@@ -14,6 +14,9 @@ silently omits:
   to the scope column.
 - `ck_sla_policy_versions_contractual_target` — a contractual source may not
   omit its availability target, because the design forbids inventing one.
+- revision 484's family-aware exclusion and derived-key constraints — distinct
+  commercial families may carry concurrent defaults without collapsing to one
+  global scope, while each family still has only one policy in force.
 
 Both migration proofs the standard asks for are covered:
 
@@ -47,6 +50,8 @@ from app import config as app_config
 ROOT = Path(__file__).resolve().parents[2]
 PREDECESSOR = "466_team_inbox_channel_ai_routes"
 CANDIDATE = "467_sla_policy_versions"
+FAMILY_PREDECESSOR = "483_invoice_discount_history"
+FAMILY_CANDIDATE = "484_sla_policy_plan_family_scope"
 
 NOW = datetime(2026, 8, 3, 12, 0, 0, tzinfo=UTC)
 
@@ -133,6 +138,13 @@ def _alembic(url: URL, revision: str) -> None:
     command.upgrade(config, revision)
 
 
+def _alembic_downgrade(url: URL, revision: str) -> None:
+    del url  # documented: env.py resolves the URL from settings, not Config
+    config = Config(str(ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(ROOT / "alembic"))
+    command.downgrade(config, revision)
+
+
 def _constraints(url: URL) -> dict[str, str]:
     with psycopg.connect(_render(url)) as conn:
         rows = conn.execute(
@@ -145,6 +157,18 @@ def _constraints(url: URL) -> dict[str, str]:
     return {name: kind for name, kind in rows}
 
 
+def _constraint_definitions(url: URL) -> dict[str, str]:
+    with psycopg.connect(_render(url)) as conn:
+        rows = conn.execute(
+            """
+            SELECT conname, pg_get_constraintdef(oid)
+            FROM pg_constraint
+            WHERE conrelid = 'sla_policy_versions'::regclass
+            """
+        ).fetchall()
+    return {name: definition for name, definition in rows}
+
+
 def _insert(conn, **overrides) -> None:
     payload = {
         "id": uuid.uuid4(),
@@ -154,6 +178,7 @@ def _insert(conn, **overrides) -> None:
         "subscription_id": None,
         "subscriber_id": None,
         "offer_id": None,
+        "plan_family": None,
         "effective_from": NOW,
         "effective_to": None,
         "availability_target_percent": 99.5,
@@ -168,12 +193,14 @@ def _insert(conn, **overrides) -> None:
         """
         INSERT INTO sla_policy_versions
           (id, policy_key, version, source, subscription_id, subscriber_id,
-           offer_id, effective_from, effective_to, availability_target_percent,
-           calendar_timezone, maintenance_excludable, command_fingerprint,
+           offer_id, plan_family, effective_from, effective_to,
+           availability_target_percent, calendar_timezone,
+           maintenance_excludable, command_fingerprint,
            command_idempotency_key, created_at)
         VALUES
           (%(id)s, %(policy_key)s, %(version)s, %(source)s, %(subscription_id)s,
-           %(subscriber_id)s, %(offer_id)s, %(effective_from)s, %(effective_to)s,
+           %(subscriber_id)s, %(offer_id)s, %(plan_family)s,
+           %(effective_from)s, %(effective_to)s,
            %(availability_target_percent)s, %(calendar_timezone)s,
            %(maintenance_excludable)s, %(command_fingerprint)s,
            %(command_idempotency_key)s, %(created_at)s)
@@ -198,6 +225,8 @@ def test_head_builds_the_table_with_its_migration_only_constraints(
         "ck_sla_policy_versions_contractual_target",
         "ck_sla_policy_versions_range",
         "ck_sla_policy_versions_target_bounds",
+        "ck_sla_policy_versions_key_is_derived",
+        "ck_sla_policy_versions_plan_family_vocab",
     ):
         assert check in found, f"{check} missing from the migrated schema"
 
@@ -226,6 +255,43 @@ def test_existing_production_database_gains_the_constraints(engine, migrated_dat
 
     after = _constraints(migrated_database)
     assert "ex_sla_policy_versions_no_overlap" in after
+
+
+def test_existing_policy_table_gains_family_identity_constraints(
+    engine, migrated_database
+):
+    """The actual 483 → 484 path replaces, rather than duplicates, identity."""
+    _alembic(migrated_database, FAMILY_PREDECESSOR)
+
+    # Revision 001 bootstraps from current model metadata. The PostgreSQL-only
+    # identity definitions, unlike the nullable column, prove the real step.
+    before = _constraint_definitions(migrated_database)
+    assert "plan_family" not in before["ex_sla_policy_versions_no_overlap"]
+    assert "plan_family" not in before["ck_sla_policy_versions_key_is_derived"]
+
+    _alembic(migrated_database, FAMILY_CANDIDATE)
+
+    after = _constraint_definitions(migrated_database)
+    assert "plan_family" in after["ex_sla_policy_versions_no_overlap"]
+    assert "plan_family" in after["ck_sla_policy_versions_key_is_derived"]
+    assert "ck_sla_policy_versions_plan_family_vocab" in after
+
+    _alembic_downgrade(migrated_database, FAMILY_PREDECESSOR)
+
+    with psycopg.connect(_render(migrated_database)) as conn:
+        downgraded_column = conn.execute(
+            """
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'sla_policy_versions'
+              AND column_name = 'plan_family'
+            """
+        ).fetchone()
+    assert downgraded_column is None
+    restored = _constraint_definitions(migrated_database)
+    assert "plan_family" not in restored["ex_sla_policy_versions_no_overlap"]
+    assert "plan_family" not in restored["ck_sla_policy_versions_key_is_derived"]
 
 
 # --- the constraints actually bite ------------------------------------------
@@ -375,6 +441,81 @@ def test_policy_key_must_match_the_derived_scope_identity(engine, migrated_datab
         with pytest.raises(pg_errors.CheckViolation) as caught:
             _insert(conn, policy_key="something:invented")
     assert caught.value.diag.constraint_name == "ck_sla_policy_versions_key_is_derived"
+
+
+def test_distinct_plan_families_may_have_overlapping_defaults(
+    engine, migrated_database
+):
+    """Family scope, not a global sentinel, owns the exclusion identity."""
+    _alembic(migrated_database, "head")
+
+    with psycopg.connect(_render(migrated_database), autocommit=True) as conn:
+        _insert(
+            conn,
+            policy_key="plan_family:unlimited",
+            source="plan_family",
+            plan_family="unlimited",
+        )
+        _insert(
+            conn,
+            policy_key="plan_family:dedicated",
+            source="plan_family",
+            plan_family="dedicated",
+        )
+        count = conn.execute(
+            "SELECT count(*) FROM sla_policy_versions WHERE source = 'plan_family'"
+        ).fetchone()[0]
+    assert count == 2
+
+
+def test_family_policy_key_is_derived_from_its_family(engine, migrated_database):
+    _alembic(migrated_database, "head")
+
+    with psycopg.connect(_render(migrated_database), autocommit=True) as conn:
+        with pytest.raises(pg_errors.CheckViolation) as caught:
+            _insert(
+                conn,
+                policy_key="plan_family:dedicated",
+                source="plan_family",
+                plan_family="unlimited",
+            )
+    assert caught.value.diag.constraint_name == "ck_sla_policy_versions_key_is_derived"
+
+
+def test_family_scope_rejects_values_outside_the_sla_protocol(
+    engine, migrated_database
+):
+    _alembic(migrated_database, "head")
+
+    with psycopg.connect(_render(migrated_database), autocommit=True) as conn:
+        with pytest.raises(pg_errors.CheckViolation) as caught:
+            _insert(
+                conn,
+                policy_key="plan_family:business_fiber",
+                source="plan_family",
+                plan_family="business_fiber",
+            )
+    assert (
+        caught.value.diag.constraint_name == "ck_sla_policy_versions_plan_family_vocab"
+    )
+
+
+def test_family_history_makes_the_scope_migration_non_downgradable(
+    engine, migrated_database
+):
+    """Append-only contractual history is refused, never silently discarded."""
+    _alembic(migrated_database, "head")
+
+    with psycopg.connect(_render(migrated_database), autocommit=True) as conn:
+        _insert(
+            conn,
+            policy_key="plan_family:home_flex",
+            source="plan_family",
+            plan_family="home_flex",
+        )
+
+    with pytest.raises(RuntimeError, match="plan_family SLA policy version"):
+        _alembic_downgrade(migrated_database, FAMILY_PREDECESSOR)
 
 
 def test_contractual_history_outlives_its_parents(engine, migrated_database):

@@ -403,3 +403,16 @@ def test_meta_social_inbox_uses_one_typed_platform_boundary() -> None:
     assert 'INSTAGRAM_TOKEN_BINDING = "instagram_login_access_token"' in connector
     assert "graph.facebook.com" in connector
     assert "graph.instagram.com" in connector
+
+
+def test_whatsapp_setup_verification_uses_installation_owned_typed_query() -> None:
+    webhook = _read(PROJECT_ROOT / "app/api/inbox_webhooks.py")
+    owner = _read(PROJECT_ROOT / "app/services/integrations/whatsapp_installation.py")
+
+    assert "VerifyWhatsAppWebhookChallengeQuery" in webhook
+    assert "verify_whatsapp_webhook_challenge(" in webhook
+    assert "resolve_secret" not in webhook
+    assert "inbound_secret_material(db)" in webhook
+    assert "IntegrationInstallationState.disabled.value" in owner
+    assert "IntegrationInstallationState.enabled.value" in owner
+    assert "hmac.compare_digest" in owner

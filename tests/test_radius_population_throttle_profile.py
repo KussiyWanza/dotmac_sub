@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from app.models.catalog import GuaranteedSpeedType
 from app.services.radius_population import _effective_profile, _rate_limit
 
 _SUB_PROFILE = SimpleNamespace(id="sub-prof", mikrotik_rate_limit="100M/50M")
@@ -56,7 +57,15 @@ def test_offer_derived_rate_survives_when_no_profile_at_all() -> None:
     offer-derived speed is used (behaviour unchanged for plan-only customers)."""
     eff = _effective_profile(_cred(None), None, _PROFILES)
     assert eff is None
-    offer = SimpleNamespace(speed_download_mbps=200, speed_upload_mbps=100)
+    # A real CatalogOffer always carries guaranteed_speed; the stub has to as
+    # well now that the rate limit consults it to decide whether to emit a
+    # committed rate. `none` keeps this case best-effort, as it was.
+    offer = SimpleNamespace(
+        speed_download_mbps=200,
+        speed_upload_mbps=100,
+        guaranteed_speed=GuaranteedSpeedType.none,
+        guaranteed_speed_limit_at=None,
+    )
     # rx/tx is NAS-perspective — upload first, download second. A 200/100 offer
     # emits 100M/200M; reversed it would sell 100 down and 200 up.
     assert _rate_limit(offer=offer, profile=eff) == "100M/200M"

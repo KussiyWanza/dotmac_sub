@@ -1,0 +1,29 @@
+# Direct writes to ``Subscription.ipv4_address`` — the served IPv4
+# compatibility projection.
+#
+# ``network.ip_assignment_lifecycle`` owns the desired IPv4 at exact service
+# grain; the column is its projection (app/models/catalog.py,
+# docs/SOT_RELATIONSHIP_MAP.md, docs/designs/IP_ASSIGNMENT_LIFECYCLE_SOT.md).
+# A write from anywhere else produces a served address with no IPAM record
+# (the ``assignment_missing`` cohort) or one that silently disagrees with its
+# assignment.
+#
+# This is migration debt, not permission. Counts must only shrink; a new entry
+# requires an accepted deviation recorded in the lifecycle design. Removing a
+# writer means deleting its line, never raising the count.
+#
+# Known blind spot: ``provisioning_helpers`` sets the column through
+# ``setattr(subscription, f"{version_key}_address", ...)``, which no
+# attribute-name scan can see. It is the allocator inside the owner's own path,
+# so it is not new debt — but do not read a clean run as proof that this file
+# lists every writer.
+#
+# Format: count repository-relative-path.
+1 app/services/connectivity_backup.py
+1 app/services/connectivity_reconciler.py
+1 app/services/enforcement.py
+1 app/services/ip_assignment_lifecycle.py
+1 app/services/ip_lifecycle.py
+3 app/services/network/ip.py
+2 app/services/radius_reject.py
+1 app/services/web_network_ip.py

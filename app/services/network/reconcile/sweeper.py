@@ -1,6 +1,6 @@
 """Periodic sweeper — long-running process, NOT a Celery task.
 
-Walks every active ``OntUnit`` row at a fixed interval and runs
+Walks every active ``OntUnit`` carrying reviewed, unexpired admission at a fixed interval and runs
 ``reconcile_ont(mode="sweep")`` against each. The sweep mode proceeds even
 against ``out_of_sync`` rows (this is how they clear), so the sweeper is
 the primary mechanism for self-healing drift detected post-write.
@@ -74,6 +74,7 @@ class SweepDisposition(StrEnum):
 
     reconciled = "reconciled"
     unreachable = "unreachable"
+    not_admitted = "not_admitted"
     held = "held"
     missing = "missing"
 
@@ -99,6 +100,10 @@ class SweepStats:
     #: `skipped_unreachable` because "we chose not to" and "we could not" are
     #: different operational facts.
     held: int = 0
+    #: ONTs whose pass-level admission became ineffective before point of use.
+    #: The catalog already excludes never-admitted rows; this counter is the
+    #: drift/race signal proving the lock-time decision failed closed.
+    not_admitted: int = 0
     succeeded: int = 0
     failed: int = 0
     deferred: int = 0
@@ -146,11 +151,22 @@ def _sweep_one(
     # placed after the pass began would be invisible to it, and the sweeper
     # would touch a device someone had just decided to protect.
     from app.services.network.ont_reconcile_eligibility import (
+        EligibilityRefusal,
         eligibility_under_lock,
     )
 
     verdict = eligibility_under_lock(db, ont_id)
     if not verdict.eligible:
+        if verdict.refusal is not EligibilityRefusal.held:
+            logger.info(
+                "sweep_ont_not_admitted",
+                extra={
+                    "ont_id": str(ont_id),
+                    "scope": verdict.scope,
+                    "refusal": verdict.refusal.value if verdict.refusal else "",
+                },
+            )
+            return SweepOutcome(disposition=SweepDisposition.not_admitted)
         logger.info(
             "sweep_ont_held",
             extra={
@@ -200,7 +216,7 @@ def _sweep_one(
 
 @dataclass(frozen=True, slots=True)
 class SweepCandidate:
-    """One ONT the automatic sweep would process, in the order it would."""
+    """One ONT in a potential or admitted sweep projection."""
 
     ont_id: uuid.UUID
     last_reconciled_at: datetime | None
@@ -217,7 +233,7 @@ def sweep_candidates(
     only_active: bool = True,
     max_onts: int | None = None,
 ) -> tuple[SweepCandidate, ...]:
-    """Return the sweep's population in sweep order.
+    """Return the potential sweep population in sweep order.
 
     Eligibility is not decided here. ``restrict_to_reconcile_candidates`` is
     the one predicate for "may automatic reconciliation drive this device",
@@ -229,15 +245,54 @@ def sweep_candidates(
     reported for the exact devices that will be walked, in the order they will
     be walked. Restating either half is how the two quietly stop agreeing.
 
-    Holds are deliberately not applied. A hold is a per-ONT decision taken at
-    the point of use, inside the reconcile transaction and under the row lock;
-    pre-filtering here would make an audit under-report a population whose
-    holds can be lifted at any time.
+    Holds and positive admissions are deliberately not applied. This full
+    potential population is the authoritative input to read-only cohort and
+    blast-radius analysis. Automatic execution consumes
+    ``admitted_sweep_candidates`` below.
     """
+    return _load_sweep_candidates(
+        db, only_active=only_active, max_onts=max_onts, admitted_ids=None
+    )
+
+
+def admitted_sweep_candidates(
+    db: Session,
+    *,
+    only_active: bool = True,
+    max_onts: int | None = None,
+) -> tuple[SweepCandidate, ...]:
+    """Return only the reviewed, unexpired execution population.
+
+    Admission is applied before ``max_onts`` so a small cohort cannot be
+    starved by never-admitted fleet rows at the head of the staleness order.
+    The resulting set remains an optimisation; each row is re-authorised under
+    lock immediately before contact.
+    """
+    from app.services.network.ont_reconcile_eligibility import admitted_ont_ids
+
+    return _load_sweep_candidates(
+        db,
+        only_active=only_active,
+        max_onts=max_onts,
+        admitted_ids=admitted_ont_ids(db),
+    )
+
+
+def _load_sweep_candidates(
+    db: Session,
+    *,
+    only_active: bool,
+    max_onts: int | None,
+    admitted_ids: frozenset[uuid.UUID] | None,
+) -> tuple[SweepCandidate, ...]:
+    if admitted_ids is not None and not admitted_ids:
+        return ()
     stmt = restrict_to_reconcile_candidates(
         select(OntUnit.id, OntObservation.last_reconciled_at),
         only_active=only_active,
     )
+    if admitted_ids is not None:
+        stmt = stmt.where(OntUnit.id.in_(admitted_ids))
     stmt = stmt.outerjoin(
         OntObservation, OntObservation.ont_unit_id == OntUnit.id
     ).order_by(OntObservation.last_reconciled_at.asc().nullsfirst(), OntUnit.id)
@@ -260,7 +315,7 @@ def run_sweep_once(
     max_onts: int | None = None,
     max_duration_sec: float | None = None,
 ) -> SweepStats:
-    """Sweep every active ONT once and return aggregated stats.
+    """Sweep every admitted active ONT once and return aggregated stats.
 
     ``db_factory`` is called per-ONT to get a fresh session — sweeps run
     long enough that holding a single session for the whole pass risks
@@ -277,7 +332,7 @@ def run_sweep_once(
     with db_factory() as catalog_db:
         ont_ids = [
             candidate.ont_id
-            for candidate in sweep_candidates(
+            for candidate in admitted_sweep_candidates(
                 catalog_db, only_active=only_active, max_onts=max_onts
             )
         ]
@@ -340,6 +395,9 @@ def run_sweep_once(
             # and is reported as a deliberate exclusion rather than an outage.
             stats.held += 1
             continue
+        if outcome.disposition is SweepDisposition.not_admitted:
+            stats.not_admitted += 1
+            continue
         if outcome.disposition is SweepDisposition.missing:
             continue
         if outcome.disposition is SweepDisposition.unreachable:
@@ -360,6 +418,7 @@ def run_sweep_once(
             "reconciled": stats.reconciled,
             "skipped_unreachable": stats.skipped_unreachable,
             "held": stats.held,
+            "not_admitted": stats.not_admitted,
             "succeeded": stats.succeeded,
             "failed": stats.failed,
             "deferred": stats.deferred,

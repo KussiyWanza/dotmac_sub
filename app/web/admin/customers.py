@@ -42,6 +42,7 @@ from app.services import (
 )
 from app.services import web_customer_details as web_customer_details_service
 from app.services import web_customer_lists as web_customer_lists_service
+from app.services import web_customer_sla as web_customer_sla_service
 from app.services import web_customer_user_access as web_customer_user_access_service
 from app.services import web_notifications as web_notifications_service
 from app.services.audit_helpers import (
@@ -2839,3 +2840,41 @@ def customer_availability_report(
         }
     )
     return templates.TemplateResponse("admin/customers/availability.html", context)
+
+
+@router.get(
+    "/{subscriber_id}/subscriptions/{subscription_id}/sla-review",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("customer:read"))],
+)
+def customer_sla_review(
+    request: Request,
+    subscriber_id: uuid.UUID,
+    subscription_id: uuid.UUID,
+    period: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """Restricted staff comparison of candidate and legacy SLA evidence."""
+
+    from app.web.admin import get_current_user, get_sidebar_stats
+
+    try:
+        page = web_customer_sla_service.build_sla_admin_review_page(
+            db,
+            subscriber_id=subscriber_id,
+            subscription_id=subscription_id,
+            period=period,
+        )
+    except DomainError as exc:
+        status_code = 404 if exc.code.endswith("unknown_review_subscription") else 400
+        raise HTTPException(status_code=status_code, detail=exc.message) from exc
+    context = {
+        "request": request,
+        "active_page": "customers",
+        "active_menu": "customers",
+        "current_user": get_current_user(request),
+        "sidebar_stats": get_sidebar_stats(db),
+        "sla_page": page,
+        "sla_humanize": web_customer_sla_service.humanize_seconds,
+    }
+    return templates.TemplateResponse("admin/customers/sla_review.html", context)

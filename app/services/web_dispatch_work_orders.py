@@ -484,6 +484,14 @@ def detail_page(db: Session, public_id: str) -> dict[str, Any]:
     task = db.get(ProjectTask, row.project_task_id) if row.project_task_id else None
     ticket = db.get(Ticket, row.origin_ticket_id) if row.origin_ticket_id else None
     queue_status = _queue_status_by_work_order(db, [row]).get(str(row.id))
+    from app.services.field.material_requests import list_staff_material_requests
+
+    material_requests = list_staff_material_requests(
+        db,
+        work_order_public_id=row.public_id,
+        page=1,
+        per_page=100,
+    )
     return {
         "work_order": row,
         "subscriber": subscriber,
@@ -500,6 +508,7 @@ def detail_page(db: Session, public_id: str) -> dict[str, Any]:
         "queue_action": _queue_action(row),
         "priorities": PRIORITY_OPTIONS,
         "technician_options": _technician_options(db),
+        "material_requests": material_requests.items,
     }
 
 

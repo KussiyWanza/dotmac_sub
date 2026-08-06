@@ -492,6 +492,21 @@ class AddOn(Base):
 
 class CatalogOffer(Base):
     __tablename__ = "catalog_offers"
+    __table_args__ = (
+        # A name is not an identity, but every plan picker presents it as one.
+        # Two active offers both named "25 Mbps Fiber" — one N537,500, one
+        # N0.00 — put two customers on unbilled dedicated fibre. Scoped to
+        # SELLABLE offers: a retired offer keeping its name is harmless and
+        # preserves history, so withdrawing one of a pair from sale resolves a
+        # collision without renaming or deleting anything.
+        Index(
+            "uq_catalog_offers_sellable_name",
+            "name",
+            unique=True,
+            postgresql_where=text("is_active AND available_for_services"),
+            sqlite_where=text("is_active = 1 AND available_for_services = 1"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4

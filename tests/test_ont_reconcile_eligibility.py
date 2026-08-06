@@ -15,6 +15,8 @@ from uuid import uuid4
 import pytest
 
 from app.models.network import (
+    OntReconcileAdmission,
+    OntReconcileAdmissionStatus,
     OntReconcileHold,
     OntReconcileHoldStatus,
     OntReconcileScope,
@@ -22,16 +24,23 @@ from app.models.network import (
 )
 from app.services.domain_errors import DomainError
 from app.services.network.ont_reconcile_eligibility import (
+    AdmissionRefusal,
+    AdmissionSpec,
+    EligibilityRefusal,
     HoldRefusal,
     HoldSpec,
     OverdueHoldAlertSeverity,
+    ReconcileAdmissionError,
     ReconcileHoldError,
+    admit_reconcile_cohort_member,
+    admitted_ont_ids,
     held_ont_ids,
     overdue_hold_alerts,
     overdue_holds,
     place_reconcile_hold,
     reconcile_eligibility,
     release_reconcile_hold,
+    revoke_reconcile_admission,
 )
 from app.services.owner_commands import CommandContext
 
@@ -78,6 +87,27 @@ def _place(db, ont, **kw):
     return place_reconcile_hold(db, spec=spec, context=ctx)
 
 
+def _admission_spec(ont, **kw):
+    return AdmissionSpec(
+        ont_unit_id=ont.id,
+        cohort_key=kw.pop("cohort_key", "cohort-1-verified"),
+        reason_code=kw.pop("reason_code", "initial_verified_rollout"),
+        explanation=kw.pop(
+            "explanation", "Canonical PON identity and sentinel review passed."
+        ),
+        reviewer=kw.pop("reviewer", "reviewer@dotmac"),
+        expires_at=kw.pop("expires_at", datetime.now(UTC) + timedelta(days=7)),
+        **kw,
+    )
+
+
+def _admit(db, ont, **kw):
+    context = kw.pop("context", _ctx(key=f"admit-test-{next(_KEY_SEQ)}"))
+    spec = _admission_spec(ont, **kw)
+    db.commit()
+    return admit_reconcile_cohort_member(db, spec=spec, context=context)
+
+
 def _expect_refusal(db, spec, ctx):
     # spec is built by the caller BEFORE this commit: touching ont.id on an
     # expired instance would reopen a transaction and the owner refuses one.
@@ -92,14 +122,28 @@ def _expect_refusal(db, spec, ctx):
 # ---------------------------------------------------------------------------
 
 
-def test_an_unheld_ont_is_eligible(db_session):
+def test_an_unadmitted_ont_fails_closed(db_session):
     ont = _ont(db_session)
     db_session.commit()
 
     verdict = reconcile_eligibility(db_session, ont.id)
 
+    assert verdict.eligible is False
+    assert verdict.held is False
+    assert verdict.refusal is EligibilityRefusal.not_admitted
+
+
+def test_a_reviewed_unheld_admission_is_eligible(db_session):
+    ont = _ont(db_session)
+    admission = _admit(db_session, ont)
+
+    verdict = reconcile_eligibility(db_session, ont.id)
+
     assert verdict.eligible is True
     assert verdict.held is False
+    assert verdict.admitted is True
+    assert verdict.admission_id == str(admission.id)
+    assert verdict.cohort_key == "cohort-1-verified"
 
 
 def test_a_held_ont_is_not_eligible_and_says_why(db_session):
@@ -122,6 +166,7 @@ def test_an_absent_ont_identity_fails_closed(db_session):
 
 def test_releasing_restores_eligibility(db_session):
     ont = _ont(db_session)
+    _admit(db_session, ont)
     hold = _place(db_session, ont)
     hold_id = hold.id
     ont_id = ont.id
@@ -135,6 +180,185 @@ def test_releasing_restores_eligibility(db_session):
     )
 
     assert reconcile_eligibility(db_session, ont_id).eligible is True
+
+
+# ---------------------------------------------------------------------------
+# Positive cohort admission
+# ---------------------------------------------------------------------------
+
+
+def test_admission_requires_distinct_review(db_session):
+    ont = _ont(db_session, "HWTC-ADMIT-REVIEW")
+    spec = _admission_spec(ont, reviewer="operator@dotmac")
+    db_session.commit()
+
+    with pytest.raises(ReconcileAdmissionError) as excinfo:
+        admit_reconcile_cohort_member(
+            db_session,
+            spec=spec,
+            context=_ctx(actor="operator@dotmac", key="admit-self-review"),
+        )
+
+    assert excinfo.value.code == AdmissionRefusal.reviewer_is_actor.value
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "code"),
+    [
+        ("cohort_key", " ", AdmissionRefusal.missing_cohort),
+        ("reason_code", "", AdmissionRefusal.missing_reason),
+        ("explanation", "", AdmissionRefusal.missing_explanation),
+        ("reviewer", "", AdmissionRefusal.missing_reviewer),
+    ],
+)
+def test_admission_requires_named_evidence(db_session, field, value, code):
+    ont = _ont(db_session, f"HWTC-ADMIT-{field}")
+    spec = _admission_spec(ont, **{field: value})
+    db_session.commit()
+
+    with pytest.raises(ReconcileAdmissionError) as excinfo:
+        admit_reconcile_cohort_member(
+            db_session,
+            spec=spec,
+            context=_ctx(key=f"admit-missing-{field}"),
+        )
+
+    assert excinfo.value.code == code.value
+
+
+def test_admission_requires_a_future_absolute_expiry(db_session):
+    ont = _ont(db_session, "HWTC-ADMIT-EXPIRY")
+    naive = _admission_spec(
+        ont, expires_at=datetime.now(UTC).replace(tzinfo=None) + timedelta(days=1)
+    )
+    expired = _admission_spec(ont, expires_at=datetime.now(UTC) - timedelta(seconds=1))
+    db_session.commit()
+    with pytest.raises(ReconcileAdmissionError) as excinfo:
+        admit_reconcile_cohort_member(
+            db_session, spec=naive, context=_ctx(key="admit-naive-expiry")
+        )
+    assert excinfo.value.code == AdmissionRefusal.expiry_missing_timezone.value
+
+    with pytest.raises(ReconcileAdmissionError) as excinfo:
+        admit_reconcile_cohort_member(
+            db_session, spec=expired, context=_ctx(key="admit-past-expiry")
+        )
+    assert excinfo.value.code == AdmissionRefusal.expiry_in_past.value
+
+
+def test_expiry_removes_authority_without_a_writer(db_session):
+    ont = _ont(db_session, "HWTC-ADMIT-ELAPSED")
+    admission = _admit(db_session, ont)
+    admission.admitted_at = datetime.now(UTC) - timedelta(days=2)
+    admission.expires_at = datetime.now(UTC) - timedelta(days=1)
+    db_session.flush()
+
+    verdict = reconcile_eligibility(db_session, ont.id)
+
+    assert verdict.eligible is False
+    assert verdict.refusal is EligibilityRefusal.not_admitted
+    assert ont.id not in admitted_ont_ids(db_session)
+
+
+def test_revocation_removes_authority(db_session):
+    ont = _ont(db_session, "HWTC-ADMIT-REVOKED")
+    admission = _admit(db_session, ont)
+    admission_id = admission.id
+    ont_id = ont.id
+    db_session.commit()
+
+    revoked = revoke_reconcile_admission(
+        db_session,
+        admission_id=admission_id,
+        context=_ctx(reason="acceptance paused", key="admit-revoke-unused"),
+    )
+
+    assert revoked.status is OntReconcileAdmissionStatus.revoked
+    assert reconcile_eligibility(db_session, ont_id).eligible is False
+
+
+def test_admission_replay_is_idempotent_and_changed_input_conflicts(db_session):
+    ont = _ont(db_session, "HWTC-ADMIT-REPLAY")
+    expires_at = datetime.now(UTC) + timedelta(days=7)
+    spec = _admission_spec(ont, expires_at=expires_at)
+    changed = _admission_spec(ont, expires_at=expires_at, cohort_key="different-cohort")
+    key = "admit-replay-one"
+    db_session.commit()
+
+    first = admit_reconcile_cohort_member(db_session, spec=spec, context=_ctx(key=key))
+    second = admit_reconcile_cohort_member(db_session, spec=spec, context=_ctx(key=key))
+    assert first.id == second.id
+    # Reading an ORM result after the owner commits may refresh the expired
+    # instance and open a caller transaction. Commands require a clean entry.
+    db_session.commit()
+
+    with pytest.raises(ReconcileAdmissionError) as excinfo:
+        admit_reconcile_cohort_member(db_session, spec=changed, context=_ctx(key=key))
+    assert excinfo.value.code == AdmissionRefusal.idempotency_conflict.value
+
+
+def test_an_expired_admission_can_be_renewed_with_reviewed_history(db_session):
+    ont = _ont(db_session, "HWTC-ADMIT-RENEW")
+    first = _admit(db_session, ont)
+    first.admitted_at = datetime.now(UTC) - timedelta(days=2)
+    first.expires_at = datetime.now(UTC) - timedelta(days=1)
+    db_session.commit()
+
+    second = _admit(
+        db_session,
+        ont,
+        cohort_key="cohort-2-verified",
+        context=_ctx(key="admit-renewed"),
+    )
+
+    db_session.refresh(first)
+    assert first.status is OntReconcileAdmissionStatus.expired
+    assert second.status is OntReconcileAdmissionStatus.active
+    assert first.id != second.id
+    assert reconcile_eligibility(db_session, ont.id).admission_id == str(second.id)
+
+
+def test_a_second_effective_admission_is_refused(db_session):
+    ont = _ont(db_session, "HWTC-ADMIT-DUPLICATE")
+    first = _admission_spec(ont)
+    second = _admission_spec(ont, cohort_key="other-cohort")
+    db_session.commit()
+    admit_reconcile_cohort_member(
+        db_session, spec=first, context=_ctx(key="admit-active-first")
+    )
+
+    with pytest.raises(ReconcileAdmissionError) as excinfo:
+        admit_reconcile_cohort_member(
+            db_session, spec=second, context=_ctx(key="admit-active-second")
+        )
+
+    assert excinfo.value.code == AdmissionRefusal.already_active.value
+
+
+def test_admission_requires_an_idempotency_key(db_session):
+    ont = _ont(db_session, "HWTC-ADMIT-NOKEY")
+    spec = _admission_spec(ont)
+    db_session.commit()
+
+    with pytest.raises(ReconcileAdmissionError) as excinfo:
+        admit_reconcile_cohort_member(
+            db_session,
+            spec=spec,
+            context=CommandContext.system(
+                actor="operator@dotmac", scope="ont:test", reason="reviewed"
+            ),
+        )
+
+    assert excinfo.value.code == AdmissionRefusal.missing_idempotency_key.value
+
+
+def test_the_active_admission_index_is_partial(db_session):
+    indexes = {index.name: index for index in OntReconcileAdmission.__table__.indexes}
+    index = indexes["uq_ont_reconcile_admissions_active_per_ont_scope"]
+
+    assert index.unique is True
+    assert "status = 'active'" in str(index.dialect_options["postgresql"]["where"])
+    assert "status = 'active'" in str(index.dialect_options["sqlite"]["where"])
 
 
 # ---------------------------------------------------------------------------
@@ -245,7 +469,7 @@ def test_nothing_releases_a_hold_but_the_release_command(db_session):
     ]
     assert len(releases) == 1, f"exactly one release path expected, found: {releases}"
     # ...and nothing schedules or times out a release.
-    for forbidden in ("expires_at", "auto_release", "timedelta(", "celery"):
+    for forbidden in ("hold.expires_at", "auto_release", "timedelta(", "celery"):
         assert forbidden not in body, f"{forbidden} suggests an automatic expiry"
 
 
@@ -365,6 +589,26 @@ def test_scope_is_sweep_only_so_operators_can_still_repair(db_session):
 # ---------------------------------------------------------------------------
 
 
+def test_point_of_use_refuses_unadmitted_ont_before_ping(db_session):
+    from app.services.network.reconcile.sweeper import SweepDisposition, _sweep_one
+
+    ont = _ont(db_session, serial="HWTC-NOT-ADMITTED-SWEEP")
+    ont_id = ont.id
+    db_session.commit()
+    pings: list[str] = []
+
+    outcome = _sweep_one(
+        db_session,
+        ont_id,
+        timeout_sec=1,
+        ping_function=lambda ip, count, timeout_sec: pings.append(ip) or True,
+        reconcile_fn=lambda *args, **kwargs: pytest.fail("must not reconcile"),
+    )
+
+    assert outcome.disposition is SweepDisposition.not_admitted
+    assert pings == []
+
+
 def test_the_sweeper_skips_held_onts_before_touching_them(db_session, monkeypatch):
     """Checked before ping, read or write.
 
@@ -384,6 +628,7 @@ def test_the_sweeper_skips_held_onts_before_touching_them(db_session, monkeypatc
     ont = _ont(db_session, serial="HWTC-HOLD-SWEEP")
     ont.olt_device_id = olt.id
     db_session.flush()
+    _admit(db_session, ont)
     _place(db_session, ont)
     db_session.commit()
 
@@ -418,6 +663,7 @@ def test_held_is_reported_separately_from_unreachable(db_session):
     stats = SweepStats(started_at=datetime.now(UTC))
     assert hasattr(stats, "held")
     assert stats.held == 0
+    assert stats.not_admitted == 0
     assert stats.skipped_unreachable == 0
 
 
@@ -572,7 +818,7 @@ def test_eligibility_under_lock_sees_a_hold_placed_after_a_set_snapshot(db_sessi
     )
 
     ont = _ont(db_session, "HWTC-MIDPASS")
-    db_session.commit()
+    _admit(db_session, ont)
     snapshot = held_ont_ids(db_session)  # taken BEFORE the hold exists
     assert ont.id not in snapshot
 
@@ -581,6 +827,30 @@ def test_eligibility_under_lock_sees_a_hold_placed_after_a_set_snapshot(db_sessi
     assert eligibility_under_lock(db_session, ont.id).eligible is False, (
         "the point-of-use decision must see a hold the snapshot missed"
     )
+
+
+def test_eligibility_under_lock_sees_revocation_after_admission_snapshot(db_session):
+    from app.services.network.ont_reconcile_eligibility import (
+        eligibility_under_lock,
+    )
+
+    ont = _ont(db_session, "HWTC-ADMISSION-MIDPASS")
+    admission = _admit(db_session, ont)
+    ont_id = ont.id
+    admission_id = admission.id
+    snapshot = admitted_ont_ids(db_session)
+    assert ont_id in snapshot
+    db_session.commit()
+
+    revoke_reconcile_admission(
+        db_session,
+        admission_id=admission_id,
+        context=_ctx(reason="cohort paused", key="admit-revoke-midpass"),
+    )
+
+    verdict = eligibility_under_lock(db_session, ont_id)
+    assert verdict.eligible is False
+    assert verdict.refusal is EligibilityRefusal.not_admitted
 
 
 def test_an_unknown_ont_is_not_eligible_under_lock(db_session):
@@ -616,7 +886,12 @@ def test_the_lock_order_is_ont_then_hold(db_session):
     source = Path("app/services/network/ont_reconcile_eligibility.py").read_text(
         encoding="utf-8"
     )
-    for fn in ("def _place(", "def _release("):
+    for fn in (
+        "def _place(",
+        "def _release(",
+        "def _admit(",
+        "def _revoke_admission(",
+    ):
         body = source[source.index(fn) :]
         body = body[: body.index("\ndef ", 1)]
         assert "_lock_ont(" in body, f"{fn} must lock the ONT row"
@@ -660,6 +935,8 @@ def test_sweep_dispositions_are_distinct_and_hashable():
     assert len({m for m in members}) == len(members), "members must be hashable"
     assert SweepDisposition.held != SweepDisposition.unreachable
     assert SweepDisposition.held != SweepDisposition.reconciled
+    assert SweepDisposition.not_admitted != SweepDisposition.held
+    assert SweepDisposition.not_admitted != SweepDisposition.unreachable
     assert SweepDisposition.held == SweepDisposition.held
 
     # Normal StrEnum serialization: the value, not a dataclass repr.

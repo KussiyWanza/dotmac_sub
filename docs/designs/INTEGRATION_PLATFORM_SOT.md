@@ -235,6 +235,21 @@ Required constraints include:
 
 ## Execution flows
 
+### Pre-activation webhook verification
+
+Provider callback verification is an installation-owned, read-only setup
+query, not an inbound message operation. It may compare the provider-presented
+verification token against the exact secret reference on the single statically
+valid installation while that installation is `disabled` or `enabled`. The
+query returns only a sanitized acceptance result; secret material is never
+returned to the HTTP adapter, persisted, or logged.
+
+This setup exception does not grant an ingress capability. Webhook `POST`
+requests, signature materialization, receipt creation, and message consequences
+continue to require an enabled receive binding. Draft, validating,
+quarantined, retired, ambiguous, invalid, or secret-unavailable installations
+fail closed during callback verification.
+
 ### Outbound domain event
 
 1. The domain owner commits its state change and stages an `EventStore` row in

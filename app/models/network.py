@@ -1742,7 +1742,39 @@ class PonPort(Base):
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     description: Mapped[str | None] = mapped_column(String(255))
     port_number: Mapped[int | None] = mapped_column(Integer)
+    # Structural identity, owned exclusively by network.pon_port_identity.
+    # `name` is display text; these are what identify the port, and what the
+    # partial unique indexes constrain. Never write them from a UI path.
+    # identity_frame NULL is a positive statement that the platform has no
+    # frame (single-box OLT), not "unknown"; identity_port NULL is "identity
+    # not established".
+    identity_frame: Mapped[int | None] = mapped_column(Integer)
+    identity_slot: Mapped[int | None] = mapped_column(Integer)
+    identity_port: Mapped[int | None] = mapped_column(Integer)
+    #: How many ONTs the split supports — a device count, not bandwidth.
     max_ont_capacity: Mapped[int | None] = mapped_column(Integer)
+
+    # --- bandwidth capacity -------------------------------------------------
+    # The PON port is the first shared segment a fibre subscriber crosses, and
+    # it was the one place in the access layer with no bandwidth figure at all:
+    # interfaces carry device_interfaces.speed_mbps and links carry
+    # network_topology_links.capacity_bps, but a PON port had only an ONT count.
+    #
+    # Recorded, never inferred. GPON is nominally 2488/1244 but split ratio,
+    # XGS-PON upgrades and shared uplinks all move the real number, and a
+    # guessed figure produces a capacity check that quietly passes. NULL means
+    # unsurveyed, which the resolver reports as unknown rather than healthy.
+    downstream_mbps: Mapped[int | None] = mapped_column(Integer)
+    upstream_mbps: Mapped[int | None] = mapped_column(Integer)
+    #: Where the figure came from — a survey, a vendor sheet, an uplink config.
+    #: A number with no provenance gets trusted for years.
+    capacity_source: Mapped[str | None] = mapped_column(String(200))
+    #: How much may be sold against this port, as a multiple of capacity. NULL
+    #: falls back to the network-wide planning default; a per-port override
+    #: exists because a port serving business customers may warrant a tighter
+    #: target than one serving residential.
+    target_oversubscription: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))
+
     notes: Mapped[str | None] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     admin_enabled: Mapped[bool] = mapped_column(
@@ -3583,6 +3615,14 @@ class OntReconcileHoldStatus(enum.Enum):
     released = "released"
 
 
+class OntReconcileAdmissionStatus(enum.Enum):
+    """Lifecycle of reviewed permission to enter the automatic sweep."""
+
+    active = "active"
+    expired = "expired"
+    revoked = "revoked"
+
+
 class OntReconcileHold(Base):
     """A reviewed decision that one ONT is excluded from automatic sweeps.
 
@@ -3680,6 +3720,89 @@ class OntReconcileHold(Base):
         if due is not None and due.tzinfo is None:
             due = due.replace(tzinfo=UTC)
         return due is not None and due <= datetime.now(UTC)
+
+
+class OntReconcileAdmission(Base):
+    """Reviewed, time-bounded permission for one ONT to enter a sweep cohort.
+
+    Owner: ``network.ont_reconcile_eligibility``. The fleet-wide feature
+    control remains an emergency stop, but it is never positive permission to
+    contact every ONT. An automatic sweep may walk only ONTs with an effective
+    admission row, and the owner rechecks that row under the ONT lock before
+    any ping, read, or write.
+
+    Expiry is deliberately fail-safe here: unlike a hold, expiry removes
+    permission. A new reviewed command may then supersede the expired history.
+    """
+
+    __tablename__ = "ont_reconcile_admissions"
+    __table_args__ = (
+        Index(
+            "uq_ont_reconcile_admissions_active_per_ont_scope",
+            "ont_unit_id",
+            "scope",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
+            sqlite_where=text("status = 'active'"),
+        ),
+        Index("ix_ont_reconcile_admissions_status", "status"),
+        Index("ix_ont_reconcile_admissions_expires_at", "expires_at"),
+        Index("ix_ont_reconcile_admissions_cohort_key", "cohort_key"),
+        CheckConstraint(
+            "expires_at > admitted_at",
+            name="ck_ont_reconcile_admissions_expiry_after_admission",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    ont_unit_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("ont_units.id", ondelete="CASCADE"), index=True
+    )
+    scope: Mapped[OntReconcileScope] = mapped_column(
+        Enum(OntReconcileScope, name="ontreconcilescope"),
+        default=OntReconcileScope.automatic_sweep,
+    )
+    status: Mapped[OntReconcileAdmissionStatus] = mapped_column(
+        Enum(OntReconcileAdmissionStatus, name="ontreconcileadmissionstatus"),
+        default=OntReconcileAdmissionStatus.active,
+    )
+    cohort_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    reason_code: Mapped[str] = mapped_column(String(64), nullable=False)
+    explanation: Mapped[str] = mapped_column(Text, nullable=False)
+    actor: Mapped[str] = mapped_column(String(160), nullable=False)
+    reviewer: Mapped[str] = mapped_column(String(160), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(
+        String(200), unique=True, nullable=False
+    )
+    admitted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ended_by: Mapped[str | None] = mapped_column(String(160))
+    end_reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+        nullable=False,
+    )
+
+    @property
+    def is_effective(self) -> bool:
+        if self.status is not OntReconcileAdmissionStatus.active:
+            return False
+        expires = self.expires_at
+        if expires is not None and expires.tzinfo is None:
+            expires = expires.replace(tzinfo=UTC)
+        return expires is not None and expires > datetime.now(UTC)
 
 
 class OntWanServiceLifecycle(enum.Enum):

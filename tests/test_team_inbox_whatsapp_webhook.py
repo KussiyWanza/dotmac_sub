@@ -25,6 +25,9 @@ from app.services.integrations.whatsapp_capability import (
     WHATSAPP_RECEIVE_CAPABILITY,
     WHATSAPP_SEND_CAPABILITY,
 )
+from app.services.integrations.whatsapp_installation import (
+    VerifyWhatsAppWebhookChallengeQuery,
+)
 
 META_TEST_SECRET = "meta-secret"  # pragma: allowlist secret
 
@@ -41,7 +44,11 @@ def _enabled_whatsapp_installation(db_session):
         db_session,
         installation_id=installation.id,
         config={"provider": "meta_cloud_api", "phone_number": "phone-1"},
-        secret_refs={"service_credentials": "env://WHATSAPP_TEST_TOKEN"},
+        secret_refs={
+            "service_credentials": "env://WHATSAPP_TEST_TOKEN",
+            "webhook_signing_secret": "env://WHATSAPP_TEST_SIGNING_SECRET",
+            "webhook_verify_token": "env://WHATSAPP_TEST_VERIFY_TOKEN",
+        },
     )
     for capability_id in (WHATSAPP_SEND_CAPABILITY, WHATSAPP_RECEIVE_CAPABILITY):
         installations.bind_capability(
@@ -115,7 +122,15 @@ def _subscriber(db_session) -> Subscriber:
 
 
 def test_meta_webhook_verify_returns_challenge(db_session, monkeypatch):
-    monkeypatch.setattr(inbox_webhooks, "_verify_token", lambda db: "verify-token")
+    monkeypatch.setenv("WHATSAPP_TEST_VERIFY_TOKEN", "verify-token")
+    installation = installations.list_installations(
+        db_session, connector_key="whatsapp"
+    )[0]
+    installations.disable_installation(
+        db_session,
+        installation_id=installation.id,
+        reason="webhook_setup",
+    )
 
     response = inbox_webhooks.verify_meta_webhook(
         mode="subscribe",
@@ -127,8 +142,24 @@ def test_meta_webhook_verify_returns_challenge(db_session, monkeypatch):
     assert response.body == b"challenge-123"
 
 
+def test_meta_webhook_verification_query_repr_redacts_presented_token():
+    query = VerifyWhatsAppWebhookChallengeQuery(
+        presented_token="provider-presented-token"
+    )
+
+    assert "provider-presented-token" not in repr(query)
+
+
 def test_meta_webhook_verify_rejects_bad_token(db_session, monkeypatch):
-    monkeypatch.setattr(inbox_webhooks, "_verify_token", lambda db: "verify-token")
+    monkeypatch.setenv("WHATSAPP_TEST_VERIFY_TOKEN", "verify-token")
+    installation = installations.list_installations(
+        db_session, connector_key="whatsapp"
+    )[0]
+    installations.disable_installation(
+        db_session,
+        installation_id=installation.id,
+        reason="webhook_setup",
+    )
 
     with pytest.raises(HTTPException) as exc:
         inbox_webhooks.verify_meta_webhook(
@@ -139,6 +170,49 @@ def test_meta_webhook_verify_rejects_bad_token(db_session, monkeypatch):
         )
 
     assert exc.value.status_code == 403
+
+
+def test_meta_webhook_verify_reports_unavailable_secret(db_session, monkeypatch):
+    monkeypatch.delenv("WHATSAPP_TEST_VERIFY_TOKEN", raising=False)
+    installation = installations.list_installations(
+        db_session, connector_key="whatsapp"
+    )[0]
+    installations.disable_installation(
+        db_session,
+        installation_id=installation.id,
+        reason="webhook_setup",
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        inbox_webhooks.verify_meta_webhook(
+            mode="subscribe",
+            token="verify-token",
+            challenge="challenge-123",
+            db=db_session,
+        )
+
+    assert exc.value.status_code == 503
+
+
+def test_meta_whatsapp_post_remains_disabled_during_webhook_setup(
+    db_session, monkeypatch
+):
+    monkeypatch.setattr(inbox_webhooks, "_app_secret", lambda db: META_TEST_SECRET)
+    installation = installations.list_installations(
+        db_session, connector_key="whatsapp"
+    )[0]
+    installations.disable_installation(
+        db_session,
+        installation_id=installation.id,
+        reason="webhook_setup",
+    )
+    body = b'{"entry":[]}'
+    request = _request(body, {"X-Hub-Signature-256": _sign(body)})
+
+    with pytest.raises(installations.InstallationError, match="no enabled binding"):
+        _run_async(inbox_webhooks.receive_meta_whatsapp_webhook(request, db_session))
+
+    assert db_session.query(IntegrationInbox).count() == 0
 
 
 def test_meta_whatsapp_webhook_rejects_bad_signature(db_session, monkeypatch):

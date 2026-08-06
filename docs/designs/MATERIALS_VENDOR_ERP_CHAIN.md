@@ -29,6 +29,17 @@ best-effort enqueue whose only trace was a metadata breadcrumb.
 
 ## Boundaries
 
+- Staff manage service-work-order material dependencies in Sub at
+  `/admin/operations/material-requests`. Creation requires an active technician
+  assignment and records a submitted request against the native work-order ID;
+  staff may then approve, reject, or cancel it. The work-order detail page and
+  Operations navigation expose the same workspace. Approval emits the existing
+  durable `field_material_request.approved` output for ERP delivery.
+- The staff workspace accepts the configured ERP warehouse code but does not
+  query ERP tables, reserve stock, choose serials, or expose local issue and
+  fulfil actions. ERP remains the owner of availability, serial allocation,
+  issuance, and refusal; Sub displays only the observed support reference and
+  outcome projected through the existing adapter.
 - ERP failures remain durable pending deliveries in the `field_erp_sync`
   outbox (8-attempt dead-letter). Sub never infers issuance or payment;
   ERP outcomes return only through the fail-atomic write-back and polling

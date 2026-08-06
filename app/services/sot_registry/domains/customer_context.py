@@ -1476,12 +1476,14 @@ DOMAIN = DomainSOT(
                 "network.customer_outage_accrual",
                 "sessions.radius_resolution",
                 "service_intent.catalog_policy",
+                "control.settings_spec",
             ),
             notes=(
                 "Shadow-phase read-time scorer (OUTAGE_SLA_SPINE §4): "
-                "resolves the effective policy (offer-version precedence "
-                "today; subscription/account contracts and persisted "
-                "immutable policy versions arrive with cutover), merges "
+                "resolves persisted subscription, account, offer, "
+                "SLA-enabled plan-family, and internal-measurement policy "
+                "versions under one precedence order, with the mutable "
+                "offer profile retained only as the shadow fallback; merges "
                 "the accrual ledger's qualifying intervals per "
                 "Africa/Lagos calendar month, and never invents a "
                 "contractual SLA — no policy renders measured "
@@ -1496,8 +1498,14 @@ DOMAIN = DomainSOT(
                 "snapshots; incomplete evidence may prove a breach but can "
                 "never produce passing or at-risk. The "
                 "legacy topology.customer_availability stays the "
-                "displayed authority until the shadow-comparison gate "
-                "cuts over; two displayed scores must never coexist."
+                "admin display authority until the shadow-comparison gate "
+                "cuts over. The restricted admin review compares one exact "
+                "closed month and classifies missing, incomplete, unavailable, "
+                "matching, and unreviewed-difference evidence without guessing "
+                "a cause or tolerance. The selector vocabulary is deliberately "
+                "legacy-only in this slice, so configuration cannot arm the "
+                "candidate. SLA remains absent from customer portal/API "
+                "surfaces; two operational admin scores never coexist."
             ),
             contract=ServiceContract(
                 concerns=(
@@ -1520,6 +1528,7 @@ DOMAIN = DomainSOT(
                             "positive subscription monitoring evidence",
                             "qualifying downtime intervals",
                             "offer SLA policy inputs",
+                            "admin SLA display control",
                         ),
                     ),
                     ConcernContract(
@@ -1610,9 +1619,20 @@ DOMAIN = DomainSOT(
                         owner="service_intent.catalog_policy",
                         kind=AuthorityKind.AUTHORITATIVE_RECORD,
                         source=(
+                            "CatalogOffer.plan_family classification plus "
                             "CatalogOffer.sla_profile_id and SlaProfile "
-                            "uptime/credit fields as display-only policy "
-                            "evidence until effective-dated versions land"
+                            "uptime/credit fields as display-only fallback "
+                            "evidence during shadow verification"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="admin SLA display control",
+                        owner="control.settings_spec",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "subscriber.sla_admin_display_authority; the allowed "
+                            "vocabulary is legacy_availability only until a later "
+                            "accepted-review activation change"
                         ),
                     ),
                 ),
@@ -1694,6 +1714,7 @@ DOMAIN = DomainSOT(
                         "customer.service_level.scope_required",
                         "customer.service_level.invalid_scope",
                         "customer.service_level.unknown_scope",
+                        "customer.service_level.unknown_plan_family",
                         "customer.service_level.idempotency_conflict",
                         "customer.service_level.duplicate_policy_terms",
                         "customer.service_level.invalid_policy_version",
@@ -1702,6 +1723,11 @@ DOMAIN = DomainSOT(
                         "customer.service_level.score_idempotency_conflict",
                         "customer.service_level.duplicate_score_evidence",
                         "customer.service_level.concurrent_score_conflict",
+                        "customer.service_level.invalid_review_period",
+                        "customer.service_level.review_period_not_closed",
+                        "customer.service_level.unknown_review_subscription",
+                        "customer.service_level.invalid_display_authority",
+                        "customer.service_level.candidate_display_not_armed",
                     ),
                     mapping_owner="app.services.web_customer_details",
                     fail_closed_on=(
@@ -1711,6 +1737,7 @@ DOMAIN = DomainSOT(
                         "a precedence claim with no matching scope",
                         "a scope id that does not belong to the source",
                         "a scope id with no such parent record",
+                        "a plan-family scope outside the SLA-enabled protocol",
                         "an idempotency key reused for different terms",
                         "identical terms already recorded under another key",
                         "a concurrent writer winning the series race",
@@ -1718,6 +1745,9 @@ DOMAIN = DomainSOT(
                         "a score command identity reused after evidence changes",
                         "exact score evidence submitted under another identity",
                         "a concurrent writer winning the score revision race",
+                        "an open or non-calendar discrepancy-review period",
+                        "a subscription outside the requested customer scope",
+                        "an invalid or prematurely armed admin display selector",
                     ),
                 ),
                 events=EventContract(
@@ -1746,30 +1776,35 @@ DOMAIN = DomainSOT(
                     ),
                     new_owner="customer.service_level",
                     verification=(
-                        "shadow_compare discrepancy review across the "
-                        "active base plus the scorer's period, union, "
-                        "exclusion, and verdict tests."
+                        "The admin-only exact-period review classifies candidate "
+                        "and legacy evidence without guessing, while focused "
+                        "tests pin missing/incomplete/unavailable/match/difference "
+                        "states, staff-only routing and the inert selector."
                     ),
                     cutover_gate=(
-                        "Displayed availability switches only after the "
-                        "discrepancy review passes and evidence coverage "
-                        "gates customer visibility; two displayed scores "
-                        "never coexist."
+                        "The operational admin display switches only in a later "
+                        "change after the discrepancy review and evidence-coverage "
+                        "threshold are explicitly accepted. Customer presentation "
+                        "is out of scope; two operational admin scores never coexist."
                     ),
                     fallback_retirement=(
-                        "The legacy trailing-window derivation is "
-                        "retired at cutover with explicit approval."
+                        "The legacy trailing-window admin derivation is retired "
+                        "after the approved admin cutover and rollback window."
                     ),
                 ),
                 steward="customer operations",
                 design_refs=(
                     "docs/designs/OUTAGE_SLA_SPINE.md",
+                    "docs/PLAN_FAMILY_ARCHITECTURE.md",
                     "docs/SOT_RELATIONSHIP_MAP.md",
                 ),
                 test_refs=(
                     "tests/test_customer_service_level.py",
                     "tests/integration/test_sla_policy_versions_postgres.py",
                     "tests/integration/test_sla_period_scores_postgres.py",
+                    "tests/architecture/test_customer_service_level_boundary.py",
+                    "tests/test_sla_admin_review.py",
+                    "tests/architecture/test_sla_admin_only_boundary.py",
                 ),
             ),
         ),

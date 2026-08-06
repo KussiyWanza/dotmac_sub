@@ -43,6 +43,7 @@
     'reports': 'reports', 'reports-revenue': 'reports', 'reports-customers': 'reports', 'reports-subscribers': 'reports',
     'reports-network': 'reports', 'reports-billing': 'reports',
     'dispatch-work-orders': 'dispatch-work-orders',
+    'material-requests': 'material-requests',
     'field-live-map': 'field-live-map', 'field-movement-playback': 'field-live-map',
     'vendor-routes': 'vendor-routes',
     'gis': 'gis', 'integrations': 'integrations',
@@ -214,6 +215,7 @@
     {{ nav_link("VPN", "/admin/network/vpn", icon_vpn, "vpn") }}
     {% endif %}
     {{ nav_link("Work Orders", "/admin/dispatch/work-orders", icon_projects, "dispatch-work-orders") }}
+    {{ nav_link("Material Requests", "/admin/operations/material-requests", icon_projects, "material-requests") }}
     {{ nav_link("Field Live Map", "/admin/dispatch/live-map", icon_gis, "field-live-map",
         active_pages=["field-live-map", "field-movement-playback"]) }}
     {{ nav_link("Vendors", "/admin/vendors", icon_network, "vendors") }}

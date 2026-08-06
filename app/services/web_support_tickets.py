@@ -157,7 +157,19 @@ SUPPORT_TICKET_LIST_DEFINITION = ListDefinition(
     default_sort_dir="desc",
 )
 
-_TICKET_STATUSES = frozenset(status.value for status in TicketStatus)
+NOT_CLOSED_TICKET_STATUS_FILTER = "not_closed"
+_TICKET_STATUS_FILTERS = frozenset(
+    {*(status.value for status in TicketStatus), NOT_CLOSED_TICKET_STATUS_FILTER}
+)
+
+
+def _ticket_status_scope(value: str | None) -> support_service.TicketStatusScope:
+    normalized = str(value or "").strip().lower()
+    if not normalized:
+        return support_service.TicketStatusScope.all()
+    if normalized == NOT_CLOSED_TICKET_STATUS_FILTER:
+        return support_service.TicketStatusScope.not_closed()
+    return support_service.TicketStatusScope.matching(TicketStatus(normalized))
 
 
 def _normalize_ticket_uuid_filter(value: str | None, name: str) -> str | None:
@@ -212,7 +224,7 @@ def build_ticket_list_query(
     """Normalize the admin support queue through its declared capabilities."""
 
     normalized_status = str(status or "").strip().lower() or None
-    if normalized_status and normalized_status not in _TICKET_STATUSES:
+    if normalized_status and normalized_status not in _TICKET_STATUS_FILTERS:
         raise ValueError(f"Unsupported ticket status: {normalized_status}")
     return SUPPORT_TICKET_LIST_DEFINITION.build_query(
         search=search,
@@ -322,7 +334,7 @@ def _ticket_scope_count(
     return support_service.tickets.count(
         db,
         search=list_query.search,
-        status=status,
+        status_scope=_ticket_status_scope(status),
         ticket_type=list_query.filter_value("ticket_type"),
         region=list_query.filter_value("region"),
         assigned_to_person_id=(
@@ -1077,7 +1089,7 @@ def build_tickets_list_context(
     rows = support_service.tickets.list(
         db,
         search=effective_query.search,
-        status=effective_query.filter_value("status"),
+        status_scope=_ticket_status_scope(effective_query.filter_value("status")),
         ticket_type=effective_query.filter_value("ticket_type"),
         region=effective_query.filter_value("region"),
         assigned_to_person_id=(
@@ -1208,7 +1220,7 @@ def list_tickets_for_scope(
     return support_service.tickets.list(
         db,
         search=list_query.search,
-        status=list_query.filter_value("status"),
+        status_scope=_ticket_status_scope(list_query.filter_value("status")),
         ticket_type=list_query.filter_value("ticket_type"),
         region=list_query.filter_value("region"),
         assigned_to_person_id=(

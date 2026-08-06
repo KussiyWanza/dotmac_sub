@@ -11,6 +11,7 @@ from app.models.catalog import (
     ServiceType,
     Subscription,
 )
+from app.models.network import IPAssignment, IpPool, IPVersion
 from app.models.subscriber import Reseller, Subscriber, SubscriberStatus
 from app.services import web_provisioning_bulk_activate as bulk_service
 
@@ -159,3 +160,157 @@ def test_bulk_activation_execute_creates_subscriptions_and_audit(db_session):
         db_session.query(AuditEvent).filter(AuditEvent.action == "bulk_activate").all()
     )
     assert audit_rows
+
+
+def _static_mapping(offer_id: str) -> bulk_service.BulkMapping:
+    return bulk_service.BulkMapping(
+        offer_id=offer_id,
+        activation_date=None,
+        nas_device_id=None,
+        ipv4_assignment="static",
+        static_ipv4="10.99.0.5",
+        mac_address=None,
+        login_prefix=None,
+        login_suffix=None,
+        service_password_mode="auto",
+        service_password_manual=None,
+        skip_active_service_check=False,
+        set_subscribers_active=False,
+    )
+
+
+def test_static_ipv4_is_refused_for_a_multi_subscriber_batch(db_session):
+    """One scalar address across N subscribers is a duplicate factory.
+
+    ``Subscription.ipv4_address`` has no uniqueness constraint, so this used to
+    land silently and surface later as ``duplicate_served_projection``.
+    """
+    reseller = Reseller(name="Partner Static Multi", is_active=True)
+    db_session.add(reseller)
+    db_session.commit()
+    db_session.refresh(reseller)
+
+    for index in range(2):
+        db_session.add(
+            Subscriber(
+                first_name="Static",
+                last_name=f"Multi{index}",
+                email=f"static-multi-{index}@example.com",
+                status=SubscriberStatus.suspended,
+                reseller_id=reseller.id,
+            )
+        )
+    db_session.commit()
+
+    offer = _create_offer(
+        db_session, name="Static Multi Plan", category=PlanCategory.recurring
+    )
+    filters = bulk_service.BulkFilters(
+        tab="recurring",
+        reseller_id=str(reseller.id),
+        subscriber_status="suspended",
+        pop_site_id=None,
+        date_from=None,
+        date_to=None,
+        custom_attr_key=None,
+        custom_attr_value=None,
+    )
+    job = bulk_service.create_job(
+        db_session,
+        filters=filters,
+        mapping=_static_mapping(str(offer.id)),
+        actor_id=None,
+    )
+    result = bulk_service.execute_job(db_session, job_id=str(job["job_id"]))
+
+    assert result["status"] == "failed"
+    assert "10.99.0.5" in str(result.get("error") or "")
+
+    served = [
+        row.ipv4_address
+        for row in db_session.query(Subscription).all()
+        if row.ipv4_address
+    ]
+    assert served == [], "a refused batch must not write any served address"
+
+
+def test_bulk_activation_never_writes_a_served_ipv4_without_an_assignment(db_session):
+    """The served column is a projection of IPAM, never a standalone write.
+
+    Bulk activation calls ``activate_subscription(emit=False)``, so the
+    provisioning handler's allocator never runs on its own. Whatever this path
+    writes into ``ipv4_address`` must still be backed by an ``IPAssignment`` —
+    an unbacked column value is the ``assignment_missing`` cohort.
+    """
+    reseller = Reseller(name="Partner Static Single", is_active=True)
+    db_session.add(reseller)
+    db_session.commit()
+    db_session.refresh(reseller)
+
+    subscriber = Subscriber(
+        first_name="Static",
+        last_name="Single",
+        email="static-single@example.com",
+        status=SubscriberStatus.suspended,
+        reseller_id=reseller.id,
+    )
+    db_session.add(subscriber)
+    db_session.commit()
+    db_session.refresh(subscriber)
+
+    db_session.add(
+        IpPool(
+            name="bulk-static-v4",
+            ip_version=IPVersion.ipv4,
+            cidr="10.99.0.0/24",
+            gateway="10.99.0.1",
+            is_active=True,
+        )
+    )
+    db_session.commit()
+
+    offer = _create_offer(
+        db_session, name="Static Single Plan", category=PlanCategory.recurring
+    )
+    filters = bulk_service.BulkFilters(
+        tab="recurring",
+        reseller_id=str(reseller.id),
+        subscriber_status="suspended",
+        pop_site_id=None,
+        date_from=None,
+        date_to=None,
+        custom_attr_key=None,
+        custom_attr_value=None,
+    )
+    job = bulk_service.create_job(
+        db_session,
+        filters=filters,
+        mapping=_static_mapping(str(offer.id)),
+        actor_id=None,
+    )
+    bulk_service.execute_job(db_session, job_id=str(job["job_id"]))
+
+    created = (
+        db_session.query(Subscription)
+        .filter(Subscription.subscriber_id == subscriber.id)
+        .all()
+    )
+    assert len(created) == 1
+    subscription = created[0]
+    # Non-vacuous: the requested static address must actually have been served,
+    # otherwise the invariant below would hold trivially.
+    assert subscription.ipv4_address == "10.99.0.5"
+
+    backing = (
+        db_session.query(IPAssignment)
+        .filter(IPAssignment.subscription_id == subscription.id)
+        .filter(IPAssignment.is_active.is_(True))
+        .filter(IPAssignment.ipv4_address_id.is_not(None))
+        .all()
+    )
+    assert backing, (
+        f"subscription {subscription.id} carries served IPv4 "
+        f"{subscription.ipv4_address} with no active exact-service IPAssignment "
+        "— this is exactly the assignment_missing cohort"
+    )
+    assert backing[0].ipv4_address.address == "10.99.0.5"

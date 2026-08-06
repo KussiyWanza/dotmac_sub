@@ -220,6 +220,7 @@ SERVICES: tuple[SOTService, ...] = (
         module="app.services.network.ont_reconcile_eligibility",
         owns=(
             "per-ONT automatic reconciliation eligibility",
+            "reviewed automatic reconciliation cohort admission",
             "overdue reconcile-hold alert consequence policy",
         ),
         depends_on=(),
@@ -231,7 +232,11 @@ SERVICES: tuple[SOTService, ...] = (
             "_reconcile_dialer_credentials run inside "
             "run_ont_reconcile_sweep AFTER the gate, disabling it also "
             "silently pauses expired remote-access cleanup and the dialer "
-            "reconcile. Active holds past review_due_at remain in force; "
+            "reconcile. Enabling that fleet control is not positive "
+            "authority: the executor catalogs only ONTs with reviewed, "
+            "named, unexpired admissions and rechecks that permission "
+            "under the ONT lock before contact. Active holds past "
+            "review_due_at remain in force; "
             "this owner also projects one critical, idempotent alert "
             "consequence per overdue hold for the shared admin-alert sink."
         ),
@@ -240,7 +245,16 @@ SERVICES: tuple[SOTService, ...] = (
                 ConcernContract(
                     name="per-ONT automatic reconciliation eligibility",
                     role=OwnerRole.COMMAND_WRITER,
-                    input_names=("reviewed hold decision",),
+                    input_names=(
+                        "reviewed cohort admission",
+                        "reviewed hold decision",
+                    ),
+                    canonical_writer="network.ont_reconcile_eligibility",
+                ),
+                ConcernContract(
+                    name="reviewed automatic reconciliation cohort admission",
+                    role=OwnerRole.COMMAND_WRITER,
+                    input_names=("reviewed cohort admission",),
                     canonical_writer="network.ont_reconcile_eligibility",
                 ),
                 ConcernContract(
@@ -250,6 +264,15 @@ SERVICES: tuple[SOTService, ...] = (
                 ),
             ),
             authoritative_inputs=(
+                AuthorityInput(
+                    name="reviewed cohort admission",
+                    owner="network.ont_reconcile_eligibility",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source=(
+                        "ont_reconcile_admissions; named, expiring "
+                        "operator decision with a distinct reviewer"
+                    ),
+                ),
                 AuthorityInput(
                     name="reviewed hold decision",
                     owner="network.ont_reconcile_eligibility",
@@ -263,19 +286,19 @@ SERVICES: tuple[SOTService, ...] = (
             transaction=TransactionContract(
                 mode=TransactionMode.OWNER_MANAGED,
                 boundary=(
-                    "Typed place/release commands through "
-                    "execute_owner_command; the eligibility query is a "
-                    "pure read."
+                    "Typed admit/revoke and hold place/release commands "
+                    "through execute_owner_command; the eligibility "
+                    "query is a pure read."
                 ),
                 locking=(
-                    "SELECT FOR UPDATE on the active hold while placing, "
-                    "so two concurrent placements cannot both pass the "
-                    "one-active-hold check."
+                    "Canonical OntUnit -> admission/hold SELECT FOR "
+                    "UPDATE order serialises commands with the sweeper's "
+                    "point-of-use decision."
                 ),
                 idempotency=(
-                    "A retried place command with the same idempotency "
-                    "key returns the existing hold rather than creating a "
-                    "second row or tripping the partial unique index."
+                    "Retried admit/place commands with the same key and "
+                    "whole typed input return the existing record; key "
+                    "reuse with changed evidence is refused."
                 ),
                 retries=(
                     "Refusals are answers, not transient failures, and are not retried."
@@ -297,6 +320,22 @@ SERVICES: tuple[SOTService, ...] = (
                     "reconcile_hold_idempotency_conflict",
                     "reconcile_hold_ont_not_found",
                     "reconcile_hold_concurrent_release",
+                    "reconcile_admission_missing_ont",
+                    "reconcile_admission_missing_cohort",
+                    "reconcile_admission_missing_reason",
+                    "reconcile_admission_missing_explanation",
+                    "reconcile_admission_missing_reviewer",
+                    "reconcile_admission_reviewer_is_actor",
+                    "reconcile_admission_missing_expiry",
+                    "reconcile_admission_expiry_missing_timezone",
+                    "reconcile_admission_expiry_in_past",
+                    "reconcile_admission_already_active",
+                    "reconcile_admission_not_found",
+                    "reconcile_admission_already_ended",
+                    "reconcile_admission_missing_idempotency_key",
+                    "reconcile_admission_idempotency_conflict",
+                    "reconcile_admission_ont_not_found",
+                    "reconcile_admission_concurrent_end",
                     # Owner-command boundary codes, raised by
                     # execute_owner_command before this owner's own
                     # validation runs.
@@ -308,7 +347,8 @@ SERVICES: tuple[SOTService, ...] = (
                 ),
                 mapping_owner=("app.services.network.ont_reconcile_eligibility"),
                 fail_closed_on=(
-                    "an absent ONT identity, which yields ineligible",
+                    "an absent ONT identity or missing, expired or "
+                    "revoked admission, which yields ineligible",
                     "a reviewer equal to the actor, because suppressing "
                     "convergence on a customer device is a two-person "
                     "decision",
@@ -316,10 +356,14 @@ SERVICES: tuple[SOTService, ...] = (
                     "a review date already in the past, which would hide "
                     "the decision it records",
                     "a second active hold for the same ONT and scope",
+                    "a second effective admission for the same ONT and scope",
                 ),
             ),
             events=EventContract(
                 event_types=(
+                    "ont_reconcile_admission.admitted",
+                    "ont_reconcile_admission.expired",
+                    "ont_reconcile_admission.revoked",
                     "ont_reconcile_hold.placed",
                     "ont_reconcile_hold.released",
                 ),
@@ -329,8 +373,9 @@ SERVICES: tuple[SOTService, ...] = (
                     "Additive only; consumers must tolerate unknown fields."
                 ),
                 replay=(
-                    "Audit rows are the record of who suppressed what and "
-                    "why; they are never deleted."
+                    "Admission and hold rows are durable evidence of who "
+                    "granted or suppressed what and why; history is never "
+                    "deleted."
                 ),
             ),
             migration=MigrationContract(
@@ -339,6 +384,8 @@ SERVICES: tuple[SOTService, ...] = (
                 old_owner="network.ont_reconcile (fleet-wide control)",
                 verification=(
                     "tests/test_ont_reconcile_eligibility.py pins that an "
+                    "unadmitted or expired ONT cannot be cataloged or "
+                    "contacted, admission is rechecked under lock, and "
                     "OVERDUE hold still suppresses, that the sweeper skips "
                     "held ONTs before any ping/read/write, and that held "
                     "is reported separately from skipped_unreachable. "
@@ -346,10 +393,10 @@ SERVICES: tuple[SOTService, ...] = (
                     "idempotent critical alert delivery and resolution."
                 ),
                 cutover_gate=(
-                    "The fleet-wide hold stays active until reviewed "
-                    "per-ONT holds are placed and their eligibility "
-                    "refusals verified; only then is the global sweep "
-                    "re-enabled."
+                    "The fleet-wide stop stays active until a small named "
+                    "cohort has reviewed, expiring admissions and its "
+                    "lock-time refusals are verified. Re-enabling the "
+                    "global control then reaches only that cohort."
                 ),
                 fallback_retirement=(
                     "network.ont_reconcile remains as an emergency "
@@ -365,6 +412,10 @@ SERVICES: tuple[SOTService, ...] = (
             test_refs=(
                 "tests/test_ont_reconcile_eligibility.py",
                 "tests/test_ont_reconcile_hold_alerts.py",
+                "tests/test_ont_reconcile_admission_cli.py",
+                "tests/test_ont_reconcile_admission_migration.py",
+                "tests/architecture/test_ont_reconcile_admission_boundary.py",
+                "tests/integration/test_ont_reconcile_hold_concurrency.py",
             ),
         ),
     ),

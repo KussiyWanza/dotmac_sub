@@ -8,11 +8,17 @@ hitting real OLT/ACS. Uses the project's ``db_session`` fixture for real
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy import select
 
 from app.models.network import DeviceStatus, OLTDevice, OntSyncStatus, OntUnit
+from app.services.network.ont_reconcile_eligibility import (
+    AdmissionSpec,
+    admit_reconcile_cohort_member,
+    admitted_ont_ids,
+)
 from app.services.network.reconcile import (
     OntDesiredState,
     ReconcileFailure,
@@ -21,8 +27,11 @@ from app.services.network.reconcile import (
 )
 from app.services.network.reconcile.sweeper import (
     SweepStats,
+    admitted_sweep_candidates,
     run_sweep_once,
+    sweep_candidates,
 )
+from app.services.owner_commands import CommandContext
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -68,9 +77,35 @@ def db_factory(db_session):
     return the same session each time (no per-ONT isolation needed)."""
     from contextlib import contextmanager
 
+    def _ensure_reviewed_admissions():
+        ont_ids = tuple(db_session.execute(select(OntUnit.id)).scalars().all())
+        already_admitted = admitted_ont_ids(db_session)
+        missing = tuple(ont_id for ont_id in ont_ids if ont_id not in already_admitted)
+        db_session.commit()
+        for ont_id in missing:
+            explanation = "Sweeper behavior test reviewed admission."
+            admit_reconcile_cohort_member(
+                db_session,
+                spec=AdmissionSpec(
+                    ont_unit_id=ont_id,
+                    cohort_key="pytest-sweeper",
+                    reason_code="pytest_sweeper_behavior",
+                    explanation=explanation,
+                    reviewer="pytest-reviewer@dotmac",
+                    expires_at=datetime.now(UTC) + timedelta(days=1),
+                ),
+                context=CommandContext.system(
+                    actor="pytest-operator@dotmac",
+                    scope=f"ont:{ont_id}",
+                    reason=explanation,
+                    idempotency_key=f"pytest-sweeper-admit-{ont_id}",
+                ),
+            )
+
     @contextmanager
     def _factory():
         try:
+            _ensure_reviewed_admissions()
             yield db_session
         finally:
             pass
@@ -147,6 +182,37 @@ def _stub_result(success: bool) -> ReconcileResult:
         duration_ms=1,
         reconciled_at=datetime.now(UTC),
     )
+
+
+def test_execution_population_is_positive_admission_applied_before_limit(
+    db_session, two_onts
+):
+    admitted_id = two_onts[1].id
+    explanation = "Explicit cohort population test."
+    db_session.commit()
+    admit_reconcile_cohort_member(
+        db_session,
+        spec=AdmissionSpec(
+            ont_unit_id=admitted_id,
+            cohort_key="pytest-positive-population",
+            reason_code="population_contract",
+            explanation=explanation,
+            reviewer="pytest-reviewer@dotmac",
+            expires_at=datetime.now(UTC) + timedelta(days=1),
+        ),
+        context=CommandContext.system(
+            actor="pytest-operator@dotmac",
+            scope=f"ont:{admitted_id}",
+            reason=explanation,
+            idempotency_key=f"pytest-positive-population-{admitted_id}",
+        ),
+    )
+
+    potential = sweep_candidates(db_session, max_onts=1)
+    execution = admitted_sweep_candidates(db_session, max_onts=1)
+
+    assert len(potential) == 1
+    assert [row.ont_id for row in execution] == [admitted_id]
 
 
 # ── run_sweep_once ──────────────────────────────────────────────────────────

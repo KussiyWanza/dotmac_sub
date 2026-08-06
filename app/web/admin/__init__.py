@@ -49,6 +49,7 @@ from app.web.admin.inbox import settings_router as inbox_settings_router
 from app.web.admin.integrations import router as integrations_router
 from app.web.admin.lead_intake import router as lead_intake_router
 from app.web.admin.legal import router as legal_router
+from app.web.admin.material_requests import router as material_requests_router
 from app.web.admin.meta_connection import router as meta_connection_router
 from app.web.admin.nas import router as nas_router
 from app.web.admin.network import router as network_router
@@ -194,6 +195,7 @@ router.include_router(surveys_router)
 router.include_router(service_change_reconciliation_router)
 router.include_router(design_system_router)
 router.include_router(dispatch_work_orders_router)
+router.include_router(material_requests_router)
 router.include_router(field_maps_router)
 router.include_router(vendor_routes_router)
 router.include_router(crm_referrals_router)

@@ -32,6 +32,7 @@ from app.db import SessionLocal
 from app.models.catalog import (
     AccessCredential,
     CatalogOffer,
+    GuaranteedSpeedType,
     RadiusProfile,
     Subscription,
     SubscriptionStatus,
@@ -98,18 +99,78 @@ def _captive_redirect_allowed(subscriber: object | None) -> bool:
     return captive_account_eligible(cast(Subscriber, subscriber))
 
 
+def _committed_mbps(offer: CatalogOffer) -> tuple[int, int] | None:
+    """The rate floor this offer promises, as (upload, download) Mbps.
+
+    ``None`` means best effort — the tier speed is a ceiling only, which is
+    what unlimited and home_flex sell. Only ``guaranteed_speed`` decides this;
+    plan family never does, so a family rename cannot silently grant or revoke
+    a guarantee.
+    """
+    if offer is None or not offer.speed_download_mbps or not offer.speed_upload_mbps:
+        return None
+
+    guaranteed = offer.guaranteed_speed
+    if guaranteed is GuaranteedSpeedType.fixed:
+        # An absolute floor in Mbps, capped at the line rate: a committed rate
+        # above the ceiling is unsatisfiable and RouterOS would reject the
+        # whole attribute, dropping the subscriber's rate limit entirely.
+        floor = offer.guaranteed_speed_limit_at
+        if not floor:
+            return None
+        return (
+            min(int(floor), offer.speed_upload_mbps),
+            min(int(floor), offer.speed_download_mbps),
+        )
+    if guaranteed is GuaranteedSpeedType.relative:
+        percent = offer.guaranteed_speed_limit_at
+        if not percent:
+            return None
+        percent = max(0, min(int(percent), 100))
+        upload = offer.speed_upload_mbps * percent // 100
+        download = offer.speed_download_mbps * percent // 100
+        if not upload or not download:
+            return None
+        return upload, download
+    return None
+
+
 def _rate_limit(offer: CatalogOffer, profile: RadiusProfile | None) -> str | None:
     """Pick MikroTik rate-limit string: profile override > offer-derived > None.
 
     The offer-derived form is rx/tx — NAS-perspective, so the subscriber's
     UPLOAD first and DOWNLOAD second, per
     ``app.services.bandwidth.to_subscriber_directions``.
+
+    An offer that promises a rate floor emits the full positional grammar so
+    the trailing committed rate can be reached:
+
+        rx/tx  burst-rx/tx  threshold-rx/tx  burst-time-rx/tx  priority  min-rx/tx
+
+    ``rx-rate-min``/``tx-rate-min`` is the CIR — the rate HTB reserves rather
+    than merely allows. Without it every tier is best effort no matter what the
+    catalogue charges for, which is what left dedicated circuits paying roughly
+    seven times the unlimited rate with no guarantee behind it.
+
+    Priority stays at RouterOS's default 8: with a committed rate set, HTB
+    honours the floor regardless of priority, which only orders the surplus.
+    Raising it here would change queue behaviour for every other subscriber on
+    the NAS, which is a separate decision from honouring a contract.
     """
     if profile and profile.mikrotik_rate_limit:
         return profile.mikrotik_rate_limit
-    if offer and offer.speed_download_mbps and offer.speed_upload_mbps:
-        return f"{offer.speed_upload_mbps}M/{offer.speed_download_mbps}M"
-    return None
+    if not offer or not offer.speed_download_mbps or not offer.speed_upload_mbps:
+        return None
+
+    ceiling = f"{offer.speed_upload_mbps}M/{offer.speed_download_mbps}M"
+    committed = _committed_mbps(offer)
+    if committed is None:
+        return ceiling
+
+    upload_min, download_min = committed
+    # Burst fields are zeroed rather than omitted: the grammar is positional,
+    # so they must be present to reach the committed rate at the end.
+    return f"{ceiling} 0/0 0/0 0/0 8 {upload_min}M/{download_min}M"
 
 
 def _effective_profile(

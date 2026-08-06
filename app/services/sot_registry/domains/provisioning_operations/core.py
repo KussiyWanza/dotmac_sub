@@ -686,6 +686,11 @@ SERVICES: tuple[SOTService, ...] = (
                 domain_codes=(
                     "operations.material_dependencies.invalid_transition",
                     "operations.material_dependencies.request_not_found",
+                    "operations.material_dependencies.work_order_not_found",
+                    "operations.material_dependencies.assignment_required",
+                    "operations.material_dependencies.material_item_not_found",
+                    "operations.material_dependencies.invalid_request",
+                    "operations.material_dependencies.idempotency_conflict",
                     "operations.material_dependencies.erp_identity_conflict",
                     "operations.material_dependencies.sync_unavailable",
                     "operations.material_dependencies.invalid_command_context",

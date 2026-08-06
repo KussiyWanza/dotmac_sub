@@ -1,4 +1,4 @@
-"""PostgreSQL concurrency contract for per-ONT reconciliation holds.
+"""PostgreSQL concurrency contract for ONT admission and hold decisions.
 
 Static guards cannot prove this boundary. A pass-level "held set" read looks
 correct in a single-session test and is still wrong: a hold placed after the
@@ -13,6 +13,8 @@ Four things this file is careful about, because an earlier version was not:
   snapshot beforehand proves nothing: the sweeper would call ``held_ont_ids``
   again afterwards, see the hold in the pre-filter, and never reach the
   point-of-use path under test.
+* The symmetric admission test returns a genuinely stale positive catalog
+  after committing revocation, proving a snapshot cannot remain authority.
 * Blocking is asserted only after placement has demonstrably REACHED
   ``_lock_ont``. A bare negative wait is scheduler-dependent -- it passes
   whether the thread is blocked on the lock or simply hasn't been scheduled.
@@ -36,17 +38,21 @@ from sqlalchemy.orm import sessionmaker
 from app.models.network import (
     DeviceStatus,
     OLTDevice,
+    OntReconcileAdmission,
     OntReconcileHold,
     OntReconcileHoldStatus,
     OntUnit,
 )
 from app.services.network import ont_reconcile_eligibility as elig_mod
 from app.services.network.ont_reconcile_eligibility import (
+    AdmissionSpec,
     HoldRefusal,
     HoldSpec,
     ReconcileHoldError,
+    admit_reconcile_cohort_member,
     place_reconcile_hold,
     release_reconcile_hold,
+    revoke_reconcile_admission,
 )
 from app.services.network.reconcile.sweeper import (
     SweepDisposition,
@@ -113,9 +119,35 @@ def seeded(factory):
         created["ont_id"] = ont.id
         created["olt_id"] = olt.id
 
+    with factory() as admit_db:
+        explanation = "Reviewed integration admission for lock testing."
+        admission = admit_reconcile_cohort_member(
+            admit_db,
+            spec=AdmissionSpec(
+                ont_unit_id=created["ont_id"],
+                cohort_key="pytest-concurrency",
+                reason_code="postgres_lock_contract",
+                explanation=explanation,
+                reviewer="reviewer@dotmac",
+                expires_at=datetime.now(UTC) + timedelta(days=1),
+            ),
+            context=CommandContext.system(
+                actor="operator@dotmac",
+                scope="ont:concurrency",
+                reason=explanation,
+                idempotency_key=f"conc-admit-{suffix}",
+            ),
+        )
+        created["admission_id"] = admission.id
+
     yield created
 
     with factory() as teardown:
+        teardown.execute(
+            delete(OntReconcileAdmission).where(
+                OntReconcileAdmission.ont_unit_id == created["ont_id"]
+            )
+        )
         teardown.execute(
             delete(OntReconcileHold).where(
                 OntReconcileHold.ont_unit_id == created["ont_id"]
@@ -325,6 +357,48 @@ def test_a_stale_prefilter_does_not_let_the_sweep_touch_a_held_ont(
     assert stats.skipped_unreachable == 0, (
         "a deliberate exclusion must not be reported as an outage"
     )
+
+
+def test_a_stale_admission_catalog_cannot_authorize_after_revocation(
+    factory, seeded, monkeypatch
+):
+    """The catalog may be stale; lock-time authority must still fail closed."""
+    ont_id = seeded["ont_id"]
+    admission_id = seeded["admission_id"]
+    real_admitted = elig_mod.admitted_ont_ids
+    intercepted: list[frozenset] = []
+
+    def _stale_admitted_ont_ids(db, **kwargs):
+        result = real_admitted(db, **kwargs)
+        assert ont_id in result
+        with factory() as revoke_db:
+            revoke_reconcile_admission(
+                revoke_db,
+                admission_id=admission_id,
+                context=_ctx(reason="cohort paused before point of use"),
+            )
+        intercepted.append(result)
+        return result
+
+    monkeypatch.setattr(elig_mod, "admitted_ont_ids", _stale_admitted_ont_ids)
+    pings: list = []
+    reconciles: list = []
+
+    stats = run_sweep_once(
+        factory,
+        timeout_sec=10,
+        max_onts=50,
+        ping_function=lambda ip, count, timeout_sec: pings.append(ip) or True,
+        reconcile_fn=lambda *args, **kwargs: reconciles.append((args, kwargs)),
+    )
+
+    assert intercepted and ont_id in intercepted[0]
+    assert pings == []
+    assert reconciles == []
+    assert stats.total_onts == 1
+    assert stats.not_admitted == 1
+    assert stats.held == 0
+    assert stats.skipped_unreachable == 0
     assert stats.reconciled == 0
 
 
