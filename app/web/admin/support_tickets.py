@@ -619,7 +619,7 @@ def ticket_add_comment(
     request: Request,
     ticket_id: UUID,
     body: str = Form(...),
-    is_internal: bool = Form(False),
+    reply_to_customer: bool = Form(False),
     mentions: str | None = Form(default=None),
     attachments: list[UploadFile] = File(default=[]),
     db: Session = Depends(get_db),
@@ -631,7 +631,7 @@ def ticket_add_comment(
         ticket_id=str(ticket_id),
         actor_id=actor_id,
         body=body,
-        is_internal=is_internal,
+        is_internal=not reply_to_customer,
         mentions=mentions,
         attachments=attachments,
     )
