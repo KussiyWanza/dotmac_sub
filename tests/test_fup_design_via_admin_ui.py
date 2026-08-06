@@ -589,3 +589,42 @@ def test_a_daily_rule_evaluates_without_a_monthly_quota_bucket(
         "enforcement skipped a subscription with daily rules because it had no "
         "monthly quota bucket; home_flex never has one"
     )
+
+
+def test_the_approaching_warning_measures_the_rule_own_window(
+    db_session, homeflex_offer, submonthly_enabled
+):
+    """A daily rule must be warned against a day of traffic, not a month.
+
+    The sweep's "approaching limit" warning divided the MONTHLY bucket by each
+    rule's threshold regardless of that rule's period. Against a daily 5 GB
+    cap, a normal month of traffic gives a ratio far above 1.0, so the warning
+    silently never fired for the very ladder §1 specifies.
+
+    evaluate_rules already computes usage_percent from each rule's own window;
+    this pins that the two agree.
+    """
+    from zoneinfo import ZoneInfo
+
+    offer, _profile = homeflex_offer
+    ensure_fup_policy(db_session, str(offer.id))
+    db_session.commit()
+    _add_throttle_rule(db_session, offer.id, threshold_gb=5)
+
+    # 4.25 GB of a 5 GB daily cap is 85% — inside the 80% warning band —
+    # while the month stands at 50 GB, which is 10x the daily threshold.
+    results = evaluate_rules(
+        db_session,
+        str(offer.id),
+        current_usage_gb=50.0,
+        current_time=DAYTIME,
+        usage_by_period=_usage("daily", 4.25, DAYTIME),
+        tz=ZoneInfo(LAGOS),
+    )
+    row = next(r for r in results if r["name"] == "Throttle at 100%")
+    assert row["triggered"] is False
+    ratio = row["usage_percent"] / 100.0
+    assert 0.8 <= ratio < 1.0, (
+        "the rule's own window puts it in the warning band; the monthly figure "
+        f"would have given {50.0 / 5:.1f}"
+    )

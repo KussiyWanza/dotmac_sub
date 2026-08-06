@@ -519,10 +519,16 @@ def _evaluate_subscription(
                 )
                 break
     elif prior_status == "none" and command.warning_enabled:
+        # Each rule's own window usage, not the monthly bucket. evaluate_rules
+        # already divides rule_usage_gb by the threshold for exactly this
+        # comparison; using current_usage instead measured a daily rule against
+        # a month of traffic, so a daily ladder either never warned or warned
+        # on the wrong day. Rows with no measured window (usage_percent None)
+        # are skipped rather than treated as zero.
         ratios = [
-            (current_usage / row["threshold_gb"], row)
+            (row["usage_percent"] / 100.0, row)
             for row in results
-            if row.get("threshold_gb")
+            if row.get("threshold_gb") and row.get("usage_percent") is not None
         ]
         if ratios:
             ratio, nearest_rule = max(ratios, key=lambda item: item[0])
