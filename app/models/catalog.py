@@ -182,8 +182,9 @@ class BillingMode(enum.Enum):
 #: This is the BROAD vocabulary. Two narrower ones exist deliberately and are
 #: not derived from it: ``SlaPlanFamily`` (which families may own an SLA
 #: default) and ``BANDWIDTH_PRICED_FAMILIES`` below. Widening this does not
-#: widen those, because classification, service-level authority and pricing
-#: model are separate questions with separate consequences.
+#: widen those, and must not: classifying an offer is a catalog act, whereas
+#: granting a family an SLA default needs commercial approval of the terms,
+#: and pricing a family per Mbps is meaningless for one sold per gigabyte.
 #:
 #: Operators may extend classification at runtime through the
 #: ``CATALOG_PLAN_FAMILIES`` setting; this tuple is the built-in default.
