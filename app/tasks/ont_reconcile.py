@@ -351,6 +351,7 @@ def run_ont_reconcile_sweep(max_onts: int = 25) -> dict[str, Any]:
             "failed": stats.failed,
             "deferred": stats.deferred,
             "held": stats.held,
+            "not_admitted": stats.not_admitted,
             "skipped_unreachable": stats.skipped_unreachable,
             "errors": stats.errors,
             "duration_sec": stats.duration_sec,

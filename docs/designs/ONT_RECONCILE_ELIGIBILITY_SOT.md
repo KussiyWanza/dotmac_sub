@@ -1,7 +1,7 @@
 # ONT reconciliation eligibility source of truth
 
-Status: implemented (owner, sweeper integration, overdue alert delivery);
-rollout in progress
+Status: implemented (positive admission, hold override, sweeper integration,
+overdue alert delivery); rollout in progress
 
 ## Canonical owner
 
@@ -10,6 +10,9 @@ is the only writer of per-ONT automatic-reconciliation eligibility. It answers
 one question:
 
 > May the sweeper touch *this* ONT, for *this* scope, right now?
+
+The answer is conjunctive: one reviewed, unexpired positive admission exists,
+and no active hold exists. Absence is refusal.
 
 ## Why it exists
 
@@ -24,6 +27,24 @@ of devices:
 
 Excluding five devices should not cost the rest their convergence, nor stop
 unrelated maintenance as a side effect nobody sees.
+
+The inverse risk also existed: after removing the fleet-wide stop, the
+scheduled task could repeatedly traverse the whole potential population.
+`max_onts` bounded one invocation, not the devices cumulatively authorized.
+The global control therefore remains an emergency stop only; enabling it is
+not positive permission to contact any ONT.
+
+## What an admission is
+
+A reviewed, named, time-bounded decision that one ONT may enter the automatic
+sweep. It records `cohort_key`, `reason_code`, `explanation`, distinct `actor`
+and `reviewer`, an absolute `expires_at`, and a mandatory `idempotency_key`.
+
+Admission expiry is deliberately the opposite of hold review-due behavior:
+expiry removes authority. An elapsed row cannot authorize contact even before
+its lifecycle status is materialized as `expired`; a new reviewed command may
+then preserve the old row as history and create the replacement admission.
+Explicit revocation removes authority before expiry.
 
 ## What a hold is
 
@@ -84,8 +105,9 @@ present.
 
 ## Lock order
 
-**`OntUnit` → active hold.** Placement, release and the sweep all take it, and
-nothing may reverse it. Reversing it would deadlock placement against release.
+**`OntUnit` → active admission/hold.** Admission, revocation, hold placement,
+hold release, and the sweep all take it, and nothing may reverse it. Reversing
+it would deadlock commands against the executor.
 
 The `OntUnit` lock is the parent lock and is held through reconciliation and
 transaction completion, so a placement that lands mid-pass waits rather than
@@ -93,26 +115,33 @@ racing.
 
 ## Sweeper integration
 
-The decision is taken **at the point of use**, per ONT, inside the transaction
-that acts on it (`eligibility_under_lock`). `held_ont_ids` remains only as a
-pre-filter: a set captured at the start of a pass cannot see a hold placed
-during the pass, so acting on the snapshot means acting on stale state.
+The full potential population remains `sweep_candidates`, which is consumed by
+read-only cohort and blast-radius analysis. Execution uses
+`admitted_sweep_candidates`: the admission predicate is applied before
+`max_onts`, so never-admitted fleet rows cannot starve a small cohort at the
+head of the staleness order.
+
+The final decision is taken **at the point of use**, per ONT, inside the
+transaction that acts on it (`eligibility_under_lock`). `admitted_ont_ids` and
+`held_ont_ids` are pre-filters only: a set captured at the start of a pass
+cannot see a revocation, expiry, or hold placed during the pass.
 
 Held ONTs are skipped **before any ping, read or write** — contacting a device
 to discover it is held would defeat the point. `_sweep_one` returns a typed `SweepOutcome` carrying a `SweepDisposition`
-(`reconciled` / `unreachable` / `held` / `missing`). A `(reachable, success)`
+(`reconciled` / `unreachable` / `not_admitted` / `held` / `missing`). A `(reachable, success)`
 tuple could not express "we chose not to", so a hold discovered at the point of
 use was counted as `skipped_unreachable` — reporting a deliberate exclusion as
 an outage. `held` is surfaced in both the task result and the
-`sweep_cycle_complete` structured log.
+`sweep_cycle_complete` structured log. `not_admitted` is a lock-time drift/race
+signal: ordinary never-admitted rows do not enter the execution catalog at all.
 
 ## Idempotency
 
-The key is **mandatory** and non-null in the schema. A replay is honoured only
-when the *entire* command matches (ONT, scope, reason, explanation, reviewer,
-actor, review date); any other reuse returns
-`reconcile_hold_idempotency_conflict`, so a recycled key cannot silently
-substitute one decision for another.
+Keys are **mandatory** and non-null in both schemas. A replay is honoured only
+when the *entire* command matches (including cohort and expiry for admission,
+or review date for a hold); any other reuse returns the corresponding
+idempotency-conflict refusal, so a recycled key cannot silently substitute one
+decision for another.
 
 ## Concurrency proof
 
@@ -143,15 +172,18 @@ eligible ONT inherited two unowned desired values. Those gates are now closed:
   legitimate explicit WCD index `1` is not conflated with an invented default.
 
 These code gates do not identify the production actor/reviewer. Those remain
-named human inputs required before any hold can be placed.
+named human inputs required before any admission or hold can be placed.
 
 1. Keep the fleet-wide hold active.
 2. Deploy this owner.
-3. Place reviewed holds on the cohort ONTs.
-4. Verify eligibility refusals and audit records.
-5. Re-enable the global sweep.
-6. Confirm the held ONTs remain untouched while fleet convergence **and
-   expired remote-access cleanup** resume.
+3. Use the read-only cohort census to choose a small named cohort.
+4. Place reviewed, expiring admissions only on those ONTs; place holds for any
+   explicit negative exception.
+5. Verify admitted-only catalog membership, lock-time refusals, and audit
+   records.
+6. Re-enable the global sweep.
+7. Confirm only the admitted cohort is contacted, held/unadmitted ONTs remain
+   untouched, and expired remote-access cleanup resumes.
 
 Expired remote-access grants must keep being checked until step 5 completes,
 because the fleet-wide hold pauses that cleanup as described above.

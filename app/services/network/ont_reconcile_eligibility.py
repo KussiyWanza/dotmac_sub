@@ -27,6 +27,12 @@ arbitrary moment, which is exactly the surprise a hold exists to prevent. An
 overdue hold stays ACTIVE and becomes reportable so it can be escalated; only
 ``release_reconcile_hold`` ends one.
 
+Positive admission. Enabling the fleet-wide control is only removal of an
+emergency stop; it is never permission to walk every ONT. The automatic sweep
+may catalog and contact only ONTs carrying a reviewed, named, unexpired cohort
+admission. Admission expiry removes authority without a writer. A hold still
+wins over an admission.
+
 Scope. ``automatic_sweep`` only, deliberately. An operator doing reviewed
 repair must still be able to drive a device explicitly -- otherwise a held ONT
 has no legitimate path back to convergence.
@@ -46,6 +52,8 @@ from sqlalchemy.orm import Session
 
 from app.models.audit import AuditActorType
 from app.models.network import (
+    OntReconcileAdmission,
+    OntReconcileAdmissionStatus,
     OntReconcileHold,
     OntReconcileHoldStatus,
     OntReconcileScope,
@@ -66,6 +74,7 @@ logger = logging.getLogger(__name__)
 
 OWNER = "network.ont_reconcile_eligibility"
 _CONCERN = "per-ONT automatic reconciliation eligibility"
+_ADMISSION_CONCERN = "reviewed automatic reconciliation cohort admission"
 OVERDUE_ALERT_PREFIX = "ont-reconcile-hold-overdue:"
 
 PLACE_COMMAND = OwnerCommandDefinition(
@@ -74,8 +83,15 @@ PLACE_COMMAND = OwnerCommandDefinition(
 RELEASE_COMMAND = OwnerCommandDefinition(
     owner=OWNER, concern=_CONCERN, name="release_reconcile_hold"
 )
+ADMIT_COMMAND = OwnerCommandDefinition(
+    owner=OWNER, concern=_ADMISSION_CONCERN, name="admit_reconcile_cohort_member"
+)
+REVOKE_ADMISSION_COMMAND = OwnerCommandDefinition(
+    owner=OWNER, concern=_ADMISSION_CONCERN, name="revoke_reconcile_admission"
+)
 
 _AUDIT_ACTION = "ont_reconcile_hold"
+_ADMISSION_AUDIT_ACTION = "ont_reconcile_admission"
 
 
 class HoldRefusal(StrEnum):
@@ -106,6 +122,36 @@ class ReconcileHoldError(DomainError):
         super().__init__(code=code, message=message, details=details)
 
 
+class AdmissionRefusal(StrEnum):
+    """Stable refusal codes for positive sweep authority commands."""
+
+    missing_ont = "reconcile_admission_missing_ont"
+    missing_cohort = "reconcile_admission_missing_cohort"
+    missing_reason = "reconcile_admission_missing_reason"
+    missing_explanation = "reconcile_admission_missing_explanation"
+    missing_reviewer = "reconcile_admission_missing_reviewer"
+    reviewer_is_actor = "reconcile_admission_reviewer_is_actor"
+    missing_expiry = "reconcile_admission_missing_expiry"
+    expiry_missing_timezone = "reconcile_admission_expiry_missing_timezone"
+    expiry_in_past = "reconcile_admission_expiry_in_past"
+    already_active = "reconcile_admission_already_active"
+    not_found = "reconcile_admission_not_found"
+    already_ended = "reconcile_admission_already_ended"
+    missing_idempotency_key = "reconcile_admission_missing_idempotency_key"
+    idempotency_conflict = "reconcile_admission_idempotency_conflict"
+    ont_not_found = "reconcile_admission_ont_not_found"
+    concurrent_end = "reconcile_admission_concurrent_end"
+
+
+class ReconcileAdmissionError(DomainError):
+    """Fail-closed refusal from the positive-admission owner."""
+
+    def __init__(
+        self, message: str, *, code: str, details: dict[str, Any] | None = None
+    ) -> None:
+        super().__init__(code=code, message=message, details=details)
+
+
 @dataclass(frozen=True, slots=True)
 class HoldSpec:
     """Typed request to suppress automatic reconciliation for one ONT."""
@@ -116,6 +162,28 @@ class HoldSpec:
     reviewer: str
     review_due_at: datetime
     scope: OntReconcileScope = OntReconcileScope.automatic_sweep
+
+
+@dataclass(frozen=True, slots=True)
+class AdmissionSpec:
+    """Typed request to admit one ONT to one named automatic-sweep cohort."""
+
+    ont_unit_id: UUID
+    cohort_key: str
+    reason_code: str
+    explanation: str
+    reviewer: str
+    expires_at: datetime
+    scope: OntReconcileScope = OntReconcileScope.automatic_sweep
+
+
+class EligibilityRefusal(StrEnum):
+    """Why an ONT is ineligible at the exact point of use."""
+
+    missing_identity = "missing_identity"
+    missing_ont = "missing_ont"
+    not_admitted = "not_admitted"
+    held = "held"
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,6 +198,10 @@ class EligibilityVerdict:
     ont_unit_id: str
     scope: str
     eligible: bool
+    refusal: EligibilityRefusal | None = None
+    admission_id: str = ""
+    cohort_key: str = ""
+    admission_expires_at: datetime | None = None
     hold_id: str = ""
     reason_code: str = ""
     review_due_at: datetime | None = None
@@ -137,7 +209,11 @@ class EligibilityVerdict:
 
     @property
     def held(self) -> bool:
-        return not self.eligible
+        return self.refusal is EligibilityRefusal.held
+
+    @property
+    def admitted(self) -> bool:
+        return bool(self.admission_id)
 
 
 class OverdueHoldAlertSeverity(StrEnum):
@@ -169,6 +245,11 @@ class OverdueHoldAlert:
 def _require(value: Any, *, code: HoldRefusal, message: str) -> None:
     if value in (None, "") or (isinstance(value, str) and not value.strip()):
         raise ReconcileHoldError(message, code=code.value)
+
+
+def _require_admission(value: Any, *, code: AdmissionRefusal, message: str) -> None:
+    if value in (None, "") or (isinstance(value, str) and not value.strip()):
+        raise ReconcileAdmissionError(message, code=code.value)
 
 
 def _validate(spec: HoldSpec, context: CommandContext) -> None:
@@ -214,16 +295,67 @@ def _validate(spec: HoldSpec, context: CommandContext) -> None:
         )
 
 
+def _validate_admission(spec: AdmissionSpec, context: CommandContext) -> None:
+    _require_admission(
+        spec.ont_unit_id,
+        code=AdmissionRefusal.missing_ont,
+        message="A reconcile admission requires an ONT.",
+    )
+    _require_admission(
+        spec.cohort_key,
+        code=AdmissionRefusal.missing_cohort,
+        message="A reconcile admission requires a named cohort.",
+    )
+    _require_admission(
+        spec.reason_code,
+        code=AdmissionRefusal.missing_reason,
+        message="A reconcile admission requires a reason code.",
+    )
+    _require_admission(
+        spec.explanation,
+        code=AdmissionRefusal.missing_explanation,
+        message="A reconcile admission requires a written explanation.",
+    )
+    _require_admission(
+        spec.reviewer,
+        code=AdmissionRefusal.missing_reviewer,
+        message="A reconcile admission requires a reviewer.",
+    )
+    if spec.reviewer.strip().lower() == (context.actor or "").strip().lower():
+        raise ReconcileAdmissionError(
+            "The reviewer must differ from the actor: granting unattended "
+            "device-write authority is a two-person decision.",
+            code=AdmissionRefusal.reviewer_is_actor.value,
+        )
+    _require_admission(
+        spec.expires_at,
+        code=AdmissionRefusal.missing_expiry,
+        message="A reconcile admission requires an expiry.",
+    )
+    if spec.expires_at.tzinfo is None or spec.expires_at.utcoffset() is None:
+        raise ReconcileAdmissionError(
+            "expires_at must be a timezone-aware absolute instant.",
+            code=AdmissionRefusal.expiry_missing_timezone.value,
+        )
+    if spec.expires_at <= datetime.now(UTC):
+        raise ReconcileAdmissionError(
+            "expires_at must be in the future; elapsed permission cannot "
+            "authorise an automatic device workflow.",
+            code=AdmissionRefusal.expiry_in_past.value,
+        )
+
+
 def _lock_ont(db: Session, ont_unit_id: UUID) -> OntUnit:
     """Serialise on the ONT row. FIRST in the canonical lock order.
 
-    Every decision about a device -- placing a hold, releasing one, or the
-    sweeper deciding to touch it -- takes this lock before reading the hold.
+    Every decision about a device -- admitting or revoking permission, placing
+    or releasing a hold, or the sweeper deciding to touch it -- takes this
+    lock before reading admission and hold state.
     A once-per-pass set read cannot serialise against a placement that lands
     mid-pass: the sweeper would act on a snapshot taken before the hold
     existed. The bulk set survives only as a pre-filter.
 
-    Canonical order: **OntUnit -> active hold**. Nothing may reverse it.
+    Canonical order: **OntUnit -> active admission/hold**. Nothing may reverse it.
     """
     ont = (
         db.execute(
@@ -260,6 +392,31 @@ def _active_hold(
     return db.execute(statement).scalars().first()
 
 
+def _active_admission(
+    db: Session,
+    ont_unit_id: UUID,
+    scope: OntReconcileScope,
+    *,
+    effective_only: bool = False,
+    for_update: bool = False,
+) -> OntReconcileAdmission | None:
+    statement = (
+        select(OntReconcileAdmission)
+        .where(OntReconcileAdmission.ont_unit_id == ont_unit_id)
+        .where(OntReconcileAdmission.scope == scope)
+        .where(OntReconcileAdmission.status == OntReconcileAdmissionStatus.active)
+    )
+    if effective_only:
+        statement = statement.where(
+            OntReconcileAdmission.expires_at > datetime.now(UTC)
+        )
+    if for_update:
+        statement = statement.with_for_update().execution_options(
+            populate_existing=True
+        )
+    return db.execute(statement).scalars().first()
+
+
 def _stage(
     db: Session, *, context: CommandContext, hold: OntReconcileHold, action: str
 ) -> None:
@@ -279,6 +436,33 @@ def _stage(
             "review_due_at": hold.review_due_at.isoformat()
             if hold.review_due_at
             else None,
+            "reason": context.reason,
+        },
+    )
+
+
+def _stage_admission(
+    db: Session,
+    *,
+    context: CommandContext,
+    admission: OntReconcileAdmission,
+    action: str,
+) -> None:
+    stage_audit_event(
+        db,
+        action=f"{_ADMISSION_AUDIT_ACTION}.{action}",
+        entity_type="ont_reconcile_admission",
+        entity_id=str(admission.id),
+        actor_type=AuditActorType.service,
+        actor_id=context.actor,
+        metadata={
+            "ont_unit_id": str(admission.ont_unit_id),
+            "scope": admission.scope.value,
+            "status": admission.status.value,
+            "cohort_key": admission.cohort_key,
+            "reason_code": admission.reason_code,
+            "reviewer": admission.reviewer,
+            "expires_at": admission.expires_at.isoformat(),
             "reason": context.reason,
         },
     )
@@ -308,6 +492,147 @@ def _replayable(
         and hold.actor == context.actor
         and stored_due == due
     )
+
+
+def _admission_replayable(
+    admission: OntReconcileAdmission,
+    spec: AdmissionSpec,
+    context: CommandContext,
+) -> bool:
+    stored_expiry = admission.expires_at
+    if stored_expiry is not None and stored_expiry.tzinfo is None:
+        stored_expiry = stored_expiry.replace(tzinfo=UTC)
+    return (
+        admission.ont_unit_id == spec.ont_unit_id
+        and admission.scope == spec.scope
+        and admission.cohort_key == spec.cohort_key.strip()
+        and admission.reason_code == spec.reason_code.strip()
+        and admission.explanation == spec.explanation.strip()
+        and admission.reviewer == spec.reviewer.strip()
+        and admission.actor == context.actor
+        and stored_expiry == spec.expires_at
+    )
+
+
+def _admit(
+    db: Session, spec: AdmissionSpec, context: CommandContext
+) -> OntReconcileAdmission:
+    _validate_admission(spec, context)
+    if not (context.idempotency_key or "").strip():
+        raise ReconcileAdmissionError(
+            "A reconcile admission requires an idempotency key.",
+            code=AdmissionRefusal.missing_idempotency_key.value,
+        )
+
+    try:
+        _lock_ont(db, spec.ont_unit_id)
+    except ReconcileHoldError as exc:
+        raise ReconcileAdmissionError(
+            "No such ONT.", code=AdmissionRefusal.ont_not_found.value
+        ) from exc
+
+    existing = (
+        db.execute(
+            select(OntReconcileAdmission).where(
+                OntReconcileAdmission.idempotency_key == context.idempotency_key
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if existing is not None:
+        if _admission_replayable(existing, spec, context):
+            return existing
+        raise ReconcileAdmissionError(
+            "That idempotency key was used for a different admission command.",
+            code=AdmissionRefusal.idempotency_conflict.value,
+        )
+
+    active = _active_admission(db, spec.ont_unit_id, spec.scope, for_update=True)
+    now = datetime.now(UTC)
+    if active is not None:
+        active_expiry = active.expires_at
+        if active_expiry.tzinfo is None:
+            active_expiry = active_expiry.replace(tzinfo=UTC)
+        if active_expiry > now:
+            raise ReconcileAdmissionError(
+                "This ONT already has an active admission for that scope.",
+                code=AdmissionRefusal.already_active.value,
+            )
+        # Time already removed this row's authority. Persist that lifecycle
+        # transition before creating the newly reviewed admission so history
+        # does not block the partial unique index.
+        active.status = OntReconcileAdmissionStatus.expired
+        active.ended_at = active_expiry
+        active.ended_by = OWNER
+        active.end_reason = "Admission authority elapsed before renewal."
+        db.flush()
+        _stage_admission(db, context=context, admission=active, action="expired")
+
+    admission = OntReconcileAdmission(
+        ont_unit_id=spec.ont_unit_id,
+        scope=spec.scope,
+        status=OntReconcileAdmissionStatus.active,
+        cohort_key=spec.cohort_key.strip(),
+        reason_code=spec.reason_code.strip(),
+        explanation=spec.explanation.strip(),
+        actor=context.actor,
+        reviewer=spec.reviewer.strip(),
+        idempotency_key=context.idempotency_key,
+        expires_at=spec.expires_at,
+    )
+    db.add(admission)
+    db.flush()
+    _stage_admission(db, context=context, admission=admission, action="admitted")
+    return admission
+
+
+def _revoke_admission(
+    db: Session, admission_id: UUID, context: CommandContext
+) -> OntReconcileAdmission:
+    target = db.get(OntReconcileAdmission, admission_id)
+    if target is None:
+        raise ReconcileAdmissionError(
+            "No such reconcile admission.", code=AdmissionRefusal.not_found.value
+        )
+    status_before_lock = target.status
+    try:
+        _lock_ont(db, target.ont_unit_id)
+    except ReconcileHoldError as exc:  # pragma: no cover - FK cascade race
+        raise ReconcileAdmissionError(
+            "No such ONT.", code=AdmissionRefusal.ont_not_found.value
+        ) from exc
+
+    admission = (
+        db.execute(
+            select(OntReconcileAdmission)
+            .where(OntReconcileAdmission.id == admission_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        .scalars()
+        .first()
+    )
+    if admission is None:  # pragma: no cover - deleted between read and lock
+        raise ReconcileAdmissionError(
+            "No such reconcile admission.", code=AdmissionRefusal.not_found.value
+        )
+    if admission.status is not OntReconcileAdmissionStatus.active:
+        code = (
+            AdmissionRefusal.concurrent_end
+            if status_before_lock is OntReconcileAdmissionStatus.active
+            else AdmissionRefusal.already_ended
+        )
+        raise ReconcileAdmissionError(
+            "That reconcile admission has already ended.", code=code.value
+        )
+    admission.status = OntReconcileAdmissionStatus.revoked
+    admission.ended_at = datetime.now(UTC)
+    admission.ended_by = context.actor
+    admission.end_reason = context.reason
+    db.flush()
+    _stage_admission(db, context=context, admission=admission, action="revoked")
+    return admission
 
 
 def _place(db: Session, spec: HoldSpec, context: CommandContext) -> OntReconcileHold:
@@ -441,6 +766,30 @@ def release_reconcile_hold(
     )
 
 
+def admit_reconcile_cohort_member(
+    db: Session, *, spec: AdmissionSpec, context: CommandContext
+) -> OntReconcileAdmission:
+    """Grant reviewed, expiring automatic-sweep authority to one ONT."""
+    return execute_owner_command(
+        db,
+        definition=ADMIT_COMMAND,
+        context=context,
+        operation=lambda: _admit(db, spec, context),
+    )
+
+
+def revoke_reconcile_admission(
+    db: Session, *, admission_id: UUID, context: CommandContext
+) -> OntReconcileAdmission:
+    """Remove positive sweep authority before its scheduled expiry."""
+    return execute_owner_command(
+        db,
+        definition=REVOKE_ADMISSION_COMMAND,
+        context=context,
+        operation=lambda: _revoke_admission(db, admission_id, context),
+    )
+
+
 def reconcile_eligibility(
     db: Session,
     ont_unit_id: Any,
@@ -449,26 +798,47 @@ def reconcile_eligibility(
 ) -> EligibilityVerdict:
     """Whether this ONT may be reconciled by this scope right now.
 
-    Checked BEFORE any ping, read or write. A held ONT must not be contacted at
-    all: reaching a device to discover it is held would defeat the point.
+    Checked BEFORE any ping, read or write. Authority is conjunctive: a valid
+    positive admission must exist and no active hold may exist. The negative
+    hold wins so an explicit suppression is always visible in reporting.
     """
     if ont_unit_id is None:
         # No identity, no eligibility. Fail closed.
-        return EligibilityVerdict(ont_unit_id="", scope=scope.value, eligible=False)
+        return EligibilityVerdict(
+            ont_unit_id="",
+            scope=scope.value,
+            eligible=False,
+            refusal=EligibilityRefusal.missing_identity,
+        )
 
     hold = _active_hold(db, ont_unit_id, scope)
-    if hold is None:
+    if hold is not None:
         return EligibilityVerdict(
-            ont_unit_id=str(ont_unit_id), scope=scope.value, eligible=True
+            ont_unit_id=str(ont_unit_id),
+            scope=scope.value,
+            eligible=False,
+            refusal=EligibilityRefusal.held,
+            hold_id=str(hold.id),
+            reason_code=hold.reason_code,
+            review_due_at=hold.review_due_at,
+            overdue=hold.is_overdue,
+        )
+
+    admission = _active_admission(db, ont_unit_id, scope, effective_only=True)
+    if admission is None:
+        return EligibilityVerdict(
+            ont_unit_id=str(ont_unit_id),
+            scope=scope.value,
+            eligible=False,
+            refusal=EligibilityRefusal.not_admitted,
         )
     return EligibilityVerdict(
         ont_unit_id=str(ont_unit_id),
         scope=scope.value,
-        eligible=False,
-        hold_id=str(hold.id),
-        reason_code=hold.reason_code,
-        review_due_at=hold.review_due_at,
-        overdue=hold.is_overdue,
+        eligible=True,
+        admission_id=str(admission.id),
+        cohort_key=admission.cohort_key,
+        admission_expires_at=admission.expires_at,
     )
 
 
@@ -490,9 +860,51 @@ def eligibility_under_lock(
     except ReconcileHoldError:
         # Unknown ONT: nothing to reconcile, and certainly not eligible.
         return EligibilityVerdict(
-            ont_unit_id=str(ont_unit_id), scope=scope.value, eligible=False
+            ont_unit_id=str(ont_unit_id),
+            scope=scope.value,
+            eligible=False,
+            refusal=EligibilityRefusal.missing_ont,
         )
     return reconcile_eligibility(db, ont_unit_id, scope=scope)
+
+
+def admitted_ont_ids(
+    db: Session, *, scope: OntReconcileScope = OntReconcileScope.automatic_sweep
+) -> frozenset[UUID]:
+    """Effective positive sweep population at this instant.
+
+    This is the catalog pre-filter. It prevents non-admitted ONTs from
+    consuming a bounded pass and starving a small admitted cohort, but it is
+    not the final decision: ``eligibility_under_lock`` rechecks expiry and
+    revocation at the point of use.
+    """
+    return frozenset(
+        db.execute(
+            select(OntReconcileAdmission.ont_unit_id)
+            .where(OntReconcileAdmission.scope == scope)
+            .where(OntReconcileAdmission.status == OntReconcileAdmissionStatus.active)
+            .where(OntReconcileAdmission.expires_at > datetime.now(UTC))
+        )
+        .scalars()
+        .all()
+    )
+
+
+def effective_admissions(
+    db: Session, *, scope: OntReconcileScope = OntReconcileScope.automatic_sweep
+) -> Sequence[OntReconcileAdmission]:
+    """Effective admissions for operator inventory, ordered by expiry."""
+    return list(
+        db.execute(
+            select(OntReconcileAdmission)
+            .where(OntReconcileAdmission.scope == scope)
+            .where(OntReconcileAdmission.status == OntReconcileAdmissionStatus.active)
+            .where(OntReconcileAdmission.expires_at > datetime.now(UTC))
+            .order_by(OntReconcileAdmission.expires_at, OntReconcileAdmission.id)
+        )
+        .scalars()
+        .all()
+    )
 
 
 def held_ont_ids(

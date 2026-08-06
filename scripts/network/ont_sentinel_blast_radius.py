@@ -20,12 +20,13 @@ A rule whose input does not live in stored configuration (an ACS server row, an
 observed device value) is reported as **unmeasured**, never as zero affected.
 A fake zero is the failure mode this whole exercise exists to prevent.
 
-The population comes from ``reconcile.sweeper.sweep_candidates`` — the same
-function ``run_sweep_once`` uses — so the risk profile reported here is always
-for the exact set of devices that will actually be swept, including its
-``NULLS FIRST`` ordering. Each rule is also counted against the never-reconciled
-subset, because those ONTs are processed first and are the ones most likely to
-hold sparse desired config.
+The population comes from ``reconcile.sweeper.sweep_candidates`` — the
+canonical potential population upstream of reviewed positive admission.
+Execution applies ``admitted_sweep_candidates`` to that same projection, so
+this report measures the fleet from which cohort membership may be chosen
+without inventing a parallel hardware predicate. Each rule is also counted
+against the never-reconciled subset because those ONTs lead the ordering and
+are most likely to hold sparse desired config.
 
 Read-only: opens no writes and performs no device I/O. Safe to run against
 production.

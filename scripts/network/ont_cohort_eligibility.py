@@ -11,9 +11,10 @@ survive each one, so an empty answer says *which* gate emptied it.
 
 The gates, each already established elsewhere:
 
-  * **in the sweep population** -- `sweep_candidates`, the same function
-    `run_sweep_once` uses, so this cannot report on a different set of devices
-    than the one that would actually be swept;
+  * **in the potential sweep population** -- `sweep_candidates`, the canonical
+    upstream population from which reviewed admissions are chosen. Execution
+    applies `admitted_sweep_candidates` to this exact population, so this
+    report cannot silently invent a parallel hardware predicate;
   * **previously observed** -- an ONT with no observation row has no stored
     state, so what the sweep would do to it cannot be known without contacting
     the device;
