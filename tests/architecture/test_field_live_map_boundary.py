@@ -39,9 +39,9 @@ def test_field_live_map_public_reads_have_typed_outcomes() -> None:
 
 
 def test_live_map_navigation_uses_the_route_permission() -> None:
-    sidebar = (
-        ROOT / "templates/components/navigation/admin_sidebar.html"
-    ).read_text(encoding="utf-8")
+    sidebar = (ROOT / "templates/components/navigation/admin_sidebar.html").read_text(
+        encoding="utf-8"
+    )
 
     permission_gate = '{% if can(request, "operations:dispatch:read") %}'
     link = 'nav_link("Field Live Map", "/admin/dispatch/live-map"'

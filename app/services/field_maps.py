@@ -101,8 +101,7 @@ def list_technician_positions(
             continue
         last_at = _as_utc(presence.last_location_at)
         is_live = bool(
-            last_at
-            and (now - last_at).total_seconds() <= query.stale_after_seconds
+            last_at and (now - last_at).total_seconds() <= query.stale_after_seconds
         )
         if is_live:
             live_count += 1
