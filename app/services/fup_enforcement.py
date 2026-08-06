@@ -233,6 +233,25 @@ def _current_quota_bucket(
     )
 
 
+def _requires_quota_bucket(db: Session, offer_id) -> bool:
+    """Does this offer have any rule that measures against the billing bucket?
+
+    Only ``monthly`` rules do. Treating the bucket as universally required
+    conflated "we cannot measure this rule" with "this subscription is not
+    metered for billing".
+    """
+    from app.services.fup import FupPolicies
+    from app.services.fup_usage import period_value
+
+    policy = FupPolicies.get_by_offer(db, str(offer_id))
+    if policy is None:
+        return True
+    active = [rule for rule in policy.rules if rule.is_active]
+    if not active:
+        return True
+    return any(period_value(rule.consumption_period) == "monthly" for rule in active)
+
+
 def _sweep_policy(db: Session) -> tuple[bool, float, bool]:
     from app.services.usage import _parse_warning_thresholds
 
@@ -300,9 +319,22 @@ def _evaluate_subscription(
         return FupSubscriptionOutcome(reset=int(bool(result.get("lifted"))))
 
     bucket = _current_quota_bucket(db, subscription.id, command.evaluated_at)
-    if bucket is None:
+    if bucket is None and _requires_quota_bucket(db, subscription.offer_id):
+        # A monthly rule measures against the billing bucket, so without one
+        # there is nothing to compare and skipping is correct.
         return FupSubscriptionOutcome()
-    current_usage = float(bucket.used_gb or 0)
+    if bucket is None:
+        # Sub-monthly rules read the windowed usage reader instead, and quota
+        # buckets only exist for offers carrying a usage allowance
+        # (usage.meter_active_subscriptions). home_flex deliberately has none —
+        # the allowance is a BILLING object and FUP is enforcement (§1) — so
+        # requiring a bucket here silently disabled every daily ladder on the
+        # family that most needs one, however carefully it was configured.
+        logger.debug(
+            "FUP evaluating sub %s with no quota bucket; sub-monthly rules only",
+            subscription.id,
+        )
+    current_usage = float(bucket.used_gb or 0) if bucket is not None else 0.0
     usage_by_period = build_usage_by_period(
         db,
         subscription,
@@ -374,8 +406,12 @@ def _evaluate_subscription(
     triggered = [row for row in results if row.get("triggered")]
     if triggered:
         for rule_result in reversed(triggered):
+            # A sub-monthly rule carries its own window_end; the billing period
+            # is only the fallback, and there may be no bucket at all.
             cap_resets_at = rule_result.get("window_end") or (
-                bucket.period_end.isoformat() if bucket.period_end else None
+                bucket.period_end.isoformat()
+                if bucket is not None and bucket.period_end
+                else None
             )
             if rule_result.get("usage_source") == "no_data":
                 continue
@@ -616,7 +652,9 @@ def _maybe_queue_repeat_upsell(
 ) -> None:
     from app.models.notification import Notification
 
-    if not bucket.period_start or not bucket.period_end:
+    # The upsell compares against prior billing cycles, so it is meaningless
+    # without a bucket to take the cycle length from.
+    if bucket is None or not bucket.period_start or not bucket.period_end:
         return
     period_len = bucket.period_end - bucket.period_start
     if period_len.total_seconds() <= 0:
