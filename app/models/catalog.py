@@ -428,7 +428,6 @@ class UsageAllowance(Base):
     included_gb: Mapped[int | None] = mapped_column(Integer)
     overage_rate: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
     overage_cap_gb: Mapped[int | None] = mapped_column(Integer)
-    throttle_rate_mbps: Mapped[int | None] = mapped_column(Integer)
     # Unused allowance carries into next period's quota bucket (capped at one
     # period's included_gb). Sourced from imported fup_limits.rollover_data.
     rollover_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
