@@ -21,13 +21,16 @@ from __future__ import annotations
 from datetime import UTC, datetime, time
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from app.services.fup import _day_in_list, _time_in_window
-from app.services.fup_usage import accrual_intervals, fup_window_bounds
 from app.services.fup_throttle_profile import (
     MIN_THROTTLE_KBPS,
+    FupThrottleRateError,
     reduced_kbps,
     resolve_or_create_profile,
 )
+from app.services.fup_usage import accrual_intervals, fup_window_bounds
 
 LAGOS = ZoneInfo("Africa/Lagos")  # UTC+1, no DST
 NIGHT_START = time(22, 0)
@@ -65,8 +68,28 @@ def test_a_deep_cut_on_a_slow_plan_is_floored_not_honoured_exactly():
     assert reduced_kbps(2_000, 95) == MIN_THROTTLE_KBPS
 
 
+@pytest.mark.parametrize("pct", [0, 100, -5, 140])
+def test_an_out_of_range_reduction_is_refused(pct):
+    """0 is a no-op and 100 is a disconnection; neither is a throttle.
+
+    The rule engine validates 1..99 on write, but an imported or hand-edited
+    row can hold either, and it must not quietly become a RADIUS profile.
+    """
+    with pytest.raises(FupThrottleRateError) as caught:
+        reduced_kbps(10_000, pct)
+    assert caught.value.code == "access.fup_throttle_rate.invalid_reduction_percent"
+
+
+def test_a_non_positive_rate_cannot_be_reduced():
+    with pytest.raises(FupThrottleRateError) as caught:
+        reduced_kbps(0, 50)
+    assert caught.value.code == "access.fup_throttle_rate.invalid_full_rate"
+
+
 def test_derived_profile_is_created_once_and_reused(db_session):
-    first = resolve_or_create_profile(db_session, download_kbps=25_000, upload_kbps=5_000)
+    first = resolve_or_create_profile(
+        db_session, download_kbps=25_000, upload_kbps=5_000
+    )
     second = resolve_or_create_profile(
         db_session, download_kbps=25_000, upload_kbps=5_000
     )
@@ -183,7 +206,9 @@ def test_spans_never_escape_the_consumption_window():
 
 
 def test_a_weekly_window_excludes_the_night_of_every_day():
-    window = fup_window_bounds("weekly", datetime(2026, 6, 24, 12, 0, tzinfo=UTC), LAGOS)
+    window = fup_window_bounds(
+        "weekly", datetime(2026, 6, 24, 12, 0, tzinfo=UTC), LAGOS
+    )
     spans = accrual_intervals(window, LAGOS, DAY_START, DAY_END)
     counted = sum((end - start).total_seconds() for start, end in spans)
     assert counted == 7 * 17 * 3600

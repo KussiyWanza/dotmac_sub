@@ -148,6 +148,7 @@ class EventType(enum.Enum):
     addon_expiring = "usage.addon_expiring"
     fup_runtime_state_changed = "fup.runtime_state_changed"
     fup_policy_changed = "fup_policy.changed"
+    fup_throttle_profile_derived = "fup.throttle_profile_derived"
 
     # Operations - Provisioning events (3)
     provisioning_started = "provisioning.started"

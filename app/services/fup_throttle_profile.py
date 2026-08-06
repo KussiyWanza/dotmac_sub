@@ -36,12 +36,26 @@ from sqlalchemy.orm import Session
 
 from app.models.catalog import NasVendor, RadiusProfile, Subscription
 from app.models.fup import FupRule
+from app.services.domain_errors import DomainError
+from app.services.events import EventType, emit_event
 
 # A throttle is a penalty, not a disconnection. Below roughly this rate a
 # connection stops being usable for the things that make a customer notice they
 # still have service at all, so a very deep reduction on an already-slow plan
 # is floored rather than honoured exactly.
 MIN_THROTTLE_KBPS = 512
+
+
+class FupThrottleRateError(DomainError):
+    """The rule's throttle depth cannot produce a rate (adapter: HTTP 400)."""
+
+
+def _error(suffix: str, message: str, **details) -> FupThrottleRateError:
+    return FupThrottleRateError(
+        code=f"access.fup_throttle_rate.{suffix}",
+        message=message,
+        details=details or None,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,8 +83,26 @@ def reduced_kbps(full_kbps: int, reduction_percent: float) -> int:
     ``speed_reduction_percent = 50``, where the two readings happen to coincide
     — which is exactly why the distinction has to be stated somewhere rather
     than left to a reader's guess.
+
+    Refuses a percentage outside ``0 < pct < 100``. The rule engine validates
+    that range on write, but an imported or hand-edited row can hold 0 (a
+    no-op dressed as enforcement) or 100 (a disconnection dressed as a
+    throttle). Neither should quietly become a RADIUS profile.
     """
-    remaining = full_kbps * (100.0 - float(reduction_percent)) / 100.0
+    pct = float(reduction_percent)
+    if not 0 < pct < 100:
+        raise _error(
+            "invalid_reduction_percent",
+            "A FUP throttle reduction must be between 1 and 99 percent.",
+            speed_reduction_percent=pct,
+        )
+    if full_kbps <= 0:
+        raise _error(
+            "invalid_full_rate",
+            "Cannot reduce a non-positive rate.",
+            full_kbps=full_kbps,
+        )
+    remaining = full_kbps * (100.0 - pct) / 100.0
     return max(int(round(remaining)), MIN_THROTTLE_KBPS)
 
 
@@ -115,6 +147,19 @@ def resolve_or_create_profile(
     )
     db.add(profile)
     db.flush()
+    # Creating a RADIUS profile is a material act — a new row that will be
+    # projected to the NAS. Reuse is a read and emits nothing; only the first
+    # appearance of a rate is evidence worth keeping.
+    emit_event(
+        db,
+        EventType.fup_throttle_profile_derived,
+        {
+            "profile_id": str(profile.id),
+            "code": code,
+            "download_kbps": download_kbps,
+            "upload_kbps": upload_kbps,
+        },
+    )
     return profile
 
 
@@ -157,8 +202,19 @@ def resolve_fup_throttle_profile(
             reason="subscriber has no full-speed profile to reduce",
         )
 
-    download = reduced_kbps(full.download_speed, rule.speed_reduction_percent)
-    upload = reduced_kbps(full.upload_speed, rule.speed_reduction_percent)
+    # A rule holding an out-of-range percentage is a data defect, not a missing
+    # value. Enforcement still has to throttle, so it degrades to the global
+    # profile with the defect named — refusing here would leave the subscriber
+    # at full speed, which is the one outcome worse than a blunt throttle.
+    try:
+        download = reduced_kbps(full.download_speed, rule.speed_reduction_percent)
+        upload = reduced_kbps(full.upload_speed, rule.speed_reduction_percent)
+    except FupThrottleRateError as exc:
+        return ThrottleProfileDecision(
+            profile_id=fallback_profile_id,
+            derived=False,
+            reason=f"{exc.code}: {exc.message}",
+        )
 
     # A "reduction" that leaves the subscriber at or above their current rate
     # is not a throttle. This happens when the floor bites on an already-slow

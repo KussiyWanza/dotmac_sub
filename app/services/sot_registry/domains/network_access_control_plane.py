@@ -1359,6 +1359,14 @@ DOMAIN = DomainSOT(
             contract=ServiceContract(
                 concerns=(
                     ConcernContract(
+                        name="resolved FUP throttle rate per subscription",
+                        role=OwnerRole.RESOLVER,
+                        input_names=(
+                            "FUP rule throttle depth",
+                            "subscriber effective rate",
+                        ),
+                    ),
+                    ConcernContract(
                         name="derived FUP throttle RADIUS profiles",
                         role=OwnerRole.PROJECTION_WRITER,
                         input_names=(
@@ -1407,9 +1415,30 @@ DOMAIN = DomainSOT(
                     ),
                 ),
                 errors=ErrorContract(
-                    domain_codes=(),
+                    domain_codes=(
+                        "access.fup_throttle_rate.invalid_reduction_percent",
+                        "access.fup_throttle_rate.invalid_full_rate",
+                    ),
                     mapping_owner="access.session_enforcement",
-                    fail_closed_on=(),
+                    fail_closed_on=(
+                        "a reduction percentage outside 1..99, which would "
+                        "produce either a no-op or a disconnection",
+                        "a non-positive rate to reduce",
+                    ),
+                ),
+                events=EventContract(
+                    event_types=("fup.throttle_profile_derived",),
+                    schema_version=1,
+                    delivery_owner="events.dispatcher",
+                    compatibility=(
+                        "Version 1 carries the derived profile identity and "
+                        "its rate pair; no subscriber or usage values."
+                    ),
+                    replay=(
+                        "Emitted only on first creation of a rate pair; reuse "
+                        "is a read. Rows are rebuilt by deleting them and "
+                        "letting enforcement recreate the rates in use."
+                    ),
                 ),
                 projections=(
                     ProjectionContract(
