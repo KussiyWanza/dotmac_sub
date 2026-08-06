@@ -154,6 +154,10 @@ A detail page establishes the decision context before exposing exhaustive data.
   the canonical work-order detail view. Creation and technician assignment are
   displayed as consecutive actions because their command owners remain
   separate; creation must not imply that a technician was assigned.
+- Material requests remain work-order-owned. Ticket, project, and project-task
+  detail pages project requests from their linked native work orders and scope
+  the create action to an actively assigned work order; they do not maintain
+  duplicate material-request relationships.
 
 ### Editor Or Form
 

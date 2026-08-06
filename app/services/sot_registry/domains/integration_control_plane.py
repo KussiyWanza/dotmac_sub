@@ -1503,8 +1503,9 @@ DOMAIN = DomainSOT(
                         owner="control.settings_spec",
                         kind=AuthorityKind.CONTROL_INPUT,
                         source=(
-                            "material_request flow ownership, ERP sync enablement, ISSUE "
-                            "payload schema, bounded batch size, and retry cadence"
+                            "material_request flow ownership, validated ERP capability "
+                            "bindings, ISSUE payload schema, bounded batch size, and "
+                            "retry cadence"
                         ),
                     ),
                 ),
@@ -1552,7 +1553,7 @@ DOMAIN = DomainSOT(
                     ),
                     fail_closed_on=(
                         "flow not owned by Sub",
-                        "disabled ERP synchronization after cutover",
+                        "missing ERP delivery capability after cutover",
                         "missing warehouse, technician, item, or serial evidence",
                         "changed ERP material-request identity",
                     ),

@@ -11,10 +11,20 @@ from app.models.dispatch import (
     TechnicianProfile,
     WorkOrderAssignmentQueue,
 )
+from app.models.field_erp_sync import (
+    FieldErpSyncEvent,
+    FieldErpSyncFlow,
+    FieldErpSyncStatus,
+    SyncFlowOwner,
+    SyncFlowOwnership,
+)
 from app.models.field_material import FieldInventoryItem, FieldMaterialRequest
+from app.models.project import Project, ProjectTask
 from app.models.subscriber import Subscriber, UserType
+from app.models.support import Ticket
 from app.models.system_user import SystemUser
 from app.models.work_order import WorkOrder
+from app.services import backoffice
 from app.services.field import material_requests
 from app.services.owner_commands import CommandContext
 from app.web.admin import material_requests as material_requests_web
@@ -171,6 +181,112 @@ def test_staff_material_request_requires_active_assignment(db_session):
     assert db_session.query(FieldMaterialRequest).count() == 0
 
 
+def test_material_requests_project_through_ticket_project_and_task(db_session):
+    user, _technician, work_order, item = _assigned_work_order(db_session)
+    ticket = Ticket(title="Customer signal fault")
+    project = Project(name="Restore customer service")
+    db_session.add_all([ticket, project])
+    db_session.flush()
+    task = ProjectTask(project_id=project.id, ticket_id=ticket.id, title="Field repair")
+    db_session.add(task)
+    db_session.flush()
+    work_order.project_id = project.id
+    work_order.project_task_id = task.id
+    db_session.commit()
+
+    command_id = uuid4()
+    created = material_requests.create_staff_material_request(
+        db_session,
+        material_requests.CreateStaffMaterialRequest(
+            context=_context(user.id, command_id, "Request scoped materials"),
+            work_order_id=work_order.id,
+            request_id=command_id,
+            priority=material_requests.MaterialRequestPriority.MEDIUM,
+            source_warehouse_code="ABJ-STORES",
+            notes=None,
+            items=(
+                material_requests.MaterialRequestLineInput(
+                    item_id=item.id,
+                    quantity=1,
+                ),
+            ),
+        ),
+    )
+
+    for scope in (
+        material_requests.MaterialRequestScope(ticket_id=ticket.id),
+        material_requests.MaterialRequestScope(project_id=project.id),
+        material_requests.MaterialRequestScope(project_task_id=task.id),
+    ):
+        page = material_requests.list_staff_material_requests(db_session, scope=scope)
+        options = material_requests.staff_material_request_form_options(
+            db_session, scope=scope
+        )
+        assert [row.id for row in page.items] == [created.id]
+        assert [row.id for row in options.work_orders] == [work_order.id]
+
+    empty = material_requests.list_staff_material_requests(
+        db_session,
+        scope=material_requests.MaterialRequestScope(ticket_id=uuid4()),
+    )
+    assert empty.items == ()
+
+
+def test_material_request_delivery_projection_exposes_retry_state(db_session):
+    user, _technician, work_order, item = _assigned_work_order(db_session)
+    command_id = uuid4()
+    created = material_requests.create_staff_material_request(
+        db_session,
+        material_requests.CreateStaffMaterialRequest(
+            context=_context(user.id, command_id, "Request delivery materials"),
+            work_order_id=work_order.id,
+            request_id=command_id,
+            priority=material_requests.MaterialRequestPriority.HIGH,
+            source_warehouse_code="ABJ-STORES",
+            notes=None,
+            items=(
+                material_requests.MaterialRequestLineInput(
+                    item_id=item.id,
+                    quantity=1,
+                ),
+            ),
+        ),
+    )
+    ownership = (
+        db_session.query(SyncFlowOwnership)
+        .filter(SyncFlowOwnership.flow == FieldErpSyncFlow.material_request.value)
+        .one_or_none()
+    )
+    if ownership is None:
+        ownership = SyncFlowOwnership(
+            flow=FieldErpSyncFlow.material_request.value,
+            owner=SyncFlowOwner.sub.value,
+        )
+        db_session.add(ownership)
+    else:
+        ownership.owner = SyncFlowOwner.sub.value
+    db_session.add(
+        FieldErpSyncEvent(
+            flow=FieldErpSyncFlow.material_request.value,
+            entity_type="field_material_request",
+            entity_id=created.id,
+            idempotency_key=f"test-material-{created.id}",
+            payload={"omni_id": str(created.id)},
+            status=FieldErpSyncStatus.pending.value,
+            attempts=2,
+            last_error="ERP temporarily unavailable",
+        )
+    )
+    db_session.commit()
+
+    delivery = backoffice.get_material_request_delivery(db_session, created.id)
+
+    assert delivery.sub_owns_delivery is True
+    assert delivery.event_status == FieldErpSyncStatus.pending.value
+    assert delivery.attempts == 2
+    assert delivery.last_error == "ERP temporarily unavailable"
+
+
 def _route_has_permission(path: str, method: str, permission: str) -> bool:
     route = next(
         route
@@ -212,6 +328,7 @@ def test_material_request_web_routes_templates_and_navigation_are_complete():
         "admin/material_requests/index.html",
         "admin/material_requests/form.html",
         "admin/material_requests/detail.html",
+        "admin/material_requests/_context_panel.html",
     ):
         material_requests_web.templates.env.get_template(template_name)
 
@@ -219,6 +336,11 @@ def test_material_request_web_routes_templates_and_navigation_are_complete():
     work_order_detail = Path(
         "templates/admin/dispatch/work_order_detail.html"
     ).read_text()
+    ticket_detail = Path("templates/admin/support/tickets/detail.html").read_text()
+    project_detail = Path("templates/admin/projects/project_detail.html").read_text()
+    task_detail = Path("templates/admin/projects/project_task_detail.html").read_text()
     assert "/admin/operations/material-requests" in sidebar
     assert "'material-requests': 'material-requests'" in sidebar
     assert "/admin/operations/material-requests/new?work_order_id=" in work_order_detail
+    for detail_template in (ticket_detail, project_detail, task_detail):
+        assert "admin/material_requests/_context_panel.html" in detail_template

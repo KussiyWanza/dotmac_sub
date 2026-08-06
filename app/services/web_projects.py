@@ -1113,6 +1113,7 @@ def build_project_detail_context(
     *,
     project: Project,
     can_read_work_orders: bool = False,
+    can_read_material_requests: bool = False,
     can_read_vendor_operations: bool = False,
     can_read_vendor_routes: bool = False,
     can_read_vendor_financials: bool = False,
@@ -1159,6 +1160,20 @@ def build_project_detail_context(
             )
         except DomainError:
             template = None
+    if can_read_material_requests:
+        from app.services.field.material_requests import (
+            MaterialRequestScope,
+            list_staff_material_requests,
+        )
+
+        material_requests = list_staff_material_requests(
+            db,
+            scope=MaterialRequestScope(project_id=project.id),
+            page=1,
+            per_page=100,
+        ).items
+    else:
+        material_requests = ()
     return {
         "project": project,
         "project_url": project_url(project),
@@ -1168,6 +1183,10 @@ def build_project_detail_context(
             work_order_views.list_project_work_order_summaries(db, project.id)
             if can_read_work_orders
             else ()
+        ),
+        "material_requests": material_requests,
+        "material_request_create_url": (
+            f"/admin/operations/material-requests/new?project_id={project.id}"
         ),
         "vendor_delivery": project_vendor_delivery.get_project_vendor_delivery(
             db,
@@ -1566,6 +1585,7 @@ def build_task_detail_context(
     *,
     task: ProjectTask,
     can_read_work_orders: bool = False,
+    can_read_material_requests: bool = False,
 ) -> dict:
     project = projects_service.projects.get(db, str(task.project_id))
     comments = projects_service.project_task_comments.list(
@@ -1587,6 +1607,20 @@ def build_task_detail_context(
     create_work_order_action, work_order_create_url = _task_work_order_create_action(
         task, project
     )
+    if can_read_material_requests:
+        from app.services.field.material_requests import (
+            MaterialRequestScope,
+            list_staff_material_requests,
+        )
+
+        material_requests = list_staff_material_requests(
+            db,
+            scope=MaterialRequestScope(project_task_id=task.id),
+            page=1,
+            per_page=100,
+        ).items
+    else:
+        material_requests = ()
     return {
         "task": task,
         "task_url": task_url(task),
@@ -1597,6 +1631,11 @@ def build_task_detail_context(
             work_order_views.list_task_work_order_summaries(db, task.id)
             if can_read_work_orders
             else ()
+        ),
+        "material_requests": material_requests,
+        "material_request_create_url": (
+            "/admin/operations/material-requests/new?"
+            f"project_task_id={task.id}&project_id={task.project_id}"
         ),
         "create_work_order_action": create_work_order_action,
         "work_order_create_url": work_order_create_url,

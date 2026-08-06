@@ -64,6 +64,10 @@
             {% endcall %}
             {% endif %}
 
+            {% if can(request, 'operations:material_request:read') %}
+            {% include "admin/material_requests/_context_panel.html" %}
+            {% endif %}
+
             {% if dependencies.blocked_by or dependencies.blocks %}
             {% call project_card(title='Dependencies', subtitle='Sequencing from the project template (edit on the template).', icon='<svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 010 5.656l-4 4a4 4 0 01-5.656-5.656l1.102-1.101m12.905-3.032l1.101-1.102a4 4 0 10-5.656-5.656l-4 4a4 4 0 000 5.656"/></svg>') %}
             <div class="grid gap-4 sm:grid-cols-2">

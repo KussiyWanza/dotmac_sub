@@ -11,6 +11,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.services import backoffice
 from app.services.auth_dependencies import can, require_permission
 from app.services.db_session_adapter import db_session_adapter
 from app.services.domain_errors import DomainError
@@ -89,6 +90,25 @@ def _error_status(error: DomainError) -> int:
     return 400
 
 
+def _scope(
+    *,
+    ticket_id: str | None = None,
+    project_id: str | None = None,
+    project_task_id: str | None = None,
+) -> material_service.MaterialRequestScope:
+    def _uuid(value: str | None) -> UUID | None:
+        try:
+            return UUID(str(value or "").strip())
+        except ValueError:
+            return None
+
+    return material_service.MaterialRequestScope(
+        ticket_id=_uuid(ticket_id),
+        project_id=_uuid(project_id),
+        project_task_id=_uuid(project_task_id),
+    )
+
+
 def _detail_response(
     request: Request,
     db: Session,
@@ -111,6 +131,7 @@ def _detail_response(
         {
             **_base_context(request, db),
             "material_request": material_request,
+            "delivery": backoffice.get_material_request_delivery(db, request_id),
             "error": error,
             "notice": notice,
             "request_id": str(uuid4()),
@@ -124,16 +145,22 @@ def _form_response(
     db: Session,
     *,
     selected_work_order_id: str | None = None,
+    scope: material_service.MaterialRequestScope | None = None,
     error: str | None = None,
     values: dict[str, str] | None = None,
     status_code: int = 200,
 ):
+    options = material_service.staff_material_request_form_options(db, scope=scope)
+    selected = selected_work_order_id or ""
+    if not selected and len(options.work_orders) == 1:
+        selected = str(options.work_orders[0].id)
     return templates.TemplateResponse(
         "admin/material_requests/form.html",
         {
             **_base_context(request, db),
-            "options": material_service.staff_material_request_form_options(db),
-            "selected_work_order_id": selected_work_order_id or "",
+            "options": options,
+            "selected_work_order_id": selected,
+            "material_scope": scope or material_service.MaterialRequestScope(),
             "values": values or {},
             "error": error,
             "request_id": str(uuid4()),
@@ -179,6 +206,9 @@ def material_request_list(
 def material_request_new(
     request: Request,
     work_order_id: str | None = None,
+    ticket_id: str | None = None,
+    project_id: str | None = None,
+    project_task_id: str | None = None,
     db: Session = Depends(get_db),
     _auth: dict = Depends(require_permission(WRITE_PERMISSION)),
 ):
@@ -186,6 +216,11 @@ def material_request_new(
         request,
         db,
         selected_work_order_id=work_order_id,
+        scope=_scope(
+            ticket_id=ticket_id,
+            project_id=project_id,
+            project_task_id=project_task_id,
+        ),
     )
 
 
@@ -205,6 +240,11 @@ def material_request_create(
         "notes": str(form.get("notes") or ""),
     }
     selected_work_order_id = str(form.get("work_order_id") or "").strip()
+    material_scope = _scope(
+        ticket_id=str(form.get("ticket_id") or ""),
+        project_id=str(form.get("project_id") or ""),
+        project_task_id=str(form.get("project_task_id") or ""),
+    )
     try:
         request_id = UUID(str(form.get("request_id") or ""))
         work_order_id = UUID(selected_work_order_id)
@@ -246,6 +286,7 @@ def material_request_create(
             request,
             db,
             selected_work_order_id=selected_work_order_id,
+            scope=material_scope,
             values=values,
             error=message,
             status_code=_error_status(exc) if isinstance(exc, DomainError) else 400,

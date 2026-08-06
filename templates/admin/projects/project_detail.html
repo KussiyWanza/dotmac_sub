@@ -111,6 +111,10 @@
             {% endcall %}
             {% endif %}
 
+            {% if can(request, 'operations:material_request:read') %}
+            {% include "admin/material_requests/_context_panel.html" %}
+            {% endif %}
+
             {% if vendor_delivery %}
             {% call project_card(
                 title='Vendor Delivery',
