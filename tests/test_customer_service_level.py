@@ -12,8 +12,11 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from app.models.catalog import SlaProfile
+from app.models.billing import ServiceEntitlement, ServiceEntitlementStatus
+from app.models.catalog import BillingMode, SlaProfile
+from app.models.lifecycle import LifecycleEventType, SubscriptionLifecycleEvent
 from app.models.network_monitoring import CustomerOutageInterval
+from app.models.usage import AccountingStatus, RadiusAccountingSession
 from app.services import customer_service_level as sla
 from app.services.service_impact_contracts import SlaVerdict
 
@@ -50,8 +53,48 @@ def _interval(
 def _activate(db, subscription):
     from app.models.catalog import SubscriptionStatus
 
+    evidence_start = NOW - timedelta(days=10)
     subscription.status = SubscriptionStatus.active
+    subscription.billing_mode = BillingMode.prepaid
+    subscription.start_at = evidence_start
+    subscription.next_billing_at = NOW + timedelta(days=1)
+    evidence_id = uuid.uuid4()
+    db.add(
+        SubscriptionLifecycleEvent(
+            id=evidence_id,
+            subscription_id=subscription.id,
+            event_type=LifecycleEventType.activate,
+            to_status=SubscriptionStatus.active,
+            evidence_grade="state_baseline",
+            evidence_source="reconciliation_baseline",
+            source_id=f"test:sla:{evidence_id}",
+            evidence_fingerprint=f"sha256:{uuid.uuid4().hex * 2}",
+            effective_at=evidence_start,
+            recorded_at=evidence_start,
+            created_at=evidence_start,
+        )
+    )
+    db.add(
+        ServiceEntitlement(
+            account_id=subscription.subscriber_id,
+            subscription_id=subscription.id,
+            starts_at=evidence_start,
+            ends_at=NOW + timedelta(days=1),
+            status=ServiceEntitlementStatus.active,
+        )
+    )
+    db.add(
+        RadiusAccountingSession(
+            subscription_id=subscription.id,
+            session_id=f"sla-{uuid.uuid4()}",
+            status_type=AccountingStatus.stop,
+            session_start=evidence_start,
+            session_end=NOW,
+            last_update_at=NOW,
+        )
+    )
     db.flush()
+    return evidence_start
 
 
 def _attach_policy(db, subscription, *, uptime="99.50", credit="10.00"):
@@ -75,10 +118,30 @@ def test_period_bounds_are_lagos_calendar_months():
     assert end == datetime(2026, 8, 31, 23, 0, 0, tzinfo=UTC)
 
 
+def test_explicit_period_instants_are_normalized_to_utc(db_session, subscription):
+    from zoneinfo import ZoneInfo
+
+    period_start = _activate(db_session, subscription)
+    lagos = ZoneInfo("Africa/Lagos")
+
+    score = sla.score_subscription_period(
+        db_session,
+        subscription,
+        now=NOW.astimezone(lagos),
+        period_start=period_start.astimezone(lagos),
+        period_end=NOW.astimezone(lagos),
+    )
+
+    assert score.period_start == period_start
+    assert score.period_end == NOW
+    assert score.period_start.tzinfo is UTC
+    assert score.period_end.tzinfo is UTC
+
+
 def test_no_policy_scores_measured_availability_without_a_target(
     db_session, subscription
 ):
-    _activate(db_session, subscription)
+    period_start = _activate(db_session, subscription)
     _interval(
         db_session,
         subscription.id,
@@ -86,7 +149,13 @@ def test_no_policy_scores_measured_availability_without_a_target(
         end=NOW - timedelta(hours=2),
     )
 
-    score = sla.score_subscription_period(db_session, subscription, now=NOW)
+    score = sla.score_subscription_period(
+        db_session,
+        subscription,
+        now=NOW,
+        period_start=period_start,
+        period_end=NOW,
+    )
 
     assert score.verdict is SlaVerdict.no_contractual_sla
     assert score.policy is None
@@ -97,7 +166,7 @@ def test_no_policy_scores_measured_availability_without_a_target(
 def test_overlapping_incident_intervals_are_unioned_not_summed(
     db_session, subscription
 ):
-    _activate(db_session, subscription)
+    period_start = _activate(db_session, subscription)
     _attach_policy(db_session, subscription)
     _interval(
         db_session,
@@ -113,14 +182,20 @@ def test_overlapping_incident_intervals_are_unioned_not_summed(
         end=NOW - timedelta(hours=1),
     )
 
-    score = sla.score_subscription_period(db_session, subscription, now=NOW)
+    score = sla.score_subscription_period(
+        db_session,
+        subscription,
+        now=NOW,
+        period_start=period_start,
+        period_end=NOW,
+    )
 
     assert score.unavailable_seconds == 3 * 3600
     assert len(score.interval_ids) == 2
 
 
 def test_reviewed_exclusions_report_in_their_own_bucket(db_session, subscription):
-    _activate(db_session, subscription)
+    period_start = _activate(db_session, subscription)
     _attach_policy(db_session, subscription)
     _interval(
         db_session,
@@ -138,7 +213,13 @@ def test_reviewed_exclusions_report_in_their_own_bucket(db_session, subscription
         quality="estimated",
     )
 
-    score = sla.score_subscription_period(db_session, subscription, now=NOW)
+    score = sla.score_subscription_period(
+        db_session,
+        subscription,
+        now=NOW,
+        period_start=period_start,
+        period_end=NOW,
+    )
 
     assert score.unavailable_seconds == 0
     assert score.excluded_seconds == 2 * 3600
@@ -146,7 +227,7 @@ def test_reviewed_exclusions_report_in_their_own_bucket(db_session, subscription
 
 
 def test_breach_and_at_risk_only_exist_against_the_policy(db_session, subscription):
-    _activate(db_session, subscription)
+    period_start = _activate(db_session, subscription)
     _attach_policy(db_session, subscription, uptime="99.90")
     # ~19 days elapsed this period; 0.1% budget ≈ 28 minutes. Ten hours of
     # confirmed downtime is a clear breach.
@@ -157,7 +238,13 @@ def test_breach_and_at_risk_only_exist_against_the_policy(db_session, subscripti
         end=NOW - timedelta(hours=1),
     )
 
-    score = sla.score_subscription_period(db_session, subscription, now=NOW)
+    score = sla.score_subscription_period(
+        db_session,
+        subscription,
+        now=NOW,
+        period_start=period_start,
+        period_end=NOW,
+    )
 
     assert score.verdict is SlaVerdict.breach
     assert score.policy is not None
@@ -179,7 +266,7 @@ def test_inactive_subscription_scores_unavailable(db_session, subscription):
 
 
 def test_open_interval_accrues_to_evaluation_time(db_session, subscription):
-    _activate(db_session, subscription)
+    period_start = _activate(db_session, subscription)
     _attach_policy(db_session, subscription)
     row = _interval(
         db_session,
@@ -190,9 +277,99 @@ def test_open_interval_accrues_to_evaluation_time(db_session, subscription):
     row.finalized_at = None
     db_session.flush()
 
-    score = sla.score_subscription_period(db_session, subscription, now=NOW)
+    score = sla.score_subscription_period(
+        db_session,
+        subscription,
+        now=NOW,
+        period_start=period_start,
+        period_end=NOW,
+    )
 
     assert score.unavailable_seconds == 2 * 3600
+
+
+def test_missing_postpaid_contract_authority_is_explicitly_incomplete(
+    db_session, subscription
+):
+    from app.models.catalog import SubscriptionStatus
+
+    subscription.status = SubscriptionStatus.active
+    subscription.billing_mode = BillingMode.postpaid
+    db_session.flush()
+
+    score = sla.score_subscription_period(db_session, subscription, now=NOW)
+
+    assert score.evidence_complete is False
+    assert score.verdict is SlaVerdict.unavailable
+    assert score.measured_availability_percent is None
+    assert any(
+        issue == "entitlement:missing_authoritative_billing_contract"
+        for issue in score.completeness_issues
+    )
+
+
+def test_unknown_monitoring_time_exposes_bounds_and_never_passes(
+    db_session, subscription
+):
+    period_start = _activate(db_session, subscription)
+    _attach_policy(db_session, subscription, uptime="99.00")
+    session = (
+        db_session.query(RadiusAccountingSession)
+        .filter(RadiusAccountingSession.subscription_id == subscription.id)
+        .one()
+    )
+    session.session_end = NOW - timedelta(hours=1)
+    session.last_update_at = NOW - timedelta(hours=1)
+    db_session.flush()
+
+    score = sla.score_subscription_period(
+        db_session,
+        subscription,
+        now=NOW,
+        period_start=period_start,
+        period_end=NOW,
+    )
+
+    assert score.unknown_seconds == 3600
+    assert score.evidence_complete is False
+    assert score.verdict is SlaVerdict.unavailable
+    assert score.measured_availability_percent is None
+    assert score.availability_lower_bound_percent is not None
+    assert score.availability_upper_bound_percent == 100.0
+
+
+def test_incomplete_evidence_can_prove_breach_only_from_the_best_case_bound(
+    db_session, subscription
+):
+    period_start = _activate(db_session, subscription)
+    _attach_policy(db_session, subscription, uptime="99.99")
+    session = (
+        db_session.query(RadiusAccountingSession)
+        .filter(RadiusAccountingSession.subscription_id == subscription.id)
+        .one()
+    )
+    session.session_end = NOW - timedelta(hours=1)
+    session.last_update_at = NOW - timedelta(hours=1)
+    _interval(
+        db_session,
+        subscription.id,
+        start=NOW - timedelta(hours=3),
+        end=NOW - timedelta(hours=2),
+    )
+    db_session.flush()
+
+    score = sla.score_subscription_period(
+        db_session,
+        subscription,
+        now=NOW,
+        period_start=period_start,
+        period_end=NOW,
+    )
+
+    assert score.evidence_complete is False
+    assert score.availability_upper_bound_percent is not None
+    assert score.availability_upper_bound_percent < 99.99
+    assert score.verdict is SlaVerdict.breach
 
 
 # --- persisted effective-dated policy versions and precedence (§4) ----------
@@ -401,6 +578,32 @@ def test_a_precedence_change_mid_period_also_splits(db_session, subscription):
     assert segments[1].policy.source.value == "subscription_contract"
 
 
+def test_legacy_offer_profile_never_applies_before_its_creation(
+    db_session, subscription
+):
+    """The shadow fallback still has an effective instant; ignoring it would
+    let mutable legacy terms govern time before they existed."""
+
+    profile = _attach_policy(db_session, subscription, uptime="99.500")
+    created_at = NOW - timedelta(days=1)
+    profile.created_at = created_at
+    db_session.flush()
+
+    segments = sla.policy_segments_for_period(
+        db_session,
+        subscription,
+        period_start=NOW - timedelta(days=3),
+        period_end=NOW,
+    )
+
+    assert len(segments) == 2
+    assert segments[0].end == created_at
+    assert segments[0].policy is None
+    assert segments[1].start == created_at
+    assert segments[1].policy is not None
+    assert segments[1].policy.availability_target_percent == 99.5
+
+
 def test_no_policy_yields_a_single_uncontracted_segment(db_session, subscription):
     period_start, period_end = sla.period_bounds(NOW)
 
@@ -443,6 +646,92 @@ def _ctx():
         reason="acceptance",
         idempotency_key=f"sla-{uuid.uuid4()}",
     )
+
+
+def _score_context(key: str):
+    from app.services.owner_commands import CommandContext
+
+    return CommandContext.system(
+        actor="test:sla-score",
+        scope="sla-period-score",
+        reason="shadow scoring acceptance",
+        idempotency_key=key,
+    )
+
+
+def test_period_score_recording_replays_then_appends_changed_evidence(
+    db_session, subscription, staged_owner_command
+):
+    from app.models.sla import (
+        SlaEligibilityInterval,
+        SlaMonitoringInterval,
+        SlaPeriodScoreRevision,
+    )
+
+    period_start = _activate(db_session, subscription)
+    _attach_policy(db_session, subscription, uptime="99.50")
+    first_command = sla.RecordPeriodScoreCommand(
+        subscription_id=subscription.id,
+        period_start=period_start,
+        period_end=NOW,
+        evaluated_at=NOW,
+        context=_score_context("score-period-1"),
+    )
+
+    first = sla.record_period_score(db_session, first_command)
+    replay = sla.record_period_score(db_session, first_command)
+
+    assert first.revision == 1
+    assert first.replayed is False
+    assert replay.score_revision_id == first.score_revision_id
+    assert replay.replayed is True
+    assert db_session.query(SlaPeriodScoreRevision).count() == 1
+    assert db_session.query(SlaEligibilityInterval).count() == 1
+    assert db_session.query(SlaMonitoringInterval).count() == 1
+
+    _interval(
+        db_session,
+        subscription.id,
+        start=NOW - timedelta(hours=2),
+        end=NOW - timedelta(hours=1),
+    )
+    second = sla.record_period_score(
+        db_session,
+        sla.RecordPeriodScoreCommand(
+            subscription_id=subscription.id,
+            period_start=period_start,
+            period_end=NOW,
+            evaluated_at=NOW,
+            context=_score_context("score-period-2"),
+        ),
+    )
+
+    assert second.revision == 2
+    assert second.supersedes_id == first.score_revision_id
+    assert second.evidence_digest != first.evidence_digest
+    assert db_session.query(SlaPeriodScoreRevision).count() == 2
+
+
+def test_exact_score_evidence_under_a_new_identity_is_not_claimed_as_replay(
+    db_session, subscription, staged_owner_command
+):
+    period_start = _activate(db_session, subscription)
+
+    def command(key: str):
+        return sla.RecordPeriodScoreCommand(
+            subscription_id=subscription.id,
+            period_start=period_start,
+            period_end=NOW,
+            evaluated_at=NOW,
+            context=_score_context(key),
+        )
+
+    sla.record_period_score(db_session, command("score-key-a"))
+
+    with pytest.raises(sla.SlaScoreError) as caught:
+        sla.record_period_score(db_session, command("score-key-b"))
+
+    assert caught.value.code == "customer.service_level.duplicate_score_evidence"
 
 
 def test_recording_a_new_version_closes_the_one_it_supersedes(
@@ -758,21 +1047,25 @@ def test_the_outcome_is_immutable_and_not_the_orm_row(
         outcome.version = 99  # frozen
 
 
-def test_recording_a_policy_does_not_change_an_existing_score(
+def test_recorded_policy_changes_only_its_effective_segment(
     db_session, subscription, staged_owner_command
 ):
-    """PR-1 gate: the scorer still applies one policy across the whole period,
-    so consuming persisted versions here would let terms recorded today govern
-    a historical score. Segmented scoring lands with PR 2."""
+    """PR 2 consumes effective segments without applying terms retroactively."""
 
-    _activate(db_session, subscription)
+    period_start = _activate(db_session, subscription)
     _interval(
         db_session,
         subscription.id,
         start=NOW - timedelta(hours=2),
         end=NOW - timedelta(hours=1),
     )
-    before = sla.score_subscription_period(db_session, subscription, now=NOW)
+    before = sla.score_subscription_period(
+        db_session,
+        subscription,
+        now=NOW,
+        period_start=period_start,
+        period_end=NOW,
+    )
 
     sla.record_policy_version(
         db_session,
@@ -784,17 +1077,21 @@ def test_recording_a_policy_does_not_change_an_existing_score(
             context=_ctx(),
         ),
     )
-    after = sla.score_subscription_period(db_session, subscription, now=NOW)
-
-    assert after.verdict == before.verdict
-    assert after.evidence_digest == before.evidence_digest
-    # ...while the resolver DOES see it, ready for PR 2.
-    assert (
-        sla.resolve_effective_policy(
-            db_session, subscription, at=NOW
-        ).availability_target_percent
-        == 99.999
+    after = sla.score_subscription_period(
+        db_session,
+        subscription,
+        now=NOW,
+        period_start=period_start,
+        period_end=NOW,
     )
+
+    assert before.verdict is SlaVerdict.no_contractual_sla
+    assert after.verdict is SlaVerdict.breach
+    assert after.evidence_digest != before.evidence_digest
+    assert len(after.policy_segments) == 2
+    assert after.policy_segments[0].policy is None
+    assert after.policy_segments[1].policy is not None
+    assert after.policy_segments[1].policy.availability_target_percent == 99.999
 
 
 # --- review round 2: precedence during shadow migration, idempotency, input --

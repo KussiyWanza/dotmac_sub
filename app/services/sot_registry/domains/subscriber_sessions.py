@@ -45,6 +45,7 @@ DOMAIN = DomainSOT(
             owns=(
                 "customer online-now resolution",
                 "primary NAS session resolution",
+                "historical subscription monitoring coverage",
             ),
             depends_on=("sessions.radius_reconciliation", "network.identity"),
             contract=ServiceContract(
@@ -62,6 +63,11 @@ DOMAIN = DomainSOT(
                             "network identity registry",
                         ),
                     ),
+                    ConcernContract(
+                        name="historical subscription monitoring coverage",
+                        role=OwnerRole.RESOLVER,
+                        input_names=("subscription-bound accounting observations",),
+                    ),
                 ),
                 authoritative_inputs=(
                     AuthorityInput(
@@ -69,6 +75,15 @@ DOMAIN = DomainSOT(
                         owner="sessions.radius_reconciliation",
                         kind=AuthorityKind.DERIVED_PROJECTION,
                         source="radius_active_sessions",
+                    ),
+                    AuthorityInput(
+                        name="subscription-bound accounting observations",
+                        owner="sessions.radius_reconciliation",
+                        kind=AuthorityKind.OBSERVATION,
+                        source=(
+                            "radius_accounting_sessions exact subscription binding, "
+                            "session_start, session_end, and last_update_at"
+                        ),
                     ),
                     AuthorityInput(
                         name="network identity registry",
@@ -112,6 +127,7 @@ DOMAIN = DomainSOT(
                 ),
                 test_refs=(
                     "tests/test_network_sot_services.py",
+                    "tests/test_customer_service_level.py",
                     "tests/test_sot_relationships.py",
                 ),
             ),

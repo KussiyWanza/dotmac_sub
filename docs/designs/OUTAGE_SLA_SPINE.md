@@ -134,9 +134,15 @@ once the new owner has run armed through a full incident cycle.
   offer version → internal measurement policy. A mid-period change splits the
   calculation by policy version.
 - Default reporting period: calendar month in Africa/Lagos.
-- Availability = (eligible seconds − qualifying unavailable seconds) /
-  eligible seconds; only active, service-entitled time enters the
-  denominator.
+- Eligibility is the intersection of proven-active lifecycle time and exact
+  service-entitlement time. Prepaid entitlement comes from funded
+  `ServiceEntitlement` or applied service-extension grant intervals. Postpaid
+  entitlement comes only from authoritative accepted billing-contract
+  versions; the current shadow contract rows are explicit incomplete evidence,
+  never a substitute for entitlement.
+- Scoreable time is eligible time less reviewed exclusions. Availability is
+  `(scoreable seconds − qualifying unavailable seconds) / scoreable seconds`.
+  Excluded time is never counted as uptime.
 - `access.subscription_lifecycle_evidence` is the authority for the lifecycle
   half of eligibility. The lifecycle status owner appends evidence in the same
   transaction as each state change; generic CRUD and asynchronous event
@@ -158,12 +164,30 @@ once the new owner has run armed through a full incident cycle.
   unsupported observation breaks coverage until a later trusted transition or
   baseline. An earlier unsupported row does not poison a fully supported later
   period.
-- `unknown` monitoring periods make the result incomplete/provisional — never
-  silent uptime.
+- Exact-subscription RADIUS accounting proves positive monitoring only from
+  session start through session stop or the last imported observation. Open
+  sessions are never extended to evaluation time and subscriber-level unbound
+  sessions are never projected retrospectively onto a service.
+- `downtime = confirmed unavailable ∩ eligibility`; `excluded = reviewed or
+  non-exact outage evidence ∩ eligibility − downtime`; `unknown = eligibility
+  − (positive monitoring ∪ downtime ∪ excluded)`. Unknown time is never silent
+  uptime.
+- An incomplete result exposes lower and upper availability bounds and no
+  single measured percentage. It may prove `breach` only when the best-case
+  upper bound is below the effective target; it can never produce `passing` or
+  `at_risk`.
 - Third-party/upstream failure is not automatically excluded where Dotmac
   sold end-to-end service; force majeure is reviewed case-by-case.
-- Every score stores the policy version, evidence coverage, and interval
-  lineage that produced it.
+- Every calculation is segmented at policy and precedence changes. Recording a
+  result appends one `sla_period_score_revisions` row plus exact eligibility and
+  positive-monitoring snapshots. Same command identity plus same digest
+  replays; changed evidence appends a linked revision under a new identity.
+  All three tables are append-only and retain policy, outage, lifecycle,
+  entitlement and monitoring lineage. Composite foreign keys bind every child
+  snapshot and every supersession link to the same subscription and reporting
+  period; a valid UUID from another customer or period cannot cross-link the
+  evidence chain. The scorer remains shadow/internal until the PR-3 discrepancy
+  and atomic display cutover.
 
 ## 5. Planned maintenance (approved)
 

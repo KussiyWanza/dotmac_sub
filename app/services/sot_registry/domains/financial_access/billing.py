@@ -316,6 +316,7 @@ SERVICES: tuple[SOTService, ...] = (
             "versioned billing contract terms",
             "billing contract version supersession",
             "effective billing contract resolution",
+            "period-scoped postpaid entitlement history",
         ),
         depends_on=(
             "access.subscription_lifecycle",
@@ -367,6 +368,11 @@ SERVICES: tuple[SOTService, ...] = (
                 ),
                 ConcernContract(
                     name="effective billing contract resolution",
+                    role=OwnerRole.RESOLVER,
+                    input_names=("recorded billing contract terms",),
+                ),
+                ConcernContract(
+                    name="period-scoped postpaid entitlement history",
                     role=OwnerRole.RESOLVER,
                     input_names=("recorded billing contract terms",),
                 ),
@@ -558,6 +564,7 @@ SERVICES: tuple[SOTService, ...] = (
             ),
             test_refs=(
                 "tests/test_billing_contracts.py",
+                "tests/test_customer_service_level.py",
                 "tests/test_billing_addon_contract_backfill.py",
                 "tests/test_api_me_addons.py",
                 "tests/architecture/test_billing_target_architecture.py",

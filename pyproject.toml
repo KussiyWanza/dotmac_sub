@@ -305,6 +305,11 @@ dev = [
     "pre-commit>=3.7.0",
     "import-linter>=2.0",
     "vulture (>=2.16,<3.0)",
+    # Property-based testing for the SLA interval algebra. Scoring correctness
+    # is set arithmetic and its defects live in interactions that example-based
+    # tests only cover where the author already thought to look. Pinned, not
+    # ranged: a strategy change would silently alter what the suite proves.
+    "hypothesis==6.165.0",
     # Kernel test kit (dotmac_kernel.testing.*): same wheel as the runtime pin
     # above; the [testing] extra adds only httpx (>=0.27,<0.28), which matches
     # Sub's own httpx==0.27.0. tests/-only per the adoption ledger — the S1

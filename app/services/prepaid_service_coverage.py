@@ -62,8 +62,151 @@ class PrepaidServiceCoverageDecision:
         return self.status == PrepaidCoverageStatus.covered
 
 
+@dataclass(frozen=True, slots=True)
+class PrepaidCoverageInterval:
+    """One exact funded or explicitly granted half-open service interval."""
+
+    subscription_id: UUID
+    source: PrepaidCoverageSource
+    source_id: UUID
+    starts_at: datetime
+    ends_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class PrepaidCoveragePeriodHistory:
+    """Exact prepaid entitlement facts and projection-completeness evidence."""
+
+    subscription_id: UUID
+    period_start: datetime
+    period_end: datetime
+    intervals: tuple[PrepaidCoverageInterval, ...]
+    complete: bool
+    issues: tuple[str, ...]
+
+
 def _as_utc(value: datetime) -> datetime:
-    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    aware = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    return aware.astimezone(UTC)
+
+
+def _covers_period(
+    intervals: list[PrepaidCoverageInterval], *, start: datetime, end: datetime
+) -> bool:
+    cursor = start
+    for interval in sorted(intervals, key=lambda item: (item.starts_at, item.ends_at)):
+        interval_start = max(_as_utc(interval.starts_at), start)
+        interval_end = min(_as_utc(interval.ends_at), end)
+        if interval_end <= cursor:
+            continue
+        if interval_start > cursor:
+            return False
+        cursor = max(cursor, interval_end)
+        if cursor >= end:
+            return True
+    return cursor >= end
+
+
+def prepaid_coverage_history_for_period(
+    db: Session,
+    subscription: Subscription,
+    *,
+    period_start: datetime,
+    period_end: datetime,
+) -> PrepaidCoveragePeriodHistory:
+    """Return exact entitlement/grant intervals overlapping one SLA period.
+
+    Missing rows normally mean the service was not funded and therefore was
+    not eligible.  The one exception is a mutable ``next_billing_at`` that
+    claims paid-through time without exact evidence: that is an unresolved
+    projection, so the history is incomplete rather than silently uncovered.
+    """
+
+    start = _as_utc(period_start)
+    end = _as_utc(period_end)
+    if end <= start:
+        raise ValueError("Prepaid coverage history requires a positive UTC period")
+
+    intervals: list[PrepaidCoverageInterval] = []
+    entitlements = db.scalars(
+        select(ServiceEntitlement).where(
+            ServiceEntitlement.subscription_id == subscription.id,
+            ServiceEntitlement.status == ServiceEntitlementStatus.active,
+            ServiceEntitlement.starts_at < end,
+            ServiceEntitlement.ends_at > start,
+        )
+    ).all()
+    intervals.extend(
+        PrepaidCoverageInterval(
+            subscription_id=subscription.id,
+            source=PrepaidCoverageSource.funded_entitlement,
+            source_id=row.id,
+            starts_at=max(_as_utc(row.starts_at), start),
+            ends_at=min(_as_utc(row.ends_at), end),
+        )
+        for row in entitlements
+    )
+
+    extensions = db.execute(
+        select(
+            ServiceExtensionEntry.id,
+            ServiceExtensionEntry.grant_starts_at,
+            ServiceExtensionEntry.grant_ends_at,
+        )
+        .join(
+            ServiceExtension, ServiceExtension.id == ServiceExtensionEntry.extension_id
+        )
+        .where(
+            ServiceExtensionEntry.subscription_id == subscription.id,
+            ServiceExtension.status == ServiceExtensionStatus.applied,
+            ServiceExtensionEntry.grant_starts_at.isnot(None),
+            ServiceExtensionEntry.grant_starts_at < end,
+            ServiceExtensionEntry.grant_ends_at.isnot(None),
+            ServiceExtensionEntry.grant_ends_at > start,
+        )
+    ).all()
+    for row in extensions:
+        assert row.grant_starts_at is not None
+        assert row.grant_ends_at is not None
+        intervals.append(
+            PrepaidCoverageInterval(
+                subscription_id=subscription.id,
+                source=PrepaidCoverageSource.service_extension_grant,
+                source_id=row.id,
+                starts_at=max(_as_utc(row.grant_starts_at), start),
+                ends_at=min(_as_utc(row.grant_ends_at), end),
+            )
+        )
+
+    issues: list[str] = []
+    paid_through = (
+        _as_utc(subscription.next_billing_at)
+        if subscription.next_billing_at is not None
+        else None
+    )
+    projected_start = max(
+        start,
+        _as_utc(subscription.start_at) if subscription.start_at is not None else start,
+    )
+    projected_end = min(end, paid_through) if paid_through is not None else start
+    if projected_end > projected_start and not _covers_period(
+        intervals, start=projected_start, end=projected_end
+    ):
+        issues.append("unresolved_paid_through_projection")
+
+    return PrepaidCoveragePeriodHistory(
+        subscription_id=subscription.id,
+        period_start=start,
+        period_end=end,
+        intervals=tuple(
+            sorted(
+                intervals,
+                key=lambda item: (item.starts_at, item.ends_at, item.source_id),
+            )
+        ),
+        complete=not issues,
+        issues=tuple(issues),
+    )
 
 
 def resolve_prepaid_service_coverage(

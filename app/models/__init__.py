@@ -854,6 +854,11 @@ from app.models.service_team import (  # noqa: F401
     ServiceTeamScopeType,
     ServiceTeamType,
 )
+from app.models.sla import (  # noqa: F401
+    SlaEligibilityInterval,
+    SlaMonitoringInterval,
+    SlaPeriodScoreRevision,
+)
 from app.models.snmp import (  # noqa: F401
     SnmpAuthProtocol,
     SnmpCredential,

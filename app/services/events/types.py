@@ -403,6 +403,10 @@ class EventType(enum.Enum):
     # OUTAGE_SLA_SPINE §4). Provenance breadcrumb: the authoritative record
     # is the immutable sla_policy_versions row itself.
     sla_policy_version_recorded = "sla_policy_version.recorded"
+    # Immutable SLA period score revision and evidence snapshot recorded
+    # (customer.service_level, OUTAGE_SLA_SPINE §4). The authoritative rows,
+    # not this breadcrumb, are the reproducible scoring record.
+    sla_period_score_recorded = "sla_period_score.recorded"
     # Customer outage communications pass completed
     # (network.outage_communications, OUTAGE_SLA_SPINE §3). Operational
     # breadcrumb only, same as the cabinet notice: the customer messages
