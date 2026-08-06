@@ -59,6 +59,7 @@ from app.services.audit_helpers import (
 )
 from app.services.catalog.subscriptions import apply_offer_radius_profile
 from app.services.common import coerce_uuid
+from app.services.domain_errors import DomainError
 from app.services.network.profile_sync import (
     enqueue_offer_profile_sync_tasks_for_existing_bundles,
 )
@@ -1182,6 +1183,59 @@ def overview_page_data(
     }
 
 
+class OfferNameConflict(DomainError):
+    """Two offers on sale under one name (adapter: re-render with the message).
+
+    Typed rather than an HTTPException: this module is a service, and the
+    transport-boundary guard in tests/architecture forbids services reaching
+    for FastAPI. The form handlers below catch it and re-render, which is a
+    better answer for an operator than a 400 anyway.
+    """
+
+
+def assert_sellable_name_is_unique(
+    db: Session, name: str, *, exclude_offer_id: str | None = None
+) -> None:
+    """Refuse a second sellable offer with the same name.
+
+    A name is not an identity, but every picker presents it as one. Production
+    carried two active offers both called "25 Mbps Fiber" — one at N537,500 and
+    one at N0.00 — and two subscriptions were created against the free one on
+    the same day. A separate pair both called "Unlimited Pro" caused a 50 Mbps
+    plan with three live customers to be withdrawn from sale by a maintenance
+    script matching on name.
+
+    Scoped to *sellable* offers rather than all of them: a retired offer keeping
+    its name is harmless and preserves history. The ambiguity only matters where
+    someone is choosing.
+
+    The database enforces the same rule, since imports do not come through here.
+    This exists so an operator gets a sentence instead of a constraint violation.
+    """
+    cleaned = (name or "").strip()
+    if not cleaned:
+        return
+    query = db.query(CatalogOffer).filter(
+        CatalogOffer.name == cleaned,
+        CatalogOffer.is_active.is_(True),
+        CatalogOffer.available_for_services.is_(True),
+    )
+    if exclude_offer_id:
+        query = query.filter(CatalogOffer.id != exclude_offer_id)
+    clash = query.first()
+    if clash is not None:
+        raise OfferNameConflict(
+            code="catalog.offer.duplicate_sellable_name",
+            message=(
+                f"Another offer available for sale is already named "
+                f"{cleaned!r} (code {clash.code or '—'}). Two sellable offers "
+                "with one name cannot be told apart when choosing a plan. "
+                "Rename this one, or withdraw the other from sale first."
+            ),
+            details={"conflicting_offer_id": str(clash.id)},
+        )
+
+
 def create_offer_with_audit(
     db: Session,
     offer: dict[str, object],
@@ -1193,6 +1247,7 @@ def create_offer_with_audit(
 
     Returns the created offer ORM object.
     """
+    assert_sellable_name_is_unique(db, str(offer.get("name") or ""))
     payload = create_offer_payload(offer)
     created_offer = catalog_service.offers.create(
         db=db,
@@ -1268,6 +1323,13 @@ def update_offer_with_audit(
 
     Returns the updated offer ORM object.
     """
+    # Checked on update too: a rename, or putting a withdrawn offer back on
+    # sale, can create the same collision as a fresh create.
+    assert_sellable_name_is_unique(
+        db,
+        str(offer_data.get("name") or getattr(existing_offer, "name", "") or ""),
+        exclude_offer_id=offer_id,
+    )
     price_id = str(offer_data.get("price_id") or "").strip()
     if price_id and offer_data.get("price_amount"):
         existing_price = db.get(OfferPrice, coerce_uuid(price_id))
@@ -1408,6 +1470,10 @@ def handle_offer_create_form(
     try:
         create_offer_with_audit(db, offer, form, request, actor_id)
         return {"redirect_url": return_to or "/admin/catalog/offers"}
+    except OfferNameConflict as exc:
+        # Re-render with the message: the operator needs to know which offer
+        # collides so they can rename or withdraw it.
+        error = exc.message
     except ValidationError as exc:
         error = exc.errors()[0]["msg"]
 

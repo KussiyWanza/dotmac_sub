@@ -50,7 +50,9 @@ def _account(db, *, mode=BillingMode.prepaid, status=SubscriberStatus.active):
 
 def _offer(db, *, mode=BillingMode.prepaid):
     offer = CatalogOffer(
-        name=f"Audit {mode.value}",
+        # Unique per call: sellable offer names are unique (489), and this
+        # helper is invoked once per subscription with the same mode.
+        name=f"Audit {mode.value} {uuid.uuid4().hex[:8]}",
         service_type=ServiceType.residential,
         access_type=AccessType.fiber,
         price_basis=PriceBasis.flat,

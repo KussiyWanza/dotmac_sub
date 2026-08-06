@@ -1751,7 +1751,30 @@ class PonPort(Base):
     identity_frame: Mapped[int | None] = mapped_column(Integer)
     identity_slot: Mapped[int | None] = mapped_column(Integer)
     identity_port: Mapped[int | None] = mapped_column(Integer)
+    #: How many ONTs the split supports — a device count, not bandwidth.
     max_ont_capacity: Mapped[int | None] = mapped_column(Integer)
+
+    # --- bandwidth capacity -------------------------------------------------
+    # The PON port is the first shared segment a fibre subscriber crosses, and
+    # it was the one place in the access layer with no bandwidth figure at all:
+    # interfaces carry device_interfaces.speed_mbps and links carry
+    # network_topology_links.capacity_bps, but a PON port had only an ONT count.
+    #
+    # Recorded, never inferred. GPON is nominally 2488/1244 but split ratio,
+    # XGS-PON upgrades and shared uplinks all move the real number, and a
+    # guessed figure produces a capacity check that quietly passes. NULL means
+    # unsurveyed, which the resolver reports as unknown rather than healthy.
+    downstream_mbps: Mapped[int | None] = mapped_column(Integer)
+    upstream_mbps: Mapped[int | None] = mapped_column(Integer)
+    #: Where the figure came from — a survey, a vendor sheet, an uplink config.
+    #: A number with no provenance gets trusted for years.
+    capacity_source: Mapped[str | None] = mapped_column(String(200))
+    #: How much may be sold against this port, as a multiple of capacity. NULL
+    #: falls back to the network-wide planning default; a per-port override
+    #: exists because a port serving business customers may warrant a tighter
+    #: target than one serving residential.
+    target_oversubscription: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))
+
     notes: Mapped[str | None] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     admin_enabled: Mapped[bool] = mapped_column(
