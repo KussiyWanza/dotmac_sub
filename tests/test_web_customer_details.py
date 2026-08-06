@@ -268,8 +268,11 @@ def test_customer_360_groups_profile_location_and_account_access() -> None:
     assert "Location not set" in account_tab
     assert ".customer-location-map { width: 100%; height: 400px; }" in template
     assert ".customer-location-map { height: 300px; }" in template
+    assert 'integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="' in template
     assert account_tab.count('id="customer-overview-map"') == 1
-    assert template.count('id="customer-mini-map"') == 1
+    assert 'id="customer-mini-map"' not in template
+    assert template.count('id="customer-map-click-toggle"') == 1
+    assert template.count('id="customer-map-save-btn"') == 1
     assert "new ResizeObserver(refreshMapLayout)" in template
     assert "mapResizeObserver.observe(mapElement)" in template
     assert "Account &amp; Access" in account_tab

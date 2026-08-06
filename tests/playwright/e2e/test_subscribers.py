@@ -2,13 +2,67 @@
 
 from __future__ import annotations
 
-from playwright.sync_api import Page, expect
+from playwright.sync_api import APIRequestContext, Page, expect
 
+from tests.playwright.helpers.api import api_post_json, bearer_headers
 from tests.playwright.pages.admin import (
     SubscriberDetailPage,
     SubscriberFormPage,
     SubscribersPage,
 )
+
+
+def _ensure_customer_map_address(
+    api_context: APIRequestContext,
+    admin_token: str,
+    subscriber_id: str,
+) -> None:
+    """Give the E2E customer one stable, mapped service address through the API."""
+    headers = bearer_headers(admin_token)
+    response = api_context.get(
+        f"/api/v1/addresses?subscriber_id={subscriber_id}", headers=headers
+    )
+    assert response.ok, response.text()
+    payload = response.json()
+    assert isinstance(payload, dict)
+    addresses = payload.get("items", [])
+    service_address = next(
+        (
+            address
+            for address in addresses
+            if isinstance(address, dict) and address.get("address_type") == "service"
+        ),
+        None,
+    )
+
+    coordinates = {
+        "latitude": 9.0765,
+        "longitude": 7.3986,
+        "is_primary": True,
+    }
+    if service_address is not None:
+        response = api_context.patch(
+            f"/api/v1/addresses/{service_address['id']}",
+            data=coordinates,
+            headers=headers,
+        )
+    else:
+        response = api_post_json(
+            api_context,
+            "/api/v1/addresses",
+            {
+                "subscriber_id": subscriber_id,
+                "address_type": "service",
+                "label": "E2E service location",
+                "address_line1": "12 Test Street",
+                "city": "Abuja",
+                "region": "FCT",
+                "country_code": "NG",
+                **coordinates,
+            },
+            headers=headers,
+        )
+    assert response.ok, response.text()
 
 
 class TestSubscribersList:
@@ -86,6 +140,24 @@ class TestSubscriberDetail:
         detail = SubscriberDetailPage(admin_page, settings.base_url)
         detail.goto(subscriber_id)
         detail.expect_loaded()
+
+    def test_overview_map_fills_its_container(
+        self,
+        admin_page: Page,
+        settings,
+        test_identities,
+        api_context: APIRequestContext,
+        admin_token: str,
+    ):
+        """The one customer map should fill the Overview location card."""
+        customer = test_identities["customer"]
+        subscriber_id = customer["subscriber"]["id"]
+        _ensure_customer_map_address(api_context, admin_token, subscriber_id)
+
+        detail = SubscriberDetailPage(admin_page, settings.base_url)
+        detail.goto(subscriber_id)
+        detail.expect_loaded()
+        detail.expect_overview_map_fills_container()
 
     def test_subscriber_edit_navigation(
         self, admin_page: Page, settings, test_identities

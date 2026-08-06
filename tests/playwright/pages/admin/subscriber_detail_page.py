@@ -94,8 +94,21 @@ class SubscriberDetailPage(BasePage):
         """Assert an address is displayed."""
         expect(self.page.get_by_text(address)).to_be_visible()
 
-    def expect_map_visible(self) -> None:
-        """Assert the mini-map is visible."""
-        expect(
-            self.page.locator("#map, .leaflet-container, [data-testid='map']")
-        ).to_be_visible()
+    def expect_overview_map_fills_container(self) -> None:
+        """Assert the single customer map uses the full Overview container."""
+        overview_map = self.page.locator("#customer-overview-map")
+        expect(overview_map).to_be_visible()
+        expect(overview_map).to_have_css("position", "relative")
+        expect(overview_map).to_have_css("height", "400px")
+        expect(overview_map.locator(".leaflet-map-pane")).to_have_css(
+            "position", "absolute"
+        )
+
+        dimensions = overview_map.evaluate(
+            """element => ({
+                width: element.clientWidth,
+                parentWidth: element.parentElement.clientWidth,
+            })"""
+        )
+        assert dimensions["width"] == dimensions["parentWidth"]
+        expect(self.page.locator("#customer-mini-map")).to_have_count(0)
