@@ -16,7 +16,16 @@ def test_service_extension_reversal_is_the_single_additive_head() -> None:
     config.set_main_option("script_location", str(ROOT / "alembic"))
     script = ScriptDirectory.from_config(config)
 
-    assert script.get_heads() == ["480_quote_discount_history"]
+    # Single-headed with this revision in the head's ancestry. Naming the exact
+    # head made every later migration break this test for no defect.
+    heads = script.get_heads()
+    assert len(heads) == 1
+    assert "472_service_extension_reversals" in {
+        item.revision
+        for item in script.iterate_revisions(
+            heads[0], "472_service_extension_reversals", inclusive=True
+        )
+    }
     assert (
         script.get_revision("472_service_extension_reversals").down_revision
         == "471_quote_documents_and_delivery"
