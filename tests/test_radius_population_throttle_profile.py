@@ -57,4 +57,6 @@ def test_offer_derived_rate_survives_when_no_profile_at_all() -> None:
     eff = _effective_profile(_cred(None), None, _PROFILES)
     assert eff is None
     offer = SimpleNamespace(speed_download_mbps=200, speed_upload_mbps=100)
-    assert _rate_limit(offer=offer, profile=eff) == "200M/100M"
+    # rx/tx is NAS-perspective — upload first, download second. A 200/100 offer
+    # emits 100M/200M; reversed it would sell 100 down and 200 up.
+    assert _rate_limit(offer=offer, profile=eff) == "100M/200M"

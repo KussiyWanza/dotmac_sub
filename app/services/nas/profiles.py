@@ -68,17 +68,22 @@ class RadiusProfiles(ListResponseMixin):
         if not profile.download_speed or not profile.upload_speed:
             return ""
 
-        # Convert Kbps to format: rx/tx (download/upload in MikroTik terms)
-        # MikroTik format: rx-rate[/tx-rate] [rx-burst-rate[/tx-burst-rate] [rx-burst-threshold[/tx-burst-threshold] [rx-burst-time[/tx-burst-time]]]]
+        # MikroTik format: rx-rate[/tx-rate] [rx-burst-rate[/tx-burst-rate]
+        # [rx-burst-threshold[/tx-burst-threshold] [rx-burst-time[/tx-burst-time]]]]
+        #
+        # rx/tx are NAS-perspective, so rx is the subscriber's UPLOAD and tx
+        # the subscriber's DOWNLOAD — the convention encoded canonically in
+        # app.services.bandwidth.to_subscriber_directions. Every pair below is
+        # therefore upload-first.
         download_k = f"{profile.download_speed}k"
         upload_k = f"{profile.upload_speed}k"
 
-        rate_limit = f"{download_k}/{upload_k}"
+        rate_limit = f"{upload_k}/{download_k}"
 
         if profile.burst_download and profile.burst_upload:
             burst_down = f"{profile.burst_download}k"
             burst_up = f"{profile.burst_upload}k"
-            rate_limit += f" {burst_down}/{burst_up}"
+            rate_limit += f" {burst_up}/{burst_down}"
 
             if profile.burst_threshold:
                 threshold = f"{profile.burst_threshold}k"

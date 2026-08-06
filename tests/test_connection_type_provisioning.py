@@ -176,7 +176,9 @@ class TestBuildRadiusReplyAttributes:
             for attr in attrs
             if attr["attribute"] == "Mikrotik-Rate-Limit"
         )
-        assert rate_limit == "50000k/25000k"
+        # rx/tx is NAS-perspective — the subscriber's upload first, download
+        # second (app.services.bandwidth.to_subscriber_directions).
+        assert rate_limit == "25000k/50000k"
 
     def test_dhcp_attributes(self, mock_subscription, mock_profile):
         db = MagicMock()

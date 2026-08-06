@@ -62,7 +62,11 @@ class TestBuildMikrotikRateLimit:
         profile.burst_threshold = None
         profile.burst_time = None
         result = _build_mikrotik_rate_limit(profile)
-        assert result == "50000k/25000k"
+        # rx/tx is NAS-perspective: rx is the subscriber's upload, tx their
+        # download (app.services.bandwidth.to_subscriber_directions). So a
+        # 50/25 profile emits upload first — reversed, the customer would be
+        # given 25 Mbps down and 50 Mbps up.
+        assert result == "25000k/50000k"
 
     def test_builds_with_burst(self):
         from app.services.enforcement import _build_mikrotik_rate_limit
@@ -76,8 +80,11 @@ class TestBuildMikrotikRateLimit:
         profile.burst_threshold = 40000
         profile.burst_time = 15
         result = _build_mikrotik_rate_limit(profile)
-        assert "50000k/25000k" in result
-        assert "75000k/37500k" in result
+        # Upload-first applies to the burst and threshold pairs too, not just
+        # the base rate — a half-swapped string is worse than a fully swapped
+        # one because the burst would fight the base limit.
+        assert "25000k/50000k" in result
+        assert "37500k/75000k" in result
         assert "15/15" in result
 
     def test_returns_none_no_speeds(self):

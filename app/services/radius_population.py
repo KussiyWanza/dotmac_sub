@@ -99,11 +99,16 @@ def _captive_redirect_allowed(subscriber: object | None) -> bool:
 
 
 def _rate_limit(offer: CatalogOffer, profile: RadiusProfile | None) -> str | None:
-    """Pick MikroTik rate-limit string: profile override > offer-derived > None."""
+    """Pick MikroTik rate-limit string: profile override > offer-derived > None.
+
+    The offer-derived form is rx/tx — NAS-perspective, so the subscriber's
+    UPLOAD first and DOWNLOAD second, per
+    ``app.services.bandwidth.to_subscriber_directions``.
+    """
     if profile and profile.mikrotik_rate_limit:
         return profile.mikrotik_rate_limit
     if offer and offer.speed_download_mbps and offer.speed_upload_mbps:
-        return f"{offer.speed_download_mbps}M/{offer.speed_upload_mbps}M"
+        return f"{offer.speed_upload_mbps}M/{offer.speed_download_mbps}M"
     return None
 
 
