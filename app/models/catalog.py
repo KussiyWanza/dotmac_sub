@@ -173,7 +173,33 @@ class BillingMode(enum.Enum):
     postpaid = "postpaid"
 
 
-PLAN_FAMILY_VALUES = ("unlimited", "dedicated", "home_flex")
+#: Commercial families an offer may be classified into.
+#:
+#: ``high_speed_data`` is a burst speed with a volume allowance that throttles
+#: on exhaustion — sold by the gigabyte, not the megabit. ``ip_block`` is a
+#: routed block sold as a service in its own right, not an attachment to one.
+#:
+#: This is the BROAD vocabulary. Two narrower ones exist deliberately and are
+#: not derived from it: ``SlaPlanFamily`` (which families may own an SLA
+#: default) and ``BANDWIDTH_PRICED_FAMILIES`` below. Widening this does not
+#: widen those, because classification, service-level authority and pricing
+#: model are separate questions with separate consequences.
+#:
+#: Operators may extend classification at runtime through the
+#: ``CATALOG_PLAN_FAMILIES`` setting; this tuple is the built-in default.
+PLAN_FAMILY_VALUES = (
+    "unlimited",
+    "dedicated",
+    "home_flex",
+    "high_speed_data",
+    "ip_block",
+)
+
+#: Families whose price is a function of Mbps, and which may therefore carry
+#: bandwidth price bands. ``high_speed_data`` is priced per gigabyte and
+#: ``ip_block`` per block size, so a per-Mbps ladder would be meaningless for
+#: both — and the database refuses bands for them.
+BANDWIDTH_PRICED_FAMILIES = ("unlimited", "dedicated", "home_flex")
 
 
 class AccessState(enum.Enum):
