@@ -1193,6 +1193,80 @@ class OfferNameConflict(DomainError):
     """
 
 
+class MissingFupLadder(DomainError):
+    """A capped family put on sale with nothing enforcing its cap."""
+
+
+#: Families whose product definition IS a volume bound, and which therefore
+#: cannot be sold without a FUP ladder to enforce it.
+#:
+#: Deliberately ``home_flex`` only. ``high_speed_data`` is also capped, and all
+#: six of its offers do carry ladders — but its ladder shape is an open product
+#: decision for that segment (PLAN_FAMILY_ARCHITECTURE §1), and asserting a
+#: requirement across segments is the cross-family inference ``plan_family``
+#: exists to prevent. Add it here when that decision is taken, not before.
+FUP_REQUIRED_FAMILIES = ("home_flex",)
+
+
+def assert_capped_offer_has_fup_ladder(
+    db: Session,
+    *,
+    offer_id: str | None,
+    plan_family: str | None,
+    available_for_services: bool,
+) -> None:
+    """Refuse to put a capped-family offer on sale with no enforcing rule.
+
+    ``home_flex`` is defined by its cap: past the allowance you keep working at
+    a reduced speed rather than losing service (§1). Production carries five
+    home_flex offers and **63 subscribers with zero FUP rules between them** —
+    a product sold on a limit that has never once been enforced. The failure is
+    silent at every layer, which is why it survived: the offer looks complete,
+    the family is set, and nothing reads back as missing.
+
+    Checked at the point of sale rather than at creation, because an offer must
+    exist before rules can be attached to it. Withdrawn and inactive offers are
+    unaffected — the requirement is about what an operator can sell.
+
+    Deliberately does **not** check thresholds. Whether the cap is 4 GB/day or
+    40 is a commercial decision, and a validator that invented a default would
+    be a worse outcome than one that refuses: it would silently enforce a
+    number nobody chose.
+    """
+    if not available_for_services:
+        return
+    if (plan_family or "") not in FUP_REQUIRED_FAMILIES:
+        return
+    if not offer_id:
+        # Nothing to look up yet; the update path re-checks once it exists.
+        return
+
+    from app.models.fup import FupAction, FupPolicy, FupRule
+
+    has_enforcing_rule = (
+        db.query(FupRule.id)
+        .join(FupPolicy, FupPolicy.id == FupRule.policy_id)
+        .filter(FupPolicy.offer_id == coerce_uuid(offer_id))
+        .filter(FupPolicy.is_active.is_(True))
+        .filter(FupRule.is_active.is_(True))
+        .filter(FupRule.action == FupAction.reduce_speed)
+        .first()
+        is not None
+    )
+    if has_enforcing_rule:
+        return
+
+    raise MissingFupLadder(
+        code="catalog.offer.missing_fup_ladder",
+        message=(
+            f"A {plan_family} offer cannot be made available for sale without "
+            "an active FUP rule that reduces speed. Add the ladder on the "
+            "offer's FUP screen first — the cap is what defines this family."
+        ),
+        details={"offer_id": str(offer_id), "plan_family": plan_family},
+    )
+
+
 def assert_sellable_name_is_unique(
     db: Session, name: str, *, exclude_offer_id: str | None = None
 ) -> None:
@@ -1329,6 +1403,24 @@ def update_offer_with_audit(
         db,
         str(offer_data.get("name") or getattr(existing_offer, "name", "") or ""),
         exclude_offer_id=offer_id,
+    )
+    # Checked here rather than on create: rules hang off the offer, so it must
+    # exist before it can have a ladder. This is the transition that matters —
+    # putting a capped product on sale.
+    assert_capped_offer_has_fup_ladder(
+        db,
+        offer_id=offer_id,
+        plan_family=str(
+            offer_data.get("plan_family")
+            or getattr(existing_offer, "plan_family", "")
+            or ""
+        ),
+        available_for_services=bool(
+            offer_data.get(
+                "available_for_services",
+                getattr(existing_offer, "available_for_services", False),
+            )
+        ),
     )
     price_id = str(offer_data.get("price_id") or "").strip()
     if price_id and offer_data.get("price_amount"):

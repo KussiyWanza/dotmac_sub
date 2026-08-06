@@ -55,9 +55,16 @@ holds.
 either. `CatalogOffer.aggregation` on an unlimited offer is an internal
 capacity-planning target, not a promise, and must not be published as one.
 
-### The FUP ladder
+### The FUP ladder — `home_flex` only
 
-Every FUP family uses the same shape, and it must stay uniform:
+This shape is the approved design for **`home_flex`**. It is stated here
+because `home_flex` is the family with no rules at all today (§6).
+
+**It is not automatically the shape for `high_speed_data`.** That is a separate
+segment (§1) with its own buyers, its own price ladder, and its own product
+decision still to be taken — see "high_speed_data is not covered by this
+ladder" below. Applying a `home_flex` rule to it by inheritance is exactly the
+cross-segment reasoning `plan_family` exists to prevent.
 
 | Stage | Threshold | Period | Action |
 |---|---|---|---|
@@ -79,8 +86,24 @@ for a simpler implementation:
    is not the feature: a customer still throttled at 22:00, or one whose
    overnight download eats tomorrow's bucket, has not been given a free night.
 
-There is no `block` stage. Blocking a residential customer who paid for the
-month is a billing conversation, not a traffic-management one.
+There is no `block` stage **for `home_flex`**. Blocking a residential customer
+who paid for the month is a billing conversation, not a traffic-management one,
+and a daily bucket self-heals at local midnight in any case.
+
+#### `high_speed_data` is not covered by this ladder
+
+Its six offers run a working, chained monthly ladder today: warn at 80% →
+`reduce_speed` at 100% (90% reduction) → `block` at 120%, with
+`enabled_by_rule_id` requiring each stage's predecessor to have fired. All 12
+chain links are wired correctly.
+
+Those six `block` stages **must not be removed on the strength of this
+section**. `high_speed_data` is sold by the gigabyte: the volume IS the
+product, so exceeding it is a different commercial event from a `home_flex`
+customer overrunning a fair-use bucket, and blocking may well be the correct
+consequence. Whether it converts to the daily/50%/free-night shape, keeps its
+monthly ladder, or moves to an upsell-on-exhaustion model is an explicit
+product decision for that segment, not an inference from this one.
 
 ### FUP has exactly one owner
 
@@ -105,15 +128,21 @@ The schema already models all of this. Nothing new is required.
 | Concept | Field | home_flex | high_speed_data | unlimited | dedicated |
 |---|---|---|---|---|---|
 | Volume bound | `fup_policies` + `fup_rules` | **ladder** | **ladder** | `notify` only | none |
-| Bucket period | `fup_rules.consumption_period` | **daily** | **daily** | monthly | — |
-| Post-FUP speed | `fup_rules.speed_reduction_percent` | **50** | **50** | — | — |
-| Free night | `fup_rules.time_start` / `time_end` | **22:00–05:00** | **22:00–05:00** | — | — |
+| Bucket period | `fup_rules.consumption_period` | **daily** | monthly *(undecided)* | monthly | — |
+| Post-FUP speed | `fup_rules.speed_reduction_percent` | **50** | 90 *(undecided)* | — | — |
+| Free night | `fup_rules.time_start` / `time_end` | **22:00–05:00** | *(undecided)* | — | — |
+| Exhaustion block | `fup_rules.action = block` | never | **in force** | — | — |
 | Rate floor | `guaranteed_speed` | `none` | `none` | `none` | **`fixed`** |
 | Floor value | `guaranteed_speed_limit_at` | NULL | NULL | NULL | **= line rate** |
 | Contention target | `aggregation` | shared | shared | **5** | **1** |
 | Public IP | `ip_block` offer | — | — | — | **bundled** |
 | Service credits | `sla_profile_id` | NULL | NULL | NULL | **set** |
 | Billing behaviour | `policy_set_id` | set | set | set | set |
+
+The `high_speed_data` column records what is **in force**, not what is
+approved. Its shape is a live product question for that segment (§1); the bold
+`home_flex` values are the approved design. Do not converge one on the other
+without a product decision.
 
 `sla_profiles` is currently empty; a dedicated SLA profile must be created
 before dedicated offers can reference one.
@@ -148,6 +177,37 @@ dedicated   50M/50M 0/0 0/0 0/0 8 50M/50M    # rx-rate-min = rx-rate → 1:1
 **`guaranteed_speed = fixed` must be the only thing that adds the min field.**
 One canonical writer: `_rate_limit()` derives it from the offer, and no caller
 hand-builds a rate-limit string.
+
+> ### ⚠ This ownership is aspirational, not current. CIR cutover is PAUSED.
+>
+> `_rate_limit()` opens with `if profile and profile.mikrotik_rate_limit:
+> return profile.mikrotik_rate_limit`. The profile string wins outright, and
+> **135 of 175 active RADIUS profiles carry one**. Measured 2026-08-06:
+>
+> | Grain | Rows | Rate from profile string | Rate from offer |
+> |---|---|---|---|
+> | Distinct active subscription | 2,338 | 2,316 (**99.1%**) | 22 |
+> | × credentials | 2,292 | 2,287 (**99.8%**) | 5 |
+>
+> All 77 active `dedicated` subscriptions are decided by a profile string, so
+> setting `guaranteed_speed = 'fixed'` on the 41 dedicated offers would emit
+> **nothing**. `RadiusProfile.mikrotik_rate_limit` is the de facto authority on
+> subscriber rate; the offer's `speed_*`, `guaranteed_speed`,
+> `guaranteed_speed_limit_at` and `aggregation` are a parallel, unreachable
+> intent for 99% of the base.
+>
+> Three checked-in sources currently disagree about who owns this — this
+> section, the `_rate_limit()` docstring (which documents the profile override
+> as intended), and the executable registry (which names the catalog-linked
+> profile as a control input). **Resolve as an authority migration, not a
+> precedence flip across 99% of subscribers.** Target: offer/contract terms own
+> MIR and CIR; `RadiusProfile` becomes a delivery template projected from them;
+> FUP remains an explicit typed consequence override; genuine customer-specific
+> rates become typed, effective-dated, approved overrides with provenance
+> rather than arbitrary strings. Parse and shadow every current profile first —
+> separating base profiles, FUP overrides, exact offer matches, legitimate
+> exceptions and unexplained drift — reconcile to zero unexplained differences,
+> then canary. This is a separate programme from the FUP work.
 
 ### FUP throttle path
 
@@ -219,12 +279,15 @@ active rules and 5 subscribers sit in an enforced state, all on
 `high_speed_data`. `unlimited`'s sixteen rules are all `notify`, as required,
 and `dedicated`'s policies correctly carry no rules. Everything else diverges:
 
-| §1 requires | Production does |
+| §1 requires (for `home_flex`) | Production does |
 |---|---|
 | `daily` bucket | **`monthly` on all 39 rules.** No daily rule exists. |
 | throttle to 50% of the plan rate | **flat 1 Mbps for everyone.** See below. |
 | free night 22:00–05:00 | **nothing.** See below. |
-| no `block` stage | `block` at 120% on six offers |
+
+`high_speed_data`'s six `block` stages are deliberately absent from this table.
+They are in force, chained correctly, and belong to a segment whose ladder is
+an open product decision — not a divergence from an approved design (§1).
 
 **The throttle is not proportional and `speed_reduction_percent` is
 decorative.** Every throttled subscriber is moved to the single RADIUS profile
