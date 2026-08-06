@@ -402,6 +402,31 @@ def execute_job(db: Session, *, job_id: str) -> dict[str, Any]:
 
     candidates = _matching_subscribers(db, filters)
     total = len(candidates)
+    # ``static_ipv4`` is ONE address for the whole job, so applying it across a
+    # multi-candidate batch hands the same address to every subscriber. Nothing
+    # downstream catches that: IPAM has a partial-unique index on the active
+    # assignment, but ``Subscription.ipv4_address`` is an unconstrained
+    # compatibility projection, so the collision lands silently and surfaces
+    # later as ``duplicate_served_projection``. A scalar static address is only
+    # coherent for a batch of exactly one.
+    if mapping.ipv4_assignment == "static" and mapping.static_ipv4 and total > 1:
+        message = (
+            "A static IPv4 cannot be applied to a bulk batch of "
+            f"{total} subscribers — it would assign {mapping.static_ipv4} to "
+            "every one of them. Narrow the filters to a single subscriber, or "
+            "activate with dynamic addressing and assign static addresses "
+            "through IPAM."
+        )
+        return upsert_job(
+            db,
+            {
+                "job_id": job_id,
+                "status": "failed",
+                "completed_at": datetime.now(UTC).isoformat(),
+                "error": message,
+                "counts": {"activated": 0, "failed": 0, "skipped": total},
+            },
+        )
     activated = 0
     failed = 0
     skipped = 0
@@ -468,8 +493,6 @@ def execute_job(db: Session, *, job_id: str) -> dict[str, Any]:
                 target.start_at = activation_at
                 target.provisioning_nas_device_id = nas_id
                 target.mac_address = mapping.mac_address or target.mac_address
-                if mapping.ipv4_assignment == "static":
-                    target.ipv4_address = mapping.static_ipv4
                 login = _compute_login(subscriber, mapping)
                 target.login = login
                 password = (
@@ -482,6 +505,24 @@ def execute_job(db: Session, *, job_id: str) -> dict[str, Any]:
                     db, subscriber=subscriber, username=login, password=password
                 )
                 db.flush()
+                # Bulk activation calls ``activate_subscription(emit=False)``, so
+                # ``subscription_activated`` never fires and the provisioning
+                # handler's ``ensure_ip_assignments_for_subscription`` never runs.
+                # This path used to compensate by writing ``ipv4_address``
+                # directly, which produced a served address with no IPAM record —
+                # the ``assignment_missing`` cohort. Ask the allocator for the
+                # assignment instead; it creates the exact-service IPAssignment
+                # and sets the column as its projection.
+                if mapping.ipv4_assignment == "static" and mapping.static_ipv4:
+                    from app.services.provisioning_helpers import (
+                        ensure_ipv4_assignment_for_subscription,
+                    )
+
+                    ensure_ipv4_assignment_for_subscription(
+                        db,
+                        str(target.id),
+                        {"ipv4_address": mapping.static_ipv4},
+                    )
                 if desired_status == SubscriptionStatus.active:
                     if target.status == SubscriptionStatus.pending:
                         activate_subscription(
@@ -515,6 +556,13 @@ def execute_job(db: Session, *, job_id: str) -> dict[str, Any]:
         except Exception:
             db.rollback()
             failed += 1
+            # Without this the per-row cause is unrecoverable: the job reports a
+            # bare ``failed`` count and the operator has nothing to act on.
+            logger.exception(
+                "Bulk activation job %s failed for subscriber %s",
+                job_id,
+                subscriber.id,
+            )
         if total:
             pct = int((idx / total) * 100)
             upsert_job(

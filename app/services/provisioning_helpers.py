@@ -671,6 +671,33 @@ def ensure_ip_assignments_for_subscription(
     return _ensure_ip_assignments(db, subscription_id, context)
 
 
+def ensure_ipv4_assignment_for_subscription(
+    db: Session, subscription_id: str, context: dict | None = None
+) -> IPAssignment | None:
+    """Allocate ONLY the IPv4 assignment, in the caller's transaction.
+
+    Two differences from :func:`ensure_ip_assignments_for_subscription`, both
+    required by callers that provision a static IPv4 inside their own loop:
+
+    * It does not walk IPv6. ``_ensure_ip_assignments`` fails closed when
+      EITHER version has no active pool, so an IPv4-only caller would inherit a
+      hard dependency on IPv6 pool availability it has no reason to carry.
+    * It flushes rather than commits, so the assignment lives or dies with the
+      caller's unit of work instead of being stranded by a later failure.
+
+    Returns the assignment so the caller can assert the served column it now
+    carries is backed by IPAM rather than standing alone.
+    """
+    subscription = db.get(Subscription, coerce_uuid(subscription_id))
+    if not subscription:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    assignment, _address = _ensure_ip_assignment_for_version(
+        db, subscription, IPVersion.ipv4, context or {}
+    )
+    db.flush()
+    return assignment
+
+
 def _extend_provisioning_context(
     db: Session,
     subscription_id: str | None,

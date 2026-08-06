@@ -141,6 +141,49 @@ def persistence_writer_modules(
     }
 
 
+@cache
+def served_ipv4_projection_writes(
+    *,
+    app_dir: Path = PROJECT_ROOT / "app",
+    project_root: Path = PROJECT_ROOT,
+) -> dict[str, int]:
+    """Return per-file counts of direct writes to the served IPv4 projection.
+
+    ``network.ip_assignment_lifecycle`` owns the desired IPv4 at exact service
+    grain; ``Subscription.ipv4_address`` is its compatibility projection
+    (``app/models/catalog.py``, ``docs/SOT_RELATIONSHIP_MAP.md``). A write that
+    does not come from the owner creates a served address with no IPAM record —
+    the ``assignment_missing`` cohort — or a served value that silently
+    disagrees with its assignment.
+
+    Only ``<something>.ipv4_address = ...`` counts. ``ipv4_address_id`` is the
+    IPAM foreign key on ``IPAssignment``, not the projection, and is excluded by
+    the exact attribute match.
+    """
+
+    counts: dict[str, int] = {}
+    for path in sorted(app_dir.rglob("*.py")):
+        if not path.is_file() or "__pycache__" in path.parts:
+            continue
+        try:
+            tree = _tree(path)
+        except SyntaxError:  # pragma: no cover - syntax checked elsewhere
+            continue
+        hits = 0
+        for node in ast.walk(tree):
+            targets: list[ast.expr] = []
+            if isinstance(node, ast.Assign):
+                targets = list(node.targets)
+            elif isinstance(node, ast.AugAssign | ast.AnnAssign):
+                targets = [node.target]
+            for target in targets:
+                if isinstance(target, ast.Attribute) and target.attr == "ipv4_address":
+                    hits += 1
+        if hits:
+            counts[str(path.relative_to(project_root))] = hits
+    return counts
+
+
 def declared_owner_modules(domains: Iterable[Any]) -> set[str]:
     """Return every module declared as an owner in the registry."""
 
