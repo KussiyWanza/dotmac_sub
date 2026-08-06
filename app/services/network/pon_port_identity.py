@@ -35,12 +35,14 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from typing import Self
+from uuid import UUID
 
 from sqlalchemy.orm import Session
 
 from app.models.network import OltCard, OltCardPort, OltShelf, PonPort
 
 __all__ = [
+    "PonIdentityConflict",
     "PonIdentityRefusal",
     "PonPortIdentity",
     "PonPortIdentityError",
@@ -71,12 +73,34 @@ class PonIdentityRefusal:
     ambiguous = "pon_identity_ambiguous"
 
 
+@dataclass(frozen=True, slots=True)
+class PonIdentityConflict:
+    """The rows that both claim one structural identity.
+
+    Immutable evidence carried on the refusal so a caller — or a later merge —
+    can act on the conflict without parsing a message string. ``claimants`` is
+    a tuple rather than a list so the admitted evidence cannot be mutated after
+    the refusal is raised.
+    """
+
+    identity: PonPortIdentity
+    claimants: tuple[UUID, ...]
+
+
 class PonPortIdentityError(ValueError):
     """A PON port cannot be identified, so no decision may be taken about it."""
 
-    def __init__(self, message: str, *, code: str) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str,
+        conflict: PonIdentityConflict | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
+        #: Structured provenance for ``ambiguous`` refusals; ``None`` otherwise.
+        self.conflict = conflict
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,14 +245,29 @@ def classify(db: Session, pon_port: PonPort) -> str:
 def assert_assignable(db: Session, pon_port: PonPort) -> None:
     """Refuse to assign or provision against an unidentifiable PON row.
 
-    Refuses a prefixed, malformed, or ambiguous row. Only active sibling rows
-    compete for current identity; inactive rows remain preserved history and
-    cannot block assignment. A row whose name is canonical but whose hardware
-    link is missing is **not** refused here: its name states a well-formed
-    identity, and refusing it would stop most provisioning on the estate for a
-    defect that predates the caller. That broader set is excluded from bounded
-    reconciliation instead, which is a reversible operational gate rather than
-    a hard failure in a customer workflow.
+    Refuses a prefixed, malformed, or ambiguous row. A row whose name is
+    canonical but whose hardware link is missing is **not** refused here: its
+    name states a well-formed identity, and refusing it would stop most
+    provisioning on the estate for a defect that predates the caller. That
+    broader set is excluded from bounded reconciliation instead, which is a
+    reversible operational gate rather than a hard failure in a customer
+    workflow.
+
+    Two independent conditions narrow what may contest an identity, because
+    each alone left production largely unassignable:
+
+    * Only **active** siblings compete. Inactive rows are preserved history and
+      must not block a live workflow.
+    * Only **canonically named** siblings compete. A prefixed or malformed row
+      is already unassignable in its own right and is pending repair, so
+      treating its shadow claim as a contest refused the correct row on its
+      behalf -- ``read_name`` strips the transport prefix, so ``pon-0/1/13``
+      reports identity ``0/1/13`` and shadow-claims its canonical twin.
+
+    Measured against production: the guard refused 459 of 502 PON ports, 212
+    carrying live customers. Of the 144 contested pairs, 142 of the prefixed
+    twins were *active*, so restricting to active rows alone recovered 2 of
+    them; both conditions together recover all 144 (assignable 43 -> 187).
     """
     reading = read_name(pon_port.name)
     if reading.prefixed or reading.malformed:
@@ -255,9 +294,22 @@ def assert_assignable(db: Session, pon_port: PonPort) -> None:
     )
     for other in siblings:
         other_reading = read_name(other.name)
+        # A sibling whose own name is prefixed or malformed is already refused
+        # in its own right and is pending repair. Letting it claim an identity
+        # would let a row nobody chose veto the canonical row that names the
+        # same port -- which refused assignment on every port that still has a
+        # `pon-` twin, including ports carrying live customers. Only a
+        # canonically named sibling can contest an identity, and
+        # UNIQUE(olt_id, name) already makes two of those impossible.
+        if other_reading.prefixed or other_reading.malformed:
+            continue
         if other_reading.identity == identity:
             raise PonPortIdentityError(
                 f"PON identity {identity} is ambiguous on this OLT: rows "
                 f"{pon_port.id} and {other.id} both claim it.",
                 code=PonIdentityRefusal.ambiguous,
+                conflict=PonIdentityConflict(
+                    identity=identity,
+                    claimants=(pon_port.id, other.id),
+                ),
             )

@@ -65,10 +65,20 @@ def _actor_type(actor_id: str | None) -> AuditActorType:
 
 
 def _fsp_parts(name: str | None) -> tuple[str | None, str | None]:
-    parts = [part.strip() for part in str(name or "").split("/") if part.strip()]
-    if len(parts) != 3:
+    """Split a canonical PON name into ``(board, port)``, or ``(None, None)``.
+
+    Splitting on ``/`` alone accepted ``pon-0/1/13`` -- three parts -- and
+    returned board ``pon-0/1``, writing a board that names nothing onto the ONT
+    instead of failing closed. Callers are already refused upstream by
+    ``pon_port_identity.assert_assignable``; this reads the name through the
+    identity owner so the helper cannot reintroduce the corruption on its own.
+    """
+    from app.services.network.pon_port_identity import read_name
+
+    identity = read_name(name).identity
+    if identity is None:
         return None, None
-    return f"{parts[0]}/{parts[1]}", parts[2]
+    return f"{identity.frame}/{identity.slot}", str(identity.port)
 
 
 class OntAssignmentCommands:
@@ -492,6 +502,23 @@ class OntAssignmentCommands:
             raise OntAssignmentCommandError(
                 "Active target PON not found", status_code=404
             )
+        # Same refusal as ``_load_target``. A physical move loads its target PON
+        # directly rather than through that helper, so without this the guard
+        # covered ``assign`` but not ``move_to_pon`` -- and the move writes
+        # ``ont.board``/``ont.port`` from the row's name, which is exactly how a
+        # non-canonical name becomes corrupt ONT inventory.
+        from app.services.network.pon_port_identity import (
+            PonPortIdentityError,
+            assert_assignable,
+        )
+
+        try:
+            assert_assignable(db, pon)
+        except PonPortIdentityError as exc:
+            raise OntAssignmentCommandError(
+                f"{exc} Repair it through network.pon_port_identity first.",
+                status_code=409,
+            ) from exc
         olt = db.scalar(
             select(OLTDevice).where(OLTDevice.id == pon.olt_id).with_for_update()
         )

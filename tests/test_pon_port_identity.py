@@ -6,6 +6,7 @@ name, so each is pinned individually rather than inferred from a happy path.
 
 from __future__ import annotations
 
+import dataclasses
 from uuid import uuid4
 
 import pytest
@@ -200,6 +201,53 @@ def test_an_inactive_duplicate_does_not_refuse_assignment(db_session):
     assert assert_assignable(db_session, active) is None
 
 
+def test_ambiguity_carries_typed_immutable_evidence(db_session):
+    """A refusal states which rows contest the identity, not just that they do."""
+    olt, card_port = _hardware(db_session)
+    first = _pon(db_session, olt, name="0/2/3", card_port=card_port)
+    second = _pon(db_session, olt, name="0/2/3 ", card_port=None)
+
+    with pytest.raises(PonPortIdentityError) as excinfo:
+        assert_assignable(db_session, first)
+
+    conflict = excinfo.value.conflict
+    assert conflict is not None
+    assert conflict.identity == PonPortIdentity(frame=0, slot=2, port=3)
+    assert set(conflict.claimants) == {first.id, second.id}
+    assert isinstance(conflict.claimants, tuple)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        conflict.identity = PonPortIdentity(frame=9, slot=9, port=9)  # type: ignore[misc]
+
+
+@pytest.mark.parametrize("twin_name", ["pon-0/2/3", "PON-0/2/3", "pon3", "board-2"])
+def test_a_row_pending_repair_cannot_veto_the_canonical_row(db_session, twin_name):
+    """The production regression this guard caused.
+
+    A prefixed or malformed sibling is already unassignable in its own right.
+    Treating its shadow claim as a contest refused the *correct* row on its
+    behalf: 459 of 502 production PON ports were refused, 212 carrying live
+    customers, purely because a ``pon-`` twin still existed beside them.
+    """
+    olt, card_port = _hardware(db_session)
+    canonical = _pon(db_session, olt, name="0/2/3", card_port=card_port)
+    _pon(db_session, olt, name=twin_name, card_port=None)
+
+    # Returns without raising; the refusal is the failure mode.
+    assert assert_assignable(db_session, canonical) is None
+
+
+def test_the_row_pending_repair_is_still_refused_itself(db_session):
+    """Unblocking the canonical twin must not unblock the bad row too."""
+    olt, card_port = _hardware(db_session)
+    _pon(db_session, olt, name="0/2/3", card_port=card_port)
+    twin = _pon(db_session, olt, name="pon-0/2/3", card_port=None)
+
+    with pytest.raises(PonPortIdentityError) as excinfo:
+        assert_assignable(db_session, twin)
+
+    assert excinfo.value.code == PonIdentityRefusal.name_not_canonical
+
+
 def test_a_canonical_name_without_a_hardware_link_is_still_assignable(db_session):
     """Deliberately narrower than the reconciliation gate.
 
@@ -213,3 +261,27 @@ def test_a_canonical_name_without_a_hardware_link_is_still_assignable(db_session
 
     assert classify(db_session, pon) == "underivable"
     assert assert_assignable(db_session, pon) is None
+
+
+# ── The board/port split used when writing ONT inventory ────────────────────
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("0/1/13", ("0/1", "13")),
+        # Splitting on "/" alone accepted this as three parts and returned
+        # board "pon-0/1" -- a board that names nothing -- instead of failing
+        # closed or reading the real identity.
+        ("pon-0/1/13", ("0/1", "13")),
+        ("pon1", (None, None)),
+        ("board-2", (None, None)),
+        ("0/1", (None, None)),
+        ("", (None, None)),
+        (None, (None, None)),
+    ],
+)
+def test_board_port_split_never_emits_a_board_that_names_nothing(name, expected):
+    from app.services.network.ont_assignment_commands import _fsp_parts
+
+    assert _fsp_parts(name) == expected
