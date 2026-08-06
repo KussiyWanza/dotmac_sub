@@ -198,6 +198,8 @@ def test_new_quote_context_renders_full_template_without_dict_method_collision(
     assert "New Quote" in html
     assert "quoteAuthoringForm([{" in html
     assert "x-data='quoteAuthoringForm(" in html
+    assert 'class="space-y-6 p-4 sm:p-6"' in html
+    assert ".space-y-6" in Path("static/css/main.css").read_text(encoding="utf-8")
 
 
 def test_new_quote_context_omits_invalid_active_tax_rate_without_500(db_session):
