@@ -29,8 +29,10 @@ from app.services.network.pon_port_identity import (
     classify,
     derive_from_card_port,
     derive_identity,
+    materialize_identity,
     read_name,
     shape_for_vendor,
+    stored_identity,
 )
 
 
@@ -396,3 +398,63 @@ def test_board_port_split_on_a_single_box_keeps_the_port(name, expected):
     from app.services.network.ont_assignment_commands import _fsp_parts
 
     assert _fsp_parts(name, vendor="ubiquiti") == expected
+
+
+# ── Identity stored on the row, not parsed from the name ────────────────────
+
+
+def test_materialize_writes_chassis_identity_and_is_idempotent(db_session):
+    olt, card_port = _hardware(db_session, frame=0, slot=2, port=3)
+    pon = _pon(db_session, olt, name="0/2/3", card_port=card_port)
+
+    first = materialize_identity(db_session, pon)
+
+    assert first == PonPortIdentity(frame=0, slot=2, port=3)
+    assert (pon.identity_frame, pon.identity_slot, pon.identity_port) == (0, 2, 3)
+    assert materialize_identity(db_session, pon) == first
+
+
+def test_materialize_writes_single_box_identity_with_no_frame(db_session):
+    """NULL frame is the positive statement that this platform has none."""
+    olt = _single_box_olt(db_session, name="UF-OLT-MAT")
+    pon = _pon(db_session, olt, name="pon5", card_port=None)
+
+    identity = materialize_identity(db_session, pon)
+
+    assert identity == SingleBoxPonIdentity(port=5)
+    assert pon.identity_frame is None
+    assert pon.identity_slot is None
+    assert pon.identity_port == 5
+
+
+def test_materialize_leaves_an_unresolvable_row_untouched(db_session):
+    """A transient inability to resolve must never erase a proven identity."""
+    olt, _ = _hardware(db_session, olt_name="OLT-UNRESOLVABLE")
+    pon = _pon(db_session, olt, name="board-2", card_port=None)
+    pon.identity_frame, pon.identity_slot, pon.identity_port = 0, 9, 9
+
+    assert materialize_identity(db_session, pon) is None
+    assert (pon.identity_frame, pon.identity_slot, pon.identity_port) == (0, 9, 9)
+
+
+def test_stored_identity_wins_over_the_name(db_session):
+    """Once established, the columns are the authority — not the display text.
+
+    Re-deriving from ``name`` on every read would leave the display string in
+    charge of identity, which is the defect this owner exists to end.
+    """
+    olt, _ = _hardware(db_session, olt_name="OLT-STORED-WINS")
+    pon = _pon(db_session, olt, name="0/9/9", card_port=None)
+    pon.identity_frame, pon.identity_slot, pon.identity_port = 0, 2, 3
+
+    assert stored_identity(pon) == PonPortIdentity(frame=0, slot=2, port=3)
+    assert derive_identity(db_session, pon) == PonPortIdentity(frame=0, slot=2, port=3)
+
+
+def test_a_row_without_stored_identity_still_derives(db_session):
+    """Backfill is not a precondition for the owner to work."""
+    olt, card_port = _hardware(db_session, olt_name="OLT-NOT-BACKFILLED")
+    pon = _pon(db_session, olt, name="0/2/3", card_port=card_port)
+
+    assert pon.identity_port is None
+    assert derive_identity(db_session, pon) == PonPortIdentity(frame=0, slot=2, port=3)

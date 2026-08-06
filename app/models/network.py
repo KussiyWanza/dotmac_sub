@@ -1742,6 +1742,15 @@ class PonPort(Base):
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     description: Mapped[str | None] = mapped_column(String(255))
     port_number: Mapped[int | None] = mapped_column(Integer)
+    # Structural identity, owned exclusively by network.pon_port_identity.
+    # `name` is display text; these are what identify the port, and what the
+    # partial unique indexes constrain. Never write them from a UI path.
+    # identity_frame NULL is a positive statement that the platform has no
+    # frame (single-box OLT), not "unknown"; identity_port NULL is "identity
+    # not established".
+    identity_frame: Mapped[int | None] = mapped_column(Integer)
+    identity_slot: Mapped[int | None] = mapped_column(Integer)
+    identity_port: Mapped[int | None] = mapped_column(Integer)
     max_ont_capacity: Mapped[int | None] = mapped_column(Integer)
     notes: Mapped[str | None] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)

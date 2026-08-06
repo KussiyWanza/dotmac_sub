@@ -32,11 +32,20 @@ Where the structural parts are unknown the answer is a refusal, never a
 generated placeholder: a fabricated name is indistinguishable from a real one
 the moment it is written.
 
-Scope note. This module is containment: it owns identity, canonical rendering,
-and the refusals. It deliberately does **not** repair data, and there is no
-database constraint on ``(olt_id, frame, slot, port)`` yet — both belong to a
-separate reviewed migration slice. Defensive prefix stripping elsewhere in the
-codebase stays until that slice has verified the data.
+Identity is now **stored**, not re-parsed from the name on every read. Migration
+``487_pon_structural_identity`` adds ``identity_frame``/``identity_slot``/
+``identity_port`` and constrains them with two partial unique indexes, one per
+shape — because a single universal constraint could never cover both. Those
+columns are owned here: no UI or import path may write them.
+:func:`materialize_identity` establishes them and is idempotent;
+:func:`derive_identity` prefers what is recorded and falls back to deriving it
+only while a row is still un-backfilled.
+
+Scope note. Repair of rows that have no derivable identity at all is still out
+of scope: on production 194 Huawei rows carry no hardware link and no usable
+name, and they are left with NULL identity columns, matched by neither partial
+index, until the topology import or their deletion. Defensive prefix stripping
+elsewhere in the codebase stays until that is done.
 """
 
 from __future__ import annotations
@@ -64,8 +73,10 @@ __all__ = [
     "canonical_name",
     "classify",
     "derive_identity",
+    "materialize_identity",
     "read_name",
     "shape_for_vendor",
+    "stored_identity",
 ]
 
 #: A canonical PON name is exactly ``frame/slot/port``. Anything else is either
@@ -317,6 +328,52 @@ def shape_for_pon_port(db: Session, pon_port: PonPort) -> PonIdentityShape:
     return shape_for_vendor(getattr(olt, "vendor", None))
 
 
+def stored_identity(pon_port: PonPort) -> PonIdentity | None:
+    """Identity as recorded on the row, or ``None`` when not yet established.
+
+    These columns are the point of the whole exercise: identity that the
+    database can constrain, rather than a claim parsed out of a display string.
+    ``identity_port`` non-NULL is the flag; ``identity_frame`` NULL alongside it
+    is the positive statement that the platform has no frame.
+    """
+    port = pon_port.identity_port
+    if port is None:
+        return None
+    frame = pon_port.identity_frame
+    slot = pon_port.identity_slot
+    if frame is None:
+        return SingleBoxPonIdentity(port=int(port))
+    if slot is None:  # pragma: no cover - a frame without a slot is not writable
+        return None
+    return PonPortIdentity(frame=int(frame), slot=int(slot), port=int(port))
+
+
+def materialize_identity(db: Session, pon_port: PonPort) -> PonIdentity | None:
+    """Resolve identity and persist it onto the row. Idempotent.
+
+    Backfill and repair entry point. Resolution stays exactly as
+    :func:`derive_identity` defines it — this only writes the answer down, so
+    running it twice is a no-op and running it after the source of truth changes
+    corrects the row.
+
+    Returns the identity written, or ``None`` when it could not be established;
+    in that case the columns are left untouched rather than cleared, because a
+    transient inability to resolve must not erase an identity already proven.
+    """
+    identity = _resolve_from_sources(db, pon_port)
+    if identity is None:
+        return None
+    if isinstance(identity, SingleBoxPonIdentity):
+        pon_port.identity_frame = None
+        pon_port.identity_slot = None
+        pon_port.identity_port = identity.port
+    else:
+        pon_port.identity_frame = identity.frame
+        pon_port.identity_slot = identity.slot
+        pon_port.identity_port = identity.port
+    return identity
+
+
 def derive_identity(db: Session, pon_port: PonPort) -> PonIdentity | None:
     """Structural identity of a stored PON port, or ``None`` when unknowable.
 
@@ -325,10 +382,29 @@ def derive_identity(db: Session, pon_port: PonPort) -> PonIdentity | None:
     cleanup can recover that. Callers that must decide something about the port
     use :func:`assert_assignable` instead of guessing.
 
+    Prefers identity already written to the row: once established it is the
+    authority, and re-deriving it from ``name`` on every read would leave the
+    display string in charge of identity, which is the defect this owner exists
+    to end.
+
     On a single-box platform there is no hardware chain to walk, and none is
     missing: the port number *is* the structural identity, so it is read from
     the name. Requiring a card-port link there would report every correctly
     named UF-OLT port as underivable forever.
+    """
+    recorded = stored_identity(pon_port)
+    if recorded is not None:
+        return recorded
+    return _resolve_from_sources(db, pon_port)
+
+
+def _resolve_from_sources(db: Session, pon_port: PonPort) -> PonIdentity | None:
+    """Resolve identity from hardware or name, ignoring what is on the row.
+
+    Kept separate from :func:`derive_identity` so repair is possible: that
+    function prefers the stored columns, so re-deriving through it would make
+    an already-written identity permanently self-confirming and
+    :func:`materialize_identity` could never correct drift.
     """
     if shape_for_pon_port(db, pon_port) is PonIdentityShape.single_box:
         return read_name(pon_port.name, shape=PonIdentityShape.single_box).identity
