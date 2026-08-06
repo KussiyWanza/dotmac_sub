@@ -30,8 +30,15 @@ from uuid import UUID, uuid4
 from sqlalchemy import case, func, or_
 from sqlalchemy.orm import Session, selectinload
 
+from app.models.catalog import RegionZone
 from app.models.field_material import FieldInventoryItem
-from app.models.party import Party, PartyContactPoint, PartyIdentityStatus
+from app.models.organization import Organization
+from app.models.party import (
+    Party,
+    PartyContactPoint,
+    PartyContactPointType,
+    PartyIdentityStatus,
+)
 from app.models.project import ProjectType
 from app.models.sales import (
     Lead,
@@ -43,7 +50,7 @@ from app.models.sales import (
     SalesOrderPaymentStatus,
     SalesOrderStatus,
 )
-from app.models.subscriber import Subscriber
+from app.models.subscriber import Reseller, Subscriber
 from app.schemas.sales import (
     LeadCreate,
     LeadUpdate,
@@ -204,6 +211,7 @@ class LeadFormFields:
 @dataclass(frozen=True, slots=True)
 class NewLeadFormFields:
     submission_id: str
+    title: str
     display_name: str
     status: str
     owner_agent_id: str
@@ -235,6 +243,7 @@ class NewLeadFormFields:
     expected_close_date: str
     lost_reason: str
     notes: str
+    address: str
     is_active: bool
 
 
@@ -794,6 +803,7 @@ def _lead_form_context(
 def _new_lead_fields(
     *,
     submission_id: str | None = None,
+    title: str | None = None,
     display_name: str | None = None,
     status: str | None = None,
     owner_agent_id: str | None = None,
@@ -825,12 +835,14 @@ def _new_lead_fields(
     expected_close_date: str | None = None,
     lost_reason: str | None = None,
     notes: str | None = None,
+    address: str | None = None,
     is_active: bool = True,
 ) -> NewLeadFormFields:
     email_rows = tuple(str(value or "") for value in (emails or ("",))) or ("",)
     phone_rows = tuple(str(value or "") for value in (phones or ("",))) or ("",)
     return NewLeadFormFields(
         submission_id=(submission_id or str(uuid4())).strip(),
+        title=(title or "").strip(),
         display_name=(display_name or "").strip(),
         status=(status or LeadStatus.new.value).strip(),
         owner_agent_id=(owner_agent_id or "").strip(),
@@ -864,6 +876,7 @@ def _new_lead_fields(
         expected_close_date=(expected_close_date or "").strip(),
         lost_reason=(lost_reason or "").strip(),
         notes=(notes or "").strip(),
+        address=(address or "").strip(),
         is_active=is_active,
     )
 
@@ -874,6 +887,8 @@ def _new_lead_context(
     lead_form: NewLeadFormFields,
     actor_system_user_id: str | None,
     field_errors: dict[str, str] | None = None,
+    mode: str = "create",
+    lead: Lead | None = None,
 ) -> dict[str, Any]:
     options = _sales_options(db)
     regions = region_zones_service.list(
@@ -888,12 +903,41 @@ def _new_lead_context(
     if not owner_id and actor_system_user_id in options["agent_map"]:
         owner_id = str(actor_system_user_id)
         lead_form = replace(lead_form, owner_agent_id=owner_id)
+    is_edit = mode == "edit"
+    edit_party = _lead_person(lead) if is_edit and lead is not None else None
     return {
         "lead_form": lead_form,
-        "lead": None,
-        "form_title": "New Lead",
-        "submit_label": "Create Lead",
-        "action_url": "/admin/sales/leads",
+        "lead": lead,
+        "is_edit": is_edit,
+        "form_title": "Edit Lead" if is_edit else "New Lead",
+        "form_description": (
+            "Update the contact and sales opportunity information"
+            if is_edit
+            else "Create and qualify a new sales opportunity"
+        ),
+        "submit_label": "Update Lead" if is_edit else "Create Lead",
+        "submitting_label": "Updating..." if is_edit else "Submitting...",
+        "action_url": (
+            f"/admin/sales/leads/{lead.id}/edit"
+            if is_edit and lead is not None
+            else "/admin/sales/leads"
+        ),
+        "cancel_url": (
+            f"/admin/sales/leads/{lead.id}"
+            if is_edit and lead is not None
+            else "/admin/sales/leads"
+        ),
+        "error_title": (
+            "We could not update this Lead."
+            if is_edit
+            else "We could not create this Lead."
+        ),
+        "lead_source_locked": bool(is_edit and lead and lead.origin_capture),
+        "nin_stored": bool(
+            edit_party
+            and isinstance(edit_party.metadata_, dict)
+            and edit_party.metadata_.get("nin_encrypted")
+        ),
         "lead_statuses": lead_operator_status_values(lead_form.status),
         "lead_sources": list(sales_service.LEAD_SOURCE_OPTIONS),
         "lost_reasons": LOST_REASON_OPTIONS,
@@ -939,6 +983,7 @@ def build_lead_create_error_context(
         db,
         lead_form=_new_lead_fields(
             submission_id=str(fields.get("submission_id") or ""),
+            title=str(fields.get("title") or ""),
             display_name=str(fields.get("display_name") or ""),
             status=str(fields.get("status") or ""),
             owner_agent_id=str(fields.get("owner_agent_id") or ""),
@@ -972,6 +1017,7 @@ def build_lead_create_error_context(
             expected_close_date=str(fields.get("expected_close_date") or ""),
             lost_reason=str(fields.get("lost_reason") or ""),
             notes=str(fields.get("notes") or ""),
+            address=str(fields.get("address") or ""),
             is_active=bool(fields.get("is_active")),
         ),
         actor_system_user_id=actor_system_user_id,
@@ -979,27 +1025,164 @@ def build_lead_create_error_context(
     )
 
 
+def _metadata_uuid(metadata: dict[str, object], key: str) -> UUID | None:
+    try:
+        return UUID(str(metadata.get(key) or ""))
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def _lead_person(lead: Lead) -> Party | None:
+    if lead.party is not None:
+        return lead.party
+    if lead.subscriber is not None:
+        return lead.subscriber.party
+    return None
+
+
 def build_lead_edit_context(db: Session, *, lead_id: str) -> dict[str, Any]:
     lead = sales_service.leads.get(db, lead_id)
-    contact_map, _ = _lead_contact_views(db, [lead])
-    contact = contact_map.get(str(lead.id))
-    return _lead_form_context(
+    party = _lead_person(lead)
+    if party is None:
+        raise LeadFormValidationError(
+            {"form": "This Lead does not have an editable Person profile."}
+        )
+    metadata = dict(party.metadata_) if isinstance(party.metadata_, dict) else {}
+    lead_metadata = dict(lead.metadata_) if isinstance(lead.metadata_, dict) else {}
+    points = (
+        db.query(PartyContactPoint)
+        .filter(
+            PartyContactPoint.party_id == party.id,
+            PartyContactPoint.is_active.is_(True),
+            PartyContactPoint.scope_key == "default",
+            PartyContactPoint.channel_type.in_(
+                (
+                    PartyContactPointType.email.value,
+                    PartyContactPointType.phone.value,
+                    PartyContactPointType.whatsapp.value,
+                )
+            ),
+        )
+        .order_by(
+            PartyContactPoint.channel_type,
+            PartyContactPoint.is_primary.desc(),
+            PartyContactPoint.created_at,
+            PartyContactPoint.id,
+        )
+        .all()
+    )
+    emails = tuple(
+        point.display_value or point.normalized_value
+        for point in points
+        if point.channel_type == PartyContactPointType.email.value
+    )
+    phones = tuple(
+        point.display_value or point.normalized_value
+        for point in points
+        if point.channel_type == PartyContactPointType.phone.value
+    )
+    whatsapp_values = {
+        point.normalized_value
+        for point in points
+        if point.channel_type == PartyContactPointType.whatsapp.value
+    }
+    whatsapp_indices = tuple(
+        str(index)
+        for index, point in enumerate(
+            point
+            for point in points
+            if point.channel_type == PartyContactPointType.phone.value
+        )
+        if point.normalized_value in whatsapp_values
+    )
+    organization_id = _metadata_uuid(metadata, "organization_id") or _metadata_uuid(
+        lead_metadata, "organization_id"
+    )
+    organization = db.get(Organization, organization_id) if organization_id else None
+    reseller = db.get(Reseller, lead.reseller_id) if lead.reseller_id else None
+    region_zone_id = _metadata_uuid(lead_metadata, "region_zone_id")
+    if region_zone_id is None and lead.region:
+        configured_region = (
+            db.query(RegionZone)
+            .filter(RegionZone.name == lead.region, RegionZone.is_active.is_(True))
+            .one_or_none()
+        )
+        region_zone_id = configured_region.id if configured_region else None
+    subscriber = lead.subscriber
+    email_rows = emails or (
+        (subscriber.email,) if subscriber is not None and subscriber.email else ("",)
+    )
+    phone_rows = phones or (
+        (subscriber.phone,) if subscriber is not None and subscriber.phone else ("",)
+    )
+
+    return _new_lead_context(
         db,
-        lead_form=_lead_form_fields(
+        lead_form=_new_lead_fields(
             title=lead.title,
+            display_name=party.display_name,
             status=lead.status,
-            party_id=str(lead.party_id) if lead.party_id else None,
-            contact_label=contact.name if contact else None,
             owner_agent_id=(str(lead.owner_agent_id) if lead.owner_agent_id else None),
+            emails=email_rows,
+            primary_email="0",
+            phones=phone_rows,
+            primary_phone="0",
+            whatsapp_phone_indices=whatsapp_indices,
+            address_line1=str(
+                metadata.get("address_line1")
+                or (subscriber.address_line1 if subscriber is not None else "")
+                or ""
+            ),
+            address_line2=str(
+                metadata.get("address_line2")
+                or (subscriber.address_line2 if subscriber is not None else "")
+                or ""
+            ),
+            date_of_birth=str(
+                metadata.get("date_of_birth")
+                or (
+                    subscriber.date_of_birth.isoformat()
+                    if subscriber is not None and subscriber.date_of_birth
+                    else ""
+                )
+            ),
+            gender=str(
+                metadata.get("gender")
+                or (
+                    subscriber.gender.value
+                    if subscriber is not None and subscriber.gender
+                    else "unknown"
+                )
+            ),
+            nin=None,
+            city=str(
+                metadata.get("city")
+                or (subscriber.city if subscriber is not None else "")
+                or ""
+            ),
+            postal_code=str(
+                metadata.get("postal_code")
+                or (subscriber.postal_code if subscriber is not None else "")
+                or ""
+            ),
+            country_code=str(
+                metadata.get("country_code")
+                or (subscriber.country_code if subscriber is not None else "")
+                or ""
+            ),
+            organization_id=str(organization.id) if organization else None,
+            organization_label=organization.name if organization else None,
+            managed_by_reseller=reseller is not None,
+            reseller_id=str(reseller.id) if reseller else None,
+            reseller_label=reseller.name if reseller else None,
             pipeline_id=str(lead.pipeline_id) if lead.pipeline_id else None,
             stage_id=str(lead.stage_id) if lead.stage_id else None,
             lead_source=lead.lead_source,
-            region=lead.region,
+            region_zone_id=str(region_zone_id) if region_zone_id else None,
             estimated_value=(
                 str(lead.estimated_value) if lead.estimated_value is not None else None
             ),
             currency=lead.currency,
-            address=lead.address,
             probability=(
                 str(lead.probability) if lead.probability is not None else "0"
             ),
@@ -1010,48 +1193,75 @@ def build_lead_edit_context(db: Session, *, lead_id: str) -> dict[str, Any]:
             ),
             lost_reason=lead.lost_reason,
             notes=lead.notes,
+            address=lead.address,
             is_active=lead.is_active,
         ),
-        mode="update",
-        lead_id=lead_id,
+        actor_system_user_id=None,
+        mode="edit",
+        lead=lead,
     )
 
 
-def build_lead_form_error_context(
+def build_lead_edit_error_context(
     db: Session,
     *,
-    mode: str,
-    lead_id: str | None,
+    lead_id: str,
     field_errors: dict[str, str],
-    **fields: str | bool | None,
+    **fields: object,
 ) -> dict[str, Any]:
-    context = _lead_form_context(
+    lead = sales_service.leads.get(db, lead_id)
+
+    def string_tuple(value: object, *, default: tuple[str, ...]) -> tuple[str, ...]:
+        if not isinstance(value, (list, tuple)):
+            return default
+        return tuple(str(item or "") for item in value)
+
+    return _new_lead_context(
         db,
-        lead_form=_lead_form_fields(
+        lead_form=_new_lead_fields(
+            submission_id=str(fields.get("submission_id") or ""),
             title=str(fields.get("title") or ""),
+            display_name=str(fields.get("display_name") or ""),
             status=str(fields.get("status") or ""),
-            party_id=str(fields.get("party_id") or ""),
-            contact_label=str(fields.get("contact_label") or ""),
             owner_agent_id=str(fields.get("owner_agent_id") or ""),
+            emails=string_tuple(fields.get("emails"), default=("",)),
+            primary_email=str(fields.get("primary_email") or "0"),
+            phones=string_tuple(fields.get("phones"), default=("",)),
+            primary_phone=str(fields.get("primary_phone") or "0"),
+            whatsapp_phone_indices=string_tuple(
+                fields.get("whatsapp_phone_indices"), default=()
+            ),
+            address_line1=str(fields.get("address_line1") or ""),
+            address_line2=str(fields.get("address_line2") or ""),
+            date_of_birth=str(fields.get("date_of_birth") or ""),
+            gender=str(fields.get("gender") or "unknown"),
+            nin=str(fields.get("nin") or ""),
+            city=str(fields.get("city") or ""),
+            postal_code=str(fields.get("postal_code") or ""),
+            country_code=str(fields.get("country_code") or ""),
+            organization_id=str(fields.get("organization_id") or ""),
+            organization_label=str(fields.get("organization_label") or ""),
+            managed_by_reseller=bool(fields.get("managed_by_reseller")),
+            reseller_id=str(fields.get("reseller_id") or ""),
+            reseller_label=str(fields.get("reseller_label") or ""),
             pipeline_id=str(fields.get("pipeline_id") or ""),
             stage_id=str(fields.get("stage_id") or ""),
             lead_source=str(fields.get("lead_source") or ""),
-            region=str(fields.get("region") or ""),
+            region_zone_id=str(fields.get("region_zone_id") or ""),
             estimated_value=str(fields.get("estimated_value") or ""),
             currency=str(fields.get("currency") or ""),
-            address=str(fields.get("address") or ""),
             probability=str(fields.get("probability") or ""),
             expected_close_date=str(fields.get("expected_close_date") or ""),
             lost_reason=str(fields.get("lost_reason") or ""),
             notes=str(fields.get("notes") or ""),
+            address=str(fields.get("address") or ""),
             is_active=bool(fields.get("is_active")),
         ),
-        mode=mode,
-        lead_id=lead_id,
+        actor_system_user_id=None,
+        field_errors=field_errors,
+        mode="edit",
+        lead=lead,
     )
-    context["field_errors"] = field_errors
-    context["error"] = "Please correct the highlighted fields."
-    return context
 
 
 def _validate_lead_form(
@@ -1391,16 +1601,33 @@ def create_lead_from_form(
 def update_lead_from_form(
     db: Session,
     *,
+    actor_system_user_id: str,
+    submission_id: str | None,
     lead_id: str,
     title: str | None,
+    display_name: str | None,
     status: str | None,
-    party_id: str | None,
-    contact_label: str | None,
     owner_agent_id: str | None,
+    emails: list[str] | tuple[str, ...],
+    primary_email: str | None,
+    phones: list[str] | tuple[str, ...],
+    primary_phone: str | None,
+    whatsapp_phone_indices: list[str] | tuple[str, ...],
+    address_line1: str | None,
+    address_line2: str | None,
+    date_of_birth: str | None,
+    gender: str | None,
+    nin: str | None,
+    city: str | None,
+    postal_code: str | None,
+    country_code: str | None,
+    organization_id: str | None,
+    managed_by_reseller: bool,
+    reseller_id: str | None,
     pipeline_id: str | None,
     stage_id: str | None,
     lead_source: str | None,
-    region: str | None,
+    region_zone_id: str | None,
     estimated_value: str | None,
     currency: str | None,
     address: str | None,
@@ -1409,54 +1636,137 @@ def update_lead_from_form(
     lost_reason: str | None,
     notes: str | None,
     is_active: bool,
-) -> None:
-    lead = sales_service.leads.get(db, lead_id)
-    contact_map, _ = _lead_contact_views(db, [lead])
-    current_contact = contact_map.get(str(lead.id))
-    if not (party_id or "").strip() and current_contact is not None:
-        raise LeadFormValidationError(
-            {"party_id": "Select a Person/Contact from the search results."}
-        )
-    values = _validate_lead_form(
-        title=title,
-        status=status,
-        party_id=party_id,
-        owner_agent_id=owner_agent_id,
-        pipeline_id=pipeline_id,
-        stage_id=stage_id,
-        lead_source=lead_source,
-        region=region,
-        estimated_value=estimated_value,
-        currency=currency,
-        address=address,
-        probability=probability,
-        expected_close_date=expected_close_date,
-        lost_reason=lost_reason,
-        notes=notes,
+) -> lead_authoring.EditLeadOutcome:
+    errors: dict[str, str] = {}
+
+    def required_uuid(value: str | None, field: str) -> UUID:
+        try:
+            return UUID((value or "").strip())
+        except (TypeError, ValueError, AttributeError):
+            errors[field] = "This form expired or is invalid. Reload and try again."
+            return UUID(int=0)
+
+    def optional_uuid(value: str | None, field: str) -> UUID | None:
+        clean = (value or "").strip()
+        if not clean:
+            return None
+        try:
+            return UUID(clean)
+        except (TypeError, ValueError, AttributeError):
+            errors[field] = "Select a valid option."
+            return None
+
+    def optional_date(value: str | None, field: str) -> date | None:
+        clean = (value or "").strip()
+        if not clean:
+            return None
+        try:
+            return date.fromisoformat(clean)
+        except ValueError:
+            errors[field] = "Enter a valid date."
+            return None
+
+    def index(value: str | None, field: str) -> int:
+        try:
+            return int((value or "0").strip())
+        except ValueError:
+            errors[field] = "Select a valid primary row."
+            return 0
+
+    actor_id = required_uuid(actor_system_user_id, "form")
+    edit_id = required_uuid(submission_id, "form")
+    parsed_lead_id = required_uuid(lead_id, "form")
+    clean_title = (title or "").strip()
+    if not clean_title:
+        errors["title"] = "Lead Name is required."
+    try:
+        lead_status = LeadStatus((status or LeadStatus.new.value).strip())
+    except ValueError:
+        errors["status"] = "Select a valid Lead Status."
+        lead_status = LeadStatus.new
+    if (lead_source or "").strip() and (
+        lead_source or ""
+    ).strip() not in sales_service.LEAD_SOURCE_OPTIONS:
+        errors["lead_source"] = "Select a valid Lead Source."
+
+    amount: Decimal | None = None
+    if (estimated_value or "").strip():
+        try:
+            amount = Decimal((estimated_value or "").strip())
+        except (ArithmeticError, ValueError):
+            errors["estimated_value"] = "Estimated Value must be a number."
+    probability_value: int | None = None
+    if (probability or "").strip():
+        try:
+            probability_value = int((probability or "").strip())
+        except ValueError:
+            errors["probability"] = "Probability must be a whole number."
+
+    whatsapp_indexes: list[int] = []
+    for raw in whatsapp_phone_indices:
+        try:
+            whatsapp_indexes.append(int(str(raw)))
+        except ValueError:
+            continue
+    selected_reseller_id = (
+        optional_uuid(reseller_id, "reseller_id") if managed_by_reseller else None
+    )
+    if managed_by_reseller and selected_reseller_id is None:
+        errors["reseller_id"] = "Select the reseller that manages this customer."
+    if errors:
+        raise LeadFormValidationError(errors)
+
+    command = lead_authoring.EditLeadCommand(
+        context=CommandContext.system(
+            actor=str(actor_id),
+            scope="sales:lead-maintenance",
+            reason="Authenticated staff updated a Lead and its Person profile",
+            idempotency_key=f"admin-lead-edit:{parsed_lead_id}:{edit_id}",
+        ),
+        edit_id=edit_id,
+        lead_id=parsed_lead_id,
+        actor_system_user_id=actor_id,
+        title=clean_title,
+        status=lead_status,
+        owner_system_user_id=optional_uuid(owner_agent_id, "owner_agent_id"),
+        pipeline_id=optional_uuid(pipeline_id, "pipeline_id"),
+        stage_id=optional_uuid(stage_id, "stage_id"),
+        lead_source=(lead_source or "").strip() or None,
+        region_zone_id=optional_uuid(region_zone_id, "region_zone_id"),
+        estimated_value=amount,
+        currency=(currency or "").strip().upper() or None,
+        address=(address or "").strip() or None,
+        probability=probability_value,
+        expected_close_date=optional_date(expected_close_date, "expected_close_date"),
+        lost_reason=(lost_reason or "").strip() or None,
+        notes=(notes or "").strip() or None,
         is_active=is_active,
+        person=lead_authoring.LeadPersonDraft(
+            display_name=(display_name or "").strip(),
+            emails=lead_authoring.LeadContactDraft(
+                values=tuple(str(value or "") for value in emails),
+                primary_index=index(primary_email, "primary_email"),
+            ),
+            phones=lead_authoring.LeadContactDraft(
+                values=tuple(str(value or "") for value in phones),
+                primary_index=index(primary_phone, "primary_phone"),
+            ),
+            whatsapp_phone_indices=tuple(whatsapp_indexes),
+            address_line1=(address_line1 or "").strip() or None,
+            address_line2=(address_line2 or "").strip() or None,
+            date_of_birth=optional_date(date_of_birth, "date_of_birth"),
+            gender=(gender or "unknown").strip(),
+            nin=(nin or "").strip() or None,
+            city=(city or "").strip() or None,
+            postal_code=(postal_code or "").strip() or None,
+            country_code=(country_code or "").strip().upper() or None,
+            organization_id=optional_uuid(organization_id, "organization_id"),
+            reseller_id=selected_reseller_id,
+        ),
     )
-    if lead.party_id != values.party_id:
-        raise LeadFormValidationError(
-            {"party_id": "Lead identity cannot be changed through the edit form."}
-        )
-    payload = LeadUpdate(
-        owner_agent_id=values.owner_agent_id,
-        pipeline_id=values.pipeline_id,
-        stage_id=values.stage_id,
-        title=values.title,
-        status=values.status,
-        lead_source=values.lead_source,
-        region=values.region,
-        estimated_value=values.estimated_value,
-        currency=values.currency,
-        address=values.address,
-        probability=values.probability,
-        expected_close_date=values.expected_close_date,
-        lost_reason=values.lost_reason,
-        notes=values.notes,
-        is_active=values.is_active,
-    )
-    sales_service.leads.update(db, lead_id, payload)
+    if errors:
+        raise LeadFormValidationError(errors)
+    return lead_authoring.edit_lead(db, command)
 
 
 def set_lead_status(db: Session, *, lead_id: str, status: str | None) -> None:

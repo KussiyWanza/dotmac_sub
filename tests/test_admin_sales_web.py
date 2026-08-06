@@ -11,6 +11,7 @@ import pytest
 from fastapi import HTTPException
 from fastapi.routing import APIRoute
 from fastapi.templating import Jinja2Templates
+from starlette.requests import Request
 
 from app.models.party import Party
 from app.models.rbac import Role, SystemUserRole
@@ -936,7 +937,7 @@ _SALES_TEMPLATES = [
     "admin/sales/leads/index.html",
     "admin/sales/leads/board.html",
     "admin/sales/leads/detail.html",
-    "admin/sales/leads/form.html",
+    "admin/sales/leads/new_form.html",
     "admin/sales/pipelines/index.html",
     "admin/sales/pipelines/form.html",
     "admin/sales/quotes/index.html",
@@ -951,6 +952,83 @@ _SALES_TEMPLATES = [
 def test_sales_templates_compile(template_name):
     templates = Jinja2Templates(directory="templates")
     assert templates.env.get_template(template_name) is not None
+
+
+def test_complete_lead_form_covers_contact_profile_and_sales_fields():
+    source = Path("templates/admin/sales/leads/new_form.html").read_text()
+    for field_name in (
+        "title",
+        "display_name",
+        "emails",
+        "primary_email",
+        "phones",
+        "primary_phone",
+        "address_line1",
+        "address_line2",
+        "date_of_birth",
+        "gender",
+        "nin",
+        "city",
+        "postal_code",
+        "country_code",
+        "organization_id",
+        "reseller_id",
+        "pipeline_id",
+        "stage_id",
+        "lead_source",
+        "region_zone_id",
+        "estimated_value",
+        "currency",
+        "probability",
+        "expected_close_date",
+        "lost_reason",
+        "notes",
+        "address",
+        "is_active",
+    ):
+        assert f'name="{field_name}"' in source
+    assert 'checkbox.name = "whatsapp_phone_indices"' in source
+    assert "Leave blank to keep the stored NIN" in source
+    assert "Lead Source is fixed by the original capture" in source
+
+
+def test_edit_lead_context_composes_complete_form(db_session):
+    subscriber = _make_subscriber(db_session)
+    lead = _make_lead(db_session, subscriber)
+    context = web_sales.build_lead_edit_context(db_session, lead_id=str(lead.id))
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": f"/admin/sales/leads/{lead.id}/edit",
+            "headers": [],
+            "scheme": "http",
+            "server": ("testserver", 80),
+            "client": ("testclient", 50000),
+        }
+    )
+    context.update(
+        {
+            "request": request,
+            "active_page": "sales-leads",
+            "active_menu": "sales",
+            "current_user": None,
+            "sidebar_stats": {},
+            "csp_nonce": "test-nonce",
+            "inbox_conversation_id": None,
+        }
+    )
+
+    rendered = admin_sales.templates.env.get_template(
+        "admin/sales/leads/new_form.html"
+    ).render(context)
+
+    assert "Edit Lead" in rendered
+    assert f'action="/admin/sales/leads/{lead.id}/edit"' in rendered
+    assert 'name="emails"' in rendered
+    assert f'value="{subscriber.email}"' in rendered
+    assert 'name="title"' in rendered
+    assert "Update Lead" in rendered
 
 
 def test_board_template_wires_kanban_api_endpoints():

@@ -57,7 +57,7 @@ person or organization is; each named domain owner keeps its own lifecycle.
 | Inbox/social interaction | `communications.team_inbox` | Observed conversation and routing, not a sales decision |
 | Native outbound campaign | `communications.campaigns` | Sub campaign, audience, recipients, and delivery state |
 | Lead identity and origin | `sales.lead_lifecycle` | Party-first Lead, immutable origin, reviewed account attachment |
-| Admin Person and Lead authoring | `sales.lead_authoring` | Atomic Person Party, contact points, Organization relationship, Lead, origin, audit, and event |
+| Admin Person and Lead authoring and maintenance | `sales.lead_authoring` | Atomic Person Party, contact points, Organization relationship, Lead, origin, audit, and event; later profile/contact and editable Lead maintenance preserves the exact Party |
 | Referral program | `referrals.program` | Capture policy, canonical program and account-attachment records, qualification/reward policy, and atomic transitions |
 | Referral account orchestration | `referrals.account_conversion` | Exact Referral/Party/Lead context into atomic account creation or reviewed attachment |
 | Pipeline and Quote | `sales.service` | Opportunity progress and Lead-backed commercial offer |
@@ -103,6 +103,14 @@ acceptance copies that exact value into the new Subscriber, after which reseller
 views continue to derive Quotes, Projects, and WorkOrders through
 `Subscriber.reseller_id`. Email remains non-unique contact information and
 never selects a reseller, merges Parties, or establishes account ownership.
+
+The admin Edit Lead command keeps the existing Party identity fixed. It may
+update that Person's explicit profile and complete default-scope contact set,
+but removed contact values are retained as inactive evidence and unchanged
+values retain their verification and consent state. The same transaction
+updates the editable Lead opportunity values and stages audit and a PII-free
+event. It cannot rewrite immutable origin, repoint the Party, or change
+reseller ownership after Subscriber conversion.
 
 ## Origin and attribution contract
 

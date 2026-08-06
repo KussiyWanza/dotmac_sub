@@ -207,6 +207,7 @@ class EventType(enum.Enum):
     # lead/quote lifecycle was webhook-silent in the CRM's event system;
     # automation consumes these.
     lead_created = "lead.created"
+    lead_updated = "lead.updated"
     lead_account_converted = "lead.account_converted"
     quote_created = "quote.created"
     quote_accepted = "quote.accepted"

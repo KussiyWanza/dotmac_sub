@@ -93,7 +93,7 @@ closed before SalesOrder money can be overwritten.
 | --- | --- |
 | Verified provider receipt | `integration.inbox` |
 | Party-first capture and source replay | `sales.capture` |
-| Atomic admin Person and Lead authoring | `sales.lead_authoring` |
+| Atomic admin Person and Lead authoring and maintenance | `sales.lead_authoring` |
 | Immutable origin | `sales.lead_lifecycle` |
 | Atomic Lead-backed New Quote authoring | `sales.quote_authoring` |
 | Atomic Quote acceptance and sales conversion | `sales.quote_acceptance` |
@@ -134,6 +134,17 @@ depend on HTTP request/response or exception types.
 - Actions: create/edit/status use `crm:lead:write`; list/detail use
   `crm:lead:read`; delete uses `crm:lead:delete`; quote creation uses
   `crm:quote:write` and navigates to the quote editor with the Lead selected.
+- Edit contract: the editor loads the existing Person Party and Lead into the
+  same complete profile/opportunity form used for creation. One typed
+  `sales.lead_authoring` maintenance command preserves the exact Party binding,
+  canonicalizes a legacy Subscriber-only Lead to that Subscriber's already
+  reviewed Person Party without contact-value identity inference,
+  reconciles active email/phone/WhatsApp contact points without deleting their
+  verification or consent history, updates the Person profile and optional
+  Organization relationship, and stages editable Lead values, audit, and a
+  PII-free `lead.updated` event in one transaction. Blank NIN input preserves
+  the stored encrypted value; immutable origin/source and converted-account
+  reseller ownership fail closed.
 - List contract: server-side search across Lead title plus authoritative
   contact name/email/phone, status/pipeline/stage/owner/source filters,
   updated/created ordering, 10/25/50/100 page sizes, and URL-preserved state.

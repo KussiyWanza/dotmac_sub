@@ -1,6 +1,5 @@
 """Admin billing management web routes."""
 
-from datetime import date
 from typing import Literal
 from uuid import UUID
 
@@ -10,6 +9,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.http_query import OptionalDateQuery
 from app.models.billing import InvoiceStatus
 from app.services import web_billing_customers as web_billing_customers_service
 from app.services import web_billing_documents as web_billing_documents_service
@@ -171,8 +171,8 @@ def invoices_list(
     proforma_only: bool = Query(False),
     customer_ref: str | None = Query(None),
     search: str | None = Query(None),
-    start_date: date | None = Query(None),
-    end_date: date | None = Query(None),
+    start_date: OptionalDateQuery = None,
+    end_date: OptionalDateQuery = None,
     sort: Literal[
         "created_at", "invoice_number", "status", "total", "issued_at", "due_at"
     ] = Query("created_at"),
@@ -267,8 +267,8 @@ def invoices_export_csv(
     proforma_only: bool = Query(False),
     customer_ref: str | None = Query(None),
     search: str | None = Query(None),
-    start_date: date | None = Query(None),
-    end_date: date | None = Query(None),
+    start_date: OptionalDateQuery = None,
+    end_date: OptionalDateQuery = None,
     sort: Literal[
         "created_at", "invoice_number", "status", "total", "issued_at", "due_at"
     ] = Query("created_at"),

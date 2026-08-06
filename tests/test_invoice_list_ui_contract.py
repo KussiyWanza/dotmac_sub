@@ -6,8 +6,11 @@ from datetime import date
 from pathlib import Path
 
 import pytest
+from fastapi import FastAPI
 from fastapi.templating import Jinja2Templates
+from fastapi.testclient import TestClient
 
+from app.http_query import OptionalDateQuery
 from app.services.inclusive_date_range import InclusiveDateRangeError
 from app.services.list_query import PageMeta
 from app.services.web_billing_overview import build_invoice_list_query
@@ -31,6 +34,8 @@ def test_invoice_route_delegates_query_normalization_to_list_owner():
     assert "web_billing_overview_service.build_invoice_list_query" in calls
     assert "web_billing_overview_service.build_invoices_list_data" in calls
     assert args["per_page"] == "str | None"
+    assert args["start_date"] == "OptionalDateQuery"
+    assert args["end_date"] == "OptionalDateQuery"
 
 
 def test_invoice_export_route_delegates_csv_projection_to_list_owner():
@@ -44,9 +49,33 @@ def test_invoice_export_route_delegates_csv_projection_to_list_owner():
     calls = {
         ast.unparse(node.func) for node in ast.walk(route) if isinstance(node, ast.Call)
     }
+    args = {arg.arg: ast.unparse(arg.annotation) for arg in route.args.args}
 
     assert "web_billing_overview_service.stream_invoices_csv" in calls
     assert "csv.writer" not in calls
+    assert args["start_date"] == "OptionalDateQuery"
+    assert args["end_date"] == "OptionalDateQuery"
+
+
+def test_optional_date_query_accepts_empty_html_inputs_and_validates_dates():
+    app = FastAPI()
+
+    @app.get("/")
+    def endpoint(value: OptionalDateQuery = None) -> dict[str, str | None]:
+        return {"value": value.isoformat() if value else None}
+
+    client = TestClient(app)
+
+    empty_response = client.get("/", params={"value": ""})
+    assert empty_response.status_code == 200
+    assert empty_response.json() == {"value": None}
+
+    valid_response = client.get("/", params={"value": "2026-08-05"})
+    assert valid_response.status_code == 200
+    assert valid_response.json() == {"value": "2026-08-05"}
+
+    invalid_response = client.get("/", params={"value": "not-a-date"})
+    assert invalid_response.status_code == 422
 
 
 def test_invoice_query_normalizes_declared_state_and_rejects_unknown_values():

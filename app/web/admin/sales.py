@@ -540,7 +540,7 @@ def lead_edit(
     context = _ctx(request, db, "sales-leads")
     context.update(web_sales_service.build_lead_edit_context(db, lead_id=lead_id))
     context["inbox_conversation_id"] = inbox_conversation_id
-    return templates.TemplateResponse("admin/sales/leads/form.html", context)
+    return templates.TemplateResponse("admin/sales/leads/new_form.html", context)
 
 
 @router.post(
@@ -551,15 +551,33 @@ def lead_edit(
 def lead_update(
     request: Request,
     lead_id: str,
+    submission_id: str | None = Form(default=None),
     title: str | None = Form(default=None),
+    display_name: str | None = Form(default=None),
     status: str | None = Form(default=None),
-    party_id: str | None = Form(default=None),
-    contact_label: str | None = Form(default=None),
     owner_agent_id: str | None = Form(default=None),
+    emails: list[str] = Form(default=[]),
+    primary_email: str | None = Form(default=None),
+    phones: list[str] = Form(default=[]),
+    primary_phone: str | None = Form(default=None),
+    whatsapp_phone_indices: list[str] = Form(default=[]),
+    address_line1: str | None = Form(default=None),
+    address_line2: str | None = Form(default=None),
+    date_of_birth: str | None = Form(default=None),
+    gender: str | None = Form(default=None),
+    nin: str | None = Form(default=None),
+    city: str | None = Form(default=None),
+    postal_code: str | None = Form(default=None),
+    country_code: str | None = Form(default=None),
+    organization_id: str | None = Form(default=None),
+    organization_label: str | None = Form(default=None),
+    managed_by_reseller: str | None = Form(default=None),
+    reseller_id: str | None = Form(default=None),
+    reseller_label: str | None = Form(default=None),
     pipeline_id: str | None = Form(default=None),
     stage_id: str | None = Form(default=None),
     lead_source: str | None = Form(default=None),
-    region: str | None = Form(default=None),
+    region_zone_id: str | None = Form(default=None),
     estimated_value: str | None = Form(default=None),
     currency: str | None = Form(default=None),
     address: str | None = Form(default=None),
@@ -585,16 +603,35 @@ def lead_update(
         if not valid_return:
             raise HTTPException(status_code=404, detail="Conversation not found.")
     active = is_active is not None
-    fields: dict[str, str | bool | None] = {
+    actor_system_user_id = _lead_actor_system_user_id(request)
+    fields: dict[str, object] = {
+        "submission_id": submission_id,
         "title": title,
+        "display_name": display_name,
         "status": status,
-        "party_id": party_id,
-        "contact_label": contact_label,
         "owner_agent_id": owner_agent_id,
+        "emails": emails,
+        "primary_email": primary_email,
+        "phones": phones,
+        "primary_phone": primary_phone,
+        "whatsapp_phone_indices": whatsapp_phone_indices,
+        "address_line1": address_line1,
+        "address_line2": address_line2,
+        "date_of_birth": date_of_birth,
+        "gender": gender,
+        "nin": nin,
+        "city": city,
+        "postal_code": postal_code,
+        "country_code": country_code,
+        "organization_id": organization_id,
+        "organization_label": organization_label,
+        "managed_by_reseller": managed_by_reseller is not None,
+        "reseller_id": reseller_id,
+        "reseller_label": reseller_label,
         "pipeline_id": pipeline_id,
         "stage_id": stage_id,
         "lead_source": lead_source,
-        "region": region,
+        "region_zone_id": region_zone_id,
         "estimated_value": estimated_value,
         "currency": currency,
         "address": address,
@@ -608,16 +645,33 @@ def lead_update(
     try:
         web_sales_service.update_lead_from_form(
             db,
+            actor_system_user_id=actor_system_user_id,
+            submission_id=submission_id,
             lead_id=lead_id,
             title=title,
+            display_name=display_name,
             status=status,
-            party_id=party_id,
-            contact_label=contact_label,
             owner_agent_id=owner_agent_id,
+            emails=emails,
+            primary_email=primary_email,
+            phones=phones,
+            primary_phone=primary_phone,
+            whatsapp_phone_indices=whatsapp_phone_indices,
+            address_line1=address_line1,
+            address_line2=address_line2,
+            date_of_birth=date_of_birth,
+            gender=gender,
+            nin=nin,
+            city=city,
+            postal_code=postal_code,
+            country_code=country_code,
+            organization_id=organization_id,
+            managed_by_reseller=managed_by_reseller is not None,
+            reseller_id=reseller_id,
             pipeline_id=pipeline_id,
             stage_id=stage_id,
             lead_source=lead_source,
-            region=region,
+            region_zone_id=region_zone_id,
             estimated_value=estimated_value,
             currency=currency,
             address=address,
@@ -638,12 +692,12 @@ def lead_update(
         web_sales_service.LeadFormValidationError,
         ValidationError,
         HTTPException,
+        DomainError,
     ) as exc:
         context = _ctx(request, db, "sales-leads")
         context.update(
-            web_sales_service.build_lead_form_error_context(
+            web_sales_service.build_lead_edit_error_context(
                 db,
-                mode="update",
                 lead_id=lead_id,
                 field_errors=_lead_field_errors(exc),
                 **fields,
@@ -651,7 +705,7 @@ def lead_update(
         )
         context["inbox_conversation_id"] = inbox_conversation_id
         return templates.TemplateResponse(
-            "admin/sales/leads/form.html", context, status_code=400
+            "admin/sales/leads/new_form.html", context, status_code=400
         )
 
 

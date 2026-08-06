@@ -203,6 +203,21 @@ def test_admin_new_lead_uses_one_registered_authoring_owner():
     assert "Form(default=None),\n    party_id" not in create_section
 
 
+def test_admin_edit_lead_uses_registered_atomic_maintenance_owner():
+    authoring = _source("app/services/sales/lead_authoring.py")
+    route = _source("app/web/admin/sales.py")
+    update_section = route.split("def lead_update(", 1)[1].split(
+        "def lead_status_update(", 1
+    )[0]
+
+    assert 'concern="atomic admin Person and Lead maintenance"' in authoring
+    assert "def edit_lead(" in authoring
+    assert "EventType.lead_updated" in authoring
+    assert "update_lead_from_form(" in update_section
+    assert "sales_service.leads.update(" not in update_section
+    assert "party_id: str | None = Form" not in update_section
+
+
 def test_released_output_carries_sales_linkage():
     src = _source("app/services/service_order_lifecycle.py")
     released = src.split("EventType.service_order_released", 1)[1]

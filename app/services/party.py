@@ -66,6 +66,40 @@ class PartyRoleContract:
     implicit_permissions: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class PersonPartyProfileUpdate:
+    """Typed profile values staged by an approved cross-domain coordinator."""
+
+    party_id: UUID
+    display_name: str
+    first_name: str
+    last_name: str
+    address_line1: str | None
+    address_line2: str | None
+    date_of_birth: str | None
+    gender: str
+    nin_encrypted: str | None
+    city: str | None
+    postal_code: str | None
+    country_code: str | None
+    organization_id: UUID | None
+    reseller_id: UUID | None
+    primary_email: str | None
+    primary_phone: str | None
+    communication_routed_through_reseller: bool
+
+
+@dataclass(frozen=True, slots=True)
+class PartyContactPointSet:
+    """Complete desired default-scope values for one Party channel."""
+
+    party_id: UUID
+    channel_type: PartyContactPointType
+    values: tuple[str, ...]
+    primary_index: int | None
+    source: str
+
+
 _ROLE_CAPABILITY_DOMAINS: dict[str, tuple[str, ...]] = {
     PartyRoleType.prospect.value: ("sales",),
     PartyRoleType.customer.value: ("sales", "billing", "support"),
@@ -1351,6 +1385,184 @@ def add_contact_point(
     db.add(contact_point)
     db.flush()
     return contact_point
+
+
+def update_person_profile(db: Session, command: PersonPartyProfileUpdate) -> Party:
+    """Stage explicit Person profile values while preserving unrelated metadata.
+
+    A missing ``nin_encrypted`` means "keep the stored value" so an edit form
+    never has to disclose the existing NIN merely to preserve it.
+    """
+
+    party = (
+        db.query(Party)
+        .filter(Party.id == command.party_id)
+        .with_for_update()
+        .one_or_none()
+    )
+    if party is None:
+        raise PartyInvariantError(f"Party '{command.party_id}' was not found")
+    if party.party_type != PartyType.person.value:
+        raise PartyInvariantError("Only a Person Party profile can be updated")
+    if party.status not in {
+        PartyIdentityStatus.active.value,
+        PartyIdentityStatus.quarantined.value,
+    }:
+        raise PartyInvariantError("The Person Party is not editable")
+
+    party.display_name = _required_text(command.display_name, "display_name")
+    metadata = dict(party.metadata_) if isinstance(party.metadata_, dict) else {}
+    metadata.update(
+        {
+            "profile_version": 1,
+            "first_name": command.first_name,
+            "last_name": command.last_name,
+            "address_line1": command.address_line1,
+            "address_line2": command.address_line2,
+            "date_of_birth": command.date_of_birth,
+            "gender": command.gender,
+            "city": command.city,
+            "postal_code": command.postal_code,
+            "country_code": command.country_code,
+            "organization_id": (
+                str(command.organization_id) if command.organization_id else None
+            ),
+            "reseller_id": str(command.reseller_id) if command.reseller_id else None,
+            "primary_email": command.primary_email,
+            "primary_phone": command.primary_phone,
+            "identity_managed_by": "sub",
+            "communication_routed_through_reseller": (
+                command.communication_routed_through_reseller
+            ),
+        }
+    )
+    if command.nin_encrypted is not None:
+        metadata["nin_encrypted"] = command.nin_encrypted
+    party.metadata_ = metadata
+    db.flush()
+    return party
+
+
+def reconcile_contact_points(
+    db: Session, command: PartyContactPointSet
+) -> tuple[PartyContactPoint, ...]:
+    """Stage the desired active default-scope points for one channel.
+
+    Existing evidence is retained. Removed values are made inactive, unchanged
+    values retain verification and consent, and previously inactive values are
+    reactivated rather than duplicated.
+    """
+
+    _party(db, command.party_id)
+    channel = _enum_value(command.channel_type, PartyContactPointType, "channel_type")
+    desired = tuple(
+        dict.fromkeys(
+            _required_text(value, "contact value") for value in command.values
+        )
+    )
+    if command.primary_index is not None and not 0 <= command.primary_index < len(
+        desired
+    ):
+        raise PartyInvariantError("primary_index does not identify a contact value")
+
+    existing = (
+        db.query(PartyContactPoint)
+        .filter(
+            PartyContactPoint.party_id == command.party_id,
+            PartyContactPoint.channel_type == channel,
+            PartyContactPoint.scope_key == "default",
+        )
+        .with_for_update()
+        .all()
+    )
+    by_value = {point.normalized_value: point for point in existing}
+
+    # Clear the partial-unique primary slot before assigning its replacement.
+    for existing_point in existing:
+        existing_point.is_primary = False
+    db.flush()
+
+    desired_set = set(desired)
+    for existing_point in existing:
+        if existing_point.normalized_value not in desired_set:
+            existing_point.is_active = False
+
+    result: list[PartyContactPoint] = []
+    for index, value in enumerate(desired):
+        point = by_value.get(value)
+        if point is None:
+            point = add_contact_point(
+                db,
+                party_id=command.party_id,
+                channel_type=command.channel_type,
+                normalized_value=value,
+                display_value=value,
+                is_primary=False,
+                metadata={"captured_by": command.source},
+            )
+        else:
+            point.display_value = value
+            point.is_active = True
+            metadata = (
+                dict(point.metadata_) if isinstance(point.metadata_, dict) else {}
+            )
+            metadata["last_updated_by"] = command.source
+            point.metadata_ = metadata
+        point.is_primary = command.primary_index == index
+        result.append(point)
+    db.flush()
+    return tuple(result)
+
+
+def set_contact_organization(
+    db: Session,
+    *,
+    person_party_id: UUID,
+    organization_party_id: UUID | None,
+    source: str,
+) -> PartyRelationship | None:
+    """Stage the Person's one active default contact-for relationship."""
+
+    person = _party(db, person_party_id)
+    if person.party_type != PartyType.person.value:
+        raise PartyInvariantError("The contact subject must be a Person Party")
+    if organization_party_id is not None:
+        organization = _party(db, organization_party_id)
+        if organization.party_type != PartyType.organization.value:
+            raise PartyInvariantError(
+                "The contact target must be an Organization Party"
+            )
+
+    relationships = (
+        db.query(PartyRelationship)
+        .filter(
+            PartyRelationship.subject_party_id == person_party_id,
+            PartyRelationship.relationship_type
+            == PartyRelationshipType.contact_for.value,
+            PartyRelationship.relationship_key == "default",
+        )
+        .with_for_update()
+        .all()
+    )
+    selected: PartyRelationship | None = None
+    for relationship in relationships:
+        matches = relationship.object_party_id == organization_party_id
+        if matches:
+            relationship.status = PartyRelationshipStatus.active.value
+            selected = relationship
+        elif relationship.source == source:
+            relationship.status = PartyRelationshipStatus.inactive.value
+
+    if organization_party_id is not None and selected is None:
+        selected = relate_parties(
+            db,
+            subject_party_id=person_party_id,
+            object_party_id=organization_party_id,
+            relationship_type=PartyRelationshipType.contact_for,
+            source=source,
+        )
+    db.flush()
+    return selected
 
 
 def add_external_reference(
