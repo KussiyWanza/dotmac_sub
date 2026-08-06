@@ -221,13 +221,14 @@ def classify(db: Session, pon_port: PonPort) -> str:
 def assert_assignable(db: Session, pon_port: PonPort) -> None:
     """Refuse to assign or provision against an unidentifiable PON row.
 
-    Refuses a prefixed, malformed, or ambiguous row. A row whose name is
-    canonical but whose hardware link is missing is **not** refused here: its
-    name states a well-formed identity, and refusing it would stop most
-    provisioning on the estate for a defect that predates the caller. That
-    broader set is excluded from bounded reconciliation instead, which is a
-    reversible operational gate rather than a hard failure in a customer
-    workflow.
+    Refuses a prefixed, malformed, or ambiguous row. Only active sibling rows
+    compete for current identity; inactive rows remain preserved history and
+    cannot block assignment. A row whose name is canonical but whose hardware
+    link is missing is **not** refused here: its name states a well-formed
+    identity, and refusing it would stop most provisioning on the estate for a
+    defect that predates the caller. That broader set is excluded from bounded
+    reconciliation instead, which is a reversible operational gate rather than
+    a hard failure in a customer workflow.
     """
     reading = read_name(pon_port.name)
     if reading.prefixed or reading.malformed:
@@ -248,6 +249,7 @@ def assert_assignable(db: Session, pon_port: PonPort) -> None:
         .filter(
             PonPort.olt_id == pon_port.olt_id,
             PonPort.id != pon_port.id,
+            PonPort.is_active.is_(True),
         )
         .all()
     )

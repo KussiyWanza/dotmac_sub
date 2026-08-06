@@ -46,12 +46,12 @@ def _hardware(db, *, frame=0, slot=2, port=3, olt_name="OLT-PON"):
     return olt, card_port
 
 
-def _pon(db, olt, *, name, card_port=None):
+def _pon(db, olt, *, name, card_port=None, is_active=True):
     pon = PonPort(
         olt_id=olt.id,
         name=name,
         olt_card_port_id=card_port.id if card_port is not None else None,
-        is_active=True,
+        is_active=is_active,
     )
     db.add(pon)
     db.flush()
@@ -189,6 +189,15 @@ def test_two_rows_claiming_one_identity_refuse_assignment(db_session):
         assert_assignable(db_session, first)
 
     assert excinfo.value.code == PonIdentityRefusal.ambiguous
+
+
+def test_an_inactive_duplicate_does_not_refuse_assignment(db_session):
+    """Retired history cannot compete with active identity."""
+    olt, card_port = _hardware(db_session)
+    active = _pon(db_session, olt, name="0/2/3", card_port=card_port)
+    _pon(db_session, olt, name="pon-0/2/3", card_port=None, is_active=False)
+
+    assert assert_assignable(db_session, active) is None
 
 
 def test_a_canonical_name_without_a_hardware_link_is_still_assignable(db_session):

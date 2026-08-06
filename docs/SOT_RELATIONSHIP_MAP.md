@@ -3199,7 +3199,11 @@ rule — never masquerading as unbound or rebinding to a wider area.
 
 Dependency order:
 
-1. `network.identity`: resolves cross-model network/customer links.
+1. `network.identity`: resolves cross-model network/customer links. Current PON
+   identity ambiguity is scoped to active `PonPort` rows: inactive duplicate
+   rows remain preserved history and do not compete with an active port for
+   assignment authority. Multiple active rows claiming one identity still fail
+   closed.
 2. `network.monitoring_inventory`: owns monitoring inventory, metric records,
    alert rules, and alert state mutations. Device admission is a single owned
    transition (`set_network_device_active`), never a bare flag write: it leaves
