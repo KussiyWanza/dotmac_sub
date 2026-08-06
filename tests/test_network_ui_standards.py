@@ -1,5 +1,6 @@
 """Regression tests for shared network-admin table and action behavior."""
 
+from html.parser import HTMLParser
 from pathlib import Path
 from uuid import uuid4
 
@@ -22,6 +23,26 @@ from app.services import (
 from app.services.device_operational_status import mismatch_worklist
 
 TEMPLATES = Path("templates")
+
+
+class _NestedStatsRowParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self._div_row_stack: list[bool] = []
+        self.nested_row_count = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag != "div":
+            return
+        classes = dict(attrs).get("class", "") or ""
+        is_stats_row = {"flex", "justify-between"}.issubset(classes.split())
+        if is_stats_row and any(self._div_row_stack):
+            self.nested_row_count += 1
+        self._div_row_stack.append(is_stats_row)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "div" and self._div_row_stack:
+            self._div_row_stack.pop()
 
 
 def test_pop_sites_list_is_searchable_paginated_and_clamps_stale_pages(db_session):
@@ -219,6 +240,31 @@ def test_network_templates_do_not_use_inline_browser_confirmations():
     assert offenders == []
 
 
+def test_network_map_stats_rows_are_siblings() -> None:
+    source = (TEMPLATES / "admin/network/map.html").read_text(encoding="utf-8")
+    stats_card = source.split("<!-- Stats -->", maxsplit=1)[1].split(
+        "<!-- Legend -->", maxsplit=1
+    )[0]
+    parser = _NestedStatsRowParser()
+
+    parser.feed(stats_card)
+
+    assert parser.nested_row_count == 0
+
+
+def test_network_map_layout_is_map_first_and_responsive() -> None:
+    source = (TEMPLATES / "admin/network/map.html").read_text(encoding="utf-8")
+
+    assert "width: 320px" not in source
+    assert "network-map-layout" in source
+    assert '"map"\n            "health"\n            "layers"' in source
+    assert source.index('class="network-map-canvas"') < source.index(
+        'class="network-map-health'
+    )
+    assert "Back to Network" not in source
+    assert '<details class="network-map-legend' in source
+
+
 def test_shared_confirmation_assets_and_critical_actions_are_wired():
     base = (TEMPLATES / "base.html").read_text()
     confirmation_js = Path("static/js/action-confirmations.js").read_text()
@@ -244,6 +290,7 @@ def test_shared_confirmation_assets_and_critical_actions_are_wired():
 def test_changed_network_templates_compile():
     env = Jinja2Templates(directory="templates").env
     templates = (
+        "admin/network/map.html",
         "admin/network/pop-sites/index.html",
         "admin/network/zones/index.html",
         "admin/network/tr069/index.html",
