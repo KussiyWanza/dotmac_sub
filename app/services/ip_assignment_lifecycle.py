@@ -1696,6 +1696,21 @@ def repair_service_ipv4_assignment(
     )
 
 
+def apply_service_ipv4_assignment_participant(
+    db: Session,
+    command: RepairServiceIPv4AssignmentCommand,
+) -> ServiceIPv4AssignmentRepairOutcome:
+    """Apply reviewed IPv4 ledger work inside a coordinating owner command.
+
+    The caller owns the root transaction. This participant remains flush-only
+    and preserves ``network.ip_assignment_lifecycle`` as the canonical writer.
+    Architecture tests restrict the call site to the reviewed service-access
+    move coordinator.
+    """
+
+    return _repair_service_ipv4_assignment(db, command)
+
+
 def repair_service_ipv4_projection(
     db: Session,
     command: RepairServiceIPv4ProjectionCommand,
@@ -1708,6 +1723,15 @@ def repair_service_ipv4_projection(
         context=command.context,
         operation=lambda: _repair_service_ipv4_projection(db, command),
     )
+
+
+def apply_service_ipv4_projection_participant(
+    db: Session,
+    command: RepairServiceIPv4ProjectionCommand,
+) -> ServiceIPv4ProjectionOutcome:
+    """Apply the served-IP projection inside a coordinating owner command."""
+
+    return _repair_service_ipv4_projection(db, command)
 
 
 __all__ = [
@@ -1727,6 +1751,8 @@ __all__ = [
     "ServiceIPv4AssignmentRepairPreview",
     "ServiceIPv4ProjectionOutcome",
     "ServiceIPv4ProjectionPreview",
+    "apply_service_ipv4_assignment_participant",
+    "apply_service_ipv4_projection_participant",
     "preview_ip_assignment_service_ownership",
     "preview_service_ipv4_assignment_repair",
     "preview_service_ipv4_projection_repair",

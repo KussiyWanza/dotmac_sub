@@ -19,8 +19,13 @@ from sqlalchemy.orm import Session
 from starlette.datastructures import FormData
 
 from app.models.audit import AuditActorType
-from app.models.catalog import Subscription, SubscriptionStatus
-from app.models.network import IPAssignment, IPv4Address, IPVersion
+from app.models.catalog import (
+    NasDevice,
+    NasDeviceStatus,
+    Subscription,
+    SubscriptionStatus,
+)
+from app.models.network import IPAssignment, IpPool, IPv4Address, IPVersion
 from app.models.subscriber import SubscriberCategory
 from app.services import catalog as catalog_service
 from app.services import subscriber as subscriber_service
@@ -33,6 +38,7 @@ from app.services.action_forms import (
 )
 from app.services.audit_helpers import build_audit_activities
 from app.services.common import coerce_uuid
+from app.services.db_session_adapter import db_session_adapter
 from app.services.domain_errors import DomainError
 from app.services.ip_assignment_lifecycle import (
     IPv4ServedProjectionDecision,
@@ -79,6 +85,13 @@ from app.services.subscription_lifecycle_schedules import (
     SubscriptionLifecycleScheduleError,
     cancel_scheduled_subscription_status_command,
 )
+from app.services.subscription_nas_assignment import (
+    MoveSubscriptionServiceAccessCommand,
+    ServiceAccessMoveOutcome,
+    ServiceAccessMovePreview,
+    move_subscription_service_access,
+    preview_subscription_service_access_move,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +111,31 @@ class SubscriptionIPv4ProjectionReconciliationCommand:
             ("preview_fingerprint", self.preview_fingerprint),
             ("idempotency_key", self.idempotency_key),
             ("actor_id", self.actor_id),
+        ):
+            if not value.strip():
+                raise ValueError(f"{name} is required")
+
+
+@dataclass(frozen=True, slots=True)
+class SubscriptionServiceAccessMoveConfirmation:
+    """Typed web confirmation for one reviewed service-access move."""
+
+    subscription_id: UUID
+    target_nas_device_id: UUID
+    target_pool_id: UUID
+    target_ipv4: str
+    preview_fingerprint: str
+    idempotency_key: str
+    actor_id: str
+    reason: str
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("target_ipv4", self.target_ipv4),
+            ("preview_fingerprint", self.preview_fingerprint),
+            ("idempotency_key", self.idempotency_key),
+            ("actor_id", self.actor_id),
+            ("reason", self.reason),
         ):
             if not value.strip():
                 raise ValueError(f"{name} is required")
@@ -489,6 +527,146 @@ def subscription_edit_form_context(
     )
     context["action_url"] = f"/admin/catalog/subscriptions/{subscription_id}/edit"
     return context
+
+
+def service_access_move_form_context(
+    db: Session,
+    subscription_id: str,
+    *,
+    preview: ServiceAccessMovePreview | None = None,
+    reason: str = "",
+    error: str | None = None,
+) -> dict[str, object] | None:
+    """Build the server-owned form context for one service-access move."""
+
+    subscription = get_subscription_or_none(db, subscription_id)
+    if subscription is None:
+        return None
+    current_nas = (
+        db.get(NasDevice, subscription.provisioning_nas_device_id)
+        if subscription.provisioning_nas_device_id
+        else None
+    )
+    nas_devices = list(
+        db.scalars(
+            select(NasDevice)
+            .where(
+                NasDevice.is_active.is_(True),
+                NasDevice.status == NasDeviceStatus.active,
+                NasDevice.id != subscription.provisioning_nas_device_id,
+            )
+            .order_by(NasDevice.name, NasDevice.id)
+        ).all()
+    )
+    pools = list(
+        db.scalars(
+            select(IpPool)
+            .where(
+                IpPool.is_active.is_(True),
+                IpPool.ip_version == IPVersion.ipv4,
+                IpPool.nas_device_id.is_not(None),
+            )
+            .order_by(IpPool.name, IpPool.id)
+        ).all()
+    )
+    current_ipv4 = core.active_service_ipv4_address(db, subscription_id)
+    return {
+        "subscription": subscription,
+        "current_nas": current_nas,
+        "current_ipv4": current_ipv4,
+        "target_nas_devices": nas_devices,
+        "target_pools": pools,
+        "preview": preview,
+        "reason": reason,
+        "error": error,
+        "idempotency_key": f"admin-service-access-move:{uuid4()}",
+    }
+
+
+def service_access_move_available_ipv4(
+    db: Session,
+    *,
+    target_nas_device_id: UUID,
+    target_pool_id: UUID,
+) -> tuple[str, ...]:
+    """List materialized, currently free IPv4 addresses for one linked pool."""
+
+    pool = db.get(IpPool, target_pool_id)
+    if (
+        pool is None
+        or not pool.is_active
+        or pool.ip_version is not IPVersion.ipv4
+        or pool.nas_device_id != target_nas_device_id
+    ):
+        raise ValueError("The selected IPv4 pool is not linked to the target router.")
+    active_address_ids = select(IPAssignment.ipv4_address_id).where(
+        IPAssignment.is_active.is_(True),
+        IPAssignment.ip_version == IPVersion.ipv4,
+        IPAssignment.ipv4_address_id.is_not(None),
+    )
+    rows = list(
+        db.scalars(
+            select(IPv4Address)
+            .where(
+                IPv4Address.pool_id == pool.id,
+                IPv4Address.is_reserved.is_(False),
+                IPv4Address.ont_unit_id.is_(None),
+                IPv4Address.id.not_in(active_address_ids),
+            )
+            .order_by(IPv4Address.address)
+        ).all()
+    )
+    return tuple(
+        str(row.address)
+        for row in rows
+        if str(row.allocation_type or "").strip().lower() != "management"
+    )
+
+
+def preview_subscription_service_access_move_form(
+    db: Session,
+    *,
+    subscription_id: UUID,
+    target_nas_device_id: UUID,
+    target_pool_id: UUID,
+    target_ipv4: str,
+) -> ServiceAccessMovePreview:
+    return preview_subscription_service_access_move(
+        db,
+        subscription_id=subscription_id,
+        target_nas_device_id=target_nas_device_id,
+        target_pool_id=target_pool_id,
+        target_ipv4=target_ipv4,
+    )
+
+
+def execute_subscription_service_access_move(
+    db: Session,
+    *,
+    confirmation: SubscriptionServiceAccessMoveConfirmation,
+) -> ServiceAccessMoveOutcome:
+    """Release adapter reads and delegate one confirmed move to its owner."""
+
+    db_session_adapter.release_read_transaction(db)
+    command_id = uuid4()
+    return move_subscription_service_access(
+        db,
+        MoveSubscriptionServiceAccessCommand(
+            context=CommandContext(
+                command_id=command_id,
+                correlation_id=command_id,
+                actor=f"admin:{confirmation.actor_id}",
+                scope="catalog:subscription:service-access:move",
+                reason=confirmation.reason,
+                idempotency_key=confirmation.idempotency_key,
+            ),
+            subscription_id=confirmation.subscription_id,
+            target_nas_device_id=confirmation.target_nas_device_id,
+            target_pool_id=confirmation.target_pool_id,
+            target_ipv4=confirmation.target_ipv4,
+            preview_fingerprint=confirmation.preview_fingerprint,
+        ),
+    )
 
 
 def subscription_detail_page_context(
@@ -1049,6 +1227,14 @@ def handle_subscription_update_form(
         error = (
             "Use Change Plan from the subscription detail page so the owner "
             "preview, confirmation, audit, and exact result are preserved."
+        )
+    if not error and str(subscription.get("provisioning_nas_device_id") or "") != str(
+        current.provisioning_nas_device_id or ""
+    ):
+        error = (
+            "Use Move service access to change the router and primary IPv4 "
+            "together. That reviewed action updates IPAM and RADIUS without "
+            "entering billing."
         )
     if not error:
         error = core.resolve_account_id(db, subscription)

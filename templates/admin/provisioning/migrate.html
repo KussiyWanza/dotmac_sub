@@ -86,7 +86,7 @@
         <input type="hidden" name="current_nas_device_id" value="{{ filters.current_nas_device_id or '' }}">
         <input type="hidden" name="query" value="{{ filters.query or '' }}">
 
-        <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
+        <div class="grid gap-4 md:grid-cols-2">
             <div>
                 <label class="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">Target Plan</label>
                 <select name="target_offer_id" class="block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
@@ -97,27 +97,13 @@
                 </select>
             </div>
             <div>
-                <label class="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">Target Router/NAS</label>
-                <select name="target_nas_device_id" class="block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
-                    <option value="">No change</option>
-                    {% for nas in nas_devices %}
-                    <option value="{{ nas.id }}">{{ nas.name }}</option>
-                    {% endfor %}
-                </select>
-            </div>
-            <div>
-                <label class="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">Target IP Pool</label>
-                <select name="target_ip_pool_id" class="block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
-                    <option value="">No change</option>
-                    {% for pool in ip_pools %}
-                    <option value="{{ pool.id }}">{{ pool.name }} ({{ pool.cidr }})</option>
-                    {% endfor %}
-                </select>
-            </div>
-            <div>
                 <label class="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">Schedule (Optional)</label>
                 <input type="datetime-local" name="scheduled_at" class="block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
             </div>
+        </div>
+
+        <div class="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-200">
+            Router and primary-IP moves are handled per subscription by <strong>Move service access</strong>. That workflow reviews an exact router, router-linked pool, and free IPv4 before changing IPAM and RADIUS; bulk plan migration cannot bypass it.
         </div>
 
         <div class="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-700">

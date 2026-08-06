@@ -59,6 +59,13 @@ add-on, billing contract, adjustment, invoice, or cadence fields. Replacing an
 address therefore preserves the customer's existing commercial entitlement
 and paid service period.
 
+An existing service's router and primary address move together through the
+reviewed coordinator documented in
+`docs/designs/SERVICE_ACCESS_MOVE_SOT.md`. That coordinator does not take over
+IPv4 authority: it invokes the lifecycle owner's required flush-only assignment
+and served-projection participants inside one root transaction. The generic
+subscription edit and legacy bulk migration paths cannot write the NAS/IP move.
+
 ## Command contract
 
 `preview_service_ipv4_assignment_repair` is read-only. Its SHA-256 binds:

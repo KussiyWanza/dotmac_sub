@@ -1404,6 +1404,41 @@ def test_generic_update_rejects_ipv4_assignment_before_technical_write(
     assert subscription.login == original_login
 
 
+def test_generic_update_form_rejects_router_change_before_technical_write(
+    db_session,
+    subscription,
+):
+    source_nas = NasDevice(name=f"Source NAS {uuid4().hex[:8]}", is_active=True)
+    target_nas = NasDevice(name=f"Target NAS {uuid4().hex[:8]}", is_active=True)
+    db_session.add_all([source_nas, target_nas])
+    db_session.flush()
+    subscription.provisioning_nas_device_id = source_nas.id
+    db_session.commit()
+
+    result = web_catalog_subscription_workflows_service.handle_subscription_update_form(
+        db_session,
+        subscription_id=str(subscription.id),
+        form=FormData(
+            {
+                "subscriber_id": str(subscription.subscriber_id),
+                "offer_id": str(subscription.offer_id),
+                "provisioning_nas_device_id": str(target_nas.id),
+                "status": subscription.status.value,
+                "billing_mode": subscription.billing_mode.value,
+                "contract_term": subscription.contract_term.value,
+            }
+        ),
+        request=None,
+        actor_id="network-operator",
+    )
+
+    assert "redirect_url" not in result
+    context = result["form_context"]
+    assert "Use Move service access" in context["error"]
+    db_session.refresh(subscription)
+    assert subscription.provisioning_nas_device_id == source_nas.id
+
+
 def test_edit_form_data_includes_active_ipv4_assignments(
     db_session,
     subscriber,

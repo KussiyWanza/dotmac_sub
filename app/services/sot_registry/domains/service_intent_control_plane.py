@@ -48,12 +48,212 @@ DOMAIN = DomainSOT(
         ),
         SOTService(
             name="service_intent.subscription_nas_assignment",
-            module="app.services.catalog.subscriptions",
+            module="app.services.subscription_nas_assignment",
             owns=(
                 "subscription provisioning NAS assignment",
                 "nonterminal services grouped by NAS",
+                "reviewed subscription service-access move",
             ),
-            depends_on=("service_intent.catalog_policy",),
+            depends_on=(
+                "service_intent.catalog_policy",
+                "service_intent.subscription_lifecycle",
+                "network.nas_inventory",
+                "network.ip_assignment_lifecycle",
+                "access.radius_projection",
+                "access.session_enforcement",
+                "sessions.radius_reconciliation",
+                "events.dispatcher",
+                "observability.audit_log",
+            ),
+            notes=(
+                "Owns the reviewed decision to move one exact subscription to a "
+                "different NAS and NAS-linked IPv4 pool. The coordinator writes "
+                "the subscription NAS binding, invokes required flush-only IPv4 "
+                "lifecycle participants in the same transaction, and relies on "
+                "the staged served-projection event for RADIUS-first session "
+                "convergence. Billing and commercial state are excluded."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name="subscription provisioning NAS assignment",
+                        role=OwnerRole.AUTHORITATIVE_RECORD,
+                        input_names=(
+                            "canonical subscription identity",
+                            "canonical NAS inventory",
+                        ),
+                        canonical_writer="service_intent.subscription_nas_assignment",
+                    ),
+                    ConcernContract(
+                        name="nonterminal services grouped by NAS",
+                        role=OwnerRole.RESOLVER,
+                        input_names=("canonical subscription NAS binding",),
+                    ),
+                    ConcernContract(
+                        name="reviewed subscription service-access move",
+                        role=OwnerRole.APPLICATION_COORDINATOR,
+                        input_names=(
+                            "authenticated service-access move command",
+                            "canonical subscription identity",
+                            "canonical subscription NAS binding",
+                            "canonical NAS inventory",
+                            "canonical active IPv4 assignment",
+                            "serviceable NAS-linked IPv4 pool inventory",
+                            "observed RADIUS IPv4 projection",
+                            "active RADIUS session observation",
+                        ),
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="authenticated service-access move command",
+                        owner="service_intent.subscription_nas_assignment",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "exact subscription, target NAS, target pool, target "
+                            "IPv4, preview SHA-256, actor, reason, and idempotency key"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical subscription identity",
+                        owner="service_intent.subscription_lifecycle",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="exact active Subscription and Subscriber identity",
+                    ),
+                    AuthorityInput(
+                        name="canonical subscription NAS binding",
+                        owner="service_intent.subscription_nas_assignment",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="Subscription.provisioning_nas_device_id",
+                    ),
+                    AuthorityInput(
+                        name="canonical NAS inventory",
+                        owner="network.nas_inventory",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="active NasDevice identity and lifecycle state",
+                    ),
+                    AuthorityInput(
+                        name="canonical active IPv4 assignment",
+                        owner="network.ip_assignment_lifecycle",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="exact active primary IPAssignment for the subscription",
+                    ),
+                    AuthorityInput(
+                        name="serviceable NAS-linked IPv4 pool inventory",
+                        owner="network.ip_assignment_lifecycle",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "active IpPool.nas_device_id, IPv4Address safety, and "
+                            "assignment availability evidence"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="observed RADIUS IPv4 projection",
+                        owner="access.radius_projection",
+                        kind=AuthorityKind.OBSERVATION,
+                        source="external RADIUS Framed-IP-Address observation",
+                    ),
+                    AuthorityInput(
+                        name="active RADIUS session observation",
+                        owner="sessions.radius_reconciliation",
+                        kind=AuthorityKind.OBSERVATION,
+                        source="fresh exact-subscription RADIUS session evidence",
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.COORDINATOR_MANAGED,
+                    boundary=(
+                        "move_subscription_service_access enters one root owner "
+                        "transaction; IPv4 participants are required and flush-only"
+                    ),
+                    locking=(
+                        "Lock the subscription, source and target NAS, target pool "
+                        "and address, and relevant assignments; IPv4 safety inventory "
+                        "uses the lifecycle owner's PostgreSQL locks"
+                    ),
+                    idempotency=(
+                        "A caller-supplied key is bound to the reviewed fingerprint "
+                        "and durable audit outcome"
+                    ),
+                    retries=(
+                        "Stale previews fail closed; exact-key replay returns the "
+                        "recorded outcome; durable projection delivery retries after commit"
+                    ),
+                ),
+                errors=ErrorContract(
+                    domain_codes=(
+                        "service_intent.subscription_nas_assignment.active_caller_transaction",
+                        "service_intent.subscription_nas_assignment.command_contract_violation",
+                        "service_intent.subscription_nas_assignment.idempotency_conflict",
+                        "service_intent.subscription_nas_assignment.incomplete_outcome",
+                        "service_intent.subscription_nas_assignment.incomplete_preview",
+                        "service_intent.subscription_nas_assignment.invalid_command_context",
+                        "service_intent.subscription_nas_assignment.missing_idempotency_key",
+                        "service_intent.subscription_nas_assignment.nested_owner_command",
+                        "service_intent.subscription_nas_assignment.nested_transaction_completion",
+                        "service_intent.subscription_nas_assignment.projection_not_ready",
+                        "service_intent.subscription_nas_assignment.stale_preview",
+                        "service_intent.subscription_nas_assignment.subscription_not_found",
+                        "service_intent.subscription_nas_assignment.unsafe_move",
+                    ),
+                    mapping_owner="app.web.admin.catalog",
+                    retryable_codes=(
+                        "service_intent.subscription_nas_assignment.stale_preview",
+                    ),
+                    fail_closed_on=(
+                        "inactive or unchanged target NAS",
+                        "target pool not linked to target NAS",
+                        "ambiguous current IPv4 ownership",
+                        "unaligned RADIUS or session evidence",
+                        "stale reviewed fingerprint",
+                    ),
+                ),
+                events=EventContract(
+                    event_types=("ip_assignment.served_projection_repaired",),
+                    schema_version=1,
+                    delivery_owner="events.dispatcher",
+                    compatibility=(
+                        "The existing IPv4 projection event carries exact subscription, "
+                        "assignment, previous and desired address evidence; the committed "
+                        "subscription already contains the new NAS binding."
+                    ),
+                    replay=(
+                        "Replay revalidates the committed served IPv4 before requesting "
+                        "RADIUS projection and old-address session disconnection."
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.CUT_OVER,
+                    new_owner="service_intent.subscription_nas_assignment",
+                    old_owner=(
+                        "generic admin subscription edit and web provisioning "
+                        "migration NAS/IP writers"
+                    ),
+                    verification=(
+                        "Focused owner, route, billing-isolation, stale-preview, "
+                        "rollback, concurrency, and architecture tests"
+                    ),
+                    cutover_gate=(
+                        "Individual UI calls only this coordinator and legacy bulk "
+                        "NAS/IP targets are refused until they submit exact commands"
+                    ),
+                    fallback_retirement=(
+                        "Generic edits cannot mutate NAS/IP and no migration helper "
+                        "may repoint IPv4Address.pool_id"
+                    ),
+                ),
+                steward="network operations",
+                design_refs=(
+                    "docs/designs/SERVICE_ACCESS_MOVE_SOT.md",
+                    "docs/designs/IP_ASSIGNMENT_LIFECYCLE_SOT.md",
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                ),
+                test_refs=(
+                    "tests/test_subscription_nas_assignment.py",
+                    "tests/test_web_catalog_subscriptions.py",
+                    "tests/architecture/test_subscription_service_access_boundary.py",
+                ),
+            ),
         ),
         SOTService(
             name="service_intent.subscription_billing_cadence",

@@ -115,3 +115,44 @@ def test_service_migration_rejects_bulk_pon_identity_target(db_session):
 
     assert exc_info.value.status_code == 410
     assert "reviewed ONT identity workflow" in exc_info.value.detail
+
+
+@pytest.mark.parametrize(
+    ("nas_device_id", "ip_pool_id"),
+    [
+        ("00000000-0000-0000-0000-000000000001", None),
+        (None, "00000000-0000-0000-0000-000000000002"),
+    ],
+)
+def test_service_migration_rejects_bulk_router_or_pool_target(
+    db_session,
+    nas_device_id,
+    ip_pool_id,
+):
+    filters = migration_service.MigrationFilters(
+        reseller_id=None,
+        pop_site_id=None,
+        subscriber_status=None,
+        current_offer_id=None,
+        current_nas_device_id=None,
+        query=None,
+    )
+    targets = migration_service.MigrationTargets(
+        offer_id=None,
+        nas_device_id=nas_device_id,
+        ip_pool_id=ip_pool_id,
+        pon_port_id=None,
+        scheduled_at=None,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        migration_service.create_job(
+            db_session,
+            filters=filters,
+            targets=targets,
+            selected_ids=["00000000-0000-0000-0000-000000000003"],
+            actor_id="system-user",
+        )
+
+    assert exc_info.value.status_code == 410
+    assert "Move service access" in exc_info.value.detail

@@ -683,6 +683,26 @@ def catalog_subscription_route_children(
     return JSONResponse({"children": children})
 
 
+@router.get(
+    "/subscriptions/service-access/available-ipv4",
+    dependencies=[Depends(require_permission("catalog:write"))],
+)
+def catalog_service_access_available_ipv4(
+    target_nas_device_id: UUID = Query(...),
+    target_pool_id: UUID = Query(...),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    try:
+        addresses = web_catalog_subscription_workflows_service.service_access_move_available_ipv4(
+            db,
+            target_nas_device_id=target_nas_device_id,
+            target_pool_id=target_pool_id,
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return JSONResponse({"addresses": addresses})
+
+
 @router.get("/subscriptions/{subscription_id}/edit", response_class=HTMLResponse)
 def catalog_subscription_edit(
     request: Request, subscription_id: str, db: Session = Depends(get_db)
@@ -706,6 +726,133 @@ def catalog_subscription_edit(
     context["notice"] = request.query_params.get("notice")
     context["error"] = request.query_params.get("error") or context.get("error")
     return templates.TemplateResponse("admin/catalog/subscription_form.html", context)
+
+
+@router.get(
+    "/subscriptions/{subscription_id}/access/move",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("catalog:write"))],
+)
+def catalog_subscription_service_access_move(
+    request: Request,
+    subscription_id: str,
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    form_context = (
+        web_catalog_subscription_workflows_service.service_access_move_form_context(
+            db, subscription_id, error=request.query_params.get("error")
+        )
+    )
+    if form_context is None:
+        context = _base_context(request, db, active_page="catalog-subscriptions")
+        context.update({"message": "Subscription not found"})
+        return templates.TemplateResponse(
+            "admin/errors/404.html", context, status_code=404
+        )
+    context = _base_context(request, db, active_page="catalog-subscriptions")
+    context.update(form_context)
+    return templates.TemplateResponse(
+        "admin/catalog/subscription_service_access_move.html", context
+    )
+
+
+@router.post(
+    "/subscriptions/{subscription_id}/access/move/preview",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("catalog:write"))],
+)
+def catalog_subscription_service_access_move_preview(
+    request: Request,
+    subscription_id: str,
+    target_nas_device_id: UUID = Form(...),
+    target_pool_id: UUID = Form(...),
+    target_ipv4: str = Form(...),
+    reason: str = Form(...),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    error: str | None = None
+    preview = None
+    try:
+        if not reason.strip():
+            raise ValueError("An operational reason is required.")
+        preview = web_catalog_subscription_workflows_service.preview_subscription_service_access_move_form(
+            db,
+            subscription_id=UUID(subscription_id),
+            target_nas_device_id=target_nas_device_id,
+            target_pool_id=target_pool_id,
+            target_ipv4=target_ipv4,
+        )
+    except (DomainError, ValueError) as exc:
+        error = str(getattr(exc, "message", None) or str(exc))
+    form_context = (
+        web_catalog_subscription_workflows_service.service_access_move_form_context(
+            db,
+            subscription_id,
+            preview=preview,
+            reason=reason,
+            error=error,
+        )
+    )
+    if form_context is None:
+        context = _base_context(request, db, active_page="catalog-subscriptions")
+        context.update({"message": "Subscription not found"})
+        return templates.TemplateResponse(
+            "admin/errors/404.html", context, status_code=404
+        )
+    context = _base_context(request, db, active_page="catalog-subscriptions")
+    context.update(form_context)
+    return templates.TemplateResponse(
+        "admin/catalog/subscription_service_access_move.html", context
+    )
+
+
+@router.post(
+    "/subscriptions/{subscription_id}/access/move/confirm",
+    dependencies=[Depends(require_permission("catalog:write"))],
+)
+def catalog_subscription_service_access_move_confirm(
+    request: Request,
+    subscription_id: str,
+    target_nas_device_id: UUID = Form(...),
+    target_pool_id: UUID = Form(...),
+    target_ipv4: str = Form(...),
+    preview_fingerprint: str = Form(...),
+    idempotency_key: str = Form(...),
+    reason: str = Form(...),
+    confirmed: str | None = Form(None),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    base_url = f"/admin/catalog/subscriptions/{subscription_id}/access/move"
+    if confirmed != "yes":
+        message = "Confirm the exact reviewed router and IPv4 move before continuing."
+        return RedirectResponse(
+            f"{base_url}?error={quote_plus(message)}", status_code=303
+        )
+    try:
+        confirmation = web_catalog_subscription_workflows_service.SubscriptionServiceAccessMoveConfirmation(
+            subscription_id=UUID(subscription_id),
+            target_nas_device_id=target_nas_device_id,
+            target_pool_id=target_pool_id,
+            target_ipv4=target_ipv4,
+            preview_fingerprint=preview_fingerprint,
+            idempotency_key=idempotency_key,
+            actor_id=str(_get_actor_id(request) or ""),
+            reason=reason,
+        )
+        outcome = web_catalog_subscription_workflows_service.execute_subscription_service_access_move(
+            db, confirmation=confirmation
+        )
+    except (DomainError, ValueError) as exc:
+        message = str(getattr(exc, "message", None) or str(exc))
+        return RedirectResponse(
+            f"{base_url}?error={quote_plus(message)}", status_code=303
+        )
+    message = (
+        f"Service access moved to {outcome.target_ipv4}; billing unchanged. "
+        "RADIUS and old-address session convergence was requested."
+    )
+    edit_url = f"/admin/catalog/subscriptions/{subscription_id}/edit"
+    return RedirectResponse(f"{edit_url}?notice={quote_plus(message)}", status_code=303)
 
 
 @router.get("/subscriptions/{subscription_id}", response_class=HTMLResponse)
