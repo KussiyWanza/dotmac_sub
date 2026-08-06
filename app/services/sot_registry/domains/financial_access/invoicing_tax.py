@@ -216,6 +216,183 @@ SERVICES: tuple[SOTService, ...] = (
         ),
     ),
     SOTService(
+        name="financial.invoice_discounts",
+        module="app.services.invoice_discounts",
+        owns=(
+            "Invoice discount current state and pricing",
+            "Invoice discount append-only revision history",
+        ),
+        depends_on=(
+            "auth.staff_provisioning",
+            "events.dispatcher",
+            "financial.invoices",
+            "sales.service",
+        ),
+        notes=(
+            "This flush-only participant prices one mutually exclusive percentage "
+            "or fixed discount against the original Invoice subtotal, recalculates "
+            "tax on the discounted base, and appends immutable revision evidence. "
+            "Administrative draft authoring and Quote deposit creation supply the "
+            "transaction. Quote-inherited discounts retain their source identity "
+            "and cannot be changed or applied twice. The history page is a direct "
+            "read of this canonical evidence, not a second writable projection."
+        ),
+        contract=ServiceContract(
+            concerns=(
+                ConcernContract(
+                    name="Invoice discount current state and pricing",
+                    role=OwnerRole.COMMAND_WRITER,
+                    input_names=(
+                        "typed Invoice discount request",
+                        "canonical Invoice subtotal and lifecycle",
+                        "canonical staff actor state",
+                        "optional canonical source Quote discount",
+                    ),
+                    canonical_writer="financial.invoice_discounts",
+                ),
+                ConcernContract(
+                    name="Invoice discount append-only revision history",
+                    role=OwnerRole.COMMAND_WRITER,
+                    input_names=(
+                        "typed Invoice discount request",
+                        "canonical Invoice subtotal and lifecycle",
+                        "canonical staff actor state",
+                        "optional canonical source Quote discount",
+                    ),
+                    canonical_writer="financial.invoice_discounts",
+                ),
+            ),
+            authoritative_inputs=(
+                AuthorityInput(
+                    name="typed Invoice discount request",
+                    owner="financial.invoice_discounts",
+                    kind=AuthorityKind.CONTROL_INPUT,
+                    source=(
+                        "typed percentage or fixed value, optional reason, source, "
+                        "source Quote identity, actor, command identity, and timestamp"
+                    ),
+                ),
+                AuthorityInput(
+                    name="canonical Invoice subtotal and lifecycle",
+                    owner="financial.invoices",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source="locked Invoice and active InvoiceLine rows",
+                ),
+                AuthorityInput(
+                    name="canonical staff actor state",
+                    owner="auth.staff_provisioning",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source="locked active SystemUser addressed by the session actor",
+                ),
+                AuthorityInput(
+                    name="optional canonical source Quote discount",
+                    owner="sales.service",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source=(
+                        "Quote discount type, value, actual amount, reason, actor, "
+                        "and structural Quote-to-deposit-Invoice identity"
+                    ),
+                ),
+            ),
+            transaction=TransactionContract(
+                mode=TransactionMode.PARTICIPANT,
+                boundary=(
+                    "The administrative Invoice draft or Quote deposit coordinator "
+                    "supplies the transaction; this participant mutates current "
+                    "discount fields, recalculates totals, appends one history row, "
+                    "and only flushes."
+                ),
+                locking=(
+                    "The coordinator locks the customer account and Invoice before "
+                    "this participant locks the active staff actor; source Quote "
+                    "evidence is resolved before Invoice construction."
+                ),
+                idempotency=(
+                    "A command UUID is unique in history; unchanged requested state "
+                    "converges without another revision, and inherited source identity "
+                    "rejects a second or different discount."
+                ),
+                retries=(
+                    "Callers retry only their whole owning transaction after rollback."
+                ),
+            ),
+            errors=ErrorContract(
+                domain_codes=(
+                    "financial.invoice_discounts.value_invalid",
+                    "financial.invoice_discounts.type_invalid",
+                    "financial.invoice_discounts.subtotal_invalid",
+                    "financial.invoice_discounts.exceeds_subtotal",
+                    "financial.invoice_discounts.reason_invalid",
+                    "financial.invoice_discounts.actor_not_eligible",
+                    "financial.invoice_discounts.invoice_mismatch",
+                    "financial.invoice_discounts.quote_source_invalid",
+                    "financial.invoice_discounts.quote_inheritance_invalid",
+                    "financial.invoice_discounts.inherited_locked",
+                    "financial.invoice_discounts.invoice_not_editable",
+                    "financial.invoice_discounts.page_invalid",
+                    "financial.invoice_discounts.page_size_invalid",
+                    "financial.invoice_discounts.date_range_invalid",
+                ),
+                mapping_owner="administrative billing web adapters",
+                retryable_codes=(),
+                fail_closed_on=(
+                    "discount greater than subtotal or invalid percentage",
+                    "missing or inactive staff actor",
+                    "issued manual discount mutation",
+                    "missing Quote source evidence or double discount",
+                ),
+            ),
+            events=EventContract(
+                event_types=(
+                    "invoice.discount_applied",
+                    "invoice.discount_changed",
+                    "invoice.discount_removed",
+                    "invoice.discount_inherited",
+                ),
+                schema_version=1,
+                delivery_owner="events.dispatcher",
+                compatibility=(
+                    "Version 1 identifies the Invoice, revision, action, source, "
+                    "discount type/value/amount, currency, and resulting total "
+                    "without customer contact details."
+                ),
+                replay=(
+                    "The unique command UUID and canonical fingerprint suppress "
+                    "duplicate history and event staging."
+                ),
+            ),
+            migration=MigrationContract(
+                state=AuthorityMigrationState.COMPLETE,
+                old_owner="no first-class Invoice discount owner or history",
+                new_owner="financial.invoice_discounts",
+                verification=(
+                    "Manual draft, tax recalculation, immutable history, Quote "
+                    "inheritance, double-discount guard, reporting, migration, and "
+                    "architecture tests."
+                ),
+                cutover_gate=(
+                    "All new Invoice discounts are first-class current state plus "
+                    "append-only history and are written only inside an owning "
+                    "Invoice creation transaction."
+                ),
+                fallback_retirement=(
+                    "No metadata or Line Item discount writer is accepted as an "
+                    "Invoice discount source."
+                ),
+            ),
+            steward="finance operations",
+            design_refs=(
+                "docs/SOT_RELATIONSHIP_MAP.md",
+                "docs/designs/INVOICE_DISCOUNT_HISTORY.md",
+            ),
+            test_refs=(
+                "tests/test_invoice_discounts.py",
+                "tests/test_quote_deposits.py",
+                "tests/architecture/test_invoice_discount_ownership.py",
+            ),
+        ),
+    ),
+    SOTService(
         name="financial.invoice_draft_authoring",
         module="app.services.invoice_draft_authoring",
         owns=(
@@ -226,6 +403,7 @@ SERVICES: tuple[SOTService, ...] = (
             "control.settings_spec",
             "customer.accounts",
             "financial.invoices",
+            "financial.invoice_discounts",
             "financial.tax_configuration",
             "events.dispatcher",
         ),
@@ -358,6 +536,7 @@ SERVICES: tuple[SOTService, ...] = (
                     "financial.invoice_draft_authoring.prepaid_reconciliation_required",
                     "financial.invoice_draft_authoring.conversion_rejected",
                     "financial.invoice_draft_authoring.currency_mismatch",
+                    "financial.invoice_draft_authoring.discount_actor_required",
                     "financial.invoice_draft_authoring.invalid_command_context",
                     "financial.invoice_draft_authoring.command_contract_violation",
                     "financial.invoice_draft_authoring.nested_owner_command",

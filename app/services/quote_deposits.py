@@ -29,20 +29,26 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.billing import Invoice, InvoiceStatus, TopupIntent
+from app.models.billing import (
+    Invoice,
+    InvoiceDiscountSource,
+    InvoiceDiscountType,
+    InvoiceStatus,
+    TopupIntent,
+)
 from app.models.quote_mirror import QuoteMirror
 from app.models.sales import Quote, QuoteDepositInvoiceLink, QuoteStatus
 from app.schemas.billing import InvoiceCreate
 from app.services import billing as billing_service
 from app.services import customer_portal_flow_payments as payments
-from app.services import quotes_mirror
-from app.services.common import coerce_uuid
+from app.services import invoice_discounts, quotes_mirror
+from app.services.common import coerce_uuid, round_money
 from app.services.customer_context import CustomerContext
 from app.services.domain_errors import DomainError
 from app.services.payment_gateway_adapter import payment_gateway_adapter
@@ -162,6 +168,93 @@ def _authoritative_quote_deposit_amount(db: Session, quote: Quote) -> Decimal:
     if bool(payload.get("deposit_paid")):
         raise _error("already_paid", "This Quote deposit is already paid")
     return Decimal(str(payload.get("deposit_amount") or "0")).quantize(Decimal("0.01"))
+
+
+@dataclass(frozen=True, slots=True)
+class QuoteDepositInvoiceAmounts:
+    original_subtotal: Decimal
+    tax_total: Decimal
+    original_total: Decimal
+    discount: invoice_discounts.InvoiceDiscountInput | None
+
+
+def _quote_deposit_invoice_amounts(
+    quote: Quote, deposit: Decimal
+) -> QuoteDepositInvoiceAmounts:
+    """Split a discounted Quote deposit without changing its payable amount."""
+
+    quote_total = round_money(quote.total)
+    discount_amount = round_money(quote.discount_amount or 0)
+    if (
+        quote_total <= 0
+        or discount_amount <= 0
+        or not quote.discount_type
+        or quote.discount_applied_by_system_user_id is None
+    ):
+        return QuoteDepositInvoiceAmounts(
+            original_subtotal=deposit,
+            tax_total=Decimal("0.00"),
+            original_total=deposit,
+            discount=None,
+        )
+    scale = deposit / quote_total
+    original_subtotal = round_money(Decimal(quote.subtotal or 0) * scale)
+    inherited_amount = round_money(discount_amount * scale)
+    discounted_subtotal = round_money(original_subtotal - inherited_amount)
+    tax_total = round_money(deposit - discounted_subtotal)
+    if tax_total < 0:
+        raise invoice_discounts.quote_inheritance_error(
+            "The Quote discount cannot be represented on its deposit Invoice."
+        )
+    discount_type = InvoiceDiscountType(quote.discount_type)
+    value = (
+        round_money(quote.discount_value or 0)
+        if discount_type is InvoiceDiscountType.percentage
+        else inherited_amount
+    )
+    return QuoteDepositInvoiceAmounts(
+        original_subtotal=original_subtotal,
+        tax_total=tax_total,
+        original_total=round_money(original_subtotal + tax_total),
+        discount=invoice_discounts.InvoiceDiscountInput(
+            discount_type=discount_type,
+            value=value,
+            reason=quote.discount_reason,
+        ),
+    )
+
+
+def _stage_inherited_quote_discount(
+    db: Session,
+    *,
+    quote: Quote,
+    invoice: Invoice,
+    amounts: QuoteDepositInvoiceAmounts,
+) -> None:
+    if amounts.discount is None or quote.discount_applied_by_system_user_id is None:
+        return
+    # Allocate account credit against the already-discounted deposit first.
+    # Restore the proportional original basis only inside this same creation
+    # transaction, immediately before the discount participant recalculates
+    # back to the exact same payable amount.
+    invoice.subtotal = amounts.original_subtotal
+    invoice.tax_total = amounts.tax_total
+    invoice.total = amounts.original_total
+    invoice_discounts.stage_invoice_discount(
+        db,
+        invoice,
+        invoice_discounts.StageInvoiceDiscountCommand(
+            invoice_id=invoice.id,
+            actor_system_user_id=quote.discount_applied_by_system_user_id,
+            command_id=uuid5(
+                NAMESPACE_URL, f"invoice-quote-discount:{quote.id}:{invoice.id}"
+            ),
+            discount=amounts.discount,
+            source=InvoiceDiscountSource.quote,
+            source_quote_id=quote.id,
+            applied_at=datetime.now(UTC),
+        ),
+    )
 
 
 def quote_payment_page(db: Session, query: QuotePaymentQuery) -> QuotePaymentPage:
@@ -410,6 +503,16 @@ def initiate_deposit(
         )
     )
     if invoice is None:
+        invoice_amounts = (
+            _quote_deposit_invoice_amounts(native_quote, deposit)
+            if native_quote is not None
+            else QuoteDepositInvoiceAmounts(
+                original_subtotal=deposit,
+                tax_total=Decimal("0.00"),
+                original_total=deposit,
+                discount=None,
+            )
+        )
         invoice = billing_service.invoices.create(
             db,
             InvoiceCreate(
@@ -417,11 +520,13 @@ def initiate_deposit(
                 status=InvoiceStatus.issued,
                 currency=row.currency or "NGN",
                 subtotal=deposit,
+                tax_total=Decimal("0.00"),
                 total=deposit,
                 balance_due=deposit,
                 issued_at=datetime.now(UTC),
                 memo=f"Installation deposit · quote {quote_id}",
             ),
+            commit=False,
         )
         # Trace the deposit back to its quote for reconciliation/audit.
         invoice.metadata_ = {
@@ -429,6 +534,12 @@ def initiate_deposit(
             "payment_flow": "quote_deposit",
         }
         if native_quote is not None:
+            _stage_inherited_quote_discount(
+                db,
+                quote=native_quote,
+                invoice=invoice,
+                amounts=invoice_amounts,
+            )
             _stage_quote_deposit_invoice_link(
                 db,
                 quote=native_quote,
@@ -490,6 +601,7 @@ def _initiate_deposit_native(
         db, subscriber_id=sub_uuid, quote_id=quote.id
     )
     if invoice is None:
+        invoice_amounts = _quote_deposit_invoice_amounts(quote, deposit)
         invoice = billing_service.invoices.create(
             db,
             InvoiceCreate(
@@ -497,11 +609,13 @@ def _initiate_deposit_native(
                 status=InvoiceStatus.issued,
                 currency=quote.currency or "NGN",
                 subtotal=deposit,
+                tax_total=Decimal("0.00"),
                 total=deposit,
                 balance_due=deposit,
                 issued_at=datetime.now(UTC),
                 memo=f"Installation deposit · quote {quote.id}",
             ),
+            commit=False,
         )
         # Trace the deposit back to its quote for reconciliation/audit — and for
         # _native_deposit_invoice_paid, which keys on exactly these two fields.
@@ -509,6 +623,12 @@ def _initiate_deposit_native(
             "quote_id": str(quote.id),
             "payment_flow": "quote_deposit",
         }
+        _stage_inherited_quote_discount(
+            db,
+            quote=quote,
+            invoice=invoice,
+            amounts=invoice_amounts,
+        )
         _stage_quote_deposit_invoice_link(db, quote=quote, invoice=invoice)
         db.commit()
 

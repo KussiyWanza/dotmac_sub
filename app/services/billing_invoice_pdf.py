@@ -440,6 +440,7 @@ def _render_invoice_html(invoice: Invoice, db: Session) -> str:
         <div class=\"totals-card\">
           <table>
             <tr><td>Subtotal</td><td class=\"num\">{NAIRA_SIGN}{_money(invoice.subtotal)}</td></tr>
+            {f'<tr><td>Discount</td><td class="num">-{NAIRA_SIGN}{_money(invoice.discount_amount)}</td></tr>' if invoice.discount_amount else ""}
             <tr><td>{tax_label}</td><td class=\"num\">{NAIRA_SIGN}{_money(invoice.tax_total)}</td></tr>
             <tr class=\"grand-total\"><td>Total</td><td class=\"num\">{NAIRA_SIGN}{_money(invoice.total)}</td></tr>
           </table>
@@ -554,6 +555,11 @@ def _render_invoice_text_lines(
         [
             "",
             f"Subtotal: NGN {_money(invoice.subtotal)}",
+            *(
+                [f"Discount: -NGN {_money(invoice.discount_amount)}"]
+                if invoice.discount_amount
+                else []
+            ),
             f"Tax: NGN {_money(invoice.tax_total)}",
             f"Total: NGN {_money(invoice.total)}",
             f"Balance Due: NGN {_money(invoice.balance_due)}",
@@ -833,6 +839,11 @@ def _build_branded_fallback_pdf(db: Session, invoice: Invoice) -> bytes:
     )
     totals = [
         ("Subtotal", f"{naira}{_money(invoice.subtotal)}"),
+        *(
+            [("Discount", f"-{naira}{_money(invoice.discount_amount)}")]
+            if invoice.discount_amount
+            else []
+        ),
         ("Tax", f"{naira}{_money(invoice.tax_total)}"),
         ("Total", f"{naira}{_money(invoice.total)}"),
     ]

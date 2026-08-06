@@ -299,6 +299,54 @@ def invoices_export_csv(
 
 
 @router.get(
+    "/invoice-discounts",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("billing:invoice:read"))],
+)
+def invoice_discounts_list(
+    request: Request,
+    date_from: OptionalDateQuery = None,
+    date_to: OptionalDateQuery = None,
+    customer: str | None = Query(None),
+    salesperson_id: str | None = Query(None),
+    discount_type: str | None = Query(None),
+    invoice_status: str | None = Query(None),
+    source: str | None = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25),
+    db: Session = Depends(get_db),
+):
+    from app.web.admin import get_current_user, get_sidebar_stats
+
+    try:
+        state = web_billing_invoices_service.build_invoice_discounts_list_context(
+            db,
+            date_from=date_from,
+            date_to=date_to,
+            customer=customer,
+            salesperson_id=salesperson_id,
+            discount_type=discount_type,
+            invoice_status=invoice_status,
+            source=source,
+            page=page,
+            page_size=page_size,
+        )
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return templates.TemplateResponse(
+        "admin/billing/invoice_discounts.html",
+        {
+            "request": request,
+            **state,
+            "active_page": "invoice_discounts",
+            "active_menu": "billing",
+            "current_user": get_current_user(request),
+            "sidebar_stats": get_sidebar_stats(db),
+        },
+    )
+
+
+@router.get(
     "/invoices/new",
     response_class=HTMLResponse,
     dependencies=[Depends(require_permission("billing:invoice:create"))],
@@ -358,6 +406,9 @@ def invoice_create(
     issued_at: str | None = Form(None),
     due_at: str | None = Form(None),
     memo: str | None = Form(None),
+    discount_type: str | None = Form(None),
+    discount_value: str | None = Form(None),
+    discount_reason: str | None = Form(None),
     proforma_invoice: str | None = Form(None),
     line_description: list[str] = Form([]),
     line_quantity: list[str] = Form([]),
@@ -382,6 +433,9 @@ def invoice_create(
             issued_at=issued_at,
             due_at=due_at,
             memo=memo,
+            discount_type=discount_type,
+            discount_value=discount_value,
+            discount_reason=discount_reason,
             proforma_invoice=proforma_invoice,
             line_description=line_description,
             line_quantity=line_quantity,
@@ -518,6 +572,9 @@ def invoice_update(
     issued_at: str | None = Form(None),
     due_at: str | None = Form(None),
     memo: str | None = Form(None),
+    discount_type: str | None = Form(None),
+    discount_value: str | None = Form(None),
+    discount_reason: str | None = Form(None),
     proforma_invoice: str | None = Form(None),
     line_items_json: str | None = Form(None),
     draft_idempotency_key: str | None = Form(None),
@@ -536,6 +593,9 @@ def invoice_update(
             issued_at=issued_at,
             due_at=due_at,
             memo=memo,
+            discount_type=discount_type,
+            discount_value=discount_value,
+            discount_reason=discount_reason,
             proforma_invoice=proforma_invoice,
             line_items_json=line_items_json,
             draft_idempotency_key=draft_idempotency_key,

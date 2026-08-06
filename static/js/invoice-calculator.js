@@ -21,6 +21,10 @@ function createInvoiceCalculator(config = {}) {
         issuedAt: config.issuedAt || '',
         dueAt: config.dueAt || '',
         memo: config.memo || '',
+        discountType: config.discountType || '',
+        discountValue: config.discountValue || '',
+        discountReason: config.discountReason || '',
+        discountLocked: Boolean(config.discountLocked),
 
         // Line items
         lineItems: [],
@@ -210,14 +214,29 @@ function createInvoiceCalculator(config = {}) {
         },
 
         get taxTotal() {
-            return this.round(
+            const originalTax = this.round(
                 this.lineItems.reduce((sum, item) => sum + this.getLineItemTax(item), 0),
                 2
             );
+            if (this.subtotal <= 0 || this.discountAmount <= 0) return originalTax;
+            return this.round(originalTax * (this.discountedSubtotal / this.subtotal), 2);
+        },
+
+        get discountAmount() {
+            const value = this.round(this.discountValue, 2);
+            if (!this.discountType || value <= 0) return 0;
+            if (this.discountType === 'percentage') {
+                return this.round(Math.min(this.subtotal, this.subtotal * value / 100), 2);
+            }
+            return this.round(Math.min(this.subtotal, value), 2);
+        },
+
+        get discountedSubtotal() {
+            return this.round(Math.max(0, this.subtotal - this.discountAmount), 2);
         },
 
         get total() {
-            return this.round(this.subtotal + this.taxTotal, 2);
+            return this.round(this.discountedSubtotal + this.taxTotal, 2);
         },
 
         // Formatting
@@ -251,6 +270,9 @@ function createInvoiceCalculator(config = {}) {
                 issued_at: this.issuedAt,
                 due_at: this.dueAt,
                 memo: this.memo,
+                discount_type: this.discountType || null,
+                discount_value: this.discountValue || null,
+                discount_reason: this.discountReason || null,
                 line_items: this.lineItems.map(item => ({
                     id: item.lineId || null,
                     description: item.description,
@@ -289,6 +311,24 @@ function createInvoiceCalculator(config = {}) {
             const emptyItems = this.lineItems.filter(item => !item.description.trim());
             if (emptyItems.length > 0) {
                 this.showToast('Please enter a description for all line items', 'error');
+                event.preventDefault();
+                return false;
+            }
+
+            if (this.discountType && (!(parseFloat(this.discountValue) > 0))) {
+                this.showToast('Enter a Discount value greater than zero', 'error');
+                event.preventDefault();
+                return false;
+            }
+
+            if (this.discountType === 'percentage' && parseFloat(this.discountValue) > 100) {
+                this.showToast('Percentage discount cannot be greater than 100', 'error');
+                event.preventDefault();
+                return false;
+            }
+
+            if (this.discountType === 'fixed_amount' && parseFloat(this.discountValue) > this.subtotal) {
+                this.showToast('Discount cannot be greater than the subtotal', 'error');
                 event.preventDefault();
                 return false;
             }

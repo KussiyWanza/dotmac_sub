@@ -6,6 +6,7 @@
 the complete invoice draft aggregate, plus administrative conversion of a
 proforma into a final invoice. The aggregate includes the invoice header, all
 active lines, owner-derived totals, create or conversion idempotency evidence,
+the optional first-class Invoice discount and its append-only revision evidence,
 audit evidence, and transactional invoice outbox events.
 
 The admin web route is a parsing and error-mapping adapter. It must release any
@@ -22,6 +23,12 @@ notifications itself.
 - The account is locked before the invoice and its lines.
 - Header, lines, totals, audit evidence, idempotency evidence, and event staging
   commit once or roll back together.
+- A manual discount is typed as either percentage or fixed amount and is staged
+  by `financial.invoice_discounts` inside this transaction. Line and discount
+  changes are admitted together so tax, total, current discount, and immutable
+  history cannot drift.
+- Direct Invoice Line writers reject an active discount. An administrator uses
+  the complete Edit Invoice command to change the lines and discount together.
 - Issued and terminal invoice documents cannot be edited.
 - Proformas remain drafts, cannot consume account credit, are excluded from
   collectible AR/dunning, cannot be paid, and cannot be announced.

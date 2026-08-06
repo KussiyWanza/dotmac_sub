@@ -181,6 +181,17 @@
 
                 <div class="border-t border-slate-200 dark:border-slate-700 pt-4 mt-4">
                     {{ metric_row("Subtotal", invoice_currency ~ " " ~ '{:,.2f}'.format(invoice.subtotal or 0), color="slate", mono=True) }}
+                    {% if invoice.discount_amount and invoice.discount_amount > 0 %}
+                    {{ metric_row("Discount", "-" ~ invoice_currency ~ " " ~ '{:,.2f}'.format(invoice.discount_amount), color="emerald", mono=True) }}
+                    <div class="rounded-lg bg-cyan-50 px-3 py-2 text-xs text-slate-600 dark:bg-cyan-950/20 dark:text-slate-300">
+                        {{ invoice.discount_type | replace('_', ' ') | title }}{% if invoice.discount_value is not none %}: {{ '{:,.2f}'.format(invoice.discount_value) }}{% if invoice.discount_type == 'percentage' %}%{% endif %}{% endif %}
+                        {% if invoice.discount_reason %} · {{ invoice.discount_reason }}{% endif %}
+                        <br>Applied by {{ invoice.discount_applied_by.display_name if invoice.discount_applied_by and invoice.discount_applied_by.display_name else 'staff user' }} on {{ invoice.discount_applied_at | app_datetime('%b %d, %Y', '-', include_tz=False) }}.
+                        {% if invoice.discount_source == 'quote' and invoice.discount_source_quote_id %}
+                        <a href="/admin/sales/quotes/{{ invoice.discount_source_quote_id }}" class="font-semibold text-cyan-700 hover:underline dark:text-cyan-300">View source Quote</a>
+                        {% endif %}
+                    </div>
+                    {% endif %}
                     {{ metric_row("Tax", invoice_currency ~ " " ~ '{:,.2f}'.format(invoice.tax_total or 0), color="slate", mono=True) }}
                     <div class="flex items-center justify-between py-2.5 mt-2">
                         <span class="text-base font-semibold text-slate-900 dark:text-white">Total</span>
@@ -192,7 +203,7 @@
             {# Line Items #}
             {% call card("Line Items", icon='<svg class="h-4 w-4 text-emerald-600 dark:text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16"/></svg>', color="emerald", padding=False) %}
                 <div class="border-b border-slate-200 px-6 py-4 dark:border-slate-700">
-                    {% if status_val == 'draft' %}
+                    {% if status_val == 'draft' and not invoice.discount_type %}
                     <form method="post" action="/admin/billing/invoices/{{ invoice.id }}/lines" class="grid gap-3 sm:grid-cols-6">
                         {% include "components/forms/csrf_input.html" %}
                         <div class="sm:col-span-3">
@@ -227,6 +238,10 @@
                             </button>
                         </div>
                     </form>
+                    {% elif status_val == 'draft' %}
+                    <p class="text-sm text-slate-500 dark:text-slate-400">
+                        Use Edit Invoice to change Line Items and the active discount together.
+                    </p>
                     {% else %}
                     <p class="text-sm text-slate-500 dark:text-slate-400">
                         Issued invoice lines are immutable financial evidence.
