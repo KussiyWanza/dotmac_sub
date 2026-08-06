@@ -35,10 +35,11 @@ depends_on = None
 
 
 def upgrade() -> None:
-    with op.batch_alter_table("usage_allowances") as batch:
-        batch.drop_column("throttle_rate_mbps")
+    op.drop_column("usage_allowances", "throttle_rate_mbps")
 
 
 def downgrade() -> None:
-    with op.batch_alter_table("usage_allowances") as batch:
-        batch.add_column(sa.Column("throttle_rate_mbps", sa.Integer(), nullable=True))
+    op.add_column(
+        "usage_allowances",
+        sa.Column("throttle_rate_mbps", sa.Integer(), nullable=True),
+    )
