@@ -988,36 +988,45 @@ def _prepare_quote_ownership(
         data["sent_at"] = datetime.now(UTC)
 
 
-def _line_amount(quantity, unit_price, discount_percent) -> Decimal:
-    """Net line amount: quantity * unit_price, less the line discount percent."""
+def _line_amount(quantity, unit_price) -> Decimal:
+    """Gross Line Item amount; new discounts apply once at Quote level."""
     qty = Decimal(quantity or 0)
     price = Decimal(unit_price or 0)
-    discount = Decimal(discount_percent or 0)
-    if discount < 0:
-        discount = Decimal("0")
-    if discount > 100:
-        discount = Decimal("100")
     gross = qty * price
-    net = gross * (Decimal("100") - discount) / Decimal("100")
-    if net < 0:
-        net = Decimal("0")
-    return net.quantize(Decimal("0.01"))
+    return max(gross, Decimal("0")).quantize(Decimal("0.01"))
+
+
+def _assert_no_active_quote_discount(quote: Quote) -> None:
+    from app.models.sales import QuoteDiscountType
+    from app.services.sales import quote_authoring
+
+    quote_authoring.assert_line_mutation_allowed(
+        quote_id=quote.id,
+        discount_type=(
+            QuoteDiscountType(quote.discount_type) if quote.discount_type else None
+        ),
+    )
 
 
 def _recalculate_quote_totals(db: Session, quote: Quote) -> None:
     db.flush()
     items = db.query(QuoteLineItem).filter(QuoteLineItem.quote_id == quote.id).all()
-    # Subtotal is the sum of net (discounted) line amounts.
+    # Previous Quotes may still contain immutable net Line Item amounts. New
+    # Line Items are gross and the current Quote discount applies once here.
     subtotal = round_money(
         sum((Decimal(item.amount or 0) for item in items), Decimal("0.00"))
     )
     quote.subtotal = subtotal
+    discounted_subtotal = round_money(
+        subtotal - Decimal(quote.discount_amount or Decimal("0.00"))
+    )
     # Auto-derive tax from the applied rate when one is set; otherwise keep the
-    # manually entered tax_total. Tax always follows the (discounted) subtotal.
+    # manually entered tax_total. Configured tax follows the Quote-discounted
+    # subtotal.
     if quote.tax_rate is not None:
         rate = Decimal(quote.tax_rate or 0)
-        quote.tax_total = round_money(subtotal * rate / Decimal("100"))
-    quote.total = subtotal + Decimal(quote.tax_total or 0)
+        quote.tax_total = round_money(discounted_subtotal * rate / Decimal("100"))
+    quote.total = discounted_subtotal + Decimal(quote.tax_total or 0)
     db.flush()
 
 
@@ -2273,13 +2282,14 @@ class QuoteLineItems(ListResponseMixin):
             quote,
             mutation="line_item_create",
         )
+        _assert_no_active_quote_discount(quote)
         data = payload.model_dump()
         # ``inventory_item_id`` is a CRM inventory UUID carried verbatim —
         # inventory is so there is nothing to validate against.
-        # Always derive amount server-side (net of any line discount).
-        data["amount"] = _line_amount(
-            data.get("quantity"), data.get("unit_price"), data.get("discount_percent")
-        )
+        # Always derive gross amount server-side. The retained database column
+        # is zero for every new Line Item and exists only for previous Quotes.
+        data["discount_percent"] = Decimal("0.00")
+        data["amount"] = _line_amount(data.get("quantity"), data.get("unit_price"))
         item = QuoteLineItem(**data)
         db.add(item)
         _recalculate_quote_totals(db, quote)
@@ -2318,13 +2328,12 @@ class QuoteLineItems(ListResponseMixin):
             quote,
             mutation="line_item_update",
         )
+        _assert_no_active_quote_discount(quote)
         data = payload.model_dump(exclude_unset=True)
         for key, value in data.items():
             setattr(item, key, value)
-        if {"quantity", "unit_price", "discount_percent"} & set(data):
-            item.amount = _line_amount(
-                item.quantity, item.unit_price, item.discount_percent
-            )
+        if {"quantity", "unit_price"} & set(data):
+            item.amount = _line_amount(item.quantity, item.unit_price)
         _recalculate_quote_totals(db, quote)
         _stage_quote_audit(
             db,
@@ -2362,6 +2371,7 @@ class QuoteLineItems(ListResponseMixin):
             quote,
             mutation="line_item_delete",
         )
+        _assert_no_active_quote_discount(quote)
         line_id = item.id
         description = item.description
         db.delete(item)

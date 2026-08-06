@@ -41,7 +41,7 @@
     {% endfor %}
 
     <form method="post" action="{{ action_url }}"
-          x-data='quoteAuthoringForm({{ quote_form["items"]|tojson }}, {{ suggestions|tojson }}, {{ tax_rates|tojson }}, {{ quote_form.tax_rate_id|tojson }}, {{ quote_form.manual_tax_total|tojson }}, {{ quote_form.initial_subtotal|default("0.00")|tojson }})'
+          x-data='quoteAuthoringForm({{ quote_form["items"]|tojson }}, {{ suggestions|tojson }}, {{ tax_rates|tojson }}, {{ quote_form.tax_rate_id|tojson }}, {{ quote_form.manual_tax_total|tojson }}, {{ quote_form.initial_subtotal|default("0.00")|tojson }}, {{ quote_form.discount_type|tojson }}, {{ quote_form.discount_value|tojson }})'
           @submit="handleSubmit($event)"
           class="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
         {% include "components/forms/csrf_input.html" %}
@@ -119,7 +119,7 @@
                     <template x-for="(row, index) in rows" :key="row.key">
                         <article class="rounded-xl border border-slate-200 bg-slate-50/70 p-3 shadow-sm dark:border-slate-600 dark:bg-slate-900/30">
                             <div class="grid grid-cols-1 gap-3 sm:grid-cols-12 sm:items-end">
-                                <div class="sm:col-span-4">
+                                <div class="sm:col-span-5">
                                     <label :for="`item-description-${index}`" class="mb-1 block text-xs font-semibold text-slate-600 dark:text-slate-300">Description</label>
                                     <input :id="`item-description-${index}`" name="item_description" type="text" maxlength="255"
                                            list="quote-item-suggestions" x-model="row.description"
@@ -129,7 +129,7 @@
                                     <input type="hidden" name="item_sub_offer_id" :value="row.sub_offer_id">
                                     <input type="hidden" name="item_inventory_item_id" :value="row.inventory_item_id">
                                 </div>
-                                <div class="grid grid-cols-2 gap-3 sm:col-span-5 sm:grid-cols-3">
+                                <div class="grid grid-cols-2 gap-3 sm:col-span-4">
                                     <div>
                                         <label :for="`item-quantity-${index}`" class="mb-1 block text-xs font-semibold text-slate-600 dark:text-slate-300">Quantity</label>
                                         <input :id="`item-quantity-${index}`" name="item_quantity" type="number" step="0.001" min="0.001"
@@ -140,12 +140,6 @@
                                         <label :for="`item-price-${index}`" class="mb-1 block text-xs font-semibold text-slate-600 dark:text-slate-300">Unit Price</label>
                                         <input :id="`item-price-${index}`" name="item_unit_price" type="number" step="0.01" min="0"
                                                x-model="row.unit_price" :required="rowNonEmpty(row)" @input="row.priceEdited = true; recalculate()"
-                                               class="block min-h-11 w-full rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-sm tabular-nums text-slate-900 shadow-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 dark:border-slate-600 dark:bg-slate-700 dark:text-white dark:focus:border-cyan-400 dark:focus:ring-cyan-400/30">
-                                    </div>
-                                    <div class="col-span-2 sm:col-span-1">
-                                        <label :for="`item-discount-${index}`" class="mb-1 block text-xs font-semibold text-slate-600 dark:text-slate-300">Discount %</label>
-                                        <input :id="`item-discount-${index}`" name="item_discount_percent" type="number" step="0.01" min="0" max="100"
-                                               x-model="row.discount_percent" :required="rowNonEmpty(row)" @input="recalculate()"
                                                class="block min-h-11 w-full rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-sm tabular-nums text-slate-900 shadow-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 dark:border-slate-600 dark:bg-slate-700 dark:text-white dark:focus:border-cyan-400 dark:focus:ring-cyan-400/30">
                                     </div>
                                 </div>
@@ -206,6 +200,46 @@
                         </output>
                     </div>
                 </div>
+
+                {% if not is_editing %}
+                <div class="rounded-xl border border-cyan-200 bg-cyan-50/50 p-4 dark:border-cyan-800 dark:bg-cyan-950/20">
+                    <div>
+                        <h2 class="text-base font-bold text-slate-900 dark:text-white">Quote Discount</h2>
+                        <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Applied once to the complete Line Item subtotal before configured tax.</p>
+                    </div>
+                    <div class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+                        <div>
+                            <label for="quote-discount-type" class="mb-1.5 block text-sm font-semibold text-slate-700 dark:text-slate-200">Discount Type</label>
+                            <select id="quote-discount-type" name="discount_type" x-model="discountType" @change="if (!discountType) discountValue = ''; recalculate()"
+                                    class="block min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 dark:border-slate-600 dark:bg-slate-700 dark:text-white dark:focus:border-cyan-400 dark:focus:ring-cyan-400/30">
+                                <option value="">No Quote Discount</option>
+                                {% for item in discount_types %}
+                                <option value="{{ item.value }}">{{ item.label }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div>
+                            <label for="quote-discount-value" class="mb-1.5 block text-sm font-semibold text-slate-700 dark:text-slate-200">Discount Value</label>
+                            <input id="quote-discount-value" name="discount_value" type="number" step="0.01" min="0.01"
+                                   :max="discountType === 'percentage' ? 100 : subtotal" :required="Boolean(discountType)" :disabled="!discountType"
+                                   x-model="discountValue" @input="recalculate()"
+                                   class="block min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-right text-sm font-semibold tabular-nums text-slate-900 shadow-sm disabled:cursor-not-allowed disabled:bg-slate-100 focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 dark:border-slate-600 dark:bg-slate-700 dark:text-white dark:disabled:bg-slate-900/40 dark:focus:border-cyan-400 dark:focus:ring-cyan-400/30">
+                        </div>
+                        <div class="sm:col-span-2">
+                            <label for="quote-discount-reason" class="mb-1.5 block text-sm font-semibold text-slate-700 dark:text-slate-200">Reason <span class="font-normal text-slate-400 dark:text-slate-500">(optional)</span></label>
+                            <textarea id="quote-discount-reason" name="discount_reason" maxlength="500" rows="2"
+                                      class="block w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 dark:border-slate-600 dark:bg-slate-700 dark:text-white dark:focus:border-cyan-400 dark:focus:ring-cyan-400/30"
+                                      placeholder="Why is this discount being granted?">{{ quote_form.discount_reason }}</textarea>
+                        </div>
+                    </div>
+                    <dl class="mt-4 grid grid-cols-1 gap-3 rounded-lg bg-white p-3 text-sm sm:grid-cols-2 dark:bg-slate-900/40">
+                        <div class="flex justify-between gap-3"><dt class="text-slate-500 dark:text-slate-400">Final discount</dt><dd class="font-semibold tabular-nums text-slate-900 dark:text-white"><span x-text="currency"></span> <span x-text="formatMoney(discountAmount)"></span></dd></div>
+                        <div class="flex justify-between gap-3"><dt class="text-slate-500 dark:text-slate-400">Subtotal after discount</dt><dd class="font-semibold tabular-nums text-slate-900 dark:text-white"><span x-text="currency"></span> <span x-text="formatMoney(discountedSubtotal)"></span></dd></div>
+                        <div class="flex justify-between gap-3"><dt class="text-slate-500 dark:text-slate-400">Applied by</dt><dd class="font-semibold text-slate-900 dark:text-white">{{ (current_user.display_name or current_user.name or current_user.email or '-') if current_user else '-' }}</dd></div>
+                        <div class="flex justify-between gap-3"><dt class="text-slate-500 dark:text-slate-400">Date applied</dt><dd class="font-semibold text-slate-900 dark:text-white">{{ discount_applied_date }}</dd></div>
+                    </dl>
+                </div>
+                {% endif %}
             </section>
 
             <section class="space-y-4" aria-labelledby="install-location-heading">
@@ -279,10 +313,10 @@
 </div>
 
 <script>
-window.quoteAuthoringForm = function(initialRows, suggestionRows, taxRateRows, selectedTaxRateId, initialManualTax, initialSubtotal) {
+window.quoteAuthoringForm = function(initialRows, suggestionRows, taxRateRows, selectedTaxRateId, initialManualTax, initialSubtotal, initialDiscountType, initialDiscountValue) {
     const emptyRow = () => ({
         key: (window.crypto && window.crypto.randomUUID) ? window.crypto.randomUUID() : `${Date.now()}-${Math.random()}`,
-        description: '', quantity: '', unit_price: '', discount_percent: '',
+        description: '', quantity: '', unit_price: '',
         sub_offer_id: '', inventory_item_id: '', priceEdited: false
     });
     const normalizeRow = (row) => ({
@@ -290,7 +324,6 @@ window.quoteAuthoringForm = function(initialRows, suggestionRows, taxRateRows, s
         description: String(row.description || ''),
         quantity: String(row.quantity || ''),
         unit_price: String(row.unit_price || ''),
-        discount_percent: String(row.discount_percent || ''),
         sub_offer_id: String(row.sub_offer_id || ''),
         inventory_item_id: String(row.inventory_item_id || ''),
         priceEdited: Boolean(row.unit_price)
@@ -302,28 +335,36 @@ window.quoteAuthoringForm = function(initialRows, suggestionRows, taxRateRows, s
         taxRates: taxRateRows || [],
         taxRateId: String(selectedTaxRateId || ''),
         manualTaxTotal: String(initialManualTax || '0.00'),
+        discountType: String(initialDiscountType || ''),
+        discountValue: String(initialDiscountValue || ''),
         currency: {{ quote_form.currency|tojson }},
         initialSubtotal: Number(initialSubtotal || 0),
         get subtotal() {
             {% if is_editing %}return this.initialSubtotal;{% else %}return this.rows.reduce((sum, row) => sum + this.lineAmount(row), 0);{% endif %}
         },
+        get discountAmount() {
+            const value = Math.max(0, Number(this.discountValue || 0));
+            if (this.discountType === 'percentage') return Math.round((this.subtotal * Math.min(100, value) / 100 + Number.EPSILON) * 100) / 100;
+            if (this.discountType === 'fixed_amount') return Math.round((Math.min(this.subtotal, value) + Number.EPSILON) * 100) / 100;
+            return 0;
+        },
+        get discountedSubtotal() { return Math.max(0, Math.round((this.subtotal - this.discountAmount + Number.EPSILON) * 100) / 100); },
         get configuredTaxTotal() {
             const selected = this.taxRates.find((rate) => String(rate.id) === String(this.taxRateId));
             if (!selected) return Math.max(0, Number(this.manualTaxTotal || 0));
-            return Math.round((this.subtotal * Number(selected.rate || 0) / 100 + Number.EPSILON) * 100) / 100;
+            return Math.round((this.discountedSubtotal * Number(selected.rate || 0) / 100 + Number.EPSILON) * 100) / 100;
         },
-        get total() { return Math.round((this.subtotal + this.configuredTaxTotal + Number.EPSILON) * 100) / 100; },
+        get total() { return Math.round((this.discountedSubtotal + this.configuredTaxTotal + Number.EPSILON) * 100) / 100; },
         rowNonEmpty(row) {
             return Boolean(String(row.description || '').trim() || String(row.quantity || '').trim() ||
-                String(row.unit_price || '').trim() || String(row.discount_percent || '').trim() ||
+                String(row.unit_price || '').trim() ||
                 row.sub_offer_id || row.inventory_item_id);
         },
         lineAmount(row) {
             if (!String(row.description || '').trim()) return 0;
             const quantity = Math.max(0, Number(row.quantity || 0));
             const price = Math.max(0, Number(row.unit_price || 0));
-            const discount = Math.min(100, Math.max(0, Number(row.discount_percent || 0)));
-            return Math.round((quantity * price * (100 - discount) / 100 + Number.EPSILON) * 100) / 100;
+            return Math.round((quantity * price + Number.EPSILON) * 100) / 100;
         },
         formatMoney(value) {
             return Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });

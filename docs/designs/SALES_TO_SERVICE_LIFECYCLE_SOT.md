@@ -1,6 +1,6 @@
 # Sales-to-Service Lifecycle Source of Truth
 
-**Status:** Approved and implemented through migration 462
+**Status:** Approved and implemented through migration 480
 **System of record:** Sub
 **Decision owner:** Michael
 
@@ -230,8 +230,11 @@ depend on HTTP request/response or exception types.
   ignored; custom descriptions are allowed; active Selfcare offers and native
   field-inventory items are suggested in batches; submitted identifiers are
   batch-resolved and must match their descriptions. Amount, Subtotal, configured
-  Tax Total, and Total are server-derived with Decimal money rounding. Manual
-  Tax Total is accepted only without a configured Tax Rate.
+  Tax Total, and Total are server-derived with Decimal money rounding. New Line
+  Items are gross-priced. One optional mutually exclusive percentage or fixed
+  Quote discount applies to the complete subtotal before configured tax; it
+  records the authenticated SystemUser and server time, and its reason is
+  optional. Manual Tax Total is accepted only without a configured Tax Rate.
 - Lifecycle contract: new Quotes may be Draft or Sent only. Draft has no
   downstream consequences and Sent sets `sent_at`; Accepted is a separate
   action invoking the atomic acceptance coordinator. Rejecting or expiring one
@@ -249,6 +252,16 @@ depend on HTTP request/response or exception types.
   rows stack on narrow screens; each Line Item becomes a touch-friendly card;
   keyboard focus, accessible labels, and light/dark variants use shared admin
   design tokens.
+
+## Quote discounts history page contract
+
+The complete command, evidence, migration, and page contract is
+`docs/designs/QUOTE_DISCOUNT_HISTORY.md`. `sales.quote_authoring` owns current
+discount application, replacement, removal, recalculation, and append-only
+history. `sales.quote_discount_reporting` owns the filtered staff projection at
+`/admin/sales/quote-discounts`. Previous Quote Line Item discounts remain
+read-only historical evidence and new writers always store zero in that legacy
+field.
 
 ## Configuration versus code contracts
 

@@ -15,7 +15,16 @@ from app.models.billing import TaxRate
 from app.models.field_material import FieldInventoryItem
 from app.models.party import Party, PartyIdentityStatus, PartyType
 from app.models.project import ProjectType
-from app.models.sales import Lead, LeadStatus, Quote, QuoteLineItem, QuoteStatus
+from app.models.sales import (
+    Lead,
+    LeadStatus,
+    Quote,
+    QuoteDiscountAction,
+    QuoteDiscountHistory,
+    QuoteDiscountType,
+    QuoteLineItem,
+    QuoteStatus,
+)
 from app.models.system_user import SystemUser
 from app.services import web_sales
 from app.services.db_session_adapter import db_session_adapter
@@ -97,6 +106,9 @@ def _create(db_session, actor: SystemUser, lead: Lead, **overrides: object) -> U
         "project_type": ProjectType.fiber_optics_installation.value,
         "tax_rate_id": None,
         "manual_tax_total": "0.00",
+        "discount_type": None,
+        "discount_value": None,
+        "discount_reason": None,
         "expires_at": None,
         "is_active": True,
         "notes": None,
@@ -107,7 +119,6 @@ def _create(db_session, actor: SystemUser, lead: Lead, **overrides: object) -> U
         "descriptions": [""],
         "quantities": [""],
         "unit_prices": [""],
-        "discount_percents": [""],
         "sub_offer_ids": [""],
         "inventory_item_ids": [""],
     }
@@ -299,7 +310,7 @@ def test_empty_rows_are_ignored_and_zero_value_quotes_remain_supported(db_sessio
     assert quote.total == Decimal("0.00")
 
 
-def test_custom_discounted_lines_and_manual_tax_are_server_calculated(db_session):
+def test_quote_percentage_discount_and_manual_tax_are_server_calculated(db_session):
     actor, lead, _party = _identity(db_session)
     quote_id = _create(
         db_session,
@@ -308,7 +319,9 @@ def test_custom_discounted_lines_and_manual_tax_are_server_calculated(db_session
         descriptions=["Custom fiber design"],
         quantities=["1.333"],
         unit_prices=["100.00"],
-        discount_percents=["10"],
+        discount_type=QuoteDiscountType.percentage.value,
+        discount_value="10",
+        discount_reason="Commercial approval",
         sub_offer_ids=[""],
         inventory_item_ids=[""],
         manual_tax_total="5.55",
@@ -316,23 +329,33 @@ def test_custom_discounted_lines_and_manual_tax_are_server_calculated(db_session
     quote = db_session.get(Quote, quote_id)
     line = db_session.query(QuoteLineItem).filter_by(quote_id=quote_id).one()
 
-    assert line.amount == Decimal("119.97")
-    assert quote.subtotal == Decimal("119.97")
+    history = db_session.query(QuoteDiscountHistory).filter_by(quote_id=quote_id).one()
+
+    assert line.discount_percent == Decimal("0.00")
+    assert line.amount == Decimal("133.30")
+    assert quote.subtotal == Decimal("133.30")
+    assert quote.discount_type == QuoteDiscountType.percentage.value
+    assert quote.discount_value == Decimal("10.00")
+    assert quote.discount_amount == Decimal("13.33")
+    assert quote.discounted_subtotal == Decimal("119.97")
     assert quote.tax_total == Decimal("5.55")
     assert quote.total == Decimal("125.52")
+    assert quote.discount_reason == "Commercial approval"
+    assert quote.discount_applied_by_system_user_id == actor.id
+    assert quote.discount_applied_at is not None
+    assert history.action == QuoteDiscountAction.applied.value
+    assert history.actor_system_user_id == actor.id
+    assert history.discount_amount == Decimal("13.33")
 
 
 @pytest.mark.parametrize(
-    ("quantity", "price", "discount", "message"),
+    ("quantity", "price", "message"),
     [
-        ("0", "10", "0", "greater than zero"),
-        ("1", "-0.01", "0", "cannot be negative"),
-        ("1", "10", "100.01", "between 0 and 100"),
+        ("0", "10", "greater than zero"),
+        ("1", "-0.01", "cannot be negative"),
     ],
 )
-def test_invalid_line_numbers_fail_closed(
-    db_session, quantity, price, discount, message
-):
+def test_invalid_line_numbers_fail_closed(db_session, quantity, price, message):
     actor, lead, _party = _identity(db_session)
     with pytest.raises(quote_authoring.QuoteAuthoringError, match=message):
         _create(
@@ -342,7 +365,35 @@ def test_invalid_line_numbers_fail_closed(
             descriptions=["Custom line"],
             quantities=[quantity],
             unit_prices=[price],
-            discount_percents=[discount],
+        )
+
+
+@pytest.mark.parametrize(
+    ("discount_type", "discount_value", "message"),
+    [
+        (QuoteDiscountType.percentage.value, "100.01", "greater than 100"),
+        (
+            QuoteDiscountType.fixed_amount.value,
+            "10.01",
+            "greater than the Quote subtotal",
+        ),
+        (QuoteDiscountType.fixed_amount.value, "0", "greater than zero"),
+    ],
+)
+def test_invalid_quote_discounts_fail_closed(
+    db_session, discount_type, discount_value, message
+):
+    actor, lead, _party = _identity(db_session)
+    with pytest.raises(quote_authoring.QuoteAuthoringError, match=message):
+        _create(
+            db_session,
+            actor,
+            lead,
+            descriptions=["Custom line"],
+            quantities=["1"],
+            unit_prices=["10"],
+            discount_type=discount_type,
+            discount_value=discount_value,
         )
 
 
@@ -362,7 +413,6 @@ def test_configured_tax_is_authoritative_and_inactive_tax_fails(db_session):
         descriptions=["Installation"],
         quantities=["2"],
         unit_prices=["100.00"],
-        discount_percents=["0"],
     )
     quote = db_session.get(Quote, quote_id)
     assert quote.subtotal == Decimal("200.00")
@@ -387,7 +437,6 @@ def test_inventory_identifier_must_be_active_and_match_description(db_session):
         descriptions=["Drop cable — CBL-1"],
         quantities=["1"],
         unit_prices=["0"],
-        discount_percents=["0"],
         inventory_item_ids=[str(item.id)],
     )
     line = db_session.query(QuoteLineItem).filter_by(quote_id=quote_id).one()
@@ -402,7 +451,6 @@ def test_inventory_identifier_must_be_active_and_match_description(db_session):
             descriptions=["Unrelated custom text"],
             quantities=["1"],
             unit_prices=["0"],
-            discount_percents=["0"],
             inventory_item_ids=[str(item.id)],
         )
 
@@ -439,7 +487,6 @@ def test_sent_is_the_only_non_draft_initial_status(db_session):
         descriptions=["Survey"],
         quantities=["1"],
         unit_prices=["0"],
-        discount_percents=["0"],
     )
     assert db_session.get(Quote, sent_id).sent_at is not None
 

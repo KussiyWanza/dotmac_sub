@@ -20,6 +20,7 @@ from app.models.sales import (
     LeadCaptureMethod,
     LeadSourcePlatform,
     LeadStatus,
+    QuoteDiscountType,
     QuoteStatus,
 )
 from app.schemas.subscriber import SubscriberCreate
@@ -273,6 +274,13 @@ class QuoteRead(QuoteBase):
 
     id: UUID
     sales_order_id: UUID | None = None
+    discount_type: QuoteDiscountType | None = None
+    discount_value: Decimal | None = None
+    discount_amount: Decimal = Decimal("0.00")
+    discount_reason: str | None = None
+    discount_applied_by_system_user_id: UUID | None = None
+    discount_applied_at: datetime | None = None
+    discount_revision: int = 0
     created_at: datetime
     updated_at: datetime
 
@@ -284,7 +292,6 @@ class QuoteLineItemBase(BaseModel):
     description: str = Field(min_length=1, max_length=255)
     quantity: Decimal = Field(default=Decimal("1.000"), gt=0)
     unit_price: Decimal = Field(default=Decimal("0.00"), ge=0)
-    discount_percent: Decimal = Field(default=Decimal("0.00"), ge=0, le=100)
     amount: Decimal = Field(default=Decimal("0.00"), ge=0)
     metadata_: dict | None = Field(default=None, serialization_alias="metadata")
 
@@ -298,7 +305,6 @@ class QuoteLineItemUpdate(BaseModel):
     description: str | None = Field(default=None, min_length=1, max_length=255)
     quantity: Decimal | None = Field(default=None, gt=0)
     unit_price: Decimal | None = Field(default=None, ge=0)
-    discount_percent: Decimal | None = Field(default=None, ge=0, le=100)
     amount: Decimal | None = Field(default=None, ge=0)
     metadata_: dict | None = Field(default=None, serialization_alias="metadata")
 
@@ -307,4 +313,6 @@ class QuoteLineItemRead(QuoteLineItemBase):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
     id: UUID
+    # Historical read-only evidence; new Line Items always store zero.
+    discount_percent: Decimal = Decimal("0.00")
     created_at: datetime

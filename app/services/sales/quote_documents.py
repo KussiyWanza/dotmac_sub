@@ -106,6 +106,10 @@ class QuoteDocumentSnapshot:
     customer_name: str
     install_address: str | None
     subtotal: Decimal
+    discount_type: str | None
+    discount_value: Decimal | None
+    discount_amount: Decimal
+    discounted_subtotal: Decimal
     tax_rate: Decimal | None
     tax_total: Decimal
     total: Decimal
@@ -126,6 +130,12 @@ class QuoteDocumentSnapshot:
             "customer_name": self.customer_name,
             "install_address": self.install_address,
             "subtotal": str(self.subtotal),
+            "discount_type": self.discount_type,
+            "discount_value": (
+                str(self.discount_value) if self.discount_value is not None else None
+            ),
+            "discount_amount": str(self.discount_amount),
+            "discounted_subtotal": str(self.discounted_subtotal),
             "tax_rate": str(self.tax_rate) if self.tax_rate is not None else None,
             "tax_total": str(self.tax_total),
             "total": str(self.total),
@@ -249,6 +259,20 @@ def load_quote_document_snapshot(value: object) -> QuoteDocumentSnapshot:
                 else None
             ),
             subtotal=Decimal(str(value["subtotal"])),
+            discount_type=(
+                str(value["discount_type"])
+                if value.get("discount_type") is not None
+                else None
+            ),
+            discount_value=(
+                Decimal(str(value["discount_value"]))
+                if value.get("discount_value") is not None
+                else None
+            ),
+            discount_amount=Decimal(str(value.get("discount_amount") or "0.00")),
+            discounted_subtotal=Decimal(
+                str(value.get("discounted_subtotal") or value["subtotal"])
+            ),
             tax_rate=(
                 Decimal(str(value["tax_rate"]))
                 if value.get("tax_rate") is not None
@@ -463,6 +487,10 @@ def _snapshot(db: Session, quote: Quote) -> tuple[QuoteDocumentSnapshot, str | N
         customer_name=recipient.display_name if recipient else "Customer",
         install_address=str(install.get("address") or "").strip() or None,
         subtotal=quote.subtotal or Decimal("0.00"),
+        discount_type=quote.discount_type,
+        discount_value=quote.discount_value,
+        discount_amount=quote.discount_amount or Decimal("0.00"),
+        discounted_subtotal=quote.discounted_subtotal,
         tax_rate=quote.tax_rate,
         tax_total=quote.tax_total or Decimal("0.00"),
         total=quote.total or Decimal("0.00"),
@@ -537,19 +565,42 @@ def _render_html(snapshot: QuoteDocumentSnapshot, logo_src: str | None) -> str:
     brand = snapshot.brand
     address = brand.legal_address
     currency = html.escape(snapshot.currency)
+    has_legacy_line_discount = any(line.discount_percent for line in snapshot.lines)
     rows = (
         "".join(
             "<tr>"
             f"<td>{html.escape(line.description)}</td>"
             f"<td class='num'>{html.escape(str(line.quantity))}</td>"
             f"<td class='num'>{currency} {_money(line.unit_price)}</td>"
-            f"<td class='num'>{html.escape(str(line.discount_percent))}%</td>"
-            f"<td class='num'>{currency} {_money(line.amount)}</td>"
-            "</tr>"
+            + (
+                f"<td class='num'>{html.escape(str(line.discount_percent))}%</td>"
+                if has_legacy_line_discount
+                else ""
+            )
+            + f"<td class='num'>{currency} {_money(line.amount)}</td>"
+            + "</tr>"
             for line in snapshot.lines
         )
-        or "<tr><td colspan='5'>No line items</td></tr>"
+        or f"<tr><td colspan='{5 if has_legacy_line_discount else 4}'>No line items</td></tr>"
     )
+    line_discount_header = (
+        "<th class='num'>Previous line discount</th>"
+        if has_legacy_line_discount
+        else ""
+    )
+    quote_discount = ""
+    if snapshot.discount_type is not None and snapshot.discount_value is not None:
+        value_label = (
+            f"{html.escape(str(snapshot.discount_value))}%"
+            if snapshot.discount_type == "percentage"
+            else f"{currency} {_money(snapshot.discount_value)}"
+        )
+        quote_discount = (
+            "<div><span>Quote discount "
+            f"({value_label})</span><span>-{currency} {_money(snapshot.discount_amount)}</span></div>"
+            "<div><span>Subtotal after discount</span>"
+            f"<span>{currency} {_money(snapshot.discounted_subtotal)}</span></div>"
+        )
     company_lines = [
         brand.legal_name or brand.name or "Dotmac",
         str(address.get("street1") or ""),
@@ -617,8 +668,9 @@ td {{ border-bottom:1px solid #e2e8f0; padding:9px; }}
 <div><strong>Reference</strong><br>{html.escape(str(snapshot.quote_id))}<br>
 <strong>Issued</strong> {_date(snapshot.created_at)}<br><strong>Expires</strong> {_date(snapshot.expires_at)}</div></div>
 {install_markup}
-<table><thead><tr><th>Description</th><th class='num'>Qty</th><th class='num'>Unit price</th><th class='num'>Discount</th><th class='num'>Amount</th></tr></thead><tbody>{rows}</tbody></table>
+<table><thead><tr><th>Description</th><th class='num'>Qty</th><th class='num'>Unit price</th>{line_discount_header}<th class='num'>Amount</th></tr></thead><tbody>{rows}</tbody></table>
 <div class='totals'><div><span>Subtotal</span><span>{currency} {_money(snapshot.subtotal)}</span></div>
+{quote_discount}
 <div><span>Tax</span><span>{currency} {_money(snapshot.tax_total)}</span></div>
 <div class='grand'><span>Total</span><span>{currency} {_money(snapshot.total)}</span></div></div>
 <section class='payment-section'><h2 class='payment-title'>Ways to make payment</h2>

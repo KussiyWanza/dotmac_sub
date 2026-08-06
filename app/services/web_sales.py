@@ -45,6 +45,7 @@ from app.models.sales import (
     LeadStatus,
     Pipeline,
     PipelineStage,
+    QuoteDiscountType,
     QuoteStatus,
     SalesOrder,
     SalesOrderPaymentStatus,
@@ -88,11 +89,13 @@ from app.services.sales import (
     quote_activity,
     quote_authoring,
     quote_delivery,
+    quote_discount_reporting,
     quote_documents,
 )
 from app.services.sales.selfserve import compute_feasibility
 from app.services.sales_orders import _resolve_project_for_sales_order
 from app.services.team_inbox_projection import list_agent_options
+from app.timezone import APP_TIMEZONE
 
 logger = logging.getLogger(__name__)
 
@@ -345,6 +348,21 @@ QUOTE_LIST_DEFINITION = ListDefinition(
         ListFieldDefinition("updated_at", "Updated", sortable=True),
     ),
     default_sort="created_at",
+    default_sort_dir="desc",
+)
+
+QUOTE_DISCOUNT_LIST_DEFINITION = ListDefinition(
+    key="quote_discounts",
+    fields=(
+        ListFieldDefinition("customer", "Customer", searchable=True),
+        ListFieldDefinition("date_from", "From date", filterable=True),
+        ListFieldDefinition("date_to", "To date", filterable=True),
+        ListFieldDefinition("salesperson_id", "Salesperson", filterable=True),
+        ListFieldDefinition("discount_type", "Discount type", filterable=True),
+        ListFieldDefinition("quote_status", "Quote status", filterable=True),
+        ListFieldDefinition("applied_at", "Applied", sortable=True),
+    ),
+    default_sort="applied_at",
     default_sort_dir="desc",
 )
 
@@ -2196,6 +2214,9 @@ def _quote_form_fields(
     tax_rate: str | None = None,
     tax_rate_id: str | None = None,
     manual_tax_total: str | None = None,
+    discount_type: str | None = None,
+    discount_value: str | None = None,
+    discount_reason: str | None = None,
     project_type: str | None = None,
     expires_at: str | None = None,
     notes: str | None = None,
@@ -2215,6 +2236,9 @@ def _quote_form_fields(
         "tax_rate": (tax_rate or "").strip(),
         "tax_rate_id": (tax_rate_id or "").strip(),
         "manual_tax_total": (manual_tax_total or "0.00").strip(),
+        "discount_type": (discount_type or "").strip(),
+        "discount_value": (discount_value or "").strip(),
+        "discount_reason": (discount_reason or "").strip(),
         "project_type": (project_type or "").strip(),
         "expires_at": (expires_at or "").strip(),
         "notes": (notes or "").strip(),
@@ -2230,7 +2254,6 @@ def _quote_form_fields(
                 "description": "",
                 "quantity": "",
                 "unit_price": "",
-                "discount_percent": "",
                 "sub_offer_id": "",
                 "inventory_item_id": "",
             }
@@ -2243,7 +2266,6 @@ def quote_form_item_rows(
     descriptions: list[str],
     quantities: list[str],
     unit_prices: list[str],
-    discount_percents: list[str],
     sub_offer_ids: list[str],
     inventory_item_ids: list[str],
 ) -> list[dict[str, str]]:
@@ -2253,7 +2275,6 @@ def quote_form_item_rows(
         len(descriptions),
         len(quantities),
         len(unit_prices),
-        len(discount_percents),
         len(sub_offer_ids),
         len(inventory_item_ids),
         1,
@@ -2263,9 +2284,6 @@ def quote_form_item_rows(
             "description": descriptions[index] if index < len(descriptions) else "",
             "quantity": quantities[index] if index < len(quantities) else "",
             "unit_price": unit_prices[index] if index < len(unit_prices) else "",
-            "discount_percent": (
-                discount_percents[index] if index < len(discount_percents) else ""
-            ),
             "sub_offer_id": (
                 sub_offer_ids[index] if index < len(sub_offer_ids) else ""
             ),
@@ -2408,6 +2426,10 @@ def _quote_form_options(db: Session) -> dict[str, Any]:
             {"value": value, "label": label}
             for value, label in QUOTE_PROJECT_TYPE_OPTIONS
         ],
+        "discount_types": [
+            {"value": QuoteDiscountType.percentage.value, "label": "Percentage"},
+            {"value": QuoteDiscountType.fixed_amount.value, "label": "Fixed Amount"},
+        ],
         "form_warnings": warnings,
     }
 
@@ -2432,6 +2454,7 @@ def build_quote_new_context(
         "action_url": "/admin/sales/quotes",
         "error": None,
         "is_editing": False,
+        "discount_applied_date": datetime.now(APP_TIMEZONE).date().isoformat(),
     }
     context.update(options)
     return context
@@ -2452,6 +2475,11 @@ def build_quote_edit_context(db: Session, *, quote_id: str) -> dict[str, Any]:
             tax_rate=str(quote.tax_rate) if quote.tax_rate is not None else None,
             tax_rate_id=str(meta.get("tax_rate_id") or ""),
             manual_tax_total=(str(quote.tax_total)),
+            discount_type=quote.discount_type,
+            discount_value=(
+                str(quote.discount_value) if quote.discount_value is not None else None
+            ),
+            discount_reason=quote.discount_reason,
             project_type=str(quote.project_type or ""),
             expires_at=(
                 quote.expires_at.strftime("%Y-%m-%dT%H:%M")
@@ -2516,6 +2544,7 @@ def build_quote_form_error_context(
             f"/admin/sales/quotes/{quote_id}/edit" if editing else "/admin/sales/quotes"
         ),
         "is_editing": editing,
+        "discount_applied_date": datetime.now(APP_TIMEZONE).date().isoformat(),
     }
     context.update(options)
     return context
@@ -2552,6 +2581,9 @@ def create_quote_from_form(
     project_type: str | None,
     tax_rate_id: str | None,
     manual_tax_total: str | None,
+    discount_type: str | None,
+    discount_value: str | None,
+    discount_reason: str | None,
     expires_at: str | None,
     is_active: bool,
     notes: str | None,
@@ -2562,7 +2594,6 @@ def create_quote_from_form(
     descriptions: list[str],
     quantities: list[str],
     unit_prices: list[str],
-    discount_percents: list[str],
     sub_offer_ids: list[str],
     inventory_item_ids: list[str],
 ) -> str:
@@ -2604,7 +2635,6 @@ def create_quote_from_form(
         len(descriptions),
         len(quantities),
         len(unit_prices),
-        len(discount_percents),
         len(sub_offer_ids),
         len(inventory_item_ids),
         0,
@@ -2615,9 +2645,6 @@ def create_quote_from_form(
             "description": descriptions[index] if index < len(descriptions) else "",
             "quantity": quantities[index] if index < len(quantities) else "",
             "unit_price": unit_prices[index] if index < len(unit_prices) else "",
-            "discount_percent": (
-                discount_percents[index] if index < len(discount_percents) else ""
-            ),
             "sub_offer_id": (
                 sub_offer_ids[index] if index < len(sub_offer_ids) else ""
             ),
@@ -2638,11 +2665,6 @@ def create_quote_from_form(
                 unit_price=parsed_decimal(
                     raw["unit_price"], f"Line Item {index + 1} Unit Price"
                 ),
-                discount_percent=parsed_decimal(
-                    raw["discount_percent"],
-                    f"Line Item {index + 1} Discount",
-                    blank=Decimal("0"),
-                ),
                 sub_offer_id=parsed_uuid(
                     raw["sub_offer_id"], f"Line Item {index + 1} offer"
                 ),
@@ -2652,6 +2674,23 @@ def create_quote_from_form(
                 ),
             )
         )
+
+    requested_discount: quote_authoring.QuoteDiscountInput | None = None
+    raw_discount_type = (discount_type or "").strip()
+    raw_discount_value = (discount_value or "").strip()
+    raw_discount_reason = (discount_reason or "").strip()
+    if raw_discount_type:
+        try:
+            selected_discount_type = QuoteDiscountType(raw_discount_type)
+        except ValueError:
+            raise ValueError("Select Percentage or Fixed Amount.") from None
+        requested_discount = quote_authoring.QuoteDiscountInput(
+            discount_type=selected_discount_type,
+            value=parsed_decimal(raw_discount_value, "Discount value"),
+            reason=raw_discount_reason or None,
+        )
+    elif raw_discount_value or raw_discount_reason:
+        raise ValueError("Select a Discount type before entering discount details.")
 
     try:
         actor_id = UUID(str(actor_system_user_id))
@@ -2694,6 +2733,7 @@ def create_quote_from_form(
             region=(region or "").strip() or None,
         ),
         lines=tuple(line_drafts),
+        discount=requested_discount,
     )
     db_session_adapter.release_read_transaction(db)
     outcome = quote_authoring.author_quote(db, command)
@@ -2751,7 +2791,6 @@ def add_quote_line_item_from_form(
     description: str | None,
     quantity: str | None,
     unit_price: str | None,
-    discount_percent: str | None,
     context: CommandContext | None = None,
 ) -> None:
     """Add a priced line to a quote.
@@ -2777,7 +2816,6 @@ def add_quote_line_item_from_form(
         description=clean_description,
         quantity=_decimal(quantity, "Quantity", "1"),
         unit_price=_decimal(unit_price, "Unit price", "0"),
-        discount_percent=_decimal(discount_percent, "Discount", "0"),
     )
     sales_service.quote_line_items.create(db, payload, context=context)
 
@@ -2789,6 +2827,56 @@ def delete_quote_line_item(
     context: CommandContext | None = None,
 ) -> None:
     sales_service.quote_line_items.delete(db, item_id, context=context)
+
+
+def change_quote_discount_from_form(
+    db: Session,
+    *,
+    quote_id: str,
+    actor_system_user_id: str,
+    expected_revision: str | None,
+    discount_type: str | None,
+    discount_value: str | None,
+    discount_reason: str | None,
+    remove: bool,
+    context: CommandContext,
+) -> quote_authoring.ChangeQuoteDiscountOutcome:
+    try:
+        quote_uuid = UUID(str(quote_id))
+        actor_uuid = UUID(str(actor_system_user_id))
+        revision = int((expected_revision or "0").strip())
+    except (TypeError, ValueError):
+        raise ValueError("The Quote discount request is not valid.") from None
+    if revision < 0:
+        raise ValueError("The Quote discount revision is not valid.")
+
+    discount: quote_authoring.QuoteDiscountInput | None = None
+    if not remove:
+        try:
+            selected_type = QuoteDiscountType((discount_type or "").strip())
+        except ValueError:
+            raise ValueError("Select Percentage or Fixed Amount.") from None
+        try:
+            value = Decimal((discount_value or "").strip())
+        except (ArithmeticError, ValueError):
+            raise ValueError("Discount value must be a number.") from None
+        discount = quote_authoring.QuoteDiscountInput(
+            discount_type=selected_type,
+            value=value,
+            reason=(discount_reason or "").strip() or None,
+        )
+
+    db_session_adapter.release_read_transaction(db)
+    return quote_authoring.change_quote_discount(
+        db,
+        quote_authoring.ChangeQuoteDiscountCommand(
+            context=context,
+            quote_id=quote_uuid,
+            actor_system_user_id=actor_uuid,
+            expected_revision=revision,
+            discount=discount,
+        ),
+    )
 
 
 def set_quote_status(
@@ -2967,6 +3055,163 @@ def build_quotes_failure_context(
     }
 
 
+def build_quote_discounts_list_context(
+    db: Session,
+    *,
+    date_from: str | None,
+    date_to: str | None,
+    customer: str | None,
+    salesperson_id: str | None,
+    discount_type: str | None,
+    quote_status: str | None,
+    page: int,
+    per_page: int,
+) -> dict[str, Any]:
+    def parsed_date(value: str | None, label: str) -> date | None:
+        candidate = (value or "").strip()
+        if not candidate:
+            return None
+        try:
+            return date.fromisoformat(candidate)
+        except ValueError:
+            raise ValueError(f"{label} must be a valid date.") from None
+
+    def parsed_uuid(value: str | None) -> UUID | None:
+        candidate = (value or "").strip()
+        if not candidate:
+            return None
+        try:
+            return UUID(candidate)
+        except ValueError:
+            raise ValueError("Select a valid salesperson.") from None
+
+    try:
+        selected_type = (
+            QuoteDiscountType((discount_type or "").strip())
+            if (discount_type or "").strip()
+            else None
+        )
+    except ValueError:
+        raise ValueError("Select a valid Discount type.") from None
+    try:
+        selected_status = (
+            QuoteStatus((quote_status or "").strip())
+            if (quote_status or "").strip()
+            else None
+        )
+    except ValueError:
+        raise ValueError("Select a valid Quote status.") from None
+
+    safe_per_page = (
+        per_page
+        if per_page in QUOTE_DISCOUNT_LIST_DEFINITION.per_page_options
+        else QUOTE_DISCOUNT_LIST_DEFINITION.default_per_page
+    )
+    result = quote_discount_reporting.list_quote_discount_history(
+        db,
+        quote_discount_reporting.QuoteDiscountHistoryQuery(
+            date_from=parsed_date(date_from, "From date"),
+            date_to=parsed_date(date_to, "To date"),
+            customer=" ".join((customer or "").split()) or None,
+            salesperson_id=parsed_uuid(salesperson_id),
+            discount_type=selected_type,
+            quote_status=selected_status,
+            page=max(1, page),
+            page_size=safe_per_page,
+        ),
+    )
+    filters = {
+        "date_from": (date_from or "").strip() or None,
+        "date_to": (date_to or "").strip() or None,
+        "salesperson_id": (salesperson_id or "").strip() or None,
+        "discount_type": selected_type.value if selected_type else None,
+        "quote_status": selected_status.value if selected_status else None,
+    }
+    list_query = QUOTE_DISCOUNT_LIST_DEFINITION.build_query(
+        search=" ".join((customer or "").split()) or None,
+        filters=filters,
+        sort_by="applied_at",
+        sort_dir="desc",
+        page=result.page,
+        per_page=result.page_size,
+    )
+    page_meta = PageMeta.from_query(list_query, result.total_count)
+    return {
+        "discounts": list(result.items),
+        "actors": list(quote_discount_reporting.quote_discount_actor_options(db)),
+        "discount_types": list(QuoteDiscountType),
+        "quote_statuses": list(QuoteStatus),
+        "list_query": list_query,
+        "page_meta": page_meta,
+        "total": result.total_count,
+        "date_from": filters["date_from"] or "",
+        "date_to": filters["date_to"] or "",
+        "customer": list_query.search or "",
+        "salesperson_id": filters["salesperson_id"] or "",
+        "discount_type": filters["discount_type"] or "",
+        "quote_status": filters["quote_status"] or "",
+    }
+
+
+def build_quote_discounts_failure_context(
+    *,
+    date_from: str | None,
+    date_to: str | None,
+    customer: str | None,
+    salesperson_id: str | None,
+    discount_type: str | None,
+    quote_status: str | None,
+    page: int,
+    per_page: int,
+) -> dict[str, Any]:
+    """Build a retryable discount-history state without database access."""
+
+    normalized_type = _clean_choice(
+        discount_type, [item.value for item in QuoteDiscountType]
+    )
+    normalized_status = _clean_choice(
+        quote_status, [item.value for item in QuoteStatus]
+    )
+    normalized_actor = _clean_uuid(salesperson_id)
+    safe_per_page = (
+        per_page
+        if per_page in QUOTE_DISCOUNT_LIST_DEFINITION.per_page_options
+        else QUOTE_DISCOUNT_LIST_DEFINITION.default_per_page
+    )
+    filters = {
+        "date_from": (date_from or "").strip() or None,
+        "date_to": (date_to or "").strip() or None,
+        "salesperson_id": normalized_actor,
+        "discount_type": normalized_type,
+        "quote_status": normalized_status,
+    }
+    list_query = QUOTE_DISCOUNT_LIST_DEFINITION.build_query(
+        search=" ".join((customer or "").split()) or None,
+        filters=filters,
+        sort_by="applied_at",
+        sort_dir="desc",
+        page=max(1, page),
+        per_page=safe_per_page,
+    )
+    return {
+        "discounts": [],
+        "actors": [],
+        "discount_types": list(QuoteDiscountType),
+        "quote_statuses": list(QuoteStatus),
+        "list_query": list_query,
+        "page_meta": PageMeta.from_query(list_query, 0),
+        "total": 0,
+        "date_from": filters["date_from"] or "",
+        "date_to": filters["date_to"] or "",
+        "customer": list_query.search or "",
+        "salesperson_id": filters["salesperson_id"] or "",
+        "discount_type": filters["discount_type"] or "",
+        "quote_status": filters["quote_status"] or "",
+        "error": "Quote discounts could not be loaded. No Quote data was changed.",
+        "retry_url": list_query.url("/admin/sales/quote-discounts"),
+    }
+
+
 def build_quote_detail_context(db: Session, *, quote_id: str) -> dict[str, Any]:
     quote = sales_service.quotes.get(db, quote_id)
     items = sales_service.quote_line_items.list(
@@ -3006,6 +3251,21 @@ def build_quote_detail_context(db: Session, *, quote_id: str) -> dict[str, Any]:
     elif expires_at_utc is not None and expires_at_utc <= datetime.now(UTC):
         email_reason = "This Quote has expired."
 
+    discount_change_reason: str | None = None
+    if not quote.is_active:
+        discount_change_reason = "This Quote is inactive."
+    elif quote.status == QuoteStatus.accepted.value:
+        discount_change_reason = "Accepted Quotes cannot be changed."
+    elif quote.status not in {QuoteStatus.draft.value, QuoteStatus.sent.value}:
+        discount_change_reason = "Only Draft or Sent Quotes can be discounted."
+    discount_actor = quote.discount_applied_by
+    discount_actor_label = None
+    if discount_actor is not None:
+        discount_actor_label = (
+            discount_actor.display_name
+            or f"{discount_actor.first_name} {discount_actor.last_name}".strip()
+        )
+
     return {
         "quote": quote,
         "items": items,
@@ -3023,6 +3283,16 @@ def build_quote_detail_context(db: Session, *, quote_id: str) -> dict[str, Any]:
         "pricing_mode": meta.get("pricing_mode"),
         "feasibility": feasibility,
         "install": install,
+        "discount_types": [
+            {"value": QuoteDiscountType.percentage.value, "label": "Percentage"},
+            {"value": QuoteDiscountType.fixed_amount.value, "label": "Fixed Amount"},
+        ],
+        "discount_actor_label": discount_actor_label,
+        "discount_action": {
+            "allowed": discount_change_reason is None,
+            "reason": discount_change_reason,
+            "request_id": str(uuid4()),
+        },
         "email_action": {
             "allowed": email_reason is None,
             "reason": email_reason,

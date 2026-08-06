@@ -187,6 +187,55 @@ def test_quote_authoring_cannot_perform_sales_conversion():
     assert '"project_template_unconfigured"' in projects
 
 
+def test_quote_discounts_are_quote_level_audited_and_history_preserving():
+    authoring = _source("app/services/sales/quote_authoring.py")
+    model = _source("app/models/sales.py")
+    sales = _source("app/services/sales/service.py")
+    schema = _source("app/schemas/sales.py")
+    route = _source("app/web/admin/sales.py")
+    form = _source("templates/admin/sales/quotes/form.html")
+    history_page = _source("templates/admin/sales/quotes/discounts.html")
+    migration = _source("alembic/versions/480_quote_discount_history.py")
+
+    assert "class QuoteDiscountInput" in authoring
+    assert 'concern="Quote discount lifecycle and append-only history"' in authoring
+    assert "def change_quote_discount(" in authoring
+    assert "_stage_discount_history(" in authoring
+    for event_name in (
+        "quote_discount_applied",
+        "quote_discount_changed",
+        "quote_discount_removed",
+    ):
+        assert f"EventType.{event_name}" in authoring
+    assert "db.commit(" not in authoring
+    assert "db.rollback(" not in authoring
+
+    assert "class QuoteDiscountHistory" in model
+    assert 'event.listens_for(QuoteDiscountHistory, "before_update")' in model
+    assert 'event.listens_for(QuoteDiscountHistory, "before_delete")' in model
+    assert 'data["discount_percent"] = Decimal("0.00")' in sales
+    assert "assert_line_mutation_allowed(" in sales
+    assert "active_discount_blocks_line_mutation" in authoring
+
+    line_input = schema.split("class QuoteLineItemBase", 1)[1].split(
+        "class QuoteLineItemRead", 1
+    )[0]
+    assert "discount_percent" not in line_input
+    assert "item_discount_percent" not in form
+    assert 'name="discount_type"' in form
+    assert 'name="discount_value"' in form
+
+    assert '"/quote-discounts"' in route
+    assert 'require_permission("crm:quote:read")' in route
+    assert "Original Subtotal" in history_page
+    assert "Applied By / Date" in history_page
+    assert "md:hidden" in history_page
+    assert "Retry" in history_page
+
+    assert "quote_discount_history_append_only" in migration
+    assert 'drop_column("quote_line_items", "discount_percent")' not in migration
+
+
 def test_admin_new_lead_uses_one_registered_authoring_owner():
     authoring = _source("app/services/sales/lead_authoring.py")
     route = _source("app/web/admin/sales.py")

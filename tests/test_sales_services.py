@@ -378,7 +378,7 @@ def test_quote_sent_stamps_sent_at(db_session):
     assert quote.sent_at is not None
 
 
-def test_quote_line_amount_discount_and_totals(db_session):
+def test_quote_line_amount_and_totals_are_gross(db_session):
     subscriber = _make_subscriber(db_session)
     quote = _make_quote(db_session, subscriber, tax_rate=Decimal("7.5"))
     item = sales_service.quote_line_items.create(
@@ -388,24 +388,24 @@ def test_quote_line_amount_discount_and_totals(db_session):
             description="Installation",
             quantity=Decimal("2"),
             unit_price=Decimal("100.00"),
-            discount_percent=Decimal("10"),
         ),
     )
-    assert item.amount == Decimal("180.00")
+    assert item.discount_percent == Decimal("0.00")
+    assert item.amount == Decimal("200.00")
 
     db_session.refresh(quote)
-    assert quote.subtotal == Decimal("180.00")
-    assert quote.tax_total == Decimal("13.50")
-    assert quote.total == Decimal("193.50")
+    assert quote.subtotal == Decimal("200.00")
+    assert quote.tax_total == Decimal("15.00")
+    assert quote.total == Decimal("215.00")
 
     sales_service.quote_line_items.update(
         db_session,
         str(item.id),
-        QuoteLineItemUpdate(discount_percent=Decimal("0")),
+        QuoteLineItemUpdate(quantity=Decimal("3")),
     )
     db_session.refresh(quote)
-    assert quote.subtotal == Decimal("200.00")
-    assert quote.total == Decimal("215.00")
+    assert quote.subtotal == Decimal("300.00")
+    assert quote.total == Decimal("322.50")
 
 
 def test_quote_count_by_status(db_session):

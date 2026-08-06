@@ -67,13 +67,17 @@ def _quote_command_context(
     quote_id: str,
     *,
     action: str = "accept",
+    command_id: UUID | None = None,
 ) -> CommandContext:
     return CommandContext.system(
         actor=str(getattr(request.state, "actor_id", None) or "admin-sales-user"),
         scope=f"sales:quote-{action}",
         reason=f"Admin Quote {action}",
+        command_id=command_id,
         idempotency_key=(
-            f"quote-acceptance:{quote_id}" if action == "accept" else None
+            f"quote-acceptance:{quote_id}"
+            if action == "accept"
+            else (f"quote-{action}:{quote_id}:{command_id}" if command_id else None)
         ),
     )
 
@@ -847,7 +851,7 @@ def pipeline_create(
             ),
             status_code=303,
         )
-    except (ValidationError, ValueError) as exc:
+    except (DomainError, ValidationError, ValueError) as exc:
         db.rollback()
         error = _error_detail(exc)
 
@@ -1200,6 +1204,83 @@ def quotes_list(
     return templates.TemplateResponse("admin/sales/quotes/index.html", context)
 
 
+@router.get(
+    "/quote-discounts",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("crm:quote:read"))],
+)
+def quote_discounts_list(
+    request: Request,
+    date_from: str | None = Query(default=None),
+    date_to: str | None = Query(default=None),
+    customer: str | None = Query(default=None),
+    salesperson_id: str | None = Query(default=None),
+    discount_type: str | None = Query(default=None),
+    quote_status: str | None = Query(default=None),
+    page: int = Query(default=1),
+    per_page: int = Query(default=25),
+    db: Session = Depends(get_db),
+):
+    context = _ctx(request, db, "sales-quote-discounts")
+    try:
+        context.update(
+            web_sales_service.build_quote_discounts_list_context(
+                db,
+                date_from=date_from,
+                date_to=date_to,
+                customer=customer,
+                salesperson_id=salesperson_id,
+                discount_type=discount_type,
+                quote_status=quote_status,
+                page=page,
+                per_page=per_page,
+            )
+        )
+    except SQLAlchemyError as exc:
+        logger.error(
+            "sales_quote_discounts_list_load_failed",
+            extra={
+                "error_type": type(exc).__name__,
+                "route": "/admin/sales/quote-discounts",
+                "has_customer_filter": bool((customer or "").strip()),
+            },
+        )
+        db_session_adapter.release_read_transaction(db)
+        context.update(
+            web_sales_service.build_quote_discounts_failure_context(
+                date_from=date_from,
+                date_to=date_to,
+                customer=customer,
+                salesperson_id=salesperson_id,
+                discount_type=discount_type,
+                quote_status=quote_status,
+                page=page,
+                per_page=per_page,
+            )
+        )
+        return templates.TemplateResponse(
+            "admin/sales/quotes/discounts.html", context, status_code=503
+        )
+    except (DomainError, ValueError) as exc:
+        context.update(
+            web_sales_service.build_quote_discounts_failure_context(
+                date_from=date_from,
+                date_to=date_to,
+                customer=customer,
+                salesperson_id=salesperson_id,
+                discount_type=discount_type,
+                quote_status=quote_status,
+                page=page,
+                per_page=per_page,
+            )
+        )
+        context["error"] = _error_detail(exc)
+        return templates.TemplateResponse(
+            "admin/sales/quotes/discounts.html", context, status_code=400
+        )
+    return templates.TemplateResponse("admin/sales/quotes/discounts.html", context)
+
+
 # NOTE: `/quotes/new` must stay above `/quotes/{quote_id}` or the detail route
 # captures "new" as an id.
 @router.get(
@@ -1231,6 +1312,9 @@ def quote_create(
     project_type: str | None = Form(default=None),
     tax_rate_id: str | None = Form(default=None),
     manual_tax_total: str | None = Form(default=None),
+    discount_type: str | None = Form(default=None),
+    discount_value: str | None = Form(default=None),
+    discount_reason: str | None = Form(default=None),
     expires_at: str | None = Form(default=None),
     is_active: str | None = Form(default=None),
     notes: str | None = Form(default=None),
@@ -1241,7 +1325,6 @@ def quote_create(
     item_description: list[str] = Form(default=[]),
     item_quantity: list[str] = Form(default=[]),
     item_unit_price: list[str] = Form(default=[]),
-    item_discount_percent: list[str] = Form(default=[]),
     item_sub_offer_id: list[str] = Form(default=[]),
     item_inventory_item_id: list[str] = Form(default=[]),
     db: Session = Depends(get_db),
@@ -1251,7 +1334,6 @@ def quote_create(
         descriptions=item_description,
         quantities=item_quantity,
         unit_prices=item_unit_price,
-        discount_percents=item_discount_percent,
         sub_offer_ids=item_sub_offer_id,
         inventory_item_ids=item_inventory_item_id,
     )
@@ -1263,6 +1345,9 @@ def quote_create(
         "project_type": project_type,
         "tax_rate_id": tax_rate_id,
         "manual_tax_total": manual_tax_total,
+        "discount_type": discount_type,
+        "discount_value": discount_value,
+        "discount_reason": discount_reason,
         "expires_at": expires_at,
         "is_active": active,
         "notes": notes,
@@ -1283,6 +1368,9 @@ def quote_create(
             project_type=project_type,
             tax_rate_id=tax_rate_id,
             manual_tax_total=manual_tax_total,
+            discount_type=discount_type,
+            discount_value=discount_value,
+            discount_reason=discount_reason,
             expires_at=expires_at,
             is_active=active,
             notes=notes,
@@ -1293,7 +1381,6 @@ def quote_create(
             descriptions=item_description,
             quantities=item_quantity,
             unit_prices=item_unit_price,
-            discount_percents=item_discount_percent,
             sub_offer_ids=item_sub_offer_id,
             inventory_item_ids=item_inventory_item_id,
         )
@@ -1481,7 +1568,6 @@ def quote_line_item_add(
     description: str | None = Form(default=None),
     quantity: str | None = Form(default=None),
     unit_price: str | None = Form(default=None),
-    discount_percent: str | None = Form(default=None),
     db: Session = Depends(get_db),
 ):
     try:
@@ -1491,10 +1577,9 @@ def quote_line_item_add(
             description=description,
             quantity=quantity,
             unit_price=unit_price,
-            discount_percent=discount_percent,
             context=_quote_command_context(request, quote_id, action="line-add"),
         )
-    except (ValidationError, ValueError) as exc:
+    except (DomainError, ValidationError, ValueError) as exc:
         db.rollback()
         context = _ctx(request, db, "sales-quotes")
         context.update(
@@ -1517,12 +1602,74 @@ def quote_line_item_delete(
     item_id: str,
     db: Session = Depends(get_db),
 ):
-    web_sales_service.delete_quote_line_item(
-        db,
-        item_id,
-        context=_quote_command_context(request, quote_id, action="line-remove"),
-    )
+    try:
+        web_sales_service.delete_quote_line_item(
+            db,
+            item_id,
+            context=_quote_command_context(request, quote_id, action="line-remove"),
+        )
+    except (DomainError, ValidationError, ValueError) as exc:
+        context = _ctx(request, db, "sales-quotes")
+        context.update(
+            web_sales_service.build_quote_detail_context(db, quote_id=quote_id)
+        )
+        context["error"] = _error_detail(exc)
+        return templates.TemplateResponse(
+            "admin/sales/quotes/detail.html", context, status_code=400
+        )
     return RedirectResponse(url=f"/admin/sales/quotes/{quote_id}", status_code=303)
+
+
+@router.post(
+    "/quotes/{quote_id}/discount",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("crm:quote:write"))],
+)
+def quote_discount_change(
+    request: Request,
+    quote_id: str,
+    request_id: str = Form(...),
+    expected_revision: str | None = Form(default=None),
+    discount_type: str | None = Form(default=None),
+    discount_value: str | None = Form(default=None),
+    discount_reason: str | None = Form(default=None),
+    action: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
+    try:
+        command_id = UUID(request_id)
+        remove = (action or "").strip() == "remove"
+        outcome = web_sales_service.change_quote_discount_from_form(
+            db,
+            quote_id=quote_id,
+            actor_system_user_id=_quote_actor_system_user_id(request),
+            expected_revision=expected_revision,
+            discount_type=discount_type,
+            discount_value=discount_value,
+            discount_reason=discount_reason,
+            remove=remove,
+            context=_quote_command_context(
+                request,
+                quote_id,
+                action="discount-remove" if remove else "discount-save",
+                command_id=command_id,
+            ),
+        )
+    except (DomainError, ValidationError, ValueError) as exc:
+        context = _ctx(request, db, "sales-quotes")
+        context.update(
+            web_sales_service.build_quote_detail_context(db, quote_id=quote_id)
+        )
+        context["error"] = _error_detail(exc)
+        return templates.TemplateResponse(
+            "admin/sales/quotes/detail.html", context, status_code=400
+        )
+    notice = (
+        "discount_removed" if outcome.action.value == "removed" else "discount_saved"
+    )
+    return RedirectResponse(
+        url=f"/admin/sales/quotes/{quote_id}?notice={notice}", status_code=303
+    )
 
 
 @router.post(
