@@ -242,11 +242,11 @@
                         </div>
                         <div
                             class="md:col-span-2 xl:col-span-2"
-                            x-data="infrastructurePicker({
+                            x-data='infrastructurePicker({
                                 type: {{ (infrastructure_type or '') | tojson }},
                                 id: {{ (infrastructure_id or '') | tojson }},
                                 selected: {{ selected_infrastructure | tojson }}
-                            })"
+                            })'
                         >
                             <div class="grid gap-3 sm:grid-cols-2">
                                 <div>
