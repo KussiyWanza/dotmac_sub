@@ -233,7 +233,10 @@ SERVICES: tuple[SOTService, ...] = (
             "fingerprinted exact-service create/link/deactivate repair. The "
             "reviewed projection command may converge only the exact "
             "Subscription.ipv4_address copy; its durable event delegates "
-            "RADIUS and old-IP session consequences to their owners. Normal "
+            "RADIUS and one-shot old-IP session consequences to their owners. "
+            "Authoritative radacct closure is bounded-polled without issuing a "
+            "second disconnect, and operator verification follows the exact "
+            "durable event UUID returned by the typed command. Normal "
             "provisioning writers remain declared migration debt until the "
             "later runtime cutover. The admin subscription replacement "
             "adapter is cut over to the two reviewed owner commands and is "
@@ -397,6 +400,7 @@ SERVICES: tuple[SOTService, ...] = (
                     "network.ip_assignment_lifecycle.command_contract_violation",
                     "network.ip_assignment_lifecycle.duplicate_assignment",
                     "network.ip_assignment_lifecycle.empty_cohort",
+                    "network.ip_assignment_lifecycle.event_identity_unavailable",
                     "network.ip_assignment_lifecycle.idempotency_conflict",
                     "network.ip_assignment_lifecycle.invalid_command_context",
                     "network.ip_assignment_lifecycle.missing_idempotency_key",
@@ -436,8 +440,10 @@ SERVICES: tuple[SOTService, ...] = (
                     "evidence without customer identity data."
                 ),
                 replay=(
-                    "The durable batch audit row and item audit rows "
-                    "reconstruct each ownership or lifecycle outcome."
+                    "The durable batch audit row and item audit rows reconstruct "
+                    "each ownership or lifecycle outcome. Served-projection "
+                    "outcomes retain the exact durable event UUID; adapters "
+                    "never infer success from the newest event."
                 ),
             ),
             projections=(
@@ -491,9 +497,11 @@ SERVICES: tuple[SOTService, ...] = (
                         "or session-conflicted evidence fails closed."
                     ),
                     drift_signal=(
-                        "The exact-service IP consistency audit compares one "
-                        "unambiguous assignment to served and policy-aware "
-                        "RADIUS projections."
+                        "The full-fleet gate always compares every ACTIVE/BLOCKED "
+                        "projected subscription, independent of NAS/session "
+                        "scope. Session parity is separately valid only when "
+                        "the complete mirror satisfies its owner freshness "
+                        "policy."
                     ),
                     rebuild_operation=(
                         "Run the dry-run exact-service projection adapter, "
@@ -519,8 +527,9 @@ SERVICES: tuple[SOTService, ...] = (
                 cutover_gate=(
                     "Every active assignment has an exact service link or "
                     "reviewed quarantine reason; reviewed repair converges "
-                    "the IPAM ledger and served/RADIUS/session projections; "
-                    "remaining projection drift is near zero before "
+                    "the IPAM ledger and served/RADIUS/session projections; all "
+                    "fleetwide gate classes read zero and the session mirror is "
+                    "complete and fresh across two population cycles before "
                     "unconditional exact-service runtime cutover."
                 ),
                 fallback_retirement=(
@@ -538,6 +547,9 @@ SERVICES: tuple[SOTService, ...] = (
             test_refs=(
                 "tests/test_ip_assignment_repair.py",
                 "tests/test_ip_assignment_lifecycle.py",
+                "tests/test_enforcement_terminal_polling.py",
+                "tests/test_event_terminal_wait.py",
+                "tests/test_nas_session_ip_divergence_audit.py",
                 "tests/test_web_ipv4_projection_reconciliation.py",
                 "tests/architecture/test_ip_assignment_service_ownership.py",
             ),

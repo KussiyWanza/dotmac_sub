@@ -11,9 +11,16 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import timedelta
 from uuid import UUID, uuid4
 
 from app.db import SessionLocal
+from app.services.event_store import (
+    EventTerminalDisposition,
+    WaitForEventTerminalQuery,
+    wait_for_event_terminal,
+)
+from app.services.events.types import EventType
 from app.services.ip_assignment_lifecycle import (
     RepairServiceIPv4ProjectionCommand,
     preview_service_ipv4_projection_repair,
@@ -38,6 +45,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--idempotency-key")
     parser.add_argument("--actor")
     parser.add_argument("--reason")
+    parser.add_argument(
+        "--event-timeout-seconds",
+        type=float,
+        default=60.0,
+        help="Wait this long for this repair's exact durable event (default: 60).",
+    )
     return parser
 
 
@@ -51,6 +64,8 @@ def _required(parser: argparse.ArgumentParser, value: str | None, flag: str) -> 
 def main() -> int:
     parser = _parser()
     args = parser.parse_args()
+    if args.event_timeout_seconds <= 0:
+        parser.error("--event-timeout-seconds must be positive")
     with SessionLocal() as session:
         preview = preview_service_ipv4_projection_repair(
             session,
@@ -117,6 +132,7 @@ def main() -> int:
                 {
                     "subscription_id": str(outcome.subscription_id),
                     "assignment_id": str(outcome.assignment_id),
+                    "event_id": str(outcome.event_id),
                     "previous_address": outcome.previous_address,
                     "desired_address": outcome.desired_address,
                     "observed_active_sessions": outcome.observed_active_sessions,
@@ -127,6 +143,29 @@ def main() -> int:
                 sort_keys=True,
             )
         )
+        terminal = wait_for_event_terminal(
+            session,
+            WaitForEventTerminalQuery(
+                event_id=outcome.event_id,
+                event_type=EventType.ip_assignment_served_projection_repaired,
+                timeout=timedelta(seconds=args.event_timeout_seconds),
+            ),
+        )
+        print(
+            json.dumps(
+                {
+                    "event_id": str(terminal.event_id),
+                    "event_type": terminal.event_type.value,
+                    "event_status": terminal.disposition.value,
+                    "retry_count": terminal.retry_count,
+                    "failed_handlers": list(terminal.failed_handlers),
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        if terminal.disposition is not EventTerminalDisposition.completed:
+            return 2
     return 0
 
 

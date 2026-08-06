@@ -34,7 +34,7 @@ Findings — per-session verdicts:
   - ``session_no_subscription`` — live session whose login resolves to no
     projected subscription.
 
-Findings — ledger health for subscriptions in scope:
+Findings — fleetwide ledger/projection gate for every projected subscription:
 
   - ``duplicate_login_subscription`` — one login carries more than one ACTIVE
     subscription. ``radius_session_reconcile._resolve_active_subs`` binds the
@@ -77,12 +77,16 @@ Scoping:
 
 ``--nas`` matches case-insensitively against the NAS device name, code, or
 ``nas_ip``, and against the session's raw ``nas_ip_address`` so sessions whose
-``nas_device_id`` never resolved are still scoped. Per-session and ledger-health
-findings cover the scoped set only. The two duplicate classes are computed
-FLEET-WIDE and reported when a group touches the scoped set — a collision's
-counterparty is frequently on another NAS — with each member labelled in or out
-of scope. ``ledger_integrity_violation`` ignores scoping entirely: a broken
-uniqueness guarantee is a database-wide fact.
+``nas_device_id`` never resolved are still scoped. Only session-observation
+findings are NAS-scoped. Ledger health and served-projection gate findings are
+always computed and reported across the full projected population; otherwise
+ordinary session churn changes the alleged cutover cohort. ``--full`` controls
+only output truncation and never changes audit scope.
+
+Session-derived results are valid only when every mirror row is within the
+owning resolver's freshness policy. A stale or empty mirror is reported as an
+unavailable session gate and produces a non-zero exit even when finding counts
+are zero.
 
 Usage (inside the app container so the DB resolves):
 
@@ -129,6 +133,17 @@ _FINDING_KINDS = (
     "session_ip_untracked",
     "session_no_subscription",
 )
+
+_SESSION_FINDING_KINDS = frozenset(
+    {
+        "session_ip_conflict",
+        "session_ip_mismatch",
+        "duplicate_session_ip",
+        "session_ip_untracked",
+        "session_no_subscription",
+    }
+)
+_FLEETWIDE_GATE_FINDING_KINDS = frozenset(_FINDING_KINDS) - (_SESSION_FINDING_KINDS)
 
 
 def _norm(ip: object) -> str:
@@ -228,6 +243,7 @@ def _subscription_state(
             if service_counts[subscriber_id] == 1
             else []
         )
+        subscriber_legacy_ips = sorted(set(legacy.get(subscriber_id, [])))
         state[sub_id] = {
             "subscription_id": sub_id,
             "subscriber_id": subscriber_id,
@@ -235,6 +251,7 @@ def _subscription_state(
             "column_ip": column_ip,
             "owner_ips": owner_ips,
             "legacy_owner_ips": legacy_ips,
+            "subscriber_legacy_owner_ips": subscriber_legacy_ips,
             "owner_ip": owner_ips[0] if len(owner_ips) == 1 else "",
             "ambiguous": len(owner_ips) > 1,
         }
@@ -310,13 +327,35 @@ def audit(db: Session, nas_filter: str | None) -> dict[str, Any]:
         }
         for address, holding in sorted(ledger_violations.items())
     ]
+    subscriptions_by_subscriber: dict[str, list[dict[str, Any]]] = {}
+    for info in state.values():
+        subscriptions_by_subscriber.setdefault(info["subscriber_id"], []).append(info)
+    findings["legacy_unbound_assignment"] = [
+        {
+            "address": address,
+            "subscriber_id": subscriber_id,
+            "projected_subscriptions": sorted(
+                (
+                    {
+                        "subscription_id": info["subscription_id"],
+                        "login": info["login"],
+                    }
+                    for info in subscriptions_by_subscriber.get(subscriber_id, [])
+                ),
+                key=lambda item: item["subscription_id"],
+            ),
+        }
+        for address, subscription_id, subscriber_id in sorted(assignments)
+        if not subscription_id
+    ]
 
     # Pass 1 — classify every live session fleet-wide. Duplicate detection needs
     # the counterparty even when it sits on a different NAS, so the scope filter
     # is recorded here and applied only to per-session adjudication below.
+    mirror_rows = db.scalars(select(RadiusActiveSession)).all()
     live: list[dict[str, Any]] = []
     stale = 0
-    for session in db.scalars(select(RadiusActiveSession)).all():
+    for session in mirror_rows:
         fresh_at = _aware(session.last_update) or _aware(session.session_start)
         if fresh_at is None or fresh_at < cutoff:
             stale += 1
@@ -357,7 +396,6 @@ def audit(db: Session, nas_filter: str | None) -> dict[str, Any]:
     }
 
     # Pass 2 — per-session verdicts, scoped set only.
-    unbound_logins: set[str] = set()
     for entry in scoped:
         observed = entry["observed_ip"]
         sub_id = entry["subscription_id"]
@@ -367,7 +405,6 @@ def audit(db: Session, nas_filter: str | None) -> dict[str, Any]:
         # login has several ACTIVE subscriptions. That is a guess, so no verdict
         # may rest on it.
         if entry["login"] in duplicate_logins:
-            unbound_logins.add(entry["login"])
             continue
 
         info = state.get(sub_id)
@@ -381,6 +418,7 @@ def audit(db: Session, nas_filter: str | None) -> dict[str, Any]:
             "owner_ip": info["owner_ip"],
             "owner_ips": info["owner_ips"],
             "legacy_owner_ips": info["legacy_owner_ips"],
+            "subscriber_legacy_owner_ips": info["subscriber_legacy_owner_ips"],
             "column_ip": info["column_ip"],
         }
 
@@ -408,7 +446,9 @@ def audit(db: Session, nas_filter: str | None) -> dict[str, Any]:
         if observed and observed not in ipam_known:
             findings["session_ip_untracked"].append(row)
 
-    for login in sorted(unbound_logins):
+    # Login ambiguity is a fleetwide service-identity gate, not a property of
+    # whichever subscriptions happened to have a fresh session this minute.
+    for login in sorted(duplicate_logins):
         findings["duplicate_login_subscription"].append(
             {
                 "login": login,
@@ -418,8 +458,8 @@ def audit(db: Session, nas_filter: str | None) -> dict[str, Any]:
             }
         )
 
-    # Pass 3 — per-subscription ledger health, scoped set only, deduped.
-    for sub_id in sorted(scoped_subscription_ids):
+    # Pass 3 — ledger/projection health across the entire projected population.
+    for sub_id in sorted(state):
         info = state.get(sub_id)
         if info is None or info["login"] in duplicate_logins:
             continue
@@ -433,9 +473,11 @@ def audit(db: Session, nas_filter: str | None) -> dict[str, Any]:
         }
         if info["ambiguous"]:
             findings["ambiguous_service_assignment"].append(row)
-        elif not info["owner_ip"] and info["legacy_owner_ips"]:
-            findings["legacy_unbound_assignment"].append(row)
-        elif not info["owner_ip"] and info["column_ip"]:
+        elif (
+            not info["owner_ip"]
+            and info["column_ip"]
+            and info["column_ip"] not in info["subscriber_legacy_owner_ips"]
+        ):
             findings["served_projection_unowned"].append(row)
         elif (
             info["owner_ip"]
@@ -444,9 +486,8 @@ def audit(db: Session, nas_filter: str | None) -> dict[str, Any]:
         ):
             findings["served_projection_stale"].append(row)
 
-    # Pass 4 — duplicates. Computed fleet-wide, reported when the group touches
-    # the scoped set, with each member labelled so the off-NAS counterparty of
-    # a scoped collision is visible rather than filtered away.
+    # Pass 4 — session duplicates remain NAS-scoped but include the fleetwide
+    # counterparty. Served projection duplicates are an unconditional gate.
     sessions_by_ip: dict[str, list[dict[str, Any]]] = {}
     for entry in live:
         if entry["observed_ip"]:
@@ -475,9 +516,7 @@ def audit(db: Session, nas_filter: str | None) -> dict[str, Any]:
         if info["column_ip"]:
             subs_by_served_ip.setdefault(info["column_ip"], []).append(info)
     for ip, infos in sorted(subs_by_served_ip.items()):
-        if len(infos) > 1 and any(
-            i["subscription_id"] in scoped_subscription_ids for i in infos
-        ):
+        if len(infos) > 1:
             findings["duplicate_served_projection"].append(
                 {
                     "served_ip": ip,
@@ -501,6 +540,11 @@ def audit(db: Session, nas_filter: str | None) -> dict[str, Any]:
                 }
             )
 
+    session_snapshot_status = (
+        "empty" if not mirror_rows else "stale" if stale else "fresh"
+    )
+    session_gate_valid = session_snapshot_status == "fresh"
+    counts = {k: len(v) for k, v in findings.items()}
     return {
         "nas_filter": nas_filter or "(all)",
         "freshness_policy": (
@@ -509,10 +553,19 @@ def audit(db: Session, nas_filter: str | None) -> dict[str, Any]:
         ),
         "sessions_live_fleetwide": len(live),
         "sessions_stale_skipped": stale,
+        "session_snapshot_status": session_snapshot_status,
+        "session_gate_valid": session_gate_valid,
         "sessions_in_scope": len(scoped),
         "subscriptions_in_scope": len(scoped_subscription_ids),
         "subscriptions_projected": len(state),
-        "counts": {k: len(v) for k, v in findings.items()},
+        "gate_population": "all ACTIVE/BLOCKED projected subscriptions",
+        "gate_counts": {
+            kind: counts[kind] for kind in sorted(_FLEETWIDE_GATE_FINDING_KINDS)
+        },
+        "session_counts": {
+            kind: counts[kind] for kind in sorted(_SESSION_FINDING_KINDS)
+        },
+        "counts": counts,
         "findings": findings,
     }
 
@@ -543,7 +596,9 @@ def main() -> int:
         result["sample_limit"] = SAMPLE_LIMIT
 
     print(json.dumps(result, indent=2, sort_keys=True))
-    return 0 if not any(result["counts"].values()) else 1
+    return (
+        0 if result["session_gate_valid"] and not any(result["counts"].values()) else 1
+    )
 
 
 if __name__ == "__main__":

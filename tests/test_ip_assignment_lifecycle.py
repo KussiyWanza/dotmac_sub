@@ -770,8 +770,10 @@ def test_projection_repair_converges_exact_service_and_stages_consequence(
     assert subscription.ipv4_address == "10.30.0.101"
     assert outcome.previous_address == "10.30.0.100"
     assert outcome.desired_address == "10.30.0.101"
+    assert isinstance(outcome.event_id, UUID)
     assert outcome.replayed is False
     assert replay.replayed is True
+    assert replay.event_id == outcome.event_id
     assert (
         db_session.scalar(
             select(func.count(AuditEvent.id)).where(
@@ -781,6 +783,11 @@ def test_projection_repair_converges_exact_service_and_stages_consequence(
         )
         == 1
     )
+    event_record = db_session.scalar(
+        select(EventStore).where(EventStore.event_id == outcome.event_id)
+    )
+    assert event_record is not None
+    assert event_record.payload["preview_fingerprint"] == preview.fingerprint
     assert (
         db_session.scalar(
             select(func.count(EventStore.id)).where(

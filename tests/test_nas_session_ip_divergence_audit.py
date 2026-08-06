@@ -122,6 +122,8 @@ def test_freshness_follows_the_session_resolver_policy(db_session, catalog_offer
     result = audit(db_session, "eagle")
 
     assert result["sessions_stale_skipped"] == 1
+    assert result["session_snapshot_status"] == "stale"
+    assert result["session_gate_valid"] is False
     assert result["sessions_in_scope"] == 1
     assert (
         str(int(ACTIVE_SESSION_FRESHNESS.total_seconds())) in result["freshness_policy"]
@@ -188,7 +190,42 @@ def test_legacy_unbound_assignment_still_holds_the_address(db_session, catalog_o
     # backed — so it is migration debt, not an unowned projection.
     assert result["counts"]["served_projection_unowned"] == 0
     assert result["counts"]["legacy_unbound_assignment"] == 1
+    assert result["findings"]["legacy_unbound_assignment"][0]["address"] == (
+        "172.16.7.4"
+    )
     assert result["counts"]["session_ip_untracked"] == 0
+
+
+def test_every_legacy_assignment_is_gated_even_when_service_grain_is_ambiguous(
+    db_session, catalog_offer
+):
+    subscriber = _subscriber(db_session, "legacy-multi")
+    _sub(
+        db_session,
+        catalog_offer,
+        login="legacy-multi-a",
+        subscriber=subscriber,
+    )
+    _sub(
+        db_session,
+        catalog_offer,
+        login="legacy-multi-b",
+        subscriber=subscriber,
+    )
+    _assign(
+        db_session,
+        subscriber=subscriber,
+        subscription=None,
+        ip="172.16.7.8",
+    )
+    db_session.commit()
+
+    result = audit(db_session, None)
+
+    assert result["gate_counts"]["legacy_unbound_assignment"] == 1
+    finding = result["findings"]["legacy_unbound_assignment"][0]
+    assert finding["address"] == "172.16.7.8"
+    assert len(finding["projected_subscriptions"]) == 2
 
 
 def test_duplicate_login_subscriptions_fail_closed(db_session, catalog_offer):
@@ -283,8 +320,10 @@ def test_duplicate_served_projection_is_the_real_duplicate_class(
     assert result["counts"]["ledger_integrity_violation"] == 0
 
 
-def test_duplicates_that_never_touch_the_scoped_nas_stay_out(db_session, catalog_offer):
-    """A --nas eagle run must not report fleet-wide noise from other NASes."""
+def test_projection_gate_is_fleetwide_even_when_session_audit_is_nas_scoped(
+    db_session, catalog_offer
+):
+    """NAS scope cannot narrow the population used for a cutover gate."""
     eagle = _nas(db_session, "Eagle Access")
     other = _nas(db_session, "Kubwa Access")
     clean = _sub(
@@ -301,11 +340,30 @@ def test_duplicates_that_never_touch_the_scoped_nas_stay_out(db_session, catalog
     db_session.commit()
 
     scoped = audit(db_session, "eagle")
-    assert scoped["counts"]["duplicate_served_projection"] == 0
+    assert scoped["counts"]["duplicate_served_projection"] == 1
     assert scoped["counts"]["session_ip_conflict"] == 0
     assert scoped["counts"]["session_ip_mismatch"] == 0
+    assert scoped["gate_population"] == "all ACTIVE/BLOCKED projected subscriptions"
 
     assert audit(db_session, None)["counts"]["duplicate_served_projection"] == 1
+
+
+def test_projection_gate_does_not_require_a_live_session(db_session, catalog_offer):
+    _sub(
+        db_session,
+        catalog_offer,
+        login="offline-stale",
+        column_ip="172.16.11.9",
+        owned_ips=["172.16.11.1"],
+    )
+    db_session.commit()
+
+    result = audit(db_session, "eagle")
+
+    assert result["sessions_in_scope"] == 0
+    assert result["session_snapshot_status"] == "empty"
+    assert result["session_gate_valid"] is False
+    assert result["gate_counts"]["served_projection_stale"] == 1
 
 
 def test_ambiguous_assignments_suppress_mismatch_but_not_conflict(

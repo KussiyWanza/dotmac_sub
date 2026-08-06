@@ -39,11 +39,10 @@ def test_handler_projects_radius_before_old_ip_only_disconnect(
         require_projected=lambda: order.append("radius") or projected
     )
 
-    def _disconnect(*_args, **kwargs):
+    def _disconnect(_db, command):
         order.append("disconnect")
-        assert kwargs["framed_ip_address"] == "10.40.0.1"
-        assert kwargs["require_terminal"] is True
-        return 1
+        assert str(command.framed_ipv4_address) == "10.40.0.1"
+        assert str(command.subscription_id) == str(subscription.id)
 
     event = Event(
         event_type=EventType.ip_assignment_served_projection_repaired,
@@ -64,7 +63,7 @@ def test_handler_projects_radius_before_old_ip_only_disconnect(
             return_value=projected,
         ),
         patch(
-            "app.services.enforcement.disconnect_subscription_sessions",
+            "app.services.enforcement.disconnect_subscription_sessions_confirmed",
             side_effect=_disconnect,
         ),
     ):

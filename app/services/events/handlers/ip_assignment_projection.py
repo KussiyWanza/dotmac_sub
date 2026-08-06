@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from ipaddress import AddressValueError, IPv4Address
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -31,7 +32,8 @@ class IPAssignmentProjectionHandler:
             subscription_id = UUID(str(event.payload["subscription_id"]))
             previous_address = _norm(str(event.payload["previous_address"]))
             desired_address = _norm(str(event.payload["desired_address"]))
-        except (KeyError, TypeError, ValueError) as exc:
+            previous_ipv4 = IPv4Address(previous_address)
+        except (AddressValueError, KeyError, TypeError, ValueError) as exc:
             raise IPAssignmentProjectionConsequenceError(
                 "Invalid IP assignment projection event context."
             ) from exc
@@ -50,19 +52,26 @@ class IPAssignmentProjectionHandler:
                 "Served IPv4 no longer matches the committed projection event."
             )
 
-        from app.services.enforcement import disconnect_subscription_sessions
+        from app.services.enforcement import (
+            ConfirmedSessionDisconnectCommand,
+            SessionDisconnectReason,
+            disconnect_subscription_sessions_confirmed,
+        )
         from app.services.radius import reconcile_subscription_connectivity
 
         reconcile_subscription_connectivity(
             db,
             str(subscription_id),
         ).require_projected()
-        disconnect_subscription_sessions(
+        disconnect_subscription_sessions_confirmed(
             db,
-            str(subscription_id),
-            reason="ip_assignment_served_projection_repaired",
-            framed_ip_address=previous_address,
-            require_terminal=True,
+            ConfirmedSessionDisconnectCommand(
+                subscription_id=subscription_id,
+                framed_ipv4_address=previous_ipv4,
+                reason=(
+                    SessionDisconnectReason.ip_assignment_served_projection_repaired
+                ),
+            ),
         )
 
 
