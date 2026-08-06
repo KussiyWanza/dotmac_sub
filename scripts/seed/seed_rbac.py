@@ -428,6 +428,8 @@ ROLE_PERMISSIONS = {
         "operations:service_team:retire",
         "operations:expense_request:read",
         "operations:expense_request:write",
+        "operations:material_request:read",
+        "operations:material_request:write",
         "reports:network:read",
         "reports:network:export",
         "reports:support:read",

@@ -37,6 +37,10 @@
 {% if work_order.project_id %}<input type="hidden" name="project_id" value="{{ work_order.project_id }}">{% endif %}<input type="hidden" name="work_type" value="{{ work_order.work_type or 'install' }}"><input type="hidden" name="requires_as_built_evidence" value="{{ 1 if work_order.requires_as_built_evidence else 0 }}">
 <div class="sm:col-span-2 flex justify-end"><button class="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white">Save planning details</button></div></form>
 {% endcall %}{% endif %}
+{% call card('Material requests', color='amber') %}
+<div class="mb-4 flex items-center justify-between gap-3"><p class="text-sm text-slate-500">Sub-owned material dependencies for this field visit.</p>{% if can(request, 'operations:material_request:write') %}<a href="/admin/operations/material-requests/new?work_order_id={{ work_order.id }}" class="rounded-xl bg-amber-600 px-3 py-2 text-sm font-semibold text-white">Request materials</a>{% endif %}</div>
+{% if material_requests %}<div class="space-y-2">{% for material_request in material_requests %}<a href="/admin/operations/material-requests/{{ material_request.id }}" class="flex items-center justify-between rounded-xl border border-slate-200 p-3 hover:bg-slate-50"><span><strong>{{ material_request.created_at | app_datetime('%d %b %Y %H:%M') }}</strong><span class="ml-2 text-sm text-slate-500">{{ material_request.items | length }} item(s)</span></span>{{ status_badge(material_request.status.value|replace('_', ' ')|title, variant='info') }}</a>{% endfor %}</div>{% else %}<p class="rounded-xl bg-slate-50 p-4 text-sm text-slate-500">No material request has been recorded for this work order.</p>{% endif %}
+{% endcall %}
 </div><aside class="space-y-6 xl:col-span-4">{% call card('Dispatch technician', color='cyan') %}
 <p class="mb-4 text-sm text-slate-500">Creation defines the work scope. Assignment is the next dispatch decision.</p>
 {% if action_permitted(request, queue_action) %}<form method="post" action="/admin/dispatch/work-orders/{{ work_order.public_id }}/queue" class="space-y-3">{% include "components/forms/csrf_input.html" %}
