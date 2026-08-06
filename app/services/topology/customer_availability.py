@@ -87,15 +87,24 @@ class CustomerAvailability:
     period_seconds: int
     serving_elements: list[ServingElement] = field(default_factory=list)
     infrastructure_downtime_seconds: int = 0
+    infrastructure_observed_days: int = 0
     tickets: list[ProviderFaultTicket] = field(default_factory=list)
     ticket_downtime_seconds: int = 0
     path_gap: str | None = None
 
     @property
     def has_infrastructure_coverage(self) -> bool:
-        """False when Sub cannot resolve the customer's path or has no
-        snapshots, in which case the numbers below are not evidence."""
-        return bool(self.serving_elements)
+        """Whether every serving element has trustworthy evidence every day.
+
+        Anything less is partial monitoring, so missing days or path elements
+        must not be silently counted as uptime.
+        """
+
+        return (
+            bool(self.serving_elements)
+            and self.period_days > 0
+            and self.infrastructure_observed_days >= self.period_days
+        )
 
     @property
     def infrastructure_uptime_percent(self) -> float:
@@ -165,7 +174,7 @@ def _infrastructure_downtime(
     *,
     start: datetime,
     end: datetime,
-) -> int:
+) -> tuple[int, int]:
     """Worst-per-day downtime across the serving elements, summed.
 
     Snapshots are daily aggregates, so per-day overlap between two elements
@@ -173,22 +182,25 @@ def _infrastructure_downtime(
     combination — a shared outage counts once, not once per element.
     """
     if not elements:
-        return 0
+        return 0, 0
 
     keys = [(e.element_type, e.element_id) for e in elements]
     rows = (
         session.query(AvailabilitySnapshot)
         .filter(AvailabilitySnapshot.snapshot_date >= start)
-        .filter(AvailabilitySnapshot.snapshot_date <= end)
+        .filter(AvailabilitySnapshot.snapshot_date < end)
         .all()
     )
     wanted = set(keys)
     by_day: dict[object, int] = {}
+    observed_keys_by_day: dict[object, set[tuple[str, uuid.UUID]]] = {}
     per_element: dict[tuple[str, uuid.UUID], int] = {}
 
     for row in rows:
         key = (row.element_type, row.element_id)
         if key not in wanted:
+            continue
+        if row.uptime_percent is None:
             continue
         downtime = int(row.downtime_seconds or 0)
         day = (
@@ -197,6 +209,7 @@ def _infrastructure_downtime(
             else row.snapshot_date
         )
         by_day[day] = max(by_day.get(day, 0), downtime)
+        observed_keys_by_day.setdefault(day, set()).add(key)
         per_element[key] = per_element.get(key, 0) + downtime
 
     for element in elements:
@@ -204,7 +217,10 @@ def _infrastructure_downtime(
             (element.element_type, element.element_id), 0
         )
 
-    return sum(by_day.values())
+    fully_observed_days = sum(
+        1 for observed_keys in observed_keys_by_day.values() if wanted <= observed_keys
+    )
+    return sum(by_day.values()), fully_observed_days
 
 
 def _provider_fault_tickets(
@@ -292,7 +308,9 @@ def customer_availability(
         )
         elements, gap = [], "path resolution failed"
 
-    infra_downtime = _infrastructure_downtime(session, elements, start=start, end=end)
+    infra_downtime, observed_days = _infrastructure_downtime(
+        session, elements, start=start, end=end
+    )
     tickets, ticket_downtime = _provider_fault_tickets(
         session,
         getattr(subscription, "subscriber_id", None),
@@ -307,6 +325,7 @@ def customer_availability(
         period_seconds=int((end - start).total_seconds()),
         serving_elements=elements,
         infrastructure_downtime_seconds=infra_downtime,
+        infrastructure_observed_days=observed_days,
         tickets=tickets,
         ticket_downtime_seconds=ticket_downtime,
         path_gap=gap,

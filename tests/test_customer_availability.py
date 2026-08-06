@@ -9,11 +9,14 @@ NOW = datetime(2026, 7, 24, 12, 0, tzinfo=UTC)
 
 
 class _Snap:
-    def __init__(self, element_type, element_id, day, downtime):
+    def __init__(
+        self, element_type, element_id, day, downtime, *, uptime_percent=100.0
+    ):
         self.element_type = element_type
         self.element_id = element_id
         self.snapshot_date = day
         self.downtime_seconds = downtime
+        self.uptime_percent = uptime_percent
 
 
 class _Ticket:
@@ -74,10 +77,10 @@ def _pop(label="BTS Apo"):
 def test_uptime_is_computed_from_serving_infrastructure(monkeypatch):
     el = _pop()
     _elements(monkeypatch, [el])
-    day = NOW - timedelta(days=2)
+    day = NOW - timedelta(hours=12)
     session = _Session(snaps=[_Snap("pop_site", el.element_id, day, 3600)])
 
-    report = ca.customer_availability(session, _Sub(), days=30, now=NOW)
+    report = ca.customer_availability(session, _Sub(), days=1, now=NOW)
 
     assert report.infrastructure_downtime_seconds == 3600
     assert report.infrastructure_uptime_percent < 100.0
@@ -206,6 +209,29 @@ def test_perfect_period_is_100_percent(monkeypatch):
     report = ca.customer_availability(_Session(), _Sub(), days=30, now=NOW)
     assert report.infrastructure_uptime_percent == 100.0
     assert report.effective_uptime_percent == 100.0
+
+
+def test_resolved_path_without_any_snapshots_is_not_coverage(monkeypatch):
+    _elements(monkeypatch, [_pop()])
+
+    report = ca.customer_availability(_Session(), _Sub(), days=30, now=NOW)
+
+    assert report.infrastructure_observed_days == 0
+    assert report.has_infrastructure_coverage is False
+
+
+def test_partial_path_or_partial_period_never_becomes_uptime(monkeypatch):
+    pop = _pop()
+    dev = ca.ServingElement("device", uuid.uuid4(), "OLT-1", "Access olt")
+    _elements(monkeypatch, [pop, dev])
+    session = _Session(
+        snaps=[_Snap("pop_site", pop.element_id, NOW - timedelta(hours=12), 0)]
+    )
+
+    report = ca.customer_availability(session, _Sub(), days=1, now=NOW)
+
+    assert report.infrastructure_observed_days == 0
+    assert report.has_infrastructure_coverage is False
 
 
 # --- the model: device/session downtime is NOT availability ----------------

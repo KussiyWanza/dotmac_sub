@@ -39,6 +39,7 @@ from app.models.sla import (
     SlaMonitoringInterval,
     SlaPeriodScoreRevision,
 )
+from app.services import sla_admin_review as _sla_admin_review
 from app.services.billing.contracts import postpaid_entitlement_history_for_period
 from app.services.domain_errors import DomainError
 from app.services.network.customer_outage_accrual import intervals_for_subscription
@@ -53,6 +54,11 @@ from app.services.service_impact_contracts import (
     SlaPolicyVersion,
     SlaScore,
     SlaVerdict,
+)
+from app.services.sla_admin_review import (
+    SlaAdminDisplayDecision,
+    SlaAdminReview,
+    SlaAdminReviewQuery,
 )
 from app.services.sla_interval_algebra import (
     Span,
@@ -78,8 +84,9 @@ class SlaShadowComparison:
     """Ledger-based score next to the legacy read-time availability.
 
     Approximate by design (calendar month-to-date vs trailing window); the
-    comparison exists to find discrepancies before cutover, not to display
-    two numbers to customers.
+    comparison exists to find discrepancies before cutover, not to publish
+    two operational admin authorities. New code uses ``review_admin_period``
+    so both methods cover one exact closed calendar month.
     """
 
     score: SlaScore
@@ -1107,9 +1114,8 @@ def shadow_compare(
         legacy = customer_availability(
             db, subscription, days=elapsed_days, now=evaluated_at
         )
-        legacy_percent = getattr(legacy, "availability_percent", None)
-        if legacy_percent is not None:
-            legacy_percent = float(legacy_percent)
+        if legacy.has_infrastructure_coverage:
+            legacy_percent = float(legacy.effective_uptime_percent)
     except Exception:
         logger.warning(
             "Legacy availability comparison failed for subscription %s",
@@ -1127,6 +1133,18 @@ def shadow_compare(
         legacy_availability_percent=legacy_percent,
         delta_percent=delta,
     )
+
+
+def resolve_admin_display_authority(db: Session) -> SlaAdminDisplayDecision:
+    """Public customer.service_level query for the inert admin selector."""
+
+    return _sla_admin_review.resolve_admin_display_authority(db)
+
+
+def review_admin_period(db: Session, query: SlaAdminReviewQuery) -> SlaAdminReview:
+    """Public customer.service_level query for one closed-period comparison."""
+
+    return _sla_admin_review.review_admin_period(db, query)
 
 
 # --- recording a new effective-dated version --------------------------------

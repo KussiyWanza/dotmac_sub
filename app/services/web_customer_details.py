@@ -1147,16 +1147,60 @@ def _build_service_level(
     *,
     now: datetime | None = None,
 ) -> dict[str, object] | None:
-    """This period's SLA context from customer.service_level (shadow phase).
+    """The one selected admin availability/SLA projection for this service.
 
-    Admin-facing: verdicts render honestly, including no_contractual_sla
-    with measured availability and the provisional flag.
+    The database-authoritative selector remains fail-closed on legacy evidence
+    in this slice. The candidate branch is present for the later reviewed
+    cutover but cannot be armed by a settings edit yet.
     """
 
-    from app.services.customer_service_level import score_subscription_period
+    from app.services.customer_service_level import (
+        resolve_admin_display_authority,
+        score_subscription_period,
+    )
+    from app.services.sla_admin_review import SlaAdminDisplayAuthority
     from app.services.status_presentation import sla_verdict_presentation
 
     try:
+        decision = resolve_admin_display_authority(db)
+        review_url = (
+            f"/admin/customers/{subscription.subscriber_id}/subscriptions/"
+            f"{subscription.id}/sla-review"
+        )
+        if decision.authority is SlaAdminDisplayAuthority.legacy_availability:
+            from app.services.topology.customer_availability import (
+                customer_availability,
+            )
+
+            report = customer_availability(
+                db,
+                subscription,
+                days=30,
+                now=now or datetime.now(UTC),
+            )
+            return {
+                "authority": decision.authority.value,
+                "authority_label": "Legacy availability evidence",
+                "authority_source": decision.source,
+                "verdict": None,
+                "presentation": None,
+                "availability_percent": (
+                    report.effective_uptime_percent
+                    if report.has_infrastructure_coverage
+                    else None
+                ),
+                "target_percent": None,
+                "unavailable_seconds": report.effective_downtime_seconds,
+                "excluded_seconds": 0,
+                "provisional": not report.has_infrastructure_coverage,
+                "period_start": report.period_start.isoformat(),
+                "period_end": report.period_end.isoformat(),
+                "detail_url": (
+                    f"/admin/customers/{subscription.subscriber_id}/availability"
+                ),
+                "review_url": review_url,
+            }
+
         score = score_subscription_period(db, subscription, now=now)
     except Exception:
         logger.warning(
@@ -1166,6 +1210,9 @@ def _build_service_level(
         )
         return None
     return {
+        "authority": decision.authority.value,
+        "authority_label": "Authoritative period SLA",
+        "authority_source": decision.source,
         "verdict": score.verdict.value,
         "presentation": sla_verdict_presentation(score.verdict),
         "availability_percent": score.measured_availability_percent,
@@ -1177,6 +1224,8 @@ def _build_service_level(
         "provisional": score.is_provisional,
         "period_start": score.period_start.isoformat(),
         "period_end": score.period_end.isoformat(),
+        "detail_url": review_url,
+        "review_url": review_url,
     }
 
 
