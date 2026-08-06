@@ -15,7 +15,7 @@
             </nav>
             <h1 class="text-2xl font-bold text-slate-900 dark:text-white">Prepaid billing date reconciliation</h1>
             <p class="mt-1 max-w-3xl text-sm text-slate-600 dark:text-slate-300">
-                Review paid prepaid periods created with the retired UTC-midnight rule. Correct periods begin at midnight Africa/Lagos (WAT) and remain stored as UTC instants.
+                Review proved historical prepaid calendar defects, including retired UTC-midnight periods and lapsed payments left on stale coverage. Correct periods begin at midnight Africa/Lagos (WAT) and remain stored as UTC instants.
             </p>
         </div>
         <a href="/admin/billing/payments/reconciliation" class="inline-flex items-center rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200">Bank reconciliation</a>
@@ -77,6 +77,7 @@
                         </td>
                         <td class="max-w-sm px-4 py-3 text-sm">
                             <span class="inline-flex rounded-full border px-2 py-0.5 font-mono text-xs {% if preview.actionable %}border-emerald-300 text-emerald-700 dark:text-emerald-300{% else %}border-amber-300 text-amber-700 dark:text-amber-300{% endif %}">{{ preview.disposition.value }}</span>
+                            {% if preview.correction_kind %}<p class="mt-1 font-mono text-xs text-slate-500">{{ preview.correction_kind.value }}</p>{% endif %}
                             <p class="mt-1 text-xs text-slate-600 dark:text-slate-300">{{ preview.reason }}</p>
                         </td>
                         <td class="px-4 py-3 text-right">
@@ -93,7 +94,7 @@
                         </td>
                     </tr>
                     {% else %}
-                    <tr><td colspan="5" class="px-4 py-10 text-center text-sm text-slate-500 dark:text-slate-400">No exact historical UTC-period signatures were found in this scan.</td></tr>
+                    <tr><td colspan="5" class="px-4 py-10 text-center text-sm text-slate-500 dark:text-slate-400">No supported historical prepaid calendar defects were found in this scan.</td></tr>
                     {% endfor %}
                 </tbody>
             </table>
