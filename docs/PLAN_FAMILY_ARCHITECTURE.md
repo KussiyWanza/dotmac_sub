@@ -1,57 +1,128 @@
 # Plan family architecture
 
-Normative design for the three commercial plan families and how each is
-expressed, enforced and verified. Owner: catalog + RADIUS provisioning.
+Normative design for the commercial plan families and how each is expressed,
+enforced and verified. Owner: catalog + RADIUS provisioning.
 
 Companion to `SOT_RELATIONSHIP_MAP.md`. Where this document and the executable
 registry in `app/services/sot_relationships.py` disagree, report the conflict —
 do not guess.
 
-## 1. The three families
+## 1. The families
 
-Every family sells the same thing — a line rate — and differs only in what
-happens when the network is busy and when the customer uses a lot.
+Two mechanisms bound what a customer gets, and **each family uses exactly one
+of them**. Confusing the two is what produced a catalogue where the family
+documented as throttling had no rules and the family documented as never
+throttling had sixteen.
 
-| | `home_flex` | `unlimited` | `dedicated` |
-|---|---|---|---|
-| Data volume | Metered allowance | Unmetered | Unmetered |
-| On exhausting allowance | **Throttled** to `throttle_rate_mbps` | n/a — no allowance | n/a |
-| Rate under congestion | Best effort | **Best effort** | **Guaranteed (CIR = MIR)** |
-| Contention | Shared | Shared | **1:1** |
-| Public IP | No | No | **Yes** |
-| SLA credits | No | No | Yes |
+**FUP** bounds *volume*: a **daily** bucket, warned then throttled, with the
+overnight window free. **Contention** bounds *rate under load*: capacity shared
+at a target ratio, with no volume limit at all.
+
+| | `home_flex` | `high_speed_data` | `unlimited` | `dedicated` | `ip_block` |
+|---|---|---|---|---|---|
+| Bounded by | **FUP** | **FUP** | **Contention** | **CIR** | n/a |
+| Data volume | Allowance | Allowance | Unmetered | Unmetered | n/a |
+| On exhaustion | warn → throttle → block | warn → throttle → block | n/a | n/a | n/a |
+| Contention | shared | shared | **1:5 target** | **1:1** | n/a |
+| Rate under load | best effort | best effort | best effort | **guaranteed** | n/a |
+| Public IP | No | No | No | **Yes** | **is the product** |
+| Sold by | Mbps | **gigabytes** | Mbps | Mbps | block size |
 
 The defining sentence for each:
 
-- **home_flex** — cheap entry. You get a volume allowance; past it you keep
+- **home_flex** — cheap entry, capped. A volume allowance; past it you keep
   working at a reduced speed rather than losing service.
-- **unlimited** — no volume limit and no throttle, ever. Speed is best effort:
-  the tier rate is a ceiling, not a floor.
+- **high_speed_data** — a burst speed with a volume bucket. Sold by the
+  gigabyte, which is why dividing its price by `speed_download_mbps` produces
+  a meaningless rate.
+- **unlimited** — no volume limit and **no throttle, ever**. Speed is best
+  effort at a 1:5 planning target; the tier rate is a ceiling, not a floor.
 - **dedicated** — the tier rate is a floor as well as a ceiling, reserved 1:1,
-  with a public IP and SLA credits.
+  with a public IP and SLA credits. No FUP.
+- **ip_block** — a routed block sold as a service in its own right, not an
+  attachment to one.
 
-`unlimited` therefore makes **no contention commitment**. It is explicitly best
-effort. `CatalogOffer.aggregation` on an unlimited offer is an internal
-capacity-planning target, not a customer promise, and must not be published as
-one.
+### unlimited warns, it does not throttle
+
+`unlimited` carries FUP rules, and every one of them is `action = notify` —
+fair-use warnings scaled to the tier (200 GB entry, 500 GB mid, 1000–2000 GB
+top) with no `speed_reduction_percent`. They tell a heavy user they are heavy.
+They must never become `reduce_speed`: the customer-facing catalogue states
+"we never throttle you for using it", and that claim is only true while this
+holds.
+
+`unlimited` therefore makes **no contention commitment** to the customer
+either. `CatalogOffer.aggregation` on an unlimited offer is an internal
+capacity-planning target, not a promise, and must not be published as one.
+
+### The FUP ladder
+
+Every FUP family uses the same shape, and it must stay uniform:
+
+| Stage | Threshold | Period | Action |
+|---|---|---|---|
+| Warn | 80% of the daily bucket | `daily` | `notify` |
+| Throttle | 100% | `daily` | `reduce_speed` **to 50% of the plan's own rate** |
+| Free night | 22:00–05:00 subscriber-local | — | throttle lifts; traffic does not accrue |
+
+Three properties of this shape are load-bearing and none may be traded away
+for a simpler implementation:
+
+1. **The bucket is daily, not monthly.** A monthly bucket lets a subscriber
+   exhaust the month in three days and spend twenty-seven throttled; a daily
+   bucket is self-healing and needs no `block` stage at all.
+2. **The throttle is relative to the plan, not absolute.** 50% of a 50 Mbps
+   Premium is 25 Mbps; 50% of a 6 Mbps Starter is 3 Mbps. A single flat
+   throttle rate makes the expensive tier's penalty far harsher than the cheap
+   tier's, which inverts what the customer paid for.
+3. **The night window both lifts the throttle and stops accrual.** Half of it
+   is not the feature: a customer still throttled at 22:00, or one whose
+   overnight download eats tomorrow's bucket, has not been given a free night.
+
+There is no `block` stage. Blocking a residential customer who paid for the
+month is a billing conversation, not a traffic-management one.
+
+### FUP has exactly one owner
+
+**`fup_policies` + `fup_rules` owns every FUP decision** — thresholds, periods,
+actions, throttle depth, and the night window. Nothing else may decide any of
+them.
+
+`usage_allowances` is **not** a second FUP authority and must not be read as
+one. It owns a different decision: **billing**. `included_gb`, `overage_rate`
+and `overage_cap_gb` are prorated into the `QuotaBucket` and turn into overage
+charges (`app/services/usage.py::_prorate_allowance`). That is rating, not
+enforcement, and the two are allowed to hold different numbers for good
+commercial reasons.
+
+The one genuine violation is **`usage_allowances.throttle_rate_mbps`**, which
+states an enforcement decision inside a billing object. It is retired: see §12.
 
 ## 2. Field mapping
 
 The schema already models all of this. Nothing new is required.
 
-| Concept | Field | home_flex | unlimited | dedicated |
-|---|---|---|---|---|
-| Volume allowance | `usage_allowance_id` | **set** | NULL | NULL |
-| Post-FUP speed | `UsageAllowance.throttle_rate_mbps` | **set** | — | — |
-| Rate floor | `guaranteed_speed` | `none` | `none` | **`fixed`** |
-| Floor value | `guaranteed_speed_limit_at` | NULL | NULL | **= line rate** |
-| Contention target | `aggregation` | shared | shared | **1** |
-| Public IP | bundled `AddOn` (`static_ip`) | — | — | **bundled** |
-| Service credits | `sla_profile_id` | NULL | NULL | **set** |
-| Billing behaviour | `policy_set_id` | set | set | set |
+| Concept | Field | home_flex | high_speed_data | unlimited | dedicated |
+|---|---|---|---|---|---|
+| Volume bound | `fup_policies` + `fup_rules` | **ladder** | **ladder** | `notify` only | none |
+| Bucket period | `fup_rules.consumption_period` | **daily** | **daily** | monthly | — |
+| Post-FUP speed | `fup_rules.speed_reduction_percent` | **50** | **50** | — | — |
+| Free night | `fup_rules.time_start` / `time_end` | **22:00–05:00** | **22:00–05:00** | — | — |
+| Rate floor | `guaranteed_speed` | `none` | `none` | `none` | **`fixed`** |
+| Floor value | `guaranteed_speed_limit_at` | NULL | NULL | NULL | **= line rate** |
+| Contention target | `aggregation` | shared | shared | **5** | **1** |
+| Public IP | `ip_block` offer | — | — | — | **bundled** |
+| Service credits | `sla_profile_id` | NULL | NULL | NULL | **set** |
+| Billing behaviour | `policy_set_id` | set | set | set | set |
 
 `sla_profiles` is currently empty; a dedicated SLA profile must be created
 before dedicated offers can reference one.
+
+`usage_allowances` (`included_gb`, `throttle_rate_mbps`) is deliberately absent
+from this table. It is a Splynx import artefact expressing the same intent as
+the FUP engine in a weaker form, and reading it as authority produces wrong
+answers — a `1000GB` plan with a blank `throttle_rate_mbps` still throttles,
+because its policy carries a `reduce_speed` rule.
 
 ## 3. Enforcement — the RADIUS contract
 
@@ -135,18 +206,77 @@ Enforce in the catalog service, with architecture tests:
 
 ## 6. Current state and gap
 
-As at 2026-08-05, across 67 active offers:
+As at 2026-08-06.
 
-- `usage_allowance_id` — **0 set**. home_flex FUP does not fire.
-- `sla_profile_id` — **0 set**; `sla_profiles` table is empty.
-- `policy_set_id` — **0 set**, though 2 policy sets exist.
+**FUP runs, but it does not implement §1.** `fup_policies`/`fup_rules` carry 39
+active rules and 5 subscribers sit in an enforced state, all on
+`high_speed_data`. `unlimited`'s sixteen rules are all `notify`, as required,
+and `dedicated`'s policies correctly carry no rules. Everything else diverges:
+
+| §1 requires | Production does |
+|---|---|
+| `daily` bucket | **`monthly` on all 39 rules.** No daily rule exists. |
+| throttle to 50% of the plan rate | **flat 1 Mbps for everyone.** See below. |
+| free night 22:00–05:00 | **nothing.** See below. |
+| no `block` stage | `block` at 120% on six offers |
+
+**The throttle is not proportional and `speed_reduction_percent` is
+decorative.** Every throttled subscriber is moved to the single RADIUS profile
+named by the `usage.fup_throttle_radius_profile_id` setting — today
+*FUP Throttle 1Mbps* (`1024k/1024k`). `speed_reduction_percent` is written to
+the rule (90 on every throttle rule) and copied onto `fup_states`, but it is
+never read arithmetically anywhere in the tree. A 6 Mbps Starter and a 50 Mbps
+Premium are both cut to 1 Mbps — an 83% cut for one and a 98% cut for the
+other, from a field that says 90% for both.
+
+**There is no free night.** One rule is *named* `Night free (00:00-06:00)`, on
+the 1000GB offer, but it is `action = notify` with a threshold of `999999gb`,
+so it can never fire. It is a label, not a mechanism. Two engine gaps stand
+behind it, both of which must be closed before any night window works:
+
+- *Night traffic still accrues.* `usage_summary.windowed_used_bytes` integrates
+  the entire daily window. `fup_policies.traffic_accounting_start/end` is never
+  applied to measurement — it is only reused as a fallback gate on rule
+  *triggering* (`app/services/fup.py:764`).
+- *A throttle never lifts early.* The only release path is
+  `state.cap_resets_at` (`app/services/fup_enforcement.py:291`); there is no
+  "nothing triggered → lift" branch. A rule window ending at 22:00 stops the
+  rule re-firing but leaves the subscriber throttled until local midnight.
+- *Window times are compared in UTC.* `_time_in_window` reads
+  `current_time.time()` from a UTC instant, so a configured 22:00 fires at
+  23:00 in Lagos.
+
+**`home_flex` has no FUP at all.** Zero rules across all five offers; one
+orphan policy on Homeflex Basic with nothing under it. Its 63 subscribers are
+uncapped on a product defined by its cap.
+
+| Offer | Mbps | Active subs | Policies | Rules |
+|---|---|---|---|---|
+| Homeflex Starter | 6 | 27 | 0 | 0 |
+| Homeflex Basic | 10 | 25 | 1 | **0** |
+| Homeflex Elite | 20 | 7 | 0 | 0 |
+| Homeflex Elite Plus | 35 | 3 | 0 | 0 |
+| Homeflex Premium | 50 | 0 | 0 | 0 |
+
+Still unexpressed:
+
 - `guaranteed_speed` — `none` on every offer, including all 41 dedicated. **No
-  dedicated customer currently receives a CIR.**
-- `aggregation` — dedicated 1:1 (40 of 41, one NULL); unlimited normalized to 5;
-  home_flex still split 1/3/5.
+  dedicated customer currently receives a CIR**, though the emitting code is
+  merged and shadow-verified inert.
+- `sla_profile_id` — 0 set; `sla_profiles` is empty. No family SLA default is
+  recorded, deliberately: the numbers are a commercial decision (§8).
+- `policy_set_id` — 0 set, though 2 policy sets exist.
+- `pon_ports.downstream_mbps` — 0 of 502 surveyed, so no capacity verdict can
+  be reached (§9).
+- `aggregation` — dedicated 1:1 (40 of 41, one NULL); unlimited normalised to
+  1:5; `home_flex` still split 1/3/5.
 
-The families are today distinguished only by naming convention. Every guarantee
-described in this document is currently unexpressed in the data.
+An earlier revision of this section claimed `usage_allowance_id` was 0 set and
+that FUP did not fire anywhere. That was wrong: the query behind it grouped by
+`plan_family` and the six offers carrying allowances were unclassified at the
+time, so they fell out of the rollup entirely. Unclassified offers are
+invisible to family-scoped analysis — which is the argument for §5's
+invariants, not an exception to them.
 
 ## 7. Variants are never new offers
 
@@ -327,13 +457,64 @@ parallel inventory. Close that before selling one.
 2. Set `guaranteed_speed`/`guaranteed_speed_limit_at` on dedicated offers;
    extend `_rate_limit()` to emit the CIR field. Shadow-diff the generated
    radreply before cutover.
-3. Wire `usage_allowance_id` on home_flex offers; verify the throttle fires and
-   clears end-to-end on one test subscriber before fleet rollout.
-4. Backfill `policy_set_id` across all families.
-5. Normalize home_flex `aggregation`; fill the one NULL dedicated offer.
-6. Add the section 5 invariants as validation plus architecture tests.
-7. Build the PON/BNG capacity reconciler; only then consider publishing any
+3. Close the three §12 engine gaps — proportional throttle, night release,
+   local-time windows — behind tests, before any rule is written that depends
+   on them.
+4. Give `home_flex` its §1 ladder in `fup_rules`, then convert
+   `high_speed_data` from monthly to daily. Verify throttle *and release* on
+   one test subscriber per family before fleet rollout.
+5. Retire `usage_allowances.throttle_rate_mbps` (§12).
+6. Backfill `policy_set_id` across all families.
+7. Normalize home_flex `aggregation`; fill the one NULL dedicated offer.
+8. Add the section 5 invariants as validation plus architecture tests.
+9. Build the PON/BNG capacity reconciler; only then consider publishing any
    contention figure to customers.
 
-Steps 2 and 3 change live subscriber sessions. Each needs a shadow phase, a
+Steps 2 and 4 change live subscriber sessions. Each needs a shadow phase, a
 named cutover gate, and a verified rollback.
+
+## 12. FUP has one owner — what that costs
+
+§1 names `fup_policies` + `fup_rules` the sole owner of every FUP decision.
+Three things currently decide FUP behaviour from outside that owner, and each
+must be moved or retired.
+
+### The throttle rate is decided by a global setting
+
+`usage.fup_throttle_radius_profile_id` names one RADIUS profile for every
+throttled subscriber on every plan. That is a decision — *how hard do we
+throttle* — living outside the owner, and it cannot express §1's proportional
+throttle at all.
+
+**Fix:** derive the throttle rate from the offer's own rate and the rule's
+`speed_reduction_percent`, making that field load-bearing instead of
+decorative. The global profile becomes a fallback for offers with no rate,
+not the mechanism. This is the change that turns "throttle to 50%" from
+un-expressible into a one-field configuration.
+
+### The night window is decided in two places, and works in neither
+
+`fup_rules.time_start/time_end` gates *triggering*;
+`fup_policies.traffic_accounting_start/end` is documented as gating
+*accrual* but is never applied to measurement. A free night needs both halves
+and one owner.
+
+**Fix:** the rule's window is authoritative for both. Enforcement lifts an
+active throttle when no rule triggers — not only at `cap_resets_at` — and
+`windowed_used_bytes` subtracts the excluded window from accrual. Both
+comparisons happen in the subscriber's local timezone, which
+`fup_window_bounds` already resolves and `_time_in_window` currently ignores.
+
+### `usage_allowances.throttle_rate_mbps` is a second answer
+
+It is set on five of six allowances (10, 10, 10, 10 and 1 Mbps) and **read by
+nothing** — an admin form field and a CSV column. Production actually throttles
+every one of them to 1 Mbps. So the catalogue asserts a post-FUP speed that is
+wrong for four of the five, and no code would notice.
+
+**Fix:** drop the column. `included_gb`, `overage_rate`, `overage_cap_gb` and
+`rollover_enabled` stay — those are billing, which `usage_allowances`
+legitimately owns (§1). Only the enforcement decision leaves.
+
+An unread column holding a wrong answer is worse than a missing one: it is
+evidence, and someone will eventually act on it.
