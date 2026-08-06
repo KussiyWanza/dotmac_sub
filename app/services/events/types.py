@@ -168,6 +168,7 @@ class EventType(enum.Enum):
     service_team_party_cutover_adopted = "service_team.party_cutover_adopted"
     workqueue_action_coordinated = "workqueue.action_coordinated"
     ai_intake_config_updated = "ai.intake_config_updated"
+    plan_family_catalogue_published = "catalog.plan_family_catalogue_published"
 
     # Operations - vendor installation project lifecycle
     # Materials / vendor / ERP chain outputs

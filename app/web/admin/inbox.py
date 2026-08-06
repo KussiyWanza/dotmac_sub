@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from app.db import finish_read_transaction, get_db
 from app.models.audit import AuditActorType
 from app.models.team_inbox import InboxChannelType
+from app.schemas.plan_family_catalogue import ResolveShareablePlanFamilyCatalogueQuery
 from app.services import (
     conversation_lead_relationships,
     conversation_ticket_handoff,
@@ -38,6 +39,7 @@ from app.services import (
     team_inbox_contact_context as contact_context_service,
 )
 from app.services.auth_dependencies import can, require_permission
+from app.services.catalog import plan_family_catalogues
 from app.services.domain_errors import DomainError
 from app.services.owner_commands import CommandContext
 from app.services.sales import lead_intake
@@ -270,6 +272,7 @@ def team_inbox_queue(
                 else ()
             ),
             "can_manage_inbox": can_manage_inbox,
+            "can_manage_leads": can(request, "crm:lead:write"),
             "manager_dashboard": manager_dashboard,
             "selected": (
                 projection.selected.timeline
@@ -294,6 +297,7 @@ def team_inbox_queue(
                 "conversation_labels": projection.selected.conversation_labels,
                 "macro_options": projection.selected.macro_options,
                 "template_options": projection.selected.template_options,
+                "catalogue_options": projection.selected.catalogue_options,
                 "action_eligibility": projection.selected.action_eligibility,
                 "is_unread": projection.selected.is_unread,
                 "priority_options": projection.selected.priority_options,
@@ -418,6 +422,7 @@ def team_inbox_detail(
             "conversation_labels": projection.conversation_labels,
             "macro_options": projection.macro_options,
             "template_options": projection.template_options,
+            "catalogue_options": projection.catalogue_options,
             "action_eligibility": projection.action_eligibility,
             "is_unread": projection.is_unread,
             "actor_person_id": str(actor_person_id) if actor_person_id else "",
@@ -428,6 +433,7 @@ def team_inbox_detail(
             ),
             "priority_options": projection.priority_options,
             "agent_options": team_inbox_projection.list_agent_options(db),
+            "can_manage_leads": can(request, "crm:lead:write"),
         }
         if projection is not None
         else None
@@ -914,6 +920,66 @@ def team_inbox_reply(
             else f"Reply queued from {outcome.sender}."
             if outcome.kind == "queued"
             else f"Reply sent from {outcome.sender}."
+        ),
+        next_url=next_url,
+    )
+
+
+@router.post(
+    "/{conversation_id}/share-catalogue",
+    dependencies=[Depends(require_permission("support:ticket:update"))],
+)
+def team_inbox_share_catalogue(
+    conversation_id: UUID,
+    request: Request,
+    plan_family: str = Form(...),
+    idempotency_key: str | None = Form(default=None),
+    next_url: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
+    try:
+        catalogue = plan_family_catalogues.resolve_shareable_catalogue(
+            db,
+            ResolveShareablePlanFamilyCatalogueQuery(plan_family=plan_family),
+        )
+        download_url = str(
+            request.url_for(
+                "public_catalogue_download", catalogue_id=str(catalogue.catalogue_id)
+            )
+        )
+        body = f"Here is our {catalogue.display_name}: {download_url}"
+        _prepare_mutation(db)
+        outcome = team_inbox_commands.reply(
+            db,
+            conversation_id=conversation_id,
+            body_text=body,
+            idempotency_key=_query_text(idempotency_key),
+            actor_person_id=_actor_id_from_request(request),
+        )
+    except plan_family_catalogues.PlanFamilyCatalogueError as exc:
+        return _detail_redirect(
+            conversation_id,
+            status="error",
+            message=exc.message,
+            next_url=next_url,
+        )
+    except (
+        team_inbox_commands.InboxCommandError,
+        team_inbox_operations.InboxOperationError,
+    ) as exc:
+        return _detail_redirect(
+            conversation_id,
+            status="error",
+            message=str(exc),
+            next_url=next_url,
+        )
+    return _detail_redirect(
+        conversation_id,
+        status="success",
+        message=(
+            "Catalogue share already submitted."
+            if outcome.replayed
+            else f"{catalogue.display_name} queued."
         ),
         next_url=next_url,
     )

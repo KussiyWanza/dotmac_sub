@@ -678,6 +678,7 @@ from app.models.payment_proof import (  # noqa: F401
     WithholdingTaxTransition,
     WithholdingTaxTransitionImmutableError,
 )
+from app.models.plan_family_catalogue import PlanFamilyCatalogue  # noqa: F401
 from app.models.portal_message import (  # noqa: F401
     PortalMessage,
     PortalMessageStatus,

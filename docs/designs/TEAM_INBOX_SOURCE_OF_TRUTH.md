@@ -233,6 +233,11 @@ stale. Realtime has no replay authority.
 - Responsive behavior: the queue and conversation actions remain usable at
   narrow widths; desktop-only density must not hide the primary reply/read
   actions.
+- Sales actions: the projection supplies owner-resolved Lead-form eligibility
+  and plan-family catalogue options to the composer. Templates display those
+  outcomes without independently deciding customer/contact identity or
+  catalogue availability. See
+  `docs/designs/INBOX_PLAN_CATALOGUE_SHARING.md`.
 
 ## Schema and migration
 

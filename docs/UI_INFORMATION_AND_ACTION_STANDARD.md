@@ -318,18 +318,25 @@ Historical plans may provide requirements or research, but each item must be
 revalidated against this standard and the current domain SOT before
 implementation.
 
-## Inbox Lead Intake Page Contract
+## Inbox Lead Intake And Catalogue Action Contract
 
-- Audience and task: an unknown Meta prospect supplies identity and service
-  location; Sales administrators manage immutable form versions; Inbox staff
-  can issue, revoke, and reissue links.
+- Audience and task: a prospect who is neither a customer nor a customer contact
+  supplies identity and service location; Sales administrators manage immutable
+  form versions; Inbox staff can issue, revoke, and reissue links. Any Inbox
+  participant may receive a plan-family catalogue.
 - Authority: `sales.lead_intake` owns template, eligibility, invitation, and
-  completion decisions. The public and admin routes and templates are adapters.
+  completion decisions. `service_intent.plan_family_catalogues` owns catalogue
+  publication, versioning, and current-document resolution. The public and admin
+  routes and templates are adapters.
 - First viewport: form purpose, customer-type fields, address search and
   confirmation, privacy notice, error state, and one primary Save action.
 - Action eligibility: automatic send is disabled until explicitly enabled and
-  both template types are published. Manual actions require `crm:lead:write`
-  and an unmatched WhatsApp, Messenger, or Instagram DM conversation.
+  both template types are published. Manual Lead actions require
+  `crm:lead:write`, a reply-capable supported channel, and owner-resolved proof
+  that the sender is neither a customer nor a customer contact; ambiguous
+  identity fails closed. The Lead action is rendered beside the conversation
+  composer. The catalogue action is visible for every conversation and enables
+  only plan families with a currently published PDF and a reply-capable thread.
 - State semantics: issued, effectively expired, revoked, completed, and failed
   delivery are distinct. Unknown/expired tokens render the same unavailable
   response and never reveal whether a digest exists.

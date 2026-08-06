@@ -1,8 +1,10 @@
 """Admin catalog component management web routes."""
 
 import logging
+from urllib.parse import quote_plus
+from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from fastapi.responses import (
     HTMLResponse,
     RedirectResponse,
@@ -15,9 +17,12 @@ from sqlalchemy.orm import Session
 from starlette.datastructures import FormData
 
 from app.csrf import get_csrf_token
-from app.db import form_write, get_db
+from app.db import finish_read_transaction, form_write, get_db
+from app.schemas.plan_family_catalogue import PublishPlanFamilyCatalogueCommand
 from app.services import web_catalog_settings as settings_svc
 from app.services.auth_dependencies import require_permission
+from app.services.catalog import plan_family_catalogues
+from app.services.owner_commands import CommandContext
 from app.web.request_parsing import parse_form_data
 
 logger = logging.getLogger(__name__)
@@ -81,6 +86,118 @@ def catalog_settings_index(
     context = _base_context(request, db, active_page="catalog-settings")
     context.update(counts)
     return templates.TemplateResponse("admin/catalog/settings/index.html", context)
+
+
+# =============================================================================
+# PLAN CATALOGUES
+# =============================================================================
+
+
+def _system_user_id(request: Request) -> UUID:
+    value = str(getattr(getattr(request.state, "user", None), "id", "") or "")
+    try:
+        return UUID(value)
+    except ValueError as exc:
+        raise plan_family_catalogues.PlanFamilyCatalogueError(
+            code="service_intent.plan_family_catalogues.actor_not_eligible",
+            message="An authenticated staff user is required.",
+        ) from exc
+
+
+def _catalogues_context(
+    request: Request,
+    db: Session,
+    *,
+    error: str | None = None,
+    success: str | None = None,
+) -> dict:
+    context = _base_context(
+        request, db, active_page="catalog-settings", settings_tab="catalogues"
+    )
+    context.update(
+        {
+            "catalogues": plan_family_catalogues.list_catalogue_options(db),
+            "error": error,
+            "success": success,
+        }
+    )
+    return context
+
+
+@router.get(
+    "/catalogues",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("catalog:read"))],
+)
+def plan_catalogues_list(
+    request: Request,
+    status: str | None = Query(default=None),
+    message: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    return templates.TemplateResponse(
+        "admin/catalog/settings/catalogues.html",
+        _catalogues_context(
+            request,
+            db,
+            error=message if status == "error" else None,
+            success=message if status == "success" else None,
+        ),
+    )
+
+
+@router.post(
+    "/catalogues",
+    dependencies=[Depends(require_permission("catalog:write"))],
+)
+def plan_catalogue_publish(
+    request: Request,
+    plan_family: str = Form(...),
+    display_name: str = Form(...),
+    description: str | None = Form(default=None),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+) -> Response:
+    try:
+        actor_id = _system_user_id(request)
+        file_bytes = file.file.read()
+        finish_read_transaction(db)
+        outcome = plan_family_catalogues.publish_catalogue(
+            db,
+            PublishPlanFamilyCatalogueCommand(
+                context=CommandContext.system(
+                    actor=f"system_user:{actor_id}",
+                    scope="catalog:write",
+                    reason="publish approved plan-family catalogue PDF",
+                    idempotency_key=(f"plan-family-catalogue:{plan_family}:{uuid4()}"),
+                ),
+                plan_family=plan_family,
+                display_name=display_name,
+                description=description,
+                original_filename=file.filename or "catalogue.pdf",
+                content_type=file.content_type,
+                file_bytes=file_bytes,
+                actor_system_user_id=actor_id,
+            ),
+        )
+    except (plan_family_catalogues.PlanFamilyCatalogueError, ValueError) as exc:
+        return templates.TemplateResponse(
+            "admin/catalog/settings/catalogues.html",
+            _catalogues_context(
+                request,
+                db,
+                error=getattr(exc, "message", str(exc)),
+            ),
+            status_code=400,
+        )
+    action = (
+        "already current" if outcome.replayed else f"published as v{outcome.version}"
+    )
+    return RedirectResponse(
+        "/admin/catalog/settings/catalogues"
+        f"?status=success&message={quote_plus(f'{outcome.display_name} {action}')}",
+        status_code=303,
+    )
 
 
 # =============================================================================
