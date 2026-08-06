@@ -1025,6 +1025,66 @@ def _normalized_contact_projection_value(source_field: str, value: str) -> str:
     return normalized
 
 
+@dataclass(frozen=True, slots=True)
+class EmailRecipient:
+    """One deliverable email address and the contact point it came from.
+
+    Frozen: a resolved recipient is evidence of who a document was addressed
+    to, and callers persist ``contact_point_id`` alongside the delivery record.
+    """
+
+    contact_point_id: UUID
+    email: str
+    display_name: str | None
+
+
+def resolve_email_recipient(db: Session, party_id: UUID) -> EmailRecipient | None:
+    """The address a document should go to for this party, or None.
+
+    Deliberately returns None rather than raising: "this party has no
+    deliverable address" is an ordinary state for a lead captured by phone, and
+    each caller phrases its own refusal.
+
+    Precedence is primary first, then oldest, then id — a total order, so two
+    equally-primary addresses cannot make delivery depend on row order.
+
+    This is the one contact-point lookup every document-delivery path needs.
+    It lives here, on the canonical contact-point owner, so that adding a new
+    kind of delivery does not clone the "which address is deliverable" rule and
+    let the copies drift apart.
+    """
+    party = db.get(Party, party_id)
+    if party is None:
+        return None
+
+    contact = (
+        db.query(PartyContactPoint)
+        .filter(
+            PartyContactPoint.party_id == party.id,
+            PartyContactPoint.channel_type == PartyContactPointType.email.value,
+            PartyContactPoint.is_active.is_(True),
+        )
+        .order_by(
+            PartyContactPoint.is_primary.desc(),
+            PartyContactPoint.created_at.asc(),
+            PartyContactPoint.id.asc(),
+        )
+        .first()
+    )
+    if contact is None:
+        return None
+
+    email = str(contact.normalized_value or contact.display_value or "").strip()
+    if not email:
+        return None
+
+    return EmailRecipient(
+        contact_point_id=contact.id,
+        email=email,
+        display_name=party.display_name,
+    )
+
+
 def bind_subscriber_contact_point(
     db: Session,
     *,

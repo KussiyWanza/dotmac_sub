@@ -1547,7 +1547,13 @@ DOMAIN = DomainSOT(
                         source=(
                             "immutable effective-dated sla_policy_versions "
                             "rows, append-only, one version in force per "
-                            "policy_key per instant"
+                            "policy_key per instant. Scope precedence, highest "
+                            "first: subscription_contract, account_contract, "
+                            "offer_version, plan_family, internal_measurement. "
+                            "The plan_family scope carries a commercial-family "
+                            "default (unlimited/dedicated/home_flex) so a family "
+                            "promise has one owner instead of being copied onto "
+                            "every offer in it"
                         ),
                     ),
                     AuthorityInput(

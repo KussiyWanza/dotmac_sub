@@ -47,6 +47,7 @@ from app.services.prepaid_service_coverage import prepaid_coverage_history_for_p
 from app.services.service_impact_contracts import (
     SLA_CALENDAR_TIMEZONE,
     ImpactState,
+    SlaPlanFamily,
     SlaPolicySegmentScore,
     SlaPolicySource,
     SlaPolicyVersion,
@@ -88,12 +89,14 @@ class SlaShadowComparison:
 
 #: Approved precedence, highest first (design §4). A subscription contract
 #: beats an account contract, which beats the subscribed offer version, which
-#: beats the internal measurement policy. Encoded once, here, so the resolver
-#: and any future reporting surface cannot disagree about which term won.
+#: beats the commercial family default, which beats the internal measurement
+#: policy. Encoded once, here, so the resolver and any future reporting
+#: surface cannot disagree about which term won.
 _PRECEDENCE: tuple[SlaPolicySource, ...] = (
     SlaPolicySource.subscription_contract,
     SlaPolicySource.account_contract,
     SlaPolicySource.offer_version,
+    SlaPolicySource.plan_family,
     SlaPolicySource.internal_measurement,
 )
 
@@ -150,6 +153,13 @@ def _persisted_versions_covering(
         )
     if subscription.offer_id is not None:
         scope_filters.append(SlaPolicyVersionRecord.offer_id == subscription.offer_id)
+        # The family default applies through the subscribed offer. db.get hits
+        # the identity map on the repeat lookup in _legacy_offer_policy, so
+        # this costs at most one query per resolve.
+        offer = db.get(CatalogOffer, subscription.offer_id)
+        family = getattr(offer, "plan_family", None) if offer is not None else None
+        if family:
+            scope_filters.append(SlaPolicyVersionRecord.plan_family == family)
 
     rows = (
         db.query(SlaPolicyVersionRecord)
@@ -1148,6 +1158,7 @@ class RecordPolicyVersionCommand:
     subscription_id: UUID | None = None
     subscriber_id: UUID | None = None
     offer_id: UUID | None = None
+    plan_family: SlaPlanFamily | None = None
     calendar_timezone: str = SLA_CALENDAR_TIMEZONE
     maintenance_excludable: bool = True
     credit_percent_per_breach: float | None = None
@@ -1181,6 +1192,7 @@ def derive_policy_key(
     subscription_id: UUID | None = None,
     subscriber_id: UUID | None = None,
     offer_id: UUID | None = None,
+    plan_family: SlaPlanFamily | None = None,
 ) -> str:
     """The series identity for one real scope. Owner-derived, never supplied.
 
@@ -1211,6 +1223,21 @@ def derive_policy_key(
                 message="An offer policy needs its offer.",
             )
         return f"offer_version:{offer_id}"
+    if source is SlaPolicySource.plan_family:
+        if plan_family is None:
+            raise SlaPolicyError(
+                code="customer.service_level.scope_required",
+                message="A family policy needs its plan family.",
+            )
+        if not isinstance(plan_family, SlaPlanFamily):
+            raise SlaPolicyError(
+                code="customer.service_level.unknown_plan_family",
+                message=(
+                    f"{plan_family!r} is not an SLA-enabled plan family "
+                    f"({', '.join(SlaPlanFamily)})."
+                ),
+            )
+        return f"plan_family:{plan_family.value}"
     return "internal_measurement:global"
 
 
@@ -1238,6 +1265,9 @@ _INPUT_CONSTRAINTS = frozenset(
         "ck_sla_policy_versions_contractual_target",
         "ck_sla_policy_versions_scope_matches_source",
         "ck_sla_policy_versions_key_is_derived",
+        # A family outside the closed vocabulary is bad input, not a lost
+        # race — retrying it can never succeed.
+        "ck_sla_policy_versions_plan_family_vocab",
     }
 )
 
@@ -1257,11 +1287,13 @@ def _validate_scope(db: Session, command: RecordPolicyVersionCommand) -> None:
         "subscription_id": command.subscription_id,
         "subscriber_id": command.subscriber_id,
         "offer_id": command.offer_id,
+        "plan_family": command.plan_family,
     }
     expected = {
         SlaPolicySource.subscription_contract: "subscription_id",
         SlaPolicySource.account_contract: "subscriber_id",
         SlaPolicySource.offer_version: "offer_id",
+        SlaPolicySource.plan_family: "plan_family",
         SlaPolicySource.internal_measurement: None,
     }[command.source]
 
@@ -1283,6 +1315,22 @@ def _validate_scope(db: Session, command: RecordPolicyVersionCommand) -> None:
             code="customer.service_level.scope_required",
             message=f"A {command.source.value} policy needs its {expected}.",
         )
+    # A family is a closed vocabulary, not a row: there is no parent to look
+    # up, so membership is the whole existence check. derive_policy_key
+    # re-validates it, but doing it here keeps the error a scope error rather
+    # than surfacing from key derivation.
+    if expected == "plan_family":
+        if not isinstance(scope_id, SlaPlanFamily):
+            raise SlaPolicyError(
+                code="customer.service_level.unknown_plan_family",
+                message=(
+                    f"{scope_id!r} is not an SLA-enabled plan family "
+                    f"({', '.join(SlaPlanFamily)})."
+                ),
+                details={"plan_family": str(scope_id)},
+            )
+        return
+
     parent = {
         "subscription_id": Subscription,
         "subscriber_id": Subscriber,
@@ -1405,6 +1453,7 @@ def record_policy_version(
             subscription_id=command.subscription_id,
             subscriber_id=command.subscriber_id,
             offer_id=command.offer_id,
+            plan_family=command.plan_family,
         )
         fingerprint = _policy_fingerprint(command, policy_key)
         idempotency_key = getattr(command.context, "idempotency_key", None)
@@ -1500,6 +1549,9 @@ def record_policy_version(
             subscription_id=command.subscription_id,
             subscriber_id=command.subscriber_id,
             offer_id=command.offer_id,
+            plan_family=(
+                command.plan_family.value if command.plan_family is not None else None
+            ),
             effective_from=effective_from,
             effective_to=None,
             availability_target_percent=(

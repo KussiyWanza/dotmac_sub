@@ -1236,3 +1236,182 @@ def test_version_one_supersedes_nothing(db_session, subscription, staged_owner_c
     assert outcome.version == 1
     assert outcome.superseded_version_id is None
     assert outcome.superseded_at is None, "nothing was superseded, so no instant"
+
+
+# --- plan-family scope ------------------------------------------------------
+
+
+def test_family_policy_identity_is_the_family_itself(db_session):
+    """A family default is a real scope, so it names its own series. Without
+    this the terms would have to be copied onto every offer in the family and
+    would drift the moment one was edited."""
+
+    assert (
+        sla.derive_policy_key(
+            sla.SlaPolicySource.plan_family,
+            plan_family=sla.SlaPlanFamily.unlimited,
+        )
+        == "plan_family:unlimited"
+    )
+    # A precedence claim with no family names no series.
+    with pytest.raises(sla.SlaPolicyError):
+        sla.derive_policy_key(sla.SlaPolicySource.plan_family)
+    # SLA authority is a NARROWER vocabulary than catalog classification, which
+    # is settings-driven and may grow. A raw string — even a real catalog
+    # family — is refused, because it would name a series the resolver has no
+    # typed way to match.
+    with pytest.raises(sla.SlaPolicyError) as caught:
+        sla.derive_policy_key(sla.SlaPolicySource.plan_family, plan_family="platinum")
+    assert caught.value.code == "customer.service_level.unknown_plan_family"
+
+
+def test_family_scope_rejects_a_foreign_scope(
+    db_session, subscription, staged_owner_command
+):
+    """A family policy carrying a subscription id would claim two scopes and
+    leave the resolver with two equal-precedence answers."""
+
+    with pytest.raises(sla.SlaPolicyError) as caught:
+        sla.record_policy_version(
+            db_session,
+            sla.RecordPolicyVersionCommand(
+                source=sla.SlaPolicySource.plan_family,
+                effective_from=NOW,
+                availability_target_percent=99.5,
+                plan_family=sla.SlaPlanFamily.unlimited,
+                subscription_id=subscription.id,
+                context=_ctx(),
+            ),
+        )
+    assert caught.value.code == "customer.service_level.invalid_scope"
+
+
+def test_family_default_applies_through_the_subscribed_offer(
+    db_session, subscription, catalog_offer, staged_owner_command
+):
+    """The whole point of the scope: terms set once on the family reach a
+    subscription that never names them, via its offer's plan_family."""
+
+    catalog_offer.plan_family = "unlimited"
+    db_session.commit()
+
+    sla.record_policy_version(
+        db_session,
+        sla.RecordPolicyVersionCommand(
+            source=sla.SlaPolicySource.plan_family,
+            effective_from=NOW - timedelta(days=10),
+            availability_target_percent=99.5,
+            plan_family=sla.SlaPlanFamily.unlimited,
+            context=_ctx(),
+        ),
+    )
+
+    resolved = sla.resolve_effective_policy(db_session, subscription, at=NOW)
+    assert resolved is not None
+    assert resolved.source is sla.SlaPolicySource.plan_family
+    assert float(resolved.availability_target_percent) == 99.5
+
+
+def test_offer_terms_outrank_the_family_default(
+    db_session, subscription, catalog_offer, staged_owner_command
+):
+    """A plan that negotiates its own terms must not be overridden by the
+    family it happens to sit in — that is the reason family sits BELOW
+    offer_version in the precedence order."""
+
+    catalog_offer.plan_family = "unlimited"
+    db_session.commit()
+
+    sla.record_policy_version(
+        db_session,
+        sla.RecordPolicyVersionCommand(
+            source=sla.SlaPolicySource.plan_family,
+            effective_from=NOW - timedelta(days=10),
+            availability_target_percent=99.5,
+            plan_family=sla.SlaPlanFamily.unlimited,
+            context=_ctx(),
+        ),
+    )
+    sla.record_policy_version(
+        db_session,
+        sla.RecordPolicyVersionCommand(
+            source=sla.SlaPolicySource.offer_version,
+            effective_from=NOW - timedelta(days=10),
+            availability_target_percent=99.9,
+            offer_id=catalog_offer.id,
+            context=_ctx(),
+        ),
+    )
+
+    resolved = sla.resolve_effective_policy(db_session, subscription, at=NOW)
+    assert resolved is not None
+    assert resolved.source is sla.SlaPolicySource.offer_version
+    assert float(resolved.availability_target_percent) == 99.9
+
+
+def test_family_default_outranks_internal_measurement(
+    db_session, subscription, catalog_offer, staged_owner_command
+):
+    """A family default is a promise; internal measurement only states what we
+    measure. The promise must win, or a global measurement row would mask
+    every family's actual terms."""
+
+    catalog_offer.plan_family = "dedicated"
+    db_session.commit()
+
+    sla.record_policy_version(
+        db_session,
+        sla.RecordPolicyVersionCommand(
+            source=sla.SlaPolicySource.internal_measurement,
+            effective_from=NOW - timedelta(days=20),
+            availability_target_percent=95.0,
+            context=_ctx(),
+        ),
+    )
+    sla.record_policy_version(
+        db_session,
+        sla.RecordPolicyVersionCommand(
+            source=sla.SlaPolicySource.plan_family,
+            effective_from=NOW - timedelta(days=10),
+            availability_target_percent=99.9,
+            plan_family=sla.SlaPlanFamily.dedicated,
+            context=_ctx(),
+        ),
+    )
+
+    resolved = sla.resolve_effective_policy(db_session, subscription, at=NOW)
+    assert resolved is not None
+    assert resolved.source is sla.SlaPolicySource.plan_family
+
+
+def test_family_terms_are_superseded_not_edited(
+    db_session, catalog_offer, staged_owner_command
+):
+    """Family terms are append-only like every other scope: raising the target
+    opens a new version and closes the old one, so a period already scored
+    keeps the terms it was measured under."""
+
+    first = sla.record_policy_version(
+        db_session,
+        sla.RecordPolicyVersionCommand(
+            source=sla.SlaPolicySource.plan_family,
+            effective_from=NOW - timedelta(days=60),
+            availability_target_percent=99.0,
+            plan_family=sla.SlaPlanFamily.home_flex,
+            context=_ctx(),
+        ),
+    )
+    second = sla.record_policy_version(
+        db_session,
+        sla.RecordPolicyVersionCommand(
+            source=sla.SlaPolicySource.plan_family,
+            effective_from=NOW - timedelta(days=30),
+            availability_target_percent=99.5,
+            plan_family=sla.SlaPlanFamily.home_flex,
+            context=_ctx(),
+        ),
+    )
+
+    assert second.version == 2
+    assert second.superseded_version_id == first.policy_version_id
+    assert first.policy_key == second.policy_key == "plan_family:home_flex"

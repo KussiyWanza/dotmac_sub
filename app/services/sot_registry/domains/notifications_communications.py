@@ -184,6 +184,181 @@ DOMAIN = DomainSOT(
     domain="notifications_communications",
     services=(
         SOTService(
+            name="communication.document_delivery",
+            module="app.services.document_delivery",
+            owns=(
+                "branded document email delivery sequence",
+                "document delivery idempotency arbitration",
+            ),
+            depends_on=(
+                "communications.intents",
+                "events.dispatcher",
+                "observability.audit_log",
+                "party.registry",
+            ),
+            notes=(
+                "Owns the SEQUENCE every emailed document repeats — arbitrate "
+                "the idempotency key, render branded bodies, submit one "
+                "communication intent, derive queued-or-suppressed, stage "
+                "audit, emit the domain event. It deliberately owns no "
+                "storage: each document type keeps its own typed row and passes "
+                "a record callback, because a Quote delivery request is "
+                "contractual evidence with RESTRICT foreign keys while a shared "
+                "catalog is marketing. Duplicated rows are acceptable when the "
+                "content genuinely differs; duplicated decisions are not. "
+                "Suppression, dedupe and channel policy stay with "
+                "communications.intents; recipient resolution stays with "
+                "party.registry."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name="branded document email delivery sequence",
+                        role=OwnerRole.COMMAND_WRITER,
+                        input_names=(
+                            "resolved email recipient",
+                            "staged document artifact",
+                            "document composition",
+                        ),
+                        canonical_writer="communication.document_delivery",
+                    ),
+                    ConcernContract(
+                        name="document delivery idempotency arbitration",
+                        role=OwnerRole.POLICY,
+                        input_names=("prior delivery under the same key",),
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="resolved email recipient",
+                        owner="party.registry",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "party.resolve_email_recipient — active email contact "
+                            "point, primary then oldest then id"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="staged document artifact",
+                        owner="sales.quote_documents",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "an immutable rendered export staged by the document "
+                            "type before delivery is attempted"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="document composition",
+                        owner="sales.quote_delivery",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "subject, body, template code, category and brand "
+                            "supplied by the document type"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="prior delivery under the same key",
+                        owner="sales.quote_delivery",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "the document type's own delivery table, read by the "
+                            "caller and passed in — this owner never reads "
+                            "storage it does not own"
+                        ),
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.PARTICIPANT,
+                    boundary=(
+                        "Runs inside the calling owner's command transaction. "
+                        "Submits the intent, invokes the caller's record "
+                        "callback, stages audit and emits the event, then "
+                        "flushes. Never commits or rolls back — the document "
+                        "owner's command boundary does."
+                    ),
+                    locking=(
+                        "Acquires no locks. The document type locks its own "
+                        "entity before calling (Quote takes SELECT ... FOR "
+                        "UPDATE), so two concurrent sends of one document "
+                        "serialise at the caller rather than here."
+                    ),
+                    idempotency=(
+                        "The key is mandatory; an un-keyed send cannot be safely "
+                        "retried and is refused. Same key with the same document "
+                        "replays the original outcome and writes nothing. Same "
+                        "key with a DIFFERENT document raises "
+                        "idempotency_conflict rather than sending a second time. "
+                        "Replay is arbitrated before the recipient is resolved, "
+                        "so learning what was already sent cannot fail because "
+                        "the address was since deactivated."
+                    ),
+                    retries=(
+                        "Safe to retry under the same key: a retry replays "
+                        "rather than re-sending. The record callback runs only "
+                        "after the intent is submitted, so a failed submit "
+                        "leaves no delivery row behind."
+                    ),
+                ),
+                errors=ErrorContract(
+                    domain_codes=(
+                        "communication.document_delivery.idempotency_key_required",
+                        "communication.document_delivery.idempotency_conflict",
+                    ),
+                    mapping_owner="the calling document owner's HTTP adapter",
+                    fail_closed_on=(
+                        "communication.document_delivery.idempotency_conflict",
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.CUT_OVER,
+                    new_owner="communication.document_delivery",
+                    old_owner="sales.quote_delivery",
+                    verification=(
+                        "sales.quote_delivery was migrated onto this owner with "
+                        "its existing behaviour tests unchanged, including "
+                        "replay, suppression and audit assertions — the "
+                        "abstraction was proved against a real path rather than "
+                        "one invented to fit it."
+                    ),
+                    cutover_gate=(
+                        "Each new emailed document type calls this owner instead "
+                        "of rebuilding the sequence; tests/architecture/"
+                        "test_quote_document_delivery_boundary.py asserts the "
+                        "Quote adapter does not construct its own intent."
+                    ),
+                    fallback_retirement=(
+                        "No parallel path remains for Quote delivery; the "
+                        "in-module sequence was removed, not deprecated."
+                    ),
+                ),
+                events=EventContract(
+                    event_types=("quote.delivery_requested",),
+                    schema_version=1,
+                    delivery_owner="events.dispatcher",
+                    compatibility=(
+                        "The envelope is document-kind tagged rather than "
+                        "quote-specific — document_kind, entity_id, delivery_id, "
+                        "communication_intent_id, artifact_id, queued — so a new "
+                        "document type adds an event type without changing the "
+                        "shape consumers already parse."
+                    ),
+                    replay=(
+                        "Emitted once per non-replayed send, inside the caller's "
+                        "transaction, so a rolled-back command emits nothing. A "
+                        "replayed idempotency key emits no event: the send it "
+                        "refers to already emitted one."
+                    ),
+                ),
+                steward="Sales and Communications",
+                design_refs=("docs/PLAN_FAMILY_ARCHITECTURE.md",),
+                test_refs=(
+                    "tests/test_quote_documents_and_delivery.py",
+                    "tests/test_party_email_recipient.py",
+                    "tests/architecture/test_quote_document_delivery_boundary.py",
+                ),
+            ),
+        ),
+        SOTService(
             name="communications.surveys",
             module="app.services.surveys",
             owns=(

@@ -93,12 +93,31 @@ class SlaVerdict(StrEnum):
     no_contractual_sla = "no_contractual_sla"
 
 
+class SlaPlanFamily(StrEnum):
+    """Commercial families eligible to own one SLA default.
+
+    Catalog classification is settings-driven and may contain additional
+    values. SLA authority is deliberately narrower: adding another family to
+    this protocol also requires the matching model constraint, Alembic
+    migration, precedence tests, and commercial approval of its terms.
+    """
+
+    unlimited = "unlimited"
+    dedicated = "dedicated"
+    home_flex = "home_flex"
+
+
 class SlaPolicySource(StrEnum):
     """Approved policy precedence, highest first (design §4)."""
 
     subscription_contract = "subscription_contract"
     account_contract = "account_contract"
     offer_version = "offer_version"
+    # A commercial family default (unlimited / dedicated / home_flex). Sits
+    # below offer_version so a plan that negotiates its own terms still wins,
+    # and above internal_measurement so a family default is a real promise
+    # rather than a measurement statement.
+    plan_family = "plan_family"
     internal_measurement = "internal_measurement"
 
 

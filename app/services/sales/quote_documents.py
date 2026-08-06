@@ -20,9 +20,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.audit import AuditActorType
-from app.models.party import PartyContactPoint, PartyContactPointType
 from app.models.sales import Quote, QuotePdfExport
 from app.models.stored_file import StoredFile
+from app.services import party as party_service
 from app.services.audit_adapter import stage_audit_event
 from app.services.billing.collection_accounts import CollectionAccounts
 from app.services.brand_profiles import ResolvedBrand, resolve_brand
@@ -328,33 +328,23 @@ def download_filename(quote: Quote | QuotePdfExport) -> str:
 
 
 def resolve_quote_recipient(db: Session, quote: Quote) -> QuoteRecipient | None:
+    """The Quote's deliverable email, via the quote's lead's party.
+
+    Only the quote -> party hop is quote-specific. Which of a party's addresses
+    is deliverable is owned by ``party.resolve_email_recipient``, so a second
+    delivery path (a shared catalog, say) cannot grow its own copy of that rule.
+    """
     lead = quote.lead
     party = lead.party if lead is not None else None
     if party is None:
         return None
-    contact = db.scalars(
-        select(PartyContactPoint)
-        .where(
-            PartyContactPoint.party_id == party.id,
-            PartyContactPoint.channel_type == PartyContactPointType.email.value,
-            PartyContactPoint.is_active.is_(True),
-        )
-        .order_by(
-            PartyContactPoint.is_primary.desc(),
-            PartyContactPoint.created_at.asc(),
-            PartyContactPoint.id.asc(),
-        )
-        .limit(1)
-    ).first()
-    if contact is None:
-        return None
-    email = str(contact.normalized_value or contact.display_value or "").strip()
-    if not email:
+    recipient = party_service.resolve_email_recipient(db, party.id)
+    if recipient is None:
         return None
     return QuoteRecipient(
-        contact_point_id=contact.id,
-        email=email,
-        display_name=party.display_name,
+        contact_point_id=recipient.contact_point_id,
+        email=recipient.email,
+        display_name=recipient.display_name or party.display_name,
     )
 
 

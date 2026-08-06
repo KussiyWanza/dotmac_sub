@@ -59,10 +59,18 @@ def test_sla_verdicts_include_no_contractual_sla():
 
 
 def test_policy_precedence_order():
+    """Declaration order IS the precedence, so this list is the contract.
+
+    plan_family sits below offer_version — a plan that negotiates its own terms
+    still beats the family default — and above internal_measurement, because a
+    family default is a promise while internal measurement only states what we
+    measure.
+    """
     assert [source.value for source in contracts.SlaPolicySource] == [
         "subscription_contract",
         "account_contract",
         "offer_version",
+        "plan_family",
         "internal_measurement",
     ]
 
