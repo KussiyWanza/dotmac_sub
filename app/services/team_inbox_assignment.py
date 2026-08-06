@@ -735,7 +735,7 @@ def queue_conversation_for_team(
         kind="queued",
         now=queued_at,
     )
-    queue_entry = _admit_queue_entry(
+    _admit_queue_entry(
         db,
         conversation_id=conversation.id,
         service_team_id=team_uuid,
@@ -745,7 +745,7 @@ def queue_conversation_for_team(
     return InboxAssignmentResult(
         kind="queued",
         service_team_id=str(team_uuid),
-        reason=f"queue_position:{queue_entry.queue_position}",
+        reason=reason_code,
     )
 
 

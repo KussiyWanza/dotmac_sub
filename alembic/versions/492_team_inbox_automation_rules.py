@@ -17,13 +17,18 @@ depends_on = None
 
 
 def upgrade() -> None:
-    trigger = sa.Enum(
+    trigger = postgresql.ENUM(
         "conversation_created",
         "inbound_message_received",
         name="inboxautomationtrigger",
+        create_type=False,
     )
-    action = sa.Enum(
-        "assign_agent", "auto_assign", "add_tag", name="inboxautomationactiontype"
+    action = postgresql.ENUM(
+        "assign_agent",
+        "auto_assign",
+        "add_tag",
+        name="inboxautomationactiontype",
+        create_type=False,
     )
     trigger.create(op.get_bind(), checkfirst=True)
     action.create(op.get_bind(), checkfirst=True)

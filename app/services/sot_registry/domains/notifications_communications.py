@@ -1530,7 +1530,7 @@ DOMAIN = DomainSOT(
                         source="Validated assign, auto-assign and label participant operations.",
                     ),
                 ),
-                transaction_mode=TransactionMode.PARTICIPANT,
+                transaction_mode=TransactionMode.COORDINATOR_MANAGED,
                 event_types=("team_inbox.automation_executed.v1",),
                 test_refs=("tests/test_team_inbox_automation.py",),
             ),
