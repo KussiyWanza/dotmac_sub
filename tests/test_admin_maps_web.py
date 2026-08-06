@@ -223,6 +223,7 @@ def test_technician_positions_marks_stale(db_session):
             technician_id=profile.id,
             person_id=user.id,
             status="on_shift",
+            location_sharing_enabled=True,
             last_latitude=6.5,
             last_longitude=3.3,
             last_location_at=datetime.now(UTC) - timedelta(minutes=30),
