@@ -234,6 +234,9 @@ class ServiceEnforcementCheck:
     * ``throttle_profile_mismatch`` (medium) — an active credential points at a
       missing/inactive RADIUS profile, so the intended profile (a throttle
       included) silently won't apply. Config drift, no immediate money impact.
+    * ``sellable_capped_offer_cannot_enforce`` (high) — an offer in a family
+      defined by its cap is on sale with no active ``reduce_speed`` rule. Sold
+      on a limit that will never fire.
     """
 
     name = "service_enforcement"
@@ -243,6 +246,7 @@ class ServiceEnforcementCheck:
         yield from self._suspended_but_online(db, now)
         yield from self._active_but_blocked(db)
         yield from self._throttle_profile_mismatch(db)
+        yield from self._sellable_capped_offer_cannot_enforce(db)
 
     def _suspended_but_online(self, db: Session, now: datetime) -> Iterable[Finding]:
         grace_cutoff = now - _ENFORCEMENT_GRACE
@@ -335,6 +339,60 @@ class ServiceEnforcementCheck:
                     "suggested_action": (
                         "Re-derive the subscriber status from its subscriptions "
                         "and refresh RADIUS so the walled-garden tag drops."
+                    ),
+                },
+            )
+
+    def _sellable_capped_offer_cannot_enforce(self, db: Session) -> Iterable[Finding]:
+        """Offers sold on a cap that nothing enforces.
+
+        Two guards prevent this going forward — the sale-time check in
+        ``web_catalog_offers`` and the rule-lifecycle guard in ``fup`` — but
+        neither can see drift that predates them, arrives by import, or is
+        written straight to the database. Production reached 63 subscribers on
+        five such offers with nobody alerted, because an offer with no rules is
+        indistinguishable at a glance from a family that legitimately has none.
+
+        Emitted per offer rather than per subscriber: the defect is one missing
+        rule, and the remediation is one rule.
+        """
+        from app.models.catalog import CatalogOffer
+        from app.services.fup import (
+            FUP_REQUIRED_FAMILIES,
+            active_speed_reduction_rule_ids,
+        )
+
+        offers = db.scalars(
+            select(CatalogOffer).where(
+                CatalogOffer.is_active.is_(True),
+                CatalogOffer.available_for_services.is_(True),
+                CatalogOffer.plan_family.in_(FUP_REQUIRED_FAMILIES),
+            )
+        ).all()
+        for offer in offers:
+            if active_speed_reduction_rule_ids(db, offer.id):
+                continue
+            affected = db.scalar(
+                select(func.count(Subscription.id)).where(
+                    Subscription.offer_id == offer.id,
+                    Subscription.status == SubscriptionStatus.active,
+                )
+            )
+            yield Finding(
+                check_name=self.name,
+                entity_type="catalog_offer",
+                canonical_entity_id=str(offer.id),
+                mismatch_type="sellable_capped_offer_cannot_enforce",
+                severity=SEVERITY_HIGH,
+                evidence={
+                    "offer_name": offer.name,
+                    "plan_family": offer.plan_family,
+                    "active_subscriptions": int(affected or 0),
+                    "expected": "an active reduce_speed FUP rule",
+                    "observed": "no active reduce_speed rule",
+                    "remediation": (
+                        "add the rule on the offer's FUP screen, or withdraw "
+                        "the offer from sale"
                     ),
                 },
             )

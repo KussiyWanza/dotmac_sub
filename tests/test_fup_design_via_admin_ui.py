@@ -562,6 +562,16 @@ def test_a_daily_rule_evaluates_without_a_monthly_quota_bucket(
         return []
 
     monkeypatch.setattr("app.services.fup.evaluate_rules", _spy)
+    # Stub the windowed reader. This test's claim is that evaluation is
+    # REACHED without a quota bucket; it is not about usage measurement. The
+    # real reader bridges async via asyncio.run (documented as safe only from
+    # the sync Celery task), which raises if any earlier test in the run has
+    # left an event loop running — a pre-existing fragility this test should
+    # not inherit to make its point.
+    monkeypatch.setattr(
+        "app.services.fup_usage.build_usage_by_period",
+        lambda *a, **k: {},
+    )
 
     from app.services.fup_enforcement import (
         EvaluateFupSubscriptionCommand,

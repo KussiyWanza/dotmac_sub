@@ -27,12 +27,20 @@ from app.models.catalog import (
     PriceBasis,
     ServiceType,
 )
-from app.services.web_catalog_offers import (
+from app.services.db_session_adapter import db_session_adapter
+from app.services.fup import (
     FUP_REQUIRED_FAMILIES,
-    MissingFupLadder,
-    assert_capped_offer_has_fup_ladder,
+    DeleteFupRuleCommand,
+    FupRuleEngineError,
+    FupRulePatch,
+    UpdateFupRuleCommand,
+    fup_policies,
 )
-from tests.fup_helpers import add_fup_rule, ensure_fup_policy
+from app.services.web_catalog_offers import (
+    MissingSpeedReductionRule,
+    assert_sellable_capped_offer_can_enforce,
+)
+from tests.fup_helpers import add_fup_rule, ensure_fup_policy, fup_command_context
 
 
 def _offer(db, *, plan_family, sellable=True):
@@ -53,7 +61,7 @@ def _offer(db, *, plan_family, sellable=True):
 
 
 def _check(db, offer, *, sellable=True):
-    assert_capped_offer_has_fup_ladder(
+    assert_sellable_capped_offer_can_enforce(
         db,
         offer_id=str(offer.id),
         plan_family=offer.plan_family,
@@ -63,9 +71,9 @@ def _check(db, offer, *, sellable=True):
 
 def test_home_flex_cannot_be_sold_without_a_throttle_rule(db_session):
     offer = _offer(db_session, plan_family="home_flex")
-    with pytest.raises(MissingFupLadder) as caught:
+    with pytest.raises(MissingSpeedReductionRule) as caught:
         _check(db_session, offer)
-    assert caught.value.code == "catalog.offer.missing_fup_ladder"
+    assert caught.value.code == "catalog.offer.missing_speed_reduction_rule"
 
 
 def test_an_empty_policy_is_not_a_ladder(db_session):
@@ -73,7 +81,7 @@ def test_an_empty_policy_is_not_a_ladder(db_session):
     offer = _offer(db_session, plan_family="home_flex")
     ensure_fup_policy(db_session, str(offer.id))
     db_session.commit()
-    with pytest.raises(MissingFupLadder):
+    with pytest.raises(MissingSpeedReductionRule):
         _check(db_session, offer)
 
 
@@ -97,7 +105,7 @@ def test_a_notify_only_ladder_is_not_enforcement(db_session):
         action="notify",
     )
     db_session.commit()
-    with pytest.raises(MissingFupLadder):
+    with pytest.raises(MissingSpeedReductionRule):
         _check(db_session, offer)
 
 
@@ -166,3 +174,108 @@ def test_other_families_are_untouched(db_session, family):
 def test_high_speed_data_is_deliberately_out_of_scope():
     """Pinned so adding it becomes a decision rather than a drive-by edit."""
     assert FUP_REQUIRED_FAMILIES == ("home_flex",)
+
+
+# --- keeping the invariant after the sale ------------------------------------
+#
+# The sale-time check establishes it; nothing kept it. A later deactivation
+# returns the offer to exactly the state that check exists to prevent —
+# sellable, capped in name, enforcing nothing — via an operator action that
+# looks entirely routine.
+
+
+def _throttle_rule(db, offer, *, name="Throttle"):
+    ensure_fup_policy(db, str(offer.id))
+    rule = add_fup_rule(
+        db,
+        str(offer.id),
+        name=name,
+        consumption_period="monthly",
+        direction="up_down",
+        threshold_amount=100,
+        threshold_unit="gb",
+        action="reduce_speed",
+        speed_reduction_percent=50,
+    )
+    db.commit()
+    return rule
+
+
+def _delete(db, rule):
+    # Read the id BEFORE releasing: touching an expired ORM attribute issues a
+    # refresh SELECT, which reopens the transaction owner commands forbid.
+    rule_id = str(rule.id)
+    db_session_adapter.release_read_transaction(db)
+    fup_policies.delete_rule(
+        db,
+        DeleteFupRuleCommand(
+            context=fup_command_context(rule_id, "test_delete"),
+            rule_id=rule_id,
+        ),
+    )
+
+
+def _patch(db, rule, patch):
+    rule_id = str(rule.id)
+    db_session_adapter.release_read_transaction(db)
+    fup_policies.update_rule(
+        db,
+        UpdateFupRuleCommand(
+            context=fup_command_context(rule_id, "test_update"),
+            rule_id=rule_id,
+            patch=patch,
+        ),
+    )
+
+
+def test_cannot_delete_the_last_enforcing_rule_while_on_sale(db_session):
+    offer = _offer(db_session, plan_family="home_flex")
+    rule = _throttle_rule(db_session, offer)
+    with pytest.raises(FupRuleEngineError) as caught:
+        _delete(db_session, rule)
+    assert caught.value.code == "access.fup_rule_engine.last_enforcing_rule"
+
+
+def test_cannot_deactivate_the_last_enforcing_rule_while_on_sale(db_session):
+    offer = _offer(db_session, plan_family="home_flex")
+    rule = _throttle_rule(db_session, offer)
+    with pytest.raises(FupRuleEngineError):
+        _patch(
+            db_session,
+            rule,
+            FupRulePatch(updated_fields=frozenset({"is_active"}), is_active=False),
+        )
+
+
+def test_cannot_convert_the_last_enforcing_rule_to_notify(db_session):
+    """Changing the action strips enforcement just as surely as deleting it."""
+    offer = _offer(db_session, plan_family="home_flex")
+    rule = _throttle_rule(db_session, offer)
+    with pytest.raises(FupRuleEngineError):
+        _patch(
+            db_session,
+            rule,
+            FupRulePatch(updated_fields=frozenset({"action"}), action="notify"),
+        )
+
+
+def test_a_second_enforcing_rule_makes_the_first_removable(db_session):
+    offer = _offer(db_session, plan_family="home_flex")
+    first = _throttle_rule(db_session, offer, name="Throttle A")
+    _throttle_rule(db_session, offer, name="Throttle B")
+    _delete(db_session, first)  # no raise — enforcement remains
+
+
+def test_withdrawing_from_sale_first_is_the_supported_route(db_session):
+    """The guard is not a trap: there is always a way out, and it is correct."""
+    offer = _offer(db_session, plan_family="home_flex")
+    rule = _throttle_rule(db_session, offer)
+    offer.available_for_services = False
+    db_session.commit()
+    _delete(db_session, rule)  # no raise
+
+
+def test_other_families_can_still_remove_their_rules(db_session):
+    offer = _offer(db_session, plan_family="high_speed_data")
+    rule = _throttle_rule(db_session, offer)
+    _delete(db_session, rule)  # no raise

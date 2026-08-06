@@ -279,6 +279,81 @@ def _emit_change(
     )
 
 
+#: Families whose product definition IS a volume bound, and which therefore
+#: cannot be SOLD without a rule that enforces it.
+#:
+#: Deliberately ``home_flex`` only. ``high_speed_data`` is also capped and all
+#: six of its offers do carry enforcement — but its ladder shape is an open
+#: product decision for that segment (PLAN_FAMILY_ARCHITECTURE §1), and
+#: asserting a requirement across segments is the cross-family inference
+#: ``plan_family`` exists to prevent. Add it when that decision is taken.
+FUP_REQUIRED_FAMILIES = ("home_flex",)
+
+
+def sale_requires_speed_reduction(offer: CatalogOffer | None) -> bool:
+    """Is this offer one that may not be on sale without enforcement?"""
+    if offer is None:
+        return False
+    return (
+        bool(offer.available_for_services)
+        and (offer.plan_family or "") in FUP_REQUIRED_FAMILIES
+    )
+
+
+def active_speed_reduction_rule_ids(db: Session, offer_id) -> list:
+    """Ids of the active ``reduce_speed`` rules enforcing this offer's cap.
+
+    Proves an enforcing *action* exists. It does not prove the ladder is
+    complete or that the threshold is reachable — a rule can sit behind an
+    unfirable chain or a time window that never opens. Named for what it
+    checks; see ``assert_sellable_capped_offer_can_enforce``.
+    """
+    rows = (
+        db.query(FupRule.id)
+        .join(FupPolicy, FupPolicy.id == FupRule.policy_id)
+        .filter(FupPolicy.offer_id == coerce_uuid(str(offer_id)))
+        .filter(FupPolicy.is_active.is_(True))
+        .filter(FupRule.is_active.is_(True))
+        .filter(FupRule.action == FupAction.reduce_speed)
+        .all()
+    )
+    return [row[0] for row in rows]
+
+
+def _assert_not_last_enforcing_rule(db: Session, rule: FupRule, *, verb: str) -> None:
+    """Refuse to strip the last enforcing rule from an offer that is on sale.
+
+    The sale-time check establishes the invariant; this keeps it. Without it a
+    later deactivation quietly returns a ``home_flex`` offer to the exact state
+    the sale-time check was written to prevent — sellable, capped in name, and
+    enforcing nothing — with no operator action that looks like a mistake.
+
+    Withdraw the offer from sale first, or leave another ``reduce_speed`` rule
+    active.
+    """
+    if rule.action is not FupAction.reduce_speed or not rule.is_active:
+        return
+    policy = rule.policy or db.get(FupPolicy, rule.policy_id)
+    if policy is None or not policy.is_active:
+        return
+    offer = db.get(CatalogOffer, policy.offer_id)
+    if not sale_requires_speed_reduction(offer):
+        return
+    remaining = [
+        rule_id
+        for rule_id in active_speed_reduction_rule_ids(db, policy.offer_id)
+        if rule_id != rule.id
+    ]
+    if remaining:
+        return
+    raise _error(
+        "last_enforcing_rule",
+        f"Cannot {verb} the only speed-reduction rule on a "
+        f"{offer.plan_family} offer that is available for sale. Withdraw the "
+        "offer from sale first, or add a replacement rule.",
+    )
+
+
 class FupPolicies:
     """Canonical owner for FUP policy/rule state and rule evaluation inputs."""
 
@@ -426,6 +501,14 @@ class FupPolicies:
             allowed_fields = set(FupRulePatch.__dataclass_fields__) - {"updated_fields"}
             if not fields or not fields <= allowed_fields:
                 raise _error("invalid_rule", "FUP rule update fields are invalid.")
+            # Before ANY mutation: both of these strip the last enforcement
+            # from an offer that may still be on sale. rule.action is
+            # overwritten further down, so checking later would read the new
+            # value and never fire.
+            if "is_active" in fields and patch.is_active is False:
+                _assert_not_last_enforcing_rule(db, rule, verb="deactivate")
+            if "action" in fields and patch.action != FupAction.reduce_speed.value:
+                _assert_not_last_enforcing_rule(db, rule, verb="change the action of")
             if "name" in fields:
                 if not patch.name or not patch.name.strip():
                     raise _error("invalid_rule", "FUP rule name is required.")
@@ -516,6 +599,7 @@ class FupPolicies:
     def delete_rule(db: Session, command: DeleteFupRuleCommand) -> None:
         def operation() -> None:
             rule = _rule(db, command.rule_id, for_update=True)
+            _assert_not_last_enforcing_rule(db, rule, verb="delete")
             policy_id = rule.policy_id
             offer_id = rule.policy.offer_id
             rule_id = rule.id
