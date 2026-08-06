@@ -7,6 +7,13 @@ one on the same day, giving two customers unbilled dedicated fibre. A separate
 pair both named "Unlimited Pro" caused a live 50 Mbps plan with three active
 customers to be withdrawn from sale by a maintenance script matching on name.
 
+Before the constraint is installed, the migration reconciles only the two
+confirmed legacy Splynx rows to the already-adjudicated production state:
+tariff 71 is retained for subscription history but withdrawn from selection,
+and tariff 79 is archived and withdrawn. The predicates include both the
+stable Splynx identifier and expected name, and already-correct production is
+a no-op. Every other collision still fails closed for operator adjudication.
+
 Scoped to *sellable* offers rather than all of them. A retired offer keeping
 its name is harmless and preserves history; the ambiguity only matters where
 somebody is choosing. Withdrawing one of a pair from sale is therefore a valid
@@ -28,6 +35,7 @@ Revises: 488_pon_port_capacity
 from collections.abc import Sequence
 
 import sqlalchemy as sa
+from sqlalchemy.engine import Connection
 
 from alembic import op
 
@@ -39,8 +47,35 @@ depends_on: str | Sequence[str] | None = None
 _INDEX = "uq_catalog_offers_sellable_name"
 
 
+def _reconcile_confirmed_legacy_duplicates(bind: Connection) -> None:
+    """Project two adjudicated legacy rows to the confirmed production state."""
+    bind.execute(
+        sa.text(
+            "UPDATE catalog_offers "
+            "SET available_for_services = false, "
+            "show_on_customer_portal = false, updated_at = CURRENT_TIMESTAMP "
+            "WHERE splynx_tariff_id = :tariff_id AND name = :expected_name "
+            "AND (available_for_services OR show_on_customer_portal)"
+        ),
+        {"tariff_id": 71, "expected_name": "25 Mbps Fiber"},
+    )
+    bind.execute(
+        sa.text(
+            "UPDATE catalog_offers "
+            "SET available_for_services = false, "
+            "show_on_customer_portal = false, status = 'archived', "
+            "is_active = false, updated_at = CURRENT_TIMESTAMP "
+            "WHERE splynx_tariff_id = :tariff_id AND name = :expected_name "
+            "AND (is_active OR available_for_services "
+            "OR show_on_customer_portal OR status::text <> 'archived')"
+        ),
+        {"tariff_id": 79, "expected_name": "Unlimited Pro"},
+    )
+
+
 def upgrade() -> None:
     bind = op.get_bind()
+    _reconcile_confirmed_legacy_duplicates(bind)
     # Fail loudly rather than let the index creation error out mid-migration
     # with a message that does not say which offers collide.
     collisions = bind.execute(

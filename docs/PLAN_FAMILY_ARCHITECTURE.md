@@ -183,6 +183,23 @@ duplicate speeds at incompatible prices.
 The correct expression of a negotiated price is a subscription-scoped discount
 or contract, not a new offer.
 
+### Legacy duplicate cutover
+
+Migration `489_unique_sellable_offer_name` installs the database constraint
+that prevents two active, sellable offers from sharing one picker-visible
+name. Before installing it, the migration projects two specifically
+adjudicated Splynx records to the confirmed production state:
+
+- tariff 71, the zero-price legacy `25 Mbps Fiber`, remains active for
+  subscription history but is withdrawn from service and portal selection;
+- tariff 79, the superseded 200 Mbps `Unlimited Pro`, is archived, made
+  inactive, and withdrawn from service and portal selection.
+
+Both repairs require the stable tariff ID and expected name, and are no-ops
+when an environment already matches production. The paid tariff 77 and live
+tariff 86 remain untouched. Any other sellable-name collision still fails the
+migration closed for explicit operator adjudication.
+
 ### Regional pricing — the one real gap
 
 `region_zone_id` sits on `CatalogOffer`, not on `OfferPrice`. So selling the
