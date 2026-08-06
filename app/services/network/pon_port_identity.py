@@ -6,14 +6,13 @@ display string. Two writers were free to invent a name when none was supplied,
 and the identity of a customer-bearing port ended up depending on which code
 path created the row.
 
-The identity of a PON port is structural: ``(olt_id, frame, slot, port)``. It
-is not a string, and it is not ``port_number`` on its own — a bare port number
-names nothing without the frame and slot it sits in, so this module refuses to
-build an identity from one. Where the structural parts are unknown the answer
-is a refusal, never a generated placeholder: a fabricated name is
-indistinguishable from a real one the moment it is written.
+The identity of a PON port is structural, but **which structure depends on the
+platform** — see :class:`PonIdentityShape`.
 
-Identity is derived from hardware topology, not from the contaminated field::
+On a chassis OLT it is ``(olt_id, frame, slot, port)``. It is not a string, and
+it is not ``port_number`` on its own — a bare port number names nothing without
+the frame and slot it sits in. There, identity is derived from hardware
+topology rather than the contaminated field::
 
     PonPort -> OltCardPort.port_number -> port
             -> OltCard.slot_number     -> slot
@@ -22,6 +21,16 @@ Identity is derived from hardware topology, not from the contaminated field::
 Each link is NOT NULL and uniquely constrained, so the chain is authoritative
 where it exists. ``PonPort.olt_card_port_id`` is nullable, so it does not
 always exist; see ``classify``.
+
+On a single-box OLT there is no chassis to walk. The port number *is* the whole
+identity, ``(olt_id, port)``, and ``pon<n>`` is its canonical rendering — not a
+prefix to strip. Treating ``frame/slot/port`` as universal was a chassis model
+imposed on hardware that has none, and it made 121 correctly named UF-OLT ports
+carrying 678 live assignments permanently unassignable.
+
+Where the structural parts are unknown the answer is a refusal, never a
+generated placeholder: a fabricated name is indistinguishable from a real one
+the moment it is written.
 
 Scope note. This module is containment: it owns identity, canonical rendering,
 and the refusals. It deliberately does **not** repair data, and there is no
@@ -34,24 +43,29 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from enum import Enum
 from typing import Self
 from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from app.models.network import OltCard, OltCardPort, OltShelf, PonPort
+from app.models.network import OltCard, OltCardPort, OLTDevice, OltShelf, PonPort
 
 __all__ = [
+    "PonIdentity",
     "PonIdentityConflict",
+    "PonIdentityShape",
     "PonIdentityRefusal",
     "PonPortIdentity",
     "PonPortIdentityError",
     "PonPortNameReading",
+    "SingleBoxPonIdentity",
     "assert_assignable",
     "canonical_name",
     "classify",
     "derive_identity",
     "read_name",
+    "shape_for_vendor",
 ]
 
 #: A canonical PON name is exactly ``frame/slot/port``. Anything else is either
@@ -62,6 +76,10 @@ _FSP = re.compile(r"^(\d+)/(\d+)/(\d+)$")
 #: is acceptable **at transport ingress only**, where it must be converted
 #: immediately; it is never an identity and never a stored name.
 _TRANSPORT_PREFIX = re.compile(r"^pon-", re.IGNORECASE)
+
+#: A single-box OLT names its ports ``pon<n>``; the bare number is accepted at
+#: ingress and rendered canonically as ``pon<n>``.
+_SINGLE_BOX_PORT = re.compile(r"^(?:pon)?(\d+)$", re.IGNORECASE)
 
 
 class PonIdentityRefusal:
@@ -83,7 +101,7 @@ class PonIdentityConflict:
     the refusal is raised.
     """
 
-    identity: PonPortIdentity
+    identity: PonIdentity
     claimants: tuple[UUID, ...]
 
 
@@ -103,14 +121,52 @@ class PonPortIdentityError(ValueError):
         self.conflict = conflict
 
 
+class PonIdentityShape(str, Enum):
+    """How a platform names a PON port, because not every OLT has a chassis.
+
+    ``chassis`` — the port sits in a slot in a frame, so identity is
+    ``frame/slot/port``. Huawei MA5600/MA5608T/MA5800, ZTE, Nokia.
+
+    ``single_box`` — the OLT *is* the box. There is no frame and no slot; the
+    port number is the whole identity. Ubiquiti UF-OLT.
+
+    Defining identity as ``frame/slot/port`` for everything is a chassis model
+    imposed on hardware that has no chassis. On the UF-OLT estate that made
+    every correctly named port unidentifiable: 121 rows carrying 678 live
+    assignments were refused, permanently, for being named ``pon1``..``pon8`` —
+    which is the only faithful name that hardware admits.
+    """
+
+    chassis = "chassis"
+    single_box = "single_box"
+
+
+#: Vendors whose OLTs have no chassis. Matched against ``OLTDevice.vendor``
+#: case-insensitively by substring, mirroring ``get_olt_adapter``.
+_SINGLE_BOX_VENDORS = frozenset({"ubiquiti", "ubnt"})
+
+
+def shape_for_vendor(vendor: str | None) -> PonIdentityShape:
+    """Identity shape for a vendor string. Chassis is the conservative default.
+
+    An unknown vendor is treated as a chassis platform: that is the existing
+    behaviour for every OLT in the fleet bar one, and it fails toward refusing
+    a malformed name rather than silently accepting a bare port number.
+    """
+    lowered = (vendor or "").strip().casefold()
+    if any(token in lowered for token in _SINGLE_BOX_VENDORS):
+        return PonIdentityShape.single_box
+    return PonIdentityShape.chassis
+
+
 @dataclass(frozen=True, slots=True)
 class PonPortIdentity:
-    """Validated structural identity of one PON port.
+    """Validated structural identity of one PON port in a chassis.
 
     Extracted from the strict ``OntFsp`` value object that already existed in
     ``ont_authorization_contracts``, which validated the same three numbers for
     the authorization path only. Identity is a property of the port, not of one
-    caller, so it lives here and that contract now consumes this.
+    caller, so it lives here.
     """
 
     frame: int
@@ -142,11 +198,45 @@ class PonPortIdentity:
         return self.value
 
 
-def canonical_name(identity: PonPortIdentity) -> str:
-    """The one rendering of a PON port name.
+@dataclass(frozen=True, slots=True)
+class SingleBoxPonIdentity:
+    """Validated identity of one PON port on an OLT with no chassis.
 
-    Always ``frame/slot/port``. ``name`` is a projection of identity, not an
-    independently writable field.
+    The port number is the entire identity. Rendering it as ``pon<n>`` is not a
+    vendor prefix to be stripped — on this platform it *is* the canonical name,
+    and the established estate naming (``pon1``..``pon8``) already matches.
+    """
+
+    port: int
+
+    @classmethod
+    def parse(cls, value: str) -> Self:
+        raw = (value or "").strip()
+        m = _SINGLE_BOX_PORT.match(raw)
+        if m is None:
+            raise PonPortIdentityError(
+                f"{raw!r} is not a canonical single-box PON identity.",
+                code=PonIdentityRefusal.name_not_canonical,
+            )
+        return cls(port=int(m[1]))
+
+    @property
+    def value(self) -> str:
+        return f"pon{self.port}"
+
+    def __str__(self) -> str:
+        return self.value
+
+
+#: A PON port is identified by whichever shape its platform admits.
+PonIdentity = PonPortIdentity | SingleBoxPonIdentity
+
+
+def canonical_name(identity: PonIdentity) -> str:
+    """The one rendering of a PON port name, for that port's platform.
+
+    ``frame/slot/port`` on a chassis, ``pon<n>`` on a single-box OLT. ``name``
+    is a projection of identity, not an independently writable field.
     """
     return identity.value
 
@@ -155,18 +245,38 @@ def canonical_name(identity: PonPortIdentity) -> str:
 class PonPortNameReading:
     """What a stored ``name`` claims, and how much cleaning that claim needed."""
 
-    identity: PonPortIdentity | None
+    identity: PonIdentity | None
     prefixed: bool
     malformed: bool
 
 
-def read_name(name: str | None) -> PonPortNameReading:
-    """Interpret a stored name without trusting it.
+def read_name(
+    name: str | None,
+    *,
+    shape: PonIdentityShape = PonIdentityShape.chassis,
+) -> PonPortNameReading:
+    """Interpret a stored name without trusting it, for a platform's shape.
 
     Reports the prefix separately from the parse so callers can tell a
     vendor-prefixed row (repairable by renaming) from a malformed one.
+
+    ``shape`` defaults to ``chassis`` so existing chassis-only callers are
+    unchanged. On a ``single_box`` platform a bare ``pon<n>`` is canonical and
+    is **not** treated as a prefixed chassis name — the ``pon`` there is the
+    name, not a transport prefix wrapped around an ``f/s/p``.
     """
     raw = (name or "").strip()
+
+    if shape is PonIdentityShape.single_box:
+        try:
+            return PonPortNameReading(
+                identity=SingleBoxPonIdentity.parse(raw),
+                prefixed=False,
+                malformed=False,
+            )
+        except PonPortIdentityError:
+            return PonPortNameReading(identity=None, prefixed=False, malformed=True)
+
     prefixed = bool(_TRANSPORT_PREFIX.match(raw))
     stripped = _TRANSPORT_PREFIX.sub("", raw)
     m = _FSP.match(stripped)
@@ -201,14 +311,27 @@ def derive_from_card_port(db: Session, card_port: OltCardPort) -> PonPortIdentit
     )
 
 
-def derive_identity(db: Session, pon_port: PonPort) -> PonPortIdentity | None:
+def shape_for_pon_port(db: Session, pon_port: PonPort) -> PonIdentityShape:
+    """Identity shape of the platform this row belongs to."""
+    olt = db.get(OLTDevice, pon_port.olt_id) if pon_port.olt_id is not None else None
+    return shape_for_vendor(getattr(olt, "vendor", None))
+
+
+def derive_identity(db: Session, pon_port: PonPort) -> PonIdentity | None:
     """Structural identity of a stored PON port, or ``None`` when unknowable.
 
     ``None`` is not a failure to be papered over — it means this row never
     recorded the hardware link that would name it, and no amount of string
     cleanup can recover that. Callers that must decide something about the port
     use :func:`assert_assignable` instead of guessing.
+
+    On a single-box platform there is no hardware chain to walk, and none is
+    missing: the port number *is* the structural identity, so it is read from
+    the name. Requiring a card-port link there would report every correctly
+    named UF-OLT port as underivable forever.
     """
+    if shape_for_pon_port(db, pon_port) is PonIdentityShape.single_box:
+        return read_name(pon_port.name, shape=PonIdentityShape.single_box).identity
     if pon_port.olt_card_port_id is None:
         return None
     card_port = db.get(OltCardPort, pon_port.olt_card_port_id)
@@ -229,8 +352,9 @@ def classify(db: Session, pon_port: PonPort) -> str:
     ``underivable`` — no hardware link; the name is the only claim, and it is
     unverifiable.
     """
+    shape = shape_for_pon_port(db, pon_port)
     derived = derive_identity(db, pon_port)
-    reading = read_name(pon_port.name)
+    reading = read_name(pon_port.name, shape=shape)
     if derived is None:
         return "underivable"
     if reading.malformed:
@@ -269,11 +393,15 @@ def assert_assignable(db: Session, pon_port: PonPort) -> None:
     twins were *active*, so restricting to active rows alone recovered 2 of
     them; both conditions together recover all 144 (assignable 43 -> 187).
     """
-    reading = read_name(pon_port.name)
+    shape = shape_for_pon_port(db, pon_port)
+    reading = read_name(pon_port.name, shape=shape)
     if reading.prefixed or reading.malformed:
+        expected = (
+            "frame/slot/port" if shape is PonIdentityShape.chassis else "pon<n> port"
+        )
         raise PonPortIdentityError(
             f"PON port {pon_port.name!r} does not carry a canonical "
-            "frame/slot/port identity; it must be repaired through the "
+            f"{expected} identity; it must be repaired through the "
             "identity owner before it can be assigned.",
             code=PonIdentityRefusal.name_not_canonical,
         )
@@ -293,7 +421,7 @@ def assert_assignable(db: Session, pon_port: PonPort) -> None:
         .all()
     )
     for other in siblings:
-        other_reading = read_name(other.name)
+        other_reading = read_name(other.name, shape=shape)
         # A sibling whose own name is prefixed or malformed is already refused
         # in its own right and is pending repair. Letting it claim an identity
         # would let a row nobody chose veto the canonical row that names the

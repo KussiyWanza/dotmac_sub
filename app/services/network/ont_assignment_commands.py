@@ -64,20 +64,36 @@ def _actor_type(actor_id: str | None) -> AuditActorType:
     return AuditActorType.user if actor_id else AuditActorType.service
 
 
-def _fsp_parts(name: str | None) -> tuple[str | None, str | None]:
-    """Split a canonical PON name into ``(board, port)``, or ``(None, None)``.
+def _fsp_parts(
+    name: str | None, *, vendor: str | None
+) -> tuple[str | None, str | None]:
+    """Split a PON name into ``(board, port)`` for the platform, or ``(None, None)``.
 
     Splitting on ``/`` alone accepted ``pon-0/1/13`` -- three parts -- and
     returned board ``pon-0/1``, writing a board that names nothing onto the ONT
     instead of failing closed. Callers are already refused upstream by
     ``pon_port_identity.assert_assignable``; this reads the name through the
     identity owner so the helper cannot reintroduce the corruption on its own.
-    """
-    from app.services.network.pon_port_identity import read_name
 
-    identity = read_name(name).identity
+    The vendor is required because the shapes differ. On a chassis OLT the
+    board is ``frame/slot``. On a single-box OLT there is no board at all, and
+    reading its ``pon<n>`` name as a chassis name yielded ``(None, None)`` --
+    silently discarding the port number on every UF-OLT assignment and move.
+    """
+    from app.services.network.pon_port_identity import (
+        SingleBoxPonIdentity,
+        read_name,
+        shape_for_vendor,
+    )
+
+    identity = read_name(name, shape=shape_for_vendor(vendor)).identity
     if identity is None:
         return None, None
+    if isinstance(identity, SingleBoxPonIdentity):
+        # A single-box OLT has no board to record. Reporting ``None`` states
+        # that honestly; inventing one would put a board that names nothing
+        # back onto the ONT, which is the defect this helper exists to stop.
+        return None, str(identity.port)
     return f"{identity.frame}/{identity.slot}", str(identity.port)
 
 
@@ -336,7 +352,7 @@ class OntAssignmentCommands:
 
         ont.olt_device_id = olt.id
         ont.pon_port_id = pon.id
-        board, port = _fsp_parts(pon.name)
+        board, port = _fsp_parts(pon.name, vendor=olt.vendor)
         if ont.board is None and board is not None:
             ont.board = board
         if ont.port is None and port is not None:
@@ -537,7 +553,7 @@ class OntAssignmentCommands:
             assignment.pon_port_id = pon.id
             ont.olt_device_id = olt.id
             ont.pon_port_id = pon.id
-            board, port = _fsp_parts(pon.name)
+            board, port = _fsp_parts(pon.name, vendor=olt.vendor)
             ont.board = board
             ont.port = port
             db.flush()
