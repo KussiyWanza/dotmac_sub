@@ -29,7 +29,10 @@ combined Inbox/Support workspace.
 | Conversation-to-Lead provenance | `communications.conversation_lead_relationships` | Owns the durable, auditable, one-active-Lead-per-conversation relationship |
 | Customer context drawer | `communications.team_inbox_contact_context` | Composes permission-scoped Party, Lead, Ticket, conversation, Project, and Task sections with typed availability |
 | Profile and Lead action resolution | `communications.inbox_lead_actions` | Resolves and coordinates identity-aware actions without owning Party or Lead fields |
-| Routing, assignment, and escalation | `communications.team_inbox_routing` | Applies configured team, availability, permission, and SLA policy |
+| Routing, assignment, escalation, and FIFO queue | `communications.team_inbox_routing` | Applies configured team, availability, permission, SLA, durable queue admission, and promotion policy |
+| Inbox automation | `communications.team_inbox_automation` | Matches Inbox-scoped conversation triggers and coordinates ordered assign, auto-assign, and tag actions |
+| Reply reminders | `communications.team_inbox_reply_reminders` | Owns configured first/repeat due times and queues internal agent notifications until a reply settles the schedule |
+| Agent introductions | `communications.team_inbox_agent_introduction` | Owns per-agent templates and the chat-widget-only first-pickup auto-send decision |
 | Conversation status | `communications.team_inbox_status` | Owns every status transition and its immutable evidence |
 | Historical lifecycle reconstruction | `communications.team_inbox_audit_reconstruction` | Applies only reviewed, hash-bound, provenance-graded historical evidence |
 | Lifecycle audit timeline and drift | `communications.team_inbox_audit_projection` | Combines immutable evidence, exposes coverage, and reports current-state drift |
@@ -87,6 +90,14 @@ AI routing is disabled, or when no confident AI result is present, the channel
 default or configured fallback team remains the primary team. The route rows
 are routing policy only; provider credentials and SMTP listener secrets remain
 owned by configuration and secret-management contracts.
+
+When no eligible agent has capacity, routing records one durable queue entry
+with a team-scoped monotonic admission position and entry timestamp. The
+periodic promotion command locks the oldest entries and each target team before
+rechecking live capacity, promotes only the oldest eligible conversation, and
+durably settles invalid or already-assigned entries. The agent projection
+derives current FIFO rank and an estimated wait from that ledger and the live
+capacity snapshot; it never makes a routing decision.
 
 ## Outbound flow
 

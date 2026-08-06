@@ -5,11 +5,70 @@ from __future__ import annotations
 import logging
 
 from app.celery_app import celery_app
-from app.services import team_inbox_maintenance
+from app.models.domain_settings import SettingDomain
+from app.services import (
+    team_inbox_assignment,
+    team_inbox_maintenance,
+    team_inbox_reply_reminders,
+)
 from app.services.db_session_adapter import db_session_adapter
 from app.services.owner_commands import CommandContext
+from app.services.settings_spec import resolve_integer
 
 logger = logging.getLogger(__name__)
+
+
+@celery_app.task(name="app.tasks.team_inbox.send_reply_reminders")
+def send_reply_reminders(*, limit: int = 200) -> dict[str, int]:
+    with db_session_adapter.session() as session:
+        result = team_inbox_reply_reminders.sweep_reply_reminders(
+            session,
+            team_inbox_reply_reminders.ReplyReminderSweepCommand(
+                context=CommandContext.system(
+                    actor="task:team-inbox-reply-reminders",
+                    scope="team-inbox:reply-reminders",
+                    reason="notify assigned agents about waiting inbound replies",
+                ),
+                delay_minutes=resolve_integer(
+                    session, SettingDomain.comms, "inbox_reply_reminder_delay_minutes"
+                ),
+                repeat_minutes=resolve_integer(
+                    session, SettingDomain.comms, "inbox_reply_reminder_repeat_minutes"
+                ),
+                limit=limit,
+            ),
+        )
+        return {
+            "scheduled": result.scheduled,
+            "sent": result.sent,
+            "resolved": result.resolved,
+        }
+
+
+@celery_app.task(name="app.tasks.team_inbox.promote_queued_conversations")
+def promote_queued_conversations(*, limit: int = 200) -> dict[str, int]:
+    with db_session_adapter.session() as session:
+        result = team_inbox_assignment.sweep_queued_conversations(
+            session,
+            team_inbox_assignment.InboxQueueSweepCommand(
+                context=CommandContext.system(
+                    actor="task:team-inbox-queue-promotion",
+                    scope="team-inbox:routing-command",
+                    reason="promote oldest eligible FIFO queue entries",
+                ),
+                limit=limit,
+            ),
+        )
+        payload = {
+            "promoted": result.promoted,
+            "cancelled": result.cancelled,
+            "remaining": result.remaining,
+        }
+        logger.info(
+            "team inbox FIFO queue promotion complete",
+            extra={"event": "team_inbox_queue_promotion", **payload},
+        )
+        return payload
 
 
 @celery_app.task(name="app.tasks.team_inbox.recover_stale_ai_intake")

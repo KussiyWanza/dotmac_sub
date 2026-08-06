@@ -1297,7 +1297,7 @@
     };
   };
 
-  window.inboxComposer = function inboxComposer(conversationId) {
+  window.inboxComposer = function inboxComposer(conversationId, introductionText = "") {
     return {
       conversationId,
       mode: "reply",
@@ -1324,6 +1324,7 @@
       aiDraftError: "",
       polishLoading: false,
       polishSuggestion: null,
+      introductionText,
 
       init() {
         this.draft = localStorage.getItem(`${KEYS.draftPrefix}${conversationId}`) || "";
@@ -1388,7 +1389,7 @@
         this.$nextTick(() => this.$refs.textarea?.focus());
       },
       insertIntroduction() {
-        this.insertQuickResponse("Hello, this is the Dotmac support team. ");
+        this.insertQuickResponse(this.introductionText);
       },
       // Accepts a bare string (ad-hoc quick response) or {text, macroId,
       // templateId} dispatched by the macro menu.

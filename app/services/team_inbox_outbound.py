@@ -330,7 +330,7 @@ def _send_field_job_reply(
 
     sent_at = now or datetime.now(UTC)
     message = existing_message or InboxMessage(conversation_id=conversation.id)
-    message.channel_type = InboxChannelType.field_job.value
+    message.channel_type = conversation.channel_type
     message.direction = InboxMessageDirection.outbound.value
     message.subject = None
     message.body = body_text
@@ -341,7 +341,10 @@ def _send_field_job_reply(
     author_name = str((payload.metadata or {}).get("author_name") or "Technician")
     message.metadata_ = {
         **(payload.metadata or {}),
-        "channel_type": InboxChannelType.field_job.value,
+        "channel_type": conversation.channel_type,
+        "sent_by_person_id": str(payload.sent_by_person_id)
+        if payload.sent_by_person_id
+        else None,
         "delivery_status": "delivered",
     }
     if existing_message is None:
@@ -583,7 +586,10 @@ def send_inbox_reply(
             existing_message=existing_message,
         )
 
-    if conversation.channel_type == InboxChannelType.field_job.value:
+    if conversation.channel_type in {
+        InboxChannelType.field_job.value,
+        InboxChannelType.chat_widget.value,
+    }:
         return _send_field_job_reply(
             db,
             conversation=conversation,

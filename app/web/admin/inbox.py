@@ -22,6 +22,7 @@ from app.services import (
     conversation_ticket_handoff,
     inbox_lead_actions,
     lead_intake_ai,
+    team_inbox_agent_introduction,
     team_inbox_commands,
     team_inbox_contact_links,
     team_inbox_media,
@@ -277,6 +278,11 @@ def team_inbox_queue(
             ),
             "selected_id": projection.selected_id or "",
             "actor_person_id": str(actor_person_id) if actor_person_id else "",
+            "agent_introduction_text": (
+                team_inbox_agent_introduction.rendered_introduction(db, actor_person_id)
+                if actor_person_id
+                else ""
+            ),
         }
     )
     if projection.selected is not None:
@@ -415,6 +421,11 @@ def team_inbox_detail(
             "action_eligibility": projection.action_eligibility,
             "is_unread": projection.is_unread,
             "actor_person_id": str(actor_person_id) if actor_person_id else "",
+            "agent_introduction_text": (
+                team_inbox_agent_introduction.rendered_introduction(db, actor_person_id)
+                if actor_person_id
+                else ""
+            ),
             "priority_options": projection.priority_options,
             "agent_options": team_inbox_projection.list_agent_options(db),
         }
@@ -1883,6 +1894,12 @@ def _settings_context(
     message: str | None = None,
 ) -> dict:
     context = _ctx(request, db)
+    actor_person_id = _actor_uuid_from_request(request)
+    introduction_preference = (
+        team_inbox_agent_introduction.preference_for_agent(db, actor_person_id)
+        if actor_person_id
+        else None
+    )
     context.update(
         {
             "email_routes": team_inbox_routing.list_email_routes(db),
@@ -1911,9 +1928,43 @@ def _settings_context(
             ],
             "notice_status": _query_text(status),
             "notice_message": _query_text(message),
+            "introduction_preference": introduction_preference,
         }
     )
     return context
+
+
+@settings_router.post(
+    "/agent-introduction",
+    dependencies=[Depends(require_permission("support:ticket:update"))],
+)
+def team_inbox_agent_introduction_update(
+    request: Request,
+    template: str = Form(...),
+    auto_send_chat_widget: bool = Form(default=False),
+    db: Session = Depends(get_db),
+):
+    _prepare_mutation(db)
+    actor_person_id = _actor_uuid_from_request(request)
+    if actor_person_id is None:
+        return _routes_redirect(status="error", message="Agent identity is required.")
+    try:
+        team_inbox_agent_introduction.update_preference_committed(
+            db,
+            team_inbox_agent_introduction.UpdateAgentIntroductionCommand(
+                context=CommandContext.system(
+                    actor=f"person:{actor_person_id}",
+                    scope="team-inbox:agent-introduction",
+                    reason="update personal Team Inbox introduction",
+                ),
+                person_id=actor_person_id,
+                template=template,
+                auto_send_chat_widget=auto_send_chat_widget,
+            ),
+        )
+    except ValueError as exc:
+        return _routes_redirect(status="error", message=str(exc))
+    return _routes_redirect(status="success", message="Introduction preference saved.")
 
 
 @settings_router.get(

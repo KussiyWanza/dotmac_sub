@@ -1153,6 +1153,20 @@ def build_beat_schedule() -> dict:
         )
         _sync_scheduled_task(
             session,
+            name="team_inbox_fifo_queue_promotion",
+            task_name="app.tasks.team_inbox.promote_queued_conversations",
+            enabled=True,
+            interval_seconds=60,
+        )
+        _sync_scheduled_task(
+            session,
+            name="team_inbox_reply_reminders",
+            task_name="app.tasks.team_inbox.send_reply_reminders",
+            enabled=True,
+            interval_seconds=60,
+        )
+        _sync_scheduled_task(
+            session,
             name="team_inbox_ai_intake_recovery",
             task_name="app.tasks.team_inbox.recover_stale_ai_intake",
             enabled=True,
