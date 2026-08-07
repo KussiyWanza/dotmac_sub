@@ -10,7 +10,7 @@ def test_customer_list_links_to_the_network_operations_map():
         encoding="utf-8"
     )
 
-    assert 'can("network:map:read")' in source
+    assert 'can(request, "network:map:read")' in source
     assert 'href="/admin/network/map?focus=customers"' in source
     assert "Customer Network Map" in source
 
