@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from app.models.network_operation import (
     NetworkOperationTargetType,
 )
+from app.services.audit_helpers import resolve_actor_display_names
 from app.services.control_plane_intent import phase_for_network_operation
 from app.services.network.ont_authorization import LOCAL_INVENTORY_FAILED_HEADLINE
 from app.services.network_operation_dispatch import operation_dispatch_summary
@@ -166,6 +167,9 @@ def build_operation_history(
             target_id,
         )
     ops = network_operations.list_for_device(db, target_enum, target_id, limit=limit)
+    actor_labels = resolve_actor_display_names(
+        db, {op.initiated_by for op in ops if op.initiated_by}
+    )
 
     result: list[dict[str, Any]] = []
     for op in ops:
@@ -188,7 +192,7 @@ def build_operation_history(
             "is_failed": status_val == "failed",
             "is_warning": status_val == "warning",
             "message": op.error or op.waiting_reason or "",
-            "initiated_by": op.initiated_by or "",
+            "initiated_by": actor_labels.get(str(op.initiated_by), "System"),
             "occurred_at": op.created_at,
             "duration": _format_duration(op),
             "can_retry": redrive_review.eligible,

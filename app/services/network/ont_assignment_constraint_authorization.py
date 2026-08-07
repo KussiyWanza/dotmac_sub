@@ -21,6 +21,7 @@ from app.models.ont_assignment_constraint_authorization import (
     OntAssignmentConstraintAuthorizationRequest,
     OntAssignmentConstraintAuthorizationReview,
 )
+from app.services.audit_helpers import resolve_actor_display_names
 from app.services.network.ont_assignment_cutover_coverage import (
     OntAssignmentCutoverCoverageError,
     OntAssignmentCutoverCoverageReport,
@@ -786,6 +787,27 @@ def inspect_ont_assignment_constraint_authorizations(
                 "target_environment": request.target_environment,
             }
         )
+    actor_labels = resolve_actor_display_names(
+        db,
+        {
+            actor
+            for row in rows
+            for actor in (
+                row.get("requested_by"),
+                (row.get("review") or {}).get("reviewed_by"),
+            )
+            if actor
+        },
+    )
+    for row in rows:
+        row["requested_by_name"] = actor_labels.get(
+            str(row.get("requested_by") or ""), "Former or unknown user"
+        )
+        if row.get("review"):
+            row["review"]["reviewed_by_name"] = actor_labels.get(
+                str(row["review"].get("reviewed_by") or ""),
+                "Former or unknown user",
+            )
     return {
         "authorizations": rows,
         "current_approval_count": current_approval_count,

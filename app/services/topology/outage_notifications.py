@@ -41,6 +41,7 @@ from app.models.network_monitoring import (
     OutageIncident,
     OutageNotificationDispatch,
 )
+from app.services.audit_helpers import resolve_actor_display_names
 from app.services.customer_notification_policy import (
     is_notification_enabled_for_subscriber,
 )
@@ -565,6 +566,9 @@ def recent_dispatches(
     )
     counts: dict[str, int] = {}
     out = []
+    actor_labels = resolve_actor_display_names(
+        session, {str(row.actor_id) for row in rows if row.actor_id}
+    )
     for r in rows:
         counts[r.status] = counts.get(r.status, 0) + 1
         out.append(
@@ -575,6 +579,7 @@ def recent_dispatches(
                 "recipient": r.recipient,
                 "subject": r.subject,
                 "actor_id": str(r.actor_id) if r.actor_id else None,
+                "actor_name": actor_labels.get(str(r.actor_id), "System"),
             }
         )
     return {"rows": out, "counts": counts}

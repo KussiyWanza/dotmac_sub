@@ -17,6 +17,7 @@ from app.models.ont_assignment_cutover import (
 from app.models.ont_assignment_identity import OntAssignmentIdentityDecision
 from app.models.ont_topology_observation import OntTopologyObservationEvidence
 from app.schemas.status_presentation import StatusTone
+from app.services.audit_helpers import resolve_actor_display_names
 from app.services.network.ont_assignment_cutover import (
     REASON_LABELS,
     REPAIR_OWNER,
@@ -319,6 +320,37 @@ def list_cutover_proposal_batches(
                 ),
             }
         )
+    actor_labels = resolve_actor_display_names(
+        db,
+        {
+            actor
+            for row in rows
+            for actor in (
+                row["batch"].proposed_by,
+                getattr(row.get("review"), "reviewed_by", None),
+                getattr(row.get("latest_verification"), "verified_by", None),
+            )
+            if actor
+        },
+    )
+    for row in rows:
+        review = row.get("review")
+        latest_verification = row.get("latest_verification")
+        row["proposed_by_name"] = actor_labels.get(
+            str(row["batch"].proposed_by), "Former or unknown user"
+        )
+        row["reviewed_by_name"] = (
+            actor_labels.get(str(review.reviewed_by), "Former or unknown user")
+            if review
+            else None
+        )
+        row["verified_by_name"] = (
+            actor_labels.get(
+                str(latest_verification.verified_by), "Former or unknown user"
+            )
+            if latest_verification
+            else None
+        )
     return rows
 
 
@@ -346,6 +378,15 @@ def decisions_page_data(
             OntAssignmentIdentityDecision.status.in_(ACTIVE_STATUSES)
         )
     decisions = list(db.scalars(statement.limit(300)))
+    actor_labels = resolve_actor_display_names(
+        db,
+        {
+            actor
+            for decision in decisions
+            for actor in (decision.proposed_by, decision.reviewed_by)
+            if actor
+        },
+    )
     ont_by_id = _models_by_id(
         db, OntUnit, {decision.ont_unit_id for decision in decisions}
     )
@@ -373,6 +414,11 @@ def decisions_page_data(
             {
                 "decision": decision,
                 "ont_serial_number": getattr(ont, "serial_number", "Unknown ONT"),
+                "reviewed_by_name": actor_labels.get(
+                    str(decision.reviewed_by), "Former or unknown user"
+                )
+                if decision.reviewed_by
+                else None,
             }
         )
     status_counts = dict.fromkeys(DECISION_STATUSES, 0)
@@ -412,6 +458,9 @@ def decision_detail_page_data(
     if decision is None:
         raise OntAssignmentIdentityError("assignment identity decision not found")
     ont = db.get(OntUnit, decision.ont_unit_id)
+    actor_labels = resolve_actor_display_names(
+        db, {decision.proposed_by, decision.reviewed_by}
+    )
     current_error: str | None = None
     current_input_sha256: str | None = None
     if decision.status in ACTIVE_STATUSES:
@@ -432,6 +481,14 @@ def decision_detail_page_data(
         "current_error": current_error,
         "current_input_sha256": current_input_sha256,
         "decision": decision,
+        "proposed_by_name": actor_labels.get(
+            str(decision.proposed_by), "Former or unknown user"
+        ),
+        "reviewed_by_name": actor_labels.get(
+            str(decision.reviewed_by), "Former or unknown user"
+        )
+        if decision.reviewed_by
+        else None,
         "input_is_current": (
             current_error is None and current_input_sha256 == decision.input_sha256
             if decision.status in ACTIVE_STATUSES

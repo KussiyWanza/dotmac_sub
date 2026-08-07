@@ -77,18 +77,34 @@ def test_snapshotted_name_is_used_when_the_actor_is_gone():
     assert name == "Former Staff"
 
 
-def test_unresolvable_user_falls_back_to_the_id_not_a_crash():
+def test_unresolvable_user_never_exposes_the_raw_id():
     orphan = uuid.uuid4()
 
     name = audit_helpers.resolve_actor_name(_event(orphan, AuditActorType.user), {})
 
-    assert name == str(orphan)
+    assert name == "Former or unknown user"
 
 
 def test_system_actor_with_no_id_is_labelled_system():
     assert (
         audit_helpers.resolve_actor_name(_event(None, AuditActorType.system), {})
         == "System"
+    )
+
+
+def test_uuid_shaped_service_identity_is_not_exposed():
+    actor_id = uuid.uuid4()
+
+    assert (
+        audit_helpers._readable_service_actor(f"integration:{actor_id}")
+        == "Integration service"
+    )
+
+
+def test_named_service_identity_remains_readable():
+    assert (
+        audit_helpers._readable_service_actor("system:outage-classifier")
+        == "System: outage classifier"
     )
 
 
