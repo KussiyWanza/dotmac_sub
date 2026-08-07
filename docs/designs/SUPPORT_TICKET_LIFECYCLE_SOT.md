@@ -97,6 +97,16 @@ change. Missing customer identity or disabled support notifications produces no
 email. Queue failure is isolated in an owner savepoint and recorded as durable
 Ticket audit evidence without rolling back the Ticket.
 
+Internal operational queues use the closed
+`TicketCreationConsequenceMode.silent_internal` path rather than constructing a
+Ticket row. The unmatched-radio coordinator is the only approved caller. The
+lifecycle participant allocates the human-readable number and stages creation
+audit/event evidence, while suppressing assignment policy, SLA clocks,
+automation, staff assignment notifications, and customer acknowledgement. A
+repeat observation repairs a legacy open queue item whose number is missing and
+records that repair in audit/event evidence. The per-radio advisory lock remains
+the deduplication authority; the Ticket owner remains the only identity writer.
+
 Customer-authored public replies have one staff-email consequence owned by the
 lifecycle command. After the comment is staged, the owner resolves active
 individual assignees from current Ticket assignment fields and queues one email
@@ -148,7 +158,9 @@ The migration is complete only while architecture guards prove that:
 - Work-Order provenance is preserved and verified as described in
   `docs/runbooks/TICKET_WORK_ORDER_PROVENANCE_CUTOVER.md`; and
 - Support/Inbox remain separate unless a later approved workspace contract is
-  checked in.
+  checked in; and
+- unmatched-radio code cannot construct a Ticket directly or call the
+  silent-internal lifecycle participants from any other service module.
 
 Repair reruns deterministic list/preview queries, SLA reconciliation, or the
 provenance verifier from canonical records. It never re-enables a legacy writer

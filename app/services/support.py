@@ -98,6 +98,19 @@ class TicketCreationAcknowledgementMode(str, Enum):
     customer_email = "customer_email"
 
 
+class TicketCreationConsequenceMode(str, Enum):
+    """Select which creation consequences the Ticket owner stages."""
+
+    standard = "standard"
+    silent_internal = "silent_internal"
+
+
+class InternalOperationalTicketSource(str, Enum):
+    """Approved internal sources allowed to request silent Ticket creation."""
+
+    unmatched_radio_queue = "unmatched_radio_queue"
+
+
 class CustomerReplyStaffNotificationSource(str, Enum):
     """Authoritative recipient source for a customer-reply staff email."""
 
@@ -1727,6 +1740,7 @@ class Tickets:
         dispatch_after_commit: bool = True,
         creation_routing_mode: TicketCreationRoutingMode | None = None,
         creation_acknowledgement_mode: TicketCreationAcknowledgementMode | None = None,
+        creation_consequence_mode: TicketCreationConsequenceMode | None = None,
     ) -> None:
         payload = {
             "name": event_name,
@@ -1759,6 +1773,8 @@ class Tickets:
             payload["creation_acknowledgement_mode"] = (
                 creation_acknowledgement_mode.value
             )
+        if creation_consequence_mode is not None:
+            payload["creation_consequence_mode"] = creation_consequence_mode.value
         emit_event(
             db,
             EventType.custom,
@@ -1770,8 +1786,7 @@ class Tickets:
         )
 
     @staticmethod
-    @ticket_owner_command("create")
-    def create(
+    def _stage_create(
         db: Session,
         payload: TicketCreate,
         actor_id: str | None = None,
@@ -1785,14 +1800,25 @@ class Tickets:
         acknowledgement_mode: TicketCreationAcknowledgementMode = (
             TicketCreationAcknowledgementMode.none
         ),
+        consequence_mode: TicketCreationConsequenceMode = (
+            TicketCreationConsequenceMode.standard
+        ),
     ) -> Ticket:
-        """Create a ticket inside the canonical Ticket transaction.
+        """Stage Ticket creation inside the canonical owner transaction.
 
         ``origin_conversation_id`` is keyword-only and deliberately absent from
         ``TicketCreate``: only ``communications.conversation_ticket_handoff``
         may assert that a ticket originated from an inbox conversation, so the
         claim must not be settable by anything that can post a ticket payload.
         """
+        if (
+            consequence_mode is TicketCreationConsequenceMode.silent_internal
+            and acknowledgement_mode is not TicketCreationAcknowledgementMode.none
+        ):
+            raise _ticket_error(
+                "invalid_ticket_creation_mode",
+                "Silent internal tickets cannot request customer acknowledgement.",
+            )
         ticket_validation.validate_ticket_creation(db, payload)
         data = payload.model_dump()
         data["status"] = data.get(
@@ -1841,52 +1867,70 @@ class Tickets:
             db.add(link)
 
         if (
-            routing_mode is TicketCreationRoutingMode.evaluate_policy
+            consequence_mode is TicketCreationConsequenceMode.standard
+            and routing_mode is TicketCreationRoutingMode.evaluate_policy
             and Tickets._auto_assignment_enabled(db)
         ):
             Tickets._apply_auto_assignment(ticket, db)
 
-        Tickets._apply_sla_policy(
-            db, ticket, explicit_due_at=payload.due_at is not None
-        )
-        from app.services import sla_assignment
-
-        sla_assignment.create_sla_clock_for_ticket(db, ticket)
         Tickets._apply_status_timestamp_rules(ticket, data)
-        Tickets._apply_ncc_categorisation(ticket, data)
+        if consequence_mode is TicketCreationConsequenceMode.standard:
+            Tickets._apply_sla_policy(
+                db, ticket, explicit_due_at=payload.due_at is not None
+            )
+            from app.services import sla_assignment
 
-        from app.models.support import AutomationTrigger
+            sla_assignment.create_sla_clock_for_ticket(db, ticket)
+            Tickets._apply_ncc_categorisation(ticket, data)
 
-        Tickets._apply_automation_rules(
-            db,
-            ticket,
-            AutomationTrigger.ticket_created,
-            preserve_service_team=(
-                routing_mode is TicketCreationRoutingMode.preserve_requested_team
-            ),
-        )
+            from app.models.support import AutomationTrigger
 
-        Tickets._queue_notifications_for_assignments(db, ticket, actor_id)
-
-        log_audit_event(
-            db=db,
-            request=request,
-            action="create",
-            entity_type="support_ticket",
-            entity_id=str(ticket.id),
-            actor_id=actor_id,
-            metadata={
-                "number": ticket.number,
-                "region": ticket.region,
-                "service_team_id": (
-                    str(ticket.service_team_id)
-                    if ticket.service_team_id is not None
-                    else None
+            Tickets._apply_automation_rules(
+                db,
+                ticket,
+                AutomationTrigger.ticket_created,
+                preserve_service_team=(
+                    routing_mode is TicketCreationRoutingMode.preserve_requested_team
                 ),
-                "creation_routing_mode": routing_mode.value,
-                "creation_acknowledgement_mode": acknowledgement_mode.value,
-            },
-        )
+            )
+
+            Tickets._queue_notifications_for_assignments(db, ticket, actor_id)
+
+        audit_metadata = {
+            "number": ticket.number,
+            "region": ticket.region,
+            "service_team_id": (
+                str(ticket.service_team_id)
+                if ticket.service_team_id is not None
+                else None
+            ),
+            "creation_routing_mode": routing_mode.value,
+            "creation_acknowledgement_mode": acknowledgement_mode.value,
+            "creation_consequence_mode": consequence_mode.value,
+        }
+        if consequence_mode is TicketCreationConsequenceMode.silent_internal:
+            from app.models.audit import AuditActorType
+            from app.services.audit_adapter import stage_audit_event
+
+            stage_audit_event(
+                db,
+                action="create",
+                entity_type="support_ticket",
+                entity_id=str(ticket.id),
+                actor_type=AuditActorType.service,
+                actor_id=actor_id,
+                metadata=audit_metadata,
+            )
+        else:
+            log_audit_event(
+                db=db,
+                request=request,
+                action="create",
+                entity_type="support_ticket",
+                entity_id=str(ticket.id),
+                actor_id=actor_id,
+                metadata=audit_metadata,
+            )
         Tickets._emit_ticket_event(
             db,
             "ticket.created",
@@ -1895,6 +1939,7 @@ class Tickets:
             dispatch_after_commit=dispatch_event_after_commit,
             creation_routing_mode=routing_mode,
             creation_acknowledgement_mode=acknowledgement_mode,
+            creation_consequence_mode=consequence_mode,
         )
         if acknowledgement_mode is TicketCreationAcknowledgementMode.customer_email:
             Tickets._stage_admin_creation_customer_email(
@@ -1906,6 +1951,132 @@ class Tickets:
 
         db.flush()
         db.refresh(ticket)
+        return ticket
+
+    @staticmethod
+    @ticket_owner_command("create")
+    def create(
+        db: Session,
+        payload: TicketCreate,
+        actor_id: str | None = None,
+        request: object | None = None,
+        *,
+        origin_conversation_id: UUID | None = None,
+        dispatch_event_after_commit: bool = True,
+        routing_mode: TicketCreationRoutingMode = (
+            TicketCreationRoutingMode.evaluate_policy
+        ),
+        acknowledgement_mode: TicketCreationAcknowledgementMode = (
+            TicketCreationAcknowledgementMode.none
+        ),
+    ) -> Ticket:
+        """Create a standard Ticket through the canonical lifecycle owner."""
+
+        return Tickets._stage_create(
+            db,
+            payload,
+            actor_id=actor_id,
+            request=request,
+            origin_conversation_id=origin_conversation_id,
+            dispatch_event_after_commit=dispatch_event_after_commit,
+            routing_mode=routing_mode,
+            acknowledgement_mode=acknowledgement_mode,
+            consequence_mode=TicketCreationConsequenceMode.standard,
+        )
+
+    @staticmethod
+    def stage_internal_creation_participant(
+        db: Session,
+        payload: TicketCreate,
+        *,
+        source: InternalOperationalTicketSource,
+    ) -> Ticket:
+        """Stage a numbered, audited Ticket for an approved silent ops source.
+
+        The coordinating caller owns the surrounding transaction. This narrow
+        participant retains Ticket identity and lifecycle writes in the
+        canonical owner while deliberately suppressing assignment, SLA,
+        automation, and notification consequences.
+        """
+
+        if not db.in_transaction():
+            raise _ticket_error(
+                "internal_ticket_participant_requires_transaction",
+                "Internal ticket participants require a coordinating transaction.",
+            )
+        metadata = payload.metadata_ if isinstance(payload.metadata_, dict) else {}
+        if metadata.get("opened_by") != source.value:
+            raise _ticket_error(
+                "internal_ticket_source_mismatch",
+                "Internal ticket evidence does not match its declared source.",
+                source=source.value,
+            )
+        return Tickets._stage_create(
+            db,
+            payload,
+            actor_id=source.value,
+            routing_mode=TicketCreationRoutingMode.preserve_requested_team,
+            acknowledgement_mode=TicketCreationAcknowledgementMode.none,
+            consequence_mode=TicketCreationConsequenceMode.silent_internal,
+        )
+
+    @staticmethod
+    def stage_internal_observation_participant(
+        db: Session,
+        *,
+        ticket_id: UUID,
+        source: InternalOperationalTicketSource,
+        observed_at: datetime,
+    ) -> Ticket:
+        """Record another observation and repair a legacy missing number."""
+
+        if not db.in_transaction():
+            raise _ticket_error(
+                "internal_ticket_participant_requires_transaction",
+                "Internal ticket participants require a coordinating transaction.",
+            )
+        ticket = db.get(Ticket, ticket_id)
+        if ticket is None or not ticket.is_active:
+            raise _ticket_error("ticket_not_found", "Ticket not found")
+        metadata = dict(ticket.metadata_ or {})
+        if metadata.get("opened_by") != source.value:
+            raise _ticket_error(
+                "internal_ticket_source_mismatch",
+                "Internal ticket evidence does not match its declared source.",
+                source=source.value,
+            )
+        metadata["occurrences"] = int(metadata.get("occurrences") or 1) + 1
+        metadata["last_seen_at"] = observed_at.isoformat()
+        ticket.metadata_ = metadata
+        if ticket.number is None:
+            ticket.number = Tickets._resolve_ticket_number(db)
+            from app.models.audit import AuditActorType
+            from app.services.audit_adapter import stage_audit_event
+
+            stage_audit_event(
+                db,
+                action="number_repair",
+                entity_type="support_ticket",
+                entity_id=str(ticket.id),
+                actor_type=AuditActorType.service,
+                actor_id=source.value,
+                metadata={
+                    "number": ticket.number,
+                    "creation_consequence_mode": (
+                        TicketCreationConsequenceMode.silent_internal.value
+                    ),
+                },
+            )
+            Tickets._emit_ticket_event(
+                db,
+                "ticket.number_repaired",
+                ticket,
+                source.value,
+                creation_consequence_mode=(
+                    TicketCreationConsequenceMode.silent_internal
+                ),
+            )
+        db.flush()
         return ticket
 
     @staticmethod

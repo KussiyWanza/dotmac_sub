@@ -511,7 +511,8 @@ DOMAIN = DomainSOT(
                         source=(
                             "typed TicketCreate, TicketUpdate, comment, merge, link, "
                             "resolution, satisfaction, attachment, and bulk command inputs "
-                            "with CommandContext"
+                            "with CommandContext plus the closed silent-internal creation "
+                            "consequence mode"
                         ),
                     ),
                     AuthorityInput(
@@ -611,7 +612,9 @@ DOMAIN = DomainSOT(
                         "Each public Ticket mutation enters execute_owner_command once on a "
                         "transaction-free session. Lifecycle helpers, SLA clocks, policy "
                         "evaluators, notifications, audit, and events are flush-only "
-                        "participants."
+                        "participants. The unmatched-radio coordinator may request only the "
+                        "restricted silent-internal creation/observation participants; those "
+                        "participants still allocate identity and stage audit/event evidence."
                     ),
                     locking=(
                         "Existing Ticket mutations lock or operate under the root command; "
@@ -646,6 +649,9 @@ DOMAIN = DomainSOT(
                         "resolution_confirmation_not_pending",
                         "resolution_confirmation_inactive",
                         "resolution_dispute_terminal",
+                        "invalid_ticket_creation_mode",
+                        "internal_ticket_source_mismatch",
+                        "internal_ticket_participant_requires_transaction",
                         *owner_command_boundary_error_codes("support.ticket_lifecycle"),
                     ),
                     mapping_owner=(
@@ -673,8 +679,9 @@ DOMAIN = DomainSOT(
                     delivery_owner="events.dispatcher",
                     compatibility=(
                         "Version 1 carries stable Ticket/account identifiers and bounded "
-                        "change evidence; private comment bodies and attachments are not "
-                        "placed in transport events."
+                        "change evidence, including the explicit creation consequence mode; "
+                        "private comment bodies and attachments are not placed in transport "
+                        "events."
                     ),
                     replay=(
                         "Canonical Ticket rows, official comments, links/merges, access "
@@ -685,12 +692,14 @@ DOMAIN = DomainSOT(
                     state=AuthorityMigrationState.COMPLETE,
                     old_owner=(
                         "support route/API/task mutations, direct service transaction "
-                        "completion, and assignment/automation policy Ticket writers"
+                        "completion, assignment/automation policy Ticket writers, and direct "
+                        "unmatched-radio Ticket construction"
                     ),
                     new_owner="support.ticket_lifecycle",
                     verification=(
                         "Support lifecycle, assignment, automation, comment, attachment, "
-                        "link, duplicate, merge, CSAT, portal, and architecture tests"
+                        "link, duplicate, merge, CSAT, portal, unmatched-radio silent creation "
+                        "and legacy-number repair, and architecture tests"
                     ),
                     cutover_gate=(
                         "all Ticket mutations enter the registered owner; policies return "
@@ -698,7 +707,8 @@ DOMAIN = DomainSOT(
                     ),
                     fallback_retirement=(
                         "the retired lifecycle-owner alias, HTTPException service coupling, direct "
-                        "service commits/rollbacks, and policy-side Ticket writes are absent"
+                        "service commits/rollbacks, policy-side Ticket writes, and direct "
+                        "unmatched-radio Ticket construction are absent"
                     ),
                 ),
                 steward="support operations",

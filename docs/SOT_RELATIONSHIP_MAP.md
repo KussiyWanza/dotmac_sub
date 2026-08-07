@@ -4207,7 +4207,12 @@ reinterpret its presentation.
 
 1. `support.ticket_lifecycle` owns ticket number allocation, lifecycle, assignment,
     comments, satisfaction, and both signed-link and authenticated resolution
-    confirmation/dispute.
+    confirmation/dispute. Internal operational queues do not construct Ticket
+    rows: the unmatched-radio coordinator alone may request the lifecycle
+    owner's typed `silent_internal` participant, which still allocates a number
+    and stages audit/event evidence while suppressing assignment, SLA,
+    automation, and notification consequences. Re-observing a legacy open
+    unmatched-radio item repairs a missing number through the same owner.
 2. `support.ticket_configuration` owns the operator-managed priority and ticket-
    type SLA targets shown at `/admin/system/ticket-settings`. Ticket types have
    no fixed code default: zero or no override falls through to the configured
