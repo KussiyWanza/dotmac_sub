@@ -1,0 +1,140 @@
+{% extends "layouts/admin.html" %}
+{% from "components/ui/macros.html" import icon_chart_bar, page_header, status_presentation_badge %}
+{% from "components/ui/list_macros.html" import list_pagination %}
+
+{% block title %}Discounts Report - Admin{% endblock %}
+
+{% block content %}
+<div class="space-y-4">
+    {% call page_header(
+        title="Discounts",
+        subtitle="Review Invoice and Quote discount history without counting inherited discounts twice.",
+        icon=icon_chart_bar(),
+        color="teal",
+        color2="emerald",
+        breadcrumbs=[
+            {"label": "Reports", "href": "/admin/reports/hub"},
+            {"label": "Discounts", "href": "/admin/reports/discounts"}
+        ]
+    ) %}{% endcall %}
+
+    <div class="flex w-full gap-1 overflow-x-auto rounded-lg bg-slate-100 p-1 sm:w-fit dark:bg-slate-800" aria-label="Discount report type">
+        <a href="/admin/reports/discounts?tab=invoices" class="inline-flex min-h-10 items-center rounded-md px-4 py-2 text-sm font-semibold {% if selected_tab.value == 'invoices' %}bg-white text-teal-700 shadow-sm dark:bg-slate-700 dark:text-teal-300{% else %}text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white{% endif %}" {% if selected_tab.value == 'invoices' %}aria-current="page"{% endif %}>Invoice Discounts</a>
+        <a href="/admin/reports/discounts?tab=quotes" class="inline-flex min-h-10 items-center rounded-md px-4 py-2 text-sm font-semibold {% if selected_tab.value == 'quotes' %}bg-white text-teal-700 shadow-sm dark:bg-slate-700 dark:text-teal-300{% else %}text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white{% endif %}" {% if selected_tab.value == 'quotes' %}aria-current="page"{% endif %}>Quote Discounts</a>
+    </div>
+
+    <div class="rounded-lg border border-cyan-200 bg-cyan-50 px-4 py-3 text-sm text-cyan-900 dark:border-cyan-900/60 dark:bg-cyan-950/30 dark:text-cyan-100">
+        Invoice and Quote histories are reported separately. An Invoice row marked <strong>Inherited from quote</strong> represents the same commercial discount as its source Quote and should not be added to the Quote amount again.
+    </div>
+
+    {% if error %}
+    <div role="alert" class="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800 dark:border-rose-900/60 dark:bg-rose-950/30 dark:text-rose-200">
+        {{ error }} <a href="/admin/reports/discounts?tab={{ selected_tab.value }}" class="font-semibold underline">Retry</a>
+    </div>
+    {% endif %}
+
+    {% if report %}
+    <form method="get" action="/admin/reports/discounts" class="rounded-lg border border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-800">
+        <input type="hidden" name="tab" value="{{ report.query.tab.value }}">
+        <input type="hidden" name="page" value="1">
+        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <div class="sm:col-span-2">
+                <label for="discount-search" class="mb-1 block text-xs font-semibold text-slate-600 dark:text-slate-300">Customer</label>
+                <input id="discount-search" name="search" type="search" value="{{ report.query.customer or '' }}" placeholder="Customer name or account number" class="block min-h-10 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-900 dark:text-white">
+            </div>
+            <div>
+                <label for="discount-date-from" class="mb-1 block text-xs font-semibold text-slate-600 dark:text-slate-300">From date</label>
+                <input id="discount-date-from" name="date_from" type="date" value="{{ report.query.date_from or '' }}" class="block min-h-10 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-900 dark:text-white">
+            </div>
+            <div>
+                <label for="discount-date-to" class="mb-1 block text-xs font-semibold text-slate-600 dark:text-slate-300">To date</label>
+                <input id="discount-date-to" name="date_to" type="date" value="{{ report.query.date_to or '' }}" class="block min-h-10 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-900 dark:text-white">
+            </div>
+            <div>
+                <label for="discount-salesperson" class="mb-1 block text-xs font-semibold text-slate-600 dark:text-slate-300">Applied by</label>
+                <select id="discount-salesperson" name="salesperson_id" class="block min-h-10 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-900 dark:text-white">
+                    <option value="">All staff</option>
+                    {% for option in report.actor_options %}<option value="{{ option.value }}" {% if report.query.salesperson_id and report.query.salesperson_id|string == option.value %}selected{% endif %}>{{ option.label }}</option>{% endfor %}
+                </select>
+            </div>
+            <div>
+                <label for="discount-type" class="mb-1 block text-xs font-semibold text-slate-600 dark:text-slate-300">Discount type</label>
+                <select id="discount-type" name="discount_type" class="block min-h-10 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-900 dark:text-white">
+                    <option value="">All types</option>
+                    {% for option in report.discount_type_options %}<option value="{{ option.value }}" {% if report.query.discount_type and report.query.discount_type.value == option.value %}selected{% endif %}>{{ option.label }}</option>{% endfor %}
+                </select>
+            </div>
+            <div>
+                <label for="discount-status" class="mb-1 block text-xs font-semibold text-slate-600 dark:text-slate-300">{{ 'Invoice' if report.query.tab.value == 'invoices' else 'Quote' }} status</label>
+                <select id="discount-status" name="{{ 'invoice_status' if report.query.tab.value == 'invoices' else 'quote_status' }}" class="block min-h-10 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-900 dark:text-white">
+                    <option value="">All statuses</option>
+                    {% set selected_status = report.query.invoice_status.value if report.query.invoice_status else (report.query.quote_status.value if report.query.quote_status else '') %}
+                    {% for option in report.status_options %}<option value="{{ option.value }}" {% if selected_status == option.value %}selected{% endif %}>{{ option.label }}</option>{% endfor %}
+                </select>
+            </div>
+            {% if report.query.tab.value == 'invoices' %}
+            <div>
+                <label for="discount-source" class="mb-1 block text-xs font-semibold text-slate-600 dark:text-slate-300">Source</label>
+                <select id="discount-source" name="source" class="block min-h-10 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-900 dark:text-white">
+                    <option value="">All sources</option>
+                    {% for option in report.source_options %}<option value="{{ option.value }}" {% if report.query.source and report.query.source.value == option.value %}selected{% endif %}>{{ option.label }}</option>{% endfor %}
+                </select>
+            </div>
+            {% endif %}
+            <div class="flex items-end gap-2 sm:col-span-2 lg:col-span-4">
+                <button type="submit" class="min-h-10 rounded-lg bg-teal-600 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-700">Apply filters</button>
+                <a href="/admin/reports/discounts?tab={{ report.query.tab.value }}" class="inline-flex min-h-10 items-center rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-700">Clear</a>
+            </div>
+        </div>
+    </form>
+
+    <div class="space-y-3 md:hidden">
+        {% for row in report.rows %}
+        <article class="rounded-lg border border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-800">
+            <div class="flex items-start justify-between gap-3">
+                <div><a href="{{ row.document_url }}" class="font-semibold text-teal-700 hover:underline dark:text-teal-300">{{ row.document_label }}</a><p class="mt-1 text-xs text-slate-500 dark:text-slate-400">{{ row.customer_name }}</p></div>
+                {{ status_presentation_badge(row.action, size='sm') }}
+            </div>
+            <dl class="mt-4 grid grid-cols-2 gap-3 text-sm">
+                <div><dt class="text-xs text-slate-500">Original subtotal</dt><dd class="mt-1 font-mono font-semibold tabular-nums">{{ row.original_subtotal_display }}</dd></div>
+                <div><dt class="text-xs text-slate-500">Actual discount</dt><dd class="mt-1 font-mono font-semibold tabular-nums">{{ row.discount_amount_display }}</dd></div>
+                <div><dt class="text-xs text-slate-500">Discount value</dt><dd class="mt-1">{{ row.discount_value_display }}</dd></div>
+                <div><dt class="text-xs text-slate-500">Total after discount</dt><dd class="mt-1 font-mono font-semibold tabular-nums">{{ row.total_after_discount_display }}</dd></div>
+                <div class="col-span-2"><dt class="text-xs text-slate-500">Source</dt><dd class="mt-1">{{ row.source_label }}{% if row.source_quote_url %} · <a href="{{ row.source_quote_url }}" class="font-semibold text-cyan-700 hover:underline dark:text-cyan-300">View source Quote</a>{% endif %}</dd></div>
+                <div class="col-span-2"><dt class="text-xs text-slate-500">Applied by and date</dt><dd class="mt-1">{{ row.actor_name }} · {{ row.applied_at_display }}</dd></div>
+                <div class="col-span-2"><dt class="text-xs text-slate-500">Reason</dt><dd class="mt-1">{{ row.reason_display }}</dd></div>
+            </dl>
+            <div class="mt-3 flex items-center justify-between gap-2"><span class="text-xs text-slate-500">Revision {{ row.revision }}</span>{{ status_presentation_badge(row.document_status, size='sm') }}</div>
+        </article>
+        {% else %}
+        <div class="min-h-40 rounded-lg border border-slate-200 bg-white px-4 py-12 text-center text-sm text-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400">No {{ report.query.tab.value|title }} discount history matches these filters.</div>
+        {% endfor %}
+    </div>
+
+    <div class="hidden overflow-hidden rounded-lg border border-slate-200 bg-white md:block dark:border-slate-700 dark:bg-slate-800">
+        <div class="border-b border-slate-200 px-4 py-3 text-sm font-semibold text-slate-700 dark:border-slate-700 dark:text-slate-200">{{ report.total_count }} discount history {{ 'entry' if report.total_count == 1 else 'entries' }}</div>
+        <div class="overflow-x-auto">
+            <table class="min-w-full divide-y divide-slate-200 text-sm dark:divide-slate-700">
+                <thead class="bg-slate-50 dark:bg-slate-900/40"><tr><th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">Document / Customer</th><th class="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">Original</th><th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">Discount</th><th class="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">After Discount / Total</th><th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">Source / Reason</th><th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">Applied By / Date</th><th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">State</th></tr></thead>
+                <tbody class="divide-y divide-slate-100 dark:divide-slate-700">
+                    {% for row in report.rows %}
+                    <tr class="align-top hover:bg-slate-50 dark:hover:bg-slate-700/30">
+                        <td class="px-4 py-3"><a href="{{ row.document_url }}" class="font-semibold text-teal-700 hover:underline dark:text-teal-300">{{ row.document_label }}</a><div class="mt-1 text-xs text-slate-500 dark:text-slate-400">{{ row.customer_name }}</div></td>
+                        <td class="px-4 py-3 text-right font-mono tabular-nums">{{ row.original_subtotal_display }}</td>
+                        <td class="px-4 py-3"><div>{{ row.discount_value_display }}</div><div class="mt-1 font-mono font-semibold tabular-nums">Actual: {{ row.discount_amount_display }}</div></td>
+                        <td class="px-4 py-3 text-right font-mono tabular-nums"><div>{{ row.discounted_subtotal_display }}</div><div class="mt-1 font-semibold">Total {{ row.total_after_discount_display }}</div></td>
+                        <td class="max-w-xs px-4 py-3"><div class="font-medium">{{ row.source_label }}</div>{% if row.source_quote_url %}<a href="{{ row.source_quote_url }}" class="mt-1 block text-xs font-semibold text-cyan-700 hover:underline dark:text-cyan-300">View source Quote</a>{% endif %}<div class="mt-2 text-xs text-slate-500 dark:text-slate-400">{{ row.reason_display }}</div></td>
+                        <td class="px-4 py-3"><div class="font-medium">{{ row.actor_name }}</div><div class="mt-1 text-xs text-slate-500 dark:text-slate-400">{{ row.applied_at_display }}</div></td>
+                        <td class="px-4 py-3"><div>{{ status_presentation_badge(row.action, size='sm') }}</div><div class="mt-2">{{ status_presentation_badge(row.document_status, size='sm') }}</div><div class="mt-2 text-xs text-slate-500">Revision {{ row.revision }}</div></td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="7" class="h-40 px-4 py-12 text-center text-sm text-slate-500 dark:text-slate-400">No {{ report.query.tab.value|title }} discount history matches these filters.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {{ list_pagination(report.list_query, report.page_meta, '/admin/reports/discounts', entity='discount history entries') }}
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

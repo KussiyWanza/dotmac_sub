@@ -32,6 +32,157 @@ DOMAIN = DomainSOT(
             ),
         ),
         SOTService(
+            name="ui.document_discount_report",
+            module="app.services.web_document_discount_report",
+            owns=(
+                "admin Invoice and Quote discount report projection",
+                "Quote-inherited Invoice discount double-count disclosure",
+            ),
+            depends_on=(
+                "auth.permission_gate",
+                "financial.invoice_discounts",
+                "sales.quote_discount_reporting",
+                "ui.display_formatting",
+                "ui.list_contracts",
+                "ui.status_presentation",
+            ),
+            notes=(
+                "The Reports UI composes the two canonical append-only history "
+                "owners into separate typed tabs. It labels source-Quote provenance "
+                "and never adds Quote and inherited Invoice amounts into one total."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name="admin Invoice and Quote discount report projection",
+                        role=OwnerRole.RESOLVER,
+                        input_names=(
+                            "normalized document discount report query",
+                            "canonical Invoice discount history",
+                            "canonical Quote discount history projection",
+                            "canonical financial display formatting",
+                            "canonical document status presentation",
+                            "authorized billing-report scope",
+                        ),
+                    ),
+                    ConcernContract(
+                        name="Quote-inherited Invoice discount double-count disclosure",
+                        role=OwnerRole.RESOLVER,
+                        input_names=(
+                            "canonical Invoice discount history",
+                            "canonical Quote discount history projection",
+                        ),
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="normalized document discount report query",
+                        owner="ui.list_contracts",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "typed tab, inclusive date range, customer, actor, "
+                            "discount type, document status, source, and pagination"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical Invoice discount history",
+                        owner="financial.invoice_discounts",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "append-only Invoice discount revisions including manual "
+                            "or Quote source identity"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical Quote discount history projection",
+                        owner="sales.quote_discount_reporting",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source="typed filtered append-only Quote discount history",
+                    ),
+                    AuthorityInput(
+                        name="canonical financial display formatting",
+                        owner="ui.display_formatting",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source=(
+                            "currency-explicit money and configured-timezone timestamp "
+                            "formatting"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical document status presentation",
+                        owner="ui.status_presentation",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source="Invoice and Quote status labels, tones, and icon keys",
+                    ),
+                    AuthorityInput(
+                        name="authorized billing-report scope",
+                        owner="auth.permission_gate",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source="reports:billing:read route authorization",
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.READ_ONLY,
+                    boundary=(
+                        "The typed report reads one selected history owner on the "
+                        "adapter session and never mutates, flushes, commits, or rolls back."
+                    ),
+                    locking="Append-only history reporting requires no mutation lock.",
+                    idempotency=(
+                        "The same committed histories and normalized query produce the "
+                        "same deterministic rows, provenance labels, and pagination."
+                    ),
+                    retries="The bounded read-only report is safe to retry.",
+                ),
+                errors=ErrorContract(
+                    domain_codes=(
+                        "financial.invoice_discounts.date_range_invalid",
+                        "financial.invoice_discounts.page_invalid",
+                        "financial.invoice_discounts.page_size_invalid",
+                        "sales.quote_discount_reporting.date_range_invalid",
+                        "sales.quote_discount_reporting.page_invalid",
+                        "sales.quote_discount_reporting.page_size_invalid",
+                    ),
+                    mapping_owner="app.web.admin.reports discount adapter",
+                    fail_closed_on=(
+                        "missing reports:billing:read permission",
+                        "invalid date range",
+                        "invalid pagination",
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.COMPLETE,
+                    old_owner=(
+                        "separate billing and sales operational history pages and "
+                        "untyped web context builders"
+                    ),
+                    new_owner="ui.document_discount_report",
+                    verification=(
+                        "typed Invoice/Quote delegation, source provenance, route "
+                        "redirect, template render, permission, and architecture tests"
+                    ),
+                    cutover_gate=(
+                        "The Reports hub is the only rendered discount-history UI and "
+                        "both legacy URLs redirect to its typed tabs."
+                    ),
+                    fallback_retirement=(
+                        "Operational-page links, old templates, and untyped discount "
+                        "context builders are removed."
+                    ),
+                ),
+                steward="billing reports UI",
+                design_refs=(
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                    "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                    "docs/designs/DOCUMENT_DISCOUNT_REPORT.md",
+                ),
+                test_refs=(
+                    "tests/test_document_discount_report.py",
+                    "tests/architecture/test_invoice_discount_ownership.py",
+                ),
+            ),
+        ),
+        SOTService(
             name="ui.form_contracts",
             module="app.services.form_contracts",
             owns=(
@@ -1718,11 +1869,14 @@ DOMAIN = DomainSOT(
         "app.api.tables",
         "app.services.subscriber",
         "app.services.table_config",
+        "app.services.web_document_discount_report",
         "app.web.admin.customers",
         "app.web.admin.billing_invoices",
+        "app.web.admin.reports",
         "app.web.admin.support_tickets",
         "templates.admin.billing.invoices",
         "templates.admin.customers",
+        "templates.admin.reports.discounts",
         "templates.admin.support.tickets",
     ),
     rule="List routes normalize request parameters through one declared list "

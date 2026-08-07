@@ -300,49 +300,12 @@ def invoices_export_csv(
 
 @router.get(
     "/invoice-discounts",
-    response_class=HTMLResponse,
-    dependencies=[Depends(require_permission("billing:invoice:read"))],
+    dependencies=[Depends(require_permission("reports:billing:read"))],
 )
-def invoice_discounts_list(
-    request: Request,
-    date_from: OptionalDateQuery = None,
-    date_to: OptionalDateQuery = None,
-    customer: str | None = Query(None),
-    salesperson_id: str | None = Query(None),
-    discount_type: str | None = Query(None),
-    invoice_status: str | None = Query(None),
-    source: str | None = Query(None),
-    page: int = Query(1, ge=1),
-    page_size: int = Query(25),
-    db: Session = Depends(get_db),
-):
-    from app.web.admin import get_current_user, get_sidebar_stats
-
-    try:
-        state = web_billing_invoices_service.build_invoice_discounts_list_context(
-            db,
-            date_from=date_from,
-            date_to=date_to,
-            customer=customer,
-            salesperson_id=salesperson_id,
-            discount_type=discount_type,
-            invoice_status=invoice_status,
-            source=source,
-            page=page,
-            page_size=page_size,
-        )
-    except (ValueError, TypeError) as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return templates.TemplateResponse(
-        "admin/billing/invoice_discounts.html",
-        {
-            "request": request,
-            **state,
-            "active_page": "invoice_discounts",
-            "active_menu": "billing",
-            "current_user": get_current_user(request),
-            "sidebar_stats": get_sidebar_stats(db),
-        },
+def invoice_discounts_report_redirect(request: Request) -> RedirectResponse:
+    suffix = f"&{request.url.query}" if request.url.query else ""
+    return RedirectResponse(
+        url=f"/admin/reports/discounts?tab=invoices{suffix}", status_code=307
     )
 
 

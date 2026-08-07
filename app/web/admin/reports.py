@@ -1,19 +1,24 @@
 """Admin reporting web routes."""
 
 import csv
-from datetime import UTC, datetime, time, timedelta
+import logging
+from datetime import UTC, date, datetime, time, timedelta
 from html import escape
 from io import StringIO
+from typing import Literal, TypedDict
 from urllib.parse import quote_plus
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Form, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.models.billing import InvoiceDiscountSource, InvoiceStatus
 from app.models.catalog import SubscriptionStatus
+from app.models.sales import QuoteStatus
 from app.models.team_inbox import InboxConversation, InboxConversationStatus
 from app.services import ncc_complaints_report as ncc_complaints_service
 from app.services import ncc_regulatory_pack as ncc_pack_service
@@ -21,15 +26,46 @@ from app.services import ncc_subscriber_report as ncc_report_service
 from app.services import ncc_workbook, team_inbox_assignment, team_inbox_outbound
 from app.services import team_inbox_metrics as team_inbox_metrics_service
 from app.services import ticket_sla_reports as ticket_sla_reports_service
+from app.services import web_document_discount_report as discount_report_service
 from app.services import web_reports as web_reports_service
 from app.services import web_reports_extended as web_reports_ext_service
 from app.services.audit_helpers import recent_activity_for_paths
 from app.services.auth_dependencies import require_any_permission, require_permission
+from app.services.db_session_adapter import db_session_adapter
+from app.services.domain_errors import DomainError
 
 templates = Jinja2Templates(directory="templates")
 router = APIRouter(prefix="/reports", tags=["web-admin-reports"])
+logger = logging.getLogger(__name__)
 
-REPORT_HUB_SECTIONS: list[dict] = [
+
+class ReportHubLink(TypedDict):
+    name: str
+    url: str
+    description: str
+    permission: str
+
+
+class ReportHubSection(TypedDict):
+    id: str
+    name: str
+    description: str
+    color: str
+    links: list[ReportHubLink]
+
+
+class DiscountReportTemplateContext(TypedDict):
+    request: Request
+    active_page: str
+    active_menu: str
+    current_user: dict[str, object]
+    sidebar_stats: dict[str, object]
+    report: discount_report_service.DocumentDiscountReport | None
+    selected_tab: discount_report_service.DiscountReportTab
+    error: str | None
+
+
+REPORT_HUB_SECTIONS: list[ReportHubSection] = [
     {
         "id": "core",
         "name": "Core Reports",
@@ -111,6 +147,12 @@ REPORT_HUB_SECTIONS: list[dict] = [
                 "permission": "reports:billing:read",
             },
             {
+                "name": "Discounts",
+                "url": "/admin/reports/discounts",
+                "description": "Invoice and Quote discount history",
+                "permission": "reports:billing:read",
+            },
+            {
                 "name": "Statements",
                 "url": "/admin/reports/statements",
                 "description": "Customer financial summaries",
@@ -155,9 +197,9 @@ REPORT_HUB_SECTIONS: list[dict] = [
                 "permission": "customer:read",
             },
             {
-                "name": "Custom Pricing & Discounts",
+                "name": "Custom Pricing",
                 "url": "/admin/reports/custom-pricing",
-                "description": "Custom pricing overrides",
+                "description": "Subscription pricing overrides and active add-ons",
                 "permission": "reports:billing:read",
             },
             {
@@ -1264,6 +1306,81 @@ def reports_new_services(
 
 
 @router.get(
+    "/discounts",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("reports:billing:read"))],
+)
+def reports_discounts(
+    request: Request,
+    tab: discount_report_service.DiscountReportTab = Query(
+        default=discount_report_service.DiscountReportTab.invoices
+    ),
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    search: str | None = Query(default=None),
+    customer: str | None = Query(default=None),
+    salesperson_id: UUID | None = Query(default=None),
+    discount_type: discount_report_service.DocumentDiscountType | None = Query(
+        default=None
+    ),
+    invoice_status: InvoiceStatus | None = Query(default=None),
+    quote_status: QuoteStatus | None = Query(default=None),
+    source: InvoiceDiscountSource | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    per_page: Literal[10, 25, 50, 100] = Query(default=25),
+    db: Session = Depends(get_db),
+):
+    from app.web.admin import get_current_user, get_sidebar_stats
+
+    context = DiscountReportTemplateContext(
+        request=request,
+        active_page="reports-discounts",
+        active_menu="reports",
+        current_user=get_current_user(request),
+        sidebar_stats=get_sidebar_stats(db),
+        report=None,
+        selected_tab=tab,
+        error=None,
+    )
+    query = discount_report_service.DocumentDiscountReportQuery(
+        tab=tab,
+        date_from=date_from,
+        date_to=date_to,
+        customer=search or customer,
+        salesperson_id=salesperson_id,
+        discount_type=discount_type,
+        invoice_status=invoice_status if tab.value == "invoices" else None,
+        quote_status=quote_status if tab.value == "quotes" else None,
+        source=source if tab.value == "invoices" else None,
+        page=page,
+        page_size=per_page,
+    )
+    try:
+        report = discount_report_service.build_document_discount_report(db, query)
+    except DomainError as exc:
+        context["error"] = exc.message
+        return templates.TemplateResponse(
+            "admin/reports/discounts.html", context, status_code=400
+        )
+    except SQLAlchemyError as exc:
+        logger.error(
+            "document_discount_report_load_failed",
+            extra={
+                "error_type": type(exc).__name__,
+                "selected_tab": tab.value,
+                "has_customer_filter": bool((search or customer or "").strip()),
+            },
+        )
+        db_session_adapter.release_read_transaction(db)
+        context["error"] = "Discounts could not be loaded. No data was changed."
+        return templates.TemplateResponse(
+            "admin/reports/discounts.html", context, status_code=503
+        )
+    context["report"] = report
+    return templates.TemplateResponse("admin/reports/discounts.html", context)
+
+
+@router.get(
     "/custom-pricing",
     response_class=HTMLResponse,
     dependencies=[Depends(require_permission("reports:billing:read"))],
@@ -1274,8 +1391,8 @@ def reports_custom_pricing(request: Request, db: Session = Depends(get_db)):
         request,
         db,
         "reports-custom-pricing",
-        "Custom Pricing & Discounts",
-        "Non-standard pricing overrides",
+        "Custom Pricing",
+        "Non-standard subscription pricing overrides and active add-ons",
     )
     ctx.update(data)
     return templates.TemplateResponse("admin/reports/custom_pricing.html", ctx)

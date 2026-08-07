@@ -54,14 +54,17 @@ the same command identity fails closed.
 
 ## Page contract
 
-- Screen: `sales-quote-discounts-list` at
-  `/admin/sales/quote-discounts`; page type: operational history list.
-- Audience/job: staff with `crm:quote:read` review every Quote discount and its
-  changes or removal.
+- Screen: the Quote tab of `reports-discounts` at
+  `/admin/reports/discounts?tab=quotes`; page type: report history list. The old
+  `/admin/sales/quote-discounts` URL redirects to this tab.
+- Audience/job: administrators with `reports:billing:read` periodically review
+  every Quote discount and its changes or removal.
 - Decision supported: identify who granted or changed a discount, its effect,
   and the related Quote state.
-- Read owner: `sales.quote_discount_reporting`; command and eligibility owner:
-  `sales.quote_authoring`; RBAC remains authoritative for access.
+- Page projection owner: `ui.document_discount_report`; canonical history read
+  owner: `sales.quote_discount_reporting`; command and eligibility owner:
+  `sales.quote_authoring`; RBAC remains authoritative for access. See
+  `docs/designs/DOCUMENT_DISCOUNT_REPORT.md` for the combined report contract.
 - Columns: Quote/customer, original subtotal, type/value and actual discount,
   discounted subtotal/final total, optional reason, actor/server time, action,
   Quote status, and a direct Quote link.

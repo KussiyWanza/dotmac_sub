@@ -601,6 +601,9 @@ def test_report_routes_require_domain_permissions():
         admin_reports.router, "/reports/revenue", "GET", "reports:billing:read"
     )
     assert _route_has_permission(
+        admin_reports.router, "/reports/discounts", "GET", "reports:billing:read"
+    )
+    assert _route_has_permission(
         admin_reports.router, "/reports/subscribers", "GET", "customer:read"
     )
     assert _route_has_permission(
