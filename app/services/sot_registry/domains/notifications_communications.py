@@ -2352,6 +2352,7 @@ DOMAIN = DomainSOT(
             module="app.services.team_inbox_projection",
             owns=(
                 "Inbox list detail metrics response cohort unread and action projection",
+                "Inbox outbound message sender identity projection",
             ),
             depends_on=(
                 "communications.team_inbox_threads",
@@ -2361,12 +2362,17 @@ DOMAIN = DomainSOT(
                 "communications.team_inbox_operator_state",
                 "communications.conversation_ticket_handoff",
                 "operations.service_team_lifecycle",
+                "auth.staff_provisioning",
             ),
             contract=_team_inbox_contract(
                 service_name="communications.team_inbox_projection",
                 concerns=(
                     (
                         "Inbox list detail metrics response cohort unread and action projection",
+                        OwnerRole.RESOLVER,
+                    ),
+                    (
+                        "Inbox outbound message sender identity projection",
                         OwnerRole.RESOLVER,
                     ),
                 ),
@@ -2413,6 +2419,15 @@ DOMAIN = DomainSOT(
                         kind=AuthorityKind.DERIVED_PROJECTION,
                         source="Current active native service-team identifiers and names.",
                     ),
+                    AuthorityInput(
+                        name="canonical staff display identity",
+                        owner="auth.staff_provisioning",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "SystemUser identity resolved from outbound message "
+                            "sent_by_person_id provenance, including inactive staff."
+                        ),
+                    ),
                 ),
                 transaction_mode=TransactionMode.READ_ONLY,
                 domain_error_codes=(
@@ -2420,9 +2435,11 @@ DOMAIN = DomainSOT(
                 ),
                 projections=(
                     "Inbox queue detail metrics response cohorts actions and unread cohorts",
+                    "Outbound message sender display name initials and provenance source",
                 ),
                 test_refs=(
                     "tests/test_team_inbox_sot_completion.py",
+                    "tests/test_team_inbox_read.py",
                     "tests/test_team_inbox_needs_attention.py",
                     "tests/test_team_inbox_filters.py",
                     "tests/architecture/test_team_inbox_boundaries.py",

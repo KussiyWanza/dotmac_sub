@@ -1,9 +1,10 @@
 """Admin network core devices web routes."""
 
+from typing import Literal
 from urllib.parse import quote_plus
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, Form, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
@@ -91,19 +92,40 @@ def network_backups_overview(
     search: str | None = None,
     stale_hours: int = 24,
     sort: str = "last_backup_asc",
+    sort_dir: Literal["asc", "desc"] | None = Query(None, alias="dir"),
+    page: int = Query(1, ge=1),
+    per_page: Literal[10, 25, 50, 100] = 25,
     db: Session = Depends(get_db),
 ):
     """Global backup status page across NAS and OLT devices."""
-    page_data = web_network_core_devices_service.backup_overview_page_data(
-        db,
+    query = web_network_core_devices_service.build_backup_overview_query(
         status=status,
         device_type=device_type,
         search=search,
         stale_hours=stale_hours,
         sort=sort,
+        sort_dir=sort_dir,
+        page=page,
+        per_page=per_page,
+    )
+    page_data = web_network_core_devices_service.backup_overview_page_data(
+        db=db,
+        query=query,
     )
     context = _base_context(request, db, active_page="network-backups")
-    context.update(page_data)
+    context.update(
+        {
+            "rows": page_data.rows,
+            "stats": page_data.stats,
+            "list_query": page_data.query.list_query,
+            "page_meta": page_data.page_meta,
+            "status_filter": page_data.query.status,
+            "device_type_filter": page_data.query.device_type,
+            "search_filter": page_data.query.list_query.search or "",
+            "stale_hours": page_data.query.stale_hours,
+            "sort_filter": page_data.query.sort_filter,
+        }
+    )
     return templates.TemplateResponse("admin/network/backups/index.html", context)
 
 

@@ -5,9 +5,10 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import HTTPException
 from sqlalchemy import String, and_, cast, func, literal, not_, or_, select, union_all
@@ -38,6 +39,12 @@ from app.models.router_management import Router, RouterStatus
 from app.models.subscriber import SubscriberCategory
 from app.models.tr069 import Tr069CpeDevice
 from app.services import network as network_service
+from app.services.list_query import (
+    ListDefinition,
+    ListFieldDefinition,
+    ListQuery,
+    PageMeta,
+)
 from app.services.network._common import decode_huawei_hex_serial, encode_to_hex_serial
 from app.services.network.effective_ont_config import resolve_effective_ont_config
 from app.services.network.olt_polling_parsers import _decode_huawei_packed_fsp
@@ -53,6 +60,126 @@ logger = logging.getLogger(__name__)
 
 # Staleness threshold for auto-refresh (15 minutes)
 _STALE_THRESHOLD_MINUTES = 15
+
+BACKUP_OVERVIEW_LIST_DEFINITION = ListDefinition(
+    key="admin.network.backups",
+    fields=(
+        ListFieldDefinition("device_name", "Device", searchable=True),
+        ListFieldDefinition("status", "Status", filterable=True),
+        ListFieldDefinition("device_type", "Device type", filterable=True),
+        ListFieldDefinition("stale_hours", "Stale threshold", filterable=True),
+        ListFieldDefinition("last_backup", "Last backup", sortable=True),
+    ),
+    default_sort="last_backup",
+    default_sort_dir="asc",
+    default_per_page=25,
+    per_page_options=(10, 25, 50, 100),
+)
+
+BackupOverviewStatus = Literal["success", "stale", "failed"]
+BackupOverviewDeviceType = Literal["nas", "olt"]
+
+
+@dataclass(frozen=True, slots=True)
+class BackupOverviewQuery:
+    list_query: ListQuery
+    stale_hours: int
+
+    @property
+    def status(self) -> str:
+        return self.list_query.filter_value("status") or "all"
+
+    @property
+    def device_type(self) -> str:
+        return self.list_query.filter_value("device_type") or "all"
+
+    @property
+    def sort_filter(self) -> str:
+        return f"last_backup_{self.list_query.sort_dir}"
+
+
+@dataclass(frozen=True, slots=True)
+class BackupOverviewRow:
+    id: str
+    device_id: str
+    backup_id: str | None
+    device_name: str
+    device_type: BackupOverviewDeviceType
+    group: str
+    vendor: str | None
+    model: str | None
+    ip_address: str
+    port: str
+    last_backup_at: datetime | None
+    last_message: str
+    backup_status: BackupOverviewStatus
+    device_url: str
+    backup_url: str | None
+    history_url: str
+
+
+@dataclass(frozen=True, slots=True)
+class BackupOverviewStats:
+    total: int
+    success: int
+    stale: int
+    failed: int
+    nas: int
+    olt: int
+
+
+@dataclass(frozen=True, slots=True)
+class BackupOverviewPage:
+    rows: tuple[BackupOverviewRow, ...]
+    stats: BackupOverviewStats
+    query: BackupOverviewQuery
+    page_meta: PageMeta
+
+
+def build_backup_overview_query(
+    *,
+    status: str | None = None,
+    device_type: str | None = None,
+    search: str | None = None,
+    stale_hours: int = 24,
+    sort: str = "last_backup_asc",
+    sort_dir: str | None = None,
+    page: int = 1,
+    per_page: int = 25,
+) -> BackupOverviewQuery:
+    normalized_status = (
+        str(status).strip().lower()
+        if status and str(status).strip().lower() in {"success", "stale", "failed"}
+        else None
+    )
+    normalized_device_type = (
+        str(device_type).strip().lower()
+        if device_type and str(device_type).strip().lower() in {"nas", "olt"}
+        else None
+    )
+    normalized_stale_hours = min(max(int(stale_hours), 1), 720)
+    normalized_sort_dir = (
+        "desc"
+        if sort == "last_backup_desc" or (sort == "last_backup" and sort_dir == "desc")
+        else "asc"
+    )
+    list_query = BACKUP_OVERVIEW_LIST_DEFINITION.build_query(
+        search=search,
+        filters={
+            "status": normalized_status,
+            "device_type": normalized_device_type,
+            "stale_hours": str(normalized_stale_hours),
+        },
+        sort_by="last_backup",
+        sort_dir=normalized_sort_dir,
+        page=page,
+        per_page=per_page,
+    )
+    return BackupOverviewQuery(
+        list_query=list_query,
+        stale_hours=normalized_stale_hours,
+    )
+
 
 _PROVISIONING_STATUS_META: dict[str, dict[str, str]] = {
     "unprovisioned": {
@@ -3557,21 +3684,15 @@ def _as_utc(value: datetime | None) -> datetime | None:
 def backup_overview_page_data(
     db: Session,
     *,
-    status: str | None = None,
-    device_type: str | None = None,
-    search: str | None = None,
-    stale_hours: int = 24,
-    sort: str = "last_backup_asc",
-) -> dict[str, object]:
+    query: BackupOverviewQuery,
+) -> BackupOverviewPage:
     """Return unified NAS/OLT backup overview rows for /admin/network/backups."""
     from app.models.catalog import NasConfigBackup, NasDevice
     from app.models.network import OltConfigBackup, OLTDevice
 
-    cutoff = datetime.now(UTC) - timedelta(hours=max(stale_hours, 1))
-    rows: list[dict[str, object]] = []
-    term = (search or "").strip().lower()
-    status_filter = (status or "all").strip().lower()
-    device_type_filter = (device_type or "all").strip().lower()
+    cutoff = datetime.now(UTC) - timedelta(hours=query.stale_hours)
+    rows: list[BackupOverviewRow] = []
+    term = (query.list_query.search or "").lower()
 
     nas_devices = list(
         db.scalars(select(NasDevice).order_by(NasDevice.name.asc())).all()
@@ -3598,30 +3719,30 @@ def backup_overview_page_data(
             )
         )
         is_stale = (last_backup_at is None) or (last_backup_at < cutoff)
-        backup_status = "failed" if failed else ("stale" if is_stale else "success")
+        backup_status: BackupOverviewStatus = (
+            "failed" if failed else ("stale" if is_stale else "success")
+        )
         rows.append(
-            {
-                "id": f"nas:{device.id}",
-                "device_id": str(device.id),
-                "backup_id": str(latest.id) if latest else None,
-                "device_name": device.name,
-                "device_type": "nas",
-                "group": device.pop_site.name if device.pop_site else "-",
-                "vendor": device.vendor.value
-                if getattr(device, "vendor", None)
-                else None,
-                "model": device.model,
-                "ip_address": device.management_ip or device.ip_address or "-",
-                "port": device.management_port or "-",
-                "last_backup_at": last_backup_at,
-                "last_message": last_message,
-                "backup_status": backup_status,
-                "device_url": f"/admin/network/nas/devices/{device.id}",
-                "backup_url": f"/admin/network/nas/backups/{latest.id}"
+            BackupOverviewRow(
+                id=f"nas:{device.id}",
+                device_id=str(device.id),
+                backup_id=str(latest.id) if latest else None,
+                device_name=device.name,
+                device_type="nas",
+                group=device.pop_site.name if device.pop_site else "-",
+                vendor=device.vendor.value if getattr(device, "vendor", None) else None,
+                model=device.model,
+                ip_address=device.management_ip or device.ip_address or "-",
+                port=str(device.management_port or "-"),
+                last_backup_at=last_backup_at,
+                last_message=last_message,
+                backup_status=backup_status,
+                device_url=f"/admin/network/nas/devices/{device.id}",
+                backup_url=f"/admin/network/nas/backups/{latest.id}"
                 if latest
                 else None,
-                "history_url": f"/admin/network/nas/devices/{device.id}/backups",
-            }
+                history_url=f"/admin/network/nas/devices/{device.id}/backups",
+            )
         )
 
     olts = list(db.scalars(select(OLTDevice).order_by(OLTDevice.name.asc())).all())
@@ -3648,32 +3769,32 @@ def backup_overview_page_data(
         is_stale = (last_backup_at is None) or (last_backup_at < cutoff)
         backup_status = "failed" if failed else ("stale" if is_stale else "success")
         rows.append(
-            {
-                "id": f"olt:{olt.id}",
-                "device_id": str(olt.id),
-                "backup_id": str(latest.id) if latest else None,
-                "device_name": olt.name,
-                "device_type": "olt",
-                "group": "-",
-                "vendor": olt.vendor,
-                "model": olt.model,
-                "ip_address": olt.mgmt_ip or "-",
-                "port": "-",
-                "last_backup_at": last_backup_at,
-                "last_message": last_message,
-                "backup_status": backup_status,
-                "device_url": f"/admin/network/olts/{olt.id}",
-                "backup_url": f"/admin/network/olts/backups/{latest.id}"
+            BackupOverviewRow(
+                id=f"olt:{olt.id}",
+                device_id=str(olt.id),
+                backup_id=str(latest.id) if latest else None,
+                device_name=olt.name,
+                device_type="olt",
+                group="-",
+                vendor=olt.vendor,
+                model=olt.model,
+                ip_address=olt.mgmt_ip or "-",
+                port="-",
+                last_backup_at=last_backup_at,
+                last_message=last_message,
+                backup_status=backup_status,
+                device_url=f"/admin/network/olts/{olt.id}",
+                backup_url=f"/admin/network/olts/backups/{latest.id}"
                 if latest
                 else None,
-                "history_url": f"/admin/network/olts/{olt.id}/backups",
-            }
+                history_url=f"/admin/network/olts/{olt.id}/backups",
+            )
         )
 
-    if device_type_filter in {"nas", "olt"}:
-        rows = [row for row in rows if row["device_type"] == device_type_filter]
-    if status_filter in {"success", "stale", "failed"}:
-        rows = [row for row in rows if row["backup_status"] == status_filter]
+    if query.device_type in {"nas", "olt"}:
+        rows = [row for row in rows if row.device_type == query.device_type]
+    if query.status in {"success", "stale", "failed"}:
+        rows = [row for row in rows if row.backup_status == query.status]
     if term:
         rows = [
             row
@@ -3682,43 +3803,42 @@ def backup_overview_page_data(
             in " ".join(
                 str(value or "").lower()
                 for value in (
-                    row["device_name"],
-                    row["device_type"],
-                    row["group"],
-                    row["vendor"],
-                    row["model"],
-                    row["ip_address"],
-                    row["last_message"],
+                    row.device_name,
+                    row.device_type,
+                    row.group,
+                    row.vendor,
+                    row.model,
+                    row.ip_address,
+                    row.last_message,
                 )
             )
         ]
 
     min_ts = datetime.min.replace(tzinfo=UTC)
-    if sort == "last_backup_desc":
-        rows.sort(key=lambda row: row["last_backup_at"] or min_ts, reverse=True)
+    if query.list_query.sort_dir == "desc":
+        rows.sort(key=lambda row: row.last_backup_at or min_ts, reverse=True)
     else:
-        rows.sort(key=lambda row: row["last_backup_at"] or min_ts)
+        rows.sort(key=lambda row: row.last_backup_at or min_ts)
 
-    stats = {
-        "total": len(rows),
-        "success": sum(1 for row in rows if row["backup_status"] == "success"),
-        "stale": sum(1 for row in rows if row["backup_status"] == "stale"),
-        "failed": sum(1 for row in rows if row["backup_status"] == "failed"),
-        "nas": sum(1 for row in rows if row["device_type"] == "nas"),
-        "olt": sum(1 for row in rows if row["device_type"] == "olt"),
-    }
-    return {
-        "rows": rows,
-        "stats": stats,
-        "status_filter": status_filter
-        if status_filter in {"success", "stale", "failed"}
-        else "all",
-        "device_type_filter": device_type_filter
-        if device_type_filter in {"nas", "olt"}
-        else "all",
-        "search_filter": search or "",
-        "stale_hours": max(stale_hours, 1),
-        "sort_filter": sort
-        if sort in {"last_backup_asc", "last_backup_desc"}
-        else "last_backup_asc",
-    }
+    stats = BackupOverviewStats(
+        total=len(rows),
+        success=sum(1 for row in rows if row.backup_status == "success"),
+        stale=sum(1 for row in rows if row.backup_status == "stale"),
+        failed=sum(1 for row in rows if row.backup_status == "failed"),
+        nas=sum(1 for row in rows if row.device_type == "nas"),
+        olt=sum(1 for row in rows if row.device_type == "olt"),
+    )
+    page_meta = PageMeta.from_query(query.list_query, stats.total)
+    effective_query = query.list_query.with_page(page_meta.page)
+    page_rows = tuple(
+        rows[effective_query.offset : effective_query.offset + effective_query.per_page]
+    )
+    return BackupOverviewPage(
+        rows=page_rows,
+        stats=stats,
+        query=BackupOverviewQuery(
+            list_query=effective_query,
+            stale_hours=query.stale_hours,
+        ),
+        page_meta=page_meta,
+    )

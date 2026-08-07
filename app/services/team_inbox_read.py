@@ -13,6 +13,7 @@ from sqlalchemy.sql.elements import ColumnElement
 from app.models.party import Party
 from app.models.service_team import ServiceTeam
 from app.models.subscriber import Subscriber
+from app.models.system_user import SystemUser
 from app.models.team_inbox import (
     InboxChannelType,
     InboxComment,
@@ -58,6 +59,19 @@ class InboxTimelineAssignment:
     is_active: bool
 
 
+class InboxTimelineSenderSource(StrEnum):
+    staff = "staff"
+    fallback = "fallback"
+
+
+@dataclass(frozen=True, slots=True)
+class InboxTimelineSenderIdentity:
+    system_user_id: str | None
+    display_name: str
+    initials: str
+    source: InboxTimelineSenderSource
+
+
 @dataclass(frozen=True)
 class InboxTimelineMessage:
     id: str
@@ -66,13 +80,14 @@ class InboxTimelineMessage:
     subject: str | None
     body: str | None
     from_address: str | None
-    to_addresses: list
-    cc_addresses: list
+    to_addresses: list[str]
+    cc_addresses: list[str]
     sent_at: datetime | None
     received_at: datetime | None
     created_at: datetime
-    metadata: dict | None
-    attachments: list[dict]
+    metadata: dict[str, object] | None
+    attachments: list[dict[str, object]]
+    sender: InboxTimelineSenderIdentity | None
 
 
 @dataclass(frozen=True)
@@ -86,7 +101,7 @@ class InboxTimelineComment:
     resolved_by_person_id: str | None
     resolved_at: datetime | None
     created_at: datetime
-    metadata: dict | None
+    metadata: dict[str, object] | None
 
 
 @dataclass(frozen=True)
@@ -109,7 +124,7 @@ class InboxConversationTimeline:
     last_message_at: datetime | None
     created_at: datetime
     updated_at: datetime
-    metadata: dict | None
+    metadata: dict[str, object] | None
     queue_position: int | None
     queued_at: datetime | None
     estimated_wait_minutes: int | None
@@ -568,6 +583,68 @@ def _display_initials(display_name: str) -> str:
     return display_name[:2].upper() or "?"
 
 
+_FALLBACK_OUTBOUND_SENDER = InboxTimelineSenderIdentity(
+    system_user_id=None,
+    display_name="Support agent",
+    initials="AG",
+    source=InboxTimelineSenderSource.fallback,
+)
+
+
+def _outbound_sender_system_user_id(message: InboxMessage) -> UUID | None:
+    if message.direction != InboxMessageDirection.outbound.value:
+        return None
+    raw_value = (message.metadata_ or {}).get("sent_by_person_id")
+    try:
+        return UUID(str(raw_value)) if raw_value else None
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def _staff_display_name(user: SystemUser) -> str:
+    return (
+        str(user.display_name or "").strip()
+        or f"{user.first_name} {user.last_name}".strip()
+        or str(user.email or "").strip()
+        or "Support agent"
+    )
+
+
+def _outbound_sender_identities(
+    db: Session,
+    messages: Sequence[InboxMessage],
+) -> dict[UUID, InboxTimelineSenderIdentity]:
+    sender_ids = {
+        sender_id
+        for message in messages
+        if (sender_id := _outbound_sender_system_user_id(message)) is not None
+    }
+    if not sender_ids:
+        return {}
+    users = db.query(SystemUser).filter(SystemUser.id.in_(sender_ids)).all()
+    return {
+        user.id: InboxTimelineSenderIdentity(
+            system_user_id=str(user.id),
+            display_name=(display_name := _staff_display_name(user)),
+            initials=_display_initials(display_name),
+            source=InboxTimelineSenderSource.staff,
+        )
+        for user in users
+    }
+
+
+def _timeline_sender_identity(
+    message: InboxMessage,
+    sender_identities: Mapping[UUID, InboxTimelineSenderIdentity],
+) -> InboxTimelineSenderIdentity | None:
+    if message.direction != InboxMessageDirection.outbound.value:
+        return None
+    sender_id = _outbound_sender_system_user_id(message)
+    if sender_id is None:
+        return _FALLBACK_OUTBOUND_SENDER
+    return sender_identities.get(sender_id, _FALLBACK_OUTBOUND_SENDER)
+
+
 def _legacy_subscriber_name(subscriber: Subscriber) -> str | None:
     return next(
         (
@@ -717,15 +794,19 @@ def _delivery_error(message: InboxMessage | None) -> str | None:
     return value or None
 
 
-def _message_attachments(message: InboxMessage) -> list[dict]:
+def _message_attachments(message: InboxMessage) -> list[dict[str, object]]:
     metadata = message.metadata_ or {}
     attachments = metadata.get("attachments")
     if not isinstance(attachments, list):
         return []
-    return [item for item in attachments if isinstance(item, dict)]
+    return [
+        {str(key): value for key, value in item.items()}
+        for item in attachments
+        if isinstance(item, dict)
+    ]
 
 
-def _asset_attachment(asset: InboxMediaAsset) -> dict:
+def _asset_attachment(asset: InboxMediaAsset) -> dict[str, object]:
     return {
         "id": str(asset.id),
         "type": asset.asset_type,
@@ -1261,12 +1342,12 @@ def get_conversation_timeline(
         db.query(InboxMessage)
         .filter(InboxMessage.conversation_id == conversation.id)
         .order_by(
-            InboxMessage.created_at.asc(),
-            InboxMessage.received_at.asc(),
-            InboxMessage.sent_at.asc(),
+            _message_time_column().asc(),
+            InboxMessage.id.asc(),
         )
         .all()
     )
+    outbound_sender_identities = _outbound_sender_identities(db, messages)
     assets_by_message = team_inbox_media.assets_for_messages(
         db,
         [message.id for message in messages],
@@ -1390,8 +1471,8 @@ def get_conversation_timeline(
                 subject=message.subject,
                 body=message.body,
                 from_address=message.from_address,
-                to_addresses=list(message.to_addresses or []),
-                cc_addresses=list(message.cc_addresses or []),
+                to_addresses=[str(value) for value in (message.to_addresses or [])],
+                cc_addresses=[str(value) for value in (message.cc_addresses or [])],
                 sent_at=message.sent_at,
                 received_at=message.received_at,
                 created_at=message.created_at,
@@ -1402,6 +1483,10 @@ def get_conversation_timeline(
                         for asset in assets_by_message.get(message.id, [])
                     ]
                     or _message_attachments(message)
+                ),
+                sender=_timeline_sender_identity(
+                    message,
+                    outbound_sender_identities,
                 ),
             )
             for message in messages

@@ -1,6 +1,33 @@
 {% extends "layouts/admin.html" %}
 {% from "components/ui/macros.html" import status_badge %}
 
+{% macro radius_card_pagination(page_meta, page_param, other_param, other_page, anchor, item_label) %}
+{% if page_meta.total_items %}
+<div class="flex flex-col gap-3 border-t border-slate-200 px-6 py-4 dark:border-slate-700 sm:flex-row sm:items-center sm:justify-between">
+    <p class="text-sm text-slate-500 dark:text-slate-400">
+        Showing {{ page_meta.start_item }} to {{ page_meta.end_item }} of {{ page_meta.total_items }} {{ item_label }}
+    </p>
+    {% if page_meta.total_pages > 1 %}
+    <nav class="flex items-center gap-2" aria-label="{{ item_label | title }} pagination">
+        {% if page_meta.has_previous %}
+        <a href="/admin/network/radius?{{ page_param }}={{ page_meta.page - 1 }}&{{ other_param }}={{ other_page }}#{{ anchor }}"
+           class="rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-700">
+            Previous
+        </a>
+        {% endif %}
+        <span class="text-sm text-slate-500 dark:text-slate-400">Page {{ page_meta.page }} of {{ page_meta.total_pages }}</span>
+        {% if page_meta.has_next %}
+        <a href="/admin/network/radius?{{ page_param }}={{ page_meta.page + 1 }}&{{ other_param }}={{ other_page }}#{{ anchor }}"
+           class="rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-700">
+            Next
+        </a>
+        {% endif %}
+    </nav>
+    {% endif %}
+</div>
+{% endif %}
+{% endmacro %}
+
 {% block title %}RADIUS / AAA - Admin{% endblock %}
 
 {% block content %}
@@ -91,7 +118,7 @@
         </div>
 
         <!-- NAS Clients -->
-        <div class="rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
+        <div id="nas-clients" class="rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
             <div class="border-b border-slate-200 px-6 py-4 dark:border-slate-700">
                 <div class="flex items-center justify-between">
                     <h2 class="font-semibold text-slate-900 dark:text-white">NAS Clients</h2>
@@ -138,11 +165,12 @@
                 </div>
                 {% endif %}
             </div>
+            {{ radius_card_pagination(clients_page_meta, 'clients_page', 'profiles_page', profiles_page_meta.page, 'nas-clients', 'clients') }}
         </div>
     </div>
 
     <!-- Authentication Profiles -->
-    <div class="rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
+    <div id="authentication-profiles" class="rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
         <div class="border-b border-slate-200 px-6 py-4 dark:border-slate-700">
             <div class="flex items-center justify-between">
                 <h2 class="font-semibold text-slate-900 dark:text-white">Authentication Profiles</h2>
@@ -189,30 +217,7 @@
             </div>
             {% endif %}
         </div>
-    </div>
-
-    <!-- Recent Activity -->
-    <div class="rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
-        <div class="border-b border-slate-200 px-6 py-4 dark:border-slate-700">
-            <h2 class="font-semibold text-slate-900 dark:text-white">Recent Activity</h2>
-        </div>
-        <div class="divide-y divide-slate-200 dark:divide-slate-700">
-            {% if activities %}
-            {% for activity in activities %}
-            <div class="px-6 py-4">
-                <div class="text-sm text-slate-700 dark:text-slate-300">{{ activity.title }}</div>
-                {% if activity.description %}
-                <div class="mt-1 text-xs text-slate-500 dark:text-slate-400">{{ activity.description }}</div>
-                {% endif %}
-                {% if activity.occurred_at %}
-                <div class="mt-1 text-xs text-slate-400 dark:text-slate-500">{{ activity.occurred_at | app_datetime('%b %d, %Y at %H:%M') }}</div>
-                {% endif %}
-            </div>
-            {% endfor %}
-            {% else %}
-            <div class="px-6 py-6 text-sm text-slate-500 dark:text-slate-400">No activity yet.</div>
-            {% endif %}
-        </div>
+        {{ radius_card_pagination(profiles_page_meta, 'profiles_page', 'clients_page', clients_page_meta.page, 'authentication-profiles', 'profiles') }}
     </div>
 
     <div class="grid gap-6 lg:grid-cols-2">
@@ -275,6 +280,30 @@
                 <div class="px-6 py-8 text-center text-sm text-slate-500 dark:text-slate-400">No auth errors recorded.</div>
                 {% endfor %}
             </div>
+        </div>
+    </div>
+
+    <!-- Recent Activity -->
+    <div class="rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
+        <div class="border-b border-slate-200 px-6 py-4 dark:border-slate-700">
+            <h2 class="font-semibold text-slate-900 dark:text-white">Recent Activity</h2>
+        </div>
+        <div class="divide-y divide-slate-200 dark:divide-slate-700">
+            {% if activities %}
+            {% for activity in activities %}
+            <div class="px-6 py-4">
+                <div class="text-sm text-slate-700 dark:text-slate-300">{{ activity.title }}</div>
+                {% if activity.description %}
+                <div class="mt-1 text-xs text-slate-500 dark:text-slate-400">{{ activity.description }}</div>
+                {% endif %}
+                {% if activity.occurred_at %}
+                <div class="mt-1 text-xs text-slate-400 dark:text-slate-500">{{ activity.occurred_at | app_datetime('%b %d, %Y at %H:%M') }}</div>
+                {% endif %}
+            </div>
+            {% endfor %}
+            {% else %}
+            <div class="px-6 py-6 text-sm text-slate-500 dark:text-slate-400">No activity yet.</div>
+            {% endif %}
         </div>
     </div>
 </div>

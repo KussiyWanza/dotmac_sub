@@ -6,15 +6,15 @@ import hashlib
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any, Generic, TypeVar, cast
 
 from fastapi import Request
 from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
-from app.models.catalog import ConnectionType, NasDevice, NasVendor
-from app.models.radius import RadiusServer
+from app.models.catalog import ConnectionType, NasDevice, NasVendor, RadiusProfile
+from app.models.radius import RadiusClient, RadiusServer
 from app.models.radius_active_session import RadiusActiveSession
 from app.models.radius_error import RadiusAuthError, RadiusAuthErrorType
 from app.schemas.catalog import (
@@ -37,10 +37,85 @@ from app.services.audit_helpers import (
     model_to_dict,
 )
 from app.services.common import coerce_uuid
+from app.services.list_query import (
+    ListDefinition,
+    ListFieldDefinition,
+    ListQuery,
+    PageMeta,
+)
 
 logger = logging.getLogger(__name__)
 
 RADIUS_CLIENT_EXCLUDE_FIELDS = {"shared_secret_hash"}
+RADIUS_OVERVIEW_PAGE_SIZE = 10
+
+RADIUS_CLIENT_LIST_DEFINITION = ListDefinition(
+    key="admin.radius.clients",
+    fields=(ListFieldDefinition("client_ip", "Client IP", sortable=True),),
+    default_sort="client_ip",
+    default_sort_dir="asc",
+    default_per_page=RADIUS_OVERVIEW_PAGE_SIZE,
+    per_page_options=(RADIUS_OVERVIEW_PAGE_SIZE,),
+)
+
+RADIUS_PROFILE_LIST_DEFINITION = ListDefinition(
+    key="admin.radius.profiles",
+    fields=(ListFieldDefinition("name", "Name", sortable=True),),
+    default_sort="name",
+    default_sort_dir="asc",
+    default_per_page=RADIUS_OVERVIEW_PAGE_SIZE,
+    per_page_options=(RADIUS_OVERVIEW_PAGE_SIZE,),
+)
+
+T = TypeVar("T")
+
+
+@dataclass(frozen=True, slots=True)
+class RadiusOverviewQuery:
+    clients: ListQuery
+    profiles: ListQuery
+
+    @classmethod
+    def from_pages(
+        cls, *, clients_page: int = 1, profiles_page: int = 1
+    ) -> RadiusOverviewQuery:
+        return cls(
+            clients=RADIUS_CLIENT_LIST_DEFINITION.build_query(
+                search=None,
+                filters={},
+                page=clients_page,
+            ),
+            profiles=RADIUS_PROFILE_LIST_DEFINITION.build_query(
+                search=None,
+                filters={},
+                page=profiles_page,
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RadiusOverviewListPage(Generic[T]):
+    items: tuple[T, ...]
+    page_meta: PageMeta
+
+
+@dataclass(frozen=True, slots=True)
+class RadiusOverviewActivity:
+    title: str
+    description: str | None
+    occurred_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class RadiusOverviewPage:
+    servers: tuple[RadiusServer, ...]
+    clients: RadiusOverviewListPage[RadiusClient]
+    profiles: RadiusOverviewListPage[RadiusProfile]
+    recent_sessions: tuple[RadiusActiveSession, ...]
+    recent_errors: tuple[RadiusAuthError, ...]
+    activities: tuple[RadiusOverviewActivity, ...]
+    total_online: int
+    total_errors: int
 
 
 @dataclass
@@ -253,34 +328,61 @@ def client_form_data(
     return data
 
 
-def radius_page_data(db) -> dict[str, object]:
-    servers = radius_service.radius_servers.list(
-        db=db,
-        is_active=None,
-        order_by="name",
-        order_dir="asc",
-        limit=200,
-        offset=0,
+def radius_page_data(db: Session, *, query: RadiusOverviewQuery) -> RadiusOverviewPage:
+    servers = tuple(
+        radius_service.radius_servers.list(
+            db=db,
+            is_active=None,
+            order_by="name",
+            order_dir="asc",
+            limit=200,
+            offset=0,
+        )
     )
-    clients = radius_service.radius_clients.list(
-        db=db,
-        server_id=None,
-        is_active=None,
-        order_by="client_ip",
-        order_dir="asc",
-        limit=200,
-        offset=0,
+
+    clients_total = int(
+        db.scalar(
+            select(func.count(RadiusClient.id)).where(RadiusClient.is_active.is_(True))
+        )
+        or 0
     )
-    profiles = catalog_service.radius_profiles.list(
-        db=db,
-        vendor=None,
-        is_active=None,
-        order_by="name",
-        order_dir="asc",
-        limit=200,
-        offset=0,
+    clients_page_meta = PageMeta.from_query(query.clients, clients_total)
+    clients_query = query.clients.with_page(clients_page_meta.page)
+    clients = tuple(
+        radius_service.radius_clients.list(
+            db=db,
+            server_id=None,
+            is_active=None,
+            order_by=clients_query.sort_by,
+            order_dir=clients_query.sort_dir,
+            limit=clients_query.per_page,
+            offset=clients_query.offset,
+        )
     )
-    recent_sessions = (
+
+    profiles_total = int(
+        db.scalar(
+            select(func.count(RadiusProfile.id)).where(
+                RadiusProfile.is_active.is_(True)
+            )
+        )
+        or 0
+    )
+    profiles_page_meta = PageMeta.from_query(query.profiles, profiles_total)
+    profiles_query = query.profiles.with_page(profiles_page_meta.page)
+    profiles = tuple(
+        catalog_service.radius_profiles.list(
+            db=db,
+            vendor=None,
+            is_active=None,
+            order_by=profiles_query.sort_by,
+            order_dir=profiles_query.sort_dir,
+            limit=profiles_query.per_page,
+            offset=profiles_query.offset,
+        )
+    )
+
+    recent_sessions = tuple(
         db.scalars(
             select(RadiusActiveSession)
             .options(
@@ -293,23 +395,47 @@ def radius_page_data(db) -> dict[str, object]:
         .unique()
         .all()
     )
-    recent_errors = db.scalars(
-        select(RadiusAuthError).order_by(RadiusAuthError.occurred_at.desc()).limit(5)
-    ).all()
-    return {
-        "profiles": profiles,
-        "servers": servers,
-        "clients": clients,
-        "recent_sessions": recent_sessions,
-        "recent_errors": recent_errors,
-        "activities": build_audit_activities_for_types(
-            db,
-            ["radius_server", "radius_client", "radius_profile"],
-            limit=10,
+    recent_errors = tuple(
+        db.scalars(
+            select(RadiusAuthError)
+            .order_by(RadiusAuthError.occurred_at.desc())
+            .limit(5)
+        ).all()
+    )
+    activity_rows = build_audit_activities_for_types(
+        db=db,
+        entity_types=["radius_server", "radius_client", "radius_profile"],
+        limit=10,
+    )
+    activities = tuple(
+        RadiusOverviewActivity(
+            title=str(row.get("title") or "Activity"),
+            description=str(row.get("description") or "") or None,
+            occurred_at=(
+                row.get("occurred_at")
+                if isinstance(row.get("occurred_at"), datetime)
+                else None
+            ),
+        )
+        for row in activity_rows
+    )
+
+    return RadiusOverviewPage(
+        servers=servers,
+        clients=RadiusOverviewListPage(
+            items=clients,
+            page_meta=clients_page_meta,
         ),
-        "total_online": db.scalar(select(func.count(RadiusActiveSession.id))) or 0,
-        "total_errors": db.scalar(select(func.count(RadiusAuthError.id))) or 0,
-    }
+        profiles=RadiusOverviewListPage(
+            items=profiles,
+            page_meta=profiles_page_meta,
+        ),
+        recent_sessions=recent_sessions,
+        recent_errors=recent_errors,
+        activities=activities,
+        total_online=int(db.scalar(select(func.count(RadiusActiveSession.id))) or 0),
+        total_errors=int(db.scalar(select(func.count(RadiusAuthError.id))) or 0),
+    )
 
 
 def import_credentials_notice(db: Session) -> str:
