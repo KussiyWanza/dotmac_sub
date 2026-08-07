@@ -59,6 +59,12 @@ def notify_project_comment_mentions(
         .all()
     )
     for user in users:
-        queue_staff_push(db, recipient=str(user.id), subject=subject, body=body)
+        queue_staff_push(
+            db,
+            recipient=str(user.id),
+            subject=subject,
+            body=body,
+            target_url=target_url,
+        )
         if user.email:
             queue_staff_email(db, recipient=user.email, subject=subject, body=body)

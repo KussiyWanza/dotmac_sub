@@ -262,6 +262,7 @@ def notify_ticket_comment_mentions(
             recipient=str(user.id),
             subject=message.subject,
             body=message.body,
+            target_url=f"/admin/support/tickets/{ticket_id}",
         )
         if user.email:
             queue_staff_email(

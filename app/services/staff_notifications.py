@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from uuid import UUID
 
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
+from app.models.admin_alert import AdminNotification
 from app.models.network_monitoring import AlertSeverity
 from app.models.notification import (
     Notification,
@@ -54,11 +56,11 @@ def queue_staff_notification(
     audience_type: str | None = None,
     audience_id=None,
     metadata: dict | None = None,
-) -> None:
+) -> Notification | None:
     """Queue an internal notification without customer preference/status policy."""
     if not recipient:
-        return
-    notifications_svc.queue_internal_notification(
+        return None
+    return notifications_svc.queue_internal_notification(
         db,
         NotificationCreate(
             channel=channel,
@@ -85,14 +87,39 @@ def queue_staff_push(
     subject: str,
     body: str,
     delivered: bool = True,
+    target_url: str = "/admin",
 ) -> None:
-    queue_staff_notification(
+    notification = queue_staff_notification(
         db,
         channel=NotificationChannel.push,
         recipient=recipient,
         subject=subject,
         body=body,
         delivered=delivered,
+        metadata={"target_url": target_url},
+    )
+    if notification is None:
+        return
+    try:
+        system_user_id = UUID(str(recipient))
+    except (TypeError, ValueError):
+        return
+    user_exists = (
+        db.query(SystemUser.id)
+        .filter(SystemUser.id == system_user_id)
+        .filter(SystemUser.is_active.is_(True))
+        .first()
+    )
+    if user_exists is None:
+        return
+    db.add(
+        AdminNotification(
+            source_notification_id=notification.id,
+            system_user_id=system_user_id,
+            title=subject[:180],
+            body=body,
+            target_url=target_url,
+        )
     )
 
 
