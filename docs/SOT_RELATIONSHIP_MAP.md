@@ -193,12 +193,15 @@ snapshots the locked Quote and lines together with the brand resolved by
 `customer.branding` and the primary enabled, complete, currency-eligible bank
 destination resolved by `financial.collection_accounts`. The snapshot records
 the internal collection-account identity, the three customer-visible transfer
-fields, and the absolute company-hosted `/portal/quotes/{quote_id}/pay` URL
-before rendering. Existing artifacts never reread mutable bank configuration.
+fields, and, for Subscriber-backed Quotes, the absolute company-hosted
+`/portal/quotes/{quote_id}/pay` URL before rendering. Lead-only Quotes snapshot
+a null online-payment URL and render bank-transfer instructions only. Existing
+artifacts never reread mutable bank configuration.
 The owner stores one content-addressed artifact for each distinct snapshot and
-stages audit and `quote.pdf_exported` evidence atomically. A missing portal
-identity, eligible bank destination, or absolute company URL fails document
-creation closed.
+stages audit and `quote.pdf_exported` evidence atomically. A missing eligible
+bank destination fails document creation closed; an invalid absolute company
+URL fails closed when the Quote is Subscriber-backed and therefore presents
+online payment.
 `sales.quote_delivery` owns the idempotent Send Email command. It resolves the
 recipient only through `Quote -> Lead -> Party` active contact points, reuses
 the exact branded PDF and its company-hosted HTTPS payment URL, consumes the

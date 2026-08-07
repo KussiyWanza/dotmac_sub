@@ -575,19 +575,32 @@ def test_quote_document_fails_closed_without_eligible_bank_details(
         raise AssertionError("missing bank details must fail closed")
 
 
-def test_quote_document_fails_closed_without_customer_portal_identity(
-    db_session, subscriber
+def test_lead_quote_document_exports_bank_transfer_without_online_payment(
+    db_session, subscriber, monkeypatch
 ):
-    quote, _primary, _quote_id = _quote(db_session, subscriber)
+    quote, _primary, quote_id = _quote(db_session, subscriber)
     quote.subscriber_id = None
-    db_session.flush()
+    db_session.commit()
+    _stub_pdf_storage(monkeypatch)
 
-    try:
-        quote_documents._snapshot(db_session, quote)
-    except quote_documents.QuoteDocumentError as exc:
-        assert exc.code == "sales.quote_documents.payment_identity_required"
-    else:  # pragma: no cover - assertion guard
-        raise AssertionError("missing portal identity must fail closed")
+    outcome = quote_documents.generate_quote_pdf(
+        db_session,
+        quote_documents.GenerateQuotePdfCommand(
+            context=_context(),
+            quote_id=quote_id,
+        ),
+    )
+    export = db_session.get(QuotePdfExport, outcome.export_id)
+    assert export is not None
+    snapshot = quote_documents.load_quote_document_snapshot(export.snapshot)
+    rendered = quote_documents._render_html(snapshot, None)
+
+    assert snapshot.payment.paystack_url is None
+    assert "Bank Transfer" in rendered
+    assert "payment-card-only" in rendered
+    assert "Pay with Paystack" not in rendered
+    assert "Pay Now" not in rendered
+    assert f"/portal/quotes/{quote_id}/pay" not in rendered
 
 
 def test_primary_presentment_skips_disabled_incomplete_and_other_currency(

@@ -15,14 +15,17 @@ The snapshot contains:
   currency by `financial.collection_accounts`;
 - the collection-account UUID as internal provenance;
 - only Bank, Account Number, and Account Name as visible transfer fields; and
-- an absolute URL built from the resolved company brand `app_url` and the
-  company-hosted `/portal/quotes/{quote_id}/pay` route.
+- for Quotes linked to an exact Subscriber identity, an absolute URL built from
+  the resolved company brand `app_url` and the company-hosted
+  `/portal/quotes/{quote_id}/pay` route.
 
 No renderer-time lookup, legacy company/settings fallback, generic Paystack URL,
-or public UUID bearer capability is permitted. Missing bank details, portal
-identity, or a valid absolute company URL fails PDF creation closed. A changed
-account or URL produces a different snapshot fingerprint and artifact; an
-existing artifact remains immutable.
+or public UUID bearer capability is permitted. Missing bank details fails PDF
+creation closed. A Subscriber-backed Quote also fails closed when its absolute
+company URL is invalid. A Lead-only Quote records a null Paystack URL and renders
+bank-transfer instructions without an online-payment action. A changed account
+or URL produces a different snapshot fingerprint and artifact; an existing
+artifact remains immutable.
 
 ## Browser payment boundary
 
@@ -80,13 +83,15 @@ and brand inputs used by the immutable document. Missing legal name or payment
 eligibility fails the delivery command before an intent is queued. A suppressed
 intent remains suppressed and never marks the Quote Sent.
 
-## Business limitation
+## Lead-only document behavior
 
 An otherwise valid Lead/Party quotation without an exact Subscriber/customer
 portal identity cannot safely enter the authenticated Paystack flow. Document
-creation fails with `sales.quote_documents.payment_identity_required`; the
-implementation does not assign another account, create a duplicate identity,
-or introduce a public signed-payment-link contract.
+creation remains available with the authoritative bank-transfer destination and
+omits the Paystack action. The implementation does not assign another account,
+create a duplicate identity, or introduce a public signed-payment-link contract.
+Email delivery remains unavailable until the Quote has the exact Subscriber
+identity required by the authenticated online-payment action.
 
 Delivery also remains unavailable for Quotes with no positive authoritative
 deposit, a paid deposit, an ineligible lifecycle state, expiry, or unavailable
