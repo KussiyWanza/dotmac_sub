@@ -594,6 +594,7 @@ def test_lead_quote_document_exports_bank_transfer_without_online_payment(
     assert export is not None
     snapshot = quote_documents.load_quote_document_snapshot(export.snapshot)
     rendered = quote_documents._render_html(snapshot, None)
+    recipient = quote_documents.resolve_quote_recipient(db_session, quote)
 
     assert snapshot.payment.paystack_url is None
     assert "Bank Transfer" in rendered
@@ -601,6 +602,15 @@ def test_lead_quote_document_exports_bank_transfer_without_online_payment(
     assert "Pay with Paystack" not in rendered
     assert "Pay Now" not in rendered
     assert f"/portal/quotes/{quote_id}/pay" not in rendered
+
+    with pytest.raises(quote_delivery.QuoteDeliveryError) as exc:
+        quote_delivery.render_quote_email(
+            snapshot=snapshot,
+            recipient=recipient,
+        )
+
+    assert exc.value.code == "sales.quote_delivery.payment_link_unavailable"
+    assert exc.value.details["reason"] == "document_snapshot_has_no_online_payment"
 
 
 def test_primary_presentment_skips_disabled_incomplete_and_other_currency(
