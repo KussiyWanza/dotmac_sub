@@ -284,9 +284,7 @@ def build_vendor_project_route_geojson(
             }
         )
 
-    features.extend(
-        _closure_proposal_features(db, project, vendor_id=vendor_uuid)
-    )
+    features.extend(_closure_proposal_features(db, project, vendor_id=vendor_uuid))
 
     return {"type": "FeatureCollection", "features": features}
 
@@ -341,8 +339,8 @@ def list_route_projects(db: Session) -> list[dict]:
     )
     closure_work_order_ids: set[UUID] = set()
     for request in closure_requests:
-        work_order_id = (request.payload or {}).get("provenance", {}).get(
-            "work_order_id"
+        work_order_id = (
+            (request.payload or {}).get("provenance", {}).get("work_order_id")
         )
         if not work_order_id:
             continue

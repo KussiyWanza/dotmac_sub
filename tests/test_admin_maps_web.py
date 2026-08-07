@@ -404,9 +404,7 @@ def test_closure_proposals_appear_on_route_map_and_project_list(db_session):
     db_session.add(change_request)
     db_session.commit()
 
-    geojson = vendor_routes_api.build_project_route_geojson(
-        db_session, str(install.id)
-    )
+    geojson = vendor_routes_api.build_project_route_geojson(db_session, str(install.id))
     feature = next(
         item
         for item in geojson["features"]
