@@ -1,9 +1,10 @@
 # Platform Adoption Ledger — dotmac_sub
 
 **Status:** Rebaselined 2026-08-02 for slice S1 of the selective kernel-adoption
-plan; amended the same day for slice S2 (dependency pinned at
-`dotmac-kernel==0.1.0a8` — see "S2 acceptance claim") and slice S3 (composition
-declared in `app/composition.py` — see "S3 acceptance claim"). Supersedes the
+plan; amended the same day for slice S2 (dependency pinned — see "S2 acceptance
+claim") and slice S3 (composition declared in `app/composition.py` — see "S3
+acceptance claim"). The pin moved to `dotmac-kernel==0.1.0a13` on 2026-08-07 —
+see "Pin history". Supersedes the
 2026-07-19 Phase-0 draft, which was surveyed before the kernel was released and
 against `origin/main` 7807afcd. No code, schema, or dependency change is
 authorized by this document alone.
@@ -37,6 +38,42 @@ collision inventory re-verified at each rebase rather than assumed to hold:
 Collision findings unchanged. The recon is re-run on every rebase because a
 stale inventory would silently under-report the very risk the S7 ADR gate
 exists to hold.
+
+
+## Pin history
+
+**2026-08-07 — `0.1.0a8` → `0.1.0a13`.** The kernel release carrying the
+white-label foundation: the module registry and manifest declarations, D1's
+per-module Postgres namespaces and migration lineages, tenant-entitlement
+enforcement (`require_capability`), typed feature flags, and the platform
+administration surface. a13 is a single release covering five development
+iterations; a9–a12 were published, a14–a17 never existed as artifacts.
+
+**Nothing in `app/` changed.** Sub consumes the kernel as CONTRACTS: the whole
+surface is `app/composition.py` importing `assembly`, `capabilities`, `features`
+and `profiles`, held there by `tests/architecture/test_kernel_import_boundary.py`.
+The changes in a9–a13 that ENFORCE at runtime — `write_audit_event` rejecting an
+undeclared audit action, and `require_permission` failing the boot on an
+undeclared permission code — are guards on kernel call paths this repo does not
+use, because Sub does not call `create_app` and does not import
+`dotmac_kernel.deps` or `dotmac_kernel.audit`.
+
+The one contract that could have broken did not: a13 retyped
+`FeatureManifest.capabilities` as `str | CapabilitySpec`, and
+`CapabilityCatalogue.from_manifests` coerces bare strings, so the declarations in
+`app/composition.py` resolve exactly as before. `ProductAssemblySpec` gained
+three fields, all defaulted. The lock moved the kernel entry and nothing else —
+no transitive dependency changed.
+
+Five sites move together, and a required check enforces that: four in
+`pyproject.toml` (the PEP 621 `dependencies` entry, the Poetry main entry, the
+Poetry dev-group `[testing]` entry, and the PEP 621 dev-group `[testing]` entry)
+plus `KERNEL_PIN` in `tests/architecture/test_kernel_compatibility.py`.
+
+**Not delivered by this bump:** Sub declares no `ModuleManifest`, so D1's
+namespace and migration-lineage rules govern nothing here yet. They become
+relevant if and when Sub extracts stateful modules.
+
 
 ## The adoption frame
 
