@@ -168,7 +168,7 @@ jobs:
     environment: staging
     timeout-minutes: 90
     steps:
-      - name: Fast-forward the staging checkout to the verified dev commit
+      - name: Check out exact candidate without moving deployment branches
         env:
           CANDIDATE_SHA: ${{ needs.verify.outputs.candidate_sha }}
           STAGING_DEPLOY_DIR: ${{ vars.STAGING_DEPLOY_DIR }}
@@ -194,9 +194,15 @@ jobs:
             echo "origin/dev moved after candidate verification." >&2
             exit 1
           fi
-          git -C "$STAGING_DEPLOY_DIR" checkout dev
-          git -C "$STAGING_DEPLOY_DIR" merge --ff-only "$CANDIDATE_SHA"
+          git -C "$STAGING_DEPLOY_DIR" checkout --detach "$CANDIDATE_SHA"
           test "$(git -C "$STAGING_DEPLOY_DIR" rev-parse HEAD)" = "$CANDIDATE_SHA"
+          if git -C "$STAGING_DEPLOY_DIR" symbolic-ref -q HEAD >/dev/null; then
+            echo "The staging deployment checkout must remain detached." >&2
+            exit 1
+          fi
+          test -z "$(
+            git -C "$STAGING_DEPLOY_DIR" status --porcelain --untracked-files=no
+          )"
 
       - name: Verify staging-only host contract
         env:

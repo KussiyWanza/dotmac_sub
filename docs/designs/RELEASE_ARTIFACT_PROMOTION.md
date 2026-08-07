@@ -93,6 +93,11 @@ migration-state observation, migrations, schema/readiness checks, service
 replacement, health checks, and rollback. These checks do not constitute a
 replacement test suite.
 
+The staging deployment worktree checks out the verified candidate at detached
+`HEAD` and never advances, merges, resets, or force-updates a local branch.
+Local branch refs are preserved operational context, not release evidence and
+not an input to the release-control decision.
+
 ## Authority migration and cutover
 
 ### Old owner and paths

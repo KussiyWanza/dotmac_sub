@@ -237,7 +237,10 @@ all of the following are true:
   deployment runner. Interactive development, agents, and diagnostic edits use
   separate worktrees and never write into the deployment worktree.
 - The tracked deployment worktree is clean. The workflow refuses to discard
-  tracked changes and updates local `dev` only by fast-forward.
+  tracked changes, verifies the exact fetched `origin/dev` candidate, checks it
+  out at detached `HEAD`, and leaves every local branch pointer unchanged. A
+  local development branch is preserved as a reference but never controls or
+  blocks deployment checkout state.
 
 The workflow accepts only a successful manually dispatched `Build release
 candidate once` run from this repository's current `dev` tip. Start it with an
@@ -292,6 +295,9 @@ files are retained until a separately approved retention action.
 - A missing runner, disabled repository switch, wrong host path, dirty tracked
   checkout, stale dev SHA, failed check, malformed or mismatched evidence,
   missing digest, unexpected port, or active Celery Beat prevents deployment.
+- The deployment checkout never moves, merges, resets, or force-updates a local
+  branch. It detaches at the verified candidate so an unrelated local branch
+  cannot diverge from `origin/dev` and block or influence a release.
 - `scripts/deploy.sh` still owns backup, migration, candidate health, primary
   health, worker readiness, rollback, and image-retention behavior; the guarded
   staging adapter supplies only the staging-specific backup and proxy opt-outs.

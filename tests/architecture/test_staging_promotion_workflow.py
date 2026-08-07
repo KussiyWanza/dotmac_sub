@@ -74,8 +74,16 @@ def test_staging_deploy_is_disabled_and_pinned_to_the_staging_host() -> None:
     assert "/home/dotmac/projects/dotmac_sub" not in workflow
     assert 'test -e "$STAGING_DEPLOY_DIR/.git"' in workflow
     assert "rev-parse --is-inside-work-tree" in workflow
-    assert 'git -C "$STAGING_DEPLOY_DIR" merge --ff-only' in workflow
-    assert "git reset --hard" not in workflow
+    assert "Check out exact candidate without moving deployment branches" in workflow
+    assert 'git -C "$STAGING_DEPLOY_DIR" checkout --detach "$CANDIDATE_SHA"' in workflow
+    assert 'git -C "$STAGING_DEPLOY_DIR" symbolic-ref -q HEAD' in workflow
+    for forbidden_branch_mutation in (
+        'git -C "$STAGING_DEPLOY_DIR" checkout dev',
+        'git -C "$STAGING_DEPLOY_DIR" merge --ff-only',
+        'git -C "$STAGING_DEPLOY_DIR" branch --force',
+        "git reset --hard",
+    ):
+        assert forbidden_branch_mutation not in workflow
     assert "actions/download-artifact@v4" in workflow
     assert "python -m scripts.release_candidate_evidence verify-candidate" in workflow
     assert 'bash scripts/deploy_staging.sh "$IMAGE_DIGEST"' in workflow
@@ -148,7 +156,8 @@ def test_staging_promotion_runbook_records_activation_and_failure_contracts() ->
     )
     assert "used only by the staging" in runbook
     assert "never write into the deployment worktree" in runbook
-    assert "updates local `dev` only by fast-forward" in runbook
+    assert "leaves every local branch pointer unchanged" in runbook
+    assert "detached `HEAD`" in runbook
     assert "scripts/deploy_staging.sh" in runbook
     assert "Build release candidate once" in runbook
     assert "release-candidate-evidence" in runbook
