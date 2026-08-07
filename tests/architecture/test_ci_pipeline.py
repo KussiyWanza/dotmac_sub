@@ -90,9 +90,9 @@ def test_ci_uses_one_named_application_cache_during_publisher_migration() -> Non
     assert "-genieacs:${{ steps.version.outputs.version }}" in ghcr_workflow
     assert "genieacs:latest" not in ghcr_workflow
 
-    candidate_workflow = (
-        ROOT / ".github/workflows/release-candidate.yml"
-    ).read_text(encoding="utf-8")
+    candidate_workflow = (ROOT / ".github/workflows/release-candidate.yml").read_text(
+        encoding="utf-8"
+    )
     assert candidate_workflow.count("uses: docker/build-push-action@v6") == 1
     assert "on:\n  workflow_dispatch:" in candidate_workflow
     assert "on:\n  push:" not in candidate_workflow

@@ -136,9 +136,7 @@ def read_candidate_evidence(path: Path) -> ReleaseArtifactEvidence:
         ) from exc
     try:
         return ReleaseArtifactEvidence(
-            source_revision=GitCommitSha(
-                _required_string(document, "source_revision")
-            ),
+            source_revision=GitCommitSha(_required_string(document, "source_revision")),
             source_tree=GitTreeSha(_required_string(document, "source_tree")),
             image_digest=OCIImageDigest(_required_string(document, "image_digest")),
             build_run_id=WorkflowRunId(
@@ -193,9 +191,7 @@ def read_staging_acceptance(path: Path) -> StagingAcceptanceEvidence:
             deployment_id=StagingDeploymentId(
                 _required_positive_int(document, "deployment_id")
             ),
-            source_revision=GitCommitSha(
-                _required_string(document, "source_revision")
-            ),
+            source_revision=GitCommitSha(_required_string(document, "source_revision")),
             source_tree=GitTreeSha(_required_string(document, "source_tree")),
             image_digest=OCIImageDigest(_required_string(document, "image_digest")),
             conclusion=conclusion,

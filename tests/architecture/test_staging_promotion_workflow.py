@@ -37,7 +37,7 @@ def test_release_candidate_build_is_explicit_green_dev_and_digest_evidenced() ->
     assert "on:\n  push:" not in workflow
     assert "candidate_sha:" in workflow
     assert "ref: dev" in workflow
-    assert 'WORKFLOW_REF: ${{ github.ref }}' in workflow
+    assert "WORKFLOW_REF: ${{ github.ref }}" in workflow
     assert '"refs/heads/dev"' in workflow
     assert 'const required = ["CI", "Mobile CI"]' in workflow
     assert "Refusing stale candidate" in workflow
@@ -88,8 +88,7 @@ def test_staging_deploy_is_disabled_and_pinned_to_the_staging_host() -> None:
         in workflow
     )
     assert (
-        "name: staging-acceptance-${{ needs.verify.outputs.candidate_sha }}"
-        in workflow
+        "name: staging-acceptance-${{ needs.verify.outputs.candidate_sha }}" in workflow
     )
     assert "10.120.121.20:8001:8001/tcp" in workflow
     assert "grep -qx celery-beat" in workflow
@@ -124,7 +123,7 @@ def test_staging_deploy_is_disabled_and_pinned_to_the_staging_host() -> None:
 
 
 def test_agents_guidance_requires_staging_before_main() -> None:
-    guidance = _read("AGENTS.md")
+    guidance = " ".join(_read("AGENTS.md").split())
 
     assert "explicit one-time candidate build" in guidance
     assert "immutable candidate digest -> staging deployment and acceptance" in guidance

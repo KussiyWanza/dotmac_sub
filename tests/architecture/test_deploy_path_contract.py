@@ -86,5 +86,5 @@ def test_deploy_accepts_and_reverifies_an_exact_oci_digest() -> None:
     assert '[[ "${TAG}" =~ ^sha256:[0-9a-f]{64}$ ]]' in deploy
     assert 'IMAGE="${IMAGE_REPO}@${TAG}"' in deploy
     assert 'grep -Fxq "${image}" <<<"${repo_digests}"' in deploy
-    assert "docker manifest inspect \"${IMAGE}\"" in deploy
-    assert "docker pull \"${IMAGE}\"" in deploy
+    assert 'docker manifest inspect "${IMAGE}"' in deploy
+    assert 'docker pull "${IMAGE}"' in deploy
