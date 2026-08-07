@@ -212,6 +212,63 @@ def _configure_phase1_radius_settings(
     assert current_prefix["value_text"] == "1050"
 
 
+class TestCustomerListFilters:
+    """Tests for customer-list filter guidance."""
+
+    def test_infrastructure_search_prompts_for_type(self, admin_page: Page, settings):
+        admin_page.goto(f"{settings.base_url}/admin/customers")
+        expect(
+            admin_page.get_by_role("heading", name="Customers", exact=True)
+        ).to_be_visible()
+        admin_page.get_by_role("button", name=re.compile(r"^Filters")).click()
+
+        infrastructure_requests: list[str] = []
+
+        def record_infrastructure_request(request) -> None:
+            if "/admin/customers/infrastructure-options" in request.url:
+                infrastructure_requests.append(request.url)
+
+        admin_page.on("request", record_infrastructure_request)
+
+        search = admin_page.locator("#infrastructure-search")
+        expect(search).to_be_enabled()
+        search.fill("Ka")
+
+        expect(admin_page.locator("#infrastructure-results")).to_be_visible()
+        expect(
+            admin_page.get_by_text("Choose an infrastructure type first.", exact=True)
+        ).to_be_visible()
+        admin_page.wait_for_timeout(400)
+        assert infrastructure_requests == []
+
+        admin_page.route(
+            "**/admin/customers/infrastructure-options?**",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(
+                    {
+                        "results": [
+                            {
+                                "id": str(uuid4()),
+                                "label": "Gudu",
+                                "context": "Abuja",
+                            }
+                        ]
+                    }
+                ),
+            ),
+        )
+        admin_page.locator("#infrastructure-type").select_option("location")
+        search.fill("Gudu")
+
+        expect(admin_page.get_by_text("Gudu", exact=True)).to_be_visible()
+        expect(admin_page.get_by_text("Abuja", exact=True)).to_be_visible()
+        assert len(infrastructure_requests) == 1
+        assert "infrastructure_type=location" in infrastructure_requests[0]
+        assert "q=Gudu" in infrastructure_requests[0]
+
+
 class TestSubscriptionActivation:
     """Tests for the subscription activation workflow."""
 
