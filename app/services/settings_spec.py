@@ -4515,6 +4515,14 @@ SETTINGS_SPECS: list[SettingSpec] = [
         label="Operational escalation delivery",
     ),
     SettingSpec(
+        domain=SettingDomain.notification,
+        key="nextcloud_talk_staff_notifications_enabled",
+        env_var="NEXTCLOUD_TALK_STAFF_NOTIFICATIONS_ENABLED",
+        value_type=SettingValueType.boolean,
+        default=False,
+        label="Nextcloud Talk staff notifications",
+    ),
+    SettingSpec(
         domain=SettingDomain.catalog,
         key="nas_backup_retention_enabled",
         env_var="NAS_BACKUP_RETENTION_ENABLED",

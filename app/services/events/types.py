@@ -243,6 +243,7 @@ class EventType(enum.Enum):
     olt_created = "olt.created"
     olt_updated = "olt.updated"
     olt_deleted = "olt.deleted"
+    olt_topology_imported = "olt.topology_imported"
 
     # ONT events (5)
     ont_discovered = "ont.discovered"

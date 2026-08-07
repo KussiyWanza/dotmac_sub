@@ -224,6 +224,17 @@
                         {% for team in service_team_options %}<option value="{{ team.id }}" {% if team.id|string == service_team_id %}selected{% endif %}>{{ team.name }}</option>{% endfor %}
                     </select>
                 </label>
+                <label class="flex items-center gap-2 text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                    <span class="w-12 shrink-0">Priority</span>
+                    <select name="priority_at_most" @change="$el.form.requestSubmit()" class="h-10 min-w-0 flex-1 rounded-lg border-slate-200 bg-white text-xs text-slate-700 focus:border-amber-500 focus:ring-amber-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
+                        <option value="">All priorities</option>
+                        {% for option in priority_options|reverse %}
+                        {% if option.value < 100 %}
+                        <option value="{{ option.value }}" {% if priority_at_most == option.value %}selected{% endif %}>{{ option.label }}{% if option.value > 0 %}+{% endif %}</option>
+                        {% endif %}
+                        {% endfor %}
+                    </select>
+                </label>
             </div>
 
             <div id="inbox-by-agent-panel" x-show="byAgentOpen" x-cloak class="space-y-2 rounded-lg border border-slate-200/60 bg-slate-50 p-2.5 dark:border-slate-700/60 dark:bg-slate-800/50">

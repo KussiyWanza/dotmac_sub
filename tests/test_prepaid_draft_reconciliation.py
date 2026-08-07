@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -24,6 +24,7 @@ from app.models.billing import (
     TaxRate,
 )
 from app.models.catalog import BillingMode, SubscriptionStatus
+from app.models.event_store import EventStore
 from app.models.prepaid_funding import (
     PrepaidDraftReconciliationException,
     PrepaidOpeningFundingConsumption,
@@ -31,9 +32,13 @@ from app.models.prepaid_funding import (
 from app.services import prepaid_draft_reconciliation as reconciliation_service
 from app.services.customer_financial_position import prepaid_available_balance
 from app.services.domain_errors import DomainError
+from app.services.events.types import EventType
 from app.services.owner_commands import CommandContext
 from app.services.prepaid_draft_reconciliation import (
     AdoptFundedPrepaidProformaCommand,
+    CreateReviewedPaidPrepaidInvoiceCommand,
+    MissingPaidPrepaidInvoiceRepairDisposition,
+    MissingPaidPrepaidInvoiceRepairQuery,
     PaidPrepaidInvoiceRepairDisposition,
     PaidPrepaidInvoiceRepairQuery,
     PrepaidDraftAction,
@@ -44,8 +49,10 @@ from app.services.prepaid_draft_reconciliation import (
     ReconcilePrepaidDraftCommand,
     RepairHistoricalPaidPrepaidInvoiceCommand,
     adopt_funded_prepaid_proforma,
+    create_reviewed_paid_prepaid_invoice,
     preview_funded_prepaid_proforma_adoption,
     preview_historical_paid_prepaid_invoice_repair,
+    preview_missing_paid_prepaid_invoice_repair,
     preview_prepaid_draft_cohort,
     preview_prepaid_draft_reconciliation,
     reconcile_prepaid_draft_invoice,
@@ -630,6 +637,152 @@ def test_missing_opening_baseline_is_a_stable_domain_error(
         "account_id": str(subscriber.id),
         "currency": "NGN",
     }
+
+
+def test_reviewed_missing_invoice_uses_exact_payment_without_opening_baseline(
+    db_session,
+    subscriber,
+    subscription,
+):
+    subscription.billing_mode = BillingMode.prepaid
+    subscription.status = SubscriptionStatus.active
+    subscription.next_billing_at = datetime(2026, 8, 3, 6, 19, tzinfo=UTC)
+    ensure_test_prepaid_contract(db_session, subscription, Decimal("17500.00"))
+    tax_rate = TaxRate(name=f"VAT-{uuid4().hex[:8]}", rate=Decimal("7.5000"))
+    db_session.add(tax_rate)
+    db_session.flush()
+    subscriber.tax_rate_id = tax_rate.id
+    payment = _payment(
+        db_session,
+        subscriber,
+        amount=Decimal("18850.00"),
+        paid_at=datetime(2026, 8, 6, 8, 22, 57, tzinfo=UTC),
+    )
+    db_session.add(
+        LedgerEntry(
+            account_id=subscriber.id,
+            entry_type=LedgerEntryType.credit,
+            source=LedgerSource.other,
+            amount=Decimal("37.50"),
+            currency="NGN",
+            memo="Historical untyped residual credit",
+            is_active=True,
+            effective_date=datetime(2026, 7, 1, tzinfo=UTC),
+        )
+    )
+    db_session.commit()
+
+    query = MissingPaidPrepaidInvoiceRepairQuery(
+        account_id=subscriber.id,
+        subscription_id=subscription.id,
+        payment_id=payment.id,
+        issued_on=date(2026, 8, 6),
+        due_on=date(2026, 9, 5),
+        next_billing_on=date(2026, 9, 5),
+        expected_total=Decimal("18812.50"),
+        expected_remaining_credit=Decimal("75.00"),
+    )
+    preview = preview_missing_paid_prepaid_invoice_repair(db_session, query)
+
+    assert preview.disposition is (
+        MissingPaidPrepaidInvoiceRepairDisposition.exact_missing_invoice
+    )
+    assert preview.actionable is True
+    assert preview.subtotal == Decimal("17500.00")
+    assert preview.tax_total == Decimal("1312.50")
+    assert preview.total == Decimal("18812.50")
+    assert preview.account_credit_before == Decimal("18887.50")
+    assert preview.selected_payment_available == Decimal("18850.00")
+    assert preview.billing_period_start == datetime(2026, 8, 5, 23, tzinfo=UTC)
+    assert preview.billing_period_end == datetime(2026, 9, 4, 23, tzinfo=UTC)
+    assert preview.due_at == datetime(2026, 9, 4, 23, tzinfo=UTC)
+    db_session.commit()
+
+    command = CreateReviewedPaidPrepaidInvoiceCommand(
+        context=CommandContext.system(
+            actor="pytest:billing-operator",
+            scope="prepaid_draft_reconciliation",
+            reason="Reviewed one exact missing prepaid paid invoice",
+            idempotency_key=f"pytest-missing-paid-invoice-{query.subscription_id}",
+        ),
+        query=query,
+        preview_fingerprint=preview.fingerprint,
+    )
+    result = create_reviewed_paid_prepaid_invoice(db_session, command)
+    replay = create_reviewed_paid_prepaid_invoice(db_session, command)
+
+    invoice = db_session.get(Invoice, result.invoice_id)
+    assert invoice is not None
+    db_session.refresh(subscription)
+    assert result.replayed is False
+    assert replay.replayed is True
+    assert replay.invoice_id == result.invoice_id
+    assert invoice.status is InvoiceStatus.paid
+    assert invoice.subtotal == Decimal("17500.00")
+    assert invoice.tax_total == Decimal("1312.50")
+    assert invoice.total == Decimal("18812.50")
+    assert invoice.balance_due == Decimal("0.00")
+    assert invoice.issued_at == datetime(2026, 8, 6, 8, 22, 57)
+    assert invoice.paid_at == datetime(2026, 8, 6, 8, 22, 57)
+    assert invoice.due_at == datetime(2026, 9, 4, 23)
+    assert invoice.billing_period_start == datetime(2026, 8, 5, 23)
+    assert invoice.billing_period_end == datetime(2026, 9, 4, 23)
+    assert subscription.next_billing_at == datetime(2026, 9, 4, 23)
+    assert result.remaining_credit == Decimal("75.00")
+    assert db_session.query(PaymentAllocation).one().amount == Decimal("18812.50")
+    assert (
+        db_session.query(EventStore)
+        .filter(EventStore.event_type == EventType.payment_received.value)
+        .filter(EventStore.invoice_id == invoice.id)
+        .count()
+        == 0
+    )
+    entitlement = db_session.query(ServiceEntitlement).one()
+    assert entitlement.source_invoice_id == invoice.id
+    assert entitlement.subscription_id == subscription.id
+
+
+def test_missing_invoice_preview_fails_closed_when_expected_remainder_changes(
+    db_session,
+    subscriber,
+    subscription,
+):
+    subscription.billing_mode = BillingMode.prepaid
+    subscription.status = SubscriptionStatus.active
+    subscription.next_billing_at = datetime(2026, 8, 3, tzinfo=UTC)
+    ensure_test_prepaid_contract(db_session, subscription, Decimal("17500.00"))
+    tax_rate = TaxRate(name=f"VAT-{uuid4().hex[:8]}", rate=Decimal("7.5000"))
+    db_session.add(tax_rate)
+    db_session.flush()
+    subscriber.tax_rate_id = tax_rate.id
+    payment = _payment(
+        db_session,
+        subscriber,
+        amount=Decimal("18850.00"),
+        paid_at=datetime(2026, 8, 6, 8, 22, 57, tzinfo=UTC),
+    )
+
+    preview = preview_missing_paid_prepaid_invoice_repair(
+        db_session,
+        MissingPaidPrepaidInvoiceRepairQuery(
+            account_id=subscriber.id,
+            subscription_id=subscription.id,
+            payment_id=payment.id,
+            issued_on=date(2026, 8, 6),
+            due_on=date(2026, 9, 5),
+            next_billing_on=date(2026, 9, 5),
+            expected_total=Decimal("18812.50"),
+            expected_remaining_credit=Decimal("75.00"),
+        ),
+    )
+
+    assert preview.disposition is (
+        MissingPaidPrepaidInvoiceRepairDisposition.manual_review
+    )
+    assert (
+        preview.reason == "reviewed account credit or selected payment capacity changed"
+    )
+    assert db_session.query(Invoice).count() == 0
 
 
 def test_fifty_kobo_shortfall_stays_draft(

@@ -91,8 +91,8 @@ INBOX_LIST_DEFINITION = ListDefinition(
         ListFieldDefinition("last_message_at", "Last activity", sortable=True),
         ListFieldDefinition("created_at", "Created", sortable=True),
     ),
-    default_sort=InboxListSort.priority.value,
-    default_sort_dir=InboxSortDirection.ascending.value,
+    default_sort=InboxListSort.last_message_at.value,
+    default_sort_dir=InboxSortDirection.descending.value,
     per_page_options=(10, 25, 50, 100),
     default_per_page=25,
 )
@@ -287,6 +287,7 @@ class InboxQueueProjection:
     assignment_counts: InboxAssignmentCounts
     status_options: tuple[str, ...]
     channel_options: tuple[str, ...]
+    priority_options: tuple[InboxPriorityOption, ...]
     label_options: tuple[team_inbox_operations.LabelOption, ...]
     saved_filters: tuple[team_inbox_operations.SavedFilterOption, ...]
     selected_id: str | None
@@ -1144,6 +1145,7 @@ def build_queue_projection(
         ),
         status_options=tuple(item.value for item in InboxConversationStatus),
         channel_options=tuple(item.value for item in InboxChannelType),
+        priority_options=INBOX_PRIORITY_OPTIONS,
         label_options=tuple(team_inbox_operations.list_labels(db)),
         saved_filters=tuple(
             team_inbox_operations.list_saved_filters(
