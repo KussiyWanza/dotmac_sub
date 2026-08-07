@@ -1,10 +1,10 @@
 name: Build & Push to GHCR
 
-# Builds one immutable image per commit on dev and main. Dev images are
-# staging-only; only the default branch receives the moving `latest` tag.
-# This is the sole image publisher and is the staging deployment trigger.
-# Production can therefore pull a main-built image while staging tests the
-# exact dev commit before promotion.
+# Transitional compatibility publisher: it still builds on dev and main while
+# build-once promotion is introduced. It is no longer the staging trigger;
+# staging accepts only evidence from the explicit release-candidate workflow.
+# Only the default branch receives `latest`, and the main-built image remains
+# the production path until the later authorization and publisher-cutover step.
 on:
   push:
     branches: [main, dev]

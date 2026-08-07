@@ -1,6 +1,7 @@
 # Build-once release artifact promotion
 
-**Status:** Approved direction; Step 1 contract foundation only, not active
+**Status:** Step 2 candidate build and digest-bound staging path implemented;
+production promotion and publisher cutover remain inactive
 
 **Owner:** Dotmac Sub release control plane
 
@@ -13,11 +14,13 @@ Git-tree equality, ancestry, and the recorded staging acceptance. Registry-side
 tagging may add version or `latest` aliases, but it must not create a second
 application image.
 
-Until the later cutover step changes the workflows, `AGENTS.md`, and release
-runbooks together, the current separate dev/main image-build contract remains
-normative. The contracts introduced in
-`scripts/release_artifact_contract.py` are side-effect free and are not called
-by a workflow or deployment host in Step 1.
+The explicit candidate path now uses the contracts through
+`scripts/release_candidate_evidence.py`. The final current green `dev` commit
+is selected manually after the rolling version bump, built once, and recorded
+as a digest-bound artifact. Staging consumes and records that digest. The
+existing dev/main GHCR publisher remains in place during migration, and the
+separate main build remains the production path until the later authorization
+and cutover slices retire it.
 
 ## Ownership and authoritative evidence
 
@@ -115,10 +118,13 @@ replacement test suite.
 
 ### Shadow and verification phase
 
-The new evidence evaluator will first run without publishing production aliases
-or changing host behavior. It must reproduce rejection for stale candidates and
-approve only a known promotion whose dev and main trees are equal. The existing
-main build remains the production path during this phase.
+The candidate workflow and staging evidence run without publishing production
+aliases. They reject stale candidates, a non-green exact `dev` SHA, malformed
+or mismatched build evidence, and any staging result not bound to the built
+digest. The existing main build remains the production path during this phase.
+The one promotion that places the new workflow on GitHub's default branch uses
+the previously active staging path because `workflow_dispatch` cannot activate
+a workflow that does not yet exist on the default branch.
 
 ### Cutover gate
 
@@ -144,8 +150,9 @@ the same staging and production evidence rules.
 
 ## Planned implementation slices
 
-1. Typed contracts and design evidence (this step; no behavior change).
-2. Explicit one-time candidate build and digest-bound staging evidence.
+1. Typed contracts and design evidence (complete).
+2. Explicit one-time candidate build and digest-bound staging evidence
+   (implemented in this step).
 3. Main tree/ancestry authorization and registry-side digest promotion.
 4. Digest-based production verification and hotfix backup enforcement.
 5. Trigger cutover, duplicate publisher removal, and GenieACS build isolation.
