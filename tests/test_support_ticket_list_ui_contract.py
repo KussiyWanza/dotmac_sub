@@ -97,7 +97,7 @@ def test_ticket_query_normalizes_declared_state_and_rejects_unknown_values():
         search=" TKT-100 ",
         status=" OPEN ",
         ticket_type=" billing ",
-        region=" north ",
+        region=" NoRtH ",
         assigned_to_me=True,
         project_manager_person_id=f" {manager_id} ",
         filters=filters,
@@ -258,6 +258,7 @@ def test_ticket_region_filter_aligns_rows_counts_options_and_status_links(
     db_session.add_all(
         [
             _ticket(title="North open", status="open", region="north"),
+            _ticket(title="Legacy North open", status="open", region=" North "),
             _ticket(title="South closed", status="closed", region="south"),
         ]
     )
@@ -271,12 +272,16 @@ def test_ticket_region_filter_aligns_rows_counts_options_and_status_links(
     )
 
     assert context["region"] == "north"
-    assert context["total"] == 1
-    assert [ticket.title for ticket in context["tickets"]] == ["North open"]
+    assert context["total"] == 2
+    assert {ticket.title for ticket in context["tickets"]} == {
+        "North open",
+        "Legacy North open",
+    }
     assert {"north", "south"}.issubset(set(context["region_options"]))
+    assert context["region_options"].count("north") == 1
     cards = {card["value"]: card for card in context["status_summary_cards"]}
-    assert cards[""]["count"] == 1
-    assert cards["open"]["count"] == 1
+    assert cards[""]["count"] == 2
+    assert cards["open"]["count"] == 2
     assert cards["closed"]["count"] == 0
     assert "region=north" in cards["open"]["href"]
 

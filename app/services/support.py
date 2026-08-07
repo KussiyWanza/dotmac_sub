@@ -13,7 +13,7 @@ from functools import wraps
 from typing import Any, ParamSpec, TypeVar
 from uuid import UUID
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.domain_settings import SettingDomain
@@ -48,7 +48,12 @@ from app.services import domain_settings as domain_settings_service
 from app.services import notification as notification_service
 from app.services import numbering as numbering_service
 from app.services import service_address as service_address_service
-from app.services import settings_spec, support_ticket_filters, ticket_validation
+from app.services import (
+    settings_spec,
+    support_ticket_filters,
+    support_ticket_region_projection,
+    ticket_validation,
+)
 from app.services import support_ticket_settings as support_ticket_settings_service
 from app.services.audit_helpers import log_audit_event
 from app.services.common import apply_ordering, apply_pagination
@@ -2684,7 +2689,12 @@ class Tickets:
         if ticket_type:
             query = query.filter(Ticket.ticket_type == ticket_type)
         if region:
-            query = query.filter(Ticket.region == str(region).strip())
+            normalized_region = support_ticket_region_projection.normalize_region_value(
+                region
+            )
+            query = query.filter(
+                func.lower(func.trim(Ticket.region)) == normalized_region
+            )
         if priority:
             query = query.filter(Ticket.priority == str(priority).strip())
         if channel:

@@ -73,8 +73,12 @@ The region projection is recomputed from workflow configuration and distinct
 non-empty Region values on active Tickets in the caller's current database
 transaction; it has no cache or stale fallback. Re-reading is its idempotent
 rebuild path, and form-context parity tests are its drift signal.
-The database deduplicates the combined inputs and orders the result by region
-value ascending before it reaches forms and filters.
+The database normalizes configured and observed values to a trimmed lowercase
+identity, deduplicates the combined inputs, and orders the result by region
+value ascending before it reaches forms and filters. Ticket list, count,
+summary, and export queries compare that same normalized identity, so legacy
+case variants such as `Garki` and `garki` remain one operational cohort even
+before stored values are repaired.
 `TicketCreationRoutingMode.preserve_requested_team` then prevents assignment
 rules and `assign_team` creation automation from replacing either the resolved
 team or the intentional unassigned result. Other creation automation continues
