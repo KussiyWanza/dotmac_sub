@@ -94,14 +94,21 @@ authoritative documents in the same change that updates the contract.
 - Work on a feature branch; never commit directly to `main`.
 - Follow the mandatory promotion sequence for every release change:
   feature branch -> `dev` -> `origin/dev` -> prescribed validation on that exact
-  remote commit -> immutable dev image -> staging deployment and acceptance ->
-  `main` -> immutable main image -> production deployment.
+  remote commit -> rolling version bump -> explicit one-time candidate build ->
+  immutable candidate digest -> staging deployment and acceptance -> `main` ->
+  immutable main image -> production deployment.
 - Do not merge a feature branch directly into `main`. Merge it into `dev`,
   update `origin/dev`, and require the repository-prescribed tests and CI to
   pass on that exact `origin/dev` commit before merging `dev` into `main`.
-- Deploy the validated immutable `origin/dev` image to the explicitly named
-  staging host and complete staging acceptance before promoting `dev` to
-  `main`. A dev image is staging-only and must never receive the `latest` tag.
+- After all source and rolling version pull requests have merged, explicitly
+  build the final validated `origin/dev` image once. Deploy that exact OCI
+  digest to the explicitly named staging host and complete staging acceptance
+  before promoting `dev` to `main`. A dev image is staging-only and must never
+  receive the `latest` tag.
+- The one-time bootstrap promotion that first places the candidate workflow on
+  the default branch uses the previously active dev-image staging path. GitHub
+  cannot dispatch a new workflow until its file exists on the default branch;
+  do not bypass staging or manually emulate candidate evidence during bootstrap.
 - Promote only the staged and accepted code from `dev` to `main`; do not add
   unrelated changes during promotion. Require the resulting `main` CI and
   immutable image build to pass before any production deployment.

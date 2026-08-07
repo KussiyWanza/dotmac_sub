@@ -1,8 +1,8 @@
 """Typed evidence and policy contracts for build-once artifact promotion.
 
-This module is intentionally side-effect free.  Step 1 defines the identities,
-observations, and decisions that later workflow adapters will populate and
-enforce; it does not activate the new release path.
+This module is intentionally side-effect free. Workflow and deployment adapters
+populate these identities and observations; pure evaluators own the resulting
+release and backup-policy decisions.
 """
 
 from __future__ import annotations
