@@ -30,15 +30,22 @@ def _page() -> web_integrations_meta_social.MetaSocialConfigPage:
         installation_id="installation-id",
         installation_state="disabled",
         connector_version="1.0.0",
+        auth_mode="individual",
+        auth_mode_options=(
+            {"id": "oauth", "label": "Meta OAuth"},
+            {"id": "individual", "label": "Individual tokens"},
+        ),
         app_id="123456789",
         facebook_page_id="75592117926",
         instagram_account_id="17841403813819361",
         graph_version="v21.0",
         webhook_url="https://sub.example/api/v1/webhooks/meta",
+        meta_oauth_token_bound=False,
         facebook_token_bound=True,
         instagram_token_bound=True,
         signing_secret_bound=True,
         verify_token_bound=True,
+        meta_oauth_token_ref_masked="",
         facebook_token_ref_masked="bao://secr…oken",
         instagram_token_ref_masked="bao://secr…oken",
         signing_secret_ref_masked="bao://secr…cret",
@@ -81,6 +88,7 @@ def test_meta_connection_template_never_prefills_secret_references() -> None:
     )
 
     for field in (
+        "meta_oauth_access_token_ref",
         "facebook_page_access_token_ref",
         "instagram_login_access_token_ref",
         "webhook_signing_secret_ref",

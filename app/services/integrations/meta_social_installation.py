@@ -18,6 +18,9 @@ from app.services.integrations import installations
 from app.services.integrations.connectors.meta_social_runtime import (
     FACEBOOK_TOKEN_BINDING,
     INSTAGRAM_TOKEN_BINDING,
+    META_OAUTH_TOKEN_BINDING,
+    META_SOCIAL_AUTH_MODE_INDIVIDUAL,
+    META_SOCIAL_AUTH_MODE_OAUTH,
     META_SOCIAL_RECEIVE_CAPABILITY,
     META_SOCIAL_SEND_CAPABILITY,
     WEBHOOK_SIGNING_SECRET_BINDING,
@@ -44,11 +47,13 @@ class MetaSocialInstallationError(DomainError, ValueError):
 
 @dataclass(frozen=True, slots=True)
 class ConfigureMetaSocialInstallationCommand:
+    auth_mode: str
     app_id: str
     facebook_page_id: str
     instagram_account_id: str
     graph_version: str
     webhook_url: str
+    meta_oauth_access_token_ref: str
     facebook_page_access_token_ref: str
     instagram_login_access_token_ref: str
     webhook_signing_secret_ref: str
@@ -70,11 +75,13 @@ class MetaSocialInstallationProjection:
     installation_id: UUID | None
     installation_state: str
     connector_version: str | None
+    auth_mode: str
     app_id: str
     facebook_page_id: str
     instagram_account_id: str
     graph_version: str
     webhook_url: str
+    meta_oauth_token_bound: bool
     facebook_token_bound: bool
     instagram_token_bound: bool
     signing_secret_bound: bool
@@ -119,11 +126,16 @@ def get_meta_social_installation_projection(
         installation_id=installation.id if installation else None,
         installation_state=(installation.state if installation else "not_configured"),
         connector_version=(installation.connector_version if installation else None),
+        auth_mode=str(
+            config.get("auth_mode") or META_SOCIAL_AUTH_MODE_INDIVIDUAL
+        ).strip()
+        or META_SOCIAL_AUTH_MODE_INDIVIDUAL,
         app_id=str(config.get("app_id") or ""),
         facebook_page_id=str(config.get("facebook_page_id") or ""),
         instagram_account_id=str(config.get("instagram_account_id") or ""),
         graph_version=str(config.get("graph_version") or "v21.0"),
         webhook_url=str(config.get("webhook_url") or ""),
+        meta_oauth_token_bound=bool(refs.get(META_OAUTH_TOKEN_BINDING)),
         facebook_token_bound=bool(refs.get(FACEBOOK_TOKEN_BINDING)),
         instagram_token_bound=bool(refs.get(INSTAGRAM_TOKEN_BINDING)),
         signing_secret_bound=bool(refs.get(WEBHOOK_SIGNING_SECRET_BINDING)),
@@ -198,46 +210,72 @@ def _configure_meta_social_installation(
             field=field,
         )
 
+    auth_mode = command.auth_mode.strip().lower() or META_SOCIAL_AUTH_MODE_INDIVIDUAL
+    if auth_mode not in {META_SOCIAL_AUTH_MODE_OAUTH, META_SOCIAL_AUTH_MODE_INDIVIDUAL}:
+        raise _error(
+            "meta_configuration_invalid",
+            "Meta social auth mode is not supported.",
+            field="auth_mode",
+            auth_mode=command.auth_mode,
+        )
+    secret_refs = {
+        WEBHOOK_SIGNING_SECRET_BINDING: reference(
+            command.webhook_signing_secret_ref,
+            binding=WEBHOOK_SIGNING_SECRET_BINDING,
+            field="webhook_signing_secret_ref",
+        ),
+        WEBHOOK_VERIFY_TOKEN_BINDING: reference(
+            command.webhook_verify_token_ref,
+            binding=WEBHOOK_VERIFY_TOKEN_BINDING,
+            field="webhook_verify_token_ref",
+        ),
+    }
+    if auth_mode == META_SOCIAL_AUTH_MODE_OAUTH:
+        secret_refs[META_OAUTH_TOKEN_BINDING] = reference(
+            command.meta_oauth_access_token_ref,
+            binding=META_OAUTH_TOKEN_BINDING,
+            field="meta_oauth_access_token_ref",
+        )
+    else:
+        secret_refs[FACEBOOK_TOKEN_BINDING] = reference(
+            command.facebook_page_access_token_ref,
+            binding=FACEBOOK_TOKEN_BINDING,
+            field="facebook_page_access_token_ref",
+        )
+        secret_refs[INSTAGRAM_TOKEN_BINDING] = reference(
+            command.instagram_login_access_token_ref,
+            binding=INSTAGRAM_TOKEN_BINDING,
+            field="instagram_login_access_token_ref",
+        )
+
     revision = installations.create_config_revision(
         db,
         installation_id=installation.id,
         config={
             "provider": "meta_social",
+            "auth_mode": auth_mode,
             "app_id": _required(command.app_id, field="app_id"),
             "facebook_page_id": _required(
                 command.facebook_page_id, field="facebook_page_id"
             ),
-            "facebook_auth_mode": "page_access_token",
+            "facebook_auth_mode": (
+                "meta_oauth"
+                if auth_mode == META_SOCIAL_AUTH_MODE_OAUTH
+                else "page_access_token"
+            ),
             "instagram_account_id": _required(
                 command.instagram_account_id, field="instagram_account_id"
             ),
-            "instagram_auth_mode": "instagram_login",
+            "instagram_auth_mode": (
+                "meta_oauth"
+                if auth_mode == META_SOCIAL_AUTH_MODE_OAUTH
+                else "instagram_login"
+            ),
             "webhook_url": command.webhook_url.strip(),
             "graph_version": _required(command.graph_version, field="graph_version"),
             "timeout_seconds": 10,
         },
-        secret_refs={
-            FACEBOOK_TOKEN_BINDING: reference(
-                command.facebook_page_access_token_ref,
-                binding=FACEBOOK_TOKEN_BINDING,
-                field="facebook_page_access_token_ref",
-            ),
-            INSTAGRAM_TOKEN_BINDING: reference(
-                command.instagram_login_access_token_ref,
-                binding=INSTAGRAM_TOKEN_BINDING,
-                field="instagram_login_access_token_ref",
-            ),
-            WEBHOOK_SIGNING_SECRET_BINDING: reference(
-                command.webhook_signing_secret_ref,
-                binding=WEBHOOK_SIGNING_SECRET_BINDING,
-                field="webhook_signing_secret_ref",
-            ),
-            WEBHOOK_VERIFY_TOKEN_BINDING: reference(
-                command.webhook_verify_token_ref,
-                binding=WEBHOOK_VERIFY_TOKEN_BINDING,
-                field="webhook_verify_token_ref",
-            ),
-        },
+        secret_refs=secret_refs,
         actor=context.actor,
     )
     for capability_id in (

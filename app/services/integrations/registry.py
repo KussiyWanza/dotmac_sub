@@ -381,16 +381,20 @@ _DEFINITIONS: tuple[ConnectorManifest, ...] = (
             "type": "object",
             "properties": {
                 "provider": {"type": "string", "enum": ["meta_social"]},
+                "auth_mode": {
+                    "type": "string",
+                    "enum": ["oauth", "individual"],
+                },
                 "app_id": {"type": "string"},
                 "facebook_page_id": {"type": "string"},
                 "facebook_auth_mode": {
                     "type": "string",
-                    "enum": ["page_access_token"],
+                    "enum": ["meta_oauth", "page_access_token"],
                 },
                 "instagram_account_id": {"type": "string"},
                 "instagram_auth_mode": {
                     "type": "string",
-                    "enum": ["instagram_login"],
+                    "enum": ["meta_oauth", "instagram_login"],
                 },
                 "webhook_url": {"type": "string"},
                 "graph_version": {"type": "string"},
@@ -398,6 +402,7 @@ _DEFINITIONS: tuple[ConnectorManifest, ...] = (
             },
             "required": [
                 "provider",
+                "auth_mode",
                 "app_id",
                 "facebook_page_id",
                 "facebook_auth_mode",
@@ -408,8 +413,9 @@ _DEFINITIONS: tuple[ConnectorManifest, ...] = (
             "additionalProperties": False,
         },
         secrets=(
-            SecretBindingManifest(name="facebook_page_access_token"),
-            SecretBindingManifest(name="instagram_login_access_token"),
+            SecretBindingManifest(name="meta_oauth_access_token", required=False),
+            SecretBindingManifest(name="facebook_page_access_token", required=False),
+            SecretBindingManifest(name="instagram_login_access_token", required=False),
             SecretBindingManifest(name="webhook_signing_secret"),
             SecretBindingManifest(name="webhook_verify_token"),
         ),

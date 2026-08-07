@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.orm import Session
 
+from app.api.inbox_webhooks import _app_secret as _whatsapp_app_secret
 from app.api.webhook_observation import webhook_observation
 from app.db import get_db
 from app.models.team_inbox import InboxChannelType
@@ -44,15 +45,41 @@ def _verify_meta_signature(db: Session, raw_body: bytes, presented: str | None) 
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Meta webhook signature verification is not configured.",
         ) from exc
+    if _signature_matches(raw_body, presented, secret):
+        return
+    whatsapp_secret = _whatsapp_signature_fallback_secret(db)
+    if whatsapp_secret and whatsapp_secret != secret:
+        if _signature_matches(raw_body, presented, whatsapp_secret):
+            return
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid or missing Meta webhook signature.",
+    )
+
+
+def _signature_matches(
+    raw_body: bytes,
+    presented: str | None,
+    secret: str,
+) -> bool:
+    if not presented:
+        return False
     expected = (
         "sha256="
         + hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
     )
-    if not presented or not hmac.compare_digest(presented, expected):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or missing Meta webhook signature.",
-        )
+    return hmac.compare_digest(presented, expected)
+
+
+def _whatsapp_signature_fallback_secret(db: Session) -> str | None:
+    try:
+        value = _whatsapp_app_secret(db)
+    except Exception:
+        return None
+    value = value.strip()
+    if not value:
+        return None
+    return value
 
 
 def _event_timestamp(value: object) -> datetime | None:
