@@ -376,7 +376,8 @@ def test_ticket_full_and_htmx_views_share_canonical_accessible_partials():
     assert 'id="ticket-column-toggle"' in list_partial
     assert 'aria-labelledby="ticket-column-toggle"' in list_partial
     assert (
-        '@click.window="if (!$el.contains($event.target)) open = false"' in list_partial
+        '@click.window.capture="if (!$el.contains($event.target)) open = false"'
+        in list_partial
     )
     assert '@keydown.escape.window="open = false"' in list_partial
     assert "@click.outside" not in list_partial

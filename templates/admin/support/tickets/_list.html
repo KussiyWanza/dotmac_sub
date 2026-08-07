@@ -101,7 +101,7 @@
             </div>
             <div class="xl:col-span-1">
                 <div class="relative"
-                     @click.window="if (!$el.contains($event.target)) open = false"
+                     @click.window.capture="if (!$el.contains($event.target)) open = false"
                      @keydown.escape.window="open = false">
                     <button type="button"
                             id="ticket-column-toggle"
