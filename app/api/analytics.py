@@ -142,6 +142,7 @@ def _agent_performance_read(
         service_team_capabilities=row.service_team_capabilities,
         active_assignment_count=metrics.active_assignment_count,
         handled_conversation_count=metrics.handled_conversation_count,
+        average_first_response_seconds=metrics.average_first_response_seconds,
         average_queue_wait_seconds=metrics.average_queue_wait_seconds,
     )
 
