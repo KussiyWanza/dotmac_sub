@@ -25,6 +25,25 @@ def test_inbox_and_work_orders_are_linked_in_the_sidebar() -> None:
     assert "'dispatch-work-orders'" in sidebar
 
 
+def test_vendor_navigation_is_grouped_and_collapsed_by_default() -> None:
+    sidebar = _read("components/navigation/admin_sidebar.html")
+
+    assert "vendorMenuOpen" in sidebar
+    assert ':aria-expanded="vendorMenuOpen.toString()"' in sidebar
+    assert 'aria-controls="admin-vendor-navigation"' in sidebar
+    assert 'x-show="vendorMenuOpen && !sidebarCollapsed"' in sidebar
+    assert 'subnav_link("Vendor Records", "/admin/vendors", "vendors")' in sidebar
+    assert (
+        'subnav_link("Vendor Review Quotes", "/admin/vendors/operations", '
+        '"vendor-operations")' in sidebar
+    )
+    assert (
+        'subnav_link("Vendor Routes", "/admin/vendors/routes", "vendor-routes")'
+        in sidebar
+    )
+    assert "vendor_group_active | tojson" in sidebar
+
+
 def test_quotes_and_sales_orders_are_reachable_from_the_sales_landing() -> None:
     leads = _read("admin/sales/leads/index.html")
     assert "/admin/sales/quotes" in leads
