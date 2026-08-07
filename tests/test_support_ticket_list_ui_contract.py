@@ -409,6 +409,18 @@ def test_ticket_full_and_htmx_views_share_canonical_accessible_partials():
     assert 'role="alert"' in list_partial
     assert "Your current results are still shown." in page
     assert "function ticketFilterFeedback()" in page
+    assert "function ticketListControls()" in page
+    assert "tickets.filter.state.${userId}" in page
+    assert "window.localStorage.setItem(this.storageKey" in page
+    assert "window.localStorage.getItem(this.storageKey)" in page
+    assert "window.localStorage.removeItem(this.storageKey)" in page
+    assert "window.location.replace(listUrl)" in page
+    assert "window.location.assign('/admin/support/tickets')" in page
+    assert "url.pathname !== '/admin/support/tickets'" in page
+    assert "if (window.location.search) return false" in page
+    assert "this.persistCurrentState()" in page
+    assert 'x-data="ticketListControls()"' in list_partial
+    assert 'data-current-user-id="{{' in list_partial
     assert 'x-bind:aria-expanded="open.toString()"' in list_partial
     assert 'id="ticket-column-toggle"' in list_partial
     assert 'aria-labelledby="ticket-column-toggle"' in list_partial
@@ -425,6 +437,7 @@ def test_ticket_full_and_htmx_views_share_canonical_accessible_partials():
     assert 'id="ticket-filter-apply"' in list_partial
     assert '@click="open = false"' in list_partial
     assert 'aria-label="Apply ticket filters"' in list_partial
+    assert 'aria-label="Clear ticket filters"' in list_partial
     assert 'hx-include="#ticket-filter-form"' in list_partial
     assert 'hx-sync="#ticket-filter-form:replace"' in list_partial
     assert 'name="sort" value="{{ list_query.sort_by }}"' in list_partial

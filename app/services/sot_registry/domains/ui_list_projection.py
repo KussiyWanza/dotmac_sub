@@ -573,6 +573,7 @@ DOMAIN = DomainSOT(
             owns=(
                 "admin support-ticket searchable fields",
                 "admin support-ticket filter semantics",
+                "admin support-ticket per-user applied-list restoration",
                 "admin support-ticket stable sort semantics",
                 "admin support-ticket page and status-summary projection",
                 "admin support-ticket export scope",
@@ -590,6 +591,10 @@ DOMAIN = DomainSOT(
                 "refreshes update the status summary and export URL while "
                 "leaving the filter and column controls mounted, expose loading "
                 "state, and retain current results with retry feedback on failure. "
+                "The browser stores the canonical typed ListQuery URL per signed-in "
+                "user after successful full-page or HTMX reads; a bare list visit "
+                "restores that URL, explicit query parameters take precedence, and "
+                "the cache never becomes authoritative for Ticket facts. "
                 "Exports consume the same complete scope without a silent row cap."
             ),
             contract=ServiceContract(
@@ -606,6 +611,7 @@ DOMAIN = DomainSOT(
                     for name in (
                         "admin support-ticket searchable fields",
                         "admin support-ticket filter semantics",
+                        "admin support-ticket per-user applied-list restoration",
                         "admin support-ticket stable sort semantics",
                         "admin support-ticket page and status-summary projection",
                         "admin support-ticket export scope",
@@ -662,7 +668,7 @@ DOMAIN = DomainSOT(
                 ),
                 test_refs=(
                     "tests/test_support_ticket_list_ui_contract.py",
-                    "tests/playwright/e2e/test_customer_portal.py",
+                    "tests/playwright/e2e/test_support_tickets.py",
                 ),
             ),
         ),

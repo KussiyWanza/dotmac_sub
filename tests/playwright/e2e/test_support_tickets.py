@@ -75,3 +75,26 @@ def test_filter_feedback_reports_loading_and_keeps_results_on_failure(
     )
     expect(error.get_by_role("button", name="Retry")).to_be_visible()
     expect(admin_page.locator("#tickets-table")).to_be_visible()
+
+
+def test_applied_filter_is_restored_after_returning_from_ticket_detail(
+    admin_page: Page, settings
+) -> None:
+    admin_page.goto(f"{settings.base_url}/admin/support/tickets")
+    admin_page.get_by_role("button", name="Clear ticket filters").click()
+    admin_page.wait_for_url("**/admin/support/tickets")
+
+    admin_page.locator("#ticket-status-filter").select_option("not_closed")
+    admin_page.wait_for_url("**status=not_closed**")
+    filtered_url = admin_page.url
+
+    ticket_link = admin_page.locator(
+        "#tickets-table tbody a[href^='/admin/support/tickets/']"
+    ).first
+    expect(ticket_link).to_be_visible()
+    ticket_link.click()
+    admin_page.wait_for_url("**/admin/support/tickets/**")
+
+    admin_page.locator("a[href='/admin/support/tickets']").first.click()
+    admin_page.wait_for_url(filtered_url)
+    expect(admin_page.locator("#ticket-status-filter")).to_have_value("not_closed")

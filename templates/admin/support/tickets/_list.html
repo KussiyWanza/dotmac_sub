@@ -13,7 +13,8 @@
           hx-push-url="true"
           hx-sync="this:replace"
           class="space-y-3"
-          x-data="ticketColumnPicker()">
+          x-data="ticketListControls()"
+          data-current-user-id="{{ (current_user.actor_id if current_user and current_user.actor_id is defined else (current_user.person_id if current_user and current_user.person_id is defined else (current_user.id if current_user and current_user.id is defined else (current_user.email if current_user and current_user.email is defined else 'anonymous')))) | e }}">
         <input type="hidden" name="page" value="1">
         <input type="hidden" name="per_page" value="{{ list_query.per_page }}">
         <input id="ticket-sort-state" type="hidden" name="sort" value="{{ list_query.sort_by }}">
@@ -84,6 +85,15 @@
                         class="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-primary-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm transition hover:bg-primary-700">
                     {{ icon_filter('h-4 w-4') }}
                     <span class="hidden xl:inline">Apply</span>
+                </button>
+                <button type="button"
+                        aria-label="Clear ticket filters"
+                        title="Clear filters"
+                        @click="clearPersistedState()"
+                        class="inline-flex items-center justify-center rounded-lg border border-slate-200 px-2.5 py-1.5 text-slate-500 transition hover:bg-slate-50 hover:text-slate-700 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-white">
+                    <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
                 </button>
             </div>
             <div class="xl:col-span-1">

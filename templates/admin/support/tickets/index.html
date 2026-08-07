@@ -382,26 +382,100 @@ function ticketFilterFeedback() {
     };
 }
 
-function ticketColumnPicker() {
+function ticketListControls() {
     return {
         open: false,
         afterSwapHandler: null,
+        storageKey: '',
+        storageVersion: 1,
+
         init() {
+            const userId = this.$el.getAttribute('data-current-user-id') || 'anonymous';
+            this.storageKey = `tickets.filter.state.${userId}`;
             document.querySelectorAll('.ticket-col-toggle').forEach((el) => {
                 el.addEventListener('change', () => this.applyColumns());
             });
             this.afterSwapHandler = (event) => {
                 if (event.detail?.target?.id !== 'tickets-table') return;
-                this.$nextTick(() => this.applyColumns());
+                this.$nextTick(() => {
+                    this.applyColumns();
+                    this.persistCurrentState();
+                });
             };
             document.body.addEventListener('htmx:afterSwap', this.afterSwapHandler);
             this.applyColumns();
+            if (!this.restorePersistedState()) {
+                this.persistCurrentState();
+            }
         },
+
         destroy() {
             if (this.afterSwapHandler) {
                 document.body.removeEventListener('htmx:afterSwap', this.afterSwapHandler);
             }
         },
+
+        normalizeListUrl(rawValue) {
+            if (!rawValue || typeof rawValue !== 'string') return '';
+            try {
+                const url = new URL(rawValue, window.location.origin);
+                if (url.origin !== window.location.origin || url.pathname !== '/admin/support/tickets') {
+                    return '';
+                }
+                return `${url.pathname}${url.search}`;
+            } catch (_error) {
+                return '';
+            }
+        },
+
+        currentCanonicalListUrl() {
+            const page = document.querySelector('#tickets-table [data-ticket-page]');
+            return this.normalizeListUrl(page?.dataset?.listUrl || '');
+        },
+
+        persistCurrentState() {
+            if (!this.storageKey) return;
+            const listUrl = this.currentCanonicalListUrl();
+            if (!listUrl) return;
+            try {
+                window.localStorage.setItem(this.storageKey, JSON.stringify({
+                    version: this.storageVersion,
+                    listUrl,
+                    savedAt: Date.now(),
+                }));
+            } catch (_error) {
+                // Ignore unavailable browser storage; the URL remains authoritative.
+            }
+        },
+
+        restorePersistedState() {
+            if (!this.storageKey || window.location.pathname !== '/admin/support/tickets') return false;
+            if (window.location.search) return false;
+
+            let saved = null;
+            try {
+                const raw = window.localStorage.getItem(this.storageKey);
+                saved = raw ? JSON.parse(raw) : null;
+            } catch (_error) {
+                saved = null;
+            }
+            if (!saved || saved.version !== this.storageVersion) return false;
+
+            const listUrl = this.normalizeListUrl(saved.listUrl);
+            if (!listUrl || !listUrl.includes('?')) return false;
+            window.location.replace(listUrl);
+            return true;
+        },
+
+        clearPersistedState() {
+            try {
+                window.localStorage.removeItem(this.storageKey);
+            } catch (_error) {
+                // Ignore unavailable browser storage and still reset the list URL.
+            }
+            window.location.assign('/admin/support/tickets');
+        },
+
         applyColumns() {
             const checked = Array.from(document.querySelectorAll('.ticket-col-toggle:checked')).map((el) => el.dataset.columnKey);
             document.querySelectorAll('[data-column]').forEach((el) => {

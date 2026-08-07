@@ -146,7 +146,11 @@ stable sorting, pagination, summaries, and export scope through one typed
 `ListQuery`. Targeted HTMX refreshes replace the result table and refresh its
 summary, sort state, and export URL without rebuilding the filter and column
 controls. The control layer announces loading in place, retains the current
-results when a read fails, and offers retry. `ui.support_ticket_bulk_action_projection`
+results when a read fails, and offers retry. After a successful list read, the
+browser stores the canonical `ListQuery` URL under a signed-in-user-specific
+key. A bare return to the list restores that applied URL; an explicit URL wins
+and replaces the stored view. The browser cache controls navigation only and is
+never authoritative for Ticket facts. `ui.support_ticket_bulk_action_projection`
 declares page-only selection and action presentation. `support.ticket_bulk_commands`
 resolves membership, normalizes the shared changes, previews eligibility, binds
 the preview to a deterministic scope token, and detects drift. Confirmed
