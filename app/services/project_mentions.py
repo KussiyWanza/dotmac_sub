@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from uuid import UUID
+
 from sqlalchemy.orm import Session
 
 from app.models.system_user import SystemUser
@@ -28,6 +30,7 @@ def notify_project_comment_mentions(
     comment_preview: str | None,
     mentioned_agent_ids: list[str] | None,
     actor_person_id: str | None,
+    source_event_id: UUID,
 ) -> None:
     recipient_ids = resolve_mentioned_person_ids(db, mentioned_agent_ids)
     if actor_person_id:
@@ -62,3 +65,28 @@ def notify_project_comment_mentions(
         queue_staff_push(db, recipient=str(user.id), subject=subject, body=body)
         if user.email:
             queue_staff_email(db, recipient=user.email, subject=subject, body=body)
+        from app.services.nextcloud_talk_staff import (
+            StaffTalkEventType,
+            StageStaffTalkNotification,
+            stage_staff_talk_notification,
+        )
+
+        stage_staff_talk_notification(
+            db,
+            StageStaffTalkNotification(
+                system_user_id=user.id,
+                source_event_id=source_event_id,
+                event_type=(
+                    StaffTalkEventType.project_task_comment_mention
+                    if is_task
+                    else StaffTalkEventType.project_comment_mention
+                ),
+                subject=subject,
+                body=body,
+                target_url=target_url,
+                source_entity_type=(
+                    "project_task_comment" if is_task else "project_comment"
+                ),
+                source_entity_id=source_event_id,
+            ),
+        )

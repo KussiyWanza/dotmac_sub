@@ -73,8 +73,12 @@ The region projection is recomputed from workflow configuration and distinct
 non-empty Region values on active Tickets in the caller's current database
 transaction; it has no cache or stale fallback. Re-reading is its idempotent
 rebuild path, and form-context parity tests are its drift signal.
-The database deduplicates the combined inputs and orders the result by region
-value ascending before it reaches forms and filters.
+The database normalizes configured and observed values to a trimmed lowercase
+identity, deduplicates the combined inputs, and orders the result by region
+value ascending before it reaches forms and filters. Ticket list, count,
+summary, and export queries compare that same normalized identity, so legacy
+case variants such as `Garki` and `garki` remain one operational cohort even
+before stored values are repaired.
 `TicketCreationRoutingMode.preserve_requested_team` then prevents assignment
 rules and `assign_team` creation automation from replacing either the resolved
 team or the intentional unassigned result. Other creation automation continues
@@ -96,6 +100,16 @@ adopt this contract, so API, inbox, integration, and portal behavior does not
 change. Missing customer identity or disabled support notifications produces no
 email. Queue failure is isolated in an owner savepoint and recorded as durable
 Ticket audit evidence without rolling back the Ticket.
+
+Internal operational queues use the closed
+`TicketCreationConsequenceMode.silent_internal` path rather than constructing a
+Ticket row. The unmatched-radio coordinator is the only approved caller. The
+lifecycle participant allocates the human-readable number and stages creation
+audit/event evidence, while suppressing assignment policy, SLA clocks,
+automation, staff assignment notifications, and customer acknowledgement. A
+repeat observation repairs a legacy open queue item whose number is missing and
+records that repair in audit/event evidence. The per-radio advisory lock remains
+the deduplication authority; the Ticket owner remains the only identity writer.
 
 Customer-authored public replies have one staff-email consequence owned by the
 lifecycle command. After the comment is staged, the owner resolves active
@@ -148,9 +162,21 @@ The migration is complete only while architecture guards prove that:
 - Work-Order provenance is preserved and verified as described in
   `docs/runbooks/TICKET_WORK_ORDER_PROVENANCE_CUTOVER.md`; and
 - Support/Inbox remain separate unless a later approved workspace contract is
-  checked in.
+  checked in; and
+- unmatched-radio code cannot construct a Ticket directly or call the
+  silent-internal lifecycle participants from any other service module.
 
 Repair reruns deterministic list/preview queries, SLA reconciliation, or the
 provenance verifier from canonical records. It never re-enables a legacy writer
 or infers lifecycle authority from CRM, tags, templates, cached UI state, or
 communication delivery.
+
+## Staff Talk consequences
+
+Assignment changes and explicit ticket-comment mentions stage a durable
+`nextcloud_talk` staff notification inside the Ticket owner command. The
+assignment command ID or comment ID is part of the delivery dedupe identity,
+and the comment author is excluded. The Ticket owner does not resolve
+Nextcloud credentials, create rooms, or perform HTTP; those consequences belong
+to `communications.nextcloud_talk_staff` after commit. Staging failure is
+isolated in an owner savepoint and cannot reject the ticket mutation.

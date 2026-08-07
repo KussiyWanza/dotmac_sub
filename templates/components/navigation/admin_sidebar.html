@@ -45,7 +45,7 @@
     'dispatch-work-orders': 'dispatch-work-orders',
     'material-requests': 'material-requests',
     'field-live-map': 'field-live-map', 'field-movement-playback': 'field-live-map',
-    'vendor-routes': 'vendor-routes',
+    'vendors': 'vendors', 'vendor-operations': 'vendors', 'vendor-routes': 'vendors',
     'gis': 'gis', 'integrations': 'integrations',
     'notifications': 'notifications', 'alert-policies': 'notifications', 'sla-policies': 'notifications', 'oncall-rotations': 'notifications',
     'settings-hub': 'system', 'configuration': 'system', 'system-modules': 'system',
@@ -127,6 +127,16 @@
 {% macro section_label(label) %}
 <p x-show="!sidebarCollapsed" class="mt-6 mb-1.5 px-3 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400 dark:text-slate-500">{{ label }}</p>
 <div x-show="sidebarCollapsed" x-cloak class="mt-4 mb-1.5 mx-3 border-t border-slate-200 dark:border-slate-700/50"></div>
+{% endmacro %}
+
+{% macro subnav_link(label, href, page_id) %}
+{% set is_active = active_page == page_id %}
+<a href="{{ href }}"
+   {% if is_active %}aria-current="page"{% endif %}
+   class="ml-7 flex min-h-[36px] items-center gap-2 rounded-lg border-l-2 py-1.5 pl-4 pr-3 text-sm font-medium transition-colors {{ cls_active if is_active else cls_inactive }}">
+    <span class="h-1.5 w-1.5 flex-shrink-0 rounded-full bg-current opacity-70" aria-hidden="true"></span>
+    <span class="truncate">{{ label }}</span>
+</a>
 {% endmacro %}
 
 {# ── Icons (h-5 w-5) ── #}
@@ -218,9 +228,35 @@
     {{ nav_link("Material Requests", "/admin/operations/material-requests", icon_projects, "material-requests") }}
     {{ nav_link("Field Live Map", "/admin/dispatch/live-map", icon_gis, "field-live-map",
         active_pages=["field-live-map", "field-movement-playback"]) }}
-    {{ nav_link("Vendors", "/admin/vendors", icon_network, "vendors") }}
-    {{ nav_link("Vendor Review Queue", "/admin/vendors/operations", icon_network, "vendor-operations") }}
-    {{ nav_link("Vendor Routes", "/admin/vendors/routes", icon_network, "vendor-routes") }}
+    {% set vendor_pages = ['vendors', 'vendor-operations', 'vendor-routes'] %}
+    {% set vendor_group_active = active_page in vendor_pages %}
+    <div x-data="{ vendorMenuOpen: {{ vendor_group_active | tojson }} }" class="relative">
+        <button type="button"
+                @click="if (sidebarCollapsed) { sidebarCollapsed = false; vendorMenuOpen = true } else { vendorMenuOpen = !vendorMenuOpen }"
+                :aria-expanded="vendorMenuOpen.toString()"
+                aria-controls="admin-vendor-navigation"
+                :aria-label="sidebarCollapsed ? 'Vendors' : null"
+                :title="sidebarCollapsed ? 'Vendors' : null"
+                :class="sidebarCollapsed ? 'mx-auto justify-center !border-l-0 !px-0 rounded-xl' : ''"
+                class="{{ cls_link }} w-full {{ cls_active if vendor_group_active else cls_inactive }}">
+            {{ icon_network }}
+            <span x-show="!sidebarCollapsed" class="flex-1 truncate text-left">Vendors</span>
+            <svg x-show="!sidebarCollapsed"
+                 :class="vendorMenuOpen ? 'rotate-180' : ''"
+                 class="h-4 w-4 flex-shrink-0 transition-transform"
+                 fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+            </svg>
+        </button>
+        <div id="admin-vendor-navigation"
+             x-show="vendorMenuOpen && !sidebarCollapsed"
+             x-cloak
+             class="mt-1 space-y-0.5">
+            {{ subnav_link("Vendor Records", "/admin/vendors", "vendors") }}
+            {{ subnav_link("Vendor Review Quotes", "/admin/vendors/operations", "vendor-operations") }}
+            {{ subnav_link("Vendor Routes", "/admin/vendors/routes", "vendor-routes") }}
+        </div>
+    </div>
 
     {{ section_label("ADMIN") }}
     {% if module_states.get('reports', True) %}

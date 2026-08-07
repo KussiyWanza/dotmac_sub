@@ -1,6 +1,6 @@
 [project]
 name = "dotmac_sm"
-version = "7.127.2"
+version = "7.128.4"
 description = "Subscriber management API and web UI"
 authors = [{name = "DotMac", email = "engineering@dotmac.local"}]
 requires-python = ">=3.11,<3.13"
@@ -47,7 +47,7 @@ dependencies = [
     "google-auth (>=2.30.0,<3.0.0)",
     "dotmac-integration-client",
     "defusedxml==0.7.1",
-    "dotmac-kernel==0.1.0a8",
+    "dotmac-kernel==0.1.0a13",
 ]
 
 [tool.poetry]
@@ -61,12 +61,12 @@ package-mode = false
 # enforced by tests/architecture/test_kernel_compatibility.py).
 [tool.poetry.dependencies]
 dotmac-integration-client = { git = "https://github.com/michaelayoade/dotmac-integration-client.git", tag = "v0.1.1" }
-dotmac-kernel = { version = "0.1.0a8", source = "forgejo" }
+dotmac-kernel = { version = "0.1.0a13", source = "forgejo" }
 
 # Same-source enrichment for the dev-group `dotmac-kernel[testing]` entry in
 # [dependency-groups] below.
 [tool.poetry.group.dev.dependencies]
-dotmac-kernel = { version = "0.1.0a8", extras = ["testing"], source = "forgejo" }
+dotmac-kernel = { version = "0.1.0a13", extras = ["testing"], source = "forgejo" }
 
 # Private Dotmac package index (Forgejo). URL only — credentials live in
 # Poetry's auth store under this source name, never in Git.
@@ -314,7 +314,7 @@ dev = [
     # above; the [testing] extra adds only httpx (>=0.27,<0.28), which matches
     # Sub's own httpx==0.27.0. tests/-only per the adoption ledger — the S1
     # import guard keeps dotmac_kernel.testing out of app/.
-    "dotmac-kernel[testing]==0.1.0a8",
+    "dotmac-kernel[testing]==0.1.0a13",
 ]
 
 # ─── Import boundaries (DCP-1 network / subscription decoupling) ──────────

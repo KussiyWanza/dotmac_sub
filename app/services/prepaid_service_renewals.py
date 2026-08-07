@@ -248,17 +248,46 @@ def _idempotency_key(origin_ref: str) -> str:
     return "prepaid-renewal-" + hashlib.sha256(origin_ref.encode("utf-8")).hexdigest()
 
 
+@dataclass(frozen=True, slots=True)
+class PrepaidMonthlyChargeDetail:
+    """Exact invoice-ready components of one canonical prepaid charge."""
+
+    subscription_id: UUID
+    unit_price: Decimal
+    subtotal: Decimal
+    tax_total: Decimal
+    total: Decimal
+    currency: str
+    billing_cycle: BillingCycle
+    tax_rate_id: UUID | None
+    tax_application: TaxApplication
+
+
+def resolve_prepaid_monthly_charge_detail(
+    db: Session,
+    subscription: Subscription,
+    effective_at: datetime,
+) -> PrepaidMonthlyChargeDetail | None:
+    """Resolve one canonical prepaid charge without losing tax provenance."""
+
+    return _resolve_prepaid_monthly_charge_details(
+        db,
+        [subscription],
+        effective_at,
+    )[subscription.id]
+
+
 def resolve_prepaid_monthly_charge(
     db: Session,
     subscription: Subscription,
     effective_at: datetime,
 ) -> tuple[Decimal, str, BillingCycle] | None:
     """Resolve one canonical taxed monthly renewal amount."""
-    return resolve_prepaid_monthly_charges(
-        db,
-        [subscription],
-        effective_at,
-    )[subscription.id]
+
+    detail = resolve_prepaid_monthly_charge_detail(db, subscription, effective_at)
+    if detail is None:
+        return None
+    return detail.total, detail.currency, detail.billing_cycle
 
 
 def _newest_price(rows: Sequence[OfferPrice | OfferVersionPrice]):
@@ -284,11 +313,11 @@ def _matching_catalog_tax_rate_id(
     return None
 
 
-def resolve_prepaid_monthly_charges(
+def _resolve_prepaid_monthly_charge_details(
     db: Session,
     subscriptions: Sequence[Subscription],
     effective_at: datetime,
-) -> dict[UUID, tuple[Decimal, str, BillingCycle] | None]:
+) -> dict[UUID, PrepaidMonthlyChargeDetail | None]:
     """Resolve exact contracted renewal charges with bounded query cost.
 
     Both renewal and enforcement consume this owner. Contract amount lives on
@@ -304,7 +333,7 @@ def resolve_prepaid_monthly_charges(
     )
 
     rows = list(subscriptions)
-    result: dict[UUID, tuple[Decimal, str, BillingCycle] | None] = {
+    result: dict[UUID, PrepaidMonthlyChargeDetail | None] = {
         subscription.id: None for subscription in rows
     }
     eligible = [
@@ -416,8 +445,11 @@ def resolve_prepaid_monthly_charges(
                     tax_rate_id = default_tax_rate_id
         tax_rate = rates_by_id.get(tax_rate_id) if tax_rate_id is not None else None
         if tax_rate is None or tax_application == TaxApplication.exempt:
+            effective_tax_application = TaxApplication.exempt
+            tax_amount = Decimal("0.00")
             total = base
         else:
+            effective_tax_application = tax_application
             tax_amount = _calculate_tax_amount(
                 base,
                 Decimal(str(tax_rate.rate)),
@@ -428,8 +460,45 @@ def resolve_prepaid_monthly_charges(
                 if tax_application == TaxApplication.inclusive
                 else round_money(base + tax_amount)
             )
-        result[subscription.id] = (total, price.currency or "NGN", cycle)
+        subtotal = (
+            round_money(base - tax_amount)
+            if effective_tax_application == TaxApplication.inclusive
+            else round_money(base)
+        )
+        result[subscription.id] = PrepaidMonthlyChargeDetail(
+            subscription_id=subscription.id,
+            unit_price=round_money(base),
+            subtotal=subtotal,
+            tax_total=round_money(tax_amount),
+            total=round_money(total),
+            currency=(price.currency or "NGN").upper(),
+            billing_cycle=cycle,
+            tax_rate_id=tax_rate.id if tax_rate is not None else None,
+            tax_application=effective_tax_application,
+        )
     return result
+
+
+def resolve_prepaid_monthly_charges(
+    db: Session,
+    subscriptions: Sequence[Subscription],
+    effective_at: datetime,
+) -> dict[UUID, tuple[Decimal, str, BillingCycle] | None]:
+    """Resolve canonical taxed monthly renewal amounts in bounded queries."""
+
+    details = _resolve_prepaid_monthly_charge_details(
+        db,
+        subscriptions,
+        effective_at,
+    )
+    return {
+        subscription_id: (
+            (detail.total, detail.currency, detail.billing_cycle)
+            if detail is not None
+            else None
+        )
+        for subscription_id, detail in details.items()
+    }
 
 
 @dataclass(frozen=True)
@@ -2330,6 +2399,7 @@ __all__ = [
     "FundingChangeRenewalDisposition",
     "FundingChangeRenewalResult",
     "PREPAID_SERVICE_RENEWAL_ELIGIBLE_STATUSES",
+    "PrepaidMonthlyChargeDetail",
     "PrepaidRecurringChargePreview",
     "PrepaidSettlementPeriod",
     "PrepaidSettlementPeriodQuery",
@@ -2355,6 +2425,7 @@ __all__ = [
     "renewal_outcomes_for_payment",
     "retract_prepaid_billing_anchors_after_funding_reversal",
     "resolve_prepaid_monthly_charge",
+    "resolve_prepaid_monthly_charge_detail",
     "resolve_prepaid_monthly_charges",
     "resolve_prepaid_settlement_period",
     "run_due_prepaid_service_renewals",

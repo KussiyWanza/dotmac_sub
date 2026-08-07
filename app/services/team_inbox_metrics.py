@@ -41,6 +41,7 @@ class InboxAgentPerformanceMetrics:
     service_team_id: str
     active_assignment_count: int
     handled_conversation_count: int
+    average_first_response_seconds: float | None
     average_queue_wait_seconds: float | None
 
 
@@ -197,6 +198,16 @@ def _message_time(message: InboxMessage) -> datetime:
 
 
 def _first_response_seconds(messages: list[InboxMessage]) -> float | None:
+    response = _first_response(messages)
+    if response is None:
+        return None
+    first_inbound, first_outbound = response
+    return _seconds_between(_message_time(first_inbound), _message_time(first_outbound))
+
+
+def _first_response(
+    messages: list[InboxMessage],
+) -> tuple[InboxMessage, InboxMessage] | None:
     first_inbound = next(
         (
             message
@@ -219,7 +230,51 @@ def _first_response_seconds(messages: list[InboxMessage]) -> float | None:
     )
     if first_outbound is None:
         return None
-    return _seconds_between(inbound_time, _message_time(first_outbound))
+    return first_inbound, first_outbound
+
+
+def _sent_by_person_id(message: InboxMessage) -> UUID | None:
+    """Return the recorded human sender for an Inbox outbound message."""
+
+    metadata = message.metadata_ or {}
+    raw_person_id = metadata.get("sent_by_person_id")
+    if not raw_person_id:
+        return None
+    try:
+        return UUID(str(raw_person_id))
+    except (TypeError, ValueError):
+        return None
+
+
+def _first_human_response(
+    messages: list[InboxMessage],
+) -> tuple[InboxMessage, InboxMessage] | None:
+    """Return the first agent-authored response to the first inbound message."""
+
+    first_inbound = next(
+        (
+            message
+            for message in messages
+            if message.direction == InboxMessageDirection.inbound.value
+        ),
+        None,
+    )
+    if first_inbound is None:
+        return None
+    inbound_time = _message_time(first_inbound)
+    first_outbound = next(
+        (
+            message
+            for message in messages
+            if message.direction == InboxMessageDirection.outbound.value
+            and _message_time(message) >= inbound_time
+            and _sent_by_person_id(message) is not None
+        ),
+        None,
+    )
+    if first_outbound is None:
+        return None
+    return first_inbound, first_outbound
 
 
 def _first_inbound_message(messages: list[InboxMessage]) -> InboxMessage | None:
@@ -383,6 +438,21 @@ def agent_performance_metrics(
         if queue_wait is not None:
             queue_wait_values.append(queue_wait)
 
+    first_response_values: list[float] = []
+    team_conversation_ids = _conversation_ids_for_team(db, team_uuid)
+    for messages in _messages_by_conversation(db, team_conversation_ids).values():
+        response = _first_human_response(messages)
+        if response is None:
+            continue
+        first_inbound, first_outbound = response
+        if _sent_by_person_id(first_outbound) != person_uuid:
+            continue
+        response_seconds = _seconds_between(
+            _message_time(first_inbound), _message_time(first_outbound)
+        )
+        if response_seconds is not None:
+            first_response_values.append(response_seconds)
+
     return InboxAgentPerformanceMetrics(
         person_id=str(person_uuid),
         service_team_id=str(team_uuid),
@@ -392,6 +462,7 @@ def agent_performance_metrics(
         handled_conversation_count=len(
             {assignment.conversation_id for assignment in assignments}
         ),
+        average_first_response_seconds=_avg(first_response_values),
         average_queue_wait_seconds=_avg(queue_wait_values),
     )
 

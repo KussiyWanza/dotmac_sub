@@ -83,10 +83,12 @@ __all__ = [
 #: a vendor-prefixed transport string or malformed.
 _FSP = re.compile(r"^(\d+)/(\d+)/(\d+)$")
 
-#: Vendor CLI output prefixes a PON interface with ``pon-``/``PON-``. That form
-#: is acceptable **at transport ingress only**, where it must be converted
-#: immediately; it is never an identity and never a stored name.
-_TRANSPORT_PREFIX = re.compile(r"^pon-", re.IGNORECASE)
+#: Vendor CLI renderings of a PON interface: ``pon-0/1/13`` and the Huawei
+#: display form ``GPON 0/1/13``. Both are acceptable **at transport ingress
+#: only**, where they must be converted immediately; neither is an identity and
+#: neither is a stored name. Production carries 147 rows of the first form and
+#: 44 of the second, so a reader that knows only one leaves the rest unreadable.
+_TRANSPORT_PREFIX = re.compile(r"^(?:pon-|gpon\s+)", re.IGNORECASE)
 
 #: A single-box OLT names its ports ``pon<n>``; the bare number is accepted at
 #: ingress and rendered canonically as ``pon<n>``.

@@ -557,7 +557,11 @@ def customer_support_attachment(
         )
     subscriber_ids = resolve_allowed_subscriber_ids(customer, db)
     context = crm_portal.ticket_detail_context(
-        request, db, customer, subscriber_ids, str(ticket_id)
+        request=request,
+        db=db,
+        customer=customer,
+        subscriber_ids=subscriber_ids,
+        ticket_id=str(ticket_id),
     )
     if context.get("ticket") is None:
         raise HTTPException(status_code=404, detail="Attachment not found")

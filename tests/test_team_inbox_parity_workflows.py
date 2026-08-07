@@ -15,7 +15,7 @@ from app.models.team_inbox import (
     InboxMessageDirection,
     InboxSavedFilter,
 )
-from app.services import team_inbox_operations, team_inbox_read
+from app.services import team_inbox_filters, team_inbox_operations, team_inbox_read
 from app.web.admin import inbox as inbox_web
 from tests.staff_identity_fixtures import add_bound_staff_user
 
@@ -95,14 +95,16 @@ def test_saved_filters_are_visible_to_owner_and_shared_users(db_session):
     personal = team_inbox_operations.save_filter(
         db_session,
         name="My urgent queue",
-        filter_payload={"priority_at_most": 25},
+        filter_payload=team_inbox_filters.InboxSavedFilterPayload(priority_at_most=25),
         owner_person_id=owner_id,
         is_shared=False,
     )
     shared = team_inbox_operations.save_filter(
         db_session,
         name="Unmapped social",
-        filter_payload={"contact_resolution_status": "unmatched"},
+        filter_payload=team_inbox_filters.InboxSavedFilterPayload(
+            contact_resolution_status="unmatched"
+        ),
         owner_person_id=owner_id,
         is_shared=True,
     )
