@@ -189,6 +189,15 @@ stale. Realtime has no replay authority.
 - Filters: search, status, channel, team, assignee, Unreplied, Needs Attention,
   AI handling, ticket handoff, activity window, contact resolution, priority,
   mute, snooze, open, unassigned, and unread.
+- Advanced Service Team conditions use the shared JSON filter grammar, but the
+  Inbox projection owns their typed allow-list and relationship semantics. The
+  only advanced field is `InboxConversation.service_team_id`; `=`, `!=`, `in`,
+  `not in`, `is empty`, and `is not empty` evaluate active
+  `InboxConversationTeam` links. Negative operators use `NOT EXISTS`, so a
+  conversation linked to both Billing and Support does not satisfy “not
+  Billing.” The Service Team lifecycle owner supplies the active selector;
+  malformed, unknown, or inactive team identifiers fail closed with
+  `communications.team_inbox_projection.invalid_filter`.
 - Response cohorts are derived from the ordered message history. `Unreplied`
   means the latest customer message has no earlier valid customer/agent
   exchange. `Needs Attention` means a customer message was followed by a
@@ -215,6 +224,8 @@ stale. Realtime has no replay authority.
   polling share that coordination boundary. This ordering is transport state
   only: the server projection remains authoritative for filter meaning, queue
   membership, counts, sorting, pagination, and canonical query normalization.
+- Advanced conditions are canonicalized into the URL and saved views. A normal
+  projection refetch is their idempotent rebuild path.
 - Queue-row unread totals count inbound messages after the authenticated
   operator's authoritative read cursor. With no cursor, every timestamped
   inbound message in the conversation is unread; outbound and internal

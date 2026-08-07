@@ -10095,6 +10095,7 @@
     "query:assigned_person_id",
     "query:channel_type",
     "query:contact_resolution_status",
+    "query:filters",
     "query:limit",
     "query:muted",
     "query:needs_response",
