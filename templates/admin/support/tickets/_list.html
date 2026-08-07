@@ -88,6 +88,7 @@
                 <button type="submit"
                         id="ticket-filter-apply"
                         aria-label="Apply ticket filters"
+                        @click="open = false"
                         hx-get="/admin/support/tickets"
                         hx-include="#ticket-filter-form"
                         hx-target="#ticket-list"

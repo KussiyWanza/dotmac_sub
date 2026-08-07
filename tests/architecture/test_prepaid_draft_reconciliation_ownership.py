@@ -47,6 +47,13 @@ def test_prepaid_draft_reconciliation_has_one_contracted_owner():
     )
     assert paid_repair.role is OwnerRole.RECONCILER
     assert paid_repair.canonical_writer == service.name
+    missing_invoice_repair = next(
+        item
+        for item in service.contract.concerns
+        if item.name == "reviewed missing prepaid paid-invoice repair"
+    )
+    assert missing_invoice_repair.role is OwnerRole.RECONCILER
+    assert missing_invoice_repair.canonical_writer == service.name
 
 
 def test_funding_change_checks_draft_before_invoice_less_renewal():
@@ -69,13 +76,19 @@ def test_reconciler_has_no_rounding_tolerance_or_raw_money_writes():
     assert "AccountAdjustment(" not in source
     assert "execute_owner_command(" in source
     assert "AccountCreditApplications.apply_invoice_fully(" in source
+    assert (
+        "AccountCreditApplications.apply_invoice_from_selected_payment_fully(" in source
+    )
     assert "result.invoice_remaining" in source
     assert "Invoices.void_pristine_draft_for_owner(" in source
     assert "Invoices.adopt_prepaid_proforma_document_for_owner(" in source
     assert "Invoices.repair_paid_prepaid_document_for_owner(" in source
+    assert "Invoices.stage_system_invoice_for_owner(" in source
+    assert "InvoiceLines.stage_system_line_for_owner(" in source
     assert "confirm_financial_access_restoration_for_owner(" in source
     assert "invoice.is_proforma = False" not in source
     assert "line.subscription_id =" not in source
+    assert "subscription.next_billing_at =" not in source
 
 
 def test_opening_consumption_and_exception_have_one_writer_owner():
@@ -121,10 +134,16 @@ def test_reconciliation_cli_is_dry_run_first():
     assert 'parser.add_argument("--adopt-proforma", action="store_true")' in source
     assert 'parser.add_argument("--subscription-id", type=_uuid)' in source
     assert 'parser.add_argument("--repair-paid-invoice", action="store_true")' in source
+    assert (
+        'parser.add_argument("--repair-missing-paid-invoice", action="store_true")'
+        in source
+    )
     assert "preview_funded_prepaid_proforma_adoption(" in source
     assert "adopt_funded_prepaid_proforma(" in source
     assert "preview_historical_paid_prepaid_invoice_repair(" in source
     assert "repair_historical_paid_prepaid_invoice(" in source
+    assert "preview_missing_paid_prepaid_invoice_repair(" in source
+    assert "create_reviewed_paid_prepaid_invoice(" in source
 
 
 def test_admin_invoice_adapter_calls_only_the_authoritative_reconciler():
