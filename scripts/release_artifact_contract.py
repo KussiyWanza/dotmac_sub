@@ -24,9 +24,7 @@ class ReleaseContractErrorCode(str, Enum):
     INVALID_IMAGE_DIGEST = "release_contract.invalid_image_digest"
     INVALID_WORKFLOW_RUN_ID = "release_contract.invalid_workflow_run_id"
     INVALID_DEPLOYMENT_ID = "release_contract.invalid_deployment_id"
-    INVALID_MIGRATION_GRAPH_DIGEST = (
-        "release_contract.invalid_migration_graph_digest"
-    )
+    INVALID_MIGRATION_GRAPH_DIGEST = "release_contract.invalid_migration_graph_digest"
     INVALID_ALEMBIC_HEADS = "release_contract.invalid_alembic_heads"
     HOTFIX_CHANGE_REFERENCE_REQUIRED = (
         "release_contract.hotfix_change_reference_required"
@@ -365,9 +363,7 @@ class HotfixNoMigrationEvidence:
 class BackupPolicyIssue(str, Enum):
     """Stable explanation for a rejected backup-skip request."""
 
-    HOTFIX_EXCEPTION_NOT_ALLOWED_ON_STAGING = (
-        "hotfix_exception_not_allowed_on_staging"
-    )
+    HOTFIX_EXCEPTION_NOT_ALLOWED_ON_STAGING = "hotfix_exception_not_allowed_on_staging"
     MIGRATION_GRAPH_CHANGED = "migration_graph_changed"
     IMAGE_HEADS_CHANGED = "image_heads_changed"
     DATABASE_NOT_AT_CANDIDATE_HEADS = "database_not_at_candidate_heads"
