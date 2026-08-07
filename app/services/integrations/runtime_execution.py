@@ -29,6 +29,9 @@ from app.services.integrations.connectors.lead_capture_http import (
 from app.services.integrations.connectors.meta_social_runtime import (
     MetaSocialRuntimeRunner,
 )
+from app.services.integrations.connectors.nextcloud_talk import (
+    NextcloudTalkRuntimeRunner,
+)
 from app.services.integrations.connectors.payment_gateway import PaymentGatewayRunner
 from app.services.integrations.connectors.whatsapp_runtime import WhatsAppRuntimeRunner
 from app.services.integrations.manifest import ConnectorManifest, ConnectorRuntimeType
@@ -77,6 +80,7 @@ def default_runner_registry() -> RunnerRegistry:
     registry.register("paystack", PaymentGatewayRunner("paystack"))
     registry.register("flutterwave", PaymentGatewayRunner("flutterwave"))
     registry.register("whatsapp", WhatsAppRuntimeRunner())
+    registry.register("nextcloud.talk", NextcloudTalkRuntimeRunner())
     registry.register("meta.social", MetaSocialRuntimeRunner())
     return registry
 

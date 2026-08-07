@@ -442,6 +442,7 @@ DOMAIN = DomainSOT(
                 "customer.branding",
                 "communications.intents",
                 "communications.notification_service",
+                "communications.nextcloud_talk_staff",
             ),
             contract=ServiceContract(
                 concerns=(

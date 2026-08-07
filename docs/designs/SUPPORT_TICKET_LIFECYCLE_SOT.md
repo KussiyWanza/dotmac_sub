@@ -170,3 +170,13 @@ Repair reruns deterministic list/preview queries, SLA reconciliation, or the
 provenance verifier from canonical records. It never re-enables a legacy writer
 or infers lifecycle authority from CRM, tags, templates, cached UI state, or
 communication delivery.
+
+## Staff Talk consequences
+
+Assignment changes and explicit ticket-comment mentions stage a durable
+`nextcloud_talk` staff notification inside the Ticket owner command. The
+assignment command ID or comment ID is part of the delivery dedupe identity,
+and the comment author is excluded. The Ticket owner does not resolve
+Nextcloud credentials, create rooms, or perform HTTP; those consequences belong
+to `communications.nextcloud_talk_staff` after commit. Staging failure is
+isolated in an owner savepoint and cannot reject the ticket mutation.
