@@ -308,7 +308,9 @@ def test_ticket_complete_scope_explicitly_disables_the_page_limit(monkeypatch):
     assert captured["region"] == "north"
 
 
-def test_ticket_number_search_renders_htmx_list_response(db_session, monkeypatch):
+def test_ticket_number_search_renders_results_without_filter_controls(
+    db_session, monkeypatch
+):
     ticket_number = "TKT-SEARCH-2048"
     db_session.add_all(
         [
@@ -323,7 +325,10 @@ def test_ticket_number_search_renders_htmx_list_response(db_session, monkeypatch
             "method": "GET",
             "path": "/admin/support/tickets",
             "query_string": f"search={ticket_number}".encode(),
-            "headers": [(b"hx-request", b"true")],
+            "headers": [
+                (b"hx-request", b"true"),
+                (b"hx-target", b"tickets-table"),
+            ],
             "scheme": "http",
             "server": ("testserver", 80),
             "client": ("testclient", 50000),
@@ -360,6 +365,10 @@ def test_ticket_number_search_renders_htmx_list_response(db_session, monkeypatch
     assert response.status_code == 200
     assert ticket_number in html
     assert "TKT-OTHER-4096" not in html
+    assert 'id="ticket-status-summary"' in html
+    assert 'hx-swap-oob="outerHTML"' in html
+    assert 'id="ticket-export-control"' in html
+    assert 'id="ticket-column-options"' not in html
 
 
 def test_ticket_full_and_htmx_views_share_canonical_accessible_partials():
@@ -372,11 +381,34 @@ def test_ticket_full_and_htmx_views_share_canonical_accessible_partials():
     table = (PROJECT_ROOT / "templates/admin/support/tickets/_table.html").read_text(
         encoding="utf-8"
     )
+    results = (
+        PROJECT_ROOT / "templates/admin/support/tickets/_results.html"
+    ).read_text(encoding="utf-8")
+    status_summary = (
+        PROJECT_ROOT / "templates/admin/support/tickets/_status_summary.html"
+    ).read_text(encoding="utf-8")
+    export_control = (
+        PROJECT_ROOT / "templates/admin/support/tickets/_export_control.html"
+    ).read_text(encoding="utf-8")
 
     assert '{% include "admin/support/tickets/_list.html" %}' in page
     assert '{% include "admin/support/tickets/_table.html" %}' in list_partial
+    assert '{% include "admin/support/tickets/_table.html" %}' in results
+    assert 'hx-swap-oob="outerHTML"' in results
+    assert 'id="ticket-status-summary"' in status_summary
+    assert 'hx-target="#tickets-table"' in status_summary
+    assert 'id="ticket-export-control"' in export_control
     assert 'hx-push-url="true"' in list_partial
-    assert 'aria-current="page"' in list_partial
+    assert 'hx-target="#tickets-table"' in list_partial
+    assert 'aria-current="page"' in status_summary
+    assert 'x-data="ticketFilterFeedback()"' in list_partial
+    assert '@htmx:before-request.window="handleBeforeRequest($event)"' in list_partial
+    assert '@htmx:after-request.window="handleAfterRequest($event)"' in list_partial
+    assert "Updating tickets…" in list_partial
+    assert 'role="status"' in list_partial
+    assert 'role="alert"' in list_partial
+    assert "Your current results are still shown." in page
+    assert "function ticketFilterFeedback()" in page
     assert 'x-bind:aria-expanded="open.toString()"' in list_partial
     assert 'id="ticket-column-toggle"' in list_partial
     assert 'aria-labelledby="ticket-column-toggle"' in list_partial
@@ -397,6 +429,7 @@ def test_ticket_full_and_htmx_views_share_canonical_accessible_partials():
     assert 'hx-sync="#ticket-filter-form:replace"' in list_partial
     assert 'name="sort" value="{{ list_query.sort_by }}"' in list_partial
     assert "list_query.url('/admin/support/tickets'" in table
+    assert 'hx-target="#tickets-table"' in table
     assert 'aria-sort="' in table
     assert 'aria-current="page"' in table
     assert 'role="status"' in table
@@ -421,6 +454,9 @@ def test_ticket_full_and_htmx_views_share_canonical_accessible_partials():
         assert literal_color not in page
         assert literal_color not in list_partial
         assert literal_color not in table
+        assert literal_color not in results
+        assert literal_color not in status_summary
+        assert literal_color not in export_control
 
 
 def test_ticket_table_contract_renders_with_empty_results():

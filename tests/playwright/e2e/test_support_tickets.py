@@ -42,3 +42,36 @@ def test_column_picker_closes_from_trigger_and_outside_click(
     admin_page.get_by_role("heading", name="Support Tickets").click()
     expect(panel).to_be_hidden()
     expect(trigger).to_have_attribute("aria-expanded", "false")
+
+    trigger.evaluate(
+        "element => { element.dataset.filterRefreshIdentity = 'preserved'; }"
+    )
+    admin_page.locator("#ticket-status-filter").select_option("not_closed")
+    admin_page.wait_for_url("**status=not_closed**")
+
+    expect(panel).to_be_hidden()
+    expect(trigger).to_have_attribute("aria-expanded", "false")
+    expect(trigger).to_have_attribute("data-filter-refresh-identity", "preserved")
+
+
+def test_filter_feedback_reports_loading_and_keeps_results_on_failure(
+    admin_page: Page, settings
+) -> None:
+    admin_page.goto(f"{settings.base_url}/admin/support/tickets")
+    held_routes = []
+    admin_page.route(
+        "**/admin/support/tickets?**", lambda route: held_routes.append(route)
+    )
+
+    admin_page.locator("#ticket-status-filter").select_option("not_closed")
+    expect(admin_page.get_by_text("Updating tickets…", exact=True)).to_be_visible()
+    assert held_routes
+
+    held_routes.pop().abort("failed")
+
+    error = admin_page.get_by_role("alert")
+    expect(error).to_contain_text(
+        "Couldn’t update tickets. Your current results are still shown."
+    )
+    expect(error.get_by_role("button", name="Retry")).to_be_visible()
+    expect(admin_page.locator("#tickets-table")).to_be_visible()

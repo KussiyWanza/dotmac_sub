@@ -434,9 +434,12 @@ DOMAIN = DomainSOT(
             notes=(
                 "app.services.support.Tickets owns the canonical filtered "
                 "domain query. The web projection declares list capabilities, "
-                "normalizes request state, and renders full-page and HTMX "
-                "reads through one partial. Exports consume the same complete "
-                "scope without a silent row cap."
+                "normalizes request state, and renders full-page and targeted "
+                "HTMX result reads from the same table projection. Targeted "
+                "refreshes update the status summary and export URL while "
+                "leaving the filter and column controls mounted, expose loading "
+                "state, and retain current results with retry feedback on failure. "
+                "Exports consume the same complete scope without a silent row cap."
             ),
             contract=ServiceContract(
                 concerns=tuple(

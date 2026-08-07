@@ -346,22 +346,69 @@ function ticketFilterBuilder() {
     };
 }
 
+function ticketFilterFeedback() {
+    return {
+        loading: false,
+        error: '',
+
+        handleBeforeRequest(event) {
+            if (event.detail?.target?.id !== 'tickets-table') return;
+            this.$el._activeTicketRequest = event.detail.xhr;
+            this.$el._ticketRetrySource = event.target;
+            this.loading = true;
+            this.error = '';
+            event.detail.target.setAttribute('aria-busy', 'true');
+        },
+
+        handleAfterRequest(event) {
+            if (event.detail?.target?.id !== 'tickets-table') return;
+            if (this.$el._activeTicketRequest !== event.detail.xhr) return;
+            this.loading = false;
+            event.detail.target.setAttribute('aria-busy', 'false');
+            if (!event.detail.successful) {
+                this.error = 'Couldn’t update tickets. Your current results are still shown.';
+            }
+        },
+
+        retry() {
+            const source = this.$el._ticketRetrySource;
+            const form = source?.closest?.('#ticket-filter-form');
+            if (form) {
+                form.requestSubmit();
+                return;
+            }
+            source?.click?.();
+        },
+    };
+}
+
 function ticketColumnPicker() {
     return {
         open: false,
+        afterSwapHandler: null,
         init() {
-            const apply = () => {
-                const checked = Array.from(document.querySelectorAll('.ticket-col-toggle:checked')).map((el) => el.dataset.columnKey);
-                document.querySelectorAll('[data-column]').forEach((el) => {
-                    const visible = checked.includes(el.dataset.column);
-                    el.classList.toggle('hidden', !visible);
-                });
-                document.cookie = `ticket_columns=${checked.join(',')}; path=/; max-age=31536000`;
-            };
             document.querySelectorAll('.ticket-col-toggle').forEach((el) => {
-                el.addEventListener('change', apply);
+                el.addEventListener('change', () => this.applyColumns());
             });
-            apply();
+            this.afterSwapHandler = (event) => {
+                if (event.detail?.target?.id !== 'tickets-table') return;
+                this.$nextTick(() => this.applyColumns());
+            };
+            document.body.addEventListener('htmx:afterSwap', this.afterSwapHandler);
+            this.applyColumns();
+        },
+        destroy() {
+            if (this.afterSwapHandler) {
+                document.body.removeEventListener('htmx:afterSwap', this.afterSwapHandler);
+            }
+        },
+        applyColumns() {
+            const checked = Array.from(document.querySelectorAll('.ticket-col-toggle:checked')).map((el) => el.dataset.columnKey);
+            document.querySelectorAll('[data-column]').forEach((el) => {
+                const visible = checked.includes(el.dataset.column);
+                el.classList.toggle('hidden', !visible);
+            });
+            document.cookie = `ticket_columns=${checked.join(',')}; path=/; max-age=31536000`;
         }
     };
 }
@@ -380,7 +427,7 @@ function supportTicketBulkActions(initialContract) {
         init() {
             this.syncTicketPage();
             document.body.addEventListener('htmx:afterSwap', (event) => {
-                if (event.detail?.target?.id !== 'ticket-list') return;
+                if (event.detail?.target?.id !== 'tickets-table') return;
                 this.clearSelection();
                 this.$nextTick(() => this.syncTicketPage());
             });

@@ -2520,8 +2520,11 @@ UUIDs. Routes and templates only transport and render the owner-defined scope.
     `app.services.web_support_tickets` web owner and delegates its filtered
     domain query to `app.services.support.Tickets`. It owns the declared admin
     search/filter/sort capabilities, exact count, page clamping, status-summary
-    links, and uncapped CSV scope. Full-page and HTMX reads render the same
-    `_list.html` and `_table.html` projections.
+    links, and uncapped CSV scope. Full-page reads compose `_list.html` and
+    `_table.html`; targeted HTMX reads reuse `_table.html` through
+    `_results.html`, update the status summary and export URL out of band, and
+    leave the filter and column controls mounted. The control layer reports
+    loading in place; failed reads retain the current results and offer retry.
 13. Support-ticket list migration record:
     - Old owners: the admin route and Jinja fragments independently interpreted
       sort/page inputs, inferred a next page from one extra row, hand-built URLs,

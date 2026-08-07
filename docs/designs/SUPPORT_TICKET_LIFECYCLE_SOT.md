@@ -143,11 +143,14 @@ comments, resolution, or native Work-Order issuance.
 
 `ui.support_ticket_list_projection` declares searchable fields, filters,
 stable sorting, pagination, summaries, and export scope through one typed
-`ListQuery`. `ui.support_ticket_bulk_action_projection` declares page-only
-selection and action presentation. `support.ticket_bulk_commands` resolves
-membership, normalizes the shared changes, previews eligibility, binds the
-preview to a deterministic scope token, and detects drift. Confirmed mutations
-delegate to `support.ticket_lifecycle`; there is no second bulk writer.
+`ListQuery`. Targeted HTMX refreshes replace the result table and refresh its
+summary, sort state, and export URL without rebuilding the filter and column
+controls. The control layer announces loading in place, retains the current
+results when a read fails, and offers retry. `ui.support_ticket_bulk_action_projection`
+declares page-only selection and action presentation. `support.ticket_bulk_commands`
+resolves membership, normalizes the shared changes, previews eligibility, binds
+the preview to a deterministic scope token, and detects drift. Confirmed
+mutations delegate to `support.ticket_lifecycle`; there is no second bulk writer.
 
 ## Cutover and repair
 
