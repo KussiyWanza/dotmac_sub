@@ -1,13 +1,13 @@
 """Backfill authoritative geodesic lengths for vendor routes.
 
-Revision ID: 496_vendor_route_lengths
-Revises: 495_plan_family_catalogues
+Revision ID: 497_vendor_route_lengths
+Revises: 496_nextcloud_talk_staff_notifications
 """
 
 from alembic import op
 
-revision: str = "496_vendor_route_lengths"
-down_revision: str | None = "495_plan_family_catalogues"
+revision: str = "497_vendor_route_lengths"
+down_revision: str | None = "496_nextcloud_talk_staff_notifications"
 branch_labels = None
 depends_on = None
 

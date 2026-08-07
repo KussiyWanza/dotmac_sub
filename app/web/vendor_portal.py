@@ -13,7 +13,6 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.models.work_order import WorkOrder
 from app.schemas.vendor_portal import (
     VendorAdvanceCreate,
     VendorAsBuiltCreate,
@@ -27,7 +26,7 @@ from app.schemas.vendor_purchase_invoice import (
     VendorPurchaseInvoiceCreate,
     VendorPurchaseInvoiceLineCreate,
 )
-from app.services import vendor_fiber, vendor_submission_proposals
+from app.services import vendor_fiber, vendor_submission_proposals, work_order_views
 from app.services.common import coerce_uuid
 from app.services.db_session_adapter import db_session_adapter
 from app.services.domain_errors import DomainError
@@ -245,14 +244,9 @@ def vendor_project_detail(
         vendor_id=vendor_id,
         capabilities=vendor_capabilities.capabilities_for(context),
     )
-    vendor_work_orders = (
-        db.query(WorkOrder)
-        .filter(
-            WorkOrder.project_id == project["project_id"],
-            WorkOrder.is_active.is_(True),
-        )
-        .order_by(WorkOrder.created_at.desc())
-        .all()
+    vendor_work_orders = work_order_views.list_project_work_order_summaries(
+        db,
+        coerce_uuid(project["project_id"]),
     )
     return templates.TemplateResponse(
         "vendor/project_detail.html",
