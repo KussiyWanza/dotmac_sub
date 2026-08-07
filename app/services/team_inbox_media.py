@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
+import httpx
 from sqlalchemy.orm import Session
 
+from app.models.stored_file import StoredFile
 from app.models.team_inbox import InboxMediaAsset, InboxMessage
+from app.services.file_storage import ObjectNotFoundError, StreamResult, file_uploads
 
 
 def _text(value: object, *, max_length: int | None = None) -> str | None:
@@ -52,6 +56,10 @@ def _file_name(raw: dict[str, Any]) -> str | None:
 
 def _source_url(raw: dict[str, Any]) -> str | None:
     return _text(raw.get("url") or raw.get("source_url") or raw.get("link"))
+
+
+def media_content_url(asset_id: object) -> str:
+    return f"/admin/inbox/media/{asset_id}/content"
 
 
 def _existing_asset(
@@ -131,6 +139,116 @@ def promote_message_attachments(
         assets.append(asset)
     db.flush()
     return assets
+
+
+@dataclass(frozen=True)
+class InboxDeliveryAttachment:
+    asset_id: UUID
+    filename: str
+    content_type: str
+    content: bytes
+    asset_type: str
+
+
+class MediaContentError(RuntimeError):
+    """Media exists, but its content cannot be read safely."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
+def _stored_file_id(asset: InboxMediaAsset) -> UUID | None:
+    from app.services.common import coerce_uuid
+
+    metadata = asset.metadata_ or {}
+    if not isinstance(metadata, dict):
+        return None
+    return coerce_uuid(metadata.get("stored_file_id"))
+
+
+def _filename(asset: InboxMediaAsset) -> str:
+    suffix = "jpg" if (asset.mime_type or "").lower() == "image/jpeg" else "bin"
+    return asset.file_name or f"inbox-media-{asset.id}.{suffix}"
+
+
+def _content_type(asset: InboxMediaAsset) -> str:
+    return asset.mime_type or "application/octet-stream"
+
+
+def _graph_version(config: dict[str, Any]) -> str:
+    version = str(config.get("graph_version") or "v21.0").strip() or "v21.0"
+    return version if version.startswith("v") else f"v{version}"
+
+
+def _whatsapp_media_content(db: Session, asset: InboxMediaAsset) -> StreamResult:
+    from app.services.integrations import whatsapp_capability
+
+    media_id = str(asset.provider_media_id or "").strip()
+    if not media_id:
+        raise MediaContentError("Media content is not available.")
+    context = whatsapp_capability.execution_context(
+        db,
+        capability_id=whatsapp_capability.WHATSAPP_RECEIVE_CAPABILITY,
+    )
+    token = str(context.secret_material.get("service_credentials") or "").strip()
+    if not token:
+        raise MediaContentError("WhatsApp media credentials are not configured.")
+    base = f"https://graph.facebook.com/{_graph_version(context.config)}"
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        metadata_response = httpx.get(
+            f"{base}/{media_id}",
+            params={"fields": "url,mime_type,file_size"},
+            headers=headers,
+            timeout=10,
+        )
+        metadata_response.raise_for_status()
+        metadata = metadata_response.json()
+        media_url = str(metadata.get("url") or "").strip()
+        if not media_url:
+            raise MediaContentError("WhatsApp media URL is unavailable.")
+        media_response = httpx.get(media_url, headers=headers, timeout=20)
+        media_response.raise_for_status()
+    except MediaContentError:
+        raise
+    except Exception as exc:
+        raise MediaContentError("WhatsApp media could not be downloaded.") from exc
+    content_type = str(
+        media_response.headers.get("content-type") or asset.mime_type or ""
+    ).split(";")[0]
+    return StreamResult(
+        chunks=iter([media_response.content]),
+        content_type=content_type or _content_type(asset),
+        content_length=len(media_response.content),
+    )
+
+
+def stream_asset_content(
+    db: Session, asset_id: str | UUID
+) -> tuple[InboxMediaAsset, StreamResult]:
+    from app.services.common import coerce_uuid
+
+    asset_uuid = coerce_uuid(asset_id)
+    asset = db.get(InboxMediaAsset, asset_uuid) if asset_uuid else None
+    if asset is None:
+        raise MediaContentError("Media not found.")
+    stored_file_id = _stored_file_id(asset)
+    if stored_file_id is not None:
+        stored_file = db.get(StoredFile, stored_file_id)
+        if stored_file is None or stored_file.is_deleted:
+            raise MediaContentError("Media content is not available.")
+        try:
+            return asset, file_uploads.stream_file(stored_file)
+        except ObjectNotFoundError as exc:
+            raise MediaContentError("Media content is not available.") from exc
+    if (
+        asset.channel_type == "whatsapp"
+        and asset.direction == "inbound"
+        and asset.provider_media_id
+    ):
+        return asset, _whatsapp_media_content(db, asset)
+    raise MediaContentError("Media content is not available.")
 
 
 def promote_unmaterialized_assets(
@@ -235,8 +353,6 @@ def stage_outbound_attachment(
     that carries it is actually sent, so an abandoned composer leaves no
     attachment claiming to belong to a message.
     """
-    from app.services.file_storage import file_uploads
-
     clean_name = _text(file_name, max_length=255) or "attachment"
     mime_type = (
         (content_type or "application/octet-stream").split(";")[0].strip().lower()
@@ -258,7 +374,7 @@ def stage_outbound_attachment(
         original_filename=clean_name,
         content_type=mime_type,
         data=data,
-        uploaded_by=uploaded_by,
+        uploaded_by=None,
     )
 
     asset = InboxMediaAsset(
@@ -277,6 +393,7 @@ def stage_outbound_attachment(
         metadata_={
             "source": "operator_upload",
             "stored_file_id": str(record.id),
+            "uploaded_by_person_id": str(uploaded_by) if uploaded_by else None,
         },
     )
     db.add(asset)
@@ -307,6 +424,25 @@ def bind_assets_to_message(
     )
     for asset in assets:
         asset.message_id = message.id
+    if assets:
+        message_metadata = dict(message.metadata_ or {})
+        attachment_rows = list(message_metadata.get("attachments") or [])
+        for asset in assets:
+            attachment_rows.append(
+                {
+                    "id": str(asset.id),
+                    "type": asset.asset_type,
+                    "file_name": asset.file_name,
+                    "filename": asset.file_name,
+                    "mime_type": asset.mime_type,
+                    "file_size": asset.file_size,
+                    "url": media_content_url(asset.id),
+                    "download_status": asset.download_status,
+                }
+            )
+        message_metadata["attachments"] = attachment_rows
+        message_metadata["inbox_attachment_ids"] = [str(asset.id) for asset in assets]
+        message.metadata_ = message_metadata
     db.flush()
     return assets
 
@@ -326,3 +462,34 @@ def pending_outbound_assets(db: Session, conversation_id) -> list[InboxMediaAsse
         .order_by(InboxMediaAsset.created_at.asc())
         .all()
     )
+
+
+def resolve_delivery_attachments(
+    db: Session, asset_ids: list[str] | tuple[str, ...]
+) -> tuple[InboxDeliveryAttachment, ...]:
+    from app.services.common import coerce_uuid
+
+    wanted = [value for value in (coerce_uuid(item) for item in asset_ids) if value]
+    if not wanted:
+        return ()
+    rows = (
+        db.query(InboxMediaAsset)
+        .filter(InboxMediaAsset.id.in_(wanted))
+        .filter(InboxMediaAsset.direction == "outbound")
+        .order_by(InboxMediaAsset.created_at.asc())
+        .all()
+    )
+    resolved: list[InboxDeliveryAttachment] = []
+    for asset in rows:
+        _asset, stream = stream_asset_content(db, asset.id)
+        resolved.append(
+            InboxDeliveryAttachment(
+                asset_id=asset.id,
+                filename=_filename(asset),
+                content_type=stream.content_type or _content_type(asset),
+                content=b"".join(stream.chunks),
+                asset_type=asset.asset_type
+                or _outbound_asset_type(_content_type(asset)),
+            )
+        )
+    return tuple(resolved)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 from collections.abc import Mapping
@@ -97,6 +98,40 @@ def build_template_payload(
     raise ValueError("unsupported_whatsapp_provider")
 
 
+def build_media_payload(
+    *,
+    provider: str,
+    recipient: str,
+    media_type: str,
+    media_id: str | None = None,
+    link: str | None = None,
+    caption: str | None = None,
+    filename: str | None = None,
+) -> dict[str, Any]:
+    if provider != WHATSAPP_PROVIDER_META:
+        raise ValueError("unsupported_whatsapp_provider")
+    clean_type = media_type.strip().lower()
+    if clean_type not in {"image", "document", "audio", "video"}:
+        raise ValueError("media_type_unsupported")
+    media_object: dict[str, Any] = {}
+    if media_id:
+        media_object["id"] = media_id.strip()
+    elif link:
+        media_object["link"] = link.strip()
+    else:
+        raise ValueError("media_reference_required")
+    if clean_type in {"image", "document", "video"} and caption:
+        media_object["caption"] = caption[:1024]
+    if clean_type == "document" and filename:
+        media_object["filename"] = filename[:255]
+    return {
+        "messaging_product": "whatsapp",
+        "to": recipient.strip(),
+        "type": clean_type,
+        clean_type: media_object,
+    }
+
+
 def normalize_inbound_webhook(
     *, provider: str, payload: dict[str, Any]
 ) -> dict[str, Any]:
@@ -124,6 +159,17 @@ def _endpoint(config: Mapping[str, Any]) -> str:
         return (
             f"https://graph.facebook.com/{_graph_version(config)}/"
             f"{phone_number}/messages"
+        )
+    raise ValueError("unsupported_whatsapp_provider")
+
+
+def _media_endpoint(config: Mapping[str, Any]) -> str:
+    provider = _provider(config)
+    if provider == WHATSAPP_PROVIDER_META:
+        phone_number = str(config.get("phone_number") or "").strip()
+        return (
+            f"https://graph.facebook.com/{_graph_version(config)}/"
+            f"{phone_number}/media"
         )
     raise ValueError("unsupported_whatsapp_provider")
 
@@ -243,6 +289,14 @@ class WhatsAppRuntimeRunner:
         configured_timeout = float(config.get("timeout_seconds") or 10)
         timeout = min(max(1.0, configured_timeout), remaining)
         try:
+            if action == "send_media":
+                payload = self._uploading_media_payload(
+                    config=config,
+                    params=params,
+                    credential=credential,
+                    timeout=timeout,
+                )
+                output["payload"] = payload
             response = httpx.post(
                 _endpoint(config),
                 json=payload,
@@ -454,7 +508,66 @@ class WhatsAppRuntimeRunner:
                 variables=variables,
                 components=components,
             )
+        if action == "send_media":
+            media_type = str(params.get("media_type") or "").strip().lower()
+            media_id = str(params.get("media_id") or "").strip()
+            link = str(params.get("link") or "").strip()
+            has_content = bool(str(params.get("content_base64") or "").strip())
+            if has_content and not media_id and not link:
+                media_id = "preview-media-id"
+            return build_media_payload(
+                provider=provider,
+                recipient=recipient,
+                media_type=media_type,
+                media_id=media_id or None,
+                link=link or None,
+                caption=str(params.get("caption") or "").strip() or None,
+                filename=str(params.get("filename") or "").strip() or None,
+            )
         raise ValueError("action_unsupported")
+
+    @staticmethod
+    def _uploading_media_payload(
+        *,
+        config: Mapping[str, Any],
+        params: Mapping[str, Any],
+        credential: str,
+        timeout: float,
+    ) -> dict[str, Any]:
+        provider = _provider(config)
+        media_id = str(params.get("media_id") or "").strip()
+        link = str(params.get("link") or "").strip()
+        content_base64 = str(params.get("content_base64") or "").strip()
+        if content_base64 and not media_id and not link:
+            try:
+                content = base64.b64decode(content_base64, validate=True)
+            except (ValueError, TypeError) as exc:
+                raise ValueError("media_content_invalid") from exc
+            filename = str(params.get("filename") or "attachment").strip()
+            content_type = str(
+                params.get("content_type") or "application/octet-stream"
+            ).strip()
+            response = httpx.post(
+                _media_endpoint(config),
+                headers={"Authorization": f"Bearer {credential}"},
+                data={"messaging_product": "whatsapp", "type": content_type},
+                files={"file": (filename, content, content_type)},
+                timeout=timeout,
+            )
+            response.raise_for_status()
+            body = response.json()
+            media_id = str(body.get("id") or "").strip()
+            if not media_id:
+                raise ValueError("media_upload_response_invalid")
+        return build_media_payload(
+            provider=provider,
+            recipient=str(params.get("recipient") or ""),
+            media_type=str(params.get("media_type") or ""),
+            media_id=media_id or None,
+            link=link or None,
+            caption=str(params.get("caption") or "").strip() or None,
+            filename=str(params.get("filename") or "").strip() or None,
+        )
 
     @staticmethod
     def _rejected(envelope: OperationEnvelope, code: str) -> OperationResult:

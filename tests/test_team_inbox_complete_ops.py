@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 from starlette.requests import Request
 
@@ -107,6 +108,41 @@ def test_message_metadata_attachments_promote_to_timeline_assets(db_session):
     assert timeline is not None
     assert timeline.messages[0].attachments[0]["provider_media_id"] == "media-1"
     assert timeline.messages[0].attachments[0]["download_status"] == "metadata_only"
+    assert timeline.messages[0].attachments[0]["url"].startswith(
+        "/admin/inbox/media/"
+    )
+
+
+def test_outbound_attachment_upload_does_not_use_staff_id_as_subscriber(
+    db_session, monkeypatch
+):
+    conversation = _conversation(db_session)
+    staff_person_id = uuid.uuid4()
+    captured: dict[str, object] = {}
+
+    def fake_stage_upload(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            id=uuid.uuid4(),
+            original_filename="proof.png",
+            file_size=len(kwargs["data"]),
+            storage_key_or_relative_path="attachments/public/inbox/proof.png",
+        )
+
+    monkeypatch.setattr(team_inbox_media.file_uploads, "stage_upload", fake_stage_upload)
+
+    asset = team_inbox_media.stage_outbound_attachment(
+        db_session,
+        conversation=conversation,
+        file_name="proof.png",
+        content_type="image/png",
+        data=b"png-bytes",
+        uploaded_by=str(staff_person_id),
+    )
+
+    assert captured["uploaded_by"] is None
+    assert asset.metadata_["uploaded_by_person_id"] == str(staff_person_id)
+    assert asset.metadata_["stored_file_id"]
 
 
 def test_comments_are_first_class_and_searchable(db_session):
