@@ -67,6 +67,9 @@ from app.services.settings_spec import resolve_value
 
 OWNER = "sales.lead_intake"
 META_CHANNELS = frozenset({"whatsapp", "facebook_messenger", "instagram_dm"})
+MANUAL_INVITATION_CHANNELS = frozenset(
+    {"email", "whatsapp", "facebook_messenger", "instagram_dm", "chat_widget"}
+)
 QUALIFYING_INTENTS = frozenset({"new_connection", "coverage_request"})
 _TEMPLATE = OwnerCommandDefinition(
     owner=OWNER,
@@ -159,6 +162,12 @@ class InvitationOutcome:
     invitation_message: str | None = None
     clarification_question: str | None = None
     replayed: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ManualInvitationEligibility:
+    eligible: bool
+    reason: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -548,20 +557,65 @@ def _unknown_conversation(db: Session, conversation_id: UUID) -> InboxConversati
             "Inbox conversation was not found.",
             kind="not_found",
         )
+    eligibility = _manual_invitation_eligibility(db, conversation)
+    if not eligibility.eligible:
+        code = (
+            "channel_not_supported"
+            if conversation.channel_type not in MANUAL_INVITATION_CHANNELS
+            else "conversation_not_unknown"
+        )
+        raise _error(code, eligibility.reason)
+    return conversation
+
+
+def manual_invitation_eligibility(
+    db: Session, conversation_id: UUID
+) -> ManualInvitationEligibility:
+    conversation = db.get(InboxConversation, conversation_id)
+    if conversation is None or not conversation.is_active:
+        return ManualInvitationEligibility(False, "Conversation is unavailable.")
+    return _manual_invitation_eligibility(db, conversation)
+
+
+def _manual_invitation_eligibility(
+    db: Session, conversation: InboxConversation
+) -> ManualInvitationEligibility:
+    if conversation.status == "resolved":
+        return ManualInvitationEligibility(
+            False, "Reopen the conversation before sending a Lead intake form."
+        )
+    if conversation.channel_type not in MANUAL_INVITATION_CHANNELS:
+        return ManualInvitationEligibility(
+            False, "This conversation channel cannot deliver a Lead intake form."
+        )
     resolution = dict((conversation.metadata_ or {}).get("contact_resolution") or {})
     if (
         conversation.subscriber_id is not None
         or resolution.get("status") != "unmatched"
     ):
-        raise _error(
-            "conversation_not_unknown", "Lead intake is limited to unknown prospects."
+        return ManualInvitationEligibility(
+            False, "Lead intake is only for people not linked to a customer account."
         )
-    if conversation.channel_type not in META_CHANNELS:
-        raise _error(
-            "channel_not_supported",
-            "Lead intake is limited to Meta messaging channels.",
+    if (
+        conversation.channel_type in {"email", "whatsapp"}
+        and conversation.contact_address
+    ):
+        # The Inbox route resolver predates SubscriberContact. Recheck the
+        # canonical identity index so a customer's saved contact person is not
+        # accidentally treated as a new lead.
+        from app.services.customer_identity_resolution import resolve_customer_identity
+
+        identity = resolve_customer_identity(
+            db, conversation.contact_address, channel_hint=conversation.channel_type
         )
-    return conversation
+        if identity.matched or identity.ambiguous:
+            return ManualInvitationEligibility(
+                False,
+                "This person matches a customer or customer contact and cannot receive a lead form.",
+            )
+    return ManualInvitationEligibility(
+        True, "Lead form is available for this prospect."
+    )
 
 
 def _published_templates_ready(db: Session) -> bool:

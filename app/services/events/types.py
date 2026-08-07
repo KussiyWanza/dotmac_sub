@@ -168,6 +168,7 @@ class EventType(enum.Enum):
     service_team_party_cutover_adopted = "service_team.party_cutover_adopted"
     workqueue_action_coordinated = "workqueue.action_coordinated"
     ai_intake_config_updated = "ai.intake_config_updated"
+    plan_family_catalogue_published = "catalog.plan_family_catalogue_published"
 
     # Operations - vendor installation project lifecycle
     # Materials / vendor / ERP chain outputs
@@ -242,6 +243,7 @@ class EventType(enum.Enum):
     olt_created = "olt.created"
     olt_updated = "olt.updated"
     olt_deleted = "olt.deleted"
+    olt_topology_imported = "olt.topology_imported"
 
     # ONT events (5)
     ont_discovered = "ont.discovered"

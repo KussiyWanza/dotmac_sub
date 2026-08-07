@@ -7,7 +7,9 @@
 ## Contract
 
 ```text
-work order requires material (field request)
+ticket / project / project task requires material
+  -> assigned native work order selected   [context projection; one owner]
+  -> work order requires material          [field request]
   -> material request approved            [operations.material_dependencies]
   -> ERP issue requested                  [receipted consumer -> durable outbox]
   -> ERP issue observed                   [polling write-back, fail-atomic]
@@ -30,11 +32,14 @@ best-effort enqueue whose only trace was a metadata breadcrumb.
 ## Boundaries
 
 - Staff manage service-work-order material dependencies in Sub at
-  `/admin/operations/material-requests`. Creation requires an active technician
-  assignment and records a submitted request against the native work-order ID;
-  staff may then approve, reject, or cancel it. The work-order detail page and
-  Operations navigation expose the same workspace. Approval emits the existing
-  durable `field_material_request.approved` output for ERP delivery.
+  `/admin/operations/material-requests`. Ticket, project, project-task, and
+  work-order detail pages expose the same request through the work order's
+  native relationships and open the form scoped to eligible field work.
+  Creation requires an active technician assignment and records one submitted
+  request against the native work-order ID; it does not create parallel
+  ticket/project/task request records. Staff may then approve, reject, or
+  cancel it. Approval emits the existing durable
+  `field_material_request.approved` output for ERP delivery.
 - The staff workspace accepts the configured ERP warehouse code but does not
   query ERP tables, reserve stock, choose serials, or expose local issue and
   fulfil actions. ERP remains the owner of availability, serial allocation,
@@ -46,6 +51,13 @@ best-effort enqueue whose only trace was a metadata breadcrumb.
   observations (`refresh_material_request_statuses`,
   `refresh_purchase_invoice_statuses`) — legitimate observation of
   ERP-owned reality, not drift repair.
+- The material-request detail page shows the current single-writer owner,
+  durable outbox state, attempt count, last error, ERP reference, and observed
+  outcome. Pending deliveries retry automatically with their stable
+  idempotency key. Until `sync_flow_ownership.material_request` is explicitly
+  cut over from `crm` to `sub`, the page states that Sub will not deliver.
+- Delivery and status schedules are enabled by validated ERP capability
+  bindings. The retired `dotmac_erp_sync_enabled` setting is not a runtime gate.
 - `operations.material_consumption` (app/services/field/materials.py) is
   now a registered owner (left the shrink-only writer baseline): monotonic,
   allocation-capped consumption evidence with a typed output.

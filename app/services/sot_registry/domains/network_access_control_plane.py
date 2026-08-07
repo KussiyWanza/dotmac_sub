@@ -987,8 +987,13 @@ DOMAIN = DomainSOT(
                 "Disconnect ACK, RFC 5176 session-not-found, rejection, timeout "
                 "and configuration failure remain distinct outcomes. Accounting "
                 "closes only when the NAS explicitly reports that the session "
-                "context is absent. The periodic recovery loop is single-flight "
-                "and caps attempts rather than successes."
+                "context is absent. Exact-old-IP projection repair issues one "
+                "disconnect and bounded-polls authoritative radacct for up to "
+                "15 seconds; it does not fall back to the lagging imported "
+                "accounting mirror, and polling never sends a second customer "
+                "interruption. "
+                "The periodic recovery loop is single-flight and caps attempts "
+                "rather than successes."
             ),
         ),
         SOTService(

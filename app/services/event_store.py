@@ -1,14 +1,96 @@
 from __future__ import annotations
 
 import json
+import time
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from typing import Any
 from uuid import UUID, uuid4
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.event_store import EventHandlerAttempt, EventStatus, EventStore
-from app.services.events.types import Event
+from app.services.events.types import Event, EventType
+
+
+class EventTerminalDisposition(StrEnum):
+    completed = "completed"
+    failed = "failed"
+    timed_out = "timed_out"
+
+
+@dataclass(frozen=True, slots=True)
+class WaitForEventTerminalQuery:
+    event_id: UUID
+    event_type: EventType
+    timeout: timedelta
+    poll_interval: timedelta = timedelta(milliseconds=500)
+
+
+@dataclass(frozen=True, slots=True)
+class EventTerminalOutcome:
+    event_id: UUID
+    event_type: EventType
+    disposition: EventTerminalDisposition
+    retry_count: int
+    failed_handlers: tuple[str, ...]
+
+
+def wait_for_event_terminal(
+    db: Session,
+    query: WaitForEventTerminalQuery,
+) -> EventTerminalOutcome:
+    """Wait for one exact durable event; never substitute a newer row."""
+
+    timeout_seconds = query.timeout.total_seconds()
+    poll_seconds = query.poll_interval.total_seconds()
+    if timeout_seconds <= 0 or poll_seconds <= 0:
+        raise ValueError("event terminal wait durations must be positive")
+    deadline = time.monotonic() + timeout_seconds
+    retry_count = 0
+    while True:
+        if db.in_transaction():
+            db.rollback()
+        record = db.scalar(
+            select(EventStore).where(
+                EventStore.event_id == query.event_id,
+                EventStore.event_type == query.event_type.value,
+            )
+        )
+        if record is not None:
+            retry_count = int(record.retry_count or 0)
+            if record.status in {EventStatus.completed, EventStatus.failed}:
+                failures = tuple(
+                    sorted(
+                        str(item.get("handler") or "")
+                        for item in (record.failed_handlers or [])
+                        if item.get("handler")
+                    )
+                )
+                return EventTerminalOutcome(
+                    event_id=query.event_id,
+                    event_type=query.event_type,
+                    disposition=(
+                        EventTerminalDisposition.completed
+                        if record.status is EventStatus.completed
+                        else EventTerminalDisposition.failed
+                    ),
+                    retry_count=retry_count,
+                    failed_handlers=failures,
+                )
+        remaining_seconds = deadline - time.monotonic()
+        if remaining_seconds <= 0:
+            return EventTerminalOutcome(
+                event_id=query.event_id,
+                event_type=query.event_type,
+                disposition=EventTerminalDisposition.timed_out,
+                retry_count=retry_count,
+                failed_handlers=(),
+            )
+        time.sleep(min(poll_seconds, remaining_seconds))
+
 
 _SENSITIVE_KEYS = {
     "api_key",

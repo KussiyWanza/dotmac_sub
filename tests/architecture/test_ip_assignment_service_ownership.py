@@ -15,6 +15,7 @@ OWNER = ROOT / "app/services/ip_assignment_lifecycle.py"
 SCRIPT = ROOT / "scripts/one_off/repair_ipam_to_served.py"
 LIFECYCLE_SCRIPT = ROOT / "scripts/one_off/repair_service_ipv4_assignment.py"
 PROJECTION_SCRIPT = ROOT / "scripts/one_off/repair_service_ipv4_projection.py"
+SESSION_DIVERGENCE_AUDIT = ROOT / "scripts/one_off/audit_nas_session_ip_divergence.py"
 WEB_ADAPTER = ROOT / "app/services/web_catalog_subscriptions.py"
 WEB_WORKFLOW = ROOT / "app/services/web_catalog_subscription_workflows.py"
 ADMIN_ROUTE = ROOT / "app/web/admin/catalog.py"
@@ -112,7 +113,21 @@ def test_projection_operator_adapter_is_dry_run_first_and_fingerprint_gated() ->
     assert '"--assignment-id"' in source
     assert "preview_service_ipv4_projection_repair(" in source
     assert "repair_service_ipv4_projection(" in source
+    assert "outcome.event_id" in source
+    assert "wait_for_event_terminal(" in source
+    assert "EventTerminalDisposition.completed" in source
+    assert "order_by(" not in source
     assert ".commit(" not in source
+
+
+def test_projection_cutover_gate_cannot_inherit_session_or_output_scope() -> None:
+    source = SESSION_DIVERGENCE_AUDIT.read_text(encoding="utf-8")
+
+    assert "for sub_id in sorted(state):" in source
+    assert "if len(infos) > 1:" in source
+    assert '"session_gate_valid": session_gate_valid' in source
+    assert '"gate_population": "all ACTIVE/BLOCKED projected subscriptions"' in source
+    assert "for sub_id in sorted(scoped_subscription_ids):" not in source
 
 
 def test_admin_ipv4_replacement_is_owner_backed_and_billing_isolated() -> None:

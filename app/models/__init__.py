@@ -678,6 +678,7 @@ from app.models.payment_proof import (  # noqa: F401
     WithholdingTaxTransition,
     WithholdingTaxTransitionImmutableError,
 )
+from app.models.plan_family_catalogue import PlanFamilyCatalogue  # noqa: F401
 from app.models.portal_message import (  # noqa: F401
     PortalMessage,
     PortalMessageStatus,
@@ -935,8 +936,12 @@ from app.models.task_execution import (  # noqa: F401
     TaskExecutionStatus,
 )
 from app.models.team_inbox import (  # noqa: F401
+    InboxAgentIntroductionPreference,
     InboxAgentPresence,
     InboxAgentPresenceStatus,
+    InboxAutomationActionType,
+    InboxAutomationRule,
+    InboxAutomationTrigger,
     InboxChannelType,
     InboxComment,
     InboxContactLink,
@@ -944,6 +949,7 @@ from app.models.team_inbox import (  # noqa: F401
     InboxConversationAssignment,
     InboxConversationLabel,
     InboxConversationLeadLink,
+    InboxConversationQueueEntry,
     InboxConversationStatus,
     InboxConversationTeam,
     InboxLabel,
@@ -952,6 +958,7 @@ from app.models.team_inbox import (  # noqa: F401
     InboxMessageDirection,
     InboxMessageTemplate,
     InboxReplyMacro,
+    InboxReplyReminder,
     InboxSavedFilter,
     InboxTeamRole,
     InboxTeamSource,

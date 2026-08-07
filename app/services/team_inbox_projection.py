@@ -34,6 +34,7 @@ from app.services import (
     team_inbox_read,
     team_inbox_read_state,
 )
+from app.services.catalog import plan_family_catalogues
 from app.services.list_query import (
     ListDefinition,
     ListFieldDefinition,
@@ -41,6 +42,7 @@ from app.services.list_query import (
     PageMeta,
     request_needs_canonicalization,
 )
+from app.services.sales import lead_intake
 
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 
@@ -89,8 +91,8 @@ INBOX_LIST_DEFINITION = ListDefinition(
         ListFieldDefinition("last_message_at", "Last activity", sortable=True),
         ListFieldDefinition("created_at", "Created", sortable=True),
     ),
-    default_sort=InboxListSort.priority.value,
-    default_sort_dir=InboxSortDirection.ascending.value,
+    default_sort=InboxListSort.last_message_at.value,
+    default_sort_dir=InboxSortDirection.descending.value,
     per_page_options=(10, 25, 50, 100),
     default_per_page=25,
 )
@@ -154,6 +156,8 @@ class InboxActionEligibility:
     can_reopen: bool
     can_link_contact: bool
     can_mark_read: bool
+    can_issue_lead_form: bool
+    lead_form_reason: str
     reason: str | None = None
 
 
@@ -181,6 +185,7 @@ class InboxConversationProjection:
     conversation_labels: tuple[team_inbox_operations.LabelOption, ...]
     macro_options: tuple[team_inbox_operations.MacroOption, ...]
     template_options: tuple[team_inbox_operations.MessageTemplateOption, ...]
+    catalogue_options: tuple[plan_family_catalogues.PlanFamilyCatalogueOption, ...]
     action_eligibility: InboxActionEligibility
     is_unread: bool
     priority_options: tuple[InboxPriorityOption, ...]
@@ -282,6 +287,7 @@ class InboxQueueProjection:
     assignment_counts: InboxAssignmentCounts
     status_options: tuple[str, ...]
     channel_options: tuple[str, ...]
+    priority_options: tuple[InboxPriorityOption, ...]
     label_options: tuple[team_inbox_operations.LabelOption, ...]
     saved_filters: tuple[team_inbox_operations.SavedFilterOption, ...]
     selected_id: str | None
@@ -657,6 +663,7 @@ def get_conversation_projection(
         return None
     is_resolved = timeline.status == InboxConversationStatus.resolved.value
     summary = subscriber_summary.subscriber_summary(db, timeline.subscriber_id)
+    lead_eligibility = lead_intake.manual_invitation_eligibility(db, conversation_id)
     return InboxConversationProjection(
         timeline=timeline,
         subscriber_summary=summary,
@@ -671,12 +678,15 @@ def get_conversation_projection(
         template_options=tuple(
             team_inbox_operations.list_templates(db, channel_type=timeline.channel_type)
         ),
+        catalogue_options=plan_family_catalogues.list_catalogue_options(db),
         action_eligibility=InboxActionEligibility(
             can_reply=not is_resolved,
             can_resolve=not is_resolved,
             can_reopen=is_resolved,
             can_link_contact=bool(timeline.contact_address),
             can_mark_read=actor_person_id is not None,
+            can_issue_lead_form=lead_eligibility.eligible,
+            lead_form_reason=lead_eligibility.reason,
             reason="Resolved conversations must be reopened before replying."
             if is_resolved
             else None,
@@ -1135,6 +1145,7 @@ def build_queue_projection(
         ),
         status_options=tuple(item.value for item in InboxConversationStatus),
         channel_options=tuple(item.value for item in InboxChannelType),
+        priority_options=INBOX_PRIORITY_OPTIONS,
         label_options=tuple(team_inbox_operations.list_labels(db)),
         saved_filters=tuple(
             team_inbox_operations.list_saved_filters(

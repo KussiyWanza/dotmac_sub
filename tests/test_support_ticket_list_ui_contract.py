@@ -386,6 +386,7 @@ def test_ticket_full_and_htmx_views_share_canonical_accessible_partials():
     assert '<option value="not_closed"' in list_partial
     assert ">Not closed</option>" in list_partial
     assert 'id="ticket-filter-apply"' in list_partial
+    assert '@click="open = false"' in list_partial
     assert 'aria-label="Apply ticket filters"' in list_partial
     assert 'hx-include="#ticket-filter-form"' in list_partial
     assert 'hx-sync="#ticket-filter-form:replace"' in list_partial

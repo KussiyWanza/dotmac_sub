@@ -162,7 +162,6 @@ service_intent.subscription_billing_cadence
 service_intent.subscription_lifecycle
 service_intent.subscription_lifecycle_execution
 service_intent.subscription_lifecycle_scheduling
-service_intent.subscription_nas_assignment
 sessions.enforcement
 sessions.radius_accounting_health
 sessions.radius_reconciliation

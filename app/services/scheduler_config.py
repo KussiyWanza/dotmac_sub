@@ -1153,6 +1153,20 @@ def build_beat_schedule() -> dict:
         )
         _sync_scheduled_task(
             session,
+            name="team_inbox_fifo_queue_promotion",
+            task_name="app.tasks.team_inbox.promote_queued_conversations",
+            enabled=True,
+            interval_seconds=60,
+        )
+        _sync_scheduled_task(
+            session,
+            name="team_inbox_reply_reminders",
+            task_name="app.tasks.team_inbox.send_reply_reminders",
+            enabled=True,
+            interval_seconds=60,
+        )
+        _sync_scheduled_task(
+            session,
             name="team_inbox_ai_intake_recovery",
             task_name="app.tasks.team_inbox.recover_stale_ai_intake",
             enabled=True,
@@ -2094,8 +2108,8 @@ def build_beat_schedule() -> dict:
 
         # Expense-claim status reconciliation. Polls ERP for
         # in-flight claims and refreshes expense_claim_status on the source row.
-        # Same master gate (dotmac_erp_sync_enabled, default OFF) → inert until
-        # cutover; read-only against ERP, so re-running is always safe.
+        # The validated ERP status capability gates this read-only schedule;
+        # per-flow ownership independently gates outbound delivery.
         dotmac_erp_expense_refresh_interval = resolve_integer(
             session,
             SettingDomain.integration,
@@ -2111,9 +2125,9 @@ def build_beat_schedule() -> dict:
 
         # Material-request status reconciliation. Polls ERP for
         # in-flight ISSUE requests and refreshes support_status on the source
-        # row (flipping to fulfilled when ERP reports it). Same master gate
-        # (dotmac_erp_sync_enabled, default OFF) → inert until cutover; read-only
-        # against ERP, so re-running is always safe.
+        # row (flipping to fulfilled when ERP reports it). The validated ERP
+        # status capability gates this read-only schedule; per-flow ownership
+        # independently gates outbound delivery.
         dotmac_erp_material_refresh_interval = resolve_integer(
             session,
             SettingDomain.integration,

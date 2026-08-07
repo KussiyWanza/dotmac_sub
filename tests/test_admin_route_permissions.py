@@ -74,6 +74,18 @@ def test_catalog_routes_require_catalog_permissions():
         "POST",
         "catalog:billing_write",
     )
+    for path, method in (
+        ("/catalog/subscriptions/service-access/available-ipv4", "GET"),
+        ("/catalog/subscriptions/{subscription_id}/access/move", "GET"),
+        ("/catalog/subscriptions/{subscription_id}/access/move/preview", "POST"),
+        ("/catalog/subscriptions/{subscription_id}/access/move/confirm", "POST"),
+    ):
+        assert _route_has_permission(
+            admin_catalog.router,
+            path,
+            method,
+            "catalog:write",
+        )
 
 
 def test_billing_catalog_api_mutations_require_narrow_permission():

@@ -159,6 +159,30 @@ def test_admin_ticket_creation_customer_email_stays_in_lifecycle_owner() -> None
     assert "default_channels=(NotificationChannel.email,)" in lifecycle
 
 
+def test_unmatched_radio_creation_delegates_to_silent_ticket_participant() -> None:
+    lifecycle = _source("app/services/support.py")
+    queue = _source("app/services/unmatched_radio_queue.py")
+
+    assert "class TicketCreationConsequenceMode" in lifecycle
+    assert "stage_internal_creation_participant" in lifecycle
+    assert "stage_internal_observation_participant" in lifecycle
+    assert "Ticket(" not in queue
+    assert "stage_internal_creation_participant(" in queue
+    assert "stage_internal_observation_participant(" in queue
+
+    allowed = {
+        "app/services/support.py",
+        "app/services/unmatched_radio_queue.py",
+    }
+    for path in (ROOT / "app" / "services").rglob("*.py"):
+        relative = path.relative_to(ROOT).as_posix()
+        if relative in allowed:
+            continue
+        source = path.read_text(encoding="utf-8")
+        assert "stage_internal_creation_participant(" not in source, relative
+        assert "stage_internal_observation_participant(" not in source, relative
+
+
 def test_ticket_work_order_field_results_cannot_close_ticket() -> None:
     source = _source("app/services/ticket_work_order_handoff.py")
     assert "execute_owner_command(" in source

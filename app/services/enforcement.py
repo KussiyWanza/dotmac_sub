@@ -5,9 +5,11 @@ from __future__ import annotations
 import logging
 import re
 import threading
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from ipaddress import IPv4Address
 from typing import Any
 from uuid import UUID
 
@@ -33,11 +35,15 @@ from app.models.usage import AccountingStatus, RadiusAccountingSession
 from app.services import control_registry, settings_spec
 from app.services.common import coerce_uuid
 from app.services.credential_crypto import decrypt_credential
+from app.services.domain_errors import DomainError
 from app.services.nas import DeviceProvisioner
 from app.services.radius_address_lists import suspended_address_list
 from app.services.secrets import resolve_secret
 
 logger = logging.getLogger(__name__)
+
+_TERMINAL_SESSION_SETTLE_TIMEOUT_SECONDS = 15.0
+_TERMINAL_SESSION_POLL_INTERVAL_SECONDS = 0.5
 
 # Characters that could break RouterOS CLI quoting or inject commands
 _ROUTEROS_UNSAFE_RE = re.compile(r'[";\\{}\n\r]')
@@ -75,6 +81,36 @@ class CoADisconnectOutcome:
     @property
     def terminal(self) -> bool:
         return self.disconnected or self.session_absent
+
+
+class SessionDisconnectReason(StrEnum):
+    """Stable reasons accepted by the typed session-enforcement boundary."""
+
+    ip_assignment_served_projection_repaired = (
+        "ip_assignment_served_projection_repaired"
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ConfirmedSessionDisconnectCommand:
+    """Disconnect only sessions on one reviewed old service address."""
+
+    subscription_id: UUID
+    framed_ipv4_address: IPv4Address
+    reason: SessionDisconnectReason
+
+
+@dataclass(frozen=True, slots=True)
+class ConfirmedSessionDisconnectOutcome:
+    """Terminal result after authoritative radacct convergence."""
+
+    subscription_id: UUID
+    framed_ipv4_address: IPv4Address
+    disconnect_count: int
+
+
+class SessionEnforcementError(DomainError):
+    """Fail-closed session command or authoritative-observation failure."""
 
 
 def _disconnect_error_cause(response: object) -> int | None:
@@ -846,7 +882,12 @@ def _enforce_address_list_on_nas(
         return False
 
 
-def _open_radacct_sessions_for_username(db: Session, username: str) -> list[dict]:
+def _open_radacct_sessions_for_username(
+    db: Session,
+    username: str,
+    *,
+    fail_closed: bool = False,
+) -> list[dict]:
     """Open sessions straight from radacct (the source of truth).
 
     The imported RadiusAccountingSession rows lag behind radacct and their
@@ -867,6 +908,11 @@ def _open_radacct_sessions_for_username(db: Session, username: str) -> list[dict
 
         target = authoritative_accounting_target(db)
         if not target:
+            if fail_closed:
+                raise SessionEnforcementError(
+                    code="access.session_enforcement.accounting_target_unavailable",
+                    message="Authoritative RADIUS accounting is not configured.",
+                )
             return []
         engine = get_external_engine(target["db_url"])
         radacct = external_radius_table(
@@ -898,8 +944,15 @@ def _open_radacct_sessions_for_username(db: Session, username: str) -> list[dict
             {"session_id": r[0], "nas_ip": r[1], "framed_ip": r[2] or None}
             for r in rows
         ]
+    except SessionEnforcementError:
+        raise
     except Exception as exc:  # noqa: BLE001
         logger.warning("radacct open-session lookup failed for %s: %s", username, exc)
+        if fail_closed:
+            raise SessionEnforcementError(
+                code="access.session_enforcement.accounting_observation_unavailable",
+                message="Authoritative RADIUS session state could not be read.",
+            ) from exc
         return []
 
 
@@ -929,6 +982,7 @@ def disconnect_subscription_sessions(
     *,
     framed_ip_address: str | None = None,
     require_terminal: bool = False,
+    authoritative_only: bool = False,
 ) -> int:
     subscription = db.get(Subscription, coerce_uuid(subscription_id))
     if not subscription:
@@ -941,7 +995,11 @@ def disconnect_subscription_sessions(
     # to dedupe against the legacy app-side rows added below.
     targets: dict[str, tuple[Any, str | None, str, str | None]] = {}
     found = 0
-    for sess in _open_radacct_sessions_for_username(db, login):
+    for sess in _open_radacct_sessions_for_username(
+        db,
+        login,
+        fail_closed=require_terminal,
+    ):
         observed_framed_ip = str(sess["framed_ip"] or "").strip()
         if expected_framed_ip and observed_framed_ip != expected_framed_ip:
             continue
@@ -965,11 +1023,15 @@ def disconnect_subscription_sessions(
     # Secondary source: app-side imported sessions (covers sessions whose
     # login changed after they started).
     legacy_sessions = (
-        db.query(RadiusAccountingSession)
-        .filter(RadiusAccountingSession.subscription_id == subscription.id)
-        .filter(RadiusAccountingSession.session_end.is_(None))
-        .filter(RadiusAccountingSession.status_type != AccountingStatus.stop)
-        .all()
+        []
+        if authoritative_only
+        else (
+            db.query(RadiusAccountingSession)
+            .filter(RadiusAccountingSession.subscription_id == subscription.id)
+            .filter(RadiusAccountingSession.session_end.is_(None))
+            .filter(RadiusAccountingSession.status_type != AccountingStatus.stop)
+            .all()
+        )
     )
     for session in legacy_sessions:
         if session.session_id in targets:
@@ -1107,17 +1169,64 @@ def disconnect_subscription_sessions(
             subscription_id,
         )
     if require_terminal:
-        remaining_sessions = [
-            session
-            for session in _open_radacct_sessions_for_username(db, login)
-            if not expected_framed_ip
-            or str(session["framed_ip"] or "").strip() == expected_framed_ip
-        ]
-        if remaining_sessions:
-            raise RuntimeError(
-                "One or more targeted RADIUS sessions remain active after disconnect."
-            )
+        deadline = time.monotonic() + _TERMINAL_SESSION_SETTLE_TIMEOUT_SECONDS
+        while True:
+            remaining_sessions = [
+                session
+                for session in _open_radacct_sessions_for_username(
+                    db,
+                    login,
+                    fail_closed=True,
+                )
+                if not expected_framed_ip
+                or str(session["framed_ip"] or "").strip() == expected_framed_ip
+            ]
+            if not remaining_sessions:
+                break
+            remaining_seconds = deadline - time.monotonic()
+            if remaining_seconds <= 0:
+                raise SessionEnforcementError(
+                    code="access.session_enforcement.terminal_session_timeout",
+                    message=(
+                        "One or more targeted RADIUS sessions remained active "
+                        "after the disconnect settle window."
+                    ),
+                    details={"remaining_session_count": len(remaining_sessions)},
+                )
+            time.sleep(min(_TERMINAL_SESSION_POLL_INTERVAL_SECONDS, remaining_seconds))
     return count
+
+
+def disconnect_subscription_sessions_confirmed(
+    db: Session,
+    command: ConfirmedSessionDisconnectCommand,
+) -> ConfirmedSessionDisconnectOutcome:
+    """Issue one exact-old-IP disconnect and wait for terminal radacct evidence.
+
+    The bounded poll only observes. It never sends a second disconnect, so a
+    normal NAS accounting-write delay cannot turn one consequence into a
+    failed durable event and a second customer interruption on retry.
+    """
+
+    try:
+        count = disconnect_subscription_sessions(
+            db,
+            str(command.subscription_id),
+            reason=command.reason.value,
+            framed_ip_address=str(command.framed_ipv4_address),
+            require_terminal=True,
+            authoritative_only=True,
+        )
+    except HTTPException as exc:
+        raise SessionEnforcementError(
+            code="access.session_enforcement.subscription_not_found",
+            message="The subscription selected for session enforcement was not found.",
+        ) from exc
+    return ConfirmedSessionDisconnectOutcome(
+        subscription_id=command.subscription_id,
+        framed_ipv4_address=command.framed_ipv4_address,
+        disconnect_count=count,
+    )
 
 
 def network_identity_signature(db: Session, subscription: Subscription) -> tuple:

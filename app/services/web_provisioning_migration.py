@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
 from app.models.catalog import CatalogOffer, Subscription
-from app.models.network import IPAssignment, IpPool, IPVersion, OntAssignment
+from app.models.network import IPAssignment, IPVersion, OntAssignment
 from app.models.network_monitoring import PopSite
 from app.models.subscriber import Reseller, Subscriber, SubscriberStatus
 from app.services import domain_settings as domain_settings_service
@@ -290,6 +290,15 @@ def _table_row(subscriber: Subscriber) -> dict[str, Any]:
 
 
 def _require_targets(targets: MigrationTargets) -> None:
+    if targets.nas_device_id or targets.ip_pool_id:
+        raise HTTPException(
+            status_code=410,
+            detail=(
+                "Bulk router and IP-pool migration is retired. Use Move service "
+                "access on each subscription so an exact target router, linked "
+                "pool, and free IPv4 are reviewed and committed atomically."
+            ),
+        )
     if targets.pon_port_id:
         raise HTTPException(
             status_code=410,
@@ -343,26 +352,6 @@ def _preview_changes(
                 "field": "Plan",
                 "from": row.get("current_plan") or "-",
                 "to": target_offer.name if target_offer else targets.offer_id,
-            }
-        )
-    if targets.nas_device_id:
-        from app.models.catalog import NasDevice
-
-        target_nas = db.get(NasDevice, targets.nas_device_id)
-        out["changes"].append(
-            {
-                "field": "Router/NAS",
-                "from": row.get("router_nas") or "-",
-                "to": target_nas.name if target_nas else targets.nas_device_id,
-            }
-        )
-    if targets.ip_pool_id:
-        target_pool = db.get(IpPool, targets.ip_pool_id)
-        out["changes"].append(
-            {
-                "field": "IP Pool",
-                "from": "Current pools",
-                "to": target_pool.name if target_pool else targets.ip_pool_id,
             }
         )
     return out
@@ -506,35 +495,6 @@ def _log_migration_audit(
     )
 
 
-def _update_ip_pool_for_subscriber(
-    db: Session, *, subscriber_id: str, pool_id: str
-) -> int:
-    target_pool = db.get(IpPool, pool_id)
-    if not target_pool:
-        raise ValueError("Target IP pool not found")
-
-    moved = 0
-    assignments = db.scalars(
-        select(IPAssignment)
-        .where(IPAssignment.subscriber_id == subscriber_id)
-        .where(IPAssignment.is_active.is_(True))
-    ).all()
-    for assignment in assignments:
-        if (
-            assignment.ip_version == IPVersion.ipv4
-            and assignment.ipv4_address is not None
-        ):
-            assignment.ipv4_address.pool_id = target_pool.id
-            moved += 1
-        if (
-            assignment.ip_version == IPVersion.ipv6
-            and assignment.ipv6_address is not None
-        ):
-            assignment.ipv6_address.pool_id = target_pool.id
-            moved += 1
-    return moved
-
-
 def execute_job(db: Session, *, job_id: str) -> dict[str, Any]:
     job = get_job(db, job_id)
     if not job:
@@ -589,14 +549,6 @@ def execute_job(db: Session, *, job_id: str) -> dict[str, Any]:
                     current,
                     previous_offer_id=previous_offer_id,
                 )
-            if targets.nas_device_id:
-                current.provisioning_nas_device_id = uuid.UUID(targets.nas_device_id)
-
-            moved_ip = 0
-            if targets.ip_pool_id:
-                moved_ip = _update_ip_pool_for_subscriber(
-                    db, subscriber_id=subscriber_id, pool_id=targets.ip_pool_id
-                )
             # ensure radius can be re-provisioned before committing this subscriber migration
             db.flush()
             sync_account_credentials_to_radius(db, subscriber.id)
@@ -604,15 +556,6 @@ def execute_job(db: Session, *, job_id: str) -> dict[str, Any]:
             migrated += 1
             db.commit()
 
-            # keep record of rows requiring manual checks (e.g., nothing changed in optional dimensions)
-            if moved_ip == 0 and targets.ip_pool_id:
-                failed_items.append(
-                    {
-                        "subscriber_id": subscriber_id,
-                        "subscriber_name": subscriber.full_name,
-                        "error": "No active IP assignment found for pool migration",
-                    }
-                )
         except Exception as exc:
             db.rollback()
             failed += 1
@@ -696,15 +639,11 @@ def page_options(db: Session, *, actor_id: str | None = None) -> dict[str, Any]:
         .where(NasDevice.is_active.is_(True))
         .order_by(NasDevice.name.asc())
     ).all()
-    ip_pools = db.scalars(
-        select(IpPool).where(IpPool.is_active.is_(True)).order_by(IpPool.name.asc())
-    ).all()
     return {
         "offers": offers,
         "resellers": resellers,
         "pop_sites": pop_sites,
         "nas_devices": nas_devices,
-        "ip_pools": ip_pools,
         "subscriber_statuses": [status.value for status in SubscriberStatus],
         "jobs": list_jobs(db, limit=20, actor_id=actor_id),
     }

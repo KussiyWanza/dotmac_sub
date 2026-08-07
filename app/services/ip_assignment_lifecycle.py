@@ -238,6 +238,7 @@ class RepairServiceIPv4ProjectionCommand:
 class ServiceIPv4ProjectionOutcome:
     subscription_id: UUID
     assignment_id: UUID
+    event_id: UUID
     previous_address: str
     desired_address: str
     observed_active_sessions: int
@@ -1231,9 +1232,16 @@ def _prior_projection_outcome(
             "idempotency_conflict",
             "The idempotency key was already used for different projection evidence.",
         )
+    event_id = metadata.get("event_id")
+    if not event_id:
+        _lifecycle_error(
+            "event_identity_unavailable",
+            "The prior repair predates exact durable-event identity; do not infer it.",
+        )
     return ServiceIPv4ProjectionOutcome(
         subscription_id=UUID(str(metadata["subscription_id"])),
         assignment_id=UUID(str(metadata["assignment_id"])),
+        event_id=UUID(str(event_id)),
         previous_address=str(metadata["previous_address"]),
         desired_address=str(metadata["desired_address"]),
         observed_active_sessions=int(metadata.get("observed_active_sessions") or 0),
@@ -1622,26 +1630,7 @@ def _repair_service_ipv4_projection(
             "ip_assignment_lifecycle",
         )
 
-    stage_audit_event(
-        db,
-        action=_PROJECTION_BATCH_AUDIT_ACTION,
-        entity_type="ip_assignment_served_projection",
-        entity_id=idempotency_key,
-        actor_type=AuditActorType.service,
-        actor_id=command.context.actor,
-        metadata={
-            "subscription_id": str(subscription.id),
-            "assignment_id": str(current.assignment_id),
-            "previous_address": current.served_address,
-            "desired_address": current.desired_address,
-            "radius_mode": current.radius_mode,
-            "observed_active_sessions": current.active_session_count,
-            "old_address_sessions": current.old_address_session_count,
-            "preview_fingerprint": current.fingerprint,
-            "reason": command.context.reason,
-        },
-    )
-    emit_event(
+    event = emit_event(
         db,
         EventType.ip_assignment_served_projection_repaired,
         {
@@ -1656,10 +1645,31 @@ def _repair_service_ipv4_projection(
         subscriber_id=subscription.subscriber_id,
         subscription_id=subscription.id,
     )
+    stage_audit_event(
+        db,
+        action=_PROJECTION_BATCH_AUDIT_ACTION,
+        entity_type="ip_assignment_served_projection",
+        entity_id=idempotency_key,
+        actor_type=AuditActorType.service,
+        actor_id=command.context.actor,
+        metadata={
+            "subscription_id": str(subscription.id),
+            "assignment_id": str(current.assignment_id),
+            "event_id": str(event.event_id),
+            "previous_address": current.served_address,
+            "desired_address": current.desired_address,
+            "radius_mode": current.radius_mode,
+            "observed_active_sessions": current.active_session_count,
+            "old_address_sessions": current.old_address_session_count,
+            "preview_fingerprint": current.fingerprint,
+            "reason": command.context.reason,
+        },
+    )
     db.flush()
     return ServiceIPv4ProjectionOutcome(
         subscription_id=subscription.id,
         assignment_id=current.assignment_id,
+        event_id=event.event_id,
         previous_address=current.served_address,
         desired_address=current.desired_address,
         observed_active_sessions=current.active_session_count,
@@ -1696,6 +1706,21 @@ def repair_service_ipv4_assignment(
     )
 
 
+def apply_service_ipv4_assignment_participant(
+    db: Session,
+    command: RepairServiceIPv4AssignmentCommand,
+) -> ServiceIPv4AssignmentRepairOutcome:
+    """Apply reviewed IPv4 ledger work inside a coordinating owner command.
+
+    The caller owns the root transaction. This participant remains flush-only
+    and preserves ``network.ip_assignment_lifecycle`` as the canonical writer.
+    Architecture tests restrict the call site to the reviewed service-access
+    move coordinator.
+    """
+
+    return _repair_service_ipv4_assignment(db, command)
+
+
 def repair_service_ipv4_projection(
     db: Session,
     command: RepairServiceIPv4ProjectionCommand,
@@ -1708,6 +1733,15 @@ def repair_service_ipv4_projection(
         context=command.context,
         operation=lambda: _repair_service_ipv4_projection(db, command),
     )
+
+
+def apply_service_ipv4_projection_participant(
+    db: Session,
+    command: RepairServiceIPv4ProjectionCommand,
+) -> ServiceIPv4ProjectionOutcome:
+    """Apply the served-IP projection inside a coordinating owner command."""
+
+    return _repair_service_ipv4_projection(db, command)
 
 
 __all__ = [
@@ -1727,6 +1761,8 @@ __all__ = [
     "ServiceIPv4AssignmentRepairPreview",
     "ServiceIPv4ProjectionOutcome",
     "ServiceIPv4ProjectionPreview",
+    "apply_service_ipv4_assignment_participant",
+    "apply_service_ipv4_projection_participant",
     "preview_ip_assignment_service_ownership",
     "preview_service_ipv4_assignment_repair",
     "preview_service_ipv4_projection_repair",

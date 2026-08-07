@@ -1434,6 +1434,7 @@ DOMAIN = DomainSOT(
                 "routing assignment and escalation policy",
                 "routing assignment and escalation transitions",
                 "immutable routing assignment and escalation evidence",
+                "durable FIFO queue admission and promotion",
             ),
             depends_on=(
                 "ai.intake",
@@ -1452,6 +1453,10 @@ DOMAIN = DomainSOT(
                     (
                         "immutable routing assignment and escalation evidence",
                         OwnerRole.AUTHORITATIVE_RECORD,
+                    ),
+                    (
+                        "durable FIFO queue admission and promotion",
+                        OwnerRole.COMMAND_WRITER,
                     ),
                 ),
                 inputs=(
@@ -1484,7 +1489,118 @@ DOMAIN = DomainSOT(
                 event_types=(
                     "team_inbox.assignment_changed.v1",
                     "team_inbox.escalated.v1",
+                    "team_inbox.queue_promoted.v1",
                 ),
+                projections=("FIFO queue position and estimated wait",),
+                test_refs=("tests/test_team_inbox_fifo_queue.py",),
+            ),
+        ),
+        SOTService(
+            name="communications.team_inbox_automation",
+            module="app.services.team_inbox_automation",
+            owns=(
+                "Team Inbox automation trigger matching",
+                "ordered Inbox automation action execution",
+            ),
+            depends_on=(
+                "communications.team_inbox_threads",
+                "communications.team_inbox_routing",
+                "communications.team_inbox_commands",
+            ),
+            contract=_team_inbox_contract(
+                service_name="communications.team_inbox_automation",
+                concerns=(
+                    ("Team Inbox automation trigger matching", OwnerRole.POLICY),
+                    (
+                        "ordered Inbox automation action execution",
+                        OwnerRole.APPLICATION_COORDINATOR,
+                    ),
+                ),
+                inputs=(
+                    AuthorityInput(
+                        name="conversation trigger facts",
+                        owner="communications.team_inbox_threads",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="Typed conversation channel, status, priority, team and contact-resolution state.",
+                    ),
+                    AuthorityInput(
+                        name="routing and collaboration commands",
+                        owner="communications.team_inbox_routing",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source="Validated assign, auto-assign and label participant operations.",
+                    ),
+                ),
+                transaction_mode=TransactionMode.COORDINATOR_MANAGED,
+                event_types=("team_inbox.automation_executed.v1",),
+                test_refs=("tests/test_team_inbox_automation.py",),
+            ),
+        ),
+        SOTService(
+            name="communications.team_inbox_reply_reminders",
+            module="app.services.team_inbox_reply_reminders",
+            owns=("agent reply reminder scheduling and repeat delivery",),
+            depends_on=(
+                "communications.team_inbox_threads",
+                "communications.team_inbox_routing",
+                "communications.intents",
+                "control.settings_spec",
+            ),
+            contract=_team_inbox_contract(
+                service_name="communications.team_inbox_reply_reminders",
+                concerns=(
+                    (
+                        "agent reply reminder scheduling and repeat delivery",
+                        OwnerRole.COMMAND_WRITER,
+                    ),
+                ),
+                inputs=(
+                    AuthorityInput(
+                        name="assignment and message chronology",
+                        owner="communications.team_inbox_routing",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="Active assignment plus latest inbound and agent outbound timestamps.",
+                    ),
+                    AuthorityInput(
+                        name="configured reminder intervals",
+                        owner="control.settings_spec",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source="Validated delay and repeat minute settings.",
+                    ),
+                ),
+                transaction_mode=TransactionMode.OWNER_MANAGED,
+                event_types=("team_inbox.reply_reminder_queued.v1",),
+                test_refs=("tests/test_team_inbox_reply_reminders.py",),
+            ),
+        ),
+        SOTService(
+            name="communications.team_inbox_agent_introduction",
+            module="app.services.team_inbox_agent_introduction",
+            owns=(
+                "per-agent introduction preference",
+                "chat-widget first-pickup introduction policy",
+            ),
+            depends_on=(
+                "communications.team_inbox_routing",
+                "communications.team_inbox_outbound_intents",
+                "auth.permission_gate",
+            ),
+            contract=_team_inbox_contract(
+                service_name="communications.team_inbox_agent_introduction",
+                concerns=(
+                    ("per-agent introduction preference", OwnerRole.COMMAND_WRITER),
+                    ("chat-widget first-pickup introduction policy", OwnerRole.POLICY),
+                ),
+                inputs=(
+                    AuthorityInput(
+                        name="agent pickup and channel",
+                        owner="communications.team_inbox_routing",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="Assigned system-user identity and exact conversation channel.",
+                    ),
+                ),
+                transaction_mode=TransactionMode.PARTICIPANT,
+                event_types=("team_inbox.agent_introduction_sent.v1",),
+                test_refs=("tests/test_team_inbox_agent_introduction.py",),
             ),
         ),
         SOTService(

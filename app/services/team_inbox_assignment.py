@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
+from math import ceil
 from typing import TypeVar
 from uuid import UUID, uuid4
 
@@ -20,14 +21,17 @@ from app.models.team_inbox import (
     InboxAuditSource,
     InboxConversation,
     InboxConversationAssignment,
+    InboxConversationQueueEntry,
     InboxConversationStatus,
     InboxConversationTeam,
+    InboxQueueEntryStatus,
     InboxRoutingDecisionMode,
     InboxRoutingEvent,
     InboxRoutingEventType,
     InboxTeamRole,
     InboxTeamSource,
 )
+from app.services import team_inbox_agent_introduction
 from app.services.owner_commands import (
     CommandContext,
     OwnerCommandDefinition,
@@ -83,6 +87,92 @@ class InboxAssignmentResult:
     service_team_id: str | None
     assigned_person_id: str | None = None
     reason: str | None = None
+
+
+@dataclass(frozen=True)
+class InboxQueueSweepCommand:
+    context: CommandContext
+    limit: int = 200
+    now: datetime | None = None
+
+
+@dataclass(frozen=True)
+class InboxQueueSweepResult:
+    promoted: int
+    cancelled: int
+    remaining: int
+
+
+@dataclass(frozen=True)
+class InboxTeamCapacitySnapshot:
+    active_assignments: int
+    total_capacity: int
+
+
+def estimate_queue_wait_minutes(
+    *,
+    queue_position: int,
+    active_assignments: int,
+    total_capacity: int,
+    average_handle_minutes: int = 10,
+) -> int | None:
+    """Estimate FIFO wait in whole service cycles from a capacity snapshot."""
+    if queue_position < 1 or total_capacity < 1 or average_handle_minutes < 1:
+        return None
+    conversations_ahead_of_capacity = max(
+        0, active_assignments + queue_position - total_capacity
+    )
+    return (
+        ceil(conversations_ahead_of_capacity / total_capacity) * average_handle_minutes
+    )
+
+
+def team_capacity_snapshot(
+    db: Session,
+    service_team_id: str | UUID,
+    *,
+    default_max_concurrent: int = DEFAULT_MAX_CONCURRENT_CONVERSATIONS,
+) -> InboxTeamCapacitySnapshot:
+    team_uuid = _coerce_uuid(service_team_id)
+    if team_uuid is None:
+        return InboxTeamCapacitySnapshot(active_assignments=0, total_capacity=0)
+    member_users = (
+        db.query(ServiceTeamMember, SystemUser)
+        .join(SystemUser, SystemUser.person_party_id == ServiceTeamMember.person_id)
+        .filter(ServiceTeamMember.team_id == team_uuid)
+        .filter(ServiceTeamMember.is_active.is_(True))
+        .filter(SystemUser.is_active.is_(True))
+        .all()
+    )
+    person_ids = [user.id for _member, user in member_users]
+    if not person_ids:
+        return InboxTeamCapacitySnapshot(active_assignments=0, total_capacity=0)
+    presences = {
+        row.person_id: row
+        for row in db.query(InboxAgentPresence)
+        .filter(InboxAgentPresence.person_id.in_(person_ids))
+        .all()
+    }
+    online_ids = [
+        person_id
+        for person_id, presence in presences.items()
+        if _effective_presence_status(presence) == InboxAgentPresenceStatus.online.value
+    ]
+    total_capacity = sum(
+        presences[person_id].max_concurrent_conversations or default_max_concurrent
+        for person_id in online_ids
+    )
+    active = (
+        db.query(func.count(InboxConversationAssignment.id))
+        .filter(InboxConversationAssignment.is_active.is_(True))
+        .filter(InboxConversationAssignment.person_id.in_(online_ids))
+        .scalar()
+        if online_ids
+        else 0
+    )
+    return InboxTeamCapacitySnapshot(
+        active_assignments=int(active or 0), total_capacity=int(total_capacity)
+    )
 
 
 def _coerce_uuid(value: str | UUID | None) -> UUID | None:
@@ -327,6 +417,79 @@ def _active_assignment(
     )
 
 
+def _lock_team(db: Session, team_id: UUID) -> ServiceTeam | None:
+    return (
+        db.query(ServiceTeam)
+        .filter(ServiceTeam.id == team_id)
+        .with_for_update()
+        .one_or_none()
+    )
+
+
+def _queue_entry(
+    db: Session, conversation_id: UUID
+) -> InboxConversationQueueEntry | None:
+    return (
+        db.query(InboxConversationQueueEntry)
+        .filter(InboxConversationQueueEntry.conversation_id == conversation_id)
+        .with_for_update()
+        .one_or_none()
+    )
+
+
+def _settle_queue_entry(
+    db: Session,
+    *,
+    conversation_id: UUID,
+    status: InboxQueueEntryStatus,
+    now: datetime,
+) -> None:
+    entry = _queue_entry(db, conversation_id)
+    if entry is None or entry.status != InboxQueueEntryStatus.queued.value:
+        return
+    entry.status = status.value
+    entry.settled_at = now
+    db.flush()
+
+
+def _admit_queue_entry(
+    db: Session,
+    *,
+    conversation_id: UUID,
+    service_team_id: UUID,
+    entered_at: datetime,
+) -> InboxConversationQueueEntry:
+    entry = _queue_entry(db, conversation_id)
+    if (
+        entry is not None
+        and entry.status == InboxQueueEntryStatus.queued.value
+        and entry.service_team_id == service_team_id
+    ):
+        return entry
+    _lock_team(db, service_team_id)
+    next_position = (
+        int(
+            db.query(
+                func.coalesce(func.max(InboxConversationQueueEntry.queue_position), 0)
+            )
+            .filter(InboxConversationQueueEntry.service_team_id == service_team_id)
+            .scalar()
+            or 0
+        )
+        + 1
+    )
+    if entry is None:
+        entry = InboxConversationQueueEntry(conversation_id=conversation_id)
+        db.add(entry)
+    entry.service_team_id = service_team_id
+    entry.queue_position = next_position
+    entry.status = InboxQueueEntryStatus.queued.value
+    entry.entered_at = entered_at
+    entry.settled_at = None
+    db.flush()
+    return entry
+
+
 def _append_routing_event(
     db: Session,
     *,
@@ -479,6 +642,12 @@ def assign_conversation_to_agent(
         metadata_={"reason": reason, "source": source},
     )
     db.add(assignment)
+    _settle_queue_entry(
+        db,
+        conversation_id=conversation.id,
+        status=InboxQueueEntryStatus.promoted,
+        now=assigned_at,
+    )
     _record_escalation_metadata(
         conversation,
         service_team_id=team_uuid,
@@ -489,6 +658,9 @@ def assign_conversation_to_agent(
         now=assigned_at,
     )
     db.flush()
+    team_inbox_agent_introduction.maybe_send_on_pickup(
+        db, conversation=conversation, person_id=person_uuid
+    )
     return InboxAssignmentResult(
         kind="assigned",
         service_team_id=str(team_uuid),
@@ -563,11 +735,17 @@ def queue_conversation_for_team(
         kind="queued",
         now=queued_at,
     )
+    _admit_queue_entry(
+        db,
+        conversation_id=conversation.id,
+        service_team_id=team_uuid,
+        entered_at=queued_at,
+    )
     db.flush()
     return InboxAssignmentResult(
         kind="queued",
         service_team_id=str(team_uuid),
-        reason="manual_queue",
+        reason=reason_code,
     )
 
 
@@ -591,6 +769,13 @@ def assign_conversation_to_available_agent(
             reason="service_team_id must be a valid UUID",
         )
 
+    team = _lock_team(db, team_uuid)
+    if team is None or not team.is_active:
+        return InboxAssignmentResult(
+            kind="invalid_team",
+            service_team_id=str(team_uuid),
+            reason="service_team_id must reference an active team",
+        )
     candidates = list_available_team_agents(db, team_uuid)
     if not candidates:
         result = queue_conversation_for_team(
@@ -700,4 +885,88 @@ def escalate_conversation_committed(
             assigned_by_person_id=assigned_by_person_id,
             reason=reason,
         ),
+    )
+
+
+def sweep_queued_conversations(
+    db: Session, command: InboxQueueSweepCommand
+) -> InboxQueueSweepResult:
+    if command.limit < 1:
+        raise ValueError("limit must be positive")
+    observed_at = command.now or datetime.now(UTC)
+
+    def _operation() -> InboxQueueSweepResult:
+        promoted = 0
+        cancelled = 0
+        entries = (
+            db.query(InboxConversationQueueEntry)
+            .filter(
+                InboxConversationQueueEntry.status == InboxQueueEntryStatus.queued.value
+            )
+            .order_by(
+                InboxConversationQueueEntry.entered_at.asc(),
+                InboxConversationQueueEntry.queue_position.asc(),
+            )
+            .limit(command.limit)
+            .with_for_update(skip_locked=True)
+            .all()
+        )
+        for entry in entries:
+            conversation = db.get(InboxConversation, entry.conversation_id)
+            if (
+                conversation is None
+                or not conversation.is_active
+                or conversation.status == InboxConversationStatus.resolved.value
+            ):
+                entry.status = InboxQueueEntryStatus.cancelled.value
+                entry.settled_at = observed_at
+                cancelled += 1
+                continue
+            if _active_assignment(db, conversation) is not None:
+                entry.status = InboxQueueEntryStatus.cancelled.value
+                entry.settled_at = observed_at
+                cancelled += 1
+                continue
+            team = _lock_team(db, entry.service_team_id)
+            if team is None or not team.is_active:
+                entry.status = InboxQueueEntryStatus.cancelled.value
+                entry.settled_at = observed_at
+                cancelled += 1
+                continue
+            candidates = list_available_team_agents(db, entry.service_team_id)
+            if not candidates:
+                continue
+            selected = candidates[0]
+            result = assign_conversation_to_agent(
+                db,
+                conversation=conversation,
+                service_team_id=entry.service_team_id,
+                person_id=selected.person_id,
+                reason="FIFO queue capacity became available",
+                source=InboxTeamSource.routing_rule.value,
+                now=observed_at,
+                decision_mode=InboxRoutingDecisionMode.automatic,
+                decision_evidence=selected,
+            )
+            if result.kind == "assigned":
+                promoted += 1
+        remaining = (
+            db.query(func.count(InboxConversationQueueEntry.id))
+            .filter(
+                InboxConversationQueueEntry.status == InboxQueueEntryStatus.queued.value
+            )
+            .scalar()
+            or 0
+        )
+        return InboxQueueSweepResult(
+            promoted=promoted,
+            cancelled=cancelled,
+            remaining=int(remaining),
+        )
+
+    return execute_owner_command(
+        db,
+        definition=_ROUTING_COMMAND,
+        context=command.context,
+        operation=_operation,
     )

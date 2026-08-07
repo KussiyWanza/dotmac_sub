@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Protocol
+from uuid import UUID
 
 from sqlalchemy.orm import Session
 
@@ -34,6 +36,20 @@ class BackofficeEnqueueResult:
     @property
     def requires_attention(self) -> bool:
         return self.status == "not_enqueued"
+
+
+@dataclass(frozen=True, slots=True)
+class BackofficeDeliveryView:
+    """Provider-neutral projection of one durable outbound delivery."""
+
+    flow_owner: str
+    sub_owns_delivery: bool
+    event_status: str | None
+    attempts: int
+    last_error: str | None
+    queued_at: datetime | None
+    updated_at: datetime | None
+    sent_at: datetime | None
 
 
 class BackofficeGateway(Protocol):
@@ -94,6 +110,41 @@ def _flow_owned_by_sub(db: Session, flow: str) -> bool:
 def external_material_fulfilment_active(db: Session) -> bool:
     """Return whether local issue/fulfil compatibility transitions are retired."""
     return _flow_owned_by_sub(db, "material_request")
+
+
+def get_material_request_delivery(
+    db: Session, request_id: UUID
+) -> BackofficeDeliveryView:
+    """Read material-request delivery state through the local back-office port."""
+    from app.models.field_erp_sync import (
+        FieldErpSyncEvent,
+        FieldErpSyncFlow,
+        SyncFlowOwner,
+        get_flow_ownership,
+    )
+
+    flow = FieldErpSyncFlow.material_request.value
+    owner = get_flow_ownership(db)[flow]
+    event = (
+        db.query(FieldErpSyncEvent)
+        .filter(
+            FieldErpSyncEvent.flow == flow,
+            FieldErpSyncEvent.entity_type == "field_material_request",
+            FieldErpSyncEvent.entity_id == request_id,
+        )
+        .order_by(FieldErpSyncEvent.created_at.desc())
+        .first()
+    )
+    return BackofficeDeliveryView(
+        flow_owner=owner,
+        sub_owns_delivery=owner == SyncFlowOwner.sub.value,
+        event_status=event.status if event is not None else None,
+        attempts=event.attempts if event is not None else 0,
+        last_error=event.last_error if event is not None else None,
+        queued_at=event.created_at if event is not None else None,
+        updated_at=event.updated_at if event is not None else None,
+        sent_at=event.sent_at if event is not None else None,
+    )
 
 
 def build_gateway(db: Session) -> BackofficeGateway:

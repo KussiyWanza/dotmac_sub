@@ -620,8 +620,8 @@ SERVICES: tuple[SOTService, ...] = (
                     owner="operations.work_orders",
                     kind=AuthorityKind.AUTHORITATIVE_RECORD,
                     source=(
-                        "active WorkOrder identity, field assignment, and "
-                        "service-workflow linkage"
+                        "active WorkOrder identity, field assignment, and native "
+                        "ticket, project, project-task service-workflow linkage"
                     ),
                 ),
                 AuthorityInput(
@@ -647,8 +647,8 @@ SERVICES: tuple[SOTService, ...] = (
                     owner="control.settings_spec",
                     kind=AuthorityKind.CONTROL_INPUT,
                     source=(
-                        "dotmac_erp_sync_enabled and material_request flow "
-                        "ownership gates"
+                        "validated ERP capability bindings and material_request "
+                        "flow ownership gate"
                     ),
                 ),
                 AuthorityInput(
@@ -765,8 +765,8 @@ SERVICES: tuple[SOTService, ...] = (
                     "fulfilment, idempotent outcome, allocation, and retry tests."
                 ),
                 cutover_gate=(
-                    "The material_request flow is assigned to Sub and ERP sync is "
-                    "enabled before approval can create ERP support work."
+                    "The material_request flow is assigned to Sub and the validated "
+                    "ERP outbox capability is enabled before delivery can begin."
                 ),
                 fallback_retirement=(
                     "Remove compatibility issue/fulfil actions after the Sub-owned "
@@ -781,6 +781,7 @@ SERVICES: tuple[SOTService, ...] = (
             test_refs=(
                 "tests/test_field_material_requests.py",
                 "tests/test_dotmac_erp_material_sync.py",
+                "tests/test_admin_material_requests.py",
             ),
         ),
     ),

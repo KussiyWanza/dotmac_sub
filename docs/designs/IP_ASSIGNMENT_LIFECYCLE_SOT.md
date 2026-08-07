@@ -59,6 +59,13 @@ add-on, billing contract, adjustment, invoice, or cadence fields. Replacing an
 address therefore preserves the customer's existing commercial entitlement
 and paid service period.
 
+An existing service's router and primary address move together through the
+reviewed coordinator documented in
+`docs/designs/SERVICE_ACCESS_MOVE_SOT.md`. That coordinator does not take over
+IPv4 authority: it invokes the lifecycle owner's required flush-only assignment
+and served-projection participants inside one root transaction. The generic
+subscription edit and legacy bulk migration paths cannot write the NAS/IP move.
+
 ## Command contract
 
 `preview_service_ipv4_assignment_repair` is read-only. Its SHA-256 binds:
@@ -209,12 +216,22 @@ The ordered sequence is therefore:
    - `ambiguous_service_assignment` = 0
    - `legacy_unbound_assignment` = 0
    - `ledger_integrity_violation` = 0
+   - `duplicate_served_projection` = 0
    - zero unresolved duplicate-login bindings
 
-   plus parity between the served projection, external RADIUS `Framed-IP-Address`
-   and the fresh live-session address for every projected login — a column that
-   agrees with its assignment while RADIUS still carries the old value is not
-   converged, merely half-written.
+   These ledger and served-projection classes are always evaluated against every
+   ACTIVE/BLOCKED projected subscription. `--nas` scopes only session findings,
+   and `--full` controls only serialization truncation; neither option narrows
+   the cutover cohort. This prevents ordinary login/session churn from changing
+   the alleged gate population.
+
+   The gate also requires parity between the served projection, external RADIUS
+   `Framed-IP-Address` and the fresh live-session address for every projected
+   login — a column that agrees with its assignment while RADIUS still carries
+   the old value is not converged, merely half-written. Session parity is
+   unavailable, never zero, when the active-session mirror is empty or contains
+   any row outside `network.radius_sessions.ACTIVE_SESSION_FRESHNESS`; the audit
+   exits non-zero until the owning reconciler produces a complete fresh mirror.
 
    Hold every one of those conditions across **two complete population and audit
    cycles** before enabling the gate. One clean cycle proves a moment; two prove
@@ -322,15 +339,23 @@ reviewed projection slice:
    `network.ip_assignment_lifecycle` in one fingerprint-bound owner command;
 3. emits `ip_assignment.served_projection_repaired` transactionally;
 4. lets the durable handler request `access.radius_projection` for the exact
-   identity and reauthenticate only sessions still framed with the old IP; and
-5. verify reconnect, accounting freshness, and traffic.
+   identity and issue one disconnect for sessions still framed with the old IP;
+5. polls authoritative `radacct` for up to 15 seconds without sending another
+   disconnect, ignoring the lagging imported accounting mirror on this exact
+   consequence, and failing the durable event when the old session does not
+   settle;
+   and
+6. verifies reconnect, accounting freshness, and traffic.
 
 The projection command fails closed on a missing or multiple exact assignment,
 cross-subscriber ownership, non-active service, shared-login selection,
 unavailable or already-divergent RADIUS evidence, conflicting session
-observations, and stale fingerprints. Event retries are safe because session
-enforcement targets only the old framed IP; a session that has reauthenticated
-onto the desired IP is not disconnected again.
+observations, stale fingerprints, and unavailable authoritative accounting.
+Normal NAS accounting-write delay is absorbed inside the single event attempt,
+so it cannot create a false failure and a second customer interruption. A real
+timeout fails durably. Event retries remain safe because enforcement targets
+only the old framed IP; a session that has reauthenticated onto the desired IP
+is not disconnected again.
 
 The final runtime cutover still removes `trust_ipam`, makes exact-service IPAM
 the unconditional RADIUS address input, retires legacy subscriber fallback,
@@ -349,6 +374,10 @@ Served projection repair uses
 `python -m scripts.one_off.repair_service_ipv4_projection` with the exact
 subscription and assignment identifiers. It is also dry-run by default and
 requires the exact preview fingerprint, idempotency key, actor, and reason.
+The typed command outcome includes the immutable durable event UUID. Apply waits
+for that exact UUID and event type to reach `completed`; `failed`, timeout, or a
+missing row returns non-zero. Operator tooling must never fall back to the newest
+event of the same type or subscription.
 
 The admin subscription detail page exposes the same owner preview as a
 server-owned **Reconcile served IPv4** action. It is absent when the projection
@@ -372,6 +401,14 @@ claiming success without repairing RADIUS and sessions.
   safety.
 - `tests/test_ip_assignment_projection_handler.py` proves RADIUS is projected
   before old-IP-only session enforcement.
+- `tests/test_enforcement_terminal_polling.py` proves one disconnect is followed
+  by bounded authoritative observation and that a lagging imported row cannot
+  trigger a second interruption on retry.
+- `tests/test_event_terminal_wait.py` proves exact event identity cannot be
+  replaced by a newer completed event.
+- `tests/test_nas_session_ip_divergence_audit.py` proves fleetwide projection
+  cohorts do not inherit NAS/session scope and stale or empty mirrors invalidate
+  session parity.
 - `tests/test_ip_consistency_audit.py` proves exact-service assignment lookup
   and policy-aware RADIUS reply expectations.
 - `tests/test_ip_assignment_repair.py` preserves the ownership-only migration

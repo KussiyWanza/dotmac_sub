@@ -1369,6 +1369,7 @@ def build_ticket_detail_context(
     *,
     ticket_lookup: str,
     actor_id: str | None = None,
+    can_read_material_requests: bool = False,
 ) -> dict:
     from uuid import uuid4
 
@@ -1379,6 +1380,20 @@ def build_ticket_detail_context(
     priority_options = support_ticket_settings_service.list_priority_options(db)
     ticket = support_service.tickets.get_by_lookup(db, ticket_lookup)
     linked_work_orders = ticket_work_order_handoff.list_for_ticket(db, ticket.id)
+    if can_read_material_requests:
+        from app.services.field.material_requests import (
+            MaterialRequestScope,
+            list_staff_material_requests,
+        )
+
+        material_requests = list_staff_material_requests(
+            db,
+            scope=MaterialRequestScope(ticket_id=ticket.id),
+            page=1,
+            per_page=100,
+        ).items
+    else:
+        material_requests = ()
     # Customer conversation history, so an agent sees what was already said on
     # other channels before replying here. `communications.team_inbox` owns these
     # rows; this is a read. Scoped by subscriber because no conversation-to-ticket
@@ -1477,6 +1492,10 @@ def build_ticket_detail_context(
         ),
         "identity_resolution": _identity_resolution_summary(ticket),
         "linked_work_orders": linked_work_orders,
+        "material_requests": material_requests,
+        "material_request_create_url": (
+            f"/admin/operations/material-requests/new?ticket_id={ticket.id}"
+        ),
         "ticket_conversations": ticket_conversations,
         "linked_project_tasks": linked_project_tasks,
         "issue_work_order_action": ticket_work_order_handoff.issue_action(

@@ -20,10 +20,12 @@ Three responsibilities live here:
 * **reconcile** — ``refresh_material_request_statuses`` polls ERP for in-flight
   requests and refreshes the mirror fields (ports CRM's status-poll refresh).
 
-INERT UNTIL CUTOVER: nothing here sends. The approve hook only enqueues when the
-master flag ``dotmac_erp_sync_enabled`` is on, and delivery is additionally gated
-per-flow by ``sync_flow_ownership.material_request`` (seeded ``crm``). Both must
-flip at cutover before a single request reaches ERP.
+INERT UNTIL CUTOVER: nothing here sends while
+``sync_flow_ownership.material_request`` remains ``crm``. Delivery and status
+workers are scheduled only when their validated ERP capability bindings are
+enabled; the retired ``dotmac_erp_sync_enabled`` setting is not a runtime gate.
+Ownership must be explicitly assigned to Sub after acceptance verification
+before a request reaches ERP.
 
 Warehouse and serial selection are first-class Sub fields. Stock and serial
 availability remain read-only ERP data, but each approved ISSUE records the

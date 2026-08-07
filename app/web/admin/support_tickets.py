@@ -32,7 +32,7 @@ from app.services import (
     web_support_ticket_bulk_actions as support_ticket_bulk_actions_service,
 )
 from app.services import web_support_tickets as support_web_service
-from app.services.auth_dependencies import require_permission
+from app.services.auth_dependencies import can, require_permission
 from app.services.list_query import ListQuery
 from app.web.request_parsing import parse_json_body
 
@@ -443,6 +443,7 @@ def ticket_detail(request: Request, ticket_lookup: str, db: Session = Depends(ge
             db,
             ticket_lookup=ticket_lookup,
             actor_id=_actor_id(request),
+            can_read_material_requests=can(request, "operations:material_request:read"),
         )
     )
     context["handoff_notice"] = request.query_params.get("handoff_notice")

@@ -1,6 +1,6 @@
 <!-- Catalog Components Horizontal Tab Navigation -->
 <div class="border-b border-slate-200 dark:border-slate-700">
-    <nav class="-mb-px flex space-x-8">
+    <nav class="-mb-px flex space-x-8 overflow-x-auto">
         <a href="/admin/catalog/settings"
            class="py-4 px-1 border-b-2 font-medium text-sm whitespace-nowrap
                   {{ 'border-primary-500 text-primary-600 dark:text-primary-400' if not settings_tab else 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300 dark:text-slate-400 dark:hover:text-slate-300' }}">
@@ -30,6 +30,11 @@
            class="py-4 px-1 border-b-2 font-medium text-sm whitespace-nowrap
                   {{ 'border-primary-500 text-primary-600 dark:text-primary-400' if settings_tab == 'add-ons' else 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300 dark:text-slate-400 dark:hover:text-slate-300' }}">
             Add-Ons
+        </a>
+        <a href="/admin/catalog/settings/catalogues"
+           class="py-4 px-1 border-b-2 font-medium text-sm whitespace-nowrap
+                  {{ 'border-primary-500 text-primary-600 dark:text-primary-400' if settings_tab == 'catalogues' else 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300 dark:text-slate-400 dark:hover:text-slate-300' }}">
+            Plan Catalogues
         </a>
     </nav>
 </div>
