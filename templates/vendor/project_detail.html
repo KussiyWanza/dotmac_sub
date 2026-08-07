@@ -347,6 +347,26 @@ window.VendorRouteAuthoring.mount({
       style: function (f) {
         var kind = f.properties && f.properties.kind;
         return { color: kind === 'as_built' ? '#10b981' : '#7c3aed', weight: 3, opacity: 0.6, dashArray: '6 6' };
+      },
+      pointToLayer: function (feature, latlng) {
+        var status = feature.properties && feature.properties.status;
+        var colors = { pending: '#f59e0b', applied: '#10b981', rejected: '#ef4444' };
+        return L.circleMarker(latlng, { radius: 7, color: '#fff', weight: 2, fillColor: colors[status] || '#f59e0b', fillOpacity: 0.95 });
+      },
+      onEachFeature: function (feature, layer) {
+        var properties = feature.properties || {};
+        if (properties.kind !== 'closure_proposal') return;
+        var popup = document.createElement('div');
+        var heading = document.createElement('strong');
+        heading.textContent = properties.name || 'Proposed closure';
+        popup.appendChild(heading);
+        popup.appendChild(document.createElement('br'));
+        popup.appendChild(document.createTextNode('Status: ' + String(properties.status || 'pending').replaceAll('_', ' ')));
+        if (properties.review_notes) {
+          popup.appendChild(document.createElement('br'));
+          popup.appendChild(document.createTextNode('Review note: ' + properties.review_notes));
+        }
+        layer.bindPopup(popup);
       }
     }).addTo(map);
     try {
