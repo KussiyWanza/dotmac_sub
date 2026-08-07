@@ -11,16 +11,19 @@ from __future__ import annotations
 
 import json
 import logging
+from uuid import UUID
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.models.fiber_change_request import FiberChangeRequest
 from app.models.vendor_routes import (
     AsBuiltRoute,
     InstallationProject,
     ProjectQuote,
     ProposedRouteRevision,
 )
+from app.models.work_order import WorkOrder
 from app.services.common import coerce_uuid
 
 logger = logging.getLogger(__name__)
@@ -54,6 +57,59 @@ def _project_label(project: InstallationProject | None) -> str:
     return f"Project {str(project.id)[:8]}"
 
 
+def _closure_proposal_features(
+    db: Session,
+    project: InstallationProject,
+    *,
+    vendor_id: UUID | None = None,
+) -> list[dict]:
+    """Project review-gated closure pins for one installation project."""
+
+    work_order_ids = {
+        str(row[0])
+        for row in db.query(WorkOrder.id)
+        .filter(WorkOrder.project_id == project.project_id)
+        .all()
+    }
+    if not work_order_ids:
+        return []
+    query = db.query(FiberChangeRequest).filter(
+        FiberChangeRequest.asset_type == "splice_closure"
+    )
+    if vendor_id is not None:
+        query = query.filter(FiberChangeRequest.requested_by_vendor_id == vendor_id)
+    features: list[dict] = []
+    for request in query.order_by(FiberChangeRequest.created_at.asc()).all():
+        payload = request.payload or {}
+        provenance = payload.get("provenance") or {}
+        if str(provenance.get("work_order_id") or "") not in work_order_ids:
+            continue
+        latitude = payload.get("latitude")
+        longitude = payload.get("longitude")
+        if latitude is None or longitude is None:
+            continue
+        features.append(
+            {
+                "type": "Feature",
+                "geometry": {
+                    "type": "Point",
+                    "coordinates": [float(longitude), float(latitude)],
+                },
+                "properties": {
+                    "id": str(request.id),
+                    "kind": "closure_proposal",
+                    "status": request.status.value,
+                    "name": payload.get("name") or "Proposed closure",
+                    "notes": payload.get("notes"),
+                    "work_order_id": provenance.get("work_order_public_id"),
+                    "review_notes": request.review_notes,
+                    "review_url": f"/admin/network/fiber-change-requests/{request.id}",
+                },
+            }
+        )
+    return features
+
+
 def build_project_route_geojson(db: Session, project_id: str) -> dict:
     """All proposed + as-built routes for an installation project as GeoJSON.
 
@@ -61,6 +117,9 @@ def build_project_route_geojson(db: Session, project_id: str) -> dict:
     ``proposed`` or ``as_built`` plus revision/status metadata.
     """
     features: list[dict] = []
+    project = db.get(InstallationProject, coerce_uuid(project_id))
+    if project is None:
+        return {"type": "FeatureCollection", "features": []}
 
     revisions = (
         db.query(ProposedRouteRevision)
@@ -115,6 +174,8 @@ def build_project_route_geojson(db: Session, project_id: str) -> dict:
             }
         )
 
+    features.extend(_closure_proposal_features(db, project))
+
     return {"type": "FeatureCollection", "features": features}
 
 
@@ -161,6 +222,9 @@ def build_vendor_project_route_geojson(
     project_uuid = coerce_uuid(project_id)
     vendor_uuid = coerce_uuid(vendor_id)
     features: list[dict] = []
+    project = db.get(InstallationProject, project_uuid)
+    if project is None:
+        return {"type": "FeatureCollection", "features": []}
 
     revisions = (
         db.query(ProposedRouteRevision)
@@ -220,6 +284,10 @@ def build_vendor_project_route_geojson(
             }
         )
 
+    features.extend(
+        _closure_proposal_features(db, project, vendor_id=vendor_uuid)
+    )
+
     return {"type": "FeatureCollection", "features": features}
 
 
@@ -242,7 +310,7 @@ def get_route_project(db: Session, project_id: str) -> dict | None:
 
 
 def list_route_projects(db: Session) -> list[dict]:
-    """Installation projects that carry any saved route geometry."""
+    """Installation projects that carry route geometry or closure proposals."""
     proposed_project_ids = {
         row[0]
         for row in (
@@ -265,7 +333,42 @@ def list_route_projects(db: Session) -> list[dict]:
             .all()
         )
     }
-    project_ids = proposed_project_ids | as_built_project_ids
+    closure_project_ids: set[UUID] = set()
+    closure_requests = (
+        db.query(FiberChangeRequest)
+        .filter(FiberChangeRequest.asset_type == "splice_closure")
+        .all()
+    )
+    closure_work_order_ids: set[UUID] = set()
+    for request in closure_requests:
+        work_order_id = (request.payload or {}).get("provenance", {}).get(
+            "work_order_id"
+        )
+        if not work_order_id:
+            continue
+        try:
+            closure_work_order_ids.add(UUID(str(work_order_id)))
+        except (TypeError, ValueError):
+            logger.warning(
+                "Ignoring closure proposal %s with invalid work-order provenance",
+                request.id,
+            )
+    if closure_work_order_ids:
+        native_project_ids = {
+            row[0]
+            for row in db.query(WorkOrder.project_id)
+            .filter(WorkOrder.id.in_(closure_work_order_ids))
+            .distinct()
+            .all()
+        }
+        if native_project_ids:
+            closure_project_ids = {
+                row[0]
+                for row in db.query(InstallationProject.id)
+                .filter(InstallationProject.project_id.in_(native_project_ids))
+                .all()
+            }
+    project_ids = proposed_project_ids | as_built_project_ids | closure_project_ids
     if not project_ids:
         return []
 
@@ -286,6 +389,7 @@ def list_route_projects(db: Session) -> list[dict]:
             ),
             "has_proposed": project.id in proposed_project_ids,
             "has_as_built": project.id in as_built_project_ids,
+            "has_closure_proposals": project.id in closure_project_ids,
         }
         for project in projects
     ]

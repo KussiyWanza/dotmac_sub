@@ -15,6 +15,10 @@ import pytest
 from fastapi.routing import APIRoute
 
 from app.models.dispatch import TechnicianProfile
+from app.models.fiber_change_request import (
+    FiberChangeRequest,
+    FiberChangeRequestOperation,
+)
 from app.models.field_location import FieldTechPresence
 from app.models.field_movement import FieldWorkOrderMovement
 from app.models.project import Project
@@ -363,6 +367,66 @@ def test_list_route_projects_lists_projects_with_geometry(db_session):
     summary = vendor_routes_api.get_route_project(db_session, str(install.id))
     assert summary is not None
     assert summary["label"] == "Fiber install — route test"
+
+
+def test_closure_proposals_appear_on_route_map_and_project_list(db_session):
+    subscriber = _subscriber(db_session)
+    project = Project(name="Closure-only route", subscriber_id=subscriber.id)
+    vendor = Vendor(name="Closure Vendor", code=f"CV-{uuid4().hex[:4]}")
+    db_session.add_all([project, vendor])
+    db_session.flush()
+    install = InstallationProject(
+        project_id=project.id,
+        subscriber_id=subscriber.id,
+        assigned_vendor_id=vendor.id,
+    )
+    work_order = WorkOrder(
+        subscriber_id=subscriber.id,
+        project_id=project.id,
+        public_id=f"sub-{uuid4().hex}",
+    )
+    db_session.add_all([install, work_order])
+    db_session.flush()
+    change_request = FiberChangeRequest(
+        asset_type="splice_closure",
+        operation=FiberChangeRequestOperation.create,
+        requested_by_vendor_id=vendor.id,
+        payload={
+            "name": "Vendor closure A",
+            "latitude": 9.08,
+            "longitude": 7.49,
+            "provenance": {
+                "work_order_id": str(work_order.id),
+                "work_order_public_id": work_order.public_id,
+            },
+        },
+    )
+    db_session.add(change_request)
+    db_session.commit()
+
+    geojson = vendor_routes_api.build_project_route_geojson(
+        db_session, str(install.id)
+    )
+    feature = next(
+        item
+        for item in geojson["features"]
+        if item["properties"]["kind"] == "closure_proposal"
+    )
+    assert feature["geometry"]["coordinates"] == [7.49, 9.08]
+    assert feature["properties"]["status"] == "pending"
+    assert feature["properties"]["review_url"].endswith(str(change_request.id))
+
+    projects = vendor_routes_api.list_route_projects(db_session)
+    entry = next(item for item in projects if item["id"] == str(install.id))
+    assert entry["has_closure_proposals"] is True
+
+    vendor_geojson = vendor_routes_api.build_vendor_project_route_geojson(
+        db_session, str(install.id), str(vendor.id)
+    )
+    assert any(
+        item["properties"]["id"] == str(change_request.id)
+        for item in vendor_geojson["features"]
+    )
 
 
 def test_get_route_project_missing_returns_none(db_session):
