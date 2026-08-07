@@ -14,7 +14,12 @@
             <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Pipeline health, revenue outlook, and sales outcomes.</p>
         </div>
         <div class="flex flex-wrap items-center gap-2">
-            <div x-data="{ open: false }" class="relative">
+            <nav aria-label="Sales sections" class="flex flex-wrap items-center gap-2 lg:hidden">
+                <a href="/admin/sales/leads" class="inline-flex items-center rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700">Leads</a>
+                <a href="/admin/sales/quotes" class="inline-flex items-center rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700">Quotes</a>
+                <a href="/admin/sales/sales-orders" class="inline-flex items-center rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700">Sales Orders</a>
+            </nav>
+            <div x-data="{ open: false }" class="relative hidden lg:block">
                 <button type="button"
                         @click="open = !open"
                         @keydown.escape.window="open = false"
