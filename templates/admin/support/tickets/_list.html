@@ -27,7 +27,8 @@
           hx-push-url="true"
           hx-sync="this:replace"
           class="space-y-3"
-          x-data="ticketColumnPicker()">
+          x-data="ticketColumnPicker()"
+          @click.window="open = false">
         <input type="hidden" name="page" value="1">
         <input type="hidden" name="per_page" value="{{ list_query.per_page }}">
         <input type="hidden" name="sort" value="{{ list_query.sort_by }}">
@@ -102,12 +103,10 @@
             </div>
             <div class="xl:col-span-1">
                 <div class="relative"
-                     x-ref="columnPicker"
-                     @click.window="if (!$refs.columnPicker.contains($event.target)) open = false"
                      @keydown.escape.window="open = false">
                     <button type="button"
                             id="ticket-column-toggle"
-                            @click="open = !open"
+                            @click.stop="open = !open"
                             x-bind:aria-expanded="open.toString()"
                             aria-controls="ticket-column-options"
                             aria-haspopup="true"
@@ -117,6 +116,7 @@
                     <div id="ticket-column-options"
                          x-show="open"
                          x-cloak
+                         @click.stop
                          aria-labelledby="ticket-column-toggle"
                          class="absolute right-0 z-20 mt-2 w-64 rounded-xl border border-slate-200 bg-white p-3 shadow-lg dark:border-slate-600 dark:bg-slate-800">
                         {% for col in ticket_columns %}
