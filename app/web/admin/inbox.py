@@ -264,6 +264,7 @@ def team_inbox_queue(
             "assignment_counts": projection.assignment_counts,
             "status_options": projection.status_options,
             "channel_options": projection.channel_options,
+            "priority_options": projection.priority_options,
             "label_options": projection.label_options,
             "saved_filters": projection.saved_filters,
             "new_conversation_template_options": (
