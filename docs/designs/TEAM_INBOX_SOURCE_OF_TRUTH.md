@@ -220,7 +220,8 @@ stale. Realtime has no replay authority.
   inbound message in the conversation is unread; outbound and internal
   messages never contribute.
 - Sort: the typed allow-list in `InboxListSort`; unknown values fall back to
-  the priority-ascending, last-message-descending queue order. Page size is
+  newest activity first (`last_message_at` descending). Priority remains an
+  explicit sort and filter, not the default queue ordering. Page size is
   restricted to the declared options.
 - Actions: routes map permission and domain outcomes only. Templates render
   owner-provided eligibility and never reconstruct lifecycle rules. Operators
