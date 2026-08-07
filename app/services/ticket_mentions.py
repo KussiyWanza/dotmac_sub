@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import partial
 from urllib.parse import urlsplit
 from uuid import UUID
 
@@ -15,6 +16,7 @@ from app.models.service_team import ServiceTeam, ServiceTeamMember
 from app.models.system_user import SystemUser
 from app.services.branding_config import get_brand
 from app.services.common import coerce_uuid
+from app.services.owner_commands import execute_owner_savepoint
 from app.services.staff_notifications import queue_staff_email, queue_staff_push
 
 logger = logging.getLogger(__name__)
@@ -232,6 +234,7 @@ def notify_ticket_comment_mentions(
     comment_preview: str | None,
     mentioned_agent_ids: list[str] | None,
     actor_person_id: str | None,
+    source_event_id: UUID | None = None,
 ) -> None:
     """Queue staff notifications for explicit ticket comment mentions."""
     recipient_ids = resolve_mentioned_person_ids(db, mentioned_agent_ids)
@@ -270,3 +273,33 @@ def notify_ticket_comment_mentions(
                 subject=message.subject,
                 body=message.body,
             )
+        if source_event_id is not None:
+            from app.services.nextcloud_talk_staff import (
+                StaffTalkEventType,
+                StageStaffTalkNotification,
+                stage_staff_talk_notification,
+            )
+
+            talk_command = StageStaffTalkNotification(
+                system_user_id=user.id,
+                source_event_id=source_event_id,
+                event_type=StaffTalkEventType.ticket_comment_mention,
+                subject=message.subject,
+                body=message.body,
+                target_url=(
+                    message.target_url or f"/admin/support/tickets/{ticket_id}"
+                ),
+                source_entity_type="support_ticket_comment",
+                source_entity_id=source_event_id,
+            )
+            try:
+                execute_owner_savepoint(
+                    db,
+                    partial(stage_staff_talk_notification, db, talk_command),
+                )
+            except Exception:  # noqa: BLE001 - comment remains authoritative
+                logger.exception(
+                    "ticket_comment_talk_staging_failed comment_id=%s user_id=%s",
+                    source_event_id,
+                    user.id,
+                )

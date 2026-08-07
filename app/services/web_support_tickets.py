@@ -34,6 +34,7 @@ from app.services import (
     service_address,
     sla_assignment,
     support_ticket_filters,
+    support_ticket_region_projection,
     ticket_mentions,
     ticket_validation,
 )
@@ -231,7 +232,8 @@ def build_ticket_list_query(
         filters={
             "status": normalized_status,
             "ticket_type": str(ticket_type or "").strip() or None,
-            "region": str(region or "").strip() or None,
+            "region": support_ticket_region_projection.normalize_region_value(region)
+            or None,
             "assigned_to_me": "true" if assigned_to_me else None,
             "project_manager_person_id": _normalize_ticket_uuid_filter(
                 project_manager_person_id, "project_manager_person_id"

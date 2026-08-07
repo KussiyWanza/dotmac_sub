@@ -697,6 +697,7 @@ SERVICES: tuple[SOTService, ...] = (
                     "financial.service_extensions.missing_reason",
                     "financial.service_extensions.missing_reversal_reason",
                     "financial.service_extensions.missing_scope_id",
+                    "financial.service_extensions.network_scope_retired",
                     "financial.service_extensions.reversal_evidence_conflict",
                     "financial.service_extensions.reversal_evidence_incomplete",
                     "financial.service_extensions.reversal_reason_too_long",
@@ -712,6 +713,7 @@ SERVICES: tuple[SOTService, ...] = (
                     "changed idempotency evidence",
                     "stale or incompatible lifecycle transition",
                     "ambiguous subscriber scope",
+                    "retired whole-network creation scope",
                     "failed access-restoration consequence",
                     "stale, referenced, or unsupported historical duplicates",
                 ),
@@ -2187,6 +2189,7 @@ SERVICES: tuple[SOTService, ...] = (
         owns=(
             "funded onboarding proforma documentary adoption",
             "historical paid prepaid invoice identity and coverage repair",
+            "reviewed missing prepaid paid-invoice repair",
             "stranded prepaid draft classification",
             "stranded prepaid draft invoice reconciliation",
             "reviewed opening funding invoice consumption",
@@ -2238,7 +2241,13 @@ SERVICES: tuple[SOTService, ...] = (
             "matches the current canonical prepaid renewal terms. It writes "
             "only missing document identity, entitlement, billing anchor, and "
             "the canonical access-restoration consequence with zero economic "
-            "delta."
+            "delta. A separate entity-scoped missing-invoice command accepts "
+            "one operator-named account, subscription, and successful native "
+            "payment plus exact business dates, contract total, and expected "
+            "remaining credit. It creates and settles one invoice only when "
+            "those fingerprinted facts remain exact and no competing document "
+            "or coverage exists; fully payment-backed repair does not depend "
+            "on or alter the migrated opening baseline."
         ),
         contract=ServiceContract(
             concerns=(
@@ -2268,6 +2277,18 @@ SERVICES: tuple[SOTService, ...] = (
                         "canonical paid invoice allocation evidence",
                         "canonical settlement business calendar",
                         "financial access restoration protocol",
+                    ),
+                    canonical_writer="financial.prepaid_draft_reconciliation",
+                ),
+                ConcernContract(
+                    name="reviewed missing prepaid paid-invoice repair",
+                    role=OwnerRole.RECONCILER,
+                    input_names=(
+                        "reviewed reconciliation command",
+                        "canonical prepaid subscription contract",
+                        "canonical payment-backed account credit",
+                        "canonical paid invoice allocation evidence",
+                        "invoice and payment participant protocols",
                     ),
                     canonical_writer="financial.prepaid_draft_reconciliation",
                 ),
@@ -2326,7 +2347,8 @@ SERVICES: tuple[SOTService, ...] = (
                     kind=AuthorityKind.CONTROL_INPUT,
                     source=(
                         "typed invoice identity, exact preview fingerprint, "
-                        "effective timestamp, actor, reason, command, "
+                        "or exact account, subscription, payment, business "
+                        "dates, total, remaining-credit expectation, actor, reason, command, "
                         "correlation, and idempotency evidence"
                     ),
                 ),
@@ -2435,7 +2457,7 @@ SERVICES: tuple[SOTService, ...] = (
                     owner="financial.invoices",
                     kind=AuthorityKind.CONTROL_INPUT,
                     source=(
-                        "flush-only invoice issue/void and exact payment-"
+                        "flush-only invoice/line construction, issue/void, and exact payment-"
                         "allocation confirmation protocols, including the "
                         "authoritative post-allocation invoice remainder"
                     ),
@@ -2469,11 +2491,17 @@ SERVICES: tuple[SOTService, ...] = (
                     "identity, entitlement, reviewed anchor projection, access "
                     "consequence, audit, event, and idempotency evidence with "
                     "zero economic delta. The "
+                    "missing-invoice repair is another owner root: it locks "
+                    "the named account, subscription, and payment, rechecks "
+                    "the preview, and commits document construction, issue, "
+                    "exact allocation, entitlement, reviewed anchor projection, "
+                    "audit, event, metadata, and idempotency evidence together. The "
                     "funding-change caller uses the same flush-only classifier "
                     "inside its existing transaction."
                 ),
                 locking=(
-                    "Lock account first, then invoice, subscription when "
+                    "Lock account first, then invoice or selected subscription "
+                    "and payment, subscription when "
                     "adopting a proforma, eligible payment and "
                     "settlement records, and the opening-funding baseline; "
                     "re-read consumption, entitlement, adjustment, and "
@@ -2481,7 +2509,8 @@ SERVICES: tuple[SOTService, ...] = (
                     "account is not automatically repaired."
                 ),
                 idempotency=(
-                    "A caller-supplied key is reserved per invoice and concern; "
+                    "A caller-supplied key is reserved per invoice or reviewed "
+                    "missing-document command and concern; "
                     "invoice "
                     "metadata, one-per-invoice opening-consumption uniqueness, "
                     "and participant idempotency keys replay the same paid or "
@@ -2529,6 +2558,9 @@ SERVICES: tuple[SOTService, ...] = (
                     "an already-paid invoice without one exact active full-value "
                     "allocation and successful unreturned settlement, or whose "
                     "charge differs from canonical renewal terms",
+                    "a missing-invoice repair with changed contract tax, dates, "
+                    "payment capacity, expected remaining credit, competing "
+                    "document, or overlapping entitlement",
                     "partial or ambiguous entitlement overlap",
                     "stale preview, changed payment capacity, participant "
                     "remainder mismatch, or already consumed opening funding",

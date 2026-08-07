@@ -79,6 +79,13 @@ def test_projection_owns_response_cohorts_from_authoritative_inputs() -> None:
     assert input_owners["ticket handoff provenance"] == (
         "communications.conversation_ticket_handoff"
     )
+    assert input_owners["active service-team selector projection"] == (
+        "operations.service_team_lifecycle"
+    )
+    assert (
+        "communications.team_inbox_projection.invalid_filter"
+        in service.contract.errors.domain_codes
+    )
 
     model = (ROOT / "app/models/team_inbox.py").read_text(encoding="utf-8")
     projection = (ROOT / "app/services/team_inbox_read.py").read_text(encoding="utf-8")
