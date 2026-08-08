@@ -11,6 +11,9 @@ from app.services.integrations import installations
 from app.services.integrations.connectors.meta_social_runtime import (
     FACEBOOK_TOKEN_BINDING,
     INSTAGRAM_TOKEN_BINDING,
+    META_OAUTH_TOKEN_BINDING,
+    META_SOCIAL_AUTH_MODE_INDIVIDUAL,
+    META_SOCIAL_AUTH_MODE_OAUTH,
     WEBHOOK_SIGNING_SECRET_BINDING,
     WEBHOOK_VERIFY_TOKEN_BINDING,
 )
@@ -26,11 +29,13 @@ from app.services.owner_commands import CommandContext
 
 @dataclass(frozen=True, slots=True)
 class MetaSocialConfigFormCommand:
+    auth_mode: str
     app_id: str
     facebook_page_id: str
     instagram_account_id: str
     graph_version: str
     webhook_url: str
+    meta_oauth_access_token_ref: str
     facebook_page_access_token_ref: str
     instagram_login_access_token_ref: str
     webhook_signing_secret_ref: str
@@ -42,15 +47,19 @@ class MetaSocialConfigPage:
     installation_id: str | None
     installation_state: str
     connector_version: str | None
+    auth_mode: str
+    auth_mode_options: tuple[dict[str, str], ...]
     app_id: str
     facebook_page_id: str
     instagram_account_id: str
     graph_version: str
     webhook_url: str
+    meta_oauth_token_bound: bool
     facebook_token_bound: bool
     instagram_token_bound: bool
     signing_secret_bound: bool
     verify_token_bound: bool
+    meta_oauth_token_ref_masked: str
     facebook_token_ref_masked: str
     instagram_token_ref_masked: str
     signing_secret_ref_masked: str
@@ -90,15 +99,24 @@ def build_config_page(db: Session) -> MetaSocialConfigPage:
         ),
         installation_state=projection.installation_state,
         connector_version=projection.connector_version,
+        auth_mode=projection.auth_mode,
+        auth_mode_options=(
+            {"id": META_SOCIAL_AUTH_MODE_OAUTH, "label": "Meta OAuth"},
+            {"id": META_SOCIAL_AUTH_MODE_INDIVIDUAL, "label": "Individual tokens"},
+        ),
         app_id=projection.app_id,
         facebook_page_id=projection.facebook_page_id,
         instagram_account_id=projection.instagram_account_id,
         graph_version=projection.graph_version,
         webhook_url=projection.webhook_url,
+        meta_oauth_token_bound=projection.meta_oauth_token_bound,
         facebook_token_bound=projection.facebook_token_bound,
         instagram_token_bound=projection.instagram_token_bound,
         signing_secret_bound=projection.signing_secret_bound,
         verify_token_bound=projection.verify_token_bound,
+        meta_oauth_token_ref_masked=_masked(
+            str(refs.get(META_OAUTH_TOKEN_BINDING) or "")
+        ),
         facebook_token_ref_masked=_masked(str(refs.get(FACEBOOK_TOKEN_BINDING) or "")),
         instagram_token_ref_masked=_masked(
             str(refs.get(INSTAGRAM_TOKEN_BINDING) or "")
@@ -121,11 +139,13 @@ def save_config(
     return configure_meta_social_installation(
         db,
         ConfigureMetaSocialInstallationCommand(
+            auth_mode=form.auth_mode,
             app_id=form.app_id,
             facebook_page_id=form.facebook_page_id,
             instagram_account_id=form.instagram_account_id,
             graph_version=form.graph_version,
             webhook_url=form.webhook_url,
+            meta_oauth_access_token_ref=form.meta_oauth_access_token_ref,
             facebook_page_access_token_ref=form.facebook_page_access_token_ref,
             instagram_login_access_token_ref=form.instagram_login_access_token_ref,
             webhook_signing_secret_ref=form.webhook_signing_secret_ref,

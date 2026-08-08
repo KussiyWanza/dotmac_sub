@@ -1853,14 +1853,14 @@ def _notify_project_roles_created_in_app(db: Session, project: Project) -> None:
     site = (project.customer_address or project.region or "").strip()
 
     subject = f"New Project Assignment: {project.name}"
-    # De-dupe by recipient email so one person with multiple roles gets one
+    # De-dupe by staff identity so one person with multiple roles gets one
     # notification.
     created_for: set[str] = set()
     for person_id, roles in roles_by_person_id.items():
         user = users_by_id.get(person_id)
-        if not user or not isinstance(user.email, str) or not user.email.strip():
+        if not user:
             continue
-        recipient = user.email.strip()
+        recipient = str(user.id)
         if recipient in created_for:
             continue
         created_for.add(recipient)
@@ -1876,6 +1876,7 @@ def _notify_project_roles_created_in_app(db: Session, project: Project) -> None:
             recipient=recipient,
             subject=subject,
             body="\n".join(body_lines),
+            target_url=f"/admin/projects/{project_ref}",
         )
 
     db.flush()
@@ -2143,7 +2144,7 @@ def _notify_project_task_assigned(
     if assigned_to.email:
         queue_staff_email(
             db,
-            recipient=assigned_to.email,
+            recipient=str(assigned_to.id),
             subject=subject,
             body=body,
         )
@@ -2153,6 +2154,8 @@ def _notify_project_task_assigned(
             recipient=str(assigned_to.id),
             subject=subject,
             body=f"You have been assigned a project task: {task.title or 'Task'}",
+            delivered=False,
+            target_url=f"/admin/projects/tasks/{task.id}",
         )
     db.flush()
     return True

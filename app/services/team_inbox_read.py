@@ -726,6 +726,13 @@ def _message_attachments(message: InboxMessage) -> list[dict]:
 
 
 def _asset_attachment(asset: InboxMediaAsset) -> dict:
+    from app.services import team_inbox_media
+
+    url = (
+        team_inbox_media.media_content_url(asset.id)
+        if asset.download_status in {"stored", "metadata_only"}
+        else asset.storage_url or asset.source_url
+    )
     return {
         "id": str(asset.id),
         "type": asset.asset_type,
@@ -734,7 +741,7 @@ def _asset_attachment(asset: InboxMediaAsset) -> dict:
         "mime_type": asset.mime_type,
         "file_size": asset.file_size,
         "caption": asset.caption,
-        "url": asset.storage_url or asset.source_url,
+        "url": url,
         "source_url": asset.source_url,
         "storage_url": asset.storage_url,
         "provider": asset.provider,

@@ -323,7 +323,9 @@ def test_notification_menu_renders_confirmation_in_staff_inbox(
     response = web_admin_notifications.notifications_menu(SimpleNamespace(), db_session)
     body = response.body.decode()
 
-    assert "Staff inbox" in body
+    # The unified bell renders one heading for every source, so the former
+    # "Staff inbox" section label is now "Notifications" (#2109).
+    assert "Notifications" in body
     assert "Bank transfer receipt needs confirmation" in body
     assert f"/admin/notifications/inbox/{notification.id}/open" in body
     assert f"/admin/billing/payment-proofs/{proof['id']}" not in body

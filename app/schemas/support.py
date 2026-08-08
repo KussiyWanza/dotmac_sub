@@ -251,7 +251,7 @@ class TicketCommentBase(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     body: str = Field(min_length=1)
-    is_internal: bool = False
+    is_internal: bool = True
     attachments: list[AttachmentMeta] = Field(default_factory=list)
 
 
