@@ -2926,7 +2926,7 @@ class Projects(ListResponseMixin):
             _notify_project_assignments(
                 db,
                 project,
-                actor_id=actor_id,
+                actor_id=str(actor_id) if actor_id else None,
                 previous_user_ids=previous_assignment_user_ids,
             )
 

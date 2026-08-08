@@ -49,11 +49,11 @@ def test_projects_owners_have_complete_typed_contracts() -> None:
     reassignment = next(
         concern
         for concern in lifecycle.contract.concerns
-        if concern.name == "existing project-task reassignment email consequence"
+        if concern.name == "project and task staff assignment notification consequence"
     )
     assert reassignment.input_names == (
         "canonical project aggregate",
-        "active project-task assignee contact identity",
+        "active project assignment audience",
         "staff notification delivery queue",
     )
     assert assignment.contract is not None
@@ -114,7 +114,7 @@ def test_task_reassignment_email_is_owned_by_project_lifecycle() -> None:
     assert "previous_assignee_ids = frozenset(task.assigned_to_person_ids)" in service
     assert "execute_owner_savepoint(" in service
     assert 'action="assignment_notification_failed"' in service
-    assert "include_push=False" in service
+    assert "include_push=True" in service
     assert "queue_staff_email(" not in adapters
 
 
