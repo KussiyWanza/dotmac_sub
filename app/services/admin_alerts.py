@@ -343,7 +343,15 @@ def notification_menu_context(
             .limit(limit)
             .all()
         )
-    unread_count = sum(1 for item in notifications if item.read_at is None)
+    unread_count = 0
+    if system_user_id:
+        unread_count = (
+            db.query(func.count(AdminNotification.id))
+            .filter(AdminNotification.system_user_id == system_user_id)
+            .filter(AdminNotification.read_at.is_(None))
+            .scalar()
+            or 0
+        )
     return {
         "admin_notifications": notifications,
         "admin_unread_count": unread_count,

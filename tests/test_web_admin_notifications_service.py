@@ -1,95 +1,68 @@
+import uuid
 from types import SimpleNamespace
 
-from app.models.notification import (
-    Notification,
-    NotificationChannel,
-    NotificationStatus,
-)
+from app.models.admin_alert import AdminNotification
+from app.models.system_user import SystemUser
 from app.services import web_admin_notifications
 
 
-def test_notifications_menu_returns_empty_state_without_recipients(
-    db_session, monkeypatch
-):
-    """When the current user has no identifiers, the fallback branch lists
-    all recent notifications (no recipient scoping)."""
-    db_session.add(
-        Notification(
-            channel=NotificationChannel.email,
-            recipient="other-admin@example.com",
-            subject="Secret job",
-            body="body",
-            status=NotificationStatus.queued,
-            is_active=True,
-        )
+def _system_user(db_session, label: str) -> SystemUser:
+    user = SystemUser(
+        first_name=label,
+        last_name="Staff",
+        email=f"{label.lower()}-{uuid.uuid4()}@example.com",
+        is_active=True,
     )
-    db_session.commit()
+    db_session.add(user)
+    db_session.flush()
+    return user
 
+
+def test_notifications_menu_has_no_global_fallback(db_session, monkeypatch):
     request = SimpleNamespace()
     monkeypatch.setattr(
         web_admin_notifications.web_admin_service,
         "get_current_user",
-        lambda _request: {
-            "email": "",
-            "subscriber_id": "",
-            "actor_id": "",
-            "id": "",
-        },
+        lambda _request: {"principal_type": "subscriber", "id": "subscriber-1"},
     )
 
     response = web_admin_notifications.notifications_menu(request, db_session)
-    body = response.body.decode()
 
-    # With no recipient identifiers, the fallback returns all notifications
-    assert "Secret job" in body
+    assert "No notifications yet." in response.body.decode()
 
 
-def test_notifications_menu_scopes_to_actor_and_email(db_session, monkeypatch):
+def test_notifications_menu_only_renders_current_staff_inbox(db_session, monkeypatch):
+    current_user = _system_user(db_session, "Current")
+    other_user = _system_user(db_session, "Other")
     db_session.add_all(
         [
-            Notification(
-                channel=NotificationChannel.email,
-                recipient="system-user-1",
-                subject="Actor scoped",
-                body="body",
-                status=NotificationStatus.queued,
-                is_active=True,
+            AdminNotification(
+                system_user_id=current_user.id,
+                title="My assignment",
+                body="Assigned to you",
+                target_url="/admin/projects/8",
             ),
-            Notification(
-                channel=NotificationChannel.email,
-                recipient="admin@example.com",
-                subject="Email scoped",
-                body="body",
-                status=NotificationStatus.queued,
-                is_active=True,
-            ),
-            Notification(
-                channel=NotificationChannel.email,
-                recipient="other-admin@example.com",
-                subject="Other admin",
-                body="body",
-                status=NotificationStatus.queued,
-                is_active=True,
+            AdminNotification(
+                system_user_id=other_user.id,
+                title="Other staff secret",
+                body="Not for this user",
+                target_url="/admin/projects/9",
             ),
         ]
     )
     db_session.commit()
-
     request = SimpleNamespace()
     monkeypatch.setattr(
         web_admin_notifications.web_admin_service,
         "get_current_user",
         lambda _request: {
-            "email": "admin@example.com",
-            "subscriber_id": "",
-            "actor_id": "system-user-1",
-            "id": "system-user-1",
+            "principal_type": "system_user",
+            "id": str(current_user.id),
         },
     )
 
-    response = web_admin_notifications.notifications_menu(request, db_session)
-    body = response.body.decode()
+    body = web_admin_notifications.notifications_menu(request, db_session).body.decode()
 
-    assert "Actor scoped" in body
-    assert "Email scoped" in body
-    assert "Other admin" not in body
+    assert "My assignment" in body
+    assert "Other staff secret" not in body
+    assert "Recent notifications" not in body

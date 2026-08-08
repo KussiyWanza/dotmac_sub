@@ -147,9 +147,6 @@
         {% call info_grid() %}
             {{ info_row("Outcome", st | title) }}
             {{ info_row("Reviewed By", reviewer.display_name or "&mdash;") }}
-            {% if reviewer.identity_resolved and reviewer.actor_id %}
-            {{ info_row("Reviewer Actor ID", reviewer.actor_id) }}
-            {% endif %}
             {% if proof.verified_amount is not none %}
             {{ info_row("Verified Amount", proof.currency ~ " " ~ "{:,.2f}".format(proof.verified_amount)) }}
             {% endif %}

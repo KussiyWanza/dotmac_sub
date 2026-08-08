@@ -1343,6 +1343,165 @@ DOMAIN = DomainSOT(
             ),
         ),
         SOTService(
+            name="access.fup_throttle_rate",
+            module="app.services.fup_throttle_profile",
+            owns=(
+                "derived FUP throttle RADIUS profiles",
+                "resolved FUP throttle rate per subscription",
+            ),
+            depends_on=("access.fup_rule_engine",),
+            notes=(
+                "How hard a throttle bites. fup_rules.speed_reduction_percent "
+                "is the decision; this derives the rate from the subscriber's "
+                "effective profile and materialises the fup-throttle-* profile "
+                "expressing it. Sole writer of those rows."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name="resolved FUP throttle rate per subscription",
+                        role=OwnerRole.RESOLVER,
+                        input_names=(
+                            "FUP rule throttle depth",
+                            "subscriber effective rate",
+                        ),
+                    ),
+                    ConcernContract(
+                        name="derived FUP throttle RADIUS profiles",
+                        role=OwnerRole.PROJECTION_WRITER,
+                        input_names=(
+                            "FUP rule throttle depth",
+                            "subscriber effective rate",
+                        ),
+                        canonical_writer="access.fup_throttle_rate",
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="FUP rule throttle depth",
+                        owner="access.fup_rule_engine",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="FupRule.speed_reduction_percent",
+                    ),
+                    AuthorityInput(
+                        name="subscriber effective rate",
+                        owner="access.session_enforcement",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source=(
+                            "RadiusProfile.download_speed/upload_speed of the "
+                            "credential-, subscription-, or offer-effective "
+                            "profile"
+                        ),
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.PARTICIPANT,
+                    boundary=(
+                        "Runs inside the enforcement consequence transaction "
+                        "and flushes without commit."
+                    ),
+                    locking=(
+                        "None taken. The RadiusProfile.code unique constraint "
+                        "serializes concurrent creation of the same rate."
+                    ),
+                    idempotency=(
+                        "Keyed on the derived rate pair, so the same rule and "
+                        "rate always resolve the same row rather than forking "
+                        "the projection."
+                    ),
+                    retries=(
+                        "The surrounding enforcement owner retries; this never "
+                        "retries or commits independently."
+                    ),
+                ),
+                errors=ErrorContract(
+                    domain_codes=(
+                        "access.fup_throttle_rate.invalid_reduction_percent",
+                        "access.fup_throttle_rate.invalid_full_rate",
+                    ),
+                    mapping_owner="access.session_enforcement",
+                    fail_closed_on=(
+                        "a reduction percentage outside 1..99, which would "
+                        "produce either a no-op or a disconnection",
+                        "a non-positive rate to reduce",
+                    ),
+                ),
+                events=EventContract(
+                    event_types=("fup.throttle_profile_derived",),
+                    schema_version=1,
+                    delivery_owner="events.dispatcher",
+                    compatibility=(
+                        "Version 1 carries the derived profile identity and "
+                        "its rate pair; no subscriber or usage values."
+                    ),
+                    replay=(
+                        "Emitted only on first creation of a rate pair; reuse "
+                        "is a read. Rows are rebuilt by deleting them and "
+                        "letting enforcement recreate the rates in use."
+                    ),
+                ),
+                projections=(
+                    ProjectionContract(
+                        name="derived FUP throttle RADIUS profiles",
+                        input_names=(
+                            "FUP rule throttle depth",
+                            "subscriber effective rate",
+                        ),
+                        writer="access.fup_throttle_rate",
+                        freshness="RadiusProfile.updated_at",
+                        stale_behavior=(
+                            "A rate with no derived profile falls back to the "
+                            "globally configured throttle profile and the "
+                            "fallback is logged; enforcement is never skipped."
+                        ),
+                        drift_signal=(
+                            "A fup-throttle-* profile whose download/upload "
+                            "speed disagrees with its own code, or one edited "
+                            "outside this module."
+                        ),
+                        rebuild_operation=(
+                            "Delete the derived profiles; the next enforcement "
+                            "recreates exactly the rates in use."
+                        ),
+                        repair_owner="access.fup_throttle_rate",
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.COMPLETE,
+                    old_owner=(
+                        "usage.fup_throttle_radius_profile_id, one global "
+                        "profile for every plan, plus a decorative "
+                        "speed_reduction_percent and a never-read "
+                        "usage_allowances.throttle_rate_mbps"
+                    ),
+                    new_owner="access.fup_throttle_rate",
+                    verification=(
+                        "Proportionality across tiers, reduction-is-a-cut, "
+                        "floor, and rate-limit rx/tx ordering tests."
+                    ),
+                    cutover_gate=(
+                        "Enforcement resolves the profile through this module; "
+                        "the global setting is reached only as a logged "
+                        "fallback."
+                    ),
+                    fallback_retirement=(
+                        "usage_allowances.throttle_rate_mbps is dropped. The "
+                        "global setting is retained deliberately, for offers "
+                        "with no rate to reduce."
+                    ),
+                ),
+                steward="network access",
+                design_refs=(
+                    "docs/PLAN_FAMILY_ARCHITECTURE.md",
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                ),
+                test_refs=(
+                    "tests/test_fup_free_night.py",
+                    "tests/test_fup_free_night_release.py",
+                ),
+            ),
+        ),
+        SOTService(
             name="access.fup_usage_windows",
             module="app.services.fup_usage",
             owns=(

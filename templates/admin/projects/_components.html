@@ -56,7 +56,7 @@
 {% endif %}
 {% endmacro %}
 
-{% macro staff_name(lookup, person_id) %}{{ lookup.get(person_id|string, person_id or '-') if lookup is defined and person_id else (person_id or '-') }}{% endmacro %}
+{% macro staff_name(lookup, person_id) %}{{ lookup.get(person_id|string, 'Former or unknown staff member') if lookup is defined and person_id else ('Former or unknown staff member' if person_id else '-') }}{% endmacro %}
 
 {% macro filter_condition_rows(schema, filters, doctype) %}
 {# Condition builder rows: field/operator/value with AND/OR grouping,

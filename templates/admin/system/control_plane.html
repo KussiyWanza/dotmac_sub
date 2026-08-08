@@ -114,7 +114,7 @@
                         <span class="font-medium text-slate-800 dark:text-slate-200">{{ event.action }}</span>
                         <span class="text-slate-400">{{ event.occurred_at | app_datetime('%Y-%m-%d %H:%M') }}</span>
                     </div>
-                    <p class="mt-1 text-slate-500">{{ event.entity_type }} · {{ event.actor }} · {{ 'success' if event.success else 'failed' }}</p>
+                    <p class="mt-1 text-slate-500">{{ event.entity_type }} · {{ event.actor_name }} · {{ event.action_label }} · {{ 'success' if event.success else 'failed' }}</p>
                 </div>
                 {% else %}
                 <p class="text-xs text-slate-500">No matching audit events in the latest 250 records.</p>

@@ -420,11 +420,16 @@ def reply(
             + "<br>".join(escape(line) for line in clean_body.splitlines())
             + "</p>"
         )
+        staged_attachment_ids = [
+            str(item).strip() for item in (attachment_ids or ()) if str(item).strip()
+        ]
         reply_metadata: dict[str, object] = {
             "source_route": "admin_inbox_detail_reply",
             "template_id": str(template.id) if template is not None else None,
             "idempotency_key": clean_idempotency_key or None,
         }
+        if staged_attachment_ids:
+            reply_metadata["inbox_attachment_ids"] = staged_attachment_ids
         if reply_to_uuid is not None:
             quoted_message = db.get(InboxMessage, reply_to_uuid)
             if (
@@ -480,9 +485,9 @@ def reply(
                 ),
                 send_after=scheduled_for,
             )
-            if attachment_ids:
+            if staged_attachment_ids:
                 team_inbox_media.bind_assets_to_message(
-                    db, message=scheduled, asset_ids=list(attachment_ids)
+                    db, message=scheduled, asset_ids=staged_attachment_ids
                 )
             team_inbox_operations.record_macro_use(db, macro_id)
             return ReplyOutcome(
@@ -528,11 +533,11 @@ def reply(
         # Bind staged uploads to the message that actually carried them, inside
         # the same command — an attachment must never outlive a reply that
         # failed to send.
-        if attachment_ids and result.message_id:
+        if staged_attachment_ids and result.message_id:
             message = db.get(InboxMessage, coerce_uuid(result.message_id))
             if message is not None:
                 team_inbox_media.bind_assets_to_message(
-                    db, message=message, asset_ids=list(attachment_ids)
+                    db, message=message, asset_ids=staged_attachment_ids
                 )
         team_inbox_operations.record_macro_use(db, macro_id)
         return ReplyOutcome(
@@ -1502,6 +1507,8 @@ def start_conversation(
             "source": "operator_initiated",
             "template_id": str(template.id) if template is not None else None,
         }
+        if staged_attachment_ids:
+            reply_metadata["inbox_attachment_ids"] = staged_attachment_ids
         if template is not None and clean_channel == InboxChannelType.whatsapp.value:
             template_metadata = dict(template.metadata_ or {})
             provider_template_name = str(

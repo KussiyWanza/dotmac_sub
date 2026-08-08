@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 import threading
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -71,11 +72,13 @@ def _install_meta_social(db_session) -> None:
     result = configure_meta_social_installation(
         db_session,
         ConfigureMetaSocialInstallationCommand(
+            auth_mode="individual",
             app_id="app-1",
             facebook_page_id="page-1",
             instagram_account_id="ig-1",
             graph_version="v21.0",
             webhook_url="https://sub.example.test/api/v1/webhooks/meta",
+            meta_oauth_access_token_ref="env://META_TEST_OAUTH_TOKEN",
             facebook_page_access_token_ref="env://META_TEST_FACEBOOK_TOKEN",
             instagram_login_access_token_ref="env://META_TEST_INSTAGRAM_TOKEN",
             webhook_signing_secret_ref="env://META_TEST_SIGNING_SECRET",
@@ -125,6 +128,29 @@ def test_meta_inbox_webhook_rejects_bad_signature(db_session, monkeypatch):
         _run_async(meta_inbox_webhooks.receive_meta_inbox_webhook(request, db_session))
 
     assert exc.value.status_code == 401
+
+
+def test_meta_signature_accepts_whatsapp_secret_fallback(db_session, monkeypatch):
+    body = b'{"entry":[]}'
+    monkeypatch.setattr(
+        meta_inbox_webhooks,
+        "inbound_secret_material",
+        lambda db: SimpleNamespace(
+            signing_secret=META_TEST_SECRET,
+            verify_token="verify-token",
+        ),
+    )
+    monkeypatch.setattr(
+        meta_inbox_webhooks,
+        "_whatsapp_app_secret",
+        lambda db: "whatsapp-secret",
+    )
+
+    meta_inbox_webhooks._verify_meta_signature(
+        db_session,
+        body,
+        _sign(body, "whatsapp-secret"),
+    )
 
 
 def test_meta_inbox_webhook_creates_facebook_messenger_message(db_session, monkeypatch):
