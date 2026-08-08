@@ -421,6 +421,128 @@ class AccountCreditApplications:
         )
 
     @staticmethod
+    def apply_invoice_from_selected_payment_fully(
+        db: Session,
+        invoice: Invoice,
+        *,
+        payment_id: UUID,
+        expected_amount: Decimal,
+    ) -> AccountCreditApplicationResult:
+        """Fund one invoice from one explicitly reviewed native payment."""
+
+        lock_account(db, str(invoice.account_id))
+        db.refresh(invoice)
+        invoice_remaining = round_money(to_decimal(invoice.balance_due))
+        expected = round_money(expected_amount)
+        currency = (invoice.currency or "NGN").upper()
+        payment = db.scalar(
+            select(Payment).where(Payment.id == payment_id).with_for_update()
+        )
+        account_credit = round_money(
+            get_account_credit_balance(
+                db,
+                str(invoice.account_id),
+                currency=currency,
+            )
+        )
+        payment_available = (
+            round_money(PaymentAllocations.available_amount(db, str(payment_id)))
+            if payment is not None
+            else Decimal("0.00")
+        )
+        if (
+            invoice_remaining <= Decimal("0.00")
+            or invoice_remaining != expected
+            or payment is None
+            or not payment.is_active
+            or payment.status is not PaymentStatus.succeeded
+            or payment.account_id != invoice.account_id
+            or (payment.currency or "NGN").upper() != currency
+            or account_credit < expected
+            or payment_available < expected
+        ):
+            raise AccountCreditApplicationError(
+                code="financial.account_credit_applications.selected_payment_rejected",
+                message=(
+                    "Selected payment no longer exactly funds the reviewed invoice."
+                ),
+                details={
+                    "invoice_id": str(invoice.id),
+                    "payment_id": str(payment_id),
+                    "invoice_remaining": str(invoice_remaining),
+                    "expected_amount": str(expected),
+                    "account_credit": str(account_credit),
+                    "payment_available": str(payment_available),
+                },
+            )
+
+        request = PaymentAllocationPreviewRequest(
+            payment_id=payment.id,
+            invoice_id=invoice.id,
+            amount=expected,
+        )
+        try:
+            allocation_preview = PaymentAllocations.preview(db, request)
+            confirmation = (
+                PaymentAllocations.stage_confirm_reviewed_document_correction(
+                    db,
+                    PaymentAllocationConfirm(
+                        **request.model_dump(),
+                        preview_fingerprint=allocation_preview.fingerprint,
+                        idempotency_key=_allocation_key(payment, invoice),
+                    ),
+                )
+            )
+        except HTTPException as exc:
+            raise AccountCreditApplicationError(
+                code="financial.account_credit_applications.allocation_rejected",
+                message="Payment-allocation owner rejected selected invoice funding.",
+                details={
+                    "invoice_id": str(invoice.id),
+                    "payment_id": str(payment.id),
+                    "reason": str(exc.detail),
+                },
+            ) from exc
+
+        applied = round_money(to_decimal(confirmation.allocation.amount))
+        _stage_application_posting(
+            db,
+            allocation=confirmation.allocation,
+            invoice=invoice,
+            payment=payment,
+            currency=currency,
+            amount=applied,
+        )
+        db.flush()
+        db.refresh(invoice)
+        remaining = round_money(to_decimal(invoice.balance_due))
+        if (
+            applied != expected
+            or remaining != Decimal("0.00")
+            or invoice.status is not InvoiceStatus.paid
+        ):
+            raise AccountCreditApplicationError(
+                code="financial.account_credit_applications.incomplete_application",
+                message="Selected payment did not produce an exactly paid invoice.",
+                details={
+                    "invoice_id": str(invoice.id),
+                    "payment_id": str(payment.id),
+                    "applied": str(applied),
+                    "remaining": str(remaining),
+                    "status": invoice.status.value,
+                },
+            )
+        return AccountCreditApplicationResult(
+            account_id=str(invoice.account_id),
+            available_credit=account_credit,
+            applied=applied,
+            invoices_settled=[str(invoice.id)],
+            invoices_touched=[str(invoice.id)],
+            allocation_ids=[str(confirmation.allocation.id)],
+            invoice_remaining=remaining,
+        )
+
+    @staticmethod
     def apply_invoice_available(
         db: Session,
         invoice: Invoice,

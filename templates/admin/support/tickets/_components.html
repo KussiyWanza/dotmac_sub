@@ -60,12 +60,16 @@
 {% endif %}
 {% endmacro %}
 
-{% macro attachment_chip(att) %}
+{% macro attachment_chip(att, ticket_id) %}
+{% if att.stored_file_id %}
+<a href="/admin/support/tickets/{{ ticket_id }}/attachments/{{ att.stored_file_id }}" target="_blank" rel="noopener" class="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-700 transition hover:border-amber-300 hover:text-amber-700 dark:border-slate-600 dark:bg-slate-700/50 dark:text-slate-200 dark:hover:border-amber-600 dark:hover:text-amber-300">
+{% else %}
 <div class="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-700 dark:border-slate-600 dark:bg-slate-700/50 dark:text-slate-200">
+{% endif %}
     <svg class="h-3.5 w-3.5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828L18 9.828a4 4 0 00-5.657-5.657L5.757 10.757a6 6 0 108.486 8.486L20.5 13"/></svg>
     <span class="truncate max-w-[16rem]">{{ att.file_name or att.name or 'Attachment' }}</span>
     {% if att.file_size %}<span class="text-slate-400">{{ ((att.file_size|int) / 1024)|round(1) }} KB</span>{% endif %}
-</div>
+{% if att.stored_file_id %}</a>{% else %}</div>{% endif %}
 {% endmacro %}
 
 {% macro people_select(name, people, selected="", label="") %}

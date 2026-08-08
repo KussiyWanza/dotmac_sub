@@ -1228,7 +1228,12 @@ DOMAIN = DomainSOT(
         SOTService(
             name="auth.staff_provisioning",
             module="app.services.staff_provisioning",
-            owns=("staff account provisioning", "staff identity bootstrap"),
+            owns=(
+                "staff account provisioning",
+                "staff identity bootstrap",
+                "staff identity maintenance",
+                "staff login identity resolution",
+            ),
             depends_on=(
                 "auth.rbac_catalog",
                 "auth.system_user_assignments",
@@ -1242,6 +1247,10 @@ DOMAIN = DomainSOT(
             notes=(
                 "ERP HR commands enter one verified coordinator transaction. "
                 "This owner writes staff identity and credential bootstrap, "
+                "keeps the canonical staff email and the one local credential "
+                "username aligned even while access is inactive, prepares "
+                "credential recovery, resolves credential drift and recovery "
+                "eligibility for adapters, "
                 "creates and binds one Person Party for every new principal, "
                 "delegates managed grants to auth.system_user_assignments, "
                 "stages audit and "
@@ -1274,6 +1283,19 @@ DOMAIN = DomainSOT(
                         ),
                         canonical_writer="auth.staff_provisioning",
                     ),
+                    ConcernContract(
+                        name="staff identity maintenance",
+                        role=OwnerRole.APPLICATION_COORDINATOR,
+                        input_names=(
+                            "authorized staff identity principal",
+                            "canonical staff identity and credential state",
+                        ),
+                    ),
+                    ConcernContract(
+                        name="staff login identity resolution",
+                        role=OwnerRole.RESOLVER,
+                        input_names=("canonical staff identity and credential state",),
+                    ),
                 ),
                 authoritative_inputs=(
                     AuthorityInput(
@@ -1292,6 +1314,15 @@ DOMAIN = DomainSOT(
                         source=(
                             "rbac:assign authorization result carried in "
                             "CommandContext actor and scope evidence"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="authorized staff identity principal",
+                        owner="auth.permission_gate",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "rbac:assign administrator evidence or an authenticated "
+                            "profile:self principal targeting its own SystemUser"
                         ),
                     ),
                     AuthorityInput(
@@ -1330,25 +1361,31 @@ DOMAIN = DomainSOT(
                     boundary=(
                         "Each public staff write enters execute_owner_command "
                         "on a transaction-free adapter session; identity, "
-                        "credentials, RBAC grants, session revocation, audit, "
+                        "credentials, profile and login-identity changes, RBAC "
+                        "grants, session revocation, audit, "
                         "Person Party identity, and the outbox event commit "
                         "together before return."
                     ),
                     locking=(
                         "A PostgreSQL advisory transaction lock serializes "
-                        "provisioning by normalized email; existing principals "
-                        "are selected FOR UPDATE and database unique constraints "
+                        "provisioning and identity maintenance by normalized "
+                        "email in sorted old/new order; existing principals and "
+                        "their local credentials "
+                        "are selected FOR UPDATE, and database unique constraints "
                         "arbitrate identity and grant keys."
                     ),
                     idempotency=(
-                        "Email is the provision natural key; managed roles and "
-                        "active state converge to requested sets. Adapters carry "
-                        "a stable intent key, and invite expansion deduplicates "
-                        "on the immutable provisioning event id."
+                        "Email is the provision natural key; managed roles, active "
+                        "state, and the local credential username converge to "
+                        "canonical staff state. Adapters carry a stable intent "
+                        "key, and invite expansion deduplicates on the immutable "
+                        "provisioning event id."
                     ),
                     retries=(
                         "Adapters may retry a failed request with the same "
                         "idempotency key. Domain validation is not retryable; "
+                        "a concurrent identity change requires a fresh read and "
+                        "reviewed retry; "
                         "event-store delivery retries consequences independently."
                     ),
                 ),
@@ -1358,6 +1395,13 @@ DOMAIN = DomainSOT(
                         "auth.staff_provisioning.unknown_roles",
                         "auth.staff_provisioning.staff_account_not_found",
                         "auth.staff_provisioning.identity_conflict",
+                        "auth.staff_provisioning.credential_not_found",
+                        "auth.staff_provisioning.credential_ambiguous",
+                        "auth.staff_provisioning.inactive_staff_account",
+                        "auth.staff_provisioning.password_update_forbidden",
+                        "auth.staff_provisioning.invalid_password",
+                        "auth.staff_provisioning.stale_identity_evidence",
+                        "auth.staff_provisioning.concurrent_identity_change",
                         "auth.system_user_assignments.last_admin_required",
                         "auth.staff_provisioning.invalid_command_context",
                         "auth.staff_provisioning.command_contract_violation",
@@ -1365,11 +1409,17 @@ DOMAIN = DomainSOT(
                         "auth.staff_provisioning.active_caller_transaction",
                         "auth.staff_provisioning.nested_transaction_completion",
                     ),
-                    mapping_owner="app.api.staff_sync",
+                    mapping_owner=(
+                        "app.api.staff_sync, app.api.auth_flow, and "
+                        "app.web.admin.system"
+                    ),
                     fail_closed_on=(
                         "missing authorization evidence",
                         "unknown or inactive roles",
                         "identity conflict",
+                        "missing or ambiguous local credential state",
+                        "stale reviewed repair evidence",
+                        "concurrent identity change",
                         "new principal without a complete Person Party binding",
                         "active caller transaction",
                         "nested command or transaction completion",
@@ -1382,6 +1432,8 @@ DOMAIN = DomainSOT(
                         "staff_account.roles_changed",
                         "staff_account.activated",
                         "staff_account.deactivated",
+                        "staff_account.identity_changed",
+                        "staff_account.credential_reconciled",
                     ),
                     schema_version=1,
                     delivery_owner="events.dispatcher",
@@ -1398,32 +1450,39 @@ DOMAIN = DomainSOT(
                 migration=MigrationContract(
                     state=AuthorityMigrationState.COMPLETE,
                     old_owner=(
-                        "app.services.web_system_user_mutations and the legacy "
-                        "multi-commit staff provisioning path"
+                        "app.services.web_system_user_edit, "
+                        "app.services.web_system_user_mutations, direct profile "
+                        "writers, and the legacy multi-commit staff provisioning path"
                     ),
                     new_owner="auth.staff_provisioning",
                     verification=(
-                        "Focused API, transaction, event, audit, RBAC, and "
-                        "ephemeral-delivery tests plus architecture guards."
+                        "Focused API, transaction, event, audit, RBAC, identity "
+                        "reconciliation, recovery, and ephemeral-delivery tests "
+                        "plus architecture guards."
                     ),
                     cutover_gate=(
-                        "All staff-sync write routes call only typed owner "
-                        "commands and contain no persistence mutation."
+                        "All staff-sync, administrative identity, self-profile, "
+                        "activation, invitation, and password-recovery routes call "
+                        "only typed owner commands for staff identity state."
                     ),
                     fallback_retirement=(
-                        "Staff sync no longer calls web_system_user_mutations "
-                        "or synchronous email delivery."
+                        "Staff sync no longer calls web_system_user_mutations or "
+                        "synchronous email delivery; web adapters no longer mutate "
+                        "staff profile or local credential identity directly."
                     ),
                 ),
                 steward="platform security",
                 design_refs=(
                     "docs/SOT_RELATIONSHIP_MAP.md",
+                    "docs/designs/STAFF_LOGIN_IDENTITY_RECONCILIATION.md",
                     "docs/adr/0002-owner-command-transaction-boundary.md",
                     "docs/designs/SOT_CODING_STANDARDS_REFACTOR.md",
                 ),
                 test_refs=(
                     "tests/test_api_staff_sync.py",
                     "tests/test_staff_provisioning_owner.py",
+                    "tests/test_staff_login_identity_admin.py",
+                    "tests/test_staff_login_identity_reconciliation_script.py",
                     "tests/architecture/test_staff_provisioning_boundary.py",
                 ),
             ),

@@ -7,9 +7,9 @@
 # This adapter proves the exact staging host contract before opting out of that
 # local dump. Seabone's cold application imports can exceed the production
 # health budget under measured disk/swap pressure, so this adapter also owns a
-# staging-only ten-minute health window. Production and every other environment
-# continue to call scripts/deploy.sh directly, where backups remain enabled and
-# the shorter default health budget remains unchanged.
+# staging-only ten-minute health window. Production uses its own verified
+# adapter, where backups remain enabled by default and the shorter health budget
+# remains unchanged.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -31,7 +31,8 @@ require_exact_env_line "SERVER_NAME=dotmac-sub-staging"
 require_exact_env_line "HEALTH_URL=http://10.120.121.20:8001/health"
 
 cd "${ROOT_DIR}"
-export SKIP_BACKUP=1
+unset SKIP_BACKUP
+export DEPLOY_BACKUP_MODE=skip_staging
 export REQUIRE_PROXY_HANDOFF=0
 export HEALTH_TIMEOUT_SECONDS=600
 exec bash "${ROOT_DIR}/scripts/deploy.sh" "$@"

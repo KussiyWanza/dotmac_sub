@@ -7,6 +7,8 @@ repair:
 * exact native payment-backed funding issues and fully settles the draft; or
 * settlement-backed payments plus reviewed opening funding settle the exact
   remainder without representing that opening source as a Payment; or
+* one entity-scoped reviewed correction creates and settles a missing prepaid
+  invoice from exact contract, payment, date, and residual-credit evidence; or
 * an exact direct-renewal debit/entitlement voids the duplicate draft without
   charging the customer again.
 
@@ -20,13 +22,14 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time
 from decimal import Decimal
 from enum import StrEnum
 from typing import NoReturn
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -62,9 +65,13 @@ from app.models.prepaid_funding import (
     PrepaidOpeningFundingConsumption,
 )
 from app.schemas.audit import AuditEventCreate
-from app.schemas.billing import LedgerEntryCreate
+from app.schemas.billing import (
+    InvoiceCreate,
+    LedgerEntryCreate,
+    SystemInvoiceLineCreate,
+)
 from app.services.audit import AuditEvents
-from app.services.billing._common import lock_account
+from app.services.billing._common import get_account_credit_balance, lock_account
 from app.services.billing.account_credit import (
     AccountCreditApplicationError,
     AccountCreditApplications,
@@ -72,13 +79,17 @@ from app.services.billing.account_credit import (
 )
 from app.services.billing.adjustments import AccountAdjustmentOrigin
 from app.services.billing.invoices import (
+    InvoiceLines,
     InvoiceOwnerError,
     Invoices,
     PaidPrepaidInvoiceDocumentRepair,
     PrepaidProformaDocumentAdoption,
 )
 from app.services.billing.ledger import LedgerEntries
-from app.services.billing.payments import finalize_invoice_application_for_owner
+from app.services.billing.payments import (
+    PaymentAllocations,
+    finalize_invoice_application_for_owner,
+)
 from app.services.common import round_money, to_decimal
 from app.services.domain_errors import DomainError
 from app.services.events import emit_event
@@ -93,6 +104,7 @@ from app.services.prepaid_funding_reconstruction import (
     PrepaidFundingBaselineMissingError,
     verified_prepaid_funding_balance,
 )
+from app.timezone import APP_TIMEZONE_NAME
 
 _OWNER = "financial.prepaid_draft_reconciliation"
 _CONCERN = "stranded prepaid draft invoice reconciliation"
@@ -111,12 +123,19 @@ _PAID_INVOICE_REPAIR_COMMAND = OwnerCommandDefinition(
     concern="historical paid prepaid invoice identity and coverage repair",
     name="repair_historical_paid_prepaid_invoice",
 )
+_MISSING_PAID_INVOICE_REPAIR_COMMAND = OwnerCommandDefinition(
+    owner=_OWNER,
+    concern="reviewed missing prepaid paid-invoice repair",
+    name="create_reviewed_paid_prepaid_invoice",
+)
 _IDEMPOTENCY_SCOPE = "prepaid_draft_reconcile"
 _PROFORMA_ADOPTION_IDEMPOTENCY_SCOPE = "prepaid_proforma_adoption"
 _PAID_INVOICE_REPAIR_IDEMPOTENCY_SCOPE = "paid_prepaid_invoice_repair"
+_MISSING_PAID_INVOICE_REPAIR_IDEMPOTENCY_SCOPE = "missing_paid_prepaid_invoice_repair"
 _METADATA_KEY = "prepaid_draft_reconciliation"
 _PROFORMA_ADOPTION_METADATA_KEY = "prepaid_proforma_adoption"
 _PAID_INVOICE_REPAIR_METADATA_KEY = "paid_prepaid_invoice_repair"
+_MISSING_PAID_INVOICE_REPAIR_METADATA_KEY = "missing_paid_prepaid_invoice_repair"
 _RENEWAL_ORIGIN = AccountAdjustmentOrigin.prepaid_service_renewal
 
 
@@ -144,6 +163,12 @@ class PrepaidProformaAdoptionDisposition(StrEnum):
 
 class PaidPrepaidInvoiceRepairDisposition(StrEnum):
     exact_paid_unlinked_invoice = "exact_paid_unlinked_invoice"
+    manual_review = "manual_review"
+    already_repaired = "already_repaired"
+
+
+class MissingPaidPrepaidInvoiceRepairDisposition(StrEnum):
+    exact_missing_invoice = "exact_missing_invoice"
     manual_review = "manual_review"
     already_repaired = "already_repaired"
 
@@ -334,6 +359,73 @@ class PaidPrepaidInvoiceRepairResult:
     billing_period_end: datetime
     preview_fingerprint: str
     subscriptions_restored: int
+    replayed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class MissingPaidPrepaidInvoiceRepairQuery:
+    account_id: UUID
+    subscription_id: UUID
+    payment_id: UUID
+    issued_on: date
+    due_on: date
+    next_billing_on: date
+    expected_total: Decimal
+    expected_remaining_credit: Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class MissingPaidPrepaidInvoiceRepairPreview:
+    account_id: UUID
+    subscription_id: UUID
+    payment_id: UUID
+    disposition: MissingPaidPrepaidInvoiceRepairDisposition
+    issued_at: datetime | None
+    paid_at: datetime | None
+    due_at: datetime | None
+    billing_period_start: datetime | None
+    billing_period_end: datetime | None
+    subtotal: Decimal
+    tax_total: Decimal
+    total: Decimal
+    currency: str
+    account_credit_before: Decimal
+    expected_remaining_credit: Decimal
+    selected_payment_available: Decimal
+    existing_invoice_id: UUID | None
+    reason: str
+    fingerprint: str
+
+    @property
+    def actionable(self) -> bool:
+        return (
+            self.disposition
+            is MissingPaidPrepaidInvoiceRepairDisposition.exact_missing_invoice
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CreateReviewedPaidPrepaidInvoiceCommand:
+    context: CommandContext
+    query: MissingPaidPrepaidInvoiceRepairQuery
+    preview_fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
+class MissingPaidPrepaidInvoiceRepairResult:
+    invoice_id: UUID
+    invoice_number: str | None
+    subscription_id: UUID
+    payment_id: UUID
+    entitlement_id: UUID
+    issued_at: datetime
+    paid_at: datetime
+    due_at: datetime
+    billing_period_start: datetime
+    billing_period_end: datetime
+    total: Decimal
+    remaining_credit: Decimal
+    preview_fingerprint: str
     replayed: bool
 
 
@@ -1278,6 +1370,442 @@ def preview_historical_paid_prepaid_invoice_repair(
     )
 
 
+def _business_midnight(value: date) -> datetime:
+    return datetime.combine(
+        value,
+        time.min,
+        tzinfo=ZoneInfo(APP_TIMEZONE_NAME),
+    ).astimezone(UTC)
+
+
+def _build_missing_paid_invoice_preview(
+    *,
+    query: MissingPaidPrepaidInvoiceRepairQuery,
+    disposition: MissingPaidPrepaidInvoiceRepairDisposition,
+    reason: str,
+    issued_at: datetime | None = None,
+    paid_at: datetime | None = None,
+    due_at: datetime | None = None,
+    period_start: datetime | None = None,
+    period_end: datetime | None = None,
+    subtotal: Decimal = Decimal("0.00"),
+    tax_total: Decimal = Decimal("0.00"),
+    total: Decimal = Decimal("0.00"),
+    currency: str = "NGN",
+    account_credit_before: Decimal = Decimal("0.00"),
+    selected_payment_available: Decimal = Decimal("0.00"),
+    existing_invoice_id: UUID | None = None,
+    evidence: dict[str, object] | None = None,
+    fingerprint_override: str | None = None,
+) -> MissingPaidPrepaidInvoiceRepairPreview:
+    payload: dict[str, object] = {
+        "account_id": query.account_id,
+        "subscription_id": query.subscription_id,
+        "payment_id": query.payment_id,
+        "issued_on": query.issued_on,
+        "due_on": query.due_on,
+        "next_billing_on": query.next_billing_on,
+        "expected_total": round_money(query.expected_total),
+        "expected_remaining_credit": round_money(query.expected_remaining_credit),
+        "issued_at": issued_at,
+        "paid_at": paid_at,
+        "due_at": due_at,
+        "period_start": period_start,
+        "period_end": period_end,
+        "subtotal": round_money(subtotal),
+        "tax_total": round_money(tax_total),
+        "total": round_money(total),
+        "currency": currency,
+        "account_credit_before": round_money(account_credit_before),
+        "selected_payment_available": round_money(selected_payment_available),
+        "existing_invoice_id": existing_invoice_id,
+        "disposition": disposition,
+        "reason": reason,
+        "evidence": evidence or {},
+    }
+    return MissingPaidPrepaidInvoiceRepairPreview(
+        account_id=query.account_id,
+        subscription_id=query.subscription_id,
+        payment_id=query.payment_id,
+        disposition=disposition,
+        issued_at=issued_at,
+        paid_at=paid_at,
+        due_at=due_at,
+        billing_period_start=period_start,
+        billing_period_end=period_end,
+        subtotal=round_money(subtotal),
+        tax_total=round_money(tax_total),
+        total=round_money(total),
+        currency=currency,
+        account_credit_before=round_money(account_credit_before),
+        expected_remaining_credit=round_money(query.expected_remaining_credit),
+        selected_payment_available=round_money(selected_payment_available),
+        existing_invoice_id=existing_invoice_id,
+        reason=reason,
+        fingerprint=fingerprint_override or _hash(payload),
+    )
+
+
+def _existing_missing_paid_invoice_repair(
+    db: Session,
+    query: MissingPaidPrepaidInvoiceRepairQuery,
+) -> tuple[Invoice, str] | None:
+    invoices = tuple(
+        db.scalars(
+            select(Invoice)
+            .join(InvoiceLine, InvoiceLine.invoice_id == Invoice.id)
+            .join(
+                PaymentAllocation,
+                PaymentAllocation.invoice_id == Invoice.id,
+            )
+            .where(
+                Invoice.account_id == query.account_id,
+                Invoice.is_active.is_(True),
+                InvoiceLine.subscription_id == query.subscription_id,
+                InvoiceLine.is_active.is_(True),
+                PaymentAllocation.payment_id == query.payment_id,
+                PaymentAllocation.is_active.is_(True),
+            )
+            .distinct()
+            .order_by(Invoice.created_at, Invoice.id)
+        ).all()
+    )
+    for invoice in invoices:
+        metadata = dict(invoice.metadata_ or {}).get(
+            _MISSING_PAID_INVOICE_REPAIR_METADATA_KEY
+        )
+        if not isinstance(metadata, dict):
+            continue
+        if (
+            str(metadata.get("issued_on")) == query.issued_on.isoformat()
+            and str(metadata.get("due_on")) == query.due_on.isoformat()
+            and str(metadata.get("next_billing_on"))
+            == query.next_billing_on.isoformat()
+            and str(metadata.get("expected_total"))
+            == str(round_money(query.expected_total))
+            and str(metadata.get("expected_remaining_credit"))
+            == str(round_money(query.expected_remaining_credit))
+        ):
+            fingerprint = str(metadata.get("preview_fingerprint") or "")
+            if fingerprint:
+                selected_allocation = round_money(
+                    to_decimal(
+                        db.scalar(
+                            select(
+                                func.coalesce(func.sum(PaymentAllocation.amount), 0)
+                            ).where(
+                                PaymentAllocation.invoice_id == invoice.id,
+                                PaymentAllocation.payment_id == query.payment_id,
+                                PaymentAllocation.is_active.is_(True),
+                            )
+                        )
+                    )
+                )
+                entitlement_id = db.scalar(
+                    select(ServiceEntitlement.id).where(
+                        ServiceEntitlement.source_invoice_id == invoice.id,
+                        ServiceEntitlement.subscription_id == query.subscription_id,
+                        ServiceEntitlement.status == ServiceEntitlementStatus.active,
+                    )
+                )
+                subscription = db.get(Subscription, query.subscription_id)
+                if (
+                    invoice.status is not InvoiceStatus.paid
+                    or round_money(to_decimal(invoice.balance_due)) != Decimal("0.00")
+                    or selected_allocation != round_money(query.expected_total)
+                    or entitlement_id is None
+                    or subscription is None
+                    or invoice.billing_period_end is None
+                    or subscription.next_billing_at is None
+                    or _utc(subscription.next_billing_at)
+                    != _utc(invoice.billing_period_end)
+                ):
+                    _error(
+                        "incomplete_repair",
+                        "Existing missing-invoice repair evidence has drifted.",
+                        invoice_id=str(invoice.id),
+                    )
+                return invoice, fingerprint
+    return None
+
+
+def preview_missing_paid_prepaid_invoice_repair(
+    db: Session,
+    query: MissingPaidPrepaidInvoiceRepairQuery,
+) -> MissingPaidPrepaidInvoiceRepairPreview:
+    """Preview one explicit missing-invoice correction without writing money."""
+
+    existing_repair = _existing_missing_paid_invoice_repair(db, query)
+    if existing_repair is not None:
+        invoice, fingerprint = existing_repair
+        return _build_missing_paid_invoice_preview(
+            query=query,
+            disposition=MissingPaidPrepaidInvoiceRepairDisposition.already_repaired,
+            reason="invoice carries structural reviewed missing-invoice evidence",
+            issued_at=_utc(invoice.issued_at) if invoice.issued_at else None,
+            paid_at=_utc(invoice.paid_at) if invoice.paid_at else None,
+            due_at=_utc(invoice.due_at) if invoice.due_at else None,
+            period_start=(
+                _utc(invoice.billing_period_start)
+                if invoice.billing_period_start
+                else None
+            ),
+            period_end=(
+                _utc(invoice.billing_period_end) if invoice.billing_period_end else None
+            ),
+            subtotal=to_decimal(invoice.subtotal),
+            tax_total=to_decimal(invoice.tax_total),
+            total=to_decimal(invoice.total),
+            currency=(invoice.currency or "NGN").upper(),
+            account_credit_before=get_account_credit_balance(
+                db,
+                str(query.account_id),
+                currency=(invoice.currency or "NGN").upper(),
+            ),
+            existing_invoice_id=invoice.id,
+            fingerprint_override=fingerprint,
+        )
+
+    expected_total = round_money(query.expected_total)
+    expected_remaining = round_money(query.expected_remaining_credit)
+    period_start = _business_midnight(query.issued_on)
+    period_end = _business_midnight(query.next_billing_on)
+    due_at = _business_midnight(query.due_on)
+    if (
+        expected_total <= Decimal("0.00")
+        or expected_remaining < Decimal("0.00")
+        or period_end <= period_start
+        or query.due_on != query.next_billing_on
+    ):
+        return _build_missing_paid_invoice_preview(
+            query=query,
+            disposition=MissingPaidPrepaidInvoiceRepairDisposition.manual_review,
+            reason="reviewed dates or expected monetary values are invalid",
+            due_at=due_at,
+            period_start=period_start,
+            period_end=period_end,
+        )
+
+    subscription = db.get(Subscription, query.subscription_id)
+    if (
+        subscription is None
+        or subscription.subscriber_id != query.account_id
+        or subscription.billing_mode is not BillingMode.prepaid
+        or subscription.status
+        not in {
+            SubscriptionStatus.active,
+            SubscriptionStatus.suspended,
+            SubscriptionStatus.blocked,
+        }
+    ):
+        return _build_missing_paid_invoice_preview(
+            query=query,
+            disposition=MissingPaidPrepaidInvoiceRepairDisposition.manual_review,
+            reason="subscription is not the selected eligible prepaid contract",
+            due_at=due_at,
+            period_start=period_start,
+            period_end=period_end,
+        )
+    current_anchor = (
+        _utc(subscription.next_billing_at)
+        if subscription.next_billing_at is not None
+        else None
+    )
+    if current_anchor is not None and current_anchor > period_start:
+        return _build_missing_paid_invoice_preview(
+            query=query,
+            disposition=MissingPaidPrepaidInvoiceRepairDisposition.manual_review,
+            reason="subscription already has a billing anchor inside the reviewed period",
+            due_at=due_at,
+            period_start=period_start,
+            period_end=period_end,
+            evidence={"current_next_billing_at": current_anchor},
+        )
+
+    payment = db.get(Payment, query.payment_id)
+    settlement = payment.settlement if payment is not None else None
+    has_return = bool(
+        payment is not None
+        and (
+            db.scalar(
+                select(PaymentRefund.id)
+                .where(PaymentRefund.payment_id == payment.id)
+                .limit(1)
+            )
+            is not None
+            or db.scalar(
+                select(PaymentReversal.id)
+                .where(PaymentReversal.payment_id == payment.id)
+                .limit(1)
+            )
+            is not None
+        )
+    )
+    local_zone = ZoneInfo(APP_TIMEZONE_NAME)
+    payment_paid_at = (
+        _utc(payment.paid_at)
+        if payment is not None and payment.paid_at is not None
+        else None
+    )
+    if (
+        payment is None
+        or not payment.is_active
+        or payment.account_id != query.account_id
+        or payment.status is not PaymentStatus.succeeded
+        or payment_paid_at is None
+        or payment_paid_at.astimezone(local_zone).date() != query.issued_on
+        or settlement is None
+        or settlement.payment_id != payment.id
+        or has_return
+    ):
+        return _build_missing_paid_invoice_preview(
+            query=query,
+            disposition=MissingPaidPrepaidInvoiceRepairDisposition.manual_review,
+            reason="selected payment is not successful unreturned settlement evidence",
+            issued_at=payment_paid_at,
+            paid_at=payment_paid_at,
+            due_at=due_at,
+            period_start=period_start,
+            period_end=period_end,
+        )
+
+    from app.services.prepaid_service_renewals import (
+        resolve_prepaid_monthly_charge_detail,
+    )
+
+    charge = resolve_prepaid_monthly_charge_detail(
+        db,
+        subscription,
+        payment_paid_at,
+    )
+    if (
+        charge is None
+        or charge.total != expected_total
+        or charge.currency != (payment.currency or "NGN").upper()
+        or settlement.currency.upper() != charge.currency
+    ):
+        return _build_missing_paid_invoice_preview(
+            query=query,
+            disposition=MissingPaidPrepaidInvoiceRepairDisposition.manual_review,
+            reason="expected total does not match canonical prepaid contract terms",
+            issued_at=payment_paid_at,
+            paid_at=payment_paid_at,
+            due_at=due_at,
+            period_start=period_start,
+            period_end=period_end,
+            total=expected_total,
+        )
+
+    account_credit = round_money(
+        get_account_credit_balance(
+            db,
+            str(query.account_id),
+            currency=charge.currency,
+        )
+    )
+    selected_payment_available = round_money(
+        PaymentAllocations.available_amount(db, str(payment.id))
+    )
+    if (
+        account_credit != round_money(expected_total + expected_remaining)
+        or selected_payment_available < expected_total
+    ):
+        return _build_missing_paid_invoice_preview(
+            query=query,
+            disposition=MissingPaidPrepaidInvoiceRepairDisposition.manual_review,
+            reason="reviewed account credit or selected payment capacity changed",
+            issued_at=payment_paid_at,
+            paid_at=payment_paid_at,
+            due_at=due_at,
+            period_start=period_start,
+            period_end=period_end,
+            subtotal=charge.subtotal,
+            tax_total=charge.tax_total,
+            total=charge.total,
+            currency=charge.currency,
+            account_credit_before=account_credit,
+            selected_payment_available=selected_payment_available,
+        )
+
+    competing_invoice_id = db.scalar(
+        select(Invoice.id)
+        .join(InvoiceLine, InvoiceLine.invoice_id == Invoice.id)
+        .where(
+            Invoice.account_id == query.account_id,
+            Invoice.is_active.is_(True),
+            Invoice.status.notin_({InvoiceStatus.void, InvoiceStatus.written_off}),
+            InvoiceLine.subscription_id == subscription.id,
+            InvoiceLine.is_active.is_(True),
+            InvoiceLine.amount > Decimal("0.00"),
+            or_(
+                Invoice.billing_period_start.is_(None),
+                Invoice.billing_period_end.is_(None),
+                (
+                    (Invoice.billing_period_start < period_end)
+                    & (Invoice.billing_period_end > period_start)
+                ),
+            ),
+        )
+        .limit(1)
+    )
+    overlapping_entitlement_id = db.scalar(
+        select(ServiceEntitlement.id)
+        .where(
+            ServiceEntitlement.subscription_id == subscription.id,
+            ServiceEntitlement.status == ServiceEntitlementStatus.active,
+            ServiceEntitlement.starts_at < period_end,
+            ServiceEntitlement.ends_at > period_start,
+        )
+        .limit(1)
+    )
+    if competing_invoice_id is not None or overlapping_entitlement_id is not None:
+        return _build_missing_paid_invoice_preview(
+            query=query,
+            disposition=MissingPaidPrepaidInvoiceRepairDisposition.manual_review,
+            reason="competing invoice or service entitlement overlaps the reviewed period",
+            issued_at=payment_paid_at,
+            paid_at=payment_paid_at,
+            due_at=due_at,
+            period_start=period_start,
+            period_end=period_end,
+            subtotal=charge.subtotal,
+            tax_total=charge.tax_total,
+            total=charge.total,
+            currency=charge.currency,
+            account_credit_before=account_credit,
+            selected_payment_available=selected_payment_available,
+            existing_invoice_id=competing_invoice_id,
+            evidence={"overlapping_entitlement_id": overlapping_entitlement_id},
+        )
+
+    return _build_missing_paid_invoice_preview(
+        query=query,
+        disposition=MissingPaidPrepaidInvoiceRepairDisposition.exact_missing_invoice,
+        reason="one reviewed payment-backed correction can create the missing invoice",
+        issued_at=payment_paid_at,
+        paid_at=payment_paid_at,
+        due_at=due_at,
+        period_start=period_start,
+        period_end=period_end,
+        subtotal=charge.subtotal,
+        tax_total=charge.tax_total,
+        total=charge.total,
+        currency=charge.currency,
+        account_credit_before=account_credit,
+        selected_payment_available=selected_payment_available,
+        evidence={
+            "subscription_updated_at": subscription.updated_at,
+            "subscription_next_billing_at": current_anchor,
+            "payment_updated_at": payment.updated_at,
+            "settlement_id": settlement.id,
+            "settlement_amount": settlement.amount,
+            "settlement_unallocated_amount": settlement.unallocated_amount,
+            "tax_rate_id": charge.tax_rate_id,
+            "tax_application": charge.tax_application,
+        },
+    )
+
+
 def _direct_renewal_evidence(
     db: Session,
     *,
@@ -1985,6 +2513,9 @@ def _stage_action(
     preview: PrepaidDraftReconciliationPreview,
     effective_at: datetime,
     context: CommandContext | None,
+    due_at: datetime | None = None,
+    reviewed_document_correction: bool = False,
+    selected_payment_id: UUID | None = None,
 ) -> tuple[
     Invoice,
     Decimal,
@@ -2004,12 +2535,32 @@ def _stage_action(
                 db,
                 str(invoice.id),
                 issued_at=_utc(effective_at),
-                due_at=_utc(effective_at),
+                due_at=_utc(due_at or effective_at),
                 reason="reconcile_exactly_funded_prepaid_draft",
                 apply_available_credit=False,
             )
-            funding = _funding_preview(db, invoice)
-            if preview.disposition is PrepaidDraftDisposition.reviewed_opening_fundable:
+            if selected_payment_id is not None:
+                if not reviewed_document_correction:
+                    _error(
+                        "review_required",
+                        "Selected-payment settlement requires reviewed document correction.",
+                    )
+                result = (
+                    AccountCreditApplications.apply_invoice_from_selected_payment_fully(
+                        db,
+                        invoice,
+                        payment_id=selected_payment_id,
+                        expected_amount=preview.invoice_total,
+                    )
+                )
+                opening_consumption = None
+            else:
+                funding = _funding_preview(db, invoice)
+            if (
+                selected_payment_id is None
+                and preview.disposition
+                is PrepaidDraftDisposition.reviewed_opening_fundable
+            ):
                 if context is None:
                     _error(
                         "review_required",
@@ -2041,7 +2592,7 @@ def _stage_action(
                     effective_at=_utc(effective_at),
                 )
                 reviewed_opening_correction = True
-            else:
+            elif selected_payment_id is None:
                 result = AccountCreditApplications.apply_invoice_fully(
                     db,
                     invoice,
@@ -2109,7 +2660,7 @@ def _stage_action(
             evidence_ref=f"prepaid_draft_reconciliation:{invoice.id}",
             authority=(
                 BillingAnchorAuthority.reviewed_reconciliation
-                if reviewed_opening_correction
+                if reviewed_opening_correction or reviewed_document_correction
                 else BillingAnchorAuthority.funding_observation
             ),
         )
@@ -2256,6 +2807,369 @@ def _replay_result(
         ),
         preview_fingerprint=str(metadata["preview_fingerprint"]),
         replayed=True,
+    )
+
+
+def _missing_paid_invoice_result(
+    db: Session,
+    *,
+    invoice: Invoice,
+    query: MissingPaidPrepaidInvoiceRepairQuery,
+    preview_fingerprint: str,
+    replayed: bool,
+) -> MissingPaidPrepaidInvoiceRepairResult:
+    entitlement = db.scalar(
+        select(ServiceEntitlement).where(
+            ServiceEntitlement.source_invoice_id == invoice.id,
+            ServiceEntitlement.subscription_id == query.subscription_id,
+            ServiceEntitlement.status == ServiceEntitlementStatus.active,
+        )
+    )
+    remaining_credit = round_money(
+        get_account_credit_balance(
+            db,
+            str(query.account_id),
+            currency=(invoice.currency or "NGN").upper(),
+        )
+    )
+    local_zone = ZoneInfo(APP_TIMEZONE_NAME)
+    selected_allocation = round_money(
+        to_decimal(
+            db.scalar(
+                select(func.coalesce(func.sum(PaymentAllocation.amount), 0)).where(
+                    PaymentAllocation.invoice_id == invoice.id,
+                    PaymentAllocation.payment_id == query.payment_id,
+                    PaymentAllocation.is_active.is_(True),
+                )
+            )
+        )
+    )
+    subscription = db.get(Subscription, query.subscription_id)
+    if (
+        entitlement is None
+        or invoice.status is not InvoiceStatus.paid
+        or round_money(to_decimal(invoice.balance_due)) != Decimal("0.00")
+        or invoice.issued_at is None
+        or invoice.paid_at is None
+        or invoice.due_at is None
+        or invoice.billing_period_start is None
+        or invoice.billing_period_end is None
+        or round_money(to_decimal(invoice.total)) != round_money(query.expected_total)
+        or _utc(invoice.issued_at).astimezone(local_zone).date() != query.issued_on
+        or _utc(invoice.paid_at).astimezone(local_zone).date() != query.issued_on
+        or _utc(invoice.due_at).astimezone(local_zone).date() != query.due_on
+        or _utc(invoice.billing_period_start).astimezone(local_zone).date()
+        != query.issued_on
+        or _utc(invoice.billing_period_end).astimezone(local_zone).date()
+        != query.next_billing_on
+        or selected_allocation != round_money(query.expected_total)
+        or subscription is None
+        or subscription.next_billing_at is None
+        or _utc(subscription.next_billing_at) != _utc(invoice.billing_period_end)
+        or remaining_credit != round_money(query.expected_remaining_credit)
+    ):
+        _error(
+            "incomplete_repair",
+            "Reviewed missing-invoice repair evidence is incomplete.",
+            invoice_id=str(invoice.id),
+        )
+    return MissingPaidPrepaidInvoiceRepairResult(
+        invoice_id=invoice.id,
+        invoice_number=invoice.invoice_number,
+        subscription_id=query.subscription_id,
+        payment_id=query.payment_id,
+        entitlement_id=entitlement.id,
+        issued_at=_utc(invoice.issued_at),
+        paid_at=_utc(invoice.paid_at),
+        due_at=_utc(invoice.due_at),
+        billing_period_start=_utc(invoice.billing_period_start),
+        billing_period_end=_utc(invoice.billing_period_end),
+        total=round_money(to_decimal(invoice.total)),
+        remaining_credit=remaining_credit,
+        preview_fingerprint=preview_fingerprint,
+        replayed=replayed,
+    )
+
+
+def create_reviewed_paid_prepaid_invoice(
+    db: Session,
+    command: CreateReviewedPaidPrepaidInvoiceCommand,
+) -> MissingPaidPrepaidInvoiceRepairResult:
+    """Create and settle one explicitly reviewed missing prepaid invoice."""
+
+    def operation() -> MissingPaidPrepaidInvoiceRepairResult:
+        key = (command.context.idempotency_key or "").strip()
+        if not key or len(key) > 120:
+            _error("missing_idempotency_key", "A bounded idempotency key is required.")
+
+        lock_account(db, str(command.query.account_id))
+        locked_subscription = lock_for_update(
+            db,
+            Subscription,
+            str(command.query.subscription_id),
+        )
+        locked_payment = lock_for_update(db, Payment, str(command.query.payment_id))
+        if locked_subscription is None or locked_payment is None:
+            _error("not_actionable", "Reviewed subscription or payment was not found.")
+        db.refresh(locked_subscription)
+        db.refresh(locked_payment)
+
+        reservation = db.scalar(
+            select(IdempotencyKey)
+            .where(
+                IdempotencyKey.scope == _MISSING_PAID_INVOICE_REPAIR_IDEMPOTENCY_SCOPE,
+                IdempotencyKey.key == key,
+            )
+            .with_for_update()
+        )
+        if reservation is not None:
+            if (
+                reservation.account_id != command.query.account_id
+                or not reservation.ref_id
+            ):
+                _error(
+                    "idempotency_conflict",
+                    "Idempotency key is reserved for different repair evidence.",
+                )
+            replay_invoice = db.get(Invoice, UUID(reservation.ref_id))
+            if replay_invoice is None:
+                _error(
+                    "incomplete_repair",
+                    "Idempotency evidence points to a missing invoice.",
+                )
+            metadata = dict(replay_invoice.metadata_ or {}).get(
+                _MISSING_PAID_INVOICE_REPAIR_METADATA_KEY
+            )
+            if (
+                not isinstance(metadata, dict)
+                or metadata.get("preview_fingerprint") != command.preview_fingerprint
+            ):
+                _error(
+                    "idempotency_conflict",
+                    "Idempotency key was used with different repair evidence.",
+                )
+            return _missing_paid_invoice_result(
+                db,
+                invoice=replay_invoice,
+                query=command.query,
+                preview_fingerprint=command.preview_fingerprint,
+                replayed=True,
+            )
+
+        current = preview_missing_paid_prepaid_invoice_repair(db, command.query)
+        if current.fingerprint != command.preview_fingerprint:
+            _error(
+                "stale_preview",
+                "Missing-invoice evidence changed after preview; preview again.",
+            )
+        if not current.actionable:
+            _error(
+                "not_actionable",
+                "Missing prepaid invoice requires additional evidence review.",
+                disposition=current.disposition.value,
+                reason=current.reason,
+            )
+        if (
+            current.issued_at is None
+            or current.paid_at is None
+            or current.due_at is None
+            or current.billing_period_start is None
+            or current.billing_period_end is None
+        ):
+            _error("incomplete_repair", "Reviewed invoice timestamps are incomplete.")
+
+        from app.services.prepaid_service_renewals import (
+            resolve_prepaid_monthly_charge_detail,
+        )
+
+        charge = resolve_prepaid_monthly_charge_detail(
+            db,
+            locked_subscription,
+            current.paid_at,
+        )
+        if charge is None or charge.total != current.total:
+            _error("stale_preview", "Contract charge changed after preview.")
+
+        reservation = IdempotencyKey(
+            scope=_MISSING_PAID_INVOICE_REPAIR_IDEMPOTENCY_SCOPE,
+            key=key,
+            account_id=current.account_id,
+        )
+        db.add(reservation)
+        try:
+            db.flush()
+        except IntegrityError:
+            _error(
+                "idempotency_conflict",
+                "Idempotency key was concurrently reserved by another command.",
+            )
+
+        try:
+            invoice = Invoices.stage_system_invoice_for_owner(
+                db,
+                InvoiceCreate(
+                    account_id=current.account_id,
+                    status=InvoiceStatus.draft,
+                    currency=current.currency,
+                    subtotal=current.subtotal,
+                    tax_total=current.tax_total,
+                    total=current.total,
+                    balance_due=current.total,
+                    billing_period_start=current.billing_period_start,
+                    billing_period_end=current.billing_period_end,
+                    paid_at=current.paid_at,
+                    memo=(
+                        "Reviewed entity-scoped correction for a missing prepaid "
+                        "service invoice."
+                    ),
+                ),
+                reason="reviewed_missing_prepaid_paid_invoice",
+            )
+            offer_name = (
+                locked_subscription.offer.name
+                if locked_subscription.offer is not None
+                else "Prepaid service"
+            )
+            InvoiceLines.stage_system_line_for_owner(
+                db,
+                SystemInvoiceLineCreate(
+                    invoice_id=invoice.id,
+                    subscription_id=locked_subscription.id,
+                    description=(
+                        f"{offer_name} ({command.query.issued_on} - "
+                        f"{command.query.next_billing_on})"
+                    ),
+                    quantity=Decimal("1.000"),
+                    unit_price=charge.unit_price,
+                    amount=charge.unit_price,
+                    tax_rate_id=charge.tax_rate_id,
+                    tax_application=charge.tax_application,
+                    metadata_={
+                        "kind": "base_subscription",
+                        "billing_period_start": (
+                            current.billing_period_start.isoformat()
+                        ),
+                        "billing_period_end": current.billing_period_end.isoformat(),
+                        "reviewed_missing_invoice": True,
+                        "created_by_command_id": str(command.context.command_id),
+                    },
+                    billing_line_key=(
+                        "missing-prepaid-repair:"
+                        f"{locked_subscription.id}:{command.query.issued_on}:"
+                        f"{command.query.next_billing_on}"
+                    ),
+                ),
+                reason="reviewed_missing_prepaid_paid_invoice",
+            )
+        except InvoiceOwnerError as exc:
+            _error(
+                "participant_rejected",
+                "Invoice owner rejected reviewed document construction.",
+                participant_error=exc.code,
+            )
+
+        funding = _funding_preview(db, invoice)
+        draft_preview = _build_preview(
+            invoice=invoice,
+            disposition=PrepaidDraftDisposition.exact_payment_fundable,
+            action=PrepaidDraftAction.settle_paid,
+            funding=funding,
+            subscription_ids=(locked_subscription.id,),
+            reason="selected reviewed payment fully funds the missing invoice",
+        )
+        if not funding.fully_funded or draft_preview.invoice_total != current.total:
+            _error(
+                "incomplete_repair",
+                "Constructed invoice did not become exactly payment-fundable.",
+                disposition=draft_preview.disposition.value,
+            )
+        changed_invoice, applied, payment_applied, opening_consumption = _stage_action(
+            db,
+            preview=draft_preview,
+            effective_at=current.issued_at,
+            due_at=current.due_at,
+            context=command.context,
+            reviewed_document_correction=True,
+            selected_payment_id=command.query.payment_id,
+        )
+        if (
+            applied != current.total
+            or payment_applied != current.total
+            or opening_consumption is not None
+        ):
+            _error(
+                "incomplete_repair",
+                "Reviewed repair did not consume the exact payment-backed amount.",
+            )
+        selected_allocation = round_money(
+            to_decimal(
+                db.scalar(
+                    select(func.coalesce(func.sum(PaymentAllocation.amount), 0)).where(
+                        PaymentAllocation.invoice_id == changed_invoice.id,
+                        PaymentAllocation.payment_id == command.query.payment_id,
+                        PaymentAllocation.is_active.is_(True),
+                    )
+                )
+            )
+        )
+        if selected_allocation != current.total:
+            _error(
+                "incomplete_repair",
+                "The selected payment did not exclusively fund the repaired invoice.",
+                selected_payment_applied=str(selected_allocation),
+            )
+
+        metadata = dict(changed_invoice.metadata_ or {})
+        metadata[_MISSING_PAID_INVOICE_REPAIR_METADATA_KEY] = {
+            "subscription_id": str(command.query.subscription_id),
+            "payment_id": str(command.query.payment_id),
+            "issued_on": command.query.issued_on.isoformat(),
+            "due_on": command.query.due_on.isoformat(),
+            "next_billing_on": command.query.next_billing_on.isoformat(),
+            "expected_total": str(round_money(command.query.expected_total)),
+            "expected_remaining_credit": str(
+                round_money(command.query.expected_remaining_credit)
+            ),
+            "preview_fingerprint": current.fingerprint,
+            "command_id": str(command.context.command_id),
+            "actor": command.context.actor,
+            "reason": command.context.reason,
+        }
+        changed_invoice.metadata_ = metadata
+        reservation.ref_id = str(changed_invoice.id)
+        AuditEvents.stage(
+            db,
+            AuditEventCreate(
+                action="create_reviewed_paid_prepaid_invoice",
+                entity_type="invoice",
+                entity_id=str(changed_invoice.id),
+                metadata_={
+                    "subscription_id": str(command.query.subscription_id),
+                    "payment_id": str(command.query.payment_id),
+                    "preview_fingerprint": current.fingerprint,
+                    "total": str(current.total),
+                    "currency": current.currency,
+                    "expected_remaining_credit": str(current.expected_remaining_credit),
+                    "issued_on": command.query.issued_on.isoformat(),
+                    "due_on": command.query.due_on.isoformat(),
+                    "next_billing_on": command.query.next_billing_on.isoformat(),
+                },
+            ),
+        )
+        db.flush()
+        return _missing_paid_invoice_result(
+            db,
+            invoice=changed_invoice,
+            query=command.query,
+            preview_fingerprint=current.fingerprint,
+            replayed=False,
+        )
+
+    return execute_owner_command(
+        db,
+        definition=_MISSING_PAID_INVOICE_REPAIR_COMMAND,
+        context=command.context,
+        operation=operation,
     )
 
 
@@ -3047,7 +3961,12 @@ def stage_prepaid_draft_after_funding_change(
 
 __all__ = [
     "AdoptFundedPrepaidProformaCommand",
+    "CreateReviewedPaidPrepaidInvoiceCommand",
     "FundingChangeDraftResult",
+    "MissingPaidPrepaidInvoiceRepairDisposition",
+    "MissingPaidPrepaidInvoiceRepairPreview",
+    "MissingPaidPrepaidInvoiceRepairQuery",
+    "MissingPaidPrepaidInvoiceRepairResult",
     "PrepaidDraftAction",
     "PrepaidDraftDisposition",
     "PrepaidDraftReconciliationError",
@@ -3064,10 +3983,12 @@ __all__ = [
     "ReconcilePrepaidDraftCommand",
     "RepairHistoricalPaidPrepaidInvoiceCommand",
     "adopt_funded_prepaid_proforma",
+    "create_reviewed_paid_prepaid_invoice",
     "preview_prepaid_draft_cohort",
     "preview_prepaid_draft_reconciliation",
     "preview_funded_prepaid_proforma_adoption",
     "preview_historical_paid_prepaid_invoice_repair",
+    "preview_missing_paid_prepaid_invoice_repair",
     "reconcile_prepaid_draft_invoice",
     "repair_historical_paid_prepaid_invoice",
     "stage_prepaid_draft_after_funding_change",

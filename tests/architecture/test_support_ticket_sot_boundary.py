@@ -108,6 +108,7 @@ def test_portal_ticket_routing_stays_in_configuration_and_lifecycle_owners() -> 
 
 def test_ticket_region_projection_has_one_typed_owner() -> None:
     configuration = _source("app/services/support_ticket_settings.py")
+    lifecycle = _source("app/services/support.py")
     projection = _source("app/services/support_ticket_region_projection.py")
 
     assert (
@@ -115,8 +116,10 @@ def test_ticket_region_projection_has_one_typed_owner() -> None:
         in configuration
     )
     assert "configured_regions: tuple[str, ...]" in projection
-    assert 'Ticket.region.label("region")' in projection
+    assert "func.lower(func.trim(Ticket.region))" in projection
+    assert "normalize_region_value" in projection
     assert ".order_by(region_sources.c.region.asc())" in projection
+    assert "func.lower(func.trim(Ticket.region)) == normalized_region" in lifecycle
     assert "db.query(Ticket.region)" not in configuration
 
 
@@ -157,6 +160,30 @@ def test_admin_ticket_creation_customer_email_stays_in_lifecycle_owner() -> None
     assert 'event_type="support_ticket_created_admin"' in lifecycle
     assert "TicketCreationAcknowledgementMode.customer_email" in admin_adapter
     assert "default_channels=(NotificationChannel.email,)" in lifecycle
+
+
+def test_unmatched_radio_creation_delegates_to_silent_ticket_participant() -> None:
+    lifecycle = _source("app/services/support.py")
+    queue = _source("app/services/unmatched_radio_queue.py")
+
+    assert "class TicketCreationConsequenceMode" in lifecycle
+    assert "stage_internal_creation_participant" in lifecycle
+    assert "stage_internal_observation_participant" in lifecycle
+    assert "Ticket(" not in queue
+    assert "stage_internal_creation_participant(" in queue
+    assert "stage_internal_observation_participant(" in queue
+
+    allowed = {
+        "app/services/support.py",
+        "app/services/unmatched_radio_queue.py",
+    }
+    for path in (ROOT / "app" / "services").rglob("*.py"):
+        relative = path.relative_to(ROOT).as_posix()
+        if relative in allowed:
+            continue
+        source = path.read_text(encoding="utf-8")
+        assert "stage_internal_creation_participant(" not in source, relative
+        assert "stage_internal_observation_participant(" not in source, relative
 
 
 def test_ticket_work_order_field_results_cannot_close_ticket() -> None:

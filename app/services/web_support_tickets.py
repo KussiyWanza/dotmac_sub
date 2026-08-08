@@ -14,6 +14,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.models.project import ProjectTask
+from app.models.stored_file import StoredFile
 from app.models.subscriber import Subscriber
 from app.models.support import (
     Ticket,
@@ -34,6 +35,7 @@ from app.services import (
     service_address,
     sla_assignment,
     support_ticket_filters,
+    support_ticket_region_projection,
     ticket_mentions,
     ticket_validation,
 )
@@ -53,6 +55,10 @@ from app.services.status_presentation import ticket_status_presentation
 
 logger = logging.getLogger(__name__)
 
+TICKET_ATTACHMENT_ENTITY_TYPES = frozenset(
+    {"support_ticket_attachment", "support_ticket_comment_attachment"}
+)
+
 
 @dataclass(frozen=True, slots=True)
 class TicketCustomerContext:
@@ -61,6 +67,50 @@ class TicketCustomerContext:
     phone: str | None
     service_address: str | None
     subscriber_id: UUID
+
+
+def get_ticket_attachment_file(
+    db: Session, *, ticket_id: UUID, file_id: UUID
+) -> StoredFile | None:
+    """Return an active file only when it belongs to the named support ticket."""
+    if db.get(Ticket, ticket_id) is None:
+        return None
+    record = db.get(StoredFile, file_id)
+    if (
+        record is None
+        or record.is_deleted
+        or record.entity_type not in TICKET_ATTACHMENT_ENTITY_TYPES
+        or record.entity_id != str(ticket_id)
+    ):
+        return None
+    return record
+
+
+def get_customer_visible_ticket_attachment_file(
+    db: Session, *, ticket_id: UUID, file_id: UUID
+) -> StoredFile | None:
+    """Resolve only attachments visible on a customer's ticket detail page."""
+    record = get_ticket_attachment_file(db, ticket_id=ticket_id, file_id=file_id)
+    if record is None:
+        return None
+    ticket = db.get(Ticket, ticket_id)
+    if ticket is None:
+        return None
+    visible_attachment_lists = [ticket.attachments or []]
+    visible_attachment_lists.extend(
+        comment.attachments or []
+        for comment in ticket.comments
+        if not comment.is_internal
+    )
+    expected_id = str(file_id)
+    if any(
+        str(item.get("stored_file_id") or "") == expected_id
+        for attachments in visible_attachment_lists
+        for item in attachments
+        if isinstance(item, Mapping)
+    ):
+        return record
+    return None
 
 
 def _ticket_customer_context(
@@ -231,7 +281,8 @@ def build_ticket_list_query(
         filters={
             "status": normalized_status,
             "ticket_type": str(ticket_type or "").strip() or None,
-            "region": str(region or "").strip() or None,
+            "region": support_ticket_region_projection.normalize_region_value(region)
+            or None,
             "assigned_to_me": "true" if assigned_to_me else None,
             "project_manager_person_id": _normalize_ticket_uuid_filter(
                 project_manager_person_id, "project_manager_person_id"

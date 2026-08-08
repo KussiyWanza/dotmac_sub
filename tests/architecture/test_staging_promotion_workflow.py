@@ -21,12 +21,39 @@ def test_dev_pull_requests_run_required_ci_gates() -> None:
     assert "branches: [main, dev]" in version_impact
 
 
-def test_ghcr_builds_dev_and_main_but_latest_remains_default_branch_only() -> None:
+def test_ghcr_isolated_to_the_pinned_genieacs_runtime() -> None:
     workflow = _read(".github/workflows/ghcr.yml")
 
-    assert "push:\n    branches: [main, dev]" in workflow
-    assert "type=sha" in workflow
-    assert "type=raw,value=latest,enable={{is_default_branch}}" in workflow
+    assert "branches: [main]" in workflow
+    assert "docker/genieacs/**" in workflow
+    assert "context: docker/genieacs" in workflow
+    assert workflow.count("uses: docker/build-push-action@v6") == 1
+    assert "context: .\n" not in workflow
+    assert "type=raw,value=latest" not in workflow
+
+
+def test_release_candidate_build_is_explicit_green_dev_and_digest_evidenced() -> None:
+    workflow = _read(".github/workflows/release-candidate.yml")
+
+    assert yaml.safe_load(workflow)
+    assert "on:\n  workflow_dispatch:" in workflow
+    assert "on:\n  push:" not in workflow
+    assert "candidate_sha:" in workflow
+    assert "ref: dev" in workflow
+    assert "WORKFLOW_REF: ${{ github.ref }}" in workflow
+    assert '"refs/heads/dev"' in workflow
+    assert 'const required = ["CI", "Mobile CI"]' in workflow
+    assert "Refusing stale candidate" in workflow
+    assert "Candidate image already exists" in workflow
+    assert "Cannot safely determine whether" in workflow
+    assert "runs-on: ubuntu-latest" in workflow
+    assert "self-hosted" not in workflow
+    assert workflow.count("uses: docker/build-push-action@v6") == 1
+    assert "id: build" in workflow
+    assert "${{ steps.build.outputs.digest }}" in workflow
+    assert "python -m scripts.release_candidate_evidence write-candidate" in workflow
+    assert "name: release-candidate-evidence" in workflow
+    assert "retention-days: 90" in workflow
 
 
 def test_staging_deploy_is_disabled_and_pinned_to_the_staging_host() -> None:
@@ -34,10 +61,10 @@ def test_staging_deploy_is_disabled_and_pinned_to_the_staging_host() -> None:
 
     # Parsing catches malformed YAML independently of the text contract checks.
     assert yaml.safe_load(workflow)
-    assert 'workflows: ["Build & Push to GHCR"]' in workflow
+    assert 'workflows: ["Build release candidate once"]' in workflow
     assert "branches: [dev]" in workflow
     assert "vars.STAGING_AUTO_DEPLOY_ENABLED == 'true'" in workflow
-    assert "github.event.workflow_run.event == 'push'" in workflow
+    assert "github.event.workflow_run.event == 'workflow_dispatch'" in workflow
     assert (
         "github.event.workflow_run.head_repository.full_name == github.repository"
         in workflow
@@ -50,12 +77,48 @@ def test_staging_deploy_is_disabled_and_pinned_to_the_staging_host() -> None:
     assert "/home/dotmac/projects/dotmac_sub" not in workflow
     assert 'test -e "$STAGING_DEPLOY_DIR/.git"' in workflow
     assert "rev-parse --is-inside-work-tree" in workflow
-    assert 'git -C "$STAGING_DEPLOY_DIR" merge --ff-only' in workflow
-    assert "git reset --hard" not in workflow
-    assert 'bash scripts/deploy_staging.sh "$IMAGE_TAG"' in workflow
-    assert 'bash scripts/deploy.sh "$IMAGE_TAG"' not in workflow
+    assert "Check out exact candidate without moving deployment branches" in workflow
+    assert 'git -C "$STAGING_DEPLOY_DIR" checkout --detach "$CANDIDATE_SHA"' in workflow
+    assert 'git -C "$STAGING_DEPLOY_DIR" symbolic-ref -q HEAD' in workflow
+    for forbidden_branch_mutation in (
+        'git -C "$STAGING_DEPLOY_DIR" checkout dev',
+        'git -C "$STAGING_DEPLOY_DIR" merge --ff-only',
+        'git -C "$STAGING_DEPLOY_DIR" branch --force',
+        "git reset --hard",
+    ):
+        assert forbidden_branch_mutation not in workflow
+    assert "actions/download-artifact@v4" in workflow
+    assert "python -m scripts.release_candidate_evidence verify-candidate" in workflow
+    assert 'bash scripts/deploy_staging.sh "$IMAGE_DIGEST"' in workflow
+    assert 'bash scripts/deploy.sh "$IMAGE_DIGEST"' not in workflow
+    assert 'expected_image="ghcr.io/michaelayoade/dotmac_sub@$IMAGE_DIGEST"' in workflow
+    assert "io.dotmac.release.source-tree" in workflow
+    assert "io.dotmac.release.build-run" in workflow
+    assert (
+        "python -m scripts.release_candidate_evidence write-staging-acceptance"
+        in workflow
+    )
+    assert (
+        "name: staging-acceptance-${{ needs.verify.outputs.candidate_sha }}" in workflow
+    )
     assert "10.120.121.20:8001:8001/tcp" in workflow
     assert "grep -qx celery-beat" in workflow
+
+    deploy_job = workflow[
+        workflow.index("  deploy:\n") : workflow.index("  record-acceptance:\n")
+    ]
+    for forbidden in (
+        "pytest",
+        "make test",
+        "ruff",
+        "mypy",
+        "lint-imports",
+        "bandit",
+        "docker build",
+    ):
+        assert forbidden not in deploy_job
+    acceptance_job = workflow[workflow.index("  record-acceptance:\n") :]
+    assert "runs-on: ubuntu-latest" in acceptance_job
 
     staging_adapter = _read("scripts/deploy_staging.sh")
     assert 'require_exact_env_line "APP_ENV=staging"' in staging_adapter
@@ -64,18 +127,24 @@ def test_staging_deploy_is_disabled_and_pinned_to_the_staging_host() -> None:
         'require_exact_env_line "HEALTH_URL=http://10.120.121.20:8001/health"'
         in staging_adapter
     )
-    assert "export SKIP_BACKUP=1" in staging_adapter
+    assert "unset SKIP_BACKUP" in staging_adapter
+    assert "export DEPLOY_BACKUP_MODE=skip_staging" in staging_adapter
     assert "export REQUIRE_PROXY_HANDOFF=0" in staging_adapter
     assert "export HEALTH_TIMEOUT_SECONDS=600" in staging_adapter
     assert 'exec bash "${ROOT_DIR}/scripts/deploy.sh" "$@"' in staging_adapter
 
 
 def test_agents_guidance_requires_staging_before_main() -> None:
-    guidance = _read("AGENTS.md")
+    guidance = " ".join(_read("AGENTS.md").split())
 
-    assert "immutable dev image -> staging deployment and acceptance" in guidance
+    assert "explicit one-time candidate build" in guidance
+    assert "immutable candidate digest -> staging deployment and acceptance" in guidance
+    assert "After all source and rolling version pull requests have merged" in guidance
+    assert "Deploy that exact OCI" in guidance
     assert "A dev image is staging-only" in guidance
     assert "must never receive the `latest` tag" in guidance
+    assert "one-time bootstrap promotion" in guidance
+    assert "cannot dispatch a new workflow" in guidance
     assert "Require the resulting `main` CI" in guidance
     assert "source pull requests do not edit `VERSION`" in guidance
     assert "automation owns the separate rolling" in guidance
@@ -91,14 +160,62 @@ def test_staging_promotion_runbook_records_activation_and_failure_contracts() ->
     )
     assert "used only by the staging" in runbook
     assert "never write into the deployment worktree" in runbook
-    assert "updates local `dev` only by fast-forward" in runbook
+    assert "leaves every local branch pointer unchanged" in runbook
+    assert "detached `HEAD`" in runbook
     assert "scripts/deploy_staging.sh" in runbook
-    assert "Production backup behavior remains unchanged" in runbook
+    assert "Build release candidate once" in runbook
+    assert "release-candidate-evidence" in runbook
+    assert "staging-acceptance-<source-sha>" in runbook
+    assert "builds only on a GitHub-hosted runner" in runbook
+    assert "## One-time workflow bootstrap" in runbook
+    assert "workflow_dispatch" in runbook
+    assert "Do not fabricate an" in runbook
+    assert "Production requires a backup by default" in runbook
     assert "ten-minute health budget" in runbook
     assert "Do not edit `VERSION` in the source pull request" in runbook
     assert (
         "A failed staging deployment never authorizes promotion to `main`." in runbook
     )
+
+
+def test_production_promotion_reuses_the_staged_digest_without_a_build() -> None:
+    workflow = _read(".github/workflows/release-promotion.yml")
+
+    assert yaml.safe_load(workflow)
+    assert "on:\n  workflow_dispatch:" in workflow
+    assert "ref: main" in workflow
+    assert 'for (const workflowName of ["CI", "Mobile CI"])' in workflow
+    assert "git merge-base --is-ancestor" in workflow
+    assert "authorize-production" in workflow
+    assert "docker buildx imagetools create" in workflow
+    assert "--prefer-index=false" in workflow
+    assert "production-authorization-${{ steps.release.outputs.sha }}" in workflow
+    assert "docker/build-push-action" not in workflow
+    assert "docker build " not in workflow
+    assert "self-hosted" not in workflow
+
+
+def test_production_deploy_requires_authorization_and_runs_no_test_suite() -> None:
+    workflow = _read(".github/workflows/production-deploy.yml")
+    deploy = _read("scripts/deploy.sh")
+    adapter = _read("scripts/deploy_production.sh")
+
+    assert yaml.safe_load(workflow)
+    assert "PRODUCTION_DEPLOY_ENABLED" in workflow
+    assert "target_server_name" in workflow
+    assert "dotmac-sub-prod" in workflow
+    assert "runs-on: [self-hosted, linux, x64, dotmac-sub-production]" in workflow
+    assert "environment: production" in workflow
+    assert "verify-production" in workflow
+    assert "bash scripts/deploy_production.sh" in workflow
+    for forbidden in ("pytest", "make test", "ruff", "mypy", "lint-imports", "bandit"):
+        assert forbidden not in workflow
+
+    assert "production does not accept SKIP_BACKUP=1" in deploy
+    assert "verify-production-decision" in deploy
+    assert "deploy_production.sh" in adapter
+    assert "write-production-decision" in adapter
+    assert "SELECT version_num FROM alembic_version ORDER BY version_num" in adapter
 
 
 def test_runbook_records_the_merge_method_per_pull_request_kind() -> None:
@@ -135,7 +252,7 @@ def test_runbook_explains_why_dev_requires_no_approving_review() -> None:
     assert "permanently unmergeable" in runbook
 
 
-def test_runbook_requires_fast_forwarding_dev_after_a_promotion() -> None:
+def test_runbook_requires_pull_request_sync_after_a_promotion() -> None:
     """The promotion merge commit exists only on main, leaving dev behind.
 
     Ancestry therefore breaks again the moment a promotion lands, and the next
@@ -145,16 +262,15 @@ def test_runbook_requires_fast_forwarding_dev_after_a_promotion() -> None:
 
     runbook = _read("docs/runbooks/STAGING_PROMOTION.md")
 
-    assert "Fast-forward `dev` to `main`" in runbook
+    assert "Synchronize `dev` after a promotion" in runbook
     # The step belongs in the numbered sequence, not only in a later section,
     # because that is what someone actually follows during a release.
     sequence = runbook[
         runbook.index("## Promotion sequence") : runbook.index("## Merge methods")
     ]
-    assert "Fast-forward `dev` to `main`" in sequence
-    # A fast-forward, not a force push — branch protection forbids the latter.
-    assert "refs/heads/dev" in runbook
-    assert "not a force" in runbook
+    assert "zero-file pull request" in sequence
+    assert "gh pr create --base dev" in runbook
+    assert "rejects even a non-force fast-forward" in runbook
 
 
 def test_runbook_warns_that_merging_a_promotion_deletes_dev() -> None:

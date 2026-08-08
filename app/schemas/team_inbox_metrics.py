@@ -31,6 +31,7 @@ class InboxAgentPerformanceRead(BaseModel):
     service_team_capabilities: tuple[str, ...]
     active_assignment_count: int
     handled_conversation_count: int
+    average_first_response_seconds: float | None = None
     average_queue_wait_seconds: float | None = None
 
 

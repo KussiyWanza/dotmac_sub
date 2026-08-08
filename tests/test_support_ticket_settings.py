@@ -134,7 +134,7 @@ def test_ticket_settings_projects_active_native_teams_without_writing_them(db_se
     ]
 
 
-@pytest.mark.parametrize("submitted", (None, "", "forged", "NORTH"))
+@pytest.mark.parametrize("submitted", (None, "", "forged"))
 def test_portal_region_validation_rejects_noncanonical_values(db_session, submitted):
     assert (
         support_ticket_settings_service.canonical_region_option(db_session, submitted)
@@ -151,6 +151,14 @@ def test_portal_region_validation_returns_current_canonical_value(db_session):
                 priority="normal",
                 channel=TicketChannel.web,
                 region="zaria",
+                is_active=True,
+            ),
+            Ticket(
+                title="Legacy Lagos ticket",
+                status="open",
+                priority="normal",
+                channel=TicketChannel.web,
+                region=" Lagos ",
                 is_active=True,
             ),
             Ticket(
@@ -176,7 +184,7 @@ def test_portal_region_validation_returns_current_canonical_value(db_session):
         db_session
     ) == ["abuja", "lagos", "zaria"]
     assert (
-        support_ticket_settings_service.canonical_region_option(db_session, "lagos")
+        support_ticket_settings_service.canonical_region_option(db_session, " LAGOS ")
         == "lagos"
     )
 

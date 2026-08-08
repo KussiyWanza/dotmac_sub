@@ -25,6 +25,12 @@
   },
   {
     "current": true,
+    "key": "nextcloud.talk",
+    "manifest_digest": "c6939956ac02d8697c9a0e41ee4d759354d433235acb5bdced9abd30ef272bf2",
+    "version": "1.0.0"
+  },
+  {
+    "current": true,
     "key": "meta.social",
     "manifest_digest": "c2a13ab30bebb90b312ab4bbcf1d2feaa23ea706100b3e5ea35a101ec566cf08",
     "version": "1.0.0"
