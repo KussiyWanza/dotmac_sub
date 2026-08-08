@@ -82,9 +82,10 @@
                         hx-swap="innerHTML"
                         hx-push-url="true"
                         hx-sync="#ticket-filter-form:replace"
-                        class="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-primary-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm transition hover:bg-primary-700">
+                        title="Apply filters"
+                        class="inline-flex flex-1 items-center justify-center rounded-lg bg-primary-600 px-2 py-1.5 text-sm font-semibold text-white shadow-sm transition hover:bg-primary-700">
                     {{ icon_filter('h-4 w-4') }}
-                    <span class="hidden xl:inline">Apply</span>
+                    <span class="sr-only">Apply</span>
                 </button>
                 <button type="button"
                         aria-label="Clear ticket filters"

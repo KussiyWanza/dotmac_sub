@@ -1360,7 +1360,7 @@ def reports_discounts(
     except DomainError as exc:
         context["error"] = exc.message
         return templates.TemplateResponse(
-            "admin/reports/discounts.html", context, status_code=400
+            "admin/reports/discounts.html", dict(context), status_code=400
         )
     except SQLAlchemyError as exc:
         logger.error(
@@ -1374,10 +1374,10 @@ def reports_discounts(
         db_session_adapter.release_read_transaction(db)
         context["error"] = "Discounts could not be loaded. No data was changed."
         return templates.TemplateResponse(
-            "admin/reports/discounts.html", context, status_code=503
+            "admin/reports/discounts.html", dict(context), status_code=503
         )
     context["report"] = report
-    return templates.TemplateResponse("admin/reports/discounts.html", context)
+    return templates.TemplateResponse("admin/reports/discounts.html", dict(context))
 
 
 @router.get(
