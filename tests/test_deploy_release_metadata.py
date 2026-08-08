@@ -44,6 +44,7 @@ def _run_deploy(
     image_selector: str = "sha-32eebc1",
     repo_digest_matches: bool = True,
     extra_env: dict[str, str] | None = None,
+    deployment_target: str = "staging",
 ) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
     deploy_dir = tmp_path / "deploy"
     bin_dir = tmp_path / "bin"
@@ -53,11 +54,16 @@ def _run_deploy(
     docker_log.write_text("")
     migration_attempts = tmp_path / "migration-attempts"
     migration_attempts.write_text("0")
+    app_env, server_name = (
+        ("production", "dotmac-sub-prod")
+        if deployment_target == "production"
+        else ("staging", "dotmac-sub-staging")
+    )
     (deploy_dir / ".env").write_text(
         "APP_IMAGE=ghcr.io/michaelayoade/dotmac_sub:sha-old0000\n"
         "GIT_SHA=old0000000000000000000000000000000000000\n"
-        "APP_ENV=production\n"
-        "SERVER_NAME=dotmac-sub-prod\n"
+        f"APP_ENV={app_env}\n"
+        f"SERVER_NAME={server_name}\n"
     )
     declared_services_literal = " ".join(
         f"'{service}'" for service in declared_services
@@ -162,7 +168,7 @@ exit 0
         "DEPLOY_DIR": str(deploy_dir),
         "REPO_DIR": str(repo_root),
         "DEPLOY_LOCK_FILE": str(tmp_path / "deploy.lock"),
-        "SKIP_BACKUP": "1",
+        "DEPLOY_BACKUP_MODE": "skip_staging",
         "IMAGE_RETAIN_COUNT": "0",
         "HEALTH_TIMEOUT_SECONDS": "0" if not health_success else "180",
         "CANDIDATE_DRAIN_SECONDS": "0",
@@ -243,6 +249,27 @@ def test_deploy_rejects_non_green_github_revision_before_database_work(
         "scripts.migration.reconcile_service_extension_duplicates" in command
         or "alembic upgrade heads" in command
         for command in commands[gate + 1 :]
+    )
+
+
+def test_production_rejects_generic_skip_backup_before_database_work(
+    tmp_path: Path,
+) -> None:
+    result, env_file, docker_log = _run_deploy(
+        tmp_path,
+        image_selector=IMAGE_DIGEST,
+        deployment_target="production",
+        extra_env={"SKIP_BACKUP": "1"},
+    )
+
+    assert result.returncode != 0
+    assert "production does not accept SKIP_BACKUP=1" in result.stderr
+    assert (
+        "APP_IMAGE=ghcr.io/michaelayoade/dotmac_sub:sha-old0000" in env_file.read_text()
+    )
+    assert not any(
+        "scripts.migration.reconcile_service_extension_duplicates" in command
+        for command in docker_log.read_text().splitlines()
     )
 
 

@@ -9,8 +9,10 @@ from scripts.release_artifact_contract import (
     EvidenceConclusion,
     GitCommitSha,
     GitTreeSha,
+    MainAuthorizationEvidence,
     OCIImageDigest,
     ReleaseArtifactEvidence,
+    ReleaseCandidateRecord,
     StagingAcceptanceEvidence,
     StagingDeploymentId,
     WorkflowRunId,
@@ -18,9 +20,12 @@ from scripts.release_artifact_contract import (
 from scripts.release_candidate_evidence import (
     EvidenceDocumentError,
     read_candidate_evidence,
+    read_production_authorization,
     read_staging_acceptance,
     verify_candidate_evidence,
+    verify_production_authorization,
     write_candidate_evidence,
+    write_production_authorization,
     write_staging_acceptance,
 )
 
@@ -128,3 +133,64 @@ def test_staging_acceptance_round_trips_the_same_digest(tmp_path: Path) -> None:
     write_staging_acceptance(path, evidence)
 
     assert read_staging_acceptance(path) == evidence
+
+
+def test_production_authorization_round_trips_distinct_main_identity(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "authorization.json"
+    record = ReleaseCandidateRecord(
+        artifact=_candidate(),
+        staging=StagingAcceptanceEvidence(
+            deployment_id=StagingDeploymentId(500),
+            source_revision=SOURCE_REVISION,
+            source_tree=SOURCE_TREE,
+            image_digest=IMAGE_DIGEST,
+            conclusion=EvidenceConclusion.SUCCESS,
+        ),
+        main=MainAuthorizationEvidence(
+            authorization_run_id=WorkflowRunId(600),
+            release_revision=GitCommitSha("6" * 40),
+            release_tree=SOURCE_TREE,
+            required_ci_conclusion=EvidenceConclusion.SUCCESS,
+            source_revision_is_ancestor=True,
+        ),
+    )
+
+    write_production_authorization(path, record)
+    restored = read_production_authorization(path)
+    verify_production_authorization(
+        restored,
+        expected_authorization_run_id=WorkflowRunId(600),
+        expected_source_revision=SOURCE_REVISION,
+        expected_release_revision=GitCommitSha("6" * 40),
+        expected_image_digest=IMAGE_DIGEST,
+    )
+
+    assert restored == record
+
+
+def test_production_authorization_rejects_a_different_staging_digest(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "authorization.json"
+    record = ReleaseCandidateRecord(
+        artifact=_candidate(),
+        staging=StagingAcceptanceEvidence(
+            deployment_id=StagingDeploymentId(500),
+            source_revision=SOURCE_REVISION,
+            source_tree=SOURCE_TREE,
+            image_digest=OCIImageDigest("sha256:" + "9" * 64),
+            conclusion=EvidenceConclusion.SUCCESS,
+        ),
+        main=MainAuthorizationEvidence(
+            authorization_run_id=WorkflowRunId(600),
+            release_revision=GitCommitSha("6" * 40),
+            release_tree=SOURCE_TREE,
+            required_ci_conclusion=EvidenceConclusion.SUCCESS,
+            source_revision_is_ancestor=True,
+        ),
+    )
+
+    with pytest.raises(EvidenceDocumentError, match="staging_image_digest_mismatch"):
+        write_production_authorization(path, record)

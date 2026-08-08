@@ -195,6 +195,27 @@ def test_main_must_contain_the_staged_source_as_the_identical_tree() -> None:
     )
 
 
+def test_main_authorization_must_be_a_distinct_release_commit() -> None:
+    main = _main()
+    outcome = evaluate_production_eligibility(
+        ReleaseCandidateRecord(
+            artifact=_artifact(),
+            staging=_staging(),
+            main=MainAuthorizationEvidence(
+                authorization_run_id=main.authorization_run_id,
+                release_revision=DEV_SHA,
+                release_tree=main.release_tree,
+                required_ci_conclusion=main.required_ci_conclusion,
+                source_revision_is_ancestor=True,
+            ),
+        )
+    )
+
+    assert outcome.blockers == (
+        ProductionEligibilityBlocker.SOURCE_AND_RELEASE_REVISION_MATCH,
+    )
+
+
 def test_non_green_source_staging_and_main_evidence_all_block() -> None:
     outcome = evaluate_production_eligibility(
         ReleaseCandidateRecord(

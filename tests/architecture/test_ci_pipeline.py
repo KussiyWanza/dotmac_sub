@@ -64,7 +64,7 @@ def test_unit_shards_prefer_measured_durations_over_source_size(
     assert groups[0] == [slowest]
 
 
-def test_ci_uses_one_named_application_cache_during_publisher_migration() -> None:
+def test_ci_uses_one_named_application_cache_after_publisher_cutover() -> None:
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
     e2e_workflow = (ROOT / ".github/workflows/e2e.yml").read_text(encoding="utf-8")
     ghcr_workflow = (ROOT / ".github/workflows/ghcr.yml").read_text(encoding="utf-8")
@@ -75,17 +75,12 @@ def test_ci_uses_one_named_application_cache_during_publisher_migration() -> Non
     assert "docker push" not in workflow
     assert "docker/build-push-action" not in e2e_workflow
     assert 'image_tag="sha-${GITHUB_SHA::7}"' in e2e_workflow
-    # ghcr.yml publishes exactly two images: the application and the pinned
-    # GenieACS runtime (built in CI so no prod host needs a source checkout).
-    # Each publisher keeps its own named buildx cache scope, and only the
-    # application image may carry the moving `latest` tag — GenieACS is pinned
-    # to the version parsed from its Dockerfile.
-    assert ghcr_workflow.count("uses: docker/build-push-action@v6") == 2
-    assert "branches: [main, dev]" in ghcr_workflow
-    assert (
-        ghcr_workflow.count("type=raw,value=latest,enable={{is_default_branch}}") == 1
-    )
-    assert "scope=dotmac-sub-application" in ghcr_workflow
+    # ghcr.yml is now isolated to the pinned GenieACS runtime. Application
+    # bytes are built once by the explicit candidate workflow and later
+    # receive production aliases without another build.
+    assert ghcr_workflow.count("uses: docker/build-push-action@v6") == 1
+    assert "branches: [main]" in ghcr_workflow
+    assert "context: .\n" not in ghcr_workflow
     assert "scope=genieacs" in ghcr_workflow
     assert "-genieacs:${{ steps.version.outputs.version }}" in ghcr_workflow
     assert "genieacs:latest" not in ghcr_workflow
@@ -98,6 +93,12 @@ def test_ci_uses_one_named_application_cache_during_publisher_migration() -> Non
     assert "on:\n  push:" not in candidate_workflow
     assert "scope=dotmac-sub-application" in candidate_workflow
     assert "type=raw,value=latest" not in candidate_workflow
+
+    promotion_workflow = (ROOT / ".github/workflows/release-promotion.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "docker buildx imagetools create" in promotion_workflow
+    assert "docker/build-push-action" not in promotion_workflow
 
 
 def test_ci_removes_workstation_venv_pointer_before_cache_and_restore() -> None:
