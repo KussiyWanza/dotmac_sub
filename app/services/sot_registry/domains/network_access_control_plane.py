@@ -673,12 +673,18 @@ DOMAIN = DomainSOT(
                         "access.event_policy.throttle_profile_required",
                         "access.event_policy.invalid_throttle_profile_id",
                         "access.event_policy.invalid_throttle_decision",
+                        "access.event_policy.subscription_required",
                     ),
                     mapping_owner=("event dispatcher and RADIUS projection adapters"),
                     fail_closed_on=(
                         "invalid event action evidence",
                         "invalid canonical boolean or action settings",
-                        "missing or invalid throttle RADIUS profile evidence",
+                        # An ABSENT global throttle profile is not fail-closed:
+                        # it is the fallback, and the per-subscriber derived
+                        # profile is the primary path. Only an invalid value,
+                        # or a throttle that can be derived from neither, fails.
+                        "invalid throttle RADIUS profile evidence",
+                        "no derivable throttle rate and no configured fallback",
                     ),
                 ),
                 migration=MigrationContract(
@@ -1418,12 +1424,17 @@ DOMAIN = DomainSOT(
                     domain_codes=(
                         "access.fup_throttle_rate.invalid_reduction_percent",
                         "access.fup_throttle_rate.invalid_full_rate",
+                        "access.fup_throttle_rate.no_throttle_profile_available",
                     ),
                     mapping_owner="access.session_enforcement",
                     fail_closed_on=(
                         "a reduction percentage outside 1..99, which would "
                         "produce either a no-op or a disconnection",
                         "a non-positive rate to reduce",
+                        "no derivable rate AND no configured fallback profile, "
+                        "which would otherwise leave a breaching subscriber at "
+                        "full speed while the sweep counted the enforcement as "
+                        "done",
                     ),
                 ),
                 events=EventContract(

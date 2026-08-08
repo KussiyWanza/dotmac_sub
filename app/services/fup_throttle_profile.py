@@ -29,6 +29,7 @@ wants a different throttle changes ``speed_reduction_percent`` on the rule.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -38,6 +39,8 @@ from app.models.catalog import NasVendor, RadiusProfile, Subscription
 from app.models.fup import FupRule
 from app.services.domain_errors import DomainError
 from app.services.events import EventType, emit_event
+
+logger = logging.getLogger(__name__)
 
 # A throttle is a penalty, not a disconnection. Below roughly this rate a
 # connection stops being usable for the things that make a customer notice they
@@ -114,6 +117,37 @@ def _profile_name(download_kbps: int, upload_kbps: int) -> str:
     return f"FUP Throttle {download_kbps}k/{upload_kbps}k"
 
 
+def _rate_limit(download_kbps: int, upload_kbps: int) -> str:
+    # MikroTik Rate-Limit is rx/tx, and rx is the subscriber's UPLOAD as seen
+    # at the NAS. Upload first. Getting this backwards silently swaps a
+    # customer's up and down rates.
+    return f"{upload_kbps}k/{download_kbps}k"
+
+
+def _repair_derived_profile(
+    profile: RadiusProfile, download_kbps: int, upload_kbps: int
+) -> list[str]:
+    """Force a reused derived profile back to what its code says it is.
+
+    Returns the names of the fields that had drifted, so the caller can record
+    that a repair happened rather than let it pass silently.
+    """
+    expected = {
+        "download_speed": download_kbps,
+        "upload_speed": upload_kbps,
+        "mikrotik_rate_limit": _rate_limit(download_kbps, upload_kbps),
+        "is_active": True,
+    }
+    drifted = [
+        field
+        for field, value in expected.items()
+        if getattr(profile, field, None) != value
+    ]
+    for field in drifted:
+        setattr(profile, field, expected[field])
+    return drifted
+
+
 def resolve_or_create_profile(
     db: Session, *, download_kbps: int, upload_kbps: int
 ) -> RadiusProfile:
@@ -126,6 +160,20 @@ def resolve_or_create_profile(
     code = _profile_code(download_kbps, upload_kbps)
     existing = db.query(RadiusProfile).filter(RadiusProfile.code == code).one_or_none()
     if existing is not None:
+        # These rows are a derived projection and this module is their only
+        # writer, so a row that no longer expresses its own code has drifted —
+        # hand-edited, or deactivated. Returning it unchecked made the cache the
+        # only copy of truth: a profile named for 5000k could be projecting
+        # anything at all to the NAS, for every subscriber that rate throttles.
+        # Repairing here is the reconciler this projection was missing.
+        drifted = _repair_derived_profile(existing, download_kbps, upload_kbps)
+        if drifted:
+            logger.warning(
+                "Repaired drifted derived FUP throttle profile %s (%s): %s",
+                code,
+                existing.id,
+                ", ".join(drifted),
+            )
         return existing
 
     profile = RadiusProfile(
@@ -139,10 +187,7 @@ def resolve_or_create_profile(
         ),
         download_speed=download_kbps,
         upload_speed=upload_kbps,
-        # MikroTik Rate-Limit is rx/tx, and rx is the subscriber's UPLOAD as
-        # seen at the NAS. Upload first. Getting this backwards silently swaps
-        # a customer's up and down rates.
-        mikrotik_rate_limit=f"{upload_kbps}k/{download_kbps}k",
+        mikrotik_rate_limit=_rate_limit(download_kbps, upload_kbps),
         is_active=True,
     )
     db.add(profile)
@@ -168,39 +213,48 @@ def resolve_fup_throttle_profile(
     *,
     subscription: Subscription,
     rule_id: str | UUID | None,
-    fallback_profile_id: UUID,
+    fallback_profile_id: UUID | None,
 ) -> ThrottleProfileDecision:
     """Which RADIUS profile expresses ``rule_id``'s throttle for this subscriber.
 
-    Falls back to the configured global profile — rather than refusing — when
-    the rule carries no reduction or the subscriber has no rate to reduce.
-    Enforcement that already decided to throttle must still throttle; the
-    fallback is a worse answer, not no answer.
+    Derivation from the subscriber's own rate is the primary path. The globally
+    configured profile is consulted only when derivation cannot produce a rate,
+    and it may legitimately be unset — deriving a proportional throttle does not
+    need one. When derivation fails AND no fallback exists there is no throttle
+    to apply, and that is raised rather than papered over: silently returning
+    "no profile" would leave a breaching subscriber at full speed while the
+    sweep counted the enforcement as done.
     """
     from app.services.enforcement import _resolve_effective_profile
 
-    if rule_id is None:
+    def _fallback(reason: str) -> ThrottleProfileDecision:
+        if fallback_profile_id is None:
+            raise _error(
+                "no_throttle_profile_available",
+                (
+                    "This FUP throttle could not be derived from the "
+                    "subscriber's rate and no global fallback profile is "
+                    "configured."
+                ),
+                reason=reason,
+                subscription_id=str(subscription.id),
+            )
         return ThrottleProfileDecision(
             profile_id=fallback_profile_id,
             derived=False,
-            reason="no rule on the enforcement event",
+            reason=reason,
         )
+
+    if rule_id is None:
+        return _fallback("no rule on the enforcement event")
 
     rule = db.get(FupRule, UUID(str(rule_id)))
     if rule is None or rule.speed_reduction_percent is None:
-        return ThrottleProfileDecision(
-            profile_id=fallback_profile_id,
-            derived=False,
-            reason="rule carries no speed_reduction_percent",
-        )
+        return _fallback("rule carries no speed_reduction_percent")
 
     full = _resolve_effective_profile(db, subscription)
     if full is None or not full.download_speed or not full.upload_speed:
-        return ThrottleProfileDecision(
-            profile_id=fallback_profile_id,
-            derived=False,
-            reason="subscriber has no full-speed profile to reduce",
-        )
+        return _fallback("subscriber has no full-speed profile to reduce")
 
     # A rule holding an out-of-range percentage is a data defect, not a missing
     # value. Enforcement still has to throttle, so it degrades to the global
@@ -210,23 +264,25 @@ def resolve_fup_throttle_profile(
         download = reduced_kbps(full.download_speed, rule.speed_reduction_percent)
         upload = reduced_kbps(full.upload_speed, rule.speed_reduction_percent)
     except FupThrottleRateError as exc:
-        return ThrottleProfileDecision(
-            profile_id=fallback_profile_id,
-            derived=False,
-            reason=f"{exc.code}: {exc.message}",
-        )
+        return _fallback(f"{exc.code}: {exc.message}")
 
-    # A "reduction" that leaves the subscriber at or above their current rate
-    # is not a throttle. This happens when the floor bites on an already-slow
-    # plan, and applying it would be a no-op dressed up as enforcement.
+    # MIN_THROTTLE_KBPS is a floor on how hard a throttle may bite, not a
+    # licence to RAISE a rate. On an already-slow plan the floor can land above
+    # the subscriber's actual rate in ONE direction — a 256k uplink handed a
+    # 512k one — and the both-directions test below is an `and`, so that passed
+    # through as a "throttle" that made the customer faster. Cap each direction
+    # at what they already have; enforcement may only take away.
+    download = min(download, full.download_speed)
+    upload = min(upload, full.upload_speed)
+
+    # A "reduction" that leaves the subscriber at their current rate in BOTH
+    # directions is not a throttle. This happens when the floor bites on an
+    # already-slow plan, and applying it would be a no-op dressed up as
+    # enforcement.
     if download >= full.download_speed and upload >= full.upload_speed:
-        return ThrottleProfileDecision(
-            profile_id=fallback_profile_id,
-            derived=False,
-            reason=(
-                f"{rule.speed_reduction_percent:g}% of "
-                f"{full.download_speed}k floors above the current rate"
-            ),
+        return _fallback(
+            f"{rule.speed_reduction_percent:g}% of "
+            f"{full.download_speed}k floors above the current rate"
         )
 
     profile = resolve_or_create_profile(db, download_kbps=download, upload_kbps=upload)

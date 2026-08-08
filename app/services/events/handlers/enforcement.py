@@ -12,13 +12,15 @@ from app.services import radius as radius_service
 from app.services import radius_reject as radius_reject_service
 from app.services.enforcement import (
     _resolve_effective_profile,
-    apply_radius_profile_to_account,
+    apply_radius_profile_to_subscription,
     disconnect_account_sessions,
     disconnect_subscription_sessions,
+    project_credentials_to_radius,
     remove_subscription_address_list_block,
     update_subscription_sessions,
 )
 from app.services.enforcement_event_policy import (
+    AccessEventPolicyError,
     FupEnforcementAction,
     ResolveFupEventPolicy,
     parse_fup_action_override,
@@ -545,42 +547,60 @@ class EnforcementHandler:
                 )
                 raise
             return
-        throttle_profile_id = policy.required_throttle_profile_id()
+        # The global profile is the FALLBACK, not a precondition. Demanding it
+        # here (required_throttle_profile_id) refused the throttle before the
+        # derived, per-subscriber profile was ever attempted, so a deployment
+        # that had never set the global setting silently enforced nothing.
+        fallback_profile_id = policy.throttle_fallback_profile_id()
         # Capture the subscriber's current full-speed profile BEFORE the
         # throttle overwrites it, so the period-reset lift can restore it. The
         # offer's effective profile is the durable "should be" value.
         original_profile_id = None
         _sub_for_profile = db.get(Subscription, subscription_id)
-        if _sub_for_profile is not None:
-            _orig = _resolve_effective_profile(db, _sub_for_profile)
-            original_profile_id = str(_orig.id) if _orig else None
-            # The throttle is a percentage of THIS subscriber's rate, not a
-            # single global speed for the whole fleet — see
-            # app/services/fup_throttle_profile.py. `policy` supplies only the
-            # fallback for offers with no rate to reduce.
-            throttle_decision = resolve_fup_throttle_profile(
-                db,
-                subscription=_sub_for_profile,
-                rule_id=rule_id,
-                fallback_profile_id=throttle_profile_id,
+        if _sub_for_profile is None:
+            raise AccessEventPolicyError(
+                code="access.event_policy.subscription_required",
+                message="FUP throttle requires a resolvable subscription.",
             )
-            throttle_profile_id = throttle_decision.profile_id
-            if not throttle_decision.derived:
-                logger.warning(
-                    "FUP throttle for subscription %s fell back to the global "
-                    "profile: %s",
-                    subscription_id,
-                    throttle_decision.reason,
-                )
+        _orig = _resolve_effective_profile(db, _sub_for_profile)
+        original_profile_id = str(_orig.id) if _orig else None
+        # The throttle is a percentage of THIS subscriber's rate, not a
+        # single global speed for the whole fleet — see
+        # app/services/fup_throttle_profile.py. `policy` supplies only the
+        # fallback for offers with no rate to reduce, and raises when neither
+        # a derived rate nor a fallback exists.
+        throttle_decision = resolve_fup_throttle_profile(
+            db,
+            subscription=_sub_for_profile,
+            rule_id=rule_id,
+            fallback_profile_id=fallback_profile_id,
+        )
+        throttle_profile_id = throttle_decision.profile_id
+        if not throttle_decision.derived:
+            logger.warning(
+                "FUP throttle for subscription %s fell back to the global profile: %s",
+                subscription_id,
+                throttle_decision.reason,
+            )
         try:
-            updated = apply_radius_profile_to_account(
-                db, str(account_id), str(throttle_profile_id)
+            # A FUP breach belongs to ONE subscription. Applying the throttle by
+            # account moved every active credential the subscriber owned onto the
+            # throttle profile, so one capped service degraded the customer's
+            # unrelated services too.
+            application = apply_radius_profile_to_subscription(
+                db, str(subscription_id), str(throttle_profile_id)
             )
-            if updated:
-                if policy.refresh_sessions:
-                    disconnect_account_sessions(
-                        db, str(account_id), reason="fup_throttle"
-                    )
+            if application.matched:
+                # Gate on MATCHED, not updated. A re-assertion after a cooldown
+                # legitimately changes nothing on the wire, but the decision
+                # still has to be recorded — gating on `updated` made "already
+                # throttled" skip state, event and customer notification
+                # exactly as if there were no credentials at all.
+                #
+                # Record WHY the credentials changed in the same transaction
+                # that changed them. The apply no longer commits, so if this
+                # raises, the handler savepoint takes the throttle back with it
+                # rather than leaving it durable and unexplained.
                 self._persist_fup_state(
                     db,
                     str(subscription_id),
@@ -593,6 +613,22 @@ class EnforcementHandler:
                     cap_resets_at=cap_resets_at_raw,
                     notes="FUP throttle applied",
                 )
+                if application.updated:
+                    # Consequences follow the authoritative state, never precede
+                    # it: project the credential rows first, then move live
+                    # sessions onto them. Disconnecting before the state existed
+                    # meant a CoA could land with nothing recording why.
+                    #
+                    # RADIUS projection is idempotent, so a failure here is
+                    # drift a later reconcile repairs. Both still run before the
+                    # dispatcher's outer commit — true post-commit delivery
+                    # needs a durable consequence intent and a post-commit
+                    # consumer, which this handler cannot express.
+                    project_credentials_to_radius(db, application.usernames)
+                    if policy.refresh_sessions:
+                        disconnect_subscription_sessions(
+                            db, str(subscription_id), reason="fup_throttle"
+                        )
         except FupRuntimeStateError:
             raise
         except Exception as exc:
