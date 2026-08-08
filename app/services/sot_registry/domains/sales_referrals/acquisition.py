@@ -954,10 +954,11 @@ SERVICES: tuple[SOTService, ...] = (
             "This owner snapshots the authoritative Quote, lines, recipient "
             "display identity, resolved company brand, primary currency-eligible "
             "Direct Transfer account, internal collection-account provenance, and "
-            "absolute company-hosted quotation payment URL into one immutable, "
+            "optional absolute company-hosted quotation payment URL into one immutable, "
             "content-addressed PDF artifact. Repeated exports of the same snapshot "
             "reuse the canonical artifact; rendering never rereads mutable account "
-            "configuration."
+            "configuration. Active Lead-only Quotes omit online payment without "
+            "creating or inferring a customer identity."
         ),
         contract=ServiceContract(
             concerns=(
@@ -1035,7 +1036,6 @@ SERVICES: tuple[SOTService, ...] = (
                     "sales.quote_documents.invalid_pdf",
                     "sales.quote_documents.invalid_snapshot",
                     "sales.quote_documents.owner_command_required",
-                    "sales.quote_documents.payment_identity_required",
                     "sales.quote_documents.payment_url_unavailable",
                     "sales.quote_documents.quote_not_found",
                     "sales.quote_documents.renderer_unavailable",
@@ -1043,9 +1043,8 @@ SERVICES: tuple[SOTService, ...] = (
                 mapping_owner="admin Quote detail adapter",
                 fail_closed_on=(
                     "missing or inactive Quote",
-                    "Quote without a compatible customer portal identity",
                     "missing eligible Direct Transfer account for the Quote currency",
-                    "missing or invalid absolute company portal URL",
+                    "missing or invalid absolute company portal URL for a linked Quote",
                     "missing stored artifact",
                     "unavailable or invalid PDF renderer output",
                 ),
