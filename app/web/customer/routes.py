@@ -20,7 +20,13 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
@@ -36,6 +42,7 @@ from app.services import (
     portal_ticket_deflection,
     support_ticket_settings,
     team_inbox_widget,
+    web_support_tickets,
 )
 from app.services import customer_portal_bandwidth as customer_portal_bandwidth_service
 from app.services import customer_portal_contacts as customer_portal_contacts_service
@@ -59,7 +66,9 @@ from app.services.customer_portal_context import (
     resolve_allowed_subscriber_ids,
     resolve_customer_subscription,
 )
+from app.services.file_storage import build_content_disposition, file_uploads
 from app.services.nin_matching import mask_nin
+from app.services.object_storage import ObjectNotFoundError
 from app.services.prepaid_funding_reconstruction import (
     PrepaidFundingBaselineMissingError,
 )
@@ -528,6 +537,56 @@ def customer_support_detail(
         request, db, customer, subscriber_ids, ticket_id
     )
     return templates.TemplateResponse("customer/support/detail.html", context)
+
+
+@router.get("/support/{ticket_id}/attachments/{file_id}")
+def customer_support_attachment(
+    request: Request,
+    ticket_id: UUID,
+    file_id: UUID,
+    db: Session = Depends(get_db),
+) -> Response:
+    customer = get_current_customer_from_request(request, db)
+    if not customer:
+        return RedirectResponse(
+            url=(
+                "/portal/auth/login?next="
+                f"/portal/support/{ticket_id}/attachments/{file_id}"
+            ),
+            status_code=303,
+        )
+    subscriber_ids = resolve_allowed_subscriber_ids(customer, db)
+    context = crm_portal.ticket_detail_context(
+        request=request,
+        db=db,
+        customer=customer,
+        subscriber_ids=subscriber_ids,
+        ticket_id=str(ticket_id),
+    )
+    if context.get("ticket") is None:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    record = web_support_tickets.get_customer_visible_ticket_attachment_file(
+        db, ticket_id=ticket_id, file_id=file_id
+    )
+    if record is None:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    try:
+        stream = file_uploads.stream_file(record)
+    except ObjectNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Attachment not found") from exc
+    disposition = build_content_disposition(record.original_filename)
+    if (record.content_type or "").startswith(
+        "image/"
+    ) or record.content_type == "application/pdf":
+        disposition = disposition.replace("attachment;", "inline;", 1)
+    headers = {"Content-Disposition": disposition}
+    if stream.content_length is not None:
+        headers["Content-Length"] = str(stream.content_length)
+    return StreamingResponse(
+        stream.chunks,
+        media_type=stream.content_type or "application/octet-stream",
+        headers=headers,
+    )
 
 
 @router.post("/support/{ticket_id}/comment", response_class=HTMLResponse)

@@ -119,7 +119,7 @@ def render_quote_email(
         raise _error(
             "payment_link_unavailable",
             "A secure Paystack payment link is unavailable for this Quote",
-            reason="document_snapshot_has_no_online_payment",
+            reason="sales.quote_documents.payment_identity_unavailable",
         )
     background, foreground = _button_colors(brand.primary_color)
     total = f"{snapshot.currency} {snapshot.total:,.2f}"

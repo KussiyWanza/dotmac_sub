@@ -38,6 +38,7 @@ from __future__ import annotations
 import enum as enum_module
 import html
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, ClassVar, TypeVar
@@ -118,6 +119,7 @@ from app.services.staff_notifications import queue_staff_email, queue_staff_push
 logger = logging.getLogger(__name__)
 
 _EnumT = TypeVar("_EnumT", bound=enum_module.Enum)
+_ProjectCommandResultT = TypeVar("_ProjectCommandResultT")
 
 _TEMPLATE_AUTO_CREATE_WORK_ORDER = "template_auto_create_work_order"
 _TEMPLATE_WORK_ORDER_REQUIRES_AS_BUILT = (
@@ -292,6 +294,30 @@ def _project_command_context(
         idempotency_key=(
             f"{action}:{aggregate_id}" if aggregate_id is not None else None
         ),
+    )
+
+
+def execute_project_mutation(
+    db: Session,
+    *,
+    action: str,
+    actor: UUID | str | None,
+    aggregate_id: UUID | str | None,
+    operation: Callable[[CommandContext], _ProjectCommandResultT],
+) -> _ProjectCommandResultT:
+    """Run an adapter-composed Project mutation inside the canonical owner."""
+
+    context = _project_command_context(
+        action=action,
+        actor=actor,
+        aggregate_id=aggregate_id,
+    )
+    db_session_adapter.release_read_transaction(db)
+    return execute_owner_command(
+        db,
+        definition=_PROJECT_MUTATION,
+        context=context,
+        operation=lambda: operation(context),
     )
 
 
@@ -2104,15 +2130,43 @@ def _stage_project_task_assignment_notification(
     """Isolate an optional delivery and record durable failure evidence."""
 
     try:
-        return execute_owner_savepoint(
-            db,
-            lambda: _notify_project_task_assigned(
+
+        def stage_notifications() -> bool:
+            from app.services.nextcloud_talk_staff import (
+                StaffTalkEventType,
+                StageStaffTalkNotification,
+                stage_staff_talk_notification,
+            )
+
+            email_or_push_staged = _notify_project_task_assigned(
                 db,
                 task,
                 project,
                 assigned_to,
                 include_push=include_push,
-            ),
+            )
+            talk_notification = stage_staff_talk_notification(
+                db,
+                StageStaffTalkNotification(
+                    system_user_id=assigned_to.id,
+                    source_event_id=context.command_id,
+                    event_type=StaffTalkEventType.project_task_assignment,
+                    subject=f"Project task assigned: {task.title or 'Task'}",
+                    body=(
+                        f"You have been assigned project task "
+                        f"{task.number or task.id} in "
+                        f"{project.number or project.name or project.id}."
+                    ),
+                    target_url=f"/admin/projects/tasks/{task.id}",
+                    source_entity_type="project_task",
+                    source_entity_id=task.id,
+                ),
+            )
+            return email_or_push_staged or talk_notification is not None
+
+        return execute_owner_savepoint(
+            db,
+            stage_notifications,
         )
     except Exception as exc:  # noqa: BLE001 - assignment must remain successful
         logger.error(
@@ -3893,7 +3947,33 @@ class ProjectTasks(ListResponseMixin):
 
 class ProjectTaskComments(ListResponseMixin):
     @staticmethod
-    def create(db: Session, payload: ProjectTaskCommentCreate):
+    def create(
+        db: Session,
+        payload: ProjectTaskCommentCreate,
+        *,
+        mentioned_agent_ids: list[str] | None = None,
+        actor_person_id: str | None = None,
+        context: CommandContext | None = None,
+    ):
+        if context is None:
+            context = _project_command_context(
+                action="create_project_task_comment",
+                actor=actor_person_id or payload.author_person_id,
+                aggregate_id=payload.task_id,
+            )
+            db_session_adapter.release_read_transaction(db)
+            return execute_owner_command(
+                db,
+                definition=_PROJECT_MUTATION,
+                context=context,
+                operation=lambda: ProjectTaskComments.create(
+                    db,
+                    payload,
+                    mentioned_agent_ids=mentioned_agent_ids,
+                    actor_person_id=actor_person_id,
+                    context=context,
+                ),
+            )
         task = db.get(ProjectTask, coerce_uuid(str(payload.task_id)))
         if not task:
             raise _project_error("not_found", "Project task not found")
@@ -3901,7 +3981,29 @@ class ProjectTaskComments(ListResponseMixin):
             _ensure_staff_uuid(str(payload.author_person_id))
         comment = ProjectTaskComment(**payload.model_dump())
         db.add(comment)
-        db.commit()
+        db.flush()
+        if mentioned_agent_ids:
+            from app.services import project_mentions
+
+            try:
+                execute_owner_savepoint(
+                    db,
+                    lambda: project_mentions.notify_project_comment_mentions(
+                        db,
+                        target_kind="project_task",
+                        target_ref=task.number or str(task.id),
+                        target_title=task.title,
+                        comment_preview=payload.body[:140],
+                        mentioned_agent_ids=mentioned_agent_ids,
+                        actor_person_id=actor_person_id,
+                        source_event_id=comment.id,
+                    ),
+                )
+            except Exception:  # noqa: BLE001 - comment remains authoritative
+                logger.exception(
+                    "project_task_comment_mention_staging_failed comment_id=%s",
+                    comment.id,
+                )
         db.refresh(comment)
         return comment
 
@@ -3928,7 +4030,33 @@ class ProjectTaskComments(ListResponseMixin):
 
 class ProjectComments(ListResponseMixin):
     @staticmethod
-    def create(db: Session, payload: ProjectCommentCreate):
+    def create(
+        db: Session,
+        payload: ProjectCommentCreate,
+        *,
+        mentioned_agent_ids: list[str] | None = None,
+        actor_person_id: str | None = None,
+        context: CommandContext | None = None,
+    ):
+        if context is None:
+            context = _project_command_context(
+                action="create_project_comment",
+                actor=actor_person_id or payload.author_person_id,
+                aggregate_id=payload.project_id,
+            )
+            db_session_adapter.release_read_transaction(db)
+            return execute_owner_command(
+                db,
+                definition=_PROJECT_MUTATION,
+                context=context,
+                operation=lambda: ProjectComments.create(
+                    db,
+                    payload,
+                    mentioned_agent_ids=mentioned_agent_ids,
+                    actor_person_id=actor_person_id,
+                    context=context,
+                ),
+            )
         project = db.get(Project, coerce_uuid(str(payload.project_id)))
         if not project:
             raise _project_error("not_found", "Project not found")
@@ -3936,7 +4064,29 @@ class ProjectComments(ListResponseMixin):
             _ensure_staff_uuid(str(payload.author_person_id))
         comment = ProjectComment(**payload.model_dump())
         db.add(comment)
-        db.commit()
+        db.flush()
+        if mentioned_agent_ids:
+            from app.services import project_mentions
+
+            try:
+                execute_owner_savepoint(
+                    db,
+                    lambda: project_mentions.notify_project_comment_mentions(
+                        db,
+                        target_kind="project",
+                        target_ref=project.number or str(project.id),
+                        target_title=project.name,
+                        comment_preview=payload.body[:140],
+                        mentioned_agent_ids=mentioned_agent_ids,
+                        actor_person_id=actor_person_id,
+                        source_event_id=comment.id,
+                    ),
+                )
+            except Exception:  # noqa: BLE001 - comment remains authoritative
+                logger.exception(
+                    "project_comment_mention_staging_failed comment_id=%s",
+                    comment.id,
+                )
         db.refresh(comment)
         return comment
 

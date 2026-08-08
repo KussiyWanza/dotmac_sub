@@ -1,13 +1,14 @@
-name: Build & Push to GHCR
+name: Build pinned GenieACS runtime
 
-# Builds one immutable image per commit on dev and main. Dev images are
-# staging-only; only the default branch receives the moving `latest` tag.
-# This is the sole image publisher and is the staging deployment trigger.
-# Production can therefore pull a main-built image while staging tests the
-# exact dev commit before promotion.
+# The application image is owned exclusively by release-candidate.yml and is
+# promoted by digest in release-promotion.yml. This workflow is deliberately
+# isolated to the independently versioned GenieACS runtime.
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
+    paths:
+      - docker/genieacs/**
+      - .github/workflows/ghcr.yml
   workflow_dispatch:
 
 env:
@@ -15,46 +16,6 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  build-and-push:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=sha
-            type=raw,value=latest,enable={{is_default_branch}}
-
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=dotmac-sub-application
-          cache-to: type=gha,mode=max,scope=dotmac-sub-application
-          secrets: |
-            forgejo_token=${{ secrets.FORGEJO_READ_TOKEN }}
-
   # GenieACS used to be the one service compose still built on the production
   # host (`build: context: .`), which is why a prod box had to keep a full
   # application checkout. Build it here instead so the host only ever pulls.

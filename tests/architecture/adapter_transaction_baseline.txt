@@ -105,7 +105,7 @@ rollback 9 app/web/admin/projects.py
 rollback 5 app/web/admin/resellers.py
 rollback 5 app/web/admin/sales.py
 rollback 4 app/web/admin/support_tickets.py
-rollback 22 app/web/admin/system.py
+rollback 20 app/web/admin/system.py
 rollback 2 app/web/admin/vendors.py
 rollback 2 app/web/customer/location.py
 rollback 5 app/web/customer/routes.py

@@ -327,30 +327,6 @@ def _unified_summary_context(
     }
 
 
-def _available_vlan_options(vlans: list[object]) -> list[dict[str, object]]:
-    available_vlans = []
-    for vlan in vlans:
-        if vlan.tag is None:
-            continue
-        purpose = vlan.purpose.value if vlan.purpose else "other"
-        available_vlans.append(
-            {
-                "id": str(vlan.id),
-                "tag": vlan.tag,
-                "name": vlan.name or f"VLAN {vlan.tag}",
-                "purpose": purpose,
-            }
-        )
-    available_vlans.sort(
-        key=lambda v: (
-            v["purpose"] != "internet",
-            v["purpose"] != "management",
-            v["tag"] or 0,
-        )
-    )
-    return available_vlans
-
-
 def _configure_form_context_from_state(
     db: Session,
     ont: object,
@@ -358,7 +334,6 @@ def _configure_form_context_from_state(
     *,
     effective: dict[str, object],
     linked_tr069: object | None = None,
-    vlans: list[object] | None = None,
 ) -> dict[str, object]:
     values = effective["values"]
     config_pack = effective.get("config_pack")
@@ -381,8 +356,6 @@ def _configure_form_context_from_state(
     if mgmt_mode_value in {"dhcp", "static_ip"}:
         mgmt_remote_access = True
 
-    available_vlans = _available_vlan_options(list(vlans or []))
-
     tr069_profile_id = values.get("tr069_olt_profile_id")
     tr069_profile_name = None
     if config_pack:
@@ -398,8 +371,10 @@ def _configure_form_context_from_state(
     )
 
     config_pack_name = None
+    config_pack_olt_id = None
     if config_pack:
         config_pack_name = getattr(config_pack, "name", None)
+        config_pack_olt_id = getattr(config_pack, "olt_id", None)
 
     mgmt_ip_pool_ctx = management_ip_choices_for_ont(db, ont)
     return {
@@ -413,12 +388,10 @@ def _configure_form_context_from_state(
         "wan_static_dns": str(values.get("wan_static_dns") or ""),
         "pppoe_username": str(values.get("pppoe_username") or ""),
         "wan_vlan": values.get("wan_vlan"),
-        "wan_vlan_id": values.get("wan_vlan_id") or "",
         "mgmt_ip_mode": mgmt_mode_value,
         "mgmt_ip_address": str(mgmt_ip or ""),
         "mgmt_remote_access": mgmt_remote_access,
         "mgmt_vlan": values.get("mgmt_vlan"),
-        "mgmt_vlan_id": values.get("mgmt_vlan_id") or "",
         "lan_gateway_ip": str(lan_gateway or ""),
         "lan_subnet_mask": str(lan_subnet or ""),
         "lan_dhcp_enabled": lan_dhcp_enabled,
@@ -429,11 +402,11 @@ def _configure_form_context_from_state(
         "wifi_channel": str(wifi_channel or ""),
         "wifi_security_mode": str(wifi_security or ""),
         "config_pack_name": config_pack_name,
+        "config_pack_olt_id": config_pack_olt_id,
         "tr069_profile_id": tr069_profile_id,
         "tr069_profile_name": tr069_profile_name,
         "has_tr069": has_tr069,
         "acs_last_inform": acs_last_inform,
-        "available_vlans": available_vlans,
         "mgmt_ip_pool": mgmt_ip_pool_ctx.get("mgmt_ip_pool"),
         "available_mgmt_ips": mgmt_ip_pool_ctx.get("available_mgmt_ips", []),
         "mgmt_ip_choice_message": mgmt_ip_pool_ctx.get("mgmt_ip_choice_message"),
@@ -1255,7 +1228,6 @@ def unified_config_context(
             ont_id,
             effective=effective_config,
             linked_tr069=linked_tr069,
-            vlans=list(observed_state["vlans"]),
         )
     )
     context["effective_values"] = (
@@ -1302,14 +1274,11 @@ def configure_form_context(db: Session, ont_id: str) -> dict[str, object]:
     """Build context for the ONT service configure form."""
     ont = network_service.ont_units.get_including_inactive(db=db, entity_id=ont_id)
     effective = resolve_effective_ont_config(db, ont)
-    from app.services.web_network_onts import get_vlans_for_ont
-
     return _configure_form_context_from_state(
         db,
         ont,
         ont_id,
         effective=effective,
-        vlans=get_vlans_for_ont(db, ont),
     )
 
 

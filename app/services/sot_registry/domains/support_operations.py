@@ -442,6 +442,7 @@ DOMAIN = DomainSOT(
                 "customer.branding",
                 "communications.intents",
                 "communications.notification_service",
+                "communications.nextcloud_talk_staff",
             ),
             contract=ServiceContract(
                 concerns=(
@@ -913,7 +914,8 @@ DOMAIN = DomainSOT(
                         owner="support.ticket_lifecycle",
                         kind=AuthorityKind.AUTHORITATIVE_RECORD,
                         source=(
-                            "distinct non-empty Region values on current active Ticket rows"
+                            "distinct normalized non-empty Region values on current "
+                            "active Ticket rows"
                         ),
                     ),
                 ),

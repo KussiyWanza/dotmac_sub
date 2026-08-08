@@ -108,6 +108,7 @@ def test_portal_ticket_routing_stays_in_configuration_and_lifecycle_owners() -> 
 
 def test_ticket_region_projection_has_one_typed_owner() -> None:
     configuration = _source("app/services/support_ticket_settings.py")
+    lifecycle = _source("app/services/support.py")
     projection = _source("app/services/support_ticket_region_projection.py")
 
     assert (
@@ -115,8 +116,10 @@ def test_ticket_region_projection_has_one_typed_owner() -> None:
         in configuration
     )
     assert "configured_regions: tuple[str, ...]" in projection
-    assert 'Ticket.region.label("region")' in projection
+    assert "func.lower(func.trim(Ticket.region))" in projection
+    assert "normalize_region_value" in projection
     assert ".order_by(region_sources.c.region.asc())" in projection
+    assert "func.lower(func.trim(Ticket.region)) == normalized_region" in lifecycle
     assert "db.query(Ticket.region)" not in configuration
 
 

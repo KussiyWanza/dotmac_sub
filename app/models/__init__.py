@@ -568,6 +568,10 @@ from app.models.network_operation import (  # noqa: F401
     NetworkOperationTargetType,
     NetworkOperationType,
 )
+from app.models.nextcloud_talk import (  # noqa: F401
+    NextcloudTalkNotificationRoom,
+    NextcloudTalkStaffAccount,
+)
 from app.models.notification import (  # noqa: F401
     AlertNotificationLog,
     AlertNotificationPolicy,

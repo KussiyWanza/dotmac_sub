@@ -954,11 +954,11 @@ SERVICES: tuple[SOTService, ...] = (
             "This owner snapshots the authoritative Quote, lines, recipient "
             "display identity, resolved company brand, primary currency-eligible "
             "Direct Transfer account, internal collection-account provenance, and "
-            "an optional Subscriber-backed company-hosted quotation payment URL "
-            "into one immutable, content-addressed PDF artifact. Repeated exports "
-            "of the same snapshot "
+            "optional absolute company-hosted quotation payment URL into one immutable, "
+            "content-addressed PDF artifact. Repeated exports of the same snapshot "
             "reuse the canonical artifact; rendering never rereads mutable account "
-            "configuration."
+            "configuration. Active Lead-only Quotes omit online payment without "
+            "creating or inferring a customer identity."
         ),
         contract=ServiceContract(
             concerns=(
@@ -1044,8 +1044,7 @@ SERVICES: tuple[SOTService, ...] = (
                 fail_closed_on=(
                     "missing or inactive Quote",
                     "missing eligible Direct Transfer account for the Quote currency",
-                    "missing or invalid absolute company portal URL for a "
-                    "Subscriber-backed Quote",
+                    "missing or invalid absolute company portal URL for a linked Quote",
                     "missing stored artifact",
                     "unavailable or invalid PDF renderer output",
                 ),

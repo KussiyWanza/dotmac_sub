@@ -40,6 +40,7 @@
         <div class="flex items-center gap-2"><span class="h-1 w-6 rounded-full" style="background:#7c3aed"></span><span class="text-slate-600 dark:text-slate-300">Proposed route</span></div>
         <div class="flex items-center gap-2"><span class="h-1 w-6 rounded-full" style="background:#10b981"></span><span class="text-slate-600 dark:text-slate-300">As-built route</span></div>
         <div class="flex items-center gap-2"><span class="h-1 w-6 rounded-full" style="background:#38bdf8"></span><span class="text-slate-600 dark:text-slate-300">Fiber network</span></div>
+        <div class="flex items-center gap-2"><span class="h-3 w-3 rounded-full border-2 border-white bg-amber-500 shadow"></span><span class="text-slate-600 dark:text-slate-300">Vendor closure proposal</span></div>
     </div>
 
     <div class="overflow-hidden rounded-2xl border border-slate-200/60 bg-white shadow-sm dark:border-slate-700/60 dark:bg-slate-800">
@@ -109,6 +110,12 @@
     const ROUTE_URL = '/api/v1/vendor-routes/projects/{{ project_id }}/geojson';
     const selectedRevisionId = {{ revision_id | tojson }};
 
+    function escapeHtml(value) {
+        return String(value == null ? '' : value)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
     const map = L.map('route-map').setView([9.0820, 8.6753], 6);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
@@ -146,9 +153,24 @@
                         opacity: selected ? 1 : 0.75
                     };
                 },
+                pointToLayer: function(feature, latlng) {
+                    const properties = feature.properties || {};
+                    const colors = { pending: '#f59e0b', applied: '#10b981', rejected: '#ef4444' };
+                    return L.circleMarker(latlng, { radius: 8, color: '#fff', weight: 2, fillColor: colors[properties.status] || '#f59e0b', fillOpacity: 0.95 });
+                },
                 onEachFeature: function(feature, layer) {
                     const properties = feature.properties || {};
                     if (properties.id) featureLayers[properties.id] = layer;
+                    if (properties.kind === 'closure_proposal') {
+                        const reviewLink = properties.review_url
+                            ? '<br><a class="font-semibold text-amber-700" href="' + escapeHtml(properties.review_url) + '">Review change request</a>'
+                            : '';
+                        const reviewNote = properties.review_notes
+                            ? '<br>Review note: ' + escapeHtml(properties.review_notes)
+                            : '';
+                        layer.bindPopup('<strong>' + escapeHtml(properties.name || 'Proposed closure') + '</strong><br>Status: ' + escapeHtml(String(properties.status || 'pending').replaceAll('_', ' ')) + reviewNote + reviewLink);
+                        return;
+                    }
                     const label = properties.kind === 'as_built'
                         ? 'As-built version ' + (properties.version || '—')
                         : 'Proposed revision ' + (properties.revision_number || '—');
