@@ -672,6 +672,103 @@ def resolve_actor_label_from_db(
     return _resolve_actor_label_from_db(db, actor_id, actor_type)
 
 
+def resolve_actor_display_names(
+    db: Session, actor_ids: list[object] | tuple[object, ...] | set[object]
+) -> dict[str, str]:
+    """Resolve arbitrary domain actor references into safe UI display names.
+
+    Domain ledgers predate ``AuditEvent.actor_label`` and commonly store either
+    a bare principal UUID or a value such as ``user:<uuid>``.  This bulk
+    projection keeps identity lookup out of templates and never exposes an
+    unresolved user UUID as the primary actor label.
+    """
+    raw_values = {str(value).strip() for value in actor_ids if str(value or "").strip()}
+    uuid_by_raw: dict[str, UUID] = {}
+    actor_kind_by_raw: dict[str, str | None] = {}
+    for raw in raw_values:
+        prefix, separator, candidate = raw.partition(":")
+        actor_kind = prefix.lower() if separator else None
+        lookup_value = (
+            candidate
+            if actor_kind
+            in {
+                "user",
+                "staff",
+                "system_user",
+                "subscriber",
+                "customer",
+                "api_key",
+            }
+            else raw
+        )
+        try:
+            uuid_by_raw[raw] = UUID(lookup_value)
+            actor_kind_by_raw[raw] = actor_kind
+        except (TypeError, ValueError):
+            continue
+
+    ids = set(uuid_by_raw.values())
+    user_labels: dict[UUID, str] = {}
+    api_key_labels: dict[UUID, str] = {}
+    if ids:
+        for user in db.query(SystemUser).filter(SystemUser.id.in_(ids)).all():
+            label = _label_from_actor_object(user)
+            if label:
+                user_labels[user.id] = label
+        for subscriber in db.query(Subscriber).filter(Subscriber.id.in_(ids)).all():
+            label = _label_from_actor_object(subscriber)
+            if label:
+                user_labels[subscriber.id] = label
+        for key in db.query(ApiKey).filter(ApiKey.id.in_(ids)).all():
+            label = _label_from_actor_object(key)
+            if label:
+                api_key_labels[key.id] = label
+
+    resolved: dict[str, str] = {}
+    for raw in raw_values:
+        actor_uuid = uuid_by_raw.get(raw)
+        if actor_uuid is not None:
+            actor_kind = actor_kind_by_raw.get(raw)
+            label = (
+                api_key_labels.get(actor_uuid)
+                if actor_kind == "api_key"
+                else user_labels.get(actor_uuid) or api_key_labels.get(actor_uuid)
+            )
+            resolved[raw] = label or "Former or unknown user"
+            continue
+        resolved[raw] = _readable_service_actor(raw)
+    return resolved
+
+
+def resolve_actor_display_name(
+    db: Session, actor_id: object | None, *, system_label: str = "System"
+) -> str:
+    """Resolve one actor reference for a user-facing activity row."""
+    raw = str(actor_id or "").strip()
+    if not raw:
+        return system_label
+    return resolve_actor_display_names(db, [raw]).get(raw, system_label)
+
+
+def _readable_service_actor(raw: str) -> str:
+    prefix, separator, value = raw.partition(":")
+    if not separator:
+        try:
+            UUID(raw)
+            return "Former or unknown user"
+        except ValueError:
+            pass
+        return raw.replace("_", " ").replace("-", " ").strip().title()
+    readable_prefix = prefix.replace("_", " ").replace("-", " ").strip().title()
+    try:
+        UUID(value)
+        return f"{readable_prefix} service"
+    except ValueError:
+        pass
+    readable_value = value.replace("_", " ").replace("-", " ").strip()
+    return f"{readable_prefix}: {readable_value}" if readable_value else readable_prefix
+
+
 def _resolve_actor_name(event, subscribers: dict[str, object]) -> str:
     # Prefer the label stored at write time — it is authoritative and survives
     # deletion of the actor. Live resolution below only backfills older rows.
@@ -686,13 +783,15 @@ def _resolve_actor_name(event, subscribers: dict[str, object]) -> str:
             return label
         metadata = getattr(event, "metadata_", None) or {}
         return (
-            metadata.get("actor_name") or metadata.get("actor_email") or str(actor_id)
+            metadata.get("actor_name")
+            or metadata.get("actor_email")
+            or "Former or unknown user"
         )
     metadata = getattr(event, "metadata_", None) or {}
     return (
         metadata.get("actor_name")
         or metadata.get("actor_email")
-        or (str(actor_id) if actor_id else None)
+        or (_readable_service_actor(str(actor_id)) if actor_id else None)
         or "System"
     )
 

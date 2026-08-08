@@ -75,7 +75,7 @@
         <h2 class="font-bold">Review history</h2>
         <ol class="mt-4 space-y-4">
           {% for event in as_built.review_events %}
-          <li class="border-l-2 border-teal-500 pl-3 text-sm"><strong>{{ event.to_status | replace('_', ' ') | title }}</strong><p class="text-xs text-slate-500">{{ event.occurred_at | app_datetime('%d %b %Y %H:%M', 'Time unavailable') }} · {{ event.actor_id }}</p>{% if event.reason %}<p class="mt-1">{{ event.reason }}</p>{% endif %}</li>
+          <li class="border-l-2 border-teal-500 pl-3 text-sm"><strong>{{ event.actor_name }} changed status to {{ event.to_status | replace('_', ' ') | title }}</strong><p class="text-xs text-slate-500">{{ event.occurred_at | app_datetime('%d %b %Y %H:%M', 'Time unavailable') }}</p>{% if event.reason %}<p class="mt-1">{{ event.reason }}</p>{% endif %}</li>
           {% endfor %}
         </ol>
       </section>

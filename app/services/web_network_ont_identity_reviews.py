@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from typing import NotRequired, TypedDict
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -17,6 +18,7 @@ from app.models.ont_assignment_cutover import (
 from app.models.ont_assignment_identity import OntAssignmentIdentityDecision
 from app.models.ont_topology_observation import OntTopologyObservationEvidence
 from app.schemas.status_presentation import StatusTone
+from app.services.audit_helpers import resolve_actor_display_names
 from app.services.network.ont_assignment_cutover import (
     REASON_LABELS,
     REPAIR_OWNER,
@@ -34,6 +36,23 @@ from app.services.network.ont_assignment_identity import (
 from app.services.ui_contracts import Action
 
 DECISION_STATUSES = ("proposed", "approved", "declined", "applied", "closed")
+
+
+class OntAssignmentReviewListRow(TypedDict):
+    batch: OntAssignmentCutoverProposalBatch
+    decisions: list[OntAssignmentIdentityDecision]
+    latest_verification: OntAssignmentCutoverVerificationAttestation | None
+    review: OntAssignmentCutoverBatchReview | None
+    status: str
+    proposed_by_name: NotRequired[str]
+    reviewed_by_name: NotRequired[str | None]
+    verified_by_name: NotRequired[str | None]
+
+
+class OntTopologyObservationReviewRow(TypedDict):
+    evidence: OntTopologyObservationEvidence
+    ont_serial_number: str
+    proposal_assignment_id: str | None
 
 
 @dataclass(frozen=True)
@@ -179,7 +198,7 @@ def list_topology_observation_reviews(
     *,
     query: str | None = None,
     limit: int = 200,
-) -> list[dict[str, object]]:
+) -> list[OntTopologyObservationReviewRow]:
     """Project unresolved network observations for manual validation."""
 
     evidence_rows = list(
@@ -199,7 +218,7 @@ def list_topology_observation_reviews(
         db, OntUnit, {evidence.ont_unit_id for evidence in evidence_rows}
     )
     normalized_query = str(query or "").strip().lower()
-    rows: list[dict[str, object]] = []
+    rows: list[OntTopologyObservationReviewRow] = []
     for evidence in evidence_rows:
         ont = ont_by_id.get(evidence.ont_unit_id)
         searchable = " ".join(
@@ -238,7 +257,7 @@ def list_cutover_proposal_batches(
     *,
     query: str | None = None,
     limit: int = 100,
-) -> list[dict[str, object]]:
+) -> list[OntAssignmentReviewListRow]:
     """Project immutable cleanup manifests and their delegated decisions."""
 
     batches = list(
@@ -284,7 +303,7 @@ def list_cutover_proposal_batches(
             decisions_by_batch[decision.proposal_batch_id].append(decision)
 
     normalized_query = str(query or "").strip().lower()
-    rows: list[dict[str, object]] = []
+    rows: list[OntAssignmentReviewListRow] = []
     for batch in batches:
         decisions = decisions_by_batch[batch.id]
         review = reviews.get(batch.id)
@@ -319,6 +338,37 @@ def list_cutover_proposal_batches(
                 ),
             }
         )
+    actor_labels = resolve_actor_display_names(
+        db,
+        {
+            actor
+            for row in rows
+            for actor in (
+                row["batch"].proposed_by,
+                getattr(row.get("review"), "reviewed_by", None),
+                getattr(row.get("latest_verification"), "verified_by", None),
+            )
+            if actor
+        },
+    )
+    for row in rows:
+        review = row.get("review")
+        latest_verification = row.get("latest_verification")
+        row["proposed_by_name"] = actor_labels.get(
+            str(row["batch"].proposed_by), "Former or unknown user"
+        )
+        row["reviewed_by_name"] = (
+            actor_labels.get(str(review.reviewed_by), "Former or unknown user")
+            if review
+            else None
+        )
+        row["verified_by_name"] = (
+            actor_labels.get(
+                str(latest_verification.verified_by), "Former or unknown user"
+            )
+            if latest_verification
+            else None
+        )
     return rows
 
 
@@ -346,6 +396,15 @@ def decisions_page_data(
             OntAssignmentIdentityDecision.status.in_(ACTIVE_STATUSES)
         )
     decisions = list(db.scalars(statement.limit(300)))
+    actor_labels = resolve_actor_display_names(
+        db,
+        {
+            actor
+            for decision in decisions
+            for actor in (decision.proposed_by, decision.reviewed_by)
+            if actor
+        },
+    )
     ont_by_id = _models_by_id(
         db, OntUnit, {decision.ont_unit_id for decision in decisions}
     )
@@ -373,6 +432,11 @@ def decisions_page_data(
             {
                 "decision": decision,
                 "ont_serial_number": getattr(ont, "serial_number", "Unknown ONT"),
+                "reviewed_by_name": actor_labels.get(
+                    str(decision.reviewed_by), "Former or unknown user"
+                )
+                if decision.reviewed_by
+                else None,
             }
         )
     status_counts = dict.fromkeys(DECISION_STATUSES, 0)
@@ -412,6 +476,9 @@ def decision_detail_page_data(
     if decision is None:
         raise OntAssignmentIdentityError("assignment identity decision not found")
     ont = db.get(OntUnit, decision.ont_unit_id)
+    actor_labels = resolve_actor_display_names(
+        db, {decision.proposed_by, decision.reviewed_by}
+    )
     current_error: str | None = None
     current_input_sha256: str | None = None
     if decision.status in ACTIVE_STATUSES:
@@ -432,6 +499,14 @@ def decision_detail_page_data(
         "current_error": current_error,
         "current_input_sha256": current_input_sha256,
         "decision": decision,
+        "proposed_by_name": actor_labels.get(
+            str(decision.proposed_by), "Former or unknown user"
+        ),
+        "reviewed_by_name": actor_labels.get(
+            str(decision.reviewed_by), "Former or unknown user"
+        )
+        if decision.reviewed_by
+        else None,
         "input_is_current": (
             current_error is None and current_input_sha256 == decision.input_sha256
             if decision.status in ACTIVE_STATUSES
