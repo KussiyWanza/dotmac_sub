@@ -15,6 +15,7 @@ from app.services import (
     vendor_route_review_proposals,
     vendor_supply_review_proposals,
 )
+from app.services.audit_helpers import resolve_actor_display_names
 from app.services.auth_dependencies import (
     can,
     require_any_permission,
@@ -278,6 +279,19 @@ def vendor_as_built_review_detail(
     except DomainError as exc:
         raise _quote_error(exc) from exc
     from app.services import vendor_routes_api
+
+    actor_labels = resolve_actor_display_names(
+        db,
+        {
+            event.get("actor_id")
+            for event in as_built.get("review_events", ())
+            if event.get("actor_id")
+        },
+    )
+    for event in as_built.get("review_events", ()):
+        event["actor_name"] = actor_labels.get(
+            str(event.get("actor_id") or ""), "System"
+        )
 
     context = _ctx(request, db)
     context.update(

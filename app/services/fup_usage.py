@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
@@ -107,6 +107,102 @@ class FupUsageWindow:
     is_authoritative: bool
 
 
+def accrual_intervals(
+    window: FupWindow,
+    tz: ZoneInfo,
+    acct_start: time | None,
+    acct_end: time | None,
+    inverse: bool = False,
+) -> list[tuple[datetime, datetime]]:
+    """Split a consumption window into the spans whose traffic actually counts.
+
+    A free overnight window is not only a matter of lifting the throttle: the
+    traffic a customer moves during it must not eat the next day's bucket.
+    ``fup_policies.traffic_accounting_start/end`` is the field that says so, and
+    until this existed it was applied to nothing — ``windowed_used_bytes``
+    integrated the whole window, so "free night" counted like any other hour.
+
+    The window is expressed in the subscriber's **wall clock** and re-derived
+    per local day, so it stays correct across a DST transition rather than
+    assuming a fixed offset. ``inverse`` flips which side counts.
+
+    Returns ``[(start, end)]`` unchanged when no accounting window is set —
+    the overwhelmingly common case, and one that must stay free of extra
+    queries and arithmetic.
+    """
+    if acct_start is None or acct_end is None:
+        return [(window.start, window.end)]
+
+    spans: list[tuple[datetime, datetime]] = []
+    local_start = window.start.astimezone(tz)
+    local_end = window.end.astimezone(tz)
+    day = local_start.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    while day < local_end:
+        next_day = day + timedelta(days=1)
+        if acct_start <= acct_end:
+            counted = [(_at(day, acct_start, tz), _at(day, acct_end, tz))]
+        else:
+            # Window wraps midnight (e.g. 22:00 -> 05:00): two spans per day.
+            counted = [
+                (day.astimezone(UTC), _at(day, acct_end, tz)),
+                (_at(day, acct_start, tz), next_day.astimezone(UTC)),
+            ]
+        if inverse:
+            counted = _complement(
+                counted, day.astimezone(UTC), next_day.astimezone(UTC)
+            )
+        for span_start, span_end in counted:
+            clipped_start = max(span_start, window.start)
+            clipped_end = min(span_end, window.end)
+            if clipped_start < clipped_end:
+                spans.append((clipped_start, clipped_end))
+        day = next_day
+
+    return spans
+
+
+def _at(local_day: datetime, at: time, tz: ZoneInfo) -> datetime:
+    """A wall-clock time on ``local_day``, as a UTC instant.
+
+    Built naive and localized fresh so the offset is resolved for that instant
+    rather than inherited across a DST boundary.
+    """
+    naive = datetime.combine(local_day.date(), at)
+    return naive.replace(tzinfo=tz).astimezone(UTC)
+
+
+def _complement(
+    spans: list[tuple[datetime, datetime]],
+    day_start: datetime,
+    day_end: datetime,
+) -> list[tuple[datetime, datetime]]:
+    """The parts of [day_start, day_end) not covered by ``spans``."""
+    out: list[tuple[datetime, datetime]] = []
+    cursor = day_start
+    for span_start, span_end in sorted(spans):
+        if span_start > cursor:
+            out.append((cursor, span_start))
+        cursor = max(cursor, span_end)
+    if cursor < day_end:
+        out.append((cursor, day_end))
+    return out
+
+
+def _accounting_window(db: Session, offer_id) -> tuple[time | None, time | None, bool]:
+    """The offer policy's accrual window, or (None, None, False) if unset."""
+    from app.services.fup import FupPolicies
+
+    policy = FupPolicies.get_by_offer(db, str(offer_id))
+    if policy is None or not policy.is_active:
+        return None, None, False
+    return (
+        policy.traffic_accounting_start,
+        policy.traffic_accounting_end,
+        bool(policy.traffic_inverse_interval),
+    )
+
+
 async def _resolve_fup_usage(
     db: Session,
     subscription,
@@ -138,9 +234,16 @@ async def _resolve_fup_usage(
             is_authoritative=used is not None,
         )
 
-    total_bytes, had_data = await windowed_used_bytes(
-        db, [subscription.id], window.start, window.end, tz
-    )
+    acct_start, acct_end, inverse = _accounting_window(db, subscription.offer_id)
+    spans = accrual_intervals(window, tz, acct_start, acct_end, inverse)
+    total_bytes = 0
+    had_data = False
+    for span_start, span_end in spans:
+        span_bytes, span_had_data = await windowed_used_bytes(
+            db, [subscription.id], span_start, span_end, tz
+        )
+        total_bytes += span_bytes
+        had_data = had_data or span_had_data
     # "no_data" (offline OR metrics store down) is distinct from a measured 0 —
     # enforcement must not act on a blind reading (#21 safeguard).
     return FupUsageWindow(

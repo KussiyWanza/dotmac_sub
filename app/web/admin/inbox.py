@@ -18,7 +18,12 @@ from fastapi import (
     Request,
     UploadFile,
 )
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    StreamingResponse,
+)
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -51,6 +56,7 @@ from app.services import (
 from app.services.auth_dependencies import can, require_permission
 from app.services.catalog import plan_family_catalogues
 from app.services.domain_errors import DomainError
+from app.services.file_storage import build_content_disposition
 from app.services.owner_commands import CommandContext
 from app.services.sales import lead_intake
 
@@ -411,6 +417,32 @@ def _detail_redirect(
             f"&message={quote_plus(message)}"
         ),
         status_code=303,
+    )
+
+
+@router.get(
+    "/media/{asset_id}/content",
+    dependencies=[Depends(require_permission("support:ticket:read"))],
+)
+def team_inbox_media_content(
+    asset_id: UUID,
+    db: Session = Depends(get_db),
+):
+    try:
+        asset, stream = team_inbox_media.stream_asset_content(db, asset_id)
+    except team_inbox_media.MediaContentError as exc:
+        raise HTTPException(status_code=404, detail=exc.message) from exc
+    headers = {
+        "Content-Disposition": build_content_disposition(
+            asset.file_name or f"inbox-media-{asset.id}"
+        )
+    }
+    if stream.content_length is not None:
+        headers["Content-Length"] = str(stream.content_length)
+    return StreamingResponse(
+        stream.chunks,
+        media_type=stream.content_type or asset.mime_type or "application/octet-stream",
+        headers=headers,
     )
 
 

@@ -126,7 +126,7 @@
                     <td class="py-2 text-slate-900 dark:text-white">{{ r.status }}</td>
                     <td class="py-2 text-slate-500">{{ r.scope }}</td>
                     <td class="py-2 text-slate-500">{{ r.recipient or '—' }}</td>
-                    <td class="py-2 font-mono text-xs text-slate-400">{{ r.actor_id or '—' }}</td>
+                    <td class="py-2 text-xs text-slate-500">{{ r.actor_name }} dispatched notification</td>
                 </tr>
                 {% else %}
                 <tr><td colspan="5" class="py-4 text-slate-400">No prior dispatches for this boundary.</td></tr>

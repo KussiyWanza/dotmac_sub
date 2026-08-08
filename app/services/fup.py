@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, time
 from typing import TypeVar
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
@@ -278,6 +279,81 @@ def _emit_change(
     )
 
 
+#: Families whose product definition IS a volume bound, and which therefore
+#: cannot be SOLD without a rule that enforces it.
+#:
+#: Deliberately ``home_flex`` only. ``high_speed_data`` is also capped and all
+#: six of its offers do carry enforcement — but its ladder shape is an open
+#: product decision for that segment (PLAN_FAMILY_ARCHITECTURE §1), and
+#: asserting a requirement across segments is the cross-family inference
+#: ``plan_family`` exists to prevent. Add it when that decision is taken.
+FUP_REQUIRED_FAMILIES = ("home_flex",)
+
+
+def sale_requires_speed_reduction(offer: CatalogOffer | None) -> bool:
+    """Is this offer one that may not be on sale without enforcement?"""
+    if offer is None:
+        return False
+    return (
+        bool(offer.available_for_services)
+        and (offer.plan_family or "") in FUP_REQUIRED_FAMILIES
+    )
+
+
+def active_speed_reduction_rule_ids(db: Session, offer_id) -> list:
+    """Ids of the active ``reduce_speed`` rules enforcing this offer's cap.
+
+    Proves an enforcing *action* exists. It does not prove the ladder is
+    complete or that the threshold is reachable — a rule can sit behind an
+    unfirable chain or a time window that never opens. Named for what it
+    checks; see ``assert_sellable_capped_offer_can_enforce``.
+    """
+    rows = (
+        db.query(FupRule.id)
+        .join(FupPolicy, FupPolicy.id == FupRule.policy_id)
+        .filter(FupPolicy.offer_id == coerce_uuid(str(offer_id)))
+        .filter(FupPolicy.is_active.is_(True))
+        .filter(FupRule.is_active.is_(True))
+        .filter(FupRule.action == FupAction.reduce_speed)
+        .all()
+    )
+    return [row[0] for row in rows]
+
+
+def _assert_not_last_enforcing_rule(db: Session, rule: FupRule, *, verb: str) -> None:
+    """Refuse to strip the last enforcing rule from an offer that is on sale.
+
+    The sale-time check establishes the invariant; this keeps it. Without it a
+    later deactivation quietly returns a ``home_flex`` offer to the exact state
+    the sale-time check was written to prevent — sellable, capped in name, and
+    enforcing nothing — with no operator action that looks like a mistake.
+
+    Withdraw the offer from sale first, or leave another ``reduce_speed`` rule
+    active.
+    """
+    if rule.action is not FupAction.reduce_speed or not rule.is_active:
+        return
+    policy = rule.policy or db.get(FupPolicy, rule.policy_id)
+    if policy is None or not policy.is_active:
+        return
+    offer = db.get(CatalogOffer, policy.offer_id)
+    if offer is None or not sale_requires_speed_reduction(offer):
+        return
+    remaining = [
+        rule_id
+        for rule_id in active_speed_reduction_rule_ids(db, policy.offer_id)
+        if rule_id != rule.id
+    ]
+    if remaining:
+        return
+    raise _error(
+        "last_enforcing_rule",
+        f"Cannot {verb} the only speed-reduction rule on a "
+        f"{offer.plan_family} offer that is available for sale. Withdraw the "
+        "offer from sale first, or add a replacement rule.",
+    )
+
+
 class FupPolicies:
     """Canonical owner for FUP policy/rule state and rule evaluation inputs."""
 
@@ -425,6 +501,14 @@ class FupPolicies:
             allowed_fields = set(FupRulePatch.__dataclass_fields__) - {"updated_fields"}
             if not fields or not fields <= allowed_fields:
                 raise _error("invalid_rule", "FUP rule update fields are invalid.")
+            # Before ANY mutation: both of these strip the last enforcement
+            # from an offer that may still be on sale. rule.action is
+            # overwritten further down, so checking later would read the new
+            # value and never fire.
+            if "is_active" in fields and patch.is_active is False:
+                _assert_not_last_enforcing_rule(db, rule, verb="deactivate")
+            if "action" in fields and patch.action != FupAction.reduce_speed.value:
+                _assert_not_last_enforcing_rule(db, rule, verb="change the action of")
             if "name" in fields:
                 if not patch.name or not patch.name.strip():
                     raise _error("invalid_rule", "FUP rule name is required.")
@@ -515,6 +599,7 @@ class FupPolicies:
     def delete_rule(db: Session, command: DeleteFupRuleCommand) -> None:
         def operation() -> None:
             rule = _rule(db, command.rule_id, for_update=True)
+            _assert_not_last_enforcing_rule(db, rule, verb="delete")
             policy_id = rule.policy_id
             offer_id = rule.policy.offer_id
             rule_id = rule.id
@@ -641,18 +726,27 @@ def _time_in_window(
     start: time | None,
     end: time | None,
     inverse: bool = False,
+    tz: ZoneInfo | None = None,
 ) -> bool:
     """Check if a time falls within a start-end window.
 
     If inverse=True, returns True when OUTSIDE the window (e.g., night browsing
     is "free" = traffic inside window doesn't count, so inverse window is "counted").
+
+    ``tz`` is the subscriber's timezone. A window is configured in *wall clock*
+    terms — "the night is free from 22:00" means the customer's 22:00 — but
+    ``check_time`` is a UTC instant, so comparing its raw ``.time()`` shifted
+    every window by the UTC offset: a 22:00 window opened at 23:00 in Lagos.
+    Daily consumption windows are already aligned to subscriber-local midnight
+    by ``fup_usage.fup_window_bounds``; this makes the time-of-day gate agree
+    with them instead of straddling two clocks.
     """
     if start is None or end is None:
         return True  # no window = always applies
     if check_time is None:
         return True
 
-    t = check_time.time()
+    t = check_time.astimezone(tz).time() if tz is not None else check_time.time()
 
     if start <= end:
         in_window = start <= t <= end
@@ -663,13 +757,23 @@ def _time_in_window(
     return not in_window if inverse else in_window
 
 
-def _day_in_list(check_time: datetime | None, days: list[int] | None) -> bool:
-    """Check if a datetime's weekday is in the allowed days list (0=Mon..6=Sun)."""
+def _day_in_list(
+    check_time: datetime | None,
+    days: list[int] | None,
+    tz: ZoneInfo | None = None,
+) -> bool:
+    """Check if a datetime's weekday is in the allowed days list (0=Mon..6=Sun).
+
+    Resolved in ``tz`` for the same reason as ``_time_in_window``: a weekday is
+    a wall-clock fact, and late-evening traffic east of UTC otherwise counts
+    against the following day.
+    """
     if not days:
         return True  # no filter = all days
     if check_time is None:
         return True
-    return check_time.weekday() in days
+    local = check_time.astimezone(tz) if tz is not None else check_time
+    return local.weekday() in days
 
 
 def evaluate_rules(
@@ -680,8 +784,13 @@ def evaluate_rules(
     current_time: datetime | None = None,
     fired_rule_ids: set | None = None,
     usage_by_period: dict | None = None,
+    tz: ZoneInfo | None = None,
 ) -> list[dict]:
     """Evaluate FUP rules for an offer against current usage.
+
+    ``tz`` is the subscriber's timezone, used only for time-of-day and
+    day-of-week gating. Enforcement supplies it; the simulation/preview path
+    may omit it, in which case windows are read in UTC as before.
 
     ``usage_by_period`` (optional) maps a consumption_period -> FupUsageWindow so
     each rule is compared against usage over ITS own window (daily/weekly/
@@ -759,12 +868,19 @@ def evaluate_rules(
             )
             continue
 
-        # Check time-of-day window (rule-level overrides policy-level)
-        time_start = rule.time_start or policy.traffic_accounting_start
-        time_end = rule.time_end or policy.traffic_accounting_end
-        inverse = policy.traffic_inverse_interval
+        # Time-of-day gating is the RULE's alone. The policy's
+        # traffic_accounting_* window is a different decision — which traffic
+        # ACCRUES, applied in fup_usage — and letting it fall through to here
+        # made one field silently govern both, so a "night is free" accounting
+        # window also stopped every rule from releasing at night. Each field
+        # now owns exactly one thing (PLAN_FAMILY_ARCHITECTURE §12).
+        #
+        # No policy in production sets traffic_accounting_start, so dropping
+        # the fallback is a no-op on current data.
+        time_start = rule.time_start
+        time_end = rule.time_end
 
-        if not _time_in_window(current_time, time_start, time_end, inverse):
+        if not _time_in_window(current_time, time_start, time_end, tz=tz):
             results.append(
                 {
                     "rule_id": str(rule.id),
@@ -782,7 +898,7 @@ def evaluate_rules(
 
         # Check day-of-week
         days = rule.days_of_week or policy.traffic_days_of_week
-        if not _day_in_list(current_time, days):
+        if not _day_in_list(current_time, days, tz=tz):
             day_names = {
                 0: "Mon",
                 1: "Tue",

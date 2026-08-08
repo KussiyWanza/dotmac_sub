@@ -30,7 +30,7 @@ from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
-from app.models.catalog import PLAN_FAMILY_VALUES, BandwidthPriceBand
+from app.models.catalog import BANDWIDTH_PRICED_FAMILIES, BandwidthPriceBand
 from app.services.domain_errors import DomainError
 
 
@@ -142,12 +142,18 @@ def quote_bandwidth(
     admin must close, and inventing a number would put a figure in front of a
     customer that no rule produced.
     """
-    if plan_family not in PLAN_FAMILY_VALUES:
+    # Checked against the BANDWIDTH-PRICED families, not every classification.
+    # high_speed_data is sold by the gigabyte and ip_block by block size, so a
+    # per-Mbps ladder is meaningless for both — and the database refuses bands
+    # for them. Validating against the broad vocabulary here would accept a
+    # family the storage layer then rejects, which is a worse error than a
+    # clear refusal.
+    if plan_family not in BANDWIDTH_PRICED_FAMILIES:
         raise BandwidthPricingError(
             code="catalog.bandwidth_pricing.unknown_plan_family",
             message=(
-                f"{plan_family!r} is not a known plan family "
-                f"({', '.join(PLAN_FAMILY_VALUES)})."
+                f"{plan_family!r} is not priced by bandwidth "
+                f"({', '.join(BANDWIDTH_PRICED_FAMILIES)})."
             ),
         )
     if speed_mbps <= 0:

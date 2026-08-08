@@ -4,7 +4,7 @@
 <div class="space-y-6">
   <div>
     <h1 class="text-2xl font-bold text-slate-900 dark:text-white">Meta social connection</h1>
-    <p class="mt-1 text-sm text-slate-500">Connect Facebook Messenger and Instagram Login to Team Inbox using separate account credentials.</p>
+    <p class="mt-1 text-sm text-slate-500">Connect Facebook Messenger and Instagram Login to Team Inbox using Meta OAuth or separate account credentials.</p>
   </div>
 
   {% if saved %}<div class="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">Configuration saved. Enable the installation from Installed Integrations after OpenBao contains the referenced values.</div>{% endif %}
@@ -12,8 +12,8 @@
 
   <div class="grid gap-4 md:grid-cols-3">
     <div class="rounded-2xl border border-slate-200 bg-white p-5 dark:border-slate-700 dark:bg-slate-800"><p class="text-sm text-slate-500">Installation</p><p class="mt-2 text-lg font-semibold dark:text-white">{{ installation_state|replace('_', ' ')|title }}</p><p class="mt-1 text-xs text-slate-500">{{ connector_version or 'Not installed' }}</p></div>
-    <div class="rounded-2xl border border-slate-200 bg-white p-5 dark:border-slate-700 dark:bg-slate-800"><p class="text-sm text-slate-500">Facebook</p><p class="mt-2 text-lg font-semibold {{ 'text-emerald-600' if facebook_token_bound else 'text-amber-600' }}">{{ 'Token reference bound' if facebook_token_bound else 'Action required' }}</p><p class="mt-1 text-xs text-slate-500">Page access token</p></div>
-    <div class="rounded-2xl border border-slate-200 bg-white p-5 dark:border-slate-700 dark:bg-slate-800"><p class="text-sm text-slate-500">Instagram</p><p class="mt-2 text-lg font-semibold {{ 'text-emerald-600' if instagram_token_bound else 'text-amber-600' }}">{{ 'Token reference bound' if instagram_token_bound else 'Action required' }}</p><p class="mt-1 text-xs text-slate-500">Instagram Login token</p></div>
+    <div class="rounded-2xl border border-slate-200 bg-white p-5 dark:border-slate-700 dark:bg-slate-800"><p class="text-sm text-slate-500">Shared OAuth</p><p class="mt-2 text-lg font-semibold {{ 'text-emerald-600' if meta_oauth_token_bound else 'text-amber-600' }}">{{ 'Token reference bound' if meta_oauth_token_bound else 'Action required' }}</p><p class="mt-1 text-xs text-slate-500">One Meta token for both channels</p></div>
+    <div class="rounded-2xl border border-slate-200 bg-white p-5 dark:border-slate-700 dark:bg-slate-800"><p class="text-sm text-slate-500">Individual</p><p class="mt-2 text-lg font-semibold {{ 'text-emerald-600' if facebook_token_bound and instagram_token_bound else 'text-amber-600' }}">{{ 'Token references bound' if facebook_token_bound and instagram_token_bound else 'Action required' }}</p><p class="mt-1 text-xs text-slate-500">Facebook Page and Instagram Login tokens</p></div>
   </div>
 
   <section class="rounded-2xl border border-slate-200 bg-white p-5 dark:border-slate-700 dark:bg-slate-800">
@@ -23,12 +23,14 @@
     <form method="post" action="/admin/crm/meta" class="mt-5 space-y-5">
       {% include "components/forms/csrf_input.html" %}
       <div class="grid gap-4 md:grid-cols-2">
+        <label class="text-sm text-slate-700 dark:text-slate-300">Auth mode<select name="auth_mode" required class="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 dark:border-slate-600 dark:bg-slate-700">{% for option in auth_mode_options %}<option value="{{ option.id }}" {% if auth_mode == option.id %}selected{% endif %}>{{ option.label }}</option>{% endfor %}</select></label>
         <label class="text-sm text-slate-700 dark:text-slate-300">Meta App ID<input name="app_id" value="{{ app_id }}" required class="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 dark:border-slate-600 dark:bg-slate-700"></label>
         <label class="text-sm text-slate-700 dark:text-slate-300">Graph API version<input name="graph_version" value="{{ graph_version }}" required placeholder="v21.0" class="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 dark:border-slate-600 dark:bg-slate-700"></label>
         <label class="text-sm text-slate-700 dark:text-slate-300">Facebook Page ID<input name="facebook_page_id" value="{{ facebook_page_id }}" required class="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 dark:border-slate-600 dark:bg-slate-700"></label>
         <label class="text-sm text-slate-700 dark:text-slate-300">Instagram professional account ID<input name="instagram_account_id" value="{{ instagram_account_id }}" required class="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 dark:border-slate-600 dark:bg-slate-700"></label>
       </div>
       <label class="block text-sm text-slate-700 dark:text-slate-300">Webhook URL<input name="webhook_url" value="{{ webhook_url }}" placeholder="https://sub.example/api/v1/webhooks/meta" class="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 dark:border-slate-600 dark:bg-slate-700"></label>
+      <label class="block text-sm text-slate-700 dark:text-slate-300">Shared Meta OAuth token reference<input name="meta_oauth_access_token_ref" value="" placeholder="{{ meta_oauth_token_ref_masked or 'bao://secret/integrations/meta_social#meta_oauth_access_token' }}" class="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 dark:border-slate-600 dark:bg-slate-700"></label>
       <div class="grid gap-4 md:grid-cols-2">
         <label class="text-sm text-slate-700 dark:text-slate-300">Facebook Page token reference<input name="facebook_page_access_token_ref" value="" placeholder="{{ facebook_token_ref_masked or 'bao://secret/integrations/meta_social#facebook_page_access_token' }}" class="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 dark:border-slate-600 dark:bg-slate-700"></label>
         <label class="text-sm text-slate-700 dark:text-slate-300">Instagram Login token reference<input name="instagram_login_access_token_ref" value="" placeholder="{{ instagram_token_ref_masked or 'bao://secret/integrations/meta_social#instagram_login_access_token' }}" class="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 dark:border-slate-600 dark:bg-slate-700"></label>

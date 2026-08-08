@@ -36,6 +36,12 @@ def test_ticket_comment_rejects_blank_body(blank):
         TicketCommentCreate(body=blank)
 
 
+def test_staff_ticket_comment_defaults_internal():
+    payload = TicketCommentCreate(body="Staff-only note")
+
+    assert payload.is_internal is True
+
+
 @pytest.mark.parametrize("blank", ["   ", "\n\t"])
 def test_my_support_schemas_reject_whitespace(blank):
     with pytest.raises(ValidationError):

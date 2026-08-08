@@ -222,6 +222,8 @@ def test_customer_infrastructure_filter_is_lazy_and_bounded():
     )
 
     assert "/admin/customers/infrastructure-options" in template
+    assert "x-data='infrastructurePicker({" in template
+    assert 'x-data="infrastructurePicker({' not in template
     assert '@input="queueLookup()"' in template
     assert "window.setTimeout(() => this.lookup(), 300)" in template
     assert "@input.debounce.300ms" not in template

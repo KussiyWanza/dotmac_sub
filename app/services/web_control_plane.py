@@ -35,6 +35,10 @@ from app.models.rbac import (
 from app.models.scheduler import ScheduledTask, ScheduleType
 from app.models.subscription_engine import SettingValueType
 from app.services import control_registry, settings_spec
+from app.services.audit_helpers import (
+    humanize_action,
+    resolve_actor_display_names,
+)
 from app.services.redis_client import redis_health_check
 from app.services.web_integrations import build_installed_integrations_data
 from app.services.web_system_secrets import build_secrets_index_context
@@ -539,6 +543,21 @@ def _audit_history(db: Session) -> dict[str, list[dict[str, object]]]:
 
 def build_control_plane_context(db: Session) -> dict[str, object]:
     history = _audit_history(db)
+    actor_labels = resolve_actor_display_names(
+        db,
+        {
+            event["actor"]
+            for events in history.values()
+            for event in events
+            if event.get("actor")
+        },
+    )
+    for events in history.values():
+        for event in events:
+            event["actor_name"] = actor_labels.get(
+                str(event.get("actor") or ""), "System"
+            )
+            event["action_label"] = humanize_action(str(event.get("action") or ""))
     section_data: list[tuple[str, str, str, list[dict[str, object]]]] = [
         (
             "settings",

@@ -138,7 +138,7 @@
                         <span class="font-semibold text-slate-800 dark:text-slate-100">{{ event.action.replace("_", " ")|title }}</span>
                         <span class="{% if event.is_success %}text-emerald-600 dark:text-emerald-300{% else %}text-red-600 dark:text-red-300{% endif %}">{{ "OK" if event.is_success else "Failed" }}</span>
                     </div>
-                    <p class="mt-1 text-slate-500 dark:text-slate-400">{{ event.occurred_at }} · {{ event.actor_id or "system" }}</p>
+                    <p class="mt-1 text-slate-500 dark:text-slate-400">{{ event.occurred_at | app_datetime('%d %b %Y %H:%M', 'Time unavailable') }} · {{ row.actor_name }} · {{ row.action_label }}</p>
                     {% if row.task_id %}
                     <p class="mt-1 font-mono text-slate-500 dark:text-slate-400">
                         Task {{ row.task_id }}

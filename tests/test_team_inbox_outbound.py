@@ -24,7 +24,7 @@ from app.schemas.ai_intake import GENERIC_FOLLOW_UP_QUESTION
 from app.schemas.settings import DomainSettingUpdate
 from app.schemas.team_inbox import InboxConversationReplyRequest
 from app.services import email as email_service
-from app.services import team_inbox_outbound, team_outbound
+from app.services import team_inbox_media, team_inbox_outbound, team_outbound
 from app.services.domain_settings import notification_settings
 from app.tasks import notifications as notification_tasks
 
@@ -225,6 +225,74 @@ def test_send_inbox_reply_does_not_call_whatsapp_provider_inline(
     assert result.kind == "queued"
     assert calls == []
     assert db_session.query(InboxMessage).count() == 1
+
+
+def test_whatsapp_notification_delivers_inbox_attachment_as_media(
+    db_session, monkeypatch
+):
+    conversation = _whatsapp_conversation(db_session)
+    attachment_id = uuid4()
+    media_calls: list[dict] = []
+    text_calls: list[dict] = []
+
+    monkeypatch.setattr(
+        notification_tasks.whatsapp_service,
+        "send_text_message",
+        lambda *args, **kwargs: (
+            text_calls.append(kwargs)
+            or {"ok": True, "provider_message_id": "wamid.text"}
+        ),
+    )
+    monkeypatch.setattr(
+        notification_tasks.team_inbox_media,
+        "resolve_delivery_attachments",
+        lambda *_args, **_kwargs: (
+            team_inbox_media.InboxDeliveryAttachment(
+                asset_id=attachment_id,
+                filename="drop.jpg",
+                content_type="image/jpeg",
+                content=b"jpeg-bytes",
+                asset_type="image",
+            ),
+        ),
+    )
+
+    def fake_send_media_message(*args, **kwargs):
+        media_calls.append(kwargs)
+        return {
+            "ok": True,
+            "provider": "meta_cloud_api",
+            "provider_message_id": "wamid.media",
+            "status_code": 200,
+        }
+
+    monkeypatch.setattr(
+        notification_tasks.whatsapp_service,
+        "send_media_message",
+        fake_send_media_message,
+    )
+    db_session.commit()
+
+    result = team_inbox_outbound.send_inbox_reply(
+        db_session,
+        conversation=conversation,
+        payload=team_inbox_outbound.InboxReplyPayload(
+            body_html="<p>Photo attached.</p>",
+            body_text="Photo attached.",
+            metadata={"inbox_attachment_ids": [str(attachment_id)]},
+        ),
+    )
+    notification_tasks._deliver_notification_queue_stats(db_session)
+
+    message = db_session.get(InboxMessage, result.message_id)
+    assert text_calls == []
+    assert len(media_calls) == 1
+    assert media_calls[0]["media_type"] == "image"
+    assert media_calls[0]["content"] == b"jpeg-bytes"
+    assert media_calls[0]["caption"] == "Photo attached."
+    assert message is not None
+    assert message.external_message_id == "wamid.media"
+    assert message.metadata_["provider_message_ids"] == ["wamid.media"]
 
 
 def _social_comment_conversation(

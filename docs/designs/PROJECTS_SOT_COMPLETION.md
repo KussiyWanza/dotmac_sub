@@ -125,6 +125,11 @@ the project aggregate. This makes preserved imports authoritative inputs to the
 counter and prevents a stale local sequence from restarting the series. The
 476 cutover repairs the native `4` through `7` drift as `PROJ-1104` through
 `PROJ-1107` and advances, but never rewinds, the sequence to at least 1108.
+The 496 follow-up repairs numeric `8` through `10` rows created during that
+cutover window. It locks numbering and project creation, assigns those rows in
+numeric order after both the highest canonical suffix and any value already
+reserved by the sequence when the migration runs, and then advances the
+sequence without rewinding it.
 
 State-changing commands stage audit and versioned domain-event evidence in the
 same transaction as authoritative state. Events are delivered after commit by
