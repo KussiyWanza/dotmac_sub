@@ -16,6 +16,7 @@ from app.services.network.olt_validators import (
     validate_profile_name,
     validate_vlan_id,
 )
+from app.services.network.parsers.cli import canonical_fsp
 
 logger = logging.getLogger(__name__)
 
@@ -623,6 +624,16 @@ def build_service_port_command(
     Returns:
         Huawei CLI command string for service-port creation
     """
+    # Canonicalize before interpolation. ``fsp`` reaches here straight from
+    # callers that only ran a boolean validation, and that validation
+    # normalizes port-name prefixes before matching without returning the
+    # normalized value — so ``gpon-0/1/0`` would have been accepted and
+    # emitted as ``... gpon gpon-0/1/0 ...``.
+    parts = canonical_fsp(fsp)
+    if parts is None:
+        raise ValueError(f"Invalid F/S/P format: {fsp!r}")
+    fsp = parts.fsp
+
     validate_vlan_id(int(vlan_id))
     validate_gem_index(int(gem_index))
     if isinstance(user_vlan, int):

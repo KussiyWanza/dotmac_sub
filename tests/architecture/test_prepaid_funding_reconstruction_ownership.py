@@ -152,10 +152,10 @@ def test_materializer_owner_requires_a_config_trusted_clean_replay_seal() -> Non
     assert "reconstruction_existing_attestation_mismatch" in owner
     assert "reconstruction_source_cohort_incomplete" in owner
     assert "expected_candidate_hash = candidate_cohort_sha256" in owner
-    assert "resolve_splynx_history_opening_targets" in exporter
+    assert "resolve_opening_balance_history_targets" in exporter
     assert "--allow-quarantined-subset" not in exporter
     assert "source_cohort_incomplete" in _read(
-        "app/services/billing/splynx_history_opening.py"
+        "app/services/billing/opening_balance_history.py"
     )
     assert "apply_prepaid_funding_reconstruction" in materializer
     assert "Ed25519PublicKey" in attestation
@@ -185,7 +185,7 @@ def test_complete_history_reader_and_retired_quarantine_name_have_one_app_home()
         if "prepaid_funding_quarantined_account_ids" in path.read_text(encoding="utf-8")
     ]
 
-    assert history_readers == ["app/services/billing/splynx_history_opening.py"]
+    assert history_readers == ["app/services/billing/opening_balance_history.py"]
     assert quarantine_name_homes == ["app/services/prepaid_funding_reconstruction.py"]
 
 

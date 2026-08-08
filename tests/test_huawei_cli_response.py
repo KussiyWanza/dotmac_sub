@@ -6,12 +6,15 @@ from app.services.network.huawei_cli_response import (
     HuaweiCliErrorCode,
     HuaweiCliResource,
     classify_huawei_cli_response,
+    describe_huawei_rejection,
     has_huawei_cli_error,
     is_huawei_cli_unsupported,
     is_huawei_no_autofind_entries,
     is_huawei_resource_absent,
     is_huawei_serial_already_registered,
+    parse_huawei_ont_add_result,
     project_huawei_result_evidence,
+    project_response_code_evidence,
 )
 from app.services.network.olt_ssh_session import ErrorCode, parse_command_result
 from app.services.network.parsers.cli import is_error_output
@@ -173,3 +176,170 @@ def test_legacy_error_predicates_delegate_to_canonical_classifier() -> None:
 
     assert is_error_output(rejected) is True
     assert is_error_output(customer_text) is False
+
+
+# ---------------------------------------------------------------------------
+# Verbatim device fixtures.
+#
+# These strings are copied from real shelves, not paraphrased. A paraphrased
+# fixture ("Automatically found ONTs do not exist", without the leading "The")
+# is exactly what kept CI green for weeks while BOI and Gudu autofind reads
+# failed in production.
+# ---------------------------------------------------------------------------
+
+#: BOI (MA5608T) and Gudu, direct SSH reads 2026-07-20 / 07-23 / 07-24.
+BOI_GUDU_EMPTY_AUTOFIND = "  Failure: The automatically found ONTs do not exist"
+
+
+def test_verbatim_empty_autofind_from_boi_and_gudu_is_a_known_empty() -> None:
+    response = classify_huawei_cli_response(BOI_GUDU_EMPTY_AUTOFIND)
+
+    assert response.error_code == HuaweiCliErrorCode.NO_AUTOFIND_ENTRIES
+    assert response.accepted is True
+    assert response.has_error_marker is False
+    assert is_huawei_no_autofind_entries(BOI_GUDU_EMPTY_AUTOFIND) is True
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "Failure: SN already exists",
+        "  Failure: The ONT SN already exists",
+        "  Failure: The SN already exists in the port",
+        "  Failure: SN 48575443A31A3529 already exists",
+        "  Failure: The SN has been used by another ONT",
+        "  Failure: The ONT with the same SN already exists",
+        "  Failure: The SN is conflicted with the SN of an existing ONT",
+    ],
+)
+def test_duplicate_serial_wordings_all_reach_the_reuse_branch(output: str) -> None:
+    """Every firmware wording must reach ont_authorization's reuse/move path.
+
+    Anything that classifies as generic ALREADY_EXISTS or UNKNOWN_ERROR instead
+    makes re-authorizing a registered ONT a hard operator-facing failure.
+    """
+    assert is_huawei_serial_already_registered(output) is True
+
+
+@pytest.mark.parametrize(
+    ("output", "code"),
+    [
+        (
+            "Failure: The service virtual port has existed already",
+            HuaweiCliErrorCode.ALREADY_EXISTS,
+        ),
+        ("  Failure: The profile already exists", HuaweiCliErrorCode.ALREADY_EXISTS),
+        ("Failure: The ONT does not exist", HuaweiCliErrorCode.ONT_NOT_EXIST),
+    ],
+)
+def test_non_serial_conflicts_keep_their_own_codes(
+    output: str, code: HuaweiCliErrorCode
+) -> None:
+    """The broadened serial patterns must not swallow other conflicts."""
+    assert classify_huawei_cli_response(output).error_code == code
+
+
+@pytest.mark.parametrize(
+    "wrapper",
+    [
+        "OLT rejected: {}",
+        "OLT rejected command: {}",
+        "OLT rejected upgrade: {}",
+        "OLT rejected inventory read for 0/1/2: {}",
+        "OLT error: {}",
+    ],
+)
+def test_every_operator_wrapper_still_classifies(wrapper: str) -> None:
+    """Wrapping for operators must not erase the device verdict.
+
+    ``authorize_ont`` wrapped rejections as "OLT rejected command: ..." while
+    the envelope only accepted the bare "OLT rejected:" form, so a genuine
+    duplicate-serial rejection classified as NONE — no error at all.
+    """
+    wrapped = wrapper.format("Failure: SN already exists")
+
+    assert classify_huawei_cli_response(wrapped).error_code == (
+        HuaweiCliErrorCode.SERIAL_ALREADY_EXISTS
+    )
+
+
+def test_canonical_rejection_wrapper_round_trips_through_the_classifier() -> None:
+    message = describe_huawei_rejection(
+        "ont add 0 sn-auth 4857 omci\r\n  Failure: The ONT does not exist\r\nOLT#",
+        action="ont add",
+    )
+
+    assert message.startswith("OLT rejected: ")
+    assert "(ont add)" in message
+    assert classify_huawei_cli_response(message).error_code == (
+        HuaweiCliErrorCode.ONT_NOT_EXIST
+    )
+
+
+# ---------------------------------------------------------------------------
+# ``ont add`` acceptance
+# ---------------------------------------------------------------------------
+
+_ADD_ECHO = (
+    "ont add 0 sn-auth 48575443A31A3529 omci ont-lineprofile-id 40 "
+    'ont-srvprofile-id 41 desc "x"'
+)
+
+
+def test_ont_add_accepted_on_success_counter_without_an_ont_id() -> None:
+    result = parse_huawei_ont_add_result(
+        f"{_ADD_ECHO}\r\n  Number of ONTs that can be added: 1, success: 1\r\nOLT#"
+    )
+
+    assert result.accepted is True
+    assert result.ont_id is None
+
+
+def test_ont_add_accepted_and_reports_the_assigned_id() -> None:
+    result = parse_huawei_ont_add_result(f"{_ADD_ECHO}\r\n  ONTID :0\r\nOLT#")
+
+    assert result.accepted is True
+    assert result.ont_id == 0
+
+
+def test_ont_add_zero_success_count_is_not_acceptance() -> None:
+    result = parse_huawei_ont_add_result(
+        "  Number of ONTs that can be added: 1, success: 0\r\nOLT#"
+    )
+
+    assert result.accepted is False
+
+
+def test_ont_add_rejection_is_checked_before_any_acceptance_evidence() -> None:
+    """A rejection that names an ONT-ID must not read as a success.
+
+    The previous local check ran ``"ont-id" in output`` *before* any error
+    test, so this output authorized nothing but reported ONT-ID 5.
+    """
+    result = parse_huawei_ont_add_result(
+        "  Failure: Configuring ONT-ID 5 failed\r\nOLT#"
+    )
+
+    assert result.accepted is False
+    assert result.ont_id is None
+
+
+def test_ont_add_echo_alone_is_not_acceptance() -> None:
+    """A silent shelf is not a success; the caller must read the state back."""
+    result = parse_huawei_ont_add_result(f"{_ADD_ECHO}\r\nOLT(config-if-gpon-0/1)#")
+
+    assert result.accepted is False
+    assert result.ont_id is None
+    assert result.code == HuaweiCliErrorCode.NONE
+
+
+def test_ont_add_profile_ids_in_the_echo_are_not_read_as_an_ont_id() -> None:
+    result = parse_huawei_ont_add_result(f"{_ADD_ECHO}\r\n  ONTID :7\r\nOLT#")
+
+    assert result.ont_id == 7
+
+
+def test_typed_outcome_evidence_matches_the_text_classifier_projection() -> None:
+    assert project_response_code_evidence(HuaweiCliErrorCode.UNKNOWN_COMMAND) == (
+        classify_huawei_cli_response("% Unknown command").to_evidence()
+    )

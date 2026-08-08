@@ -11,6 +11,7 @@ from app.services.network.olt_ssh_diagnostics import (
     OntTrafficStats,
     OpticalInfo,
 )
+from app.services.network.parsers.cli import canonical_fsp
 from app.services.network.parsers.loader import OntInfoEntry
 
 if TYPE_CHECKING:
@@ -44,9 +45,9 @@ def _alarm_matches_ont(alarm: AlarmEntry, *, fsp: str, ont_id: int) -> bool:
             alarm.raw.get("line") if alarm.raw else "",
         ]
     ).lower()
-    parts = fsp.split("/")
-    if len(parts) == 3:
-        frame, slot, port = parts
+    parts = canonical_fsp(fsp)
+    if parts is not None:
+        frame, slot, port = parts.frame, parts.slot, parts.port
         fsp_patterns = [
             f"{frame}/{slot}/{port}",
             f"frameid:{frame}",

@@ -299,7 +299,7 @@ Edit the owning domain shard and regenerate; do not hand-edit these rows.
 | `customer.service_level` | per-subscription SLA policy resolution and period score | `resolver` | contractual SLA terms ← `customer.service_level`<br>period-scoped lifecycle evidence ← `access.subscription_lifecycle_evidence`<br>period-scoped prepaid entitlement evidence ← `financial.prepaid_service_coverage`<br>period-scoped postpaid contract evidence ← `billing.contracts`<br>positive subscription monitoring evidence ← `sessions.radius_resolution`<br>qualifying downtime intervals ← `network.customer_outage_accrual`<br>offer SLA policy inputs ← `service_intent.catalog_policy`<br>admin SLA display control ← `control.settings_spec` | `owner_managed` | `shadowing` | customer operations | `docs/designs/OUTAGE_SLA_SPINE.md`<br>`docs/PLAN_FAMILY_ARCHITECTURE.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_customer_service_level.py`<br>`tests/integration/test_sla_policy_versions_postgres.py`<br>`tests/integration/test_sla_period_scores_postgres.py`<br>`tests/architecture/test_customer_service_level_boundary.py`<br>`tests/test_sla_admin_review.py`<br>`tests/architecture/test_sla_admin_only_boundary.py` |
 | `customer.service_level` | immutable SLA period-score revisions and evidence snapshots | `authoritative_record` | contractual SLA terms ← `customer.service_level`<br>period-scoped lifecycle evidence ← `access.subscription_lifecycle_evidence`<br>period-scoped prepaid entitlement evidence ← `financial.prepaid_service_coverage`<br>period-scoped postpaid contract evidence ← `billing.contracts`<br>positive subscription monitoring evidence ← `sessions.radius_resolution`<br>qualifying downtime intervals ← `network.customer_outage_accrual` | `owner_managed` | `shadowing` | customer operations | `docs/designs/OUTAGE_SLA_SPINE.md`<br>`docs/PLAN_FAMILY_ARCHITECTURE.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_customer_service_level.py`<br>`tests/integration/test_sla_policy_versions_postgres.py`<br>`tests/integration/test_sla_period_scores_postgres.py`<br>`tests/architecture/test_customer_service_level_boundary.py`<br>`tests/test_sla_admin_review.py`<br>`tests/architecture/test_sla_admin_only_boundary.py` |
 | `customer.field_job_chat` | subscriber-scoped job chat read and send | `transport` | authenticated subscriber identity ← `customer.identity_scope`<br>canonical job chat conversation ← `communications.team_inbox_field_job`<br>canonical work order ownership ← `operations.work_orders` | `not_applicable` | `native` | customer experience platform | `docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_field_job_chat.py` |
-| `billing.splynx_history_opening` | complete Splynx-history customer opening target | `resolver` | frozen Splynx transaction-net evidence ← `external:splynx_final_snapshot`<br>canonical post-handoff native financial facts ← `financial.ledger`<br>canonical migrated customer identity ← `customer.accounts` | `read_only` | `cutover_ready` | billing and finance operations | `docs/adr/0007-end-to-end-billing-target-architecture.md`<br>`docs/designs/SPLYNX_RETIREMENT.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_splynx_history_opening.py`<br>`tests/test_billing_alignment_audit.py`<br>`tests/test_subledger_opening_positions.py` |
+| `billing.opening_balance_history` | complete opening-balance customer target | `resolver` | frozen opening-balance transaction-net evidence ← `external:splynx_final_snapshot`<br>canonical post-handoff native financial facts ← `financial.ledger`<br>canonical migrated customer identity ← `customer.accounts` | `read_only` | `cutover_ready` | billing and finance operations | `docs/adr/0007-end-to-end-billing-target-architecture.md`<br>`docs/designs/SPLYNX_RETIREMENT.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_opening_balance_history.py`<br>`tests/test_billing_alignment_audit.py`<br>`tests/test_subledger_opening_positions.py` |
 | `billing.addon_contract_backfill` | recurring add-on contract migration snapshot | `observation_collector` | legacy recurring add-on facts ← `financial.addon_purchases`<br>recorded billing contract boundary ← `billing.contracts` | `owner_managed` | `shadowing` | billing and finance operations | `docs/adr/0007-end-to-end-billing-target-architecture.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_billing_addon_contract_backfill.py`<br>`tests/architecture/test_billing_target_architecture.py` |
 | `billing.contracts` | versioned billing contract terms | `authoritative_record` | accepted commercial order line ← `sales.orders`<br>canonical subscription projection ← `access.subscription_lifecycle`<br>effective tax treatment inputs ← `financial.tax_configuration`<br>recurring add-on migration output ← `billing.addon_contract_backfill`<br>live recurring add-on purchase output ← `financial.addon_purchases`<br>recorded billing contract terms ← `billing.contracts`<br>receipted owner-output deliveries ← `events.owner_outputs`<br>exact pending-terms time trigger ← `runtime.durable_timers` | `owner_managed` | `shadowing` | billing and finance operations | `docs/adr/0007-end-to-end-billing-target-architecture.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_billing_contracts.py`<br>`tests/test_customer_service_level.py`<br>`tests/test_billing_addon_contract_backfill.py`<br>`tests/test_api_me_addons.py`<br>`tests/architecture/test_billing_target_architecture.py` |
 | `billing.contracts` | billing contract version supersession | `command_writer` | recorded billing contract terms ← `billing.contracts`<br>exact pending-terms time trigger ← `runtime.durable_timers`<br>receipted owner-output deliveries ← `events.owner_outputs` | `owner_managed` | `shadowing` | billing and finance operations | `docs/adr/0007-end-to-end-billing-target-architecture.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_billing_contracts.py`<br>`tests/test_customer_service_level.py`<br>`tests/test_billing_addon_contract_backfill.py`<br>`tests/test_api_me_addons.py`<br>`tests/architecture/test_billing_target_architecture.py` |
@@ -1196,7 +1196,7 @@ detailed security and delivery boundary is
    them into a generic balance or absorb payment lifecycle or service-access
    state. Prepaid funding delegates to
    `financial.prepaid_funding_reconstruction`: one reviewed opening target at
-   the review timestamp. `billing.splynx_history_opening` derives the migrated
+   the review timestamp. `billing.opening_balance_history` derives the migrated
    component from credits minus debits over the complete frozen Splynx
    transaction set and then adds canonical Sub-native facts strictly after the
    fixed handoff. A complete empty source set is mathematically zero. A native
@@ -3687,6 +3687,37 @@ writers are retired; historical rows remain readable evidence.
    still require the control-plane intent readback contract. Protocol adapter,
    authorization, provisioning, and reconcile history persist the sanitized
    classifier projection as operation evidence; raw CLI output is not retained.
+   Classification happens **once, on raw device output, at the point of
+   capture**, and travels as the typed `HuaweiDeviceOutcome` carrier;
+   `OltOperationResult.response_code` is the authoritative verdict downstream.
+   Re-classifying an operator-facing message is forbidden: that string is
+   wrapped and truncated, and re-parsing it silently disabled the
+   duplicate-serial reuse/move branch in `network.ont_authorization` while
+   synthetic-message unit tests stayed green. Operator-facing rejection text is
+   owned here too (`describe_huawei_rejection`) so the envelope the classifier
+   parses and the envelope the stack emits cannot drift apart. Regression
+   fixtures must be verbatim device output; a paraphrased fixture masked the
+   BOI/Gudu empty-autofind misclassification for weeks. Enforced by
+   `tests/architecture/test_huawei_cli_response_sot.py`.
+40a. `network.huawei_command_transport`: owns how one command line reaches a
+   Huawei shelf. `app.services.network.olt_ssh_ont._common.send_ont_command` is
+   the single writer: the line is always written atomically, because Huawei
+   line editors coalesce separately-written space characters, and
+   `HuaweiCommandProfile.requires_slow_send` selects the pace *between*
+   commands rather than splitting one. ONT lifecycle, OMCI, IPHOST, TR-069,
+   profile, and session paths call it instead of keeping local senders.
+40b. `network.fsp_identity`: `app.services.network.parsers.cli.canonical_fsp`
+   owns Frame/Slot/Port normalization and shape, returning the typed
+   `FspParts`. `olt_validators.validate_fsp_parts` layers the Huawei range
+   checks and the raising contract on top and returns the same typed parts;
+   `validate_fsp` is its canonical-string projection. Device commands are built
+   from `FspParts.frame_slot` / `.port`, never from a caller's raw string:
+   validation normalizes port-name prefixes (`gpon-0/1/0`) before matching, so
+   a caller that split the raw value emitted `interface gpon gpon-0/1` and
+   `service-port … gpon gpon-0/1/0 …`. `PonPort.name` is a real source of
+   prefixed values, so canonicalization happens at the command boundary rather
+   than being assumed upstream. Enforced across the OLT command-building
+   surface by `tests/architecture/test_huawei_cli_response_sot.py`.
 41. `network.routeros_sot`: owns typed MikroTik desired state, the managed
    resource/field registry, Dotmac ownership markers, verified reconciliation,
    and periodic drift evidence. Router routes and tasks only orchestrate it,

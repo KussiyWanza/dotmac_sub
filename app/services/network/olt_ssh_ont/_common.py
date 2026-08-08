@@ -10,6 +10,13 @@ from dataclasses import dataclass
 
 from paramiko.ssh_exception import SSHException
 
+from app.services.network.huawei_cli_response import (
+    HuaweiCliErrorCode,
+    HuaweiDeviceOutcome,
+    describe_huawei_rejection,
+)
+from app.services.network.parsers.cli import canonical_fsp
+
 logger = logging.getLogger(__name__)
 
 # Specific SSH-related exceptions that can occur during OLT operations
@@ -21,10 +28,13 @@ _SSH_CONNECTION_ERRORS = (
     ConnectionError,
 )
 
-# Delay between characters when using slow send (seconds).
-# Some OLT terminals corrupt commands sent too quickly.
-# Increased from 0.05 to 0.1 for MA5608T compatibility.
-_SLOW_SEND_CHAR_DELAY = 0.1
+# Settle time after writing one complete command line, before reading the
+# response. Shelves whose command profile sets ``requires_slow_send`` (MA5608T
+# family) get the longer pace; the rest get the same 0.1s the read-path sender
+# already uses. This is deliberately *between* commands — never inside one, see
+# ``send_ont_command``.
+_ATOMIC_SEND_PACE_SEC = 0.1
+_SLOW_SHELF_PACE_SEC = 0.4
 
 # Regex patterns for validation
 _FSP_RE = re.compile(r"^\d{1,2}/\d{1,2}/\d{1,3}$")
@@ -80,6 +90,41 @@ class OntIphostResult:
     serial_number: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class OntAuthorizationOutcome:
+    """Typed result of one ``ont add ... sn-auth`` exchange.
+
+    Carries the classified device code forward so callers branch on
+    :attr:`code` instead of re-parsing :attr:`message`. ``ont_id`` is ``None``
+    whenever the firmware accepted the write without naming an ONT-ID; the
+    adapter resolves it by readback rather than guessing.
+    """
+
+    outcome: HuaweiDeviceOutcome
+    ont_id: int | None = None
+
+    @property
+    def succeeded(self) -> bool:
+        return self.outcome.succeeded
+
+    @property
+    def code(self) -> HuaweiCliErrorCode:
+        return self.outcome.code
+
+    @property
+    def message(self) -> str:
+        return self.outcome.message
+
+    @property
+    def device_was_silent(self) -> bool:
+        """Whether the shelf returned no recognizable verdict at all.
+
+        A silent shelf is not evidence of success and not evidence of
+        rejection; the caller must confirm by reading the registration back.
+        """
+        return not self.succeeded and self.code is HuaweiCliErrorCode.NONE
+
+
 @dataclass
 class OntStatusEntry:
     """Status of a single registered ONT on an OLT port."""
@@ -114,31 +159,58 @@ class ServicePortDiagnostics:
     warnings: list[str]
 
 
-def _send_slow(
-    channel, command: str, char_delay: float = _SLOW_SEND_CHAR_DELAY
-) -> None:
-    """Send command with delays to avoid terminal corruption.
+def invalid_fsp_message(fsp: object) -> str:
+    """One wording for a rejected Frame/Slot/Port, shared by every ONT write."""
+    return f"Invalid F/S/P format: {fsp!r} (expected digits/digits/digits)"
 
-    Some OLT terminals (particularly certain Huawei MA5608T units) have terminal
-    processing issues that corrupt commands with spaces when sent at full speed.
-    This version sends each word (space-separated) with a delay after each word.
 
-    Args:
-        channel: Paramiko SSH channel.
-        command: Command string to send (without trailing newline).
-        char_delay: Delay in seconds between each word.
+def shelf_requires_pacing(olt) -> bool:
+    """Whether this shelf needs extra settle time between config commands.
+
+    Reads ``HuaweiCommandProfile.requires_slow_send``, which was previously
+    computed and never consulted. Falls back to the conservative ``True`` if
+    the profile cannot be resolved.
     """
-    # Split by spaces and send each part with space, adding delay after spaces
-    parts = command.split(" ")
-    for i, part in enumerate(parts):
-        channel.send(part)
-        if i < len(parts) - 1:
-            # Send space and wait for terminal to process
-            channel.send(" ")
-            time.sleep(char_delay)
-    # Small delay before newline
-    time.sleep(char_delay)
-    channel.send("\n")
+    try:
+        from app.services.network.huawei_command_profiles import (
+            get_huawei_command_profile,
+        )
+
+        return get_huawei_command_profile(olt).requires_slow_send
+    except Exception:  # pragma: no cover - profile resolution must never block a write
+        logger.debug("Falling back to paced sends for OLT %r", olt, exc_info=True)
+        return True
+
+
+def send_ont_command(
+    olt, channel, command: str, *, pace_sec: float | None = None
+) -> None:
+    """Write one ONT config command line to a Huawei shelf. Single owner.
+
+    The line is always written **atomically**. Huawei line editors coalesce
+    separately-written space characters while the editor is active, which is
+    exactly what produced corrupted commands on Jabi's MA5608T
+    (``ont internet-config414ip-index0``, ``undo ont wan-config414ip-index0``)
+    even though the caller was using the old word-splitting "slow" sender.
+    ``app.services.network.olt_ssh._send_huawei_command`` established the
+    atomic-line rule for read paths; this is the same rule for ONT writes.
+
+    ``requires_slow_send`` therefore now means *pace between commands*, not
+    *split within one command*. Shelves that declare they do not need it
+    (MA5800 profiles) get the shorter pace.
+    """
+    channel.send(f"{command}\n")
+    delay = (
+        pace_sec
+        if pace_sec is not None
+        else (
+            _SLOW_SHELF_PACE_SEC
+            if shelf_requires_pacing(olt)
+            else _ATOMIC_SEND_PACE_SEC
+        )
+    )
+    if delay > 0:
+        time.sleep(delay)
 
 
 def _run_ont_config_command(
@@ -152,12 +224,11 @@ def _run_ont_config_command(
     """Run a single ONT-scoped config command on a GPON interface."""
     from app.services.network import olt_ssh as core
 
-    ok, err = core._validate_fsp(fsp)
-    if not ok:
-        return False, err
+    parts = canonical_fsp(fsp)
+    if parts is None:
+        return False, invalid_fsp_message(fsp)
 
-    parts = fsp.split("/")
-    frame_slot = f"{parts[0]}/{parts[1]}"
+    frame_slot = parts.frame_slot
 
     try:
         transport, channel, _policy = core._open_shell(olt)
@@ -171,11 +242,15 @@ def _run_ont_config_command(
         config_prompt = r"[#)]\s*$"
         core._run_huawei_cmd(channel, "config", prompt=config_prompt)
 
-        _send_slow(channel, f"interface gpon {frame_slot}")
+        send_ont_command(olt, channel, f"interface gpon {frame_slot}")
         core._read_until_prompt(channel, config_prompt, timeout_sec=8)
 
-        _send_slow(channel, command)
-        output = core._read_until_prompt(
+        send_ont_command(olt, channel, command)
+        # Strict read: a shelf that never returns to the prompt has not
+        # accepted anything. The lenient read returned an empty buffer, which
+        # carries no error marker, so the caller reported ``success_message``
+        # for a command that timed out.
+        output = core.read_until_prompt_strict(
             channel, config_prompt, timeout_sec=timeout_sec
         )
 
@@ -188,7 +263,7 @@ def _run_ont_config_command(
                 olt.name,
                 output.strip()[-150:],
             )
-            return False, f"OLT rejected: {output.strip()[-150:]}"
+            return False, describe_huawei_rejection(output, detail_limit=150)
         return True, success_message
     except (*_SSH_CONNECTION_ERRORS, RuntimeError) as exc:
         logger.error(
@@ -214,7 +289,7 @@ def _validate_fsp(fsp: str, *, allow_normalize: bool = True) -> tuple[bool, str]
     """
     check_fsp = normalize_fsp(fsp) if allow_normalize else fsp
     if not _FSP_RE.match(check_fsp):
-        return False, f"Invalid F/S/P format: {fsp!r} (expected digits/digits/digits)"
+        return False, invalid_fsp_message(fsp)
     return True, ""
 
 

@@ -9,6 +9,7 @@ import socket
 from paramiko.ssh_exception import SSHException
 
 from app.models.network import OLTDevice
+from app.services.network.huawei_cli_response import describe_huawei_rejection
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +77,7 @@ def upgrade_firmware(
                 olt.name,
                 output.strip()[-200:],
             )
-            return False, f"OLT rejected upgrade: {output.strip()[-200:]}"
+            return False, describe_huawei_rejection(output, action="firmware upgrade")
 
         logger.info(
             "Firmware upgrade command sent to OLT %s, output: %s",
@@ -206,7 +207,7 @@ def restore_config_from_backup(
         config_prompt = r"\][ \t]*$"
         system_view = _run_huawei_cmd(channel, "system-view", prompt=config_prompt)
         if is_error_output(system_view):
-            return False, f"OLT rejected config mode: {system_view.strip()[-200:]}"
+            return False, describe_huawei_rejection(system_view, action="config mode")
 
         errors: list[str] = []
         applied = 0

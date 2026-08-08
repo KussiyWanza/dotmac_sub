@@ -27,6 +27,8 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 if TYPE_CHECKING:
     from app.models.network import OLTDevice
 
+from app.services.network.parsers.cli import canonical_fsp
+
 logger = logging.getLogger(__name__)
 
 
@@ -445,10 +447,10 @@ class HuaweiOltAdapter(BaseOltAdapter):
     ) -> list[str]:
         """Generate Huawei ONT authorization commands."""
         # Parse FSP
-        parts = fsp.split("/")
-        if len(parts) != 3:
+        parts = canonical_fsp(fsp)
+        if parts is None:
             raise ValueError(f"Invalid FSP format: {fsp}")
-        frame, slot, port = parts
+        frame, slot, port = parts.frame, parts.slot, parts.port
 
         commands = [
             f"interface gpon {frame}/{slot}",
@@ -501,10 +503,10 @@ class HuaweiOltAdapter(BaseOltAdapter):
 
     def generate_delete_ont_commands(self, fsp: str, ont_id: int) -> list[str]:
         """Generate Huawei ONT deletion commands."""
-        parts = fsp.split("/")
-        if len(parts) != 3:
+        parts = canonical_fsp(fsp)
+        if parts is None:
             raise ValueError(f"Invalid FSP format: {fsp}")
-        frame, slot, port = parts
+        frame, slot, port = parts.frame, parts.slot, parts.port
 
         return [
             f"interface gpon {frame}/{slot}",

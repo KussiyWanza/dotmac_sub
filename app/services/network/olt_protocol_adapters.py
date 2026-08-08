@@ -24,7 +24,10 @@ from app.services.network.huawei_cli_response import (
     HuaweiCliResource,
     classify_huawei_cli_response,
     is_huawei_resource_absent,
+    project_response_code_evidence,
 )
+from app.services.network.olt_ssh_ont._common import OntAuthorizationOutcome
+from app.services.network.parsers.cli import canonical_fsp
 
 if TYPE_CHECKING:
     from app.models.network import OLTDevice
@@ -73,7 +76,15 @@ class OltConnectionConfig:
 
 @dataclass
 class OltOperationResult(AdapterResult):
-    """Result of an OLT write operation."""
+    """Result of an OLT write operation.
+
+    ``response_code`` is the authoritative device verdict. Set it from the
+    classification made on **raw** device output at the point of capture;
+    callers branch on it. The ``message`` fallback below exists only for
+    transports that have not yet been migrated to
+    :class:`~app.services.network.huawei_cli_response.HuaweiDeviceOutcome`,
+    and cannot be relied on: ``message`` is wrapped and truncated.
+    """
 
     # For authorize_ont: the assigned ONT ID
     ont_id: int | None = None
@@ -84,15 +95,24 @@ class OltOperationResult(AdapterResult):
     # For create_service_port: the assigned service-port index
     service_port_index: int | None = None
 
+    # Typed device verdict, classified once on raw output.
+    response_code: HuaweiCliErrorCode | None = None
+
     def __post_init__(self) -> None:
         """Attach sanitized Huawei response evidence before callers project it."""
-        response = classify_huawei_cli_response(self.message)
-        if response.error_code == HuaweiCliErrorCode.NONE:
+        response_code = self.response_code
+        if response_code is None:
+            # Legacy path: recover what we can from the operator-facing text.
+            response_code = classify_huawei_cli_response(self.message).error_code
+            self.response_code = response_code
+        if response_code == HuaweiCliErrorCode.NONE:
             return
         self.data = dict(self.data or {})
-        self.data.setdefault("huawei_cli_response", response.to_evidence())
+        self.data.setdefault(
+            "huawei_cli_response", project_response_code_evidence(response_code)
+        )
         if self.error_code is None:
-            self.error_code = response.error_code.value
+            self.error_code = response_code.value
 
 
 @runtime_checkable
@@ -332,11 +352,18 @@ class OltProtocolAdapter:
         service_profile_id: int | None = None,
         description: str = "",
     ) -> OltOperationResult:
-        """Authorize ONT via SSH CLI."""
+        """Authorize ONT via SSH CLI, confirming the registration by readback.
+
+        Mirrors ``deauthorize_ont``: the device write is never trusted on its
+        own. A shelf that returns no verdict, or accepts without naming an
+        ONT-ID, is resolved by reading the registration back — the previous
+        code reported "command sent" as a success with no ONT-ID, which the
+        authorization workflow then had to treat as a failure.
+        """
         from app.services.network.olt_ssh_ont import authorize_ont as ssh_authorize
 
         try:
-            ok, message, ont_id = ssh_authorize(
+            outcome = ssh_authorize(
                 self._olt,
                 fsp,
                 serial_number,
@@ -344,17 +371,84 @@ class OltProtocolAdapter:
                 service_profile_id=service_profile_id,
                 description=description or None,
             )
-            return OltOperationResult(
-                success=ok,
-                message=message,
-                ont_id=ont_id,
-            )
         except Exception as exc:
             logger.exception("SSH authorize_ont failed")
             return OltOperationResult(
                 success=False,
                 message=f"SSH authorization failed: {exc}",
+                response_code=HuaweiCliErrorCode.CONNECTION_ERROR,
             )
+
+        if outcome.succeeded and outcome.ont_id is not None:
+            return OltOperationResult(
+                success=True,
+                message=outcome.message,
+                ont_id=outcome.ont_id,
+                response_code=outcome.code,
+            )
+
+        # Accepted without an ONT-ID (MA5800 reports a success count only), or
+        # no verdict at all: ask the device what it actually holds.
+        if outcome.succeeded or outcome.device_was_silent:
+            return self._confirm_authorization_by_readback(
+                fsp,
+                serial_number,
+                outcome=outcome,
+            )
+
+        # An explicit rejection is final. Carry the typed code so the
+        # authorization workflow can branch on it (for example
+        # SERIAL_ALREADY_EXISTS -> reuse or move the existing registration)
+        # without re-parsing the operator-facing message.
+        return OltOperationResult(
+            success=False,
+            message=outcome.message,
+            response_code=outcome.code,
+        )
+
+    def _confirm_authorization_by_readback(
+        self,
+        fsp: str,
+        serial_number: str,
+        *,
+        outcome: OntAuthorizationOutcome,
+    ) -> OltOperationResult:
+        """Resolve an unconfirmed authorization against the device's own state."""
+        read = self.find_ont_by_serial(serial_number)
+        registration = read.data.get("registration") if read.success else None
+        if not read.success or registration is None:
+            detail = read.message if not read.success else "ONT is not registered"
+            return OltOperationResult(
+                success=False,
+                message=f"{outcome.message} Readback did not confirm it: {detail}",
+                response_code=outcome.code,
+                data={"verified_registered": False},
+            )
+
+        observed_fsp = str(getattr(registration, "fsp", "") or "").strip()
+        requested = canonical_fsp(fsp)
+        if requested is None or observed_fsp != requested.fsp:
+            return OltOperationResult(
+                success=False,
+                message=(
+                    f"{outcome.message} Readback found the serial on "
+                    f"{observed_fsp or 'an unknown port'}, not {fsp}."
+                ),
+                response_code=outcome.code,
+                data={"verified_registered": False},
+            )
+
+        ont_id = int(registration.onu_id)
+        return OltOperationResult(
+            success=True,
+            message=(
+                f"ONT {serial_number} confirmed registered on {requested.fsp} "
+                f"as ONT-ID {ont_id} by readback."
+            ),
+            ont_id=ont_id,
+            response_code=outcome.code,
+            data={"verified_registered": True},
+        )
 
     def deauthorize_ont(self, fsp: str, ont_id: int) -> OltOperationResult:
         """Deauthorize an ONT and verify that it is absent on readback."""

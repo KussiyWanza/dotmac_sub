@@ -17,7 +17,6 @@ Example usage:
 from __future__ import annotations
 
 import logging
-import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -37,12 +36,6 @@ if TYPE_CHECKING:
     from app.models.network import OLTDevice
 
 logger = logging.getLogger(__name__)
-
-# Delay between characters when using slow send (seconds).
-# Some OLT terminals (particularly Huawei MA5608T) corrupt commands with spaces
-# when sent at full speed. 100ms delay per character works around this issue.
-SLOW_SEND_CHAR_DELAY = 0.1
-
 
 # ---------------------------------------------------------------------------
 # Structured Error Detection
@@ -119,28 +112,24 @@ class CliMode(Enum):
 
 
 # ---------------------------------------------------------------------------
-# Slow Send Helper
+# Command Transmission (delegated to the single owner)
 # ---------------------------------------------------------------------------
 
 
-def _send_slow(
-    channel: Channel, command: str, char_delay: float = SLOW_SEND_CHAR_DELAY
+def _send(
+    olt: OLTDevice, channel: Channel, command: str, *, paced: bool = True
 ) -> None:
-    """Send command character-by-character with delay.
+    """Delegate to the single owner of Huawei command transmission.
 
-    Some OLT terminals (particularly Huawei MA5608T) have terminal processing
-    issues that corrupt commands with spaces when sent at full speed.
-    Sending character-by-character with small delays works around this issue.
-
-    Args:
-        channel: Paramiko SSH channel.
-        command: Command string to send (without trailing newline).
-        char_delay: Delay in seconds between each character.
+    This module previously kept its own character-by-character sender. Two
+    parallel senders meant two answers to "how does a command line reach a
+    shelf"; the char-by-char one is exactly the pattern that lets a Huawei
+    line editor coalesce spaces. ``send_ont_command`` writes the line
+    atomically and paces between commands per the OLT's command profile.
     """
-    for char in command:
-        channel.send(char)
-        time.sleep(char_delay)
-    channel.send("\n")
+    from app.services.network.olt_ssh_ont._common import send_ont_command
+
+    send_ont_command(olt, channel, command, pace_sec=None if paced else 0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -180,9 +169,9 @@ class OltSession:
             command: CLI command to execute.
             timeout_sec: Timeout for command response.
             require_mode: If set, ensure we're in this mode before running command.
-            slow_send: If True, send command character-by-character with delays
-                to avoid terminal corruption on some OLT models (MA5608T).
-                Default is True for reliability.
+            slow_send: If True (default), pace after the command line per the
+                OLT's command profile. The line itself is always written
+                atomically — see ``send_ont_command``, the single owner.
 
         Returns:
             CommandResult with success/error classification.
@@ -200,12 +189,8 @@ class OltSession:
             elif require_mode == CliMode.ENABLE and self.current_mode == CliMode.USER:
                 self._enter_enable_mode()
 
-            # Execute command with slow send if requested
-            logger.debug("OLT command: %r (slow_send=%s)", command, slow_send)
-            if slow_send:
-                _send_slow(self.channel, command)
-            else:
-                self.channel.send(f"{command}\n")
+            logger.debug("OLT command: %r (paced=%s)", command, slow_send)
+            _send(self.olt, self.channel, command, paced=slow_send)
 
             # Read response
             output = _read_until_prompt(
@@ -283,7 +268,7 @@ class OltSession:
         """Enter enable/privileged mode."""
         from app.services.network.olt_ssh import _read_until_prompt
 
-        _send_slow(self.channel, "enable")
+        _send(self.olt, self.channel, "enable")
         _read_until_prompt(self.channel, r"#\s*$", timeout_sec=5)
         self.current_mode = CliMode.ENABLE
 
@@ -294,7 +279,7 @@ class OltSession:
         if self.current_mode == CliMode.USER:
             self._enter_enable_mode()
 
-        _send_slow(self.channel, "config")
+        _send(self.olt, self.channel, "config")
         _read_until_prompt(self.channel, r"[#)]\s*$", timeout_sec=5)
         self.current_mode = CliMode.CONFIG
 
@@ -303,7 +288,7 @@ class OltSession:
         from app.services.network.olt_ssh import _read_until_prompt
 
         if self.current_mode == CliMode.CONFIG:
-            _send_slow(self.channel, "quit")
+            _send(self.olt, self.channel, "quit")
             _read_until_prompt(self.channel, r"#\s*$", timeout_sec=5)
             self.current_mode = CliMode.ENABLE
 
@@ -350,7 +335,7 @@ def olt_session(olt: OLTDevice) -> Iterator[OltSession]:
 
         # Enter enable mode and set terminal length
         session._enter_enable_mode()
-        _send_slow(channel, "screen-length 0 temporary")
+        _send(olt, channel, "screen-length 0 temporary")
         _read_until_prompt(channel, r"#\s*$", timeout_sec=5)
 
         yield session

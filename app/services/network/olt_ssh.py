@@ -21,6 +21,8 @@ from paramiko.channel import Channel
 from paramiko.ssh_exception import SSHException
 from paramiko.transport import Transport
 
+from app.services.network.huawei_cli_response import describe_huawei_rejection
+
 logger = logging.getLogger(__name__)
 
 # Specific SSH-related exceptions that can occur during OLT operations
@@ -36,7 +38,10 @@ from app.config import settings
 from app.models.network import OLTDevice
 from app.services.credential_crypto import decrypt_credential
 from app.services.network.olt_command_gen import build_service_port_command
-from app.services.network.olt_ssh_ont._common import _safe_profile_name
+from app.services.network.olt_ssh_ont._common import (
+    _safe_profile_name,
+    invalid_fsp_message,
+)
 from app.services.network.olt_ssh_ont.tr069 import bind_tr069_server_profile
 from app.services.network.olt_ssh_profiles import (
     Tr069ServerProfile as Tr069ServerProfile,
@@ -55,6 +60,7 @@ from app.services.network.parsers import (
     HUAWEI_OPTIONAL_ARG_PROMPT,
     FirmwareInfo,
     ServicePortEntry,
+    canonical_fsp,
     is_error_output,
     needs_huawei_command_confirm,
     normalize_fsp,
@@ -270,6 +276,26 @@ def _read_until_prompt(
         buffer += chunk
         if compiled.search(buffer):
             return buffer
+
+
+def read_until_prompt_strict(
+    channel: Channel, prompt_regex: str, timeout_sec: float = 8.0
+) -> str:
+    """Read to the prompt, or raise when the shelf never returns one.
+
+    ``_read_until_prompt`` returns whatever it has when the deadline passes.
+    On a *read* path that degrades to a short answer, but on a *write* path it
+    is unsafe: an empty buffer carries no Huawei error marker, so callers
+    concluded "no error, therefore success" for a command that timed out.
+    Write paths must use this variant so a timeout stays a failure.
+    """
+    buffer = _read_until_prompt(channel, prompt_regex, timeout_sec=timeout_sec)
+    if not re.search(prompt_regex, buffer):
+        raise TimeoutError(
+            f"Huawei shelf did not return a prompt within {timeout_sec}s; "
+            "the command outcome is unknown"
+        )
+    return buffer
 
 
 def _prime_shell_prompt(
@@ -729,7 +755,7 @@ def upgrade_firmware(
             logger.warning(
                 "Firmware upgrade failed on OLT %s: %s", olt.name, output.strip()[-200:]
             )
-            return False, f"OLT rejected upgrade: {output.strip()[-200:]}"
+            return False, describe_huawei_rejection(output, action="firmware upgrade")
 
         logger.info(
             "Firmware upgrade command sent to OLT %s, output: %s",
@@ -936,7 +962,11 @@ def fetch_running_config_ssh(olt: OLTDevice) -> tuple[bool, str, str]:
                 config_text,
             )
         if is_error_output(config_text):
-            return False, "OLT rejected running-config command", config_text
+            return (
+                False,
+                describe_huawei_rejection(output, action="running-config"),
+                config_text,
+            )
         if "return" not in config_text.lower():
             return (
                 False,
@@ -1082,7 +1112,7 @@ def delete_service_port(olt: OLTDevice, index: int) -> tuple[bool, str]:
                 olt.name,
                 output.strip()[-150:],
             )
-            return False, f"OLT rejected: {output.strip()[-150:]}"
+            return False, describe_huawei_rejection(output, detail_limit=150)
 
         logger.info("Deleted service-port %d on OLT %s", index, olt.name)
         _invalidate_olt_read_cache(olt, "service_ports", "running_config")
@@ -1105,9 +1135,9 @@ def update_ont_profiles(
     service_profile_id: int | None = None,
 ) -> tuple[bool, str]:
     """Update an existing Huawei ONT's line and/or service profile."""
-    ok, err = _validate_fsp(fsp)
-    if not ok:
-        return False, err
+    parts = canonical_fsp(fsp)
+    if parts is None:
+        return False, invalid_fsp_message(fsp)
     if line_profile_id is None and service_profile_id is None:
         return False, "No ONT profile changes requested"
 
@@ -1117,7 +1147,7 @@ def update_ont_profiles(
         return False, f"Connection failed: {exc}"
 
     try:
-        from app.services.network.olt_ssh_ont._common import _send_slow
+        from app.services.network.olt_ssh_ont._common import send_ont_command
 
         channel.send("enable\n")
         _read_until_prompt(channel, r"#\s*$", timeout_sec=_setup_prompt_timeout())
@@ -1125,10 +1155,9 @@ def update_ont_profiles(
         config_prompt = r"[#)]\s*$"
         _run_huawei_cmd(channel, "config", prompt=config_prompt)
 
-        parts = fsp.split("/")
-        frame_slot = f"{parts[0]}/{parts[1]}"
-        port_num = parts[2]
-        _send_slow(channel, f"interface gpon {frame_slot}")
+        frame_slot = parts.frame_slot
+        port_num = parts.port
+        send_ont_command(olt, channel, f"interface gpon {frame_slot}")
         _read_until_prompt(channel, config_prompt, timeout_sec=_setup_prompt_timeout())
 
         cmd = f"ont modify {port_num} {ont_id}"
@@ -1137,7 +1166,7 @@ def update_ont_profiles(
         if service_profile_id is not None:
             cmd += f" ont-srvprofile-id {service_profile_id}"
 
-        _send_slow(channel, cmd)
+        send_ont_command(olt, channel, cmd)
         output = _read_until_prompt(channel, r"[#)]\s*$|<cr>", timeout_sec=10)
         if "<cr>" in output:
             channel.send("\n")
@@ -1154,7 +1183,7 @@ def update_ont_profiles(
                 ont_id,
                 output.strip()[-200:],
             )
-            return False, f"OLT rejected: {output.strip()[-200:]}"
+            return False, describe_huawei_rejection(output)
 
         profile_bits: list[str] = []
         if line_profile_id is not None:
@@ -1193,9 +1222,9 @@ def set_ont_description(
     a non-empty string; the OLT will silently accept the write if it's
     identical to the existing desc.
     """
-    ok, err = _validate_fsp(fsp)
-    if not ok:
-        return False, err
+    parts = canonical_fsp(fsp)
+    if parts is None:
+        return False, invalid_fsp_message(fsp)
     if not description:
         return False, "description is empty"
 
@@ -1205,7 +1234,7 @@ def set_ont_description(
         return False, f"Connection failed: {exc}"
 
     try:
-        from app.services.network.olt_ssh_ont._common import _send_slow
+        from app.services.network.olt_ssh_ont._common import send_ont_command
 
         channel.send("enable\n")
         _read_until_prompt(channel, r"#\s*$", timeout_sec=_setup_prompt_timeout())
@@ -1213,10 +1242,9 @@ def set_ont_description(
         config_prompt = r"[#)]\s*$"
         _run_huawei_cmd(channel, "config", prompt=config_prompt)
 
-        parts = fsp.split("/")
-        frame_slot = f"{parts[0]}/{parts[1]}"
-        port_num = parts[2]
-        _send_slow(channel, f"interface gpon {frame_slot}")
+        frame_slot = parts.frame_slot
+        port_num = parts.port
+        send_ont_command(olt, channel, f"interface gpon {frame_slot}")
         _read_until_prompt(channel, config_prompt, timeout_sec=_setup_prompt_timeout())
 
         # Escape any embedded double-quotes; the wrapped-in-quotes form is
@@ -1224,7 +1252,7 @@ def set_ont_description(
         # lifecycle.py's `ont add ... desc "..."`).
         safe = description.replace('"', '\\"')
         cmd = f'ont modify {port_num} {ont_id} desc "{safe}"'
-        _send_slow(channel, cmd)
+        send_ont_command(olt, channel, cmd)
         output = _read_until_prompt(channel, r"[#)]\s*$|<cr>", timeout_sec=10)
         if "<cr>" in output:
             channel.send("\n")
@@ -1241,7 +1269,7 @@ def set_ont_description(
                 ont_id,
                 output.strip()[-200:],
             )
-            return False, f"OLT rejected: {output.strip()[-200:]}"
+            return False, describe_huawei_rejection(output)
 
         logger.info(
             "ONT %d description updated on OLT %s %s",
@@ -1334,7 +1362,7 @@ def create_single_service_port(
                 olt.name,
                 output.strip()[-150:],
             )
-            return False, f"OLT rejected: {output.strip()[-150:]}", None
+            return False, describe_huawei_rejection(output, detail_limit=150), None
 
         idx_str = str(port_index) if port_index is not None else "auto"
         logger.info(

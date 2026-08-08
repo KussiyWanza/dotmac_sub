@@ -17,12 +17,12 @@ from sqlalchemy import (
 )
 
 from app.models.billing import LedgerEntry, LedgerEntryType, LedgerSource
-from app.services.billing.splynx_history_opening import (
+from app.services.billing.opening_balance_history import (
     SOURCE_TABLE,
-    SplynxHistoryOpeningError,
-    SplynxHistoryOpeningQuery,
-    SplynxHistoryOrigin,
-    resolve_splynx_history_opening_targets,
+    OpeningBalanceHistoryError,
+    OpeningBalanceHistoryOrigin,
+    OpeningBalanceHistoryQuery,
+    resolve_opening_balance_history_targets,
 )
 
 HANDOFF = datetime(2026, 6, 18, tzinfo=UTC)
@@ -50,8 +50,8 @@ def history_table(db_session):  # noqa: ANN001
         metadata.drop_all(db_session.get_bind())
 
 
-def _query(account_id) -> SplynxHistoryOpeningQuery:  # noqa: ANN001
-    return SplynxHistoryOpeningQuery(
+def _query(account_id) -> OpeningBalanceHistoryQuery:  # noqa: ANN001
+    return OpeningBalanceHistoryQuery(
         account_ids=(account_id,),
         currency="NGN",
         native_after=HANDOFF,
@@ -100,12 +100,14 @@ def test_complete_history_net_plus_native_facts_is_the_target(
     )
     db_session.flush()
 
-    snapshot = resolve_splynx_history_opening_targets(db_session, _query(subscriber.id))
+    snapshot = resolve_opening_balance_history_targets(
+        db_session, _query(subscriber.id)
+    )
 
     assert len(snapshot.rows) == 1
     row = snapshot.rows[0]
     assert row.history_transaction_count == 2
-    assert row.origin == SplynxHistoryOrigin.migrated_history
+    assert row.origin == OpeningBalanceHistoryOrigin.migrated_history
     assert row.history_position == Decimal("70.00")
     assert row.native_position == Decimal("20.00")
     assert row.target_position == Decimal("90.00")
@@ -130,7 +132,7 @@ def test_complete_empty_history_is_mathematical_zero(
     )
     db_session.flush()
 
-    row = resolve_splynx_history_opening_targets(
+    row = resolve_opening_balance_history_targets(
         db_session, _query(subscriber.id)
     ).rows[0]
 
@@ -158,11 +160,11 @@ def test_native_account_after_handoff_has_explicit_zero_history(
     )
     db_session.flush()
 
-    row = resolve_splynx_history_opening_targets(
+    row = resolve_opening_balance_history_targets(
         db_session, _query(subscriber.id)
     ).rows[0]
 
-    assert row.origin == SplynxHistoryOrigin.native_after_handoff
+    assert row.origin == OpeningBalanceHistoryOrigin.native_after_handoff
     assert row.splynx_customer_id is None
     assert row.history_position == Decimal("0.00")
     assert row.native_position == Decimal("15.00")
@@ -176,8 +178,8 @@ def test_migrated_account_without_splynx_identity_fails_the_complete_snapshot(
     subscriber.created_at = datetime(2026, 6, 1, tzinfo=UTC)
     db_session.flush()
 
-    with pytest.raises(SplynxHistoryOpeningError) as exc:
-        resolve_splynx_history_opening_targets(db_session, _query(subscriber.id))
+    with pytest.raises(OpeningBalanceHistoryError) as exc:
+        resolve_opening_balance_history_targets(db_session, _query(subscriber.id))
 
     assert exc.value.code.endswith("source_cohort_incomplete")
 
@@ -189,8 +191,8 @@ def test_missing_source_customer_fails_the_complete_snapshot(
     subscriber.created_at = datetime(2026, 6, 1, tzinfo=UTC)
     db_session.flush()
 
-    with pytest.raises(SplynxHistoryOpeningError) as exc:
-        resolve_splynx_history_opening_targets(db_session, _query(subscriber.id))
+    with pytest.raises(OpeningBalanceHistoryError) as exc:
+        resolve_opening_balance_history_targets(db_session, _query(subscriber.id))
 
     assert exc.value.code.endswith("source_cohort_incomplete")
 
@@ -212,8 +214,8 @@ def test_unreconciled_transaction_net_fails_the_complete_snapshot(
     )
     db_session.flush()
 
-    with pytest.raises(SplynxHistoryOpeningError) as exc:
-        resolve_splynx_history_opening_targets(db_session, _query(subscriber.id))
+    with pytest.raises(OpeningBalanceHistoryError) as exc:
+        resolve_opening_balance_history_targets(db_session, _query(subscriber.id))
 
     assert exc.value.code.endswith("source_history_unreconciled")
 
@@ -235,13 +237,13 @@ def test_same_target_with_changed_source_evidence_changes_the_fingerprint(
     )
     db_session.flush()
 
-    first = resolve_splynx_history_opening_targets(db_session, _query(subscriber.id))
+    first = resolve_opening_balance_history_targets(db_session, _query(subscriber.id))
     db_session.execute(
         history_table.update()
         .where(history_table.c.splynx_customer_id == 1005)
         .values(active_transaction_rows=3)
     )
-    second = resolve_splynx_history_opening_targets(db_session, _query(subscriber.id))
+    second = resolve_opening_balance_history_targets(db_session, _query(subscriber.id))
 
     assert first.rows[0].target_position == second.rows[0].target_position
     assert first.rows[0].evidence_fingerprint != second.rows[0].evidence_fingerprint
@@ -276,7 +278,7 @@ def test_duplicate_source_rows_for_one_customer_fail_the_complete_snapshot(
     )
     db_session.flush()
 
-    with pytest.raises(SplynxHistoryOpeningError) as exc:
-        resolve_splynx_history_opening_targets(db_session, _query(subscriber.id))
+    with pytest.raises(OpeningBalanceHistoryError) as exc:
+        resolve_opening_balance_history_targets(db_session, _query(subscriber.id))
 
     assert exc.value.code.endswith("source_identity_duplicate")

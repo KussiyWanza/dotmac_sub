@@ -6,14 +6,14 @@ much funding is required, whether an account is shielded, or what access
 consequence follows:
 
 * ``financial.prepaid_enforcement`` selects the candidate cohort;
-* the alignment replay reconstructs available funding from the final Splynx
+* the alignment replay reconstructs available funding from the final opening-balance
   position plus proven post-legacy facts;
 * the reconstruction owner verifies and materializes the sealed baseline;
 * enforcement services apply profile, activation, shield, health, and lifecycle
   policy from config-owned inputs.
 
 The export is complete-or-error. Every migrated candidate must have one frozen
-source row whose active transaction net reconciles to the final Splynx
+source row whose active transaction net reconciles to the final opening-balance
 position; a complete empty transaction set is zero. A native account created
 after the fixed handoff has an explicit zero history component plus canonical
 native facts. Missing, duplicated, malformed, or unreconciled source evidence
@@ -43,9 +43,9 @@ from sqlalchemy.orm import Session
 
 from app.db import SessionLocal
 from app.services import display_format
-from app.services.billing.splynx_history_opening import (
-    SplynxHistoryOpeningQuery,
-    resolve_splynx_history_opening_targets,
+from app.services.billing.opening_balance_history import (
+    OpeningBalanceHistoryQuery,
+    resolve_opening_balance_history_targets,
 )
 from app.services.prepaid_enforcement_planner import (
     candidate_prepaid_funding_account_ids,
@@ -240,7 +240,7 @@ def build_prepaid_funding_snapshot(
 ) -> FundingSnapshotExport:
     """Build one complete history-derived candidate snapshot.
 
-    The frozen Splynx transaction net is the source opening at the legacy
+    The frozen carried-in transaction net is the source opening at the
     handoff. Canonical Sub-native facts advance it to ``snapshot_at``. Any
     source-integrity defect raises and prevents an artifact; no customer is
     classified as unknown or silently assigned a fallback.
@@ -256,9 +256,9 @@ def build_prepaid_funding_snapshot(
             key=str,
         )
     )
-    snapshot = resolve_splynx_history_opening_targets(
+    snapshot = resolve_opening_balance_history_targets(
         db,
-        SplynxHistoryOpeningQuery(
+        OpeningBalanceHistoryQuery(
             account_ids=tuple(UUID(value) for value in candidate_ids),
             currency=display_format.default_currency(db),
             native_after=LEGACY_FINANCIAL_REPLAY_AT,

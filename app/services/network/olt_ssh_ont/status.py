@@ -14,6 +14,7 @@ from app.services.network._common import encode_to_hex_serial
 from app.services.network.huawei_cli_response import (
     HuaweiCliResource,
     classify_huawei_cli_response,
+    describe_huawei_rejection,
     is_huawei_resource_absent,
 )
 from app.services.network.olt_ssh_ont._common import (
@@ -221,7 +222,7 @@ def get_ont_info_detail(
         output = core._run_huawei_cmd(channel, cmd, prompt=prompt)
 
         if core.is_error_output(output):
-            return False, f"OLT error: {output.strip()[-200:]}", None
+            return False, describe_huawei_rejection(output), None
 
         return True, "ONT info retrieved", parse_ont_info_detail(output)
     except (*_SSH_CONNECTION_ERRORS, RuntimeError) as exc:
@@ -262,7 +263,7 @@ def get_ont_status(
         output = core._run_huawei_cmd(channel, cmd, prompt=prompt)
 
         if core.is_error_output(output):
-            return False, f"OLT error: {output.strip()[-200:]}", None
+            return False, describe_huawei_rejection(output), None
 
         kv: dict[str, str] = {}
         for line in output.splitlines():
@@ -357,7 +358,7 @@ def get_registered_ont_serials(
             if core.is_error_output(output):
                 return (
                     False,
-                    f"OLT rejected inventory read for {fsp}: {output.strip()[-200:]}",
+                    describe_huawei_rejection(output, action=f"inventory read {fsp}"),
                     [],
                 )
             return (
@@ -439,7 +440,11 @@ def find_ont_by_serial(
             )
             return (
                 False,
-                (f"OLT rejected ONT serial lookup ({response.error_code.value})."),
+                describe_huawei_rejection(
+                    output,
+                    action="ONT serial lookup",
+                    code=response.error_code,
+                ),
                 None,
             )
 

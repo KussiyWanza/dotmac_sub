@@ -10,9 +10,13 @@ from collections import Counter
 from sqlalchemy.orm import Session
 
 from app.models.network import OLTDevice
-from app.services.network.huawei_cli_response import is_huawei_idempotent_conflict
+from app.services.network.huawei_cli_response import (
+    describe_huawei_rejection,
+    is_huawei_idempotent_conflict,
+)
 from app.services.network.olt_inventory import get_olt_or_none
 from app.services.network.olt_ssh import ServicePortEntry
+from app.services.network.parsers.cli import canonical_fsp
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +116,7 @@ def get_service_port_by_index(
             prompt=prompt,
         )
         if core.is_error_output(output):
-            return False, f"OLT rejected: {output.strip()[-150:]}", None
+            return False, describe_huawei_rejection(output, detail_limit=150), None
         entries = core._parse_service_port_table(output)
         for entry in entries:
             if entry.index == index:
@@ -307,7 +311,7 @@ def delete_service_port(olt: OLTDevice, index: int) -> tuple[bool, str]:
                 olt.name,
                 output.strip()[-150:],
             )
-            return False, f"OLT rejected: {output.strip()[-150:]}"
+            return False, describe_huawei_rejection(output, detail_limit=150)
 
         logger.info("Deleted service-port %d on OLT %s", index, olt.name)
         core._invalidate_olt_read_cache(olt, "service_ports", "running_config")
@@ -352,9 +356,10 @@ def create_single_service_port(
     """
     from app.services.network import olt_ssh as core
 
-    ok, err = core._validate_fsp(fsp)
-    if not ok:
-        return False, err, None
+    parts = canonical_fsp(fsp)
+    if parts is None:
+        return False, f"Invalid F/S/P format: {fsp!r}", None
+    fsp = parts.fsp
 
     try:
         transport, channel, _policy = core._open_shell(olt)
@@ -491,7 +496,7 @@ def create_single_service_port(
                 olt.name,
                 output.strip()[-150:],
             )
-            return False, f"OLT rejected: {output.strip()[-150:]}", None
+            return False, describe_huawei_rejection(output, detail_limit=150), None
 
         logger.info(
             "Created service-port %s VLAN %d GEM %d for ONT %d on OLT %s %s",

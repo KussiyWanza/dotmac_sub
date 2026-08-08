@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import importlib
+import sys
 import uuid
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -982,3 +984,119 @@ class TestMoveOnt:
         assert error is None
         assert resolved_assignment is assignment
         assert olt is assignment_olt
+
+
+class TestMoveOntDeviceSafety:
+    """The move is device-first, so it must be device-safe.
+
+    Step 1 deletes a working subscriber ONT from the OLT. Two things made that
+    unsafe: the target F/S/P was taken verbatim from ``PonPort.name`` (which
+    carries prefixes like ``gpon-0/2/13``, so step 2 built
+    ``interface gpon gpon-0/2``), and the deauthorize step carried no
+    ``rollback_fn`` — so ``all_or_nothing=True`` did not restore the ONT.
+    """
+
+    @staticmethod
+    def _harness(monkeypatch, target_name: str, *, authorize_ok: bool):
+        olt_id = uuid.uuid4()
+        ont = MagicMock()
+        ont.id = "ont-1"
+        ont.serial_number = "48575443A31A3529"
+
+        target_port = MagicMock()
+        target_port.id = "pon-1"
+        target_port.olt_id = olt_id
+        target_port.name = target_name
+
+        db = MagicMock()
+        db.get.return_value = target_port
+        db.scalars.return_value.first.return_value = MagicMock(subscriber_id="sub-1")
+
+        calls: list[tuple[str, tuple, dict]] = []
+
+        class _Adapter:
+            def deauthorize_ont(self, *args, **kwargs):
+                calls.append(("deauthorize_ont", args, kwargs))
+                return SimpleNamespace(success=True, message="deleted", ont_id=None)
+
+            def authorize_ont(self, *args, **kwargs):
+                calls.append(("authorize_ont", args, kwargs))
+                return SimpleNamespace(
+                    success=authorize_ok,
+                    message="authorized" if authorize_ok else "OLT rejected: Failure",
+                    ont_id=7 if authorize_ok else None,
+                )
+
+            def create_service_port(self, *args, **kwargs):
+                calls.append(("create_service_port", args, kwargs))
+                return SimpleNamespace(success=True, message="created", ont_id=None)
+
+            def get_service_ports_for_ont(self, *args, **kwargs):
+                return SimpleNamespace(success=True, message="", data={})
+
+        # ``app.services.network.ont_write`` is shadowed by a service instance
+        # on the package, so resolve the real modules explicitly.
+        ont_write_mod = sys.modules["app.services.network.ont_write"]
+        adapters_mod = sys.modules["app.services.network.olt_protocol_adapters"]
+        imported_mod = importlib.import_module(
+            "app.services.network.imported_service_ports"
+        )
+
+        monkeypatch.setattr(
+            ont_write_mod, "get_ont_or_error", lambda *a, **k: (ont, None)
+        )
+        monkeypatch.setattr(
+            ont_write_mod,
+            "_strict_olt_write_context",
+            lambda *a, **k: (
+                SimpleNamespace(
+                    olt=SimpleNamespace(id=olt_id),
+                    fsp="0/2/11",
+                    ont_id_on_olt=13,
+                    line_profile_id=10,
+                    service_profile_id=20,
+                ),
+                None,
+            ),
+        )
+        monkeypatch.setattr(
+            adapters_mod, "get_protocol_adapter", lambda *a, **k: _Adapter()
+        )
+        monkeypatch.setattr(
+            imported_mod, "require_imported_service_port_state", lambda *a, **k: None
+        )
+        monkeypatch.setattr(
+            imported_mod, "list_imported_service_ports", lambda *a, **k: []
+        )
+        return db, calls
+
+    def test_prefixed_pon_port_name_is_canonicalized_before_the_olt_command(
+        self, monkeypatch
+    ):
+        db, calls = self._harness(monkeypatch, "gpon-0/2/13", authorize_ok=True)
+
+        OntWriteService.move_ont(db, "ont-1", target_pon_port_id=FAKE_UUID)
+
+        authorize = next(call for call in calls if call[0] == "authorize_ont")
+        assert authorize[1][0] == "0/2/13"
+
+    def test_unusable_pon_port_name_fails_before_any_device_write(self, monkeypatch):
+        db, calls = self._harness(monkeypatch, "uplink-A", authorize_ok=True)
+
+        result = OntWriteService.move_ont(db, "ont-1", target_pon_port_id=FAKE_UUID)
+
+        assert result.success is False
+        assert "Frame/Slot/Port" in result.message
+        assert calls == []
+
+    def test_failed_authorize_restores_the_ont_on_the_source_port(self, monkeypatch):
+        db, calls = self._harness(monkeypatch, "0/2/13", authorize_ok=False)
+
+        result = OntWriteService.move_ont(db, "ont-1", target_pon_port_id=FAKE_UUID)
+
+        assert result.success is False
+        authorizes = [call for call in calls if call[0] == "authorize_ont"]
+        assert len(authorizes) == 2, "the source-port restore did not run"
+        assert authorizes[0][1][0] == "0/2/13"
+        assert authorizes[1][1][0] == "0/2/11", "ONT was left deauthorized"
+        assert authorizes[1][1][1] == "48575443A31A3529"
