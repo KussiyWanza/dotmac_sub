@@ -614,7 +614,13 @@ fi
 
 if [[ "${BACKUP_MODE}" == "required" ]]; then
   log "Backing up database before migrations"
-  bash "${REPO_DIR}/scripts/db_backup.sh" &
+  # db_backup.sh reads .env from ROOT_DIR, defaulting to its own parent — the
+  # code checkout. That is only correct where the deploy dir and the repo are
+  # the same directory. On the runner-based production path they are not:
+  # REPO_DIR is the ephemeral Actions workspace and DEPLOY_DIR is the pinned
+  # host directory that actually holds .env, so the backup aborted with
+  # "Missing <workspace>/.env" and no production deploy ever completed.
+  ROOT_DIR="${DEPLOY_DIR}" bash "${REPO_DIR}/scripts/db_backup.sh" &
   BACKUP_PID=$!
   wait "${BACKUP_PID}"
   BACKUP_PID=""
