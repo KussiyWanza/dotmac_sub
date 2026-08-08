@@ -198,8 +198,9 @@ def _provision_template_context() -> dict[str, object]:
     }
 
 
-def test_provision_page_blocks_when_authorization_is_ready_but_provisioning_is_not(
-) -> None:
+def test_provision_page_blocks_when_authorization_is_ready_but_provisioning_is_not() -> (
+    None
+):
     context = _provision_template_context()
     context["provision_preflight"] = SimpleNamespace(
         ready_to_authorize=True,

@@ -195,7 +195,8 @@ def get_provision_operation_progress(
         message=op.error or op.waiting_reason or "",
         occurred_at=op.created_at,
         duration=_format_duration(op),
-        is_active=status in {
+        is_active=status
+        in {
             NetworkOperationStatus.pending,
             NetworkOperationStatus.running,
             NetworkOperationStatus.waiting,
