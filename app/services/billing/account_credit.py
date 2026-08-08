@@ -113,31 +113,37 @@ class AccountCreditInvariantViolation:
     detail: str
 
 
-# The legacy book was loaded into Sub in a single bulk import: 106,690 of the
-# 106,692 pre-import invoices share the 2026-03-15 14:00 UTC hour, and the first
-# natively authored invoice is 2026-03-16 06:45 UTC. Those imported rows arrived
-# already marked paid without their payment or allocation records, so 12.4% of
-# them can never satisfy the funding invariant — against 2.5% of the invoices
-# Sub itself settled. Counting them forever pins the gauge above zero and buries
-# the live defect underneath a backlog no reconciler can drain, so the invariant
-# measures what Sub is responsible for and reports the legacy book separately.
-LEGACY_INVOICE_IMPORT_BOUNDARY_AT = datetime(2026, 3, 16, tzinfo=UTC)
+# Where Sub's own book begins. Everything before this instant is opening
+# balance: the position carried in at the handoff, loaded in a single bulk
+# write where 106,690 of the 106,692 earlier invoices share the 2026-03-15
+# 14:00 UTC hour, against a first natively authored invoice of 2026-03-16
+# 06:45 UTC.
+#
+# Opening-balance invoices arrived already settled, without the allocations
+# that tie a payment to an invoice, so 12.4% of them cannot satisfy the funding
+# invariant — against 2.5% of the invoices Sub itself settled. Their balance due
+# is zero and no reconciler can produce evidence that was never carried in, so
+# counting them forever would pin the gauge above zero and bury the live defect
+# under a backlog nobody can act on. The invariant measures the book Sub is
+# responsible for; the opening balance is reported separately.
+OPENING_BALANCE_BOUNDARY_AT = datetime(2026, 3, 16, tzinfo=UTC)
 
 
-def _count_underfunded_paid_invoices(db: Session, *, imported: bool) -> int:
+def _count_underfunded_paid_invoices(db: Session, *, opening_balance: bool) -> int:
     """Count paid invoices whose funding evidence falls short of their total.
 
-    One definition, two populations. `imported=False` is the live invariant:
-    invoices Sub itself authored and settled. `imported=True` is the legacy book
-    loaded on 2026-03-15, which arrived already paid without its payment records
-    and can never satisfy the check. Splitting here rather than duplicating the
-    query keeps the partial-refund proration and rounding identical for both.
+    One definition, two populations. `opening_balance=False` is the live
+    invariant: the book Sub itself authored and settled. `opening_balance=True`
+    is the position carried in at the handoff, which cannot satisfy the check
+    because its allocations were never part of what was carried in. Splitting
+    here rather than duplicating the query keeps the partial-refund proration
+    and rounding identical for both.
     """
     zero = Decimal("0.00")
     boundary = (
-        Invoice.created_at < LEGACY_INVOICE_IMPORT_BOUNDARY_AT
-        if imported
-        else Invoice.created_at >= LEGACY_INVOICE_IMPORT_BOUNDARY_AT
+        Invoice.created_at < OPENING_BALANCE_BOUNDARY_AT
+        if opening_balance
+        else Invoice.created_at >= OPENING_BALANCE_BOUNDARY_AT
     )
     effective_payment_amount = case(
         (
@@ -375,7 +381,7 @@ def _source_payments(
         .filter(Payment.account_id == coerce_uuid(account_id))
         .filter(Payment.is_active.is_(True))
         .filter(Payment.status == PaymentStatus.succeeded)
-        # Historical Splynx rows are migration evidence, not reusable cash.
+        # Historical carried-in rows are migration evidence, not reusable cash.
         .filter(Payment.splynx_payment_id.is_(None))
         .order_by(
             Payment.paid_at.asc().nulls_last(),
@@ -1323,7 +1329,9 @@ class AccountCreditApplications:
             ) > round_money(row.source_capacity):
                 negative_payment_credit_source_availability += 1
 
-        paid_invoice_underfunded = _count_underfunded_paid_invoices(db, imported=False)
+        paid_invoice_underfunded = _count_underfunded_paid_invoices(
+            db, opening_balance=False
+        )
 
         settled_deposit_without_exact_payment = int(
             db.execute(
@@ -1420,17 +1428,18 @@ class AccountCreditApplications:
         )
 
     @staticmethod
-    def count_imported_underfunded_invoices(db: Session) -> int:
-        """Count legacy-book paid invoices lacking complete funding evidence.
+    def count_opening_balance_underfunded_invoices(db: Session) -> int:
+        """Count opening-balance paid invoices lacking complete funding evidence.
 
         Deliberately not a field on `AccountCreditInvariantSummary`: that type is
         pinned one-field-per-forensic-violation-code, and this is an observation
-        rather than a live breach. The imported rows arrived already marked paid
-        without their payment records, so no reconciler can ever settle them —
-        they need a one-time accounting disposition. Reporting the figure keeps
-        the re-scoping from quietly losing it.
+        rather than a live breach. These invoices were settled before the
+        handoff and carried in already paid, so no reconciler can produce
+        allocations that were never carried in. Reporting the figure keeps the
+        invariant's boundary honest instead of quietly losing what sits behind
+        it.
         """
-        return _count_underfunded_paid_invoices(db, imported=True)
+        return _count_underfunded_paid_invoices(db, opening_balance=True)
 
 
 __all__ = [

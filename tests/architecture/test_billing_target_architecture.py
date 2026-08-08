@@ -221,7 +221,7 @@ def test_phase3_prepaid_cutover_is_fingerprint_gated_and_single_writer() -> None
     subledger = (root / "app/services/billing/customer_subledger.py").read_text(
         encoding="utf-8"
     )
-    history = (root / "app/services/billing/splynx_history_opening.py").read_text(
+    history = (root / "app/services/billing/opening_balance_history.py").read_text(
         encoding="utf-8"
     )
     operator = (root / "scripts/billing/billing_target_shadow.py").read_text(

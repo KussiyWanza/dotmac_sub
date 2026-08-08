@@ -56,7 +56,7 @@ from app.models.splynx_transaction import SplynxBillingTransaction
 from app.models.subscriber import Subscriber
 from app.schemas.billing import CreditNoteIssuePreviewRequest
 from app.services.billing.credit_notes import CreditNotes
-from app.services.billing.splynx_history_opening import SplynxHistoryOpeningError
+from app.services.billing.opening_balance_history import OpeningBalanceHistoryError
 from app.services.customer_financial_ledger import calculate_customer_balance
 from scripts.one_off.billing_alignment_audit import (
     LEGACY_LEDGER_CUTOVER,
@@ -644,8 +644,8 @@ def test_funding_export_fails_complete_batch_without_source_history(
     db_session.commit()
     try:
         with pytest.raises(
-            SplynxHistoryOpeningError,
-            match="frozen Splynx history does not cover the complete customer cohort",
+            OpeningBalanceHistoryError,
+            match="frozen opening-balance history does not cover the complete customer cohort",
         ):
             build_prepaid_funding_snapshot(
                 db_session,

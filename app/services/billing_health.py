@@ -13,8 +13,8 @@ Signals:
   the count of active subscriptions; a sharp drop means the cycle silently
   stopped scanning a cohort (the 4,041->108 incident).
 * payment-volume — last-24h succeeded payments vs the trailing-7-day daily
-  average; a collapse means intake broke (the Splynx-cutover recording gap),
-  using a REAL baseline rather than a static floor.
+  average; a collapse means intake broke (the handoff recording gap), using a
+  REAL baseline rather than a static floor.
 """
 
 from __future__ import annotations
@@ -185,10 +185,10 @@ class BillingHealthSnapshot:
     billing_profile_mismatch_count: int = 0
     billing_profile_mixed_count: int = 0
     account_credit_invariant_count: int = 0
-    # Legacy imported book. Observed for the accounting disposition, but never
-    # an anomaly: no reconciler can drain invoices that arrived already paid
-    # without their payment records.
-    account_credit_invariant_imported_count: int = 0
+    # The opening balance carried in at the handoff. Observed so the boundary
+    # stays visible, but never an anomaly: no reconciler can produce
+    # allocations for invoices that were carried in already settled.
+    account_credit_invariant_opening_balance_count: int = 0
     prepaid_coverage_unresolved_count: int = 0
     prepaid_coverage_repairable_count: int = 0
     prepaid_coverage_quarantined_count: int = 0
@@ -297,8 +297,8 @@ def billing_health_observations(snapshot: BillingHealthSnapshot):  # noqa: ANN20
         ),
         (
             "account_credit_invariant_violations",
-            "legacy_import",
-            snapshot.account_credit_invariant_imported_count,
+            "opening_balance",
+            snapshot.account_credit_invariant_opening_balance_count,
         ),
         (
             "unbilled_active_subscriptions",
@@ -758,8 +758,8 @@ def billing_health_snapshot(
     account_credit_invariant_count = AccountCreditApplications.summarize_invariants(
         db
     ).total
-    account_credit_invariant_imported_count = (
-        AccountCreditApplications.count_imported_underfunded_invoices(db)
+    account_credit_invariant_opening_balance_count = (
+        AccountCreditApplications.count_opening_balance_underfunded_invoices(db)
     )
     coverage_repairable_count, coverage_quarantined_count = (
         prepaid_coverage_reconciliation_counts(db)
@@ -787,8 +787,8 @@ def billing_health_snapshot(
         billing_profile_mismatch_count=profile_mismatch_count,
         billing_profile_mixed_count=profile_mixed_count,
         account_credit_invariant_count=account_credit_invariant_count,
-        account_credit_invariant_imported_count=(
-            account_credit_invariant_imported_count
+        account_credit_invariant_opening_balance_count=(
+            account_credit_invariant_opening_balance_count
         ),
         scan_min_ratio=scan_min_ratio,
         payment_volume_min_ratio=payment_volume_min_ratio,

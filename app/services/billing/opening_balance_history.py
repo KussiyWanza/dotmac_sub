@@ -1,15 +1,15 @@
-"""One-time Splynx-history opening targets for customer-subledger completion.
+"""One-time opening-balance targets for customer-subledger completion.
 
-This migration resolver consumes the frozen, isolated audit restore produced by
-``scripts.one_off.reconstruct_splynx_mirror``.  It never contacts Splynx and it
-never writes money.  For every requested account the source position is the
+This migration resolver consumes a frozen, isolated audit restore of the
+position carried in at the handoff. It contacts no external system and it never
+writes money. For every requested account the source position is the
 mathematical net of the complete active transaction set; an empty set is zero.
 
 The final target adds canonical Sub-native financial facts strictly after the
-legacy handoff and no later than the reviewed opening instant. Any missing
-migrated source account or malformed/unreconciled source row fails the complete
-query. A native account created after handoff has an explicit zero history
-component. There is no per-account unknown or quarantine outcome.
+handoff and no later than the reviewed opening instant. Any missing carried-in
+account or malformed/unreconciled source row fails the complete query. A native
+account created after handoff has an explicit zero history component. There is
+no per-account unknown or quarantine outcome.
 """
 
 from __future__ import annotations
@@ -29,23 +29,26 @@ from app.models.subscriber import Subscriber
 from app.services.common import coerce_uuid, round_money
 from app.services.domain_errors import DomainError
 
-OWNER = "billing.splynx_history_opening"
+OWNER = "billing.opening_balance_history"
+# Physical table name, deliberately unchanged here: renaming it is a schema
+# change and belongs with the rest of the column/table rename, not with this
+# vocabulary pass.
 SOURCE_TABLE = "audit_splynx_final_balances"
 
 
-class SplynxHistoryOpeningError(DomainError):
+class OpeningBalanceHistoryError(DomainError):
     """Complete-cohort source-integrity failure."""
 
 
-class SplynxHistoryOrigin(StrEnum):
+class OpeningBalanceHistoryOrigin(StrEnum):
     """Why an account has its opening history position."""
 
     migrated_history = "migrated_history"
     native_after_handoff = "native_after_handoff"
 
 
-def _error(suffix: str, message: str, **details: object) -> SplynxHistoryOpeningError:
-    return SplynxHistoryOpeningError(
+def _error(suffix: str, message: str, **details: object) -> OpeningBalanceHistoryError:
+    return OpeningBalanceHistoryError(
         code=f"{OWNER}.{suffix}", message=message, details=dict(details)
     )
 
@@ -72,7 +75,7 @@ def _digest(value: object) -> str:
 
 
 @dataclass(frozen=True, slots=True)
-class SplynxHistoryOpeningQuery:
+class OpeningBalanceHistoryQuery:
     """Exact full-cohort source snapshot to resolve."""
 
     account_ids: tuple[UUID, ...]
@@ -82,12 +85,12 @@ class SplynxHistoryOpeningQuery:
 
 
 @dataclass(frozen=True, slots=True)
-class SplynxHistoryOpeningRow:
+class OpeningBalanceHistoryRow:
     """One history-derived target with typed provenance."""
 
     account_id: UUID
     currency: str
-    origin: SplynxHistoryOrigin
+    origin: OpeningBalanceHistoryOrigin
     splynx_customer_id: int | None
     history_transaction_count: int
     history_position: Decimal
@@ -97,20 +100,20 @@ class SplynxHistoryOpeningRow:
 
 
 @dataclass(frozen=True, slots=True)
-class SplynxHistoryOpeningSnapshot:
+class OpeningBalanceHistorySnapshot:
     """Complete result; partial snapshots are never returned."""
 
     native_after: datetime
     position_at: datetime
     currency: str
-    rows: tuple[SplynxHistoryOpeningRow, ...]
+    rows: tuple[OpeningBalanceHistoryRow, ...]
     source_fingerprint: str
 
 
-def resolve_splynx_history_opening_targets(
+def resolve_opening_balance_history_targets(
     db: Session,
-    query: SplynxHistoryOpeningQuery,
-) -> SplynxHistoryOpeningSnapshot:
+    query: OpeningBalanceHistoryQuery,
+) -> OpeningBalanceHistorySnapshot:
     """Resolve every target or fail the entire source snapshot."""
 
     ids = tuple(sorted({coerce_uuid(value) for value in query.account_ids}, key=str))
@@ -120,7 +123,7 @@ def resolve_splynx_history_opening_targets(
     if currency != "NGN":
         raise _error(
             "unsupported_currency",
-            "The retained Splynx transaction history is NGN-only.",
+            "The retained opening-balance transaction history is NGN-only.",
             currency=currency,
         )
     native_after = _utc(query.native_after)
@@ -128,13 +131,13 @@ def resolve_splynx_history_opening_targets(
     if position_at <= native_after:
         raise _error(
             "invalid_query",
-            "History opening position must follow the legacy handoff.",
+            "History opening position must follow the handoff.",
         )
     bind = db.get_bind()
     if bind is None or not inspect(bind).has_table(SOURCE_TABLE):
         raise _error(
             "source_snapshot_missing",
-            "The frozen Splynx final-balance evidence table is unavailable.",
+            "The frozen opening-balance evidence table is unavailable.",
         )
 
     accounts = {
@@ -176,7 +179,7 @@ def resolve_splynx_history_opening_targets(
     if missing_source_ids:
         raise _error(
             "source_cohort_incomplete",
-            "Every customer migrated at the handoff must retain its Splynx identity.",
+            "Every customer carried in at the handoff must retain its source identity.",
             account_ids=[str(value) for value in missing_source_ids],
         )
     source_ids = [
@@ -187,7 +190,7 @@ def resolve_splynx_history_opening_targets(
     if len(set(source_ids)) != len(source_ids):
         raise _error(
             "source_identity_duplicate",
-            "A Splynx customer identity maps to more than one Sub customer.",
+            "A carried-in customer identity maps to more than one Sub customer.",
         )
 
     source = table(
@@ -229,7 +232,7 @@ def resolve_splynx_history_opening_targets(
     if missing_history:
         raise _error(
             "source_cohort_incomplete",
-            "The frozen Splynx history does not cover the complete customer cohort.",
+            "The frozen opening-balance history does not cover the complete customer cohort.",
             account_ids=[str(value) for value in missing_history],
         )
 
@@ -244,24 +247,24 @@ def resolve_splynx_history_opening_targets(
         before=position_at,
     )
     canonical_rows: list[dict[str, object]] = []
-    resolved: list[SplynxHistoryOpeningRow] = []
+    resolved: list[OpeningBalanceHistoryRow] = []
     for account_id in ids:
         account = accounts[account_id]
         evidence = by_account.get(account_id)
         if evidence is None:
-            origin = SplynxHistoryOrigin.native_after_handoff
+            origin = OpeningBalanceHistoryOrigin.native_after_handoff
             source_id = None
             transaction_count = 0
             history_position = Decimal("0.00")
             source_deposit: Decimal | None = None
             reconciled: bool | None = None
         else:
-            origin = SplynxHistoryOrigin.migrated_history
+            origin = OpeningBalanceHistoryOrigin.migrated_history
             source_id = int(evidence.splynx_customer_id)
             if source_id != account.splynx_customer_id:
                 raise _error(
                     "source_identity_mismatch",
-                    "Frozen history belongs to a different Splynx customer.",
+                    "Frozen history belongs to a different carried-in customer.",
                     account_id=str(account_id),
                 )
             transaction_count = int(evidence.active_transaction_rows or 0)
@@ -276,7 +279,7 @@ def resolve_splynx_history_opening_targets(
             ):
                 raise _error(
                     "source_history_malformed",
-                    "An empty Splynx transaction set must have no net and a zero position.",
+                    "An empty carried-in transaction set must have no net and a zero position.",
                     account_id=str(account_id),
                 )
             if transaction_count > 0 and (
@@ -284,7 +287,7 @@ def resolve_splynx_history_opening_targets(
             ):
                 raise _error(
                     "source_history_unreconciled",
-                    "Splynx credits minus debits do not equal the frozen source position.",
+                    "Credits minus debits do not equal the frozen source position.",
                     account_id=str(account_id),
                 )
         native_position = round_money(
@@ -309,7 +312,7 @@ def resolve_splynx_history_opening_targets(
         }
         canonical_rows.append(canonical)
         resolved.append(
-            SplynxHistoryOpeningRow(
+            OpeningBalanceHistoryRow(
                 account_id=account_id,
                 currency=currency,
                 origin=origin,
@@ -321,7 +324,7 @@ def resolve_splynx_history_opening_targets(
                 evidence_fingerprint=_digest(canonical),
             )
         )
-    return SplynxHistoryOpeningSnapshot(
+    return OpeningBalanceHistorySnapshot(
         native_after=native_after,
         position_at=position_at,
         currency=currency,
@@ -331,10 +334,10 @@ def resolve_splynx_history_opening_targets(
 
 
 __all__ = [
-    "SplynxHistoryOpeningError",
-    "SplynxHistoryOrigin",
-    "SplynxHistoryOpeningQuery",
-    "SplynxHistoryOpeningRow",
-    "SplynxHistoryOpeningSnapshot",
-    "resolve_splynx_history_opening_targets",
+    "OpeningBalanceHistoryError",
+    "OpeningBalanceHistoryOrigin",
+    "OpeningBalanceHistoryQuery",
+    "OpeningBalanceHistoryRow",
+    "OpeningBalanceHistorySnapshot",
+    "resolve_opening_balance_history_targets",
 ]

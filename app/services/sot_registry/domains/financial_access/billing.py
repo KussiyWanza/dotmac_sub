@@ -20,9 +20,9 @@ from app.services.sot_manifest import (
 
 SERVICES: tuple[SOTService, ...] = (
     SOTService(
-        name="billing.splynx_history_opening",
-        module="app.services.billing.splynx_history_opening",
-        owns=("complete Splynx-history customer opening target",),
+        name="billing.opening_balance_history",
+        module="app.services.billing.opening_balance_history",
+        owns=("complete opening-balance customer target",),
         depends_on=(
             "customer.accounts",
             "financial.credit_notes",
@@ -31,19 +31,19 @@ SERVICES: tuple[SOTService, ...] = (
             "financial.payments",
         ),
         notes=(
-            "Cutover-only resolver over the frozen isolated Splynx audit "
+            "Cutover-only resolver over the frozen isolated opening-balance audit "
             "restore. A complete empty transaction set is zero; missing, "
             "duplicate, malformed, or unreconciled source evidence fails the "
-            "whole cohort. It never contacts Splynx, writes money, assigns an "
+            "whole cohort. It contacts no external system, writes money, assigns an "
             "unknown balance, or remains a runtime authority after completion."
         ),
         contract=ServiceContract(
             concerns=(
                 ConcernContract(
-                    name="complete Splynx-history customer opening target",
+                    name="complete opening-balance customer target",
                     role=OwnerRole.RESOLVER,
                     input_names=(
-                        "frozen Splynx transaction-net evidence",
+                        "frozen opening-balance transaction-net evidence",
                         "canonical post-handoff native financial facts",
                         "canonical migrated customer identity",
                     ),
@@ -51,7 +51,7 @@ SERVICES: tuple[SOTService, ...] = (
             ),
             authoritative_inputs=(
                 AuthorityInput(
-                    name="frozen Splynx transaction-net evidence",
+                    name="frozen opening-balance transaction-net evidence",
                     owner="external:splynx_final_snapshot",
                     kind=AuthorityKind.EXTERNAL_OBSERVATION,
                     source=(
@@ -100,14 +100,14 @@ SERVICES: tuple[SOTService, ...] = (
             ),
             errors=ErrorContract(
                 domain_codes=(
-                    "billing.splynx_history_opening.invalid_query",
-                    "billing.splynx_history_opening.unsupported_currency",
-                    "billing.splynx_history_opening.source_snapshot_missing",
-                    "billing.splynx_history_opening.source_cohort_incomplete",
-                    "billing.splynx_history_opening.source_identity_duplicate",
-                    "billing.splynx_history_opening.source_identity_mismatch",
-                    "billing.splynx_history_opening.source_history_malformed",
-                    "billing.splynx_history_opening.source_history_unreconciled",
+                    "billing.opening_balance_history.invalid_query",
+                    "billing.opening_balance_history.unsupported_currency",
+                    "billing.opening_balance_history.source_snapshot_missing",
+                    "billing.opening_balance_history.source_cohort_incomplete",
+                    "billing.opening_balance_history.source_identity_duplicate",
+                    "billing.opening_balance_history.source_identity_mismatch",
+                    "billing.opening_balance_history.source_history_malformed",
+                    "billing.opening_balance_history.source_history_unreconciled",
                 ),
                 mapping_owner=("scripts.one_off.export_prepaid_funding_snapshot"),
                 fail_closed_on=(
@@ -123,7 +123,7 @@ SERVICES: tuple[SOTService, ...] = (
                 old_owner=(
                     "partial independent replay with permanent funding quarantine"
                 ),
-                new_owner="billing.splynx_history_opening",
+                new_owner="billing.opening_balance_history",
                 verification=(
                     "Complete/empty history, source mismatch, missing cohort, "
                     "native advancement, signed manifest, incremental opening, "
@@ -148,7 +148,7 @@ SERVICES: tuple[SOTService, ...] = (
                 "docs/SOT_RELATIONSHIP_MAP.md",
             ),
             test_refs=(
-                "tests/test_splynx_history_opening.py",
+                "tests/test_opening_balance_history.py",
                 "tests/test_billing_alignment_audit.py",
                 "tests/test_subledger_opening_positions.py",
             ),
@@ -812,7 +812,7 @@ SERVICES: tuple[SOTService, ...] = (
             "finance approvals are separate commands and are forbidden while "
             "blockers remain. Phase 3 may derive an opening target without "
             "Splynx only when account provenance proves the customer was "
-            "created after the fixed legacy handoff with no Splynx identity. "
+            "created after the fixed handoff with no carried-in identity. "
             "The zero history component and canonical native facts are "
             "fingerprinted before normal approval and capture. After "
             "authority activation, a separate single-account preview derives "
