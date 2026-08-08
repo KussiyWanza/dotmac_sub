@@ -512,7 +512,7 @@ SERVICES: tuple[SOTService, ...] = (
                 ),
             ),
             transaction=TransactionContract(
-                mode=TransactionMode.COORDINATOR_MANAGED,
+                mode=TransactionMode.OWNER_MANAGED,
                 boundary=(
                     "cancel_unsubmitted_direct_transfer enters execute_owner_command "
                     "once and commits or rolls back the transition and event once."
