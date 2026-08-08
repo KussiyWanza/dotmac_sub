@@ -9,8 +9,8 @@ predicate, which is then paid twice for the page count and result query.
 PostgreSQL builds these indexes concurrently so customer writes remain
 available during deployment. The extension is part of the base schema.
 
-Revision ID: 503_customer_search_trigram_indexes
-Revises: 502_open_setting_domain_vocabulary
+Revision ID: 504_customer_search_trigram_indexes
+Revises: 503_reconcile_ticket_portal_visibility
 Create Date: 2026-08-08
 """
 
@@ -20,8 +20,8 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "503_customer_search_trigram_indexes"
-down_revision: str | None = "502_open_setting_domain_vocabulary"
+revision: str = "504_customer_search_trigram_indexes"
+down_revision: str | None = "503_reconcile_ticket_portal_visibility"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
