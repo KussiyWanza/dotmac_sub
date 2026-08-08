@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import logging
 import math
+from collections.abc import Sequence
 from uuid import UUID
 
-from sqlalchemy import case, func
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.catalog import Subscription
@@ -21,22 +22,121 @@ from app.models.network import (
 )
 from app.models.network_monitoring import NetworkDevice, PopSite
 from app.models.subscriber import Address, Subscriber
-from app.models.usage import AccountingStatus, RadiusAccountingSession
 from app.services import settings_spec
 from app.services.device_operational_status import (
+    DeviceOperationalState,
     annotate_operational_status,
     derive_ont_operational_status,
+)
+from app.services.network.radius_sessions import (
+    SubscriptionSessionBinding,
+    SubscriptionSessionSnapshot,
+    SubscriptionSessionState,
+    subscription_session_snapshots,
 )
 from app.services.network.signal_thresholds import (
     classify_signal,
     get_signal_thresholds,
 )
+from app.services.network_map_contracts import (
+    NetworkMapCustomerConnectivity,
+    NetworkMapCustomerLayer,
+    NetworkMapCustomerRouteKind,
+    NetworkMapFeature,
+    NetworkMapFeatureProperties,
+    NetworkMapFeatureType,
+    NetworkMapInspectionStatus,
+    NetworkMapLineGeometry,
+    NetworkMapLink,
+    NetworkMapPermission,
+    NetworkMapPointGeometry,
+    NetworkMapProjection,
+    NetworkMapSignalQuality,
+    NetworkMapStats,
+    NetworkMapStatusPresentation,
+    NetworkMapSupportLifecycle,
+    NetworkMapSupportType,
+)
+from app.services.status_presentation import access_session_status_presentation
 
 logger = logging.getLogger(__name__)
 
 
-def build_network_map_context(db: Session) -> dict:
-    features: list[dict] = []
+def _point(longitude: object, latitude: object) -> NetworkMapPointGeometry:
+    return NetworkMapPointGeometry(
+        longitude=float(str(longitude)),
+        latitude=float(str(latitude)),
+    )
+
+
+def _line_geometry(geojson: str) -> NetworkMapLineGeometry:
+    """Normalize PostGIS GeoJSON once at the persistence boundary."""
+
+    decoded: object = json.loads(geojson)
+    if not isinstance(decoded, dict) or decoded.get("type") != "LineString":
+        raise ValueError("Fiber segment geometry must be a GeoJSON LineString")
+    raw_coordinates = decoded.get("coordinates")
+    if not isinstance(raw_coordinates, list):
+        raise ValueError("Fiber segment LineString coordinates must be a list")
+    coordinates: list[tuple[float, float]] = []
+    for coordinate in raw_coordinates:
+        if not isinstance(coordinate, list) or len(coordinate) != 2:
+            raise ValueError(
+                "Fiber segment coordinate must be a longitude/latitude pair"
+            )
+        longitude, latitude = coordinate
+        if not isinstance(longitude, (int, float)) or not isinstance(
+            latitude, (int, float)
+        ):
+            raise ValueError("Fiber segment coordinates must be numeric")
+        coordinates.append((float(longitude), float(latitude)))
+    return NetworkMapLineGeometry(coordinates=tuple(coordinates))
+
+
+def resolve_customer_connectivity(
+    snapshots: Sequence[SubscriptionSessionSnapshot],
+) -> NetworkMapCustomerConnectivity:
+    """Compose exact session observations into one customer marker state."""
+
+    priority = {
+        SubscriptionSessionState.inactive: 0,
+        SubscriptionSessionState.offline: 1,
+        SubscriptionSessionState.stale: 2,
+        SubscriptionSessionState.connected: 3,
+    }
+    if snapshots:
+        selected = max(
+            snapshots,
+            key=lambda snapshot: (
+                priority[snapshot.state],
+                snapshot.observed_at.timestamp() if snapshot.observed_at else -1.0,
+            ),
+        )
+        state = selected.state
+        observed_at = selected.observed_at
+        binding = selected.binding
+    else:
+        state = SubscriptionSessionState.inactive
+        observed_at = None
+        binding = SubscriptionSessionBinding.none
+    presentation = access_session_status_presentation(state.value)
+    return NetworkMapCustomerConnectivity(
+        state=state,
+        layer=(
+            NetworkMapCustomerLayer.connected
+            if state is SubscriptionSessionState.connected
+            else NetworkMapCustomerLayer.not_connected
+        ),
+        presentation=NetworkMapStatusPresentation.from_contract(presentation),
+        observed_at=observed_at,
+        binding=binding,
+    )
+
+
+def build_network_map_projection(*, db: Session) -> NetworkMapProjection:
+    """Build the typed comprehensive-map projection from named read owners."""
+
+    features: list[NetworkMapFeature] = []
 
     # POP Sites
     pop_sites = (
@@ -59,21 +159,25 @@ def build_network_map_context(db: Session) -> dict:
         }
     for pop in pop_sites:
         features.append(
-            {
-                "type": "Feature",
-                "geometry": {
-                    "type": "Point",
-                    "coordinates": [pop.longitude, pop.latitude],
-                },
-                "properties": {
-                    "id": str(pop.id),
-                    "type": "pop_site",
-                    "name": pop.name,
-                    "code": pop.code,
-                    "city": pop.city,
-                    "device_count": pop_device_counts.get(pop.id, 0),
-                },
-            }
+            NetworkMapFeature(
+                geometry=_point(pop.longitude, pop.latitude),
+                properties=NetworkMapFeatureProperties(
+                    id=pop.id,
+                    feature_type=NetworkMapFeatureType.pop_site,
+                    name=pop.name,
+                    code=pop.code,
+                    city=pop.city,
+                    device_count=pop_device_counts.get(pop.id, 0),
+                    customer_cohort_link=NetworkMapLink(
+                        href=(
+                            "/admin/customers?infrastructure_type=location"
+                            f"&infrastructure_id={pop.id}"
+                        ),
+                        label="Associated customers",
+                        permission=NetworkMapPermission.customer_read,
+                    ),
+                ),
+            )
         )
 
     # Network Devices (anchored at POP coordinates with slight spread)
@@ -94,28 +198,28 @@ def build_network_map_context(db: Session) -> dict:
         latitude = float(pop_site.latitude or 0.0) + (math.sin(angle) * radius)
         longitude = float(pop_site.longitude or 0.0) + (math.cos(angle) * radius)
         features.append(
-            {
-                "type": "Feature",
-                "geometry": {"type": "Point", "coordinates": [longitude, latitude]},
-                "properties": {
-                    "id": str(device.id),
-                    "type": "network_device",
-                    "name": device.name,
-                    "status": device.operational_status,
-                    "status_reason": device.operational_reason,
-                    "status_presentation": device.status_presentation.model_dump(
-                        mode="json"
+            NetworkMapFeature(
+                geometry=NetworkMapPointGeometry(
+                    longitude=longitude,
+                    latitude=latitude,
+                ),
+                properties=NetworkMapFeatureProperties(
+                    id=device.id,
+                    feature_type=NetworkMapFeatureType.network_device,
+                    name=device.name,
+                    status=DeviceOperationalState(device.operational_status),
+                    status_reason=device.operational_reason,
+                    status_presentation=NetworkMapStatusPresentation.from_contract(
+                        device.status_presentation
                     ),
-                    "role": device.role.value if device.role else None,
-                    "device_type": device.device_type.value
-                    if device.device_type
-                    else None,
-                    "vendor": device.vendor,
-                    "model": device.model,
-                    "mgmt_ip": device.mgmt_ip,
-                    "pop_site_name": pop_site.name if pop_site else None,
-                },
-            }
+                    role=device.role,
+                    device_type=device.device_type,
+                    vendor=device.vendor,
+                    model=device.model,
+                    management_ip=device.mgmt_ip,
+                    pop_site_name=pop_site.name if pop_site else None,
+                ),
+            )
         )
 
     # FDH Cabinets
@@ -138,20 +242,24 @@ def build_network_map_context(db: Session) -> dict:
         }
     for fdh in fdhs:
         features.append(
-            {
-                "type": "Feature",
-                "geometry": {
-                    "type": "Point",
-                    "coordinates": [fdh.longitude, fdh.latitude],
-                },
-                "properties": {
-                    "id": str(fdh.id),
-                    "type": "fdh_cabinet",
-                    "name": fdh.name,
-                    "code": fdh.code,
-                    "splitter_count": splitter_counts.get(fdh.id, 0),
-                },
-            }
+            NetworkMapFeature(
+                geometry=_point(fdh.longitude, fdh.latitude),
+                properties=NetworkMapFeatureProperties(
+                    id=fdh.id,
+                    feature_type=NetworkMapFeatureType.fdh_cabinet,
+                    name=fdh.name,
+                    code=fdh.code,
+                    splitter_count=splitter_counts.get(fdh.id, 0),
+                    customer_cohort_link=NetworkMapLink(
+                        href=(
+                            "/admin/customers?infrastructure_type=cabinet"
+                            f"&infrastructure_id={fdh.id}"
+                        ),
+                        label="Associated customers",
+                        permission=NetworkMapPermission.customer_read,
+                    ),
+                ),
+            )
         )
 
     # Splice Closures
@@ -164,18 +272,14 @@ def build_network_map_context(db: Session) -> dict:
     )
     for closure in closures:
         features.append(
-            {
-                "type": "Feature",
-                "geometry": {
-                    "type": "Point",
-                    "coordinates": [closure.longitude, closure.latitude],
-                },
-                "properties": {
-                    "id": str(closure.id),
-                    "type": "splice_closure",
-                    "name": closure.name,
-                },
-            }
+            NetworkMapFeature(
+                geometry=_point(closure.longitude, closure.latitude),
+                properties=NetworkMapFeatureProperties(
+                    id=closure.id,
+                    feature_type=NetworkMapFeatureType.splice_closure,
+                    name=closure.name,
+                ),
+            )
         )
 
     # Fiber Access Points
@@ -188,21 +292,17 @@ def build_network_map_context(db: Session) -> dict:
     )
     for ap in access_points:
         features.append(
-            {
-                "type": "Feature",
-                "geometry": {
-                    "type": "Point",
-                    "coordinates": [ap.longitude, ap.latitude],
-                },
-                "properties": {
-                    "id": str(ap.id),
-                    "type": "access_point",
-                    "name": ap.name,
-                    "code": ap.code,
-                    "ap_type": ap.access_point_type,
-                    "placement": ap.placement,
-                },
-            }
+            NetworkMapFeature(
+                geometry=_point(ap.longitude, ap.latitude),
+                properties=NetworkMapFeatureProperties(
+                    id=ap.id,
+                    feature_type=NetworkMapFeatureType.access_point,
+                    name=ap.name,
+                    code=ap.code,
+                    access_point_type=ap.access_point_type,
+                    placement=ap.placement,
+                ),
+            )
         )
 
     # Fiber Support Structures (poles / ducts) with coordinates
@@ -214,22 +314,18 @@ def build_network_map_context(db: Session) -> dict:
     )
     for ss in support_structures:
         features.append(
-            {
-                "type": "Feature",
-                "geometry": {
-                    "type": "Point",
-                    "coordinates": [ss.longitude, ss.latitude],
-                },
-                "properties": {
-                    "id": str(ss.id),
-                    "type": "support_structure",
-                    "name": ss.name,
-                    "code": ss.code,
-                    "support_type": ss.support_type,
-                    "lifecycle_status": ss.lifecycle_status,
-                    "inspection_status": ss.inspection_status,
-                },
-            }
+            NetworkMapFeature(
+                geometry=_point(ss.longitude, ss.latitude),
+                properties=NetworkMapFeatureProperties(
+                    id=ss.id,
+                    feature_type=NetworkMapFeatureType.support_structure,
+                    name=ss.name,
+                    code=ss.code,
+                    support_type=NetworkMapSupportType(ss.support_type),
+                    lifecycle_status=NetworkMapSupportLifecycle(ss.lifecycle_status),
+                    inspection_status=NetworkMapInspectionStatus(ss.inspection_status),
+                ),
+            )
         )
 
     # Fiber Segments
@@ -247,25 +343,19 @@ def build_network_map_context(db: Session) -> dict:
     for segment, geojson_str in segment_geoms:
         if not geojson_str:
             continue
-        geom = json.loads(geojson_str)
         features.append(
-            {
-                "type": "Feature",
-                "geometry": geom,
-                "properties": {
-                    "id": str(segment.id),
-                    "type": "fiber_segment",
-                    "name": segment.name,
-                    "segment_type": segment.segment_type.value
-                    if segment.segment_type
-                    else "distribution",
-                    "cable_type": segment.cable_type.value
-                    if segment.cable_type
-                    else None,
-                    "fiber_count": segment.fiber_count,
-                    "length_m": segment.length_m,
-                },
-            }
+            NetworkMapFeature(
+                geometry=_line_geometry(geojson_str),
+                properties=NetworkMapFeatureProperties(
+                    id=segment.id,
+                    feature_type=NetworkMapFeatureType.fiber_segment,
+                    name=segment.name,
+                    segment_type=segment.segment_type,
+                    cable_type=segment.cable_type,
+                    fiber_count=segment.fiber_count,
+                    length_m=segment.length_m,
+                ),
+            )
         )
 
     # ONT Units with GPS coordinates
@@ -301,46 +391,30 @@ def build_network_map_context(db: Session) -> dict:
         if signal_quality == "warning":
             ont_warning += 1
         features.append(
-            {
-                "type": "Feature",
-                "geometry": {
-                    "type": "Point",
-                    "coordinates": [float(ont.gps_longitude), float(ont.gps_latitude)],
-                },
-                "properties": {
-                    "id": str(ont.id),
-                    "type": "ont",
-                    "name": ont.name or ont.serial_number or "ONT",
-                    "serial_number": ont.serial_number,
-                    "status": operational.status,
-                    "status_reason": operational.reason,
-                    "status_presentation": operational.presentation.model_dump(
-                        mode="json"
+            NetworkMapFeature(
+                geometry=_point(ont.gps_longitude, ont.gps_latitude),
+                properties=NetworkMapFeatureProperties(
+                    id=ont.id,
+                    feature_type=NetworkMapFeatureType.ont,
+                    name=ont.name or ont.serial_number or "ONT",
+                    serial_number=ont.serial_number,
+                    status=DeviceOperationalState(operational.status),
+                    status_reason=operational.reason,
+                    status_presentation=NetworkMapStatusPresentation.from_contract(
+                        operational.presentation
                     ),
-                    "signal_quality": signal_quality,
-                    "olt_rx_dbm": olt_rx_dbm,
-                    "onu_rx_dbm": onu_rx_dbm,
-                    "vendor": ont.vendor,
-                    "model": ont.model,
-                },
-            }
+                    signal_quality=NetworkMapSignalQuality(signal_quality),
+                    olt_rx_dbm=olt_rx_dbm,
+                    onu_rx_dbm=onu_rx_dbm,
+                    vendor=ont.vendor,
+                    model=ont.model,
+                ),
+            )
         )
 
-    # Customers with addresses that have coordinates, including OLT status
-    active_sessions_subq = (
-        db.query(Subscription.subscriber_id)
-        .join(
-            RadiusAccountingSession,
-            RadiusAccountingSession.subscription_id == Subscription.id,
-        )
-        .filter(
-            RadiusAccountingSession.session_end.is_(None),
-            RadiusAccountingSession.status_type != AccountingStatus.stop,
-        )
-        .distinct()
-        .subquery()
-    )
-
+    # Customers with mapped addresses. Session state comes only from the
+    # registered network.radius_sessions resolver; this projection does not
+    # inspect accounting transport rows or invent freshness semantics.
     map_limit_raw = settings_spec.resolve_value(
         db, SettingDomain.gis, "map_customer_limit"
     )
@@ -351,28 +425,54 @@ def build_network_map_context(db: Session) -> dict:
     if map_limit is not None and map_limit <= 0:
         map_limit = None
 
-    customer_counts = (
-        db.query(
-            func.count(Address.id).label("total"),
-            func.sum(
-                case((active_sessions_subq.c.subscriber_id.isnot(None), 1), else_=0)
-            ).label("online"),
-        )
+    mapped_addresses = (
+        db.query(Address.id, Address.subscriber_id)
         .join(Subscriber, Address.subscriber_id == Subscriber.id)
-        .outerjoin(
-            active_sessions_subq, active_sessions_subq.c.subscriber_id == Subscriber.id
-        )
         .filter(
             Address.latitude.isnot(None),
             Address.longitude.isnot(None),
             Subscriber.is_active.is_(True),
         )
-        .first()
+        .order_by(Address.id)
+        .all()
     )
-
-    customer_total = int(customer_counts.total or 0) if customer_counts else 0
-    online_count = int(customer_counts.online or 0) if customer_counts else 0
-    offline_count = max(customer_total - online_count, 0)
+    customer_total = len(mapped_addresses)
+    mapped_subscriber_ids = {
+        row.subscriber_id for row in mapped_addresses if row.subscriber_id is not None
+    }
+    subscriptions = (
+        db.query(Subscription)
+        .filter(Subscription.subscriber_id.in_(mapped_subscriber_ids))
+        .order_by(Subscription.id)
+        .all()
+        if mapped_subscriber_ids
+        else []
+    )
+    snapshot_by_subscription = subscription_session_snapshots(db, subscriptions)
+    snapshots_by_subscriber: dict[UUID, list[SubscriptionSessionSnapshot]] = {
+        subscriber_id: [] for subscriber_id in mapped_subscriber_ids
+    }
+    for subscription in subscriptions:
+        snapshot = snapshot_by_subscription.get(subscription.id)
+        if snapshot is not None:
+            snapshots_by_subscriber.setdefault(subscription.subscriber_id, []).append(
+                snapshot
+            )
+    connectivity_by_subscriber = {
+        subscriber_id: resolve_customer_connectivity(snapshots)
+        for subscriber_id, snapshots in snapshots_by_subscriber.items()
+    }
+    inactive_connectivity = resolve_customer_connectivity(())
+    connected_count = sum(
+        1
+        for row in mapped_addresses
+        if connectivity_by_subscriber.get(
+            row.subscriber_id,
+            inactive_connectivity,
+        ).layer
+        is NetworkMapCustomerLayer.connected
+    )
+    not_connected_count = customer_total - connected_count
 
     customer_addresses_query = (
         db.query(
@@ -389,12 +489,8 @@ def build_network_map_context(db: Session) -> dict:
             .label("subscriber_category"),
             Subscriber.first_name,
             Subscriber.last_name,
-            (active_sessions_subq.c.subscriber_id.isnot(None)).label("is_online"),
         )
         .join(Subscriber, Address.subscriber_id == Subscriber.id)
-        .outerjoin(
-            active_sessions_subq, active_sessions_subq.c.subscriber_id == Subscriber.id
-        )
         .filter(
             Address.latitude.isnot(None),
             Address.longitude.isnot(None),
@@ -417,70 +513,80 @@ def build_network_map_context(db: Session) -> dict:
             or (addr.display_name or "").strip()
             or "Unknown Customer"
         )
-        is_online = bool(addr.is_online)
+        connectivity = connectivity_by_subscriber.get(
+            addr.subscriber_id,
+            inactive_connectivity,
+        )
         features.append(
-            {
-                "type": "Feature",
-                "geometry": {
-                    "type": "Point",
-                    "coordinates": [addr.longitude, addr.latitude],
-                },
-                "properties": {
-                    "id": str(addr.id),
-                    "type": "customer",
-                    "name": subscriber_name,
-                    "address": addr.address_line1,
-                    "city": addr.city or "",
-                    "subscriber_id": str(addr.subscriber_id),
-                    "customer_type": "business" if is_business else "person",
-                    "is_online": is_online,
-                },
-            }
+            NetworkMapFeature(
+                geometry=_point(addr.longitude, addr.latitude),
+                properties=NetworkMapFeatureProperties(
+                    id=addr.id,
+                    feature_type=NetworkMapFeatureType.customer,
+                    name=subscriber_name,
+                    address=addr.address_line1,
+                    city=addr.city or "",
+                    subscriber_id=addr.subscriber_id,
+                    customer_route_kind=(
+                        NetworkMapCustomerRouteKind.business
+                        if is_business
+                        else NetworkMapCustomerRouteKind.person
+                    ),
+                    connectivity=connectivity,
+                    customer_detail_link=NetworkMapLink(
+                        href=(
+                            "/admin/customers/business/"
+                            if is_business
+                            else "/admin/customers/person/"
+                        )
+                        + str(addr.subscriber_id),
+                        label="View customer and network path",
+                        permission=NetworkMapPermission.customer_read,
+                    ),
+                ),
+            )
         )
 
-    map_data = {"type": "FeatureCollection", "features": features}
-
-    stats = {
-        "pop_sites": db.query(func.count(PopSite.id))
+    stats = NetworkMapStats(
+        pop_sites=db.query(func.count(PopSite.id))
         .filter(PopSite.is_active.is_(True))
         .scalar()
         or 0,
-        "fdh_cabinets": db.query(func.count(FdhCabinet.id))
+        fdh_cabinets=db.query(func.count(FdhCabinet.id))
         .filter(FdhCabinet.is_active.is_(True))
         .scalar()
         or 0,
-        "splice_closures": db.query(func.count(FiberSpliceClosure.id))
+        splice_closures=db.query(func.count(FiberSpliceClosure.id))
         .filter(FiberSpliceClosure.is_active.is_(True))
         .scalar()
         or 0,
-        "access_points": db.query(func.count(FiberAccessPoint.id))
+        access_points=db.query(func.count(FiberAccessPoint.id))
         .filter(FiberAccessPoint.is_active.is_(True))
         .scalar()
         or 0,
-        "support_structures": db.query(func.count(FiberSupportStructure.id)).scalar()
-        or 0,
-        "fiber_segments": len(segments),
-        "customers": customer_total,
-        "customers_online": online_count,
-        "customers_offline": offline_count,
-        "network_devices": len(network_devices),
-        "network_devices_working": sum(
+        support_structures=db.query(func.count(FiberSupportStructure.id)).scalar() or 0,
+        fiber_segments=len(segments),
+        customers=customer_total,
+        customers_connected=connected_count,
+        customers_not_connected=not_connected_count,
+        network_devices=len(network_devices),
+        network_devices_working=sum(
             1 for device, _ in network_devices if device.operational_status == "working"
         ),
-        "network_devices_not_working": sum(
+        network_devices_not_working=sum(
             1
             for device, _ in network_devices
             if device.operational_status == "not_working"
         ),
-        "onts": len(ont_units),
-        "onts_working": ont_working,
-        "onts_not_working": ont_not_working,
-        "onts_warning": ont_warning,
-    }
+        onts=len(ont_units),
+        onts_working=ont_working,
+        onts_not_working=ont_not_working,
+        onts_warning=ont_warning,
+    )
 
-    return {
-        "map_data": map_data,
-        "stats": stats,
-        "customer_count": customer_total,
-        "customer_map_count": len(customer_addresses),
-    }
+    return NetworkMapProjection(
+        features=tuple(features),
+        stats=stats,
+        customer_count=customer_total,
+        customer_map_count=len(customer_addresses),
+    )

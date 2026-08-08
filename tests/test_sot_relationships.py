@@ -752,6 +752,7 @@ def test_domain_sot_relationships_encode_cross_domain_dependencies():
         "events.dispatcher",
         "communications.notification_service",
         "communications.staff_notifications",
+        "communications.nextcloud_talk_staff",
         "operations.work_order_commands",
     )
     assert sot_relationships.dependencies_for("operations.work_order_commands") == (

@@ -11,11 +11,14 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime, timedelta
 
+from app.models.audit import AuditEvent
 from app.models.catalog import Subscription, SubscriptionStatus
+from app.models.event_store import EventStore
 from app.models.network import CPEDevice, DeviceStatus, DeviceType
 from app.models.network_monitoring import NetworkDevice
+from app.models.notification import Notification
 from app.models.support import Ticket, TicketStatus
-from app.services import radio_registration, unmatched_radio_queue
+from app.services import radio_registration, support, unmatched_radio_queue
 
 MAC = "24:A4:3C:AA:BB:01"
 MAC_COMPACT = "24a43caabb01"
@@ -87,7 +90,24 @@ class TestQueueSemantics:
             == 1
         )
 
-    def test_open_item_is_a_silent_internal_ticket(self, db_session):
+    def test_open_item_is_a_numbered_audited_silent_internal_ticket(
+        self, db_session, monkeypatch
+    ):
+        def _unexpected_consequence(*args, **kwargs):
+            raise AssertionError("silent internal ticket ran standard consequences")
+
+        monkeypatch.setattr(
+            support.Tickets, "_apply_sla_policy", _unexpected_consequence
+        )
+        monkeypatch.setattr(
+            support.Tickets, "_apply_automation_rules", _unexpected_consequence
+        )
+        monkeypatch.setattr(
+            support.Tickets,
+            "_queue_notifications_for_assignments",
+            _unexpected_consequence,
+        )
+
         ticket, _ = unmatched_radio_queue.open_item(
             db_session,
             mac_compact=MAC_COMPACT,
@@ -96,8 +116,73 @@ class TestQueueSemantics:
             description="d",
         )
         assert ticket.status == TicketStatus.open.value
+        assert ticket.number
         assert unmatched_radio_queue.TAG in (ticket.tags or [])
         assert ticket.metadata_["radio_mac"] == MAC_COMPACT
+        assert db_session.query(Notification).count() == 0
+
+        audit = (
+            db_session.query(AuditEvent)
+            .filter(
+                AuditEvent.action == "create",
+                AuditEvent.entity_type == "support_ticket",
+                AuditEvent.entity_id == str(ticket.id),
+            )
+            .one()
+        )
+        assert audit.actor_id == unmatched_radio_queue.__name__.rsplit(".", 1)[-1]
+        assert audit.metadata_["number"] == ticket.number
+        assert audit.metadata_["creation_consequence_mode"] == "silent_internal"
+
+        event = (
+            db_session.query(EventStore)
+            .filter(
+                EventStore.event_type == "custom",
+                EventStore.payload["ticket_id"].as_string() == str(ticket.id),
+            )
+            .one()
+        )
+        assert event.payload["name"] == "ticket.created"
+        assert event.payload["ticket_number"] == ticket.number
+        assert event.payload["creation_consequence_mode"] == "silent_internal"
+
+    def test_repeat_observation_repairs_legacy_missing_number(self, db_session):
+        legacy = Ticket(
+            title="Legacy unmatched radio",
+            status=TicketStatus.open.value,
+            ticket_type=unmatched_radio_queue.TICKET_TYPE,
+            metadata_={
+                "opened_by": "unmatched_radio_queue",
+                "radio_mac": MAC_COMPACT,
+                "occurrences": 1,
+            },
+        )
+        db_session.add(legacy)
+        db_session.flush()
+        assert legacy.number is None
+
+        observed, created = unmatched_radio_queue.open_item(
+            db_session,
+            mac_compact=MAC_COMPACT,
+            reason=unmatched_radio_queue.REASON_NOT_ADOPTED,
+            title="ignored for dedupe",
+            description="ignored for dedupe",
+        )
+
+        assert created is False
+        assert observed.id == legacy.id
+        assert observed.number
+        assert observed.metadata_["occurrences"] == 2
+        repair_audit = (
+            db_session.query(AuditEvent)
+            .filter(
+                AuditEvent.action == "number_repair",
+                AuditEvent.entity_type == "support_ticket",
+                AuditEvent.entity_id == str(legacy.id),
+            )
+            .one()
+        )
+        assert repair_audit.metadata_["number"] == observed.number
 
     def test_closed_item_allows_a_new_one_later(self, db_session):
         ticket, _ = unmatched_radio_queue.open_item(

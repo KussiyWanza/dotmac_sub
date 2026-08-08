@@ -27,6 +27,7 @@ from app.models.network import (
     FiberColorStandard,
     FiberSegment,
     FiberSegmentType,
+    FiberSpliceClosure,
     FiberStrand,
     FiberStrandStatus,
 )
@@ -132,6 +133,90 @@ class StrandDamageReceipt:
             "tube_number": self.tube_number,
             "work_order_public_id": self.work_order_public_id,
         }
+
+
+@dataclass(frozen=True)
+class ClosureRegistrationReceipt:
+    """Acknowledgement for a review-gated vendor closure pin."""
+
+    change_request_id: uuid.UUID
+    status: FiberChangeRequestStatus
+    name: str
+    latitude: float
+    longitude: float
+    work_order_public_id: str | None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "change_request_id": self.change_request_id,
+            "status": self.status.value,
+            "name": self.name,
+            "latitude": self.latitude,
+            "longitude": self.longitude,
+            "work_order_public_id": self.work_order_public_id,
+        }
+
+
+def register_closure(
+    db: Session,
+    *,
+    actor: SpliceProposalActor,
+    name: str,
+    latitude: float,
+    longitude: float,
+    notes: str | None = None,
+    work_order: WorkOrder | None = None,
+) -> ClosureRegistrationReceipt:
+    """File a closure pin for staff review without mutating live plant."""
+
+    cleaned_name = (name or "").strip()
+    if not cleaned_name:
+        raise _invalid("closure_name_required", "A closure name is required")
+    if not -90 <= latitude <= 90 or not -180 <= longitude <= 180:
+        raise _invalid("invalid_closure_coordinates", "Coordinates are out of range")
+    if db.query(FiberSpliceClosure).filter_by(name=cleaned_name).first() is not None:
+        raise _conflict(
+            "closure_name_exists", "A closure with this name already exists"
+        )
+    pending = (
+        db.query(FiberChangeRequest)
+        .filter(FiberChangeRequest.asset_type == "splice_closure")
+        .filter(FiberChangeRequest.status == FiberChangeRequestStatus.pending)
+        .filter(FiberChangeRequest.operation == FiberChangeRequestOperation.create)
+        .all()
+    )
+    if any((row.payload or {}).get("name") == cleaned_name for row in pending):
+        raise _conflict(
+            "closure_registration_pending",
+            "A closure with this name is already awaiting review",
+        )
+    payload: dict[str, Any] = {
+        "name": cleaned_name,
+        "latitude": latitude,
+        "longitude": longitude,
+        "geom": {"type": "Point", "coordinates": [longitude, latitude]},
+        "is_active": False,
+        "provenance": _provenance(actor, work_order),
+    }
+    if notes:
+        payload["notes"] = notes.strip()
+    request = fiber_change_requests.create_request(
+        db,
+        asset_type="splice_closure",
+        asset_id=None,
+        operation=FiberChangeRequestOperation.create,
+        payload=payload,
+        requested_by_person_id=None,
+        requested_by_vendor_id=_vendor_id_or_none(actor),
+    )
+    return ClosureRegistrationReceipt(
+        change_request_id=request.id,
+        status=request.status,
+        name=cleaned_name,
+        latitude=latitude,
+        longitude=longitude,
+        work_order_public_id=work_order.public_id if work_order else None,
+    )
 
 
 def register_cable(

@@ -458,3 +458,13 @@ def test_a_row_without_stored_identity_still_derives(db_session):
 
     assert pon.identity_port is None
     assert derive_identity(db_session, pon) == PonPortIdentity(frame=0, slot=2, port=3)
+
+
+@pytest.mark.parametrize("raw", ["GPON 0/2/3", "gpon  0/2/3", "pon-0/2/3"])
+def test_every_vendor_display_form_reads_to_the_same_identity(raw):
+    """Production carries both renderings; a reader that knows one is not enough."""
+    reading = read_name(raw)
+
+    assert reading.identity == PonPortIdentity(frame=0, slot=2, port=3)
+    assert reading.prefixed is True
+    assert reading.malformed is False

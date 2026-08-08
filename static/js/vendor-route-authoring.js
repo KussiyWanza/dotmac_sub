@@ -28,6 +28,7 @@
                 var properties = feature.properties || {};
                 return (
                     properties.kind === "as_built" ||
+                    properties.kind === "closure_proposal" ||
                     String(properties.quote_id || "") === String(config.quoteId)
                 );
             },
@@ -48,9 +49,41 @@
                             dashArray: "6 6",
                         };
                     },
+                    pointToLayer: function (feature, latlng) {
+                        var properties = feature.properties || {};
+                        var colors = {
+                            pending: "#f59e0b",
+                            applied: "#10b981",
+                            rejected: "#ef4444",
+                        };
+                        return window.L.circleMarker(latlng, {
+                            radius: 7,
+                            color: "#ffffff",
+                            weight: 2,
+                            fillColor: colors[properties.status] || "#f59e0b",
+                            fillOpacity: 0.95,
+                        });
+                    },
                     onEachFeature: function (feature, layer) {
                         var properties = feature.properties || {};
                         if (properties.id) contextLayers[String(properties.id)] = layer;
+                        if (properties.kind === "closure_proposal") {
+                            var popup = document.createElement("div");
+                            var heading = document.createElement("strong");
+                            heading.textContent = properties.name || "Proposed closure";
+                            popup.appendChild(heading);
+                            popup.appendChild(document.createElement("br"));
+                            popup.appendChild(
+                                document.createTextNode(
+                                    "Status: " + String(properties.status || "pending").replaceAll("_", " "),
+                                ),
+                            );
+                            if (properties.review_notes) {
+                                popup.appendChild(document.createElement("br"));
+                                popup.appendChild(document.createTextNode("Review note: " + properties.review_notes));
+                            }
+                            layer.bindPopup(popup);
+                        }
                     },
                 },
             ).addTo(map);
@@ -66,7 +99,6 @@
             weight: 4,
         }).addTo(map);
         var markers = window.L.layerGroup().addTo(map);
-        var lengthEdited = false;
 
         function setError(message) {
             errorElement.textContent = message || "";
@@ -131,7 +163,7 @@
                 }),
             });
             var meters = Math.round(tracedLength() * 10) / 10;
-            if (!lengthEdited) lengthElement.value = meters;
+            lengthElement.value = meters;
             hintElement.textContent =
                 points.length + " points \u00b7 " + meters + " m traced";
         }
@@ -144,16 +176,12 @@
         map.on("click", function (event) {
             addPoint(event.latlng.lat, event.latlng.lng);
         });
-        lengthElement.addEventListener("input", function () {
-            lengthEdited = true;
-        });
         undoElement.addEventListener("click", function () {
             points.pop();
             redraw();
         });
         clearElement.addEventListener("click", function () {
             points = [];
-            lengthEdited = false;
             lengthElement.value = "";
             redraw();
         });

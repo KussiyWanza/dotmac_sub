@@ -44,6 +44,15 @@ Outage/SLA-data eligibility validation — requiring the extension window to mat
 a recorded outage and bounding the granted days by the SLA breach — is tracked
 as a separate follow-up.
 
+## Creation scope policy
+
+New service extensions may target a POP site, NAS device, or an explicit set of
+customers. Whole-network creation is retired: the typed form options omit it and
+the `financial.service_extensions` create owner rejects it before writing any
+aggregate, audit, or event evidence. `ServiceExtensionScope.network` remains a
+historical persistence value so existing records can still be viewed, applied,
+canceled, reversed, and reported without rewriting their original scope.
+
 ## Transaction boundary
 
 Each create, apply, cancel, or reverse command enters `execute_owner_command`

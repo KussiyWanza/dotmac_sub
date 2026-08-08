@@ -630,6 +630,9 @@ def _inbox_agent_rows(db: Session):
             "service_team_capabilities": ", ".join(row.service_team_capabilities),
             "active_assignment_count": row.metrics.active_assignment_count,
             "handled_conversation_count": row.metrics.handled_conversation_count,
+            "average_first_response": _seconds_label(
+                row.metrics.average_first_response_seconds
+            ),
             "average_queue_wait": _seconds_label(
                 row.metrics.average_queue_wait_seconds
             ),

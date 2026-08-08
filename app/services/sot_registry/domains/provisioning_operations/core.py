@@ -913,6 +913,7 @@ SERVICES: tuple[SOTService, ...] = (
             "events.dispatcher",
             "communications.notification_service",
             "communications.staff_notifications",
+            "communications.nextcloud_talk_staff",
             "operations.work_order_commands",
         ),
         notes=(

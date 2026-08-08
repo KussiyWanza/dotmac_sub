@@ -7,7 +7,7 @@
 {% endif %}
 
 {# ═══════════════════════ CONFIG SUMMARY (READ-ONLY) ═══════════════════════ #}
-{% if wan_vlan or mgmt_vlan or tr069_profile_name or config_pack_name %}
+{% if wan_vlan or mgmt_vlan or tr069_profile_name or config_pack_name or config_pack_olt_id %}
 <div class="mb-4 rounded-lg border border-blue-200 bg-blue-50/50 dark:border-blue-800/50 dark:bg-blue-900/20">
     <div class="flex items-center gap-2 border-b border-blue-100 px-3 py-2 dark:border-blue-800/30">
         <svg class="h-4 w-4 text-blue-500 dark:text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
@@ -15,20 +15,22 @@
         {% if config_pack_name %}
         <span class="ml-auto rounded bg-blue-100 px-1.5 py-0.5 text-xs text-blue-600 dark:bg-blue-800/50 dark:text-blue-300">{{ config_pack_name }}</span>
         {% endif %}
+        {% if config_pack_olt_id %}
+        <a href="/admin/network/olts/{{ config_pack_olt_id }}?tab=settings"
+           class="{{ '' if config_pack_name else 'ml-auto' }} text-xs font-medium text-blue-700 underline-offset-2 hover:underline dark:text-blue-300">
+            Edit OLT config
+        </a>
+        {% endif %}
     </div>
     <div class="flex flex-wrap gap-x-6 gap-y-1 px-3 py-2 text-sm">
-        {% if wan_vlan %}
         <div class="flex items-center gap-1.5">
             <span class="text-slate-500 dark:text-slate-400">Internet VLAN:</span>
-            <span class="font-mono font-medium text-slate-900 dark:text-white">{{ wan_vlan }}</span>
+            <span class="font-mono font-medium text-slate-900 dark:text-white">{{ wan_vlan or 'Not configured' }}</span>
         </div>
-        {% endif %}
-        {% if mgmt_vlan %}
         <div class="flex items-center gap-1.5">
             <span class="text-slate-500 dark:text-slate-400">Mgmt VLAN:</span>
-            <span class="font-mono font-medium text-slate-900 dark:text-white">{{ mgmt_vlan }}</span>
+            <span class="font-mono font-medium text-slate-900 dark:text-white">{{ mgmt_vlan or 'Not configured' }}</span>
         </div>
-        {% endif %}
         {% if tr069_profile_name %}
         <div class="flex items-center gap-1.5">
             <span class="text-slate-500 dark:text-slate-400">TR-069:</span>
@@ -49,6 +51,7 @@
             </span>
             {% endif %}
         </div>
+        <div class="text-xs text-slate-500 dark:text-slate-400">VLANs are inherited from the OLT config.</div>
     </div>
 </div>
 {% endif %}
@@ -115,21 +118,11 @@
                     </select>
                 </div>
                 <div class="w-32">
-                    <label for="mgmt_vlan_id" class="mb-1 block text-xs text-slate-600 dark:text-slate-400">VLAN</label>
-                    <select id="mgmt_vlan_id" name="mgmt_vlan_id"
-                            class="w-full rounded border border-slate-300 bg-white px-2 py-1.5 text-sm font-mono dark:border-slate-600 dark:bg-slate-700 dark:text-white">
-                        <option value="">Default</option>
-                        {% for vlan in available_vlans %}
-                        {% if vlan.purpose in ['management', 'tr069'] %}
-                        <option value="{{ vlan.id }}" {% if mgmt_vlan_id and mgmt_vlan_id == vlan.id %}selected{% endif %}>{{ vlan.tag }} · {{ vlan.name }}</option>
-                        {% endif %}
-                        {% endfor %}
-                        {% for vlan in available_vlans %}
-                        {% if vlan.purpose not in ['management', 'tr069', 'internet'] %}
-                        <option value="{{ vlan.id }}" {% if mgmt_vlan_id and mgmt_vlan_id == vlan.id %}selected{% endif %}>{{ vlan.tag }} · {{ vlan.name }}</option>
-                        {% endif %}
-                        {% endfor %}
-                    </select>
+                    <span class="mb-1 block text-xs text-slate-600 dark:text-slate-400">VLAN (from OLT)</span>
+                    <div aria-label="Management VLAN inherited from OLT config"
+                         class="w-full rounded border border-slate-200 bg-slate-50 px-2 py-1.5 text-sm font-mono text-slate-700 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200">
+                        {{ mgmt_vlan or 'Not configured' }}
+                    </div>
                 </div>
                 <template x-if="mgmtIpMode === 'static_ip'">
                     <div class="w-44">
@@ -196,21 +189,11 @@
                     </select>
                 </div>
                 <div class="w-32">
-                    <label for="wan_vlan_id" class="mb-1 block text-xs text-slate-600 dark:text-slate-400">VLAN</label>
-                    <select id="wan_vlan_id" name="wan_vlan_id"
-                            class="w-full rounded border border-slate-300 bg-white px-2 py-1.5 text-sm font-mono dark:border-slate-600 dark:bg-slate-700 dark:text-white">
-                        <option value="">Default</option>
-                        {% for vlan in available_vlans %}
-                        {% if vlan.purpose == 'internet' %}
-                        <option value="{{ vlan.id }}" {% if wan_vlan_id and wan_vlan_id == vlan.id %}selected{% endif %}>{{ vlan.tag }} · {{ vlan.name }}</option>
-                        {% endif %}
-                        {% endfor %}
-                        {% for vlan in available_vlans %}
-                        {% if vlan.purpose not in ['internet', 'management', 'tr069'] %}
-                        <option value="{{ vlan.id }}" {% if wan_vlan_id and wan_vlan_id == vlan.id %}selected{% endif %}>{{ vlan.tag }} · {{ vlan.name }}</option>
-                        {% endif %}
-                        {% endfor %}
-                    </select>
+                    <span class="mb-1 block text-xs text-slate-600 dark:text-slate-400">VLAN (from OLT)</span>
+                    <div aria-label="Internet VLAN inherited from OLT config"
+                         class="w-full rounded border border-slate-200 bg-slate-50 px-2 py-1.5 text-sm font-mono text-slate-700 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200">
+                        {{ wan_vlan or 'Not configured' }}
+                    </div>
                 </div>
                 <div class="w-32">
                     <label class="mb-1 block text-xs text-slate-600 dark:text-slate-400">NAT</label>

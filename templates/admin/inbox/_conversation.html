@@ -1,4 +1,4 @@
-{% from "components/ui/triage.html" import message_bubble %}
+{% from "components/ui/triage.html" import message_bubble with context %}
 {% from "components/ui/macros.html" import status_badge %}
 {% set active_assignments = timeline.assignments | selectattr('is_active') | list %}
 

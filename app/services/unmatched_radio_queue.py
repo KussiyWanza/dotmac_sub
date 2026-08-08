@@ -1,10 +1,10 @@
 """Ops queue for unmatched/ambiguous customer radios (internal tickets).
 
 Truly-unmatched radios must become work items in a queue someone already
-works — the internal support-ticket table — not a dashboard list. Items are
-plain ``support_tickets`` rows created DIRECTLY (never via ``Tickets.create``)
-so no assignment notifications, automation rules or CRM pushes fire: the
-queue is deliberately silent.
+works — the internal support-ticket table — not a dashboard list. Creation is
+delegated to the canonical Ticket lifecycle participant so every item receives
+a human-readable number plus audit/event evidence. The typed silent-internal
+mode suppresses assignment, SLA, automation, and notification consequences.
 
 Semantics:
 - Dedupe: at most ONE open item per radio MAC (``metadata.radio_mac``,
@@ -39,7 +39,9 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy.orm import Session
 
 from app.models.network import CPEDevice, DeviceStatus, DeviceType
-from app.models.support import Ticket, TicketChannel, TicketPriority, TicketStatus
+from app.models.support import Ticket, TicketChannel, TicketStatus
+from app.schemas.support import TicketCreate
+from app.services import support as support_service
 
 logger = logging.getLogger(__name__)
 
@@ -121,11 +123,15 @@ def open_item(
 
     existing = find_open_item(db, mac_compact)
     if existing is not None:
-        meta = dict(existing.metadata_ or {})
-        meta["occurrences"] = int(meta.get("occurrences") or 1) + 1
-        meta["last_seen_at"] = _now().isoformat()
-        existing.metadata_ = meta
-        return existing, False
+        observed = support_service.tickets.stage_internal_observation_participant(
+            db,
+            ticket_id=existing.id,
+            source=(
+                support_service.InternalOperationalTicketSource.unmatched_radio_queue
+            ),
+            observed_at=_now(),
+        )
+        return observed, False
 
     metadata = {
         "radio_mac": mac_compact,
@@ -134,19 +140,23 @@ def open_item(
         "opened_by": "unmatched_radio_queue",
         **(details or {}),
     }
-    ticket = Ticket(
-        title=title,
-        description=description,
-        status=TicketStatus.open.value,
-        priority=TicketPriority.normal.value,
-        channel=TicketChannel.api,
-        ticket_type=TICKET_TYPE,
-        tags=[TAG],
-        subscriber_id=subscriber_id,
-        metadata_=metadata,
+    ticket_payload = TicketCreate.model_validate(
+        {
+            "title": title,
+            "description": description,
+            "status": TicketStatus.open.value,
+            "channel": TicketChannel.api,
+            "ticket_type": TICKET_TYPE,
+            "tags": [TAG],
+            "subscriber_id": subscriber_id,
+            "metadata": metadata,
+        }
     )
-    db.add(ticket)
-    db.flush()
+    ticket = support_service.tickets.stage_internal_creation_participant(
+        db,
+        ticket_payload,
+        source=support_service.InternalOperationalTicketSource.unmatched_radio_queue,
+    )
     logger.info(
         "unmatched_radio_item_opened mac=%s reason=%s ticket=%s",
         mac_compact,

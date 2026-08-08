@@ -428,7 +428,7 @@ def record_notification_queue_result(
     except Exception:
         logger.debug("notification_queue_metrics_record_failed", exc_info=True)
 
-    failed = counters.get("failed", 0)
+    failed = counters.get("failed", 0) + counters.get("talk_failed", 0)
     stuck_dropped = counters.get("stuck_dropped", 0)
     if failed <= 0 and stuck_dropped <= 0:
         return
