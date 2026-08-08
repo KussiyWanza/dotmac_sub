@@ -49,6 +49,7 @@ def _ticket(
     t.due_at = datetime.fromisoformat(due) if due else None
     t.resolved_at = datetime.fromisoformat(resolved) if resolved else None
     t.closed_at = datetime.fromisoformat(closed) if closed else None
+    t.attachments = []
     return t
 
 
@@ -58,6 +59,7 @@ def _comment(body="body", is_internal=False, author_person_id=None) -> Mock:
     c.is_internal = is_internal
     c.author_person_id = author_person_id
     c.created_at = datetime(2026, 1, 1, tzinfo=UTC)
+    c.attachments = []
     return c
 
 

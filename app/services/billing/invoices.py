@@ -1507,6 +1507,24 @@ class Invoices(ListResponseMixin):
         return invoice
 
     @staticmethod
+    def stage_system_invoice_for_owner(
+        db: Session,
+        payload: InvoiceCreate,
+        *,
+        reason: str,
+    ) -> Invoice:
+        """Stage an invoice as a flush-only participant for a command owner."""
+
+        try:
+            return Invoices.stage_system_invoice(db, payload, reason=reason)
+        except HTTPException as exc:
+            raise InvoiceOwnerError(
+                code="financial.invoice.stage_rejected",
+                message="Invoice owner rejected system document construction.",
+                details={"reason": str(exc.detail)},
+            ) from exc
+
+    @staticmethod
     def issue_draft_system(
         db: Session,
         invoice_id: str,
@@ -2760,6 +2778,24 @@ class InvoiceLines(ListResponseMixin):
             ),
         )
         return line
+
+    @staticmethod
+    def stage_system_line_for_owner(
+        db: Session,
+        payload: SystemInvoiceLineCreate,
+        *,
+        reason: str,
+    ) -> InvoiceLine:
+        """Stage a system line as a flush-only participant for a command owner."""
+
+        try:
+            return InvoiceLines.stage_system_line(db, payload, reason=reason)
+        except HTTPException as exc:
+            raise InvoiceOwnerError(
+                code="financial.invoice.line_stage_rejected",
+                message="Invoice owner rejected system line construction.",
+                details={"reason": str(exc.detail)},
+            ) from exc
 
     @staticmethod
     def create(db: Session, payload: InvoiceLineCreate):

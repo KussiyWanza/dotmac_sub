@@ -31,6 +31,7 @@ from app.services.ephemeral_communication_actions import (
     materialize_email,
 )
 from app.services.integrations import whatsapp_capability as whatsapp_service
+from app.services.nextcloud_talk_staff import deliver_due_staff_talk_notifications
 from app.services.observability import record_notification_queue_result
 from app.services.settings_spec import resolve_value
 from app.services.whatsapp_notification_templates import provider_template_from_template
@@ -778,6 +779,16 @@ def deliver_notification_queue() -> dict[str, int]:
     started = time.monotonic()
     with db_session_adapter.session() as session:
         result = _deliver_notification_queue_stats(session)
+        talk_result = deliver_due_staff_talk_notifications(session)
+        result.update(
+            {
+                "talk_claimed": talk_result.claimed,
+                "talk_delivered": talk_result.delivered,
+                "talk_retried": talk_result.retried,
+                "talk_failed": talk_result.failed,
+                "talk_reconciled": talk_result.reconciled,
+            }
+        )
         record_notification_queue_result(
             session,
             task_name="app.tasks.notifications.deliver_notification_queue",

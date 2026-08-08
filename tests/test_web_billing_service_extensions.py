@@ -209,7 +209,9 @@ def test_activity_order_is_deterministic_for_equal_timestamps(db_session):
     ]
 
 
-def test_actor_label_snapshot_survives_staff_rename_and_deletion(db_session):
+def test_actor_label_snapshot_survives_staff_rename_and_deletion(
+    db_session, subscriber
+):
     actor_id = uuid4()
     actor = SystemUser(
         id=actor_id,
@@ -219,6 +221,7 @@ def test_actor_label_snapshot_survives_staff_rename_and_deletion(db_session):
         email=f"extension-{uuid4().hex}@example.com",
     )
     db_session.add(actor)
+    subscriber_id = str(subscriber.id)
     db_session.commit()
     created = service_extensions.create_service_extension(
         db_session,
@@ -233,7 +236,9 @@ def test_actor_label_snapshot_survives_staff_rename_and_deletion(db_session):
             window_start=_NOW - timedelta(hours=2),
             window_end=_NOW - timedelta(hours=1),
             days=1,
-            scope_type=ServiceExtensionScope.network,
+            scope_type=ServiceExtensionScope.subscribers,
+            subscriber_identifiers=(subscriber_id,),
+            subscriber_ids_resolved=True,
         ),
     )
     actor.display_name = "Renamed Operator"
@@ -413,3 +418,13 @@ def test_create_form_preserves_server_idempotency_key_and_submit_lock():
     assert ':disabled="submitting"' in form
     assert "_form_context(" in route
     assert "idempotency_key=idempotency_key" in route
+
+
+def test_create_form_scope_contract_omits_network(db_session):
+    options = service_extensions.scope_options(db_session)
+
+    assert options.scope_types == (
+        ServiceExtensionScope.pop_site,
+        ServiceExtensionScope.nas_device,
+        ServiceExtensionScope.subscribers,
+    )

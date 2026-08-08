@@ -286,6 +286,30 @@ jobs:
           include-hidden-files: true
           retention-days: 1
 
+  migration-sequence:
+    name: Migration Sequence Gate (report-only)
+    needs: [changes]
+    if: needs.changes.outputs.docs-only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # The gate is pure stdlib, so it needs neither the project virtualenv nor
+      # the shared python-environment artifact — depending on either only adds
+      # a failure mode unrelated to what it checks.
+
+      # Shadow phase per docs/adr/0008-migration-sequence-ownership.md: report
+      # findings without failing the build, so we can measure how many pull
+      # requests this would block before making it required.
+      - name: Check migration chains onto the base head
+        run: |
+          git fetch origin "${{ github.base_ref || 'dev' }}" --depth=0 || true
+          python3 scripts/architecture/migration_sequence_gate.py \
+            --base "origin/${{ github.base_ref || 'dev' }}" --report-only
+
   architecture:
     name: Architecture Tests
     needs: [changes, python-environment]

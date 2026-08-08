@@ -32,6 +32,7 @@ from app.services import (
     service_team_composition,
     team_inbox_assignment,
     team_inbox_field_job,
+    team_inbox_filters,
     team_inbox_media,
     team_inbox_read_state,
 )
@@ -753,6 +754,7 @@ def list_conversations(
     subscriber_id: str | UUID | None = None,
     service_team_id: str | UUID | None = None,
     service_team_ids: Sequence[str | UUID] | None = None,
+    advanced_filters: team_inbox_filters.InboxAdvancedFilterQuery | None = None,
     assigned_person_id: str | UUID | None = None,
     needs_response: bool = False,
     needs_attention: bool = False,
@@ -919,6 +921,13 @@ def list_conversations(
                 )
             )
         )
+
+    if advanced_filters is not None:
+        advanced_filter_expression = team_inbox_filters.build_filter_expression(
+            advanced_filters
+        )
+        if advanced_filter_expression is not None:
+            query = query.filter(advanced_filter_expression)
 
     assignee_uuid = _optional_uuid(assigned_person_id)
     if assignee_uuid is not None:

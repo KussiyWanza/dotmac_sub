@@ -26,7 +26,14 @@ def test_column_picker_closes_from_trigger_and_outside_click(
     trigger.click()
     expect(panel).to_be_visible()
 
+    admin_page.locator("#ticket-filter-form").evaluate(
+        "element => element.dataset.e2eBeforeApply = 'true'"
+    )
     admin_page.get_by_role("button", name="Apply ticket filters").click()
+    admin_page.wait_for_selector(
+        "#ticket-filter-form[data-e2e-before-apply='true']",
+        state="detached",
+    )
     expect(panel).to_be_hidden()
 
     trigger.click()

@@ -1222,38 +1222,44 @@ def add_project_comment_from_form(
     attachments: list | None = None,
     mentions: str | None = None,
 ) -> ProjectComment:
-    project = projects_service.projects.get(db, project_id)
-    uploaded = stage_comment_attachments(
+    def create_comment(context):
+        projects_service.projects.get(db, project_id)
+        uploaded = stage_comment_attachments(
+            db,
+            comment_scope_id=project_id,
+            entity_type="project_comment_attachment",
+            attachments=attachments or [],
+        )
+        payload = ProjectCommentCreate(
+            project_id=coerce_uuid(project_id),
+            author_person_id=parse_uuid_or_none(actor_id),
+            body=body,
+            attachments=uploaded or None,
+        )
+        comment = projects_service.project_comments.create(
+            db,
+            payload,
+            mentioned_agent_ids=parse_mentions_payload(mentions),
+            actor_person_id=actor_id,
+            context=context,
+        )
+        log_audit_event(
+            db=db,
+            request=request,
+            action="comment",
+            entity_type="project",
+            entity_id=str(project_id),
+            actor_id=actor_id,
+        )
+        return comment
+
+    return projects_service.execute_project_mutation(
         db,
-        comment_scope_id=project_id,
-        entity_type="project_comment_attachment",
-        attachments=attachments or [],
+        action="create_project_comment",
+        actor=actor_id,
+        aggregate_id=project_id,
+        operation=create_comment,
     )
-    payload = ProjectCommentCreate(
-        project_id=coerce_uuid(project_id),
-        author_person_id=parse_uuid_or_none(actor_id),
-        body=body,
-        attachments=uploaded or None,
-    )
-    comment = projects_service.project_comments.create(db, payload)
-    project_mentions.notify_project_comment_mentions(
-        db,
-        target_kind="project",
-        target_ref=project.number or project_id,
-        target_title=project.name,
-        comment_preview=body[:140],
-        mentioned_agent_ids=parse_mentions_payload(mentions),
-        actor_person_id=actor_id,
-    )
-    log_audit_event(
-        db=db,
-        request=request,
-        action="comment",
-        entity_type="project",
-        entity_id=str(project_id),
-        actor_id=actor_id,
-    )
-    return comment
 
 
 def update_project_comment_from_form(
@@ -1665,38 +1671,44 @@ def add_task_comment_from_form(
     attachments: list | None = None,
     mentions: str | None = None,
 ):
-    task = projects_service.project_tasks.get(db, task_id)
-    uploaded = stage_comment_attachments(
+    def create_comment(context):
+        projects_service.project_tasks.get(db, task_id)
+        uploaded = stage_comment_attachments(
+            db,
+            comment_scope_id=task_id,
+            entity_type="project_task_comment_attachment",
+            attachments=attachments or [],
+        )
+        payload = ProjectTaskCommentCreate(
+            task_id=coerce_uuid(task_id),
+            author_person_id=parse_uuid_or_none(actor_id),
+            body=body,
+            attachments=uploaded or None,
+        )
+        comment = projects_service.project_task_comments.create(
+            db,
+            payload,
+            mentioned_agent_ids=parse_mentions_payload(mentions),
+            actor_person_id=actor_id,
+            context=context,
+        )
+        log_audit_event(
+            db=db,
+            request=request,
+            action="comment",
+            entity_type="project_task",
+            entity_id=str(task_id),
+            actor_id=actor_id,
+        )
+        return comment
+
+    return projects_service.execute_project_mutation(
         db,
-        comment_scope_id=task_id,
-        entity_type="project_task_comment_attachment",
-        attachments=attachments or [],
+        action="create_project_task_comment",
+        actor=actor_id,
+        aggregate_id=task_id,
+        operation=create_comment,
     )
-    payload = ProjectTaskCommentCreate(
-        task_id=coerce_uuid(task_id),
-        author_person_id=parse_uuid_or_none(actor_id),
-        body=body,
-        attachments=uploaded or None,
-    )
-    comment = projects_service.project_task_comments.create(db, payload)
-    project_mentions.notify_project_comment_mentions(
-        db,
-        target_kind="project_task",
-        target_ref=task.number or task_id,
-        target_title=task.title,
-        comment_preview=body[:140],
-        mentioned_agent_ids=parse_mentions_payload(mentions),
-        actor_person_id=actor_id,
-    )
-    log_audit_event(
-        db=db,
-        request=request,
-        action="comment",
-        entity_type="project_task",
-        entity_id=str(task_id),
-        actor_id=actor_id,
-    )
-    return comment
 
 
 # ── project templates admin ──────────────────────────────────────────────────
