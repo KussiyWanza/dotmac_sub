@@ -7,6 +7,7 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from typing import Self
 from uuid import UUID, uuid4
 
 from sqlalchemy import or_
@@ -101,12 +102,76 @@ class TalkConnectionTestResult:
     error_code: str | None = None
 
 
+class NextcloudTalkStaffCommandError(DomainError):
+    """Safe failure returned by a contracted staff-Talk owner command."""
+
+
+@dataclass(frozen=True, slots=True)
+class NextcloudUserId:
+    """Exact immutable Nextcloud login ID used by Talk participant APIs."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        user_id = self.value.strip()
+        if not user_id:
+            raise NextcloudTalkStaffCommandError(
+                code=f"{OWNER}.invalid_mapping",
+                message="Nextcloud user ID is required.",
+                details={"field": "nextcloud_username", "reason": "required"},
+            )
+        if len(user_id) > 255:
+            raise NextcloudTalkStaffCommandError(
+                code=f"{OWNER}.invalid_mapping",
+                message="Nextcloud user ID must be at most 255 characters.",
+                details={"field": "nextcloud_username", "reason": "too_long"},
+            )
+        if any(
+            ord(character) < 32
+            or ord(character) == 127
+            or (character.isspace() and character != " ")
+            for character in user_id
+        ):
+            raise NextcloudTalkStaffCommandError(
+                code=f"{OWNER}.invalid_mapping",
+                message=(
+                    "Nextcloud user ID contains unsupported whitespace or "
+                    "control characters."
+                ),
+                details={
+                    "field": "nextcloud_username",
+                    "reason": "unsupported_character",
+                },
+            )
+        object.__setattr__(self, "value", user_id)
+
+    @classmethod
+    def parse(cls, value: str) -> Self:
+        return cls(value)
+
+    @property
+    def normalized(self) -> str:
+        return self.value.casefold()
+
+    def __str__(self) -> str:
+        return self.value
+
+
 @dataclass(frozen=True, slots=True)
 class SetStaffAccountMappingCommand:
     context: CommandContext
     system_user_id: UUID
     integration_installation_id: UUID
-    nextcloud_username: str
+    nextcloud_user_id: NextcloudUserId
+
+
+@dataclass(frozen=True, slots=True)
+class SetStaffAccountMappingResult:
+    mapping_id: UUID
+    system_user_id: UUID
+    integration_installation_id: UUID
+    nextcloud_user_id: NextcloudUserId
+    is_active: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,10 +186,6 @@ class TestStaffTalkConnectionCommand:
     context: CommandContext
     system_user_id: UUID
     integration_installation_id: UUID
-
-
-class NextcloudTalkStaffCommandError(DomainError):
-    """Safe failure returned by a contracted staff-Talk owner command."""
 
 
 def _enabled(db: Session) -> bool:
@@ -234,7 +295,7 @@ def set_staff_account_mapping(
     *,
     system_user_id: UUID,
     integration_installation_id: UUID,
-    nextcloud_username: str,
+    nextcloud_user_id: NextcloudUserId,
     actor: str,
 ) -> NextcloudTalkStaffAccount:
     """Create or update one explicit staff-to-Nextcloud identity mapping."""
@@ -243,14 +304,6 @@ def set_staff_account_mapping(
     if user is None:
         raise ValueError("System user not found")
     _require_talk_installation(db, integration_installation_id)
-    username = nextcloud_username.strip()
-    if (
-        not username
-        or len(username) > 255
-        or any(character.isspace() or ord(character) < 32 for character in username)
-    ):
-        raise ValueError("Nextcloud username is required")
-    normalized = username.casefold()
     mapping = (
         db.query(NextcloudTalkStaffAccount)
         .filter(
@@ -264,21 +317,21 @@ def set_staff_account_mapping(
         mapping = NextcloudTalkStaffAccount(
             system_user_id=system_user_id,
             integration_installation_id=integration_installation_id,
-            nextcloud_username=username,
-            nextcloud_username_normalized=normalized,
+            nextcloud_username=nextcloud_user_id.value,
+            nextcloud_username_normalized=nextcloud_user_id.normalized,
             created_by=actor,
         )
         db.add(mapping)
     else:
-        if mapping.nextcloud_username_normalized != normalized:
+        if mapping.nextcloud_username_normalized != nextcloud_user_id.normalized:
             _invalidate_room(
                 db,
                 system_user_id=system_user_id,
                 installation_id=integration_installation_id,
                 failure_code="username_mapping_changed",
             )
-        mapping.nextcloud_username = username
-        mapping.nextcloud_username_normalized = normalized
+        mapping.nextcloud_username = nextcloud_user_id.value
+        mapping.nextcloud_username_normalized = nextcloud_user_id.normalized
         mapping.is_active = True
         mapping.updated_by = actor
     db.flush()
@@ -288,20 +341,30 @@ def set_staff_account_mapping(
 def execute_set_staff_account_mapping(
     db: Session,
     command: SetStaffAccountMappingCommand,
-) -> NextcloudTalkStaffAccount:
+) -> SetStaffAccountMappingResult:
     """Persist one mapping through the contracted owner transaction."""
+
+    def operation() -> SetStaffAccountMappingResult:
+        mapping = set_staff_account_mapping(
+            db,
+            system_user_id=command.system_user_id,
+            integration_installation_id=command.integration_installation_id,
+            nextcloud_user_id=command.nextcloud_user_id,
+            actor=command.context.actor,
+        )
+        return SetStaffAccountMappingResult(
+            mapping_id=mapping.id,
+            system_user_id=mapping.system_user_id,
+            integration_installation_id=mapping.integration_installation_id,
+            nextcloud_user_id=command.nextcloud_user_id,
+            is_active=mapping.is_active,
+        )
 
     return execute_owner_command(
         db,
         definition=_SET_MAPPING_COMMAND,
         context=command.context,
-        operation=lambda: set_staff_account_mapping(
-            db,
-            system_user_id=command.system_user_id,
-            integration_installation_id=command.integration_installation_id,
-            nextcloud_username=command.nextcloud_username,
-            actor=command.context.actor,
-        ),
+        operation=operation,
     )
 
 

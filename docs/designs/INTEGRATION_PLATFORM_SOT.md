@@ -469,10 +469,13 @@ delivery/inbox evidence remain intact.
     expired-OAuth credential fallback.
 11. Nextcloud Talk staff notification transport with a pinned installation,
     OpenBao app-password reference, public-HTTPS egress validation, explicit
-    `SystemUser` username mappings, cached one-to-one rooms, deterministic chat
-    references, and asynchronous retry/reconciliation. The capability binding's
-    `approved_egress_hosts` must explicitly include the hostname from the
-    installation URL before static validation can enable it.
+    `SystemUser` mappings to exact immutable Nextcloud user IDs, cached one-to-one
+    rooms, deterministic chat references, and asynchronous retry/reconciliation.
+    Ordinary internal spaces are preserved because Nextcloud permits them in user
+    IDs; email addresses and display names are not substituted for the provider
+    identity. The capability binding's `approved_egress_hosts` must explicitly
+    include the hostname from the installation URL before static validation can
+    enable it.
 
 Signed external artifacts and OAuth installation grants require separate
 approved designs before they can become live owners. They are not implicit

@@ -2035,7 +2035,11 @@ def user_nextcloud_talk_mapping_save(
                 ),
                 system_user_id=coerce_uuid(user_id),
                 integration_installation_id=installation_id,
-                nextcloud_username=nextcloud_username,
+                nextcloud_user_id=(
+                    nextcloud_talk_staff_service.NextcloudUserId.parse(
+                        nextcloud_username
+                    )
+                ),
             ),
         )
     except (DomainError, ValueError, IntegrityError) as exc:
