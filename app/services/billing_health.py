@@ -185,6 +185,9 @@ class BillingHealthSnapshot:
     billing_profile_mismatch_count: int = 0
     billing_profile_mixed_count: int = 0
     account_credit_invariant_count: int = 0
+    # Invoices past draft with no issue date. They cannot age, cannot go
+    # overdue, and drop out of anything filtering on issue date.
+    paid_without_issue_count: int = 0
     # The opening balance carried in at the handoff. Observed so the boundary
     # stays visible, but never an anomaly: no reconciler can produce
     # allocations for invoices that were carried in already settled.
@@ -205,6 +208,8 @@ class BillingHealthSnapshot:
         out: list[str] = []
         if self.paid_with_balance_count > 0:
             out.append("paid_invoices_with_balance")
+        if self.paid_without_issue_count > 0:
+            out.append("invoices_paid_without_issue")
         if self.scan_ratio is not None and self.scan_ratio < self.scan_min_ratio:
             out.append("invoice_scan_count_low")
         if self.payment_volume_collapsed:
@@ -242,6 +247,7 @@ def billing_health_observations(snapshot: BillingHealthSnapshot):  # noqa: ANN20
 
     values: list[tuple[str, str, int | float | Decimal]] = [
         ("paid_invoices_with_balance", "all", snapshot.paid_with_balance_count),
+        ("invoices_paid_without_issue", "all", snapshot.paid_without_issue_count),
         ("invoice_last_scanned", "all", snapshot.last_scanned or 0),
         ("active_subscriptions", "all", snapshot.eligible_active_subs),
         ("payments_succeeded_24h", "all", snapshot.payments_24h),
@@ -737,6 +743,29 @@ def billing_profile_integrity(db: Session) -> tuple[int, int]:
     return mismatch, mixed
 
 
+def invoices_past_draft_without_issue_date(db: Session) -> int:
+    """Count invoices that left draft without an issue date.
+
+    An invoice past draft is asserting it was issued, so it must carry the date
+    that makes that true: ageing, dunning runway, statements and every
+    issue-date filter read it. A NULL there is not cosmetic — the invoice simply
+    stops existing for those questions, quietly, without failing anything.
+
+    Voided invoices are excluded: void is terminal and may be reached from
+    states that never issued.
+    """
+    return int(
+        db.query(func.count(Invoice.id))
+        .filter(
+            Invoice.is_active.is_(True),
+            Invoice.status.not_in([InvoiceStatus.draft, InvoiceStatus.void]),
+            Invoice.issued_at.is_(None),
+        )
+        .scalar()
+        or 0
+    )
+
+
 def billing_health_snapshot(
     db: Session, now: datetime | None = None
 ) -> BillingHealthSnapshot:
@@ -744,6 +773,7 @@ def billing_health_snapshot(
         _health_thresholds(db)
     )
     pwb_count, pwb_total = paid_with_balance(db)
+    paid_without_issue_count = invoices_past_draft_without_issue_date(db)
     last_scanned, eligible, scan_ratio = invoice_scan_coverage(db)
     c24, avg7, ratio, collapsed = payment_volume(db, now=now)
     no_path, terminal = billing_path_coverage(db)
@@ -766,6 +796,7 @@ def billing_health_snapshot(
     )
     return BillingHealthSnapshot(
         paid_with_balance_count=pwb_count,
+        paid_without_issue_count=paid_without_issue_count,
         paid_with_balance_total=pwb_total,
         last_scanned=last_scanned,
         eligible_active_subs=eligible,
