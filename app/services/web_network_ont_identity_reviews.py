@@ -49,6 +49,12 @@ class OntAssignmentReviewListRow(TypedDict):
     verified_by_name: NotRequired[str | None]
 
 
+class OntTopologyObservationReviewRow(TypedDict):
+    evidence: OntTopologyObservationEvidence
+    ont_serial_number: str
+    proposal_assignment_id: str | None
+
+
 @dataclass(frozen=True)
 class OntAssignmentIdentityCandidate:
     assignment_id: str
@@ -192,7 +198,7 @@ def list_topology_observation_reviews(
     *,
     query: str | None = None,
     limit: int = 200,
-) -> list[dict[str, object]]:
+) -> list[OntTopologyObservationReviewRow]:
     """Project unresolved network observations for manual validation."""
 
     evidence_rows = list(
@@ -212,7 +218,7 @@ def list_topology_observation_reviews(
         db, OntUnit, {evidence.ont_unit_id for evidence in evidence_rows}
     )
     normalized_query = str(query or "").strip().lower()
-    rows: list[OntAssignmentReviewListRow] = []
+    rows: list[OntTopologyObservationReviewRow] = []
     for evidence in evidence_rows:
         ont = ont_by_id.get(evidence.ont_unit_id)
         searchable = " ".join(
@@ -251,7 +257,7 @@ def list_cutover_proposal_batches(
     *,
     query: str | None = None,
     limit: int = 100,
-) -> list[dict[str, object]]:
+) -> list[OntAssignmentReviewListRow]:
     """Project immutable cleanup manifests and their delegated decisions."""
 
     batches = list(
@@ -297,7 +303,7 @@ def list_cutover_proposal_batches(
             decisions_by_batch[decision.proposal_batch_id].append(decision)
 
     normalized_query = str(query or "").strip().lower()
-    rows: list[dict[str, object]] = []
+    rows: list[OntAssignmentReviewListRow] = []
     for batch in batches:
         decisions = decisions_by_batch[batch.id]
         review = reviews.get(batch.id)
