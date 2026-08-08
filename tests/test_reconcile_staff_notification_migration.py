@@ -4,7 +4,7 @@ MIGRATION = (
     Path(__file__).parents[1]
     / "alembic"
     / "versions"
-    / "498_reconcile_staff_notification_inbox.py"
+    / "500_reconcile_staff_notification_inbox.py"
 )
 
 

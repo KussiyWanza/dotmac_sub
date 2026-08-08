@@ -1,7 +1,7 @@
 """link staff delivery records to the canonical in-app inbox
 
-Revision ID: 497_unify_staff_notification_inbox
-Revises: 496_backfill_project_numbers_8_10
+Revision ID: 499_unify_staff_notification_inbox
+Revises: 498_backfill_project_numbers_8_10
 Create Date: 2026-08-07
 """
 
@@ -14,8 +14,8 @@ from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
-revision: str = "497_unify_staff_notification_inbox"
-down_revision: str | None = "496_backfill_project_numbers_8_10"
+revision: str = "499_unify_staff_notification_inbox"
+down_revision: str | None = "498_backfill_project_numbers_8_10"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

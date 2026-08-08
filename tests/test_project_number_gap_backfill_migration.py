@@ -8,7 +8,7 @@ import sqlalchemy as sa
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MIGRATION_PATH = (
-    REPO_ROOT / "alembic" / "versions" / "496_backfill_project_numbers_8_10.py"
+    REPO_ROOT / "alembic" / "versions" / "498_backfill_project_numbers_8_10.py"
 )
 
 
@@ -24,8 +24,8 @@ def _load_migration() -> ModuleType:
 
 def test_migration_extends_current_single_head() -> None:
     migration = _load_migration()
-    assert migration.revision == "496_backfill_project_numbers_8_10"
-    assert migration.down_revision == "495_plan_family_catalogues"
+    assert migration.revision == "498_backfill_project_numbers_8_10"
+    assert migration.down_revision == "497_vendor_route_lengths"
 
 
 def test_upgrade_allocates_after_numbers_available_at_execution(monkeypatch) -> None:

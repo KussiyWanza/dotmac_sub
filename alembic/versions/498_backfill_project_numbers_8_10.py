@@ -1,7 +1,7 @@
 """backfill project numbers created during the numbering repair rollout
 
-Revision ID: 496_backfill_project_numbers_8_10
-Revises: 495_plan_family_catalogues
+Revision ID: 498_backfill_project_numbers_8_10
+Revises: 497_vendor_route_lengths
 Create Date: 2026-08-06
 """
 
@@ -13,8 +13,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "496_backfill_project_numbers_8_10"
-down_revision: str | None = "495_plan_family_catalogues"
+revision: str = "498_backfill_project_numbers_8_10"
+down_revision: str | None = "497_vendor_route_lengths"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

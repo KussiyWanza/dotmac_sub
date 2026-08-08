@@ -1,7 +1,7 @@
 """reconcile historical staff push deliveries into the in-app inbox
 
-Revision ID: 498_reconcile_staff_notification_inbox
-Revises: 497_unify_staff_notification_inbox
+Revision ID: 500_reconcile_staff_notification_inbox
+Revises: 499_unify_staff_notification_inbox
 Create Date: 2026-08-07
 """
 
@@ -13,8 +13,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "498_reconcile_staff_notification_inbox"
-down_revision: str | None = "497_unify_staff_notification_inbox"
+revision: str = "500_reconcile_staff_notification_inbox"
+down_revision: str | None = "499_unify_staff_notification_inbox"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
