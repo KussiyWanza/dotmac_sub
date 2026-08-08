@@ -30,6 +30,7 @@
                 <div class="mt-5"><p class="text-xs font-semibold uppercase tracking-wide text-slate-500">Lifecycle metadata</p><pre class="mt-2 overflow-x-auto rounded-xl bg-slate-950 p-4 text-xs text-slate-100">{{ intent.metadata|tojson(indent=2) }}</pre></div>
                 {% if can_cancel and intent.can_cancel %}
                 <form method="post" action="/admin/customers/person/{{ customer.id }}/payment-intents/{{ intent.id }}/cancel" class="mt-5 flex flex-col gap-3 border-t border-slate-100 pt-5 sm:flex-row dark:border-slate-700" onsubmit="return confirm('Cancel this pending payment intent?');">
+                    {% include "components/forms/csrf_input.html" %}
                     <input name="reason" required maxlength="500" placeholder="Reason for cancellation" class="min-w-0 flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-900">
                     <button type="submit" class="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700">Cancel intent</button>
                 </form>
