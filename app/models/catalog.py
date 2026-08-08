@@ -173,7 +173,34 @@ class BillingMode(enum.Enum):
     postpaid = "postpaid"
 
 
-PLAN_FAMILY_VALUES = ("unlimited", "dedicated", "home_flex")
+#: Commercial families an offer may be classified into.
+#:
+#: ``high_speed_data`` is a burst speed with a volume allowance that throttles
+#: on exhaustion — sold by the gigabyte, not the megabit. ``ip_block`` is a
+#: routed block sold as a service in its own right, not an attachment to one.
+#:
+#: This is the BROAD vocabulary. Two narrower ones exist deliberately and are
+#: not derived from it: ``SlaPlanFamily`` (which families may own an SLA
+#: default) and ``BANDWIDTH_PRICED_FAMILIES`` below. Widening this does not
+#: widen those, and must not: classifying an offer is a catalog act, whereas
+#: granting a family an SLA default needs commercial approval of the terms,
+#: and pricing a family per Mbps is meaningless for one sold per gigabyte.
+#:
+#: Operators may extend classification at runtime through the
+#: ``CATALOG_PLAN_FAMILIES`` setting; this tuple is the built-in default.
+PLAN_FAMILY_VALUES = (
+    "unlimited",
+    "dedicated",
+    "home_flex",
+    "high_speed_data",
+    "ip_block",
+)
+
+#: Families whose price is a function of Mbps, and which may therefore carry
+#: bandwidth price bands. ``high_speed_data`` is priced per gigabyte and
+#: ``ip_block`` per block size, so a per-Mbps ladder would be meaningless for
+#: both — and the database refuses bands for them.
+BANDWIDTH_PRICED_FAMILIES = ("unlimited", "dedicated", "home_flex")
 
 
 class AccessState(enum.Enum):
@@ -402,7 +429,6 @@ class UsageAllowance(Base):
     included_gb: Mapped[int | None] = mapped_column(Integer)
     overage_rate: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
     overage_cap_gb: Mapped[int | None] = mapped_column(Integer)
-    throttle_rate_mbps: Mapped[int | None] = mapped_column(Integer)
     # Unused allowance carries into next period's quota bucket (capped at one
     # period's included_gb). Sourced from imported fup_limits.rollover_data.
     rollover_enabled: Mapped[bool] = mapped_column(Boolean, default=False)

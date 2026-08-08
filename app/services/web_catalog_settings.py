@@ -245,7 +245,6 @@ def usage_allowance_form_defaults() -> dict[str, object]:
         "included_gb": "",
         "overage_rate": "",
         "overage_cap_gb": "",
-        "throttle_rate_mbps": "",
         "is_active": True,
     }
 
@@ -275,7 +274,6 @@ def usage_allowance_form_context(
             "included_gb": obj.included_gb or "",
             "overage_rate": obj.overage_rate or "",
             "overage_cap_gb": obj.overage_cap_gb or "",
-            "throttle_rate_mbps": obj.throttle_rate_mbps or "",
             "is_active": obj.is_active,
         },
         "action_url": (f"/admin/catalog/settings/usage-allowances/{allowance_id}/edit"),
@@ -294,7 +292,6 @@ def parse_usage_allowance_form(form) -> dict[str, object]:
         "included_gb": form_str("included_gb").strip(),
         "overage_rate": form_str("overage_rate").strip(),
         "overage_cap_gb": form_str("overage_cap_gb").strip(),
-        "throttle_rate_mbps": form_str("throttle_rate_mbps").strip(),
         "is_active": form_str("is_active") == "true",
     }
 
@@ -310,7 +307,6 @@ def _usage_allowance_payload(values: dict[str, object]) -> dict[str, object]:
         "included_gb": _optional_int(values["included_gb"]),
         "overage_rate": values["overage_rate"] or None,
         "overage_cap_gb": _optional_int(values["overage_cap_gb"]),
-        "throttle_rate_mbps": _optional_int(values["throttle_rate_mbps"]),
         "is_active": values["is_active"],
     }
 
@@ -989,7 +985,6 @@ def export_usage_allowances_csv(db: Session) -> str:
             "Included GB",
             "Overage Rate",
             "Overage Cap GB",
-            "Throttle Rate Mbps",
             "Active",
         ]
     )
@@ -1001,7 +996,6 @@ def export_usage_allowances_csv(db: Session) -> str:
                 a.included_gb or "",
                 a.overage_rate or "",
                 a.overage_cap_gb or "",
-                a.throttle_rate_mbps or "",
                 "Yes" if a.is_active else "No",
             ]
         )

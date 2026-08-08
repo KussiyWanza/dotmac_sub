@@ -28,10 +28,29 @@ def test_customer_service_level_has_one_complete_owner_contract() -> None:
 
 
 def test_sla_family_scope_is_a_typed_closed_protocol() -> None:
+    """SLA scope is a closed protocol, and a SUBSET of catalog classification.
+
+    This asserted equality until ``high_speed_data`` and ``ip_block`` were
+    added to the catalog vocabulary. Equality was an accident of the two sets
+    coinciding, and it contradicts ``SlaPlanFamily``'s own docstring: catalog
+    classification is settings-driven and may carry additional values, while
+    SLA authority is deliberately narrower because widening it also requires a
+    model constraint, a migration, precedence tests, and **commercial approval
+    of the terms** — which classifying an offer does not.
+
+    The real invariant is one-directional: no family may own an SLA default
+    unless it is a family the catalog recognises. A catalog family with no SLA
+    scope is the normal state of a newly classified product, not a defect.
+    """
     assert RecordPolicyVersionCommand.__annotations__["plan_family"] == (
         "SlaPlanFamily | None"
     )
-    assert tuple(family.value for family in SlaPlanFamily) == PLAN_FAMILY_VALUES
+    sla_families = {family.value for family in SlaPlanFamily}
+    assert sla_families <= set(PLAN_FAMILY_VALUES), (
+        "SlaPlanFamily contains a family the catalog does not recognise: "
+        f"{sorted(sla_families - set(PLAN_FAMILY_VALUES))}"
+    )
+    assert sla_families, "SLA scope must not be empty"
 
 
 def test_only_customer_service_level_constructs_policy_records() -> None:
