@@ -1,0 +1,6 @@
+{% set ticket_oob = true %}
+{% include "admin/support/tickets/_status_summary.html" %}
+<input id="ticket-sort-state" type="hidden" name="sort" value="{{ list_query.sort_by }}" hx-swap-oob="outerHTML">
+<input id="ticket-direction-state" type="hidden" name="dir" value="{{ list_query.sort_dir }}" hx-swap-oob="outerHTML">
+{% include "admin/support/tickets/_export_control.html" %}
+{% include "admin/support/tickets/_table.html" %}

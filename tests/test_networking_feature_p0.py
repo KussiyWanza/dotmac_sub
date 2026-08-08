@@ -2267,31 +2267,36 @@ def test_backup_overview_page_data_classifies_and_filters(db_session):
     db_session.add(olt_backup)
     db_session.commit()
 
-    page = core_devices_views.backup_overview_page_data(db_session, stale_hours=24)
-    by_name = {row["device_name"]: row for row in page["rows"]}
-    assert by_name["NAS Fresh"]["backup_status"] == "success"
-    assert by_name["NAS Stale"]["backup_status"] == "stale"
-    assert by_name["NAS Failed"]["backup_status"] == "failed"
-    assert by_name["OLT North"]["backup_status"] == "success"
-    assert by_name["OLT North"]["backup_url"] == (
+    query = core_devices_views.build_backup_overview_query(stale_hours=24)
+    page = core_devices_views.backup_overview_page_data(
+        db=db_session,
+        query=query,
+    )
+    by_name = {row.device_name: row for row in page.rows}
+    assert by_name["NAS Fresh"].backup_status == "success"
+    assert by_name["NAS Stale"].backup_status == "stale"
+    assert by_name["NAS Failed"].backup_status == "failed"
+    assert by_name["OLT North"].backup_status == "success"
+    assert by_name["OLT North"].backup_url == (
         f"/admin/network/olts/backups/{olt_backup.id}"
     )
-    assert by_name["OLT North"]["history_url"] == (
-        f"/admin/network/olts/{olt.id}/backups"
-    )
-    assert page["stats"]["total"] == 4
-    assert page["stats"]["stale"] == 1
-    assert page["stats"]["failed"] == 1
+    assert by_name["OLT North"].history_url == (f"/admin/network/olts/{olt.id}/backups")
+    assert page.stats.total == 4
+    assert page.stats.stale == 1
+    assert page.stats.failed == 1
     assert fresh_backup.id != stale_backup.id != failed_backup.id
 
-    stale_only = core_devices_views.backup_overview_page_data(
-        db_session,
+    stale_query = core_devices_views.build_backup_overview_query(
         stale_hours=24,
         status="stale",
         device_type="nas",
     )
-    assert stale_only["stats"]["total"] == 1
-    assert stale_only["rows"][0]["device_name"] == "NAS Stale"
+    stale_only = core_devices_views.backup_overview_page_data(
+        db=db_session,
+        query=stale_query,
+    )
+    assert stale_only.stats.total == 1
+    assert stale_only.rows[0].device_name == "NAS Stale"
 
 
 def test_backup_overview_page_data_search_and_sort(db_session):
@@ -2326,13 +2331,54 @@ def test_backup_overview_page_data_search_and_sort(db_session):
     )
     db_session.commit()
 
-    filtered = core_devices_views.backup_overview_page_data(
-        db_session,
+    query = core_devices_views.build_backup_overview_query(
         search="203.0.113.5",
         sort="last_backup_desc",
     )
-    assert filtered["stats"]["total"] == 1
-    assert filtered["rows"][0]["device_name"] == "NAS Searchable"
+    filtered = core_devices_views.backup_overview_page_data(
+        db=db_session,
+        query=query,
+    )
+    assert filtered.stats.total == 1
+    assert filtered.rows[0].device_name == "NAS Searchable"
+
+
+def test_backup_overview_page_data_paginates_filtered_rows(db_session):
+    db_session.add_all(
+        NasDevice(
+            name=f"NAS Page {index:03d}",
+            vendor=NasVendor.mikrotik,
+            management_ip=f"198.51.100.{index + 1}",
+            is_active=True,
+        )
+        for index in range(26)
+    )
+    db_session.commit()
+
+    query = core_devices_views.build_backup_overview_query(page=2, per_page=10)
+    page = core_devices_views.backup_overview_page_data(
+        db=db_session,
+        query=query,
+    )
+
+    assert page.stats.total == 26
+    assert page.page_meta.page == 2
+    assert page.page_meta.total_pages == 3
+    assert page.page_meta.start_item == 11
+    assert page.page_meta.end_item == 20
+    assert len(page.rows) == 10
+    assert page.rows[0].device_name == "NAS Page 010"
+
+
+def test_backup_overview_template_renders_canonical_pagination():
+    template = Path("templates/admin/network/backups/index.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert "list_pagination" in template
+    assert "list_query" in template
+    assert "page_meta" in template
+    assert "'/admin/network/backups'" in template
 
 
 def test_consolidated_page_data_search_includes_onts_beyond_default_limit(db_session):

@@ -1176,9 +1176,11 @@ no mutation authority.
   cutover gate. The worklist deliberately has no ready/pass/eligible field;
   only `network.fiber_cutover_readiness` applies the checked-in numeric policy to
   the complete worklist evidence.
-- `/admin/network/fiber-field-verification` is GET-only. Its summary always uses
-  the complete cohort while the HTML table displays the first 500 rows in
-  evidence-priority order. `scripts/network/audit_fiber_field_verification.py`
+- `/admin/network/fiber-field-verification` is GET-only. Its summary, counts,
+  deterministic evidence-priority order, and report digest always use the
+  complete cohort. A presentation-only HTML projection paginates that ordered
+  report at 25, 50, or 100 rows per page and does not pass a display limit into
+  the exhaustive owner. `scripts/network/audit_fiber_field_verification.py`
   emits the complete JSON report inside a read-only PostgreSQL
   `REPEATABLE READ` transaction and does not return a cutover-readiness exit
   code.

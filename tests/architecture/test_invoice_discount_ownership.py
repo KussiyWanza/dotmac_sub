@@ -40,16 +40,26 @@ def test_invoice_discount_history_has_database_and_orm_immutability() -> None:
 
 
 def test_invoice_discount_routes_only_adapt_typed_services() -> None:
-    route = _source("app/web/admin/billing_invoices.py")
-    assert '"/invoice-discounts"' in route
-    assert "build_invoice_discounts_list_context(" in route
-    assert "InvoiceDiscountHistory(" not in route
-    assert "invoice.discount_amount =" not in route
+    billing_route = _source("app/web/admin/billing_invoices.py")
+    sales_route = _source("app/web/admin/sales.py")
+    report_route = _source("app/web/admin/reports.py")
+    projection = _source("app/services/web_document_discount_report.py")
+    assert '"/invoice-discounts"' in billing_route
+    assert '"/quote-discounts"' in sales_route
+    assert "/admin/reports/discounts?tab=invoices" in billing_route
+    assert "/admin/reports/discounts?tab=quotes" in sales_route
+    assert '"/discounts"' in report_route
+    assert "DocumentDiscountReportQuery(" in report_route
+    assert "build_document_discount_report(" in report_route
+    assert "list_invoice_discount_history(" in projection
+    assert "list_quote_discount_history(" in projection
+    assert "InvoiceDiscountHistory(" not in report_route
+    assert "QuoteDiscountHistory(" not in report_route
 
 
 def test_invoice_discount_ui_exposes_controls_and_history_filters() -> None:
     form = _source("templates/admin/billing/invoice_form.html")
-    history = _source("templates/admin/billing/invoice_discounts.html")
+    history = _source("templates/admin/reports/discounts.html")
     for field in ("discount_type", "discount_value", "discount_reason"):
         assert f'name="{field}"' in form
     assert "Final discount amount" in form
@@ -58,10 +68,22 @@ def test_invoice_discount_ui_exposes_controls_and_history_filters() -> None:
     for field in (
         "date_from",
         "date_to",
-        "customer",
+        "search",
         "salesperson_id",
         "discount_type",
-        "invoice_status",
     ):
         assert f'name="{field}"' in history
-    assert "View Invoice" in history
+    assert "invoice_status" in history
+    assert "Inherited from quote" in history
+    assert "View source Quote" in history
+
+
+def test_discount_history_has_one_rendered_report_location() -> None:
+    invoice_list = _source("templates/admin/billing/invoices.html")
+    quote_list = _source("templates/admin/sales/quotes/index.html")
+    quote_detail = _source("templates/admin/sales/quotes/detail.html")
+    assert "/admin/billing/invoice-discounts" not in invoice_list
+    assert "/admin/sales/quote-discounts" not in quote_list
+    assert "/admin/sales/quote-discounts" not in quote_detail
+    assert not (ROOT / "templates/admin/billing/invoice_discounts.html").exists()
+    assert not (ROOT / "templates/admin/sales/quotes/discounts.html").exists()

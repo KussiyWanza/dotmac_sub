@@ -346,9 +346,49 @@ function ticketFilterBuilder() {
     };
 }
 
-function ticketColumnPicker() {
+function ticketFilterFeedback() {
+    return {
+        loading: false,
+        error: '',
+
+        handleBeforeRequest(event) {
+            if (event.detail?.target?.id !== 'tickets-table') return;
+            this.$el._activeTicketRequest = event.detail.xhr;
+            this.$el._ticketRetrySource = event.target;
+            this.loading = true;
+            this.error = '';
+            event.detail.target.setAttribute('aria-busy', 'true');
+        },
+
+        handleAfterRequest(event) {
+            if (event.detail?.target?.id !== 'tickets-table') return;
+            if (this.$el._activeTicketRequest !== event.detail.xhr) return;
+            this.loading = false;
+            event.detail.target.setAttribute('aria-busy', 'false');
+            if (!event.detail.successful) {
+                this.error = 'Couldn’t update tickets. Your current results are still shown.';
+            }
+        },
+
+        retry() {
+            const source = this.$el._ticketRetrySource;
+            const form = source?.closest?.('#ticket-filter-form');
+            if (form) {
+                form.requestSubmit();
+                return;
+            }
+            source?.click?.();
+        },
+    };
+}
+
+function ticketListControls() {
     return {
         open: false,
+        afterSwapHandler: null,
+        storageKey: '',
+        storageVersion: 1,
+
         init() {
             this.closeOnOutsideClick = (event) => {
                 if (!event.target.closest('#ticket-column-toggle, #ticket-column-options')) {
@@ -356,21 +396,100 @@ function ticketColumnPicker() {
                 }
             };
             document.addEventListener('click', this.closeOnOutsideClick, true);
-            const apply = () => {
-                const checked = Array.from(document.querySelectorAll('.ticket-col-toggle:checked')).map((el) => el.dataset.columnKey);
-                document.querySelectorAll('[data-column]').forEach((el) => {
-                    const visible = checked.includes(el.dataset.column);
-                    el.classList.toggle('hidden', !visible);
-                });
-                document.cookie = `ticket_columns=${checked.join(',')}; path=/; max-age=31536000`;
-            };
+            const userId = this.$el.getAttribute('data-current-user-id') || 'anonymous';
+            this.storageKey = `tickets.filter.state.${userId}`;
             document.querySelectorAll('.ticket-col-toggle').forEach((el) => {
-                el.addEventListener('change', apply);
+                el.addEventListener('change', () => this.applyColumns());
             });
-            apply();
+            this.afterSwapHandler = (event) => {
+                if (event.detail?.target?.id !== 'tickets-table') return;
+                this.$nextTick(() => {
+                    this.applyColumns();
+                    this.persistCurrentState();
+                });
+            };
+            document.body.addEventListener('htmx:afterSwap', this.afterSwapHandler);
+            this.applyColumns();
+            if (!this.restorePersistedState()) {
+                this.persistCurrentState();
+            }
         },
+
         destroy() {
             document.removeEventListener('click', this.closeOnOutsideClick, true);
+            if (this.afterSwapHandler) {
+                document.body.removeEventListener('htmx:afterSwap', this.afterSwapHandler);
+            }
+        },
+
+        normalizeListUrl(rawValue) {
+            if (!rawValue || typeof rawValue !== 'string') return '';
+            try {
+                const url = new URL(rawValue, window.location.origin);
+                if (url.origin !== window.location.origin || url.pathname !== '/admin/support/tickets') {
+                    return '';
+                }
+                return `${url.pathname}${url.search}`;
+            } catch (_error) {
+                return '';
+            }
+        },
+
+        currentCanonicalListUrl() {
+            const page = document.querySelector('#tickets-table [data-ticket-page]');
+            return this.normalizeListUrl(page?.dataset?.listUrl || '');
+        },
+
+        persistCurrentState() {
+            if (!this.storageKey) return;
+            const listUrl = this.currentCanonicalListUrl();
+            if (!listUrl) return;
+            try {
+                window.localStorage.setItem(this.storageKey, JSON.stringify({
+                    version: this.storageVersion,
+                    listUrl,
+                    savedAt: Date.now(),
+                }));
+            } catch (_error) {
+                // Ignore unavailable browser storage; the URL remains authoritative.
+            }
+        },
+
+        restorePersistedState() {
+            if (!this.storageKey || window.location.pathname !== '/admin/support/tickets') return false;
+            if (window.location.search) return false;
+
+            let saved = null;
+            try {
+                const raw = window.localStorage.getItem(this.storageKey);
+                saved = raw ? JSON.parse(raw) : null;
+            } catch (_error) {
+                saved = null;
+            }
+            if (!saved || saved.version !== this.storageVersion) return false;
+
+            const listUrl = this.normalizeListUrl(saved.listUrl);
+            if (!listUrl || !listUrl.includes('?')) return false;
+            window.location.replace(listUrl);
+            return true;
+        },
+
+        clearPersistedState() {
+            try {
+                window.localStorage.removeItem(this.storageKey);
+            } catch (_error) {
+                // Ignore unavailable browser storage and still reset the list URL.
+            }
+            window.location.assign('/admin/support/tickets');
+        },
+
+        applyColumns() {
+            const checked = Array.from(document.querySelectorAll('.ticket-col-toggle:checked')).map((el) => el.dataset.columnKey);
+            document.querySelectorAll('[data-column]').forEach((el) => {
+                const visible = checked.includes(el.dataset.column);
+                el.classList.toggle('hidden', !visible);
+            });
+            document.cookie = `ticket_columns=${checked.join(',')}; path=/; max-age=31536000`;
         }
     };
 }
@@ -389,7 +508,7 @@ function supportTicketBulkActions(initialContract) {
         init() {
             this.syncTicketPage();
             document.body.addEventListener('htmx:afterSwap', (event) => {
-                if (event.detail?.target?.id !== 'ticket-list') return;
+                if (event.detail?.target?.id !== 'tickets-table') return;
                 this.clearSelection();
                 this.$nextTick(() => this.syncTicketPage());
             });

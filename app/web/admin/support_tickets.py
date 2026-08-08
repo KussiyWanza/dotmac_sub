@@ -176,9 +176,12 @@ def tickets_list(
     )
 
     if request.headers.get("HX-Request"):
-        response = templates.TemplateResponse(
-            "admin/support/tickets/_list.html", context
+        partial_name = (
+            "admin/support/tickets/_results.html"
+            if request.headers.get("HX-Target") == "tickets-table"
+            else "admin/support/tickets/_list.html"
         )
+        response = templates.TemplateResponse(partial_name, context)
         if canonicalization_needed:
             response.headers["HX-Replace-Url"] = effective_query.url(
                 "/admin/support/tickets"
