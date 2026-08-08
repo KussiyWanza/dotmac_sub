@@ -26,6 +26,7 @@ Revises: 497_vendor_route_lengths
 from __future__ import annotations
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision = "498_retire_allowance_throttle_rate"

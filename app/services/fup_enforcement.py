@@ -652,7 +652,7 @@ def _hit_fup_in_window(
 def _maybe_queue_repeat_upsell(
     session: Session,
     subscription: Subscription,
-    bucket: QuotaBucket,
+    bucket: QuotaBucket | None,
     rule_result: dict,
     pending_notifications: list[dict],
 ) -> None:

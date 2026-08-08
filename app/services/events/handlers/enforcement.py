@@ -558,19 +558,19 @@ class EnforcementHandler:
             # single global speed for the whole fleet — see
             # app/services/fup_throttle_profile.py. `policy` supplies only the
             # fallback for offers with no rate to reduce.
-            decision = resolve_fup_throttle_profile(
+            throttle_decision = resolve_fup_throttle_profile(
                 db,
                 subscription=_sub_for_profile,
                 rule_id=rule_id,
                 fallback_profile_id=throttle_profile_id,
             )
-            throttle_profile_id = decision.profile_id
-            if not decision.derived:
+            throttle_profile_id = throttle_decision.profile_id
+            if not throttle_decision.derived:
                 logger.warning(
                     "FUP throttle for subscription %s fell back to the global "
                     "profile: %s",
                     subscription_id,
-                    decision.reason,
+                    throttle_decision.reason,
                 )
         try:
             updated = apply_radius_profile_to_account(

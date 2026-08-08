@@ -337,7 +337,7 @@ def _assert_not_last_enforcing_rule(db: Session, rule: FupRule, *, verb: str) ->
     if policy is None or not policy.is_active:
         return
     offer = db.get(CatalogOffer, policy.offer_id)
-    if not sale_requires_speed_reduction(offer):
+    if offer is None or not sale_requires_speed_reduction(offer):
         return
     remaining = [
         rule_id
