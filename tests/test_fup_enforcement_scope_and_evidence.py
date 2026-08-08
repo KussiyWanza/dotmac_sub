@@ -22,6 +22,7 @@ Defects merged in #2114 are pinned here:
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
@@ -150,13 +151,19 @@ def test_unlinked_credential_is_claimed_only_when_no_sibling_serves(
 # ---------------------------------------------------------------------------
 
 
-def test_apply_does_not_commit_so_the_caller_can_still_roll_back(
+def test_apply_does_not_commit_the_caller_owns_the_transaction(
     db_session, subscriber, catalog_offer
 ):
     """A throttle with no state row explaining it is unrecoverable evidence.
 
-    The apply leaves the change pending so that a later failure — staging the
-    FupState row, say — takes the throttle back with it.
+    Event handlers run on a savepoint-backed child session and the dispatcher
+    commits the parent even when a handler raises, so a commit *inside* this
+    helper released the savepoint and put the credential change beyond the
+    handler's own rollback. The change must stay pending, so that the FupState
+    row recording WHY it happened lands in the same transaction.
+
+    Asserted on the invariant (no commit) rather than by rolling back, so the
+    test does not depend on the fixture's transaction isolation strategy.
     """
     full = RadiusProfile(name=f"full-{uuid4().hex[:6]}", is_active=True)
     throttle = RadiusProfile(name=f"throttle-{uuid4().hex[:6]}", is_active=True)
@@ -164,18 +171,20 @@ def test_apply_does_not_commit_so_the_caller_can_still_roll_back(
     db_session.flush()
 
     sub = _sub(db_session, subscriber, catalog_offer)
-    cred = _cred(db_session, subscriber, sub, full, "rollback-user")
-    db_session.commit()
+    cred = _cred(db_session, subscriber, sub, full, "commit-owner")
+    db_session.flush()
 
-    updated, _ = apply_radius_profile_to_subscription(
-        db_session, str(sub.id), str(throttle.id)
-    )
+    with patch.object(
+        db_session, "commit", side_effect=AssertionError("apply must not commit")
+    ):
+        updated, usernames = apply_radius_profile_to_subscription(
+            db_session, str(sub.id), str(throttle.id)
+        )
+
     assert updated == 1
-
-    db_session.rollback()
-
-    db_session.refresh(cred)
-    assert cred.radius_profile_id == full.id
+    assert usernames == {"commit-owner"}
+    # Applied in-session and visible to the caller, but not yet durable.
+    assert cred.radius_profile_id == throttle.id
 
 
 # ---------------------------------------------------------------------------

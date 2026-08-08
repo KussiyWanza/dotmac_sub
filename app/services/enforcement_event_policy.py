@@ -163,9 +163,16 @@ def resolve_fup_event_policy(
         "fup_throttle_radius_profile_id",
     )
     if raw_profile_id is None or not str(raw_profile_id).strip():
-        raise _error(
-            "throttle_profile_required",
-            "FUP throttling requires a canonical RADIUS profile setting.",
+        # Absent, not fatal. This setting is the FALLBACK profile; the throttle
+        # a subscriber actually gets is derived from their own rate by
+        # app/services/fup_throttle_profile.py. Refusing the whole decision here
+        # meant a deployment that never set it enforced nothing at all. The
+        # resolver raises if derivation fails AND this fallback is missing, so
+        # the genuinely unthrottleable case still surfaces.
+        return FupEventPolicyDecision(
+            action=action,
+            throttle_profile_id=None,
+            refresh_sessions=resolve_session_refresh_policy(db).enabled,
         )
     try:
         throttle_profile_id = UUID(str(raw_profile_id).strip())

@@ -673,12 +673,18 @@ DOMAIN = DomainSOT(
                         "access.event_policy.throttle_profile_required",
                         "access.event_policy.invalid_throttle_profile_id",
                         "access.event_policy.invalid_throttle_decision",
+                        "access.event_policy.subscription_required",
                     ),
                     mapping_owner=("event dispatcher and RADIUS projection adapters"),
                     fail_closed_on=(
                         "invalid event action evidence",
                         "invalid canonical boolean or action settings",
-                        "missing or invalid throttle RADIUS profile evidence",
+                        # An ABSENT global throttle profile is not fail-closed:
+                        # it is the fallback, and the per-subscriber derived
+                        # profile is the primary path. Only an invalid value,
+                        # or a throttle that can be derived from neither, fails.
+                        "invalid throttle RADIUS profile evidence",
+                        "no derivable throttle rate and no configured fallback",
                     ),
                 ),
                 migration=MigrationContract(
