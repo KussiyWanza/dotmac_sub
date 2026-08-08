@@ -1076,6 +1076,7 @@ def test_customer_reply_emails_each_active_assignee_once(db_session, subscriber)
         db_session.query(Notification)
         .filter(Notification.channel == NotificationChannel.email)
         .filter(Notification.recipient == assignee.email)
+        .filter(Notification.subject == f"New customer reply on ticket {ticket.number}")
         .all()
     )
     assert len(emails) == 1

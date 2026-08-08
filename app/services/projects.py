@@ -2234,7 +2234,7 @@ def _notify_new_project_task_assignees(
     previous_assignee_ids: frozenset[UUID],
     context: CommandContext,
 ) -> ProjectTaskReassignmentNotificationOutcome:
-    """Email active staff newly added to an already-existing project task."""
+    """Notify active staff newly added to an already-existing project task."""
 
     added_assignee_ids = tuple(
         sorted(
@@ -2271,7 +2271,7 @@ def _notify_new_project_task_assignees(
             project=project,
             assigned_to=user,
             context=context,
-            include_push=False,
+            include_push=True,
         ):
             queued_email_user_ids.append(user.id)
         else:
