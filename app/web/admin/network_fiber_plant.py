@@ -11,6 +11,9 @@ from app.db import get_db
 from app.services import fiber_topology as fiber_topology_service
 from app.services import web_network_fdh as web_network_fdh_service
 from app.services import web_network_fiber as web_network_fiber_service
+from app.services import (
+    web_network_fiber_field_verification as fiber_field_verification_web_service,
+)
 from app.services import web_network_fiber_plant as web_network_fiber_plant_service
 from app.services import (
     web_network_fiber_plant_actions as web_network_fiber_plant_actions_service,
@@ -36,9 +39,6 @@ from app.services.network.fiber_topology_connectivity_review import (
 )
 from app.services.network.fiber_topology_field_map import (
     project_fiber_field_verification_map,
-)
-from app.services.network.fiber_topology_field_worklist import (
-    reconcile_fiber_field_worklist,
 )
 from app.services.network.fiber_topology_identity_coverage import (
     reconcile_fiber_identity_coverage,
@@ -331,17 +331,38 @@ def fiber_identity_coverage(request: Request, db: Session = Depends(get_db)):
     response_class=HTMLResponse,
     dependencies=[Depends(require_permission("network:fiber:read"))],
 )
-def fiber_field_verification_worklist(request: Request, db: Session = Depends(get_db)):
+def fiber_field_verification_worklist(
+    request: Request,
+    page: int = Query(default=1, ge=1),
+    per_page: int = Query(default=25),
+    db: Session = Depends(get_db),
+):
     """Show the complete read-only staged-source field-evidence worklist."""
 
-    worklist = reconcile_fiber_field_worklist(db)
+    page_query = (
+        fiber_field_verification_web_service.build_fiber_field_worklist_page_query(
+            page=page,
+            per_page=per_page,
+        )
+    )
+    page_data = fiber_field_verification_web_service.get_fiber_field_worklist_page(
+        db=db,
+        query=page_query,
+    )
     context = _base_context(
         request,
         db,
         active_page="fiber-field-verification",
         active_menu="fiber",
     )
-    context["worklist"] = worklist
+    context.update(
+        {
+            "list_query": page_data.list_query,
+            "page_meta": page_data.page_meta,
+            "worklist": page_data.worklist,
+            "worklist_rows": page_data.rows,
+        }
+    )
     return templates.TemplateResponse(
         "admin/network/fiber/field_verification_worklist.html", context
     )

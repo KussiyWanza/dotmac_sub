@@ -302,6 +302,8 @@ def test_admin_route_and_template_are_read_only_complete_cohort_projection():
     content = template.read_text()
     assert "always use the complete cohort" in content
     assert "cannot create or assign work orders" in content
-    assert "worklist.rows[:500]" in content
+    assert "worklist_rows" in content
+    assert "list_pagination" in content
+    assert "worklist.rows[:500]" not in content
     assert "cutover gate" in content
-    assert "<form" not in content
+    assert 'type="submit"' not in content

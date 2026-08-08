@@ -1,4 +1,5 @@
 {% extends "layouts/admin.html" %}
+{% from "components/ui/list_macros.html" import list_pagination %}
 
 {% block title %}Network Backups - Admin{% endblock %}
 
@@ -138,6 +139,7 @@
                 </tbody>
             </table>
         </div>
+        {{ list_pagination(list_query, page_meta, '/admin/network/backups', entity='devices') }}
     </div>
 </div>
 {% endblock %}

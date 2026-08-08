@@ -89,3 +89,19 @@ def test_list_pagination_preserves_query_state_and_announces_results():
         "/admin/referrals?status=pending&amp;sort=created_at&amp;dir=desc"
         "&amp;page=3&amp;per_page=25"
     ) in html
+
+
+def test_list_pagination_can_return_to_an_anchored_section():
+    query = _query(sort_by="created_at", sort_dir="desc", page=2)
+    page_meta = PageMeta.from_query(query, 1240)
+    tmpl = _environment().from_string(
+        "{% from 'components/ui/list_macros.html' import list_pagination %}"
+        "{{ list_pagination(lq, page_meta, '/admin/referrals', "
+        "entity='identities', anchor='latest-identities', compact_range=true) }}"
+    )
+
+    html = tmpl.render(lq=query, page_meta=page_meta)
+
+    assert "Showing 26&ndash;50 of 1,240 identities" in html
+    assert 'action="/admin/referrals#latest-identities"' in html
+    assert "page=3&amp;per_page=25#latest-identities" in html

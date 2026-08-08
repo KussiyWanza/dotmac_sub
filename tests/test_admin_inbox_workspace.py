@@ -128,6 +128,11 @@ def test_workspace_exposes_responsive_realtime_and_accessible_controls():
     triage = Path("templates/components/ui/triage.html").read_text()
     assert 'set priority_label = "Urgent"' in triage
     assert "assignee.initials" in triage
+    assert "message.sender" in triage
+    assert "outbound_sender.display_name" in triage
+    assert "outbound_sender.initials" in triage
+    assert 'aria-label="Sent by {{ outbound_sender_name }}"' in triage
+    assert ">AG</div>" not in triage
     assert "dotmac.inbox.draft." in javascript
     assert "newMessagesAvailable" in javascript
     assert "setInterval" in javascript

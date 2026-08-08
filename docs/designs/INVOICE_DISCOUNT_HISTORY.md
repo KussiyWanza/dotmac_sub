@@ -57,10 +57,12 @@ metadata.
 
 ## History read model
 
-The Invoice Discounts page reads the canonical history table joined to the
-current Invoice, customer Party, and staff actor. It supports date, customer,
+The Invoice tab of `/admin/reports/discounts` reads this canonical typed history
+projection through `ui.document_discount_report`. It supports date, customer,
 salesperson, discount type, Invoice status, and source filters. It links to both
-the Invoice and the source Quote when present.
+the Invoice and the source Quote when present. The old operational page redirects
+to this report and no longer owns a template or context builder. See
+`docs/designs/DOCUMENT_DISCOUNT_REPORT.md` for the page and double-count contract.
 
 Freshness is transactional: a committed discount revision is immediately
 visible. There is no cache or separately writable projection. A rebuild is the

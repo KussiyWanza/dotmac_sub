@@ -207,6 +207,11 @@ stale. Realtime has no replay authority.
   state of queued, accepted, sent, delivered, read, or retried. Failed,
   scheduled, AI-intake, and explicitly no-response-required messages do not
   establish the prior agent reply.
+- Outbound message bubbles resolve their saved `sent_by_person_id` against the
+  canonical `SystemUser` identity at read time, including inactive staff, and
+  expose a typed display name and initials. Legacy, automated, deleted, or
+  malformed sender references fall back to `Support agent` / `AG`; the current
+  viewer is never presented as the historical sender.
 - Needs Attention excludes resolved, snoozed, inactive, ticketed, Facebook
   comment, and Instagram comment conversations. Direct Messenger and Instagram
   DM conversations remain eligible.

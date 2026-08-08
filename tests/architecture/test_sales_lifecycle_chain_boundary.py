@@ -193,8 +193,10 @@ def test_quote_discounts_are_quote_level_audited_and_history_preserving():
     sales = _source("app/services/sales/service.py")
     schema = _source("app/schemas/sales.py")
     route = _source("app/web/admin/sales.py")
+    report_route = _source("app/web/admin/reports.py")
+    report_projection = _source("app/services/web_document_discount_report.py")
     form = _source("templates/admin/sales/quotes/form.html")
-    history_page = _source("templates/admin/sales/quotes/discounts.html")
+    history_page = _source("templates/admin/reports/discounts.html")
     migration = _source("alembic/versions/480_quote_discount_history.py")
 
     assert "class QuoteDiscountInput" in authoring
@@ -226,9 +228,12 @@ def test_quote_discounts_are_quote_level_audited_and_history_preserving():
     assert 'name="discount_value"' in form
 
     assert '"/quote-discounts"' in route
-    assert 'require_permission("crm:quote:read")' in route
-    assert "Original Subtotal" in history_page
-    assert "Applied By / Date" in history_page
+    assert "/admin/reports/discounts?tab=quotes" in route
+    assert 'require_permission("reports:billing:read")' in route
+    assert '"/discounts"' in report_route
+    assert "list_quote_discount_history(" in report_projection
+    assert "Original subtotal" in history_page
+    assert "Applied by and date" in history_page
     assert "md:hidden" in history_page
     assert "Retry" in history_page
 

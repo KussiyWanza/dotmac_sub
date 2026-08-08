@@ -89,7 +89,6 @@ from app.services.sales import (
     quote_activity,
     quote_authoring,
     quote_delivery,
-    quote_discount_reporting,
     quote_documents,
 )
 from app.services.sales.selfserve import compute_feasibility
@@ -348,21 +347,6 @@ QUOTE_LIST_DEFINITION = ListDefinition(
         ListFieldDefinition("updated_at", "Updated", sortable=True),
     ),
     default_sort="created_at",
-    default_sort_dir="desc",
-)
-
-QUOTE_DISCOUNT_LIST_DEFINITION = ListDefinition(
-    key="quote_discounts",
-    fields=(
-        ListFieldDefinition("customer", "Customer", searchable=True),
-        ListFieldDefinition("date_from", "From date", filterable=True),
-        ListFieldDefinition("date_to", "To date", filterable=True),
-        ListFieldDefinition("salesperson_id", "Salesperson", filterable=True),
-        ListFieldDefinition("discount_type", "Discount type", filterable=True),
-        ListFieldDefinition("quote_status", "Quote status", filterable=True),
-        ListFieldDefinition("applied_at", "Applied", sortable=True),
-    ),
-    default_sort="applied_at",
     default_sort_dir="desc",
 )
 
@@ -3052,163 +3036,6 @@ def build_quotes_failure_context(
         "filters_active": bool(list_query.search or list_query.filters),
         "api_error": "Quotes could not be loaded. No CRM data was changed.",
         "retry_url": list_query.url("/admin/sales/quotes"),
-    }
-
-
-def build_quote_discounts_list_context(
-    db: Session,
-    *,
-    date_from: str | None,
-    date_to: str | None,
-    customer: str | None,
-    salesperson_id: str | None,
-    discount_type: str | None,
-    quote_status: str | None,
-    page: int,
-    per_page: int,
-) -> dict[str, Any]:
-    def parsed_date(value: str | None, label: str) -> date | None:
-        candidate = (value or "").strip()
-        if not candidate:
-            return None
-        try:
-            return date.fromisoformat(candidate)
-        except ValueError:
-            raise ValueError(f"{label} must be a valid date.") from None
-
-    def parsed_uuid(value: str | None) -> UUID | None:
-        candidate = (value or "").strip()
-        if not candidate:
-            return None
-        try:
-            return UUID(candidate)
-        except ValueError:
-            raise ValueError("Select a valid salesperson.") from None
-
-    try:
-        selected_type = (
-            QuoteDiscountType((discount_type or "").strip())
-            if (discount_type or "").strip()
-            else None
-        )
-    except ValueError:
-        raise ValueError("Select a valid Discount type.") from None
-    try:
-        selected_status = (
-            QuoteStatus((quote_status or "").strip())
-            if (quote_status or "").strip()
-            else None
-        )
-    except ValueError:
-        raise ValueError("Select a valid Quote status.") from None
-
-    safe_per_page = (
-        per_page
-        if per_page in QUOTE_DISCOUNT_LIST_DEFINITION.per_page_options
-        else QUOTE_DISCOUNT_LIST_DEFINITION.default_per_page
-    )
-    result = quote_discount_reporting.list_quote_discount_history(
-        db,
-        quote_discount_reporting.QuoteDiscountHistoryQuery(
-            date_from=parsed_date(date_from, "From date"),
-            date_to=parsed_date(date_to, "To date"),
-            customer=" ".join((customer or "").split()) or None,
-            salesperson_id=parsed_uuid(salesperson_id),
-            discount_type=selected_type,
-            quote_status=selected_status,
-            page=max(1, page),
-            page_size=safe_per_page,
-        ),
-    )
-    filters = {
-        "date_from": (date_from or "").strip() or None,
-        "date_to": (date_to or "").strip() or None,
-        "salesperson_id": (salesperson_id or "").strip() or None,
-        "discount_type": selected_type.value if selected_type else None,
-        "quote_status": selected_status.value if selected_status else None,
-    }
-    list_query = QUOTE_DISCOUNT_LIST_DEFINITION.build_query(
-        search=" ".join((customer or "").split()) or None,
-        filters=filters,
-        sort_by="applied_at",
-        sort_dir="desc",
-        page=result.page,
-        per_page=result.page_size,
-    )
-    page_meta = PageMeta.from_query(list_query, result.total_count)
-    return {
-        "discounts": list(result.items),
-        "actors": list(quote_discount_reporting.quote_discount_actor_options(db)),
-        "discount_types": list(QuoteDiscountType),
-        "quote_statuses": list(QuoteStatus),
-        "list_query": list_query,
-        "page_meta": page_meta,
-        "total": result.total_count,
-        "date_from": filters["date_from"] or "",
-        "date_to": filters["date_to"] or "",
-        "customer": list_query.search or "",
-        "salesperson_id": filters["salesperson_id"] or "",
-        "discount_type": filters["discount_type"] or "",
-        "quote_status": filters["quote_status"] or "",
-    }
-
-
-def build_quote_discounts_failure_context(
-    *,
-    date_from: str | None,
-    date_to: str | None,
-    customer: str | None,
-    salesperson_id: str | None,
-    discount_type: str | None,
-    quote_status: str | None,
-    page: int,
-    per_page: int,
-) -> dict[str, Any]:
-    """Build a retryable discount-history state without database access."""
-
-    normalized_type = _clean_choice(
-        discount_type, [item.value for item in QuoteDiscountType]
-    )
-    normalized_status = _clean_choice(
-        quote_status, [item.value for item in QuoteStatus]
-    )
-    normalized_actor = _clean_uuid(salesperson_id)
-    safe_per_page = (
-        per_page
-        if per_page in QUOTE_DISCOUNT_LIST_DEFINITION.per_page_options
-        else QUOTE_DISCOUNT_LIST_DEFINITION.default_per_page
-    )
-    filters = {
-        "date_from": (date_from or "").strip() or None,
-        "date_to": (date_to or "").strip() or None,
-        "salesperson_id": normalized_actor,
-        "discount_type": normalized_type,
-        "quote_status": normalized_status,
-    }
-    list_query = QUOTE_DISCOUNT_LIST_DEFINITION.build_query(
-        search=" ".join((customer or "").split()) or None,
-        filters=filters,
-        sort_by="applied_at",
-        sort_dir="desc",
-        page=max(1, page),
-        per_page=safe_per_page,
-    )
-    return {
-        "discounts": [],
-        "actors": [],
-        "discount_types": list(QuoteDiscountType),
-        "quote_statuses": list(QuoteStatus),
-        "list_query": list_query,
-        "page_meta": PageMeta.from_query(list_query, 0),
-        "total": 0,
-        "date_from": filters["date_from"] or "",
-        "date_to": filters["date_to"] or "",
-        "customer": list_query.search or "",
-        "salesperson_id": filters["salesperson_id"] or "",
-        "discount_type": filters["discount_type"] or "",
-        "quote_status": filters["quote_status"] or "",
-        "error": "Quote discounts could not be loaded. No Quote data was changed.",
-        "retry_url": list_query.url("/admin/sales/quote-discounts"),
     }
 
 
