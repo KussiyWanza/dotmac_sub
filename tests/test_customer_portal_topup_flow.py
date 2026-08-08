@@ -310,6 +310,7 @@ def test_get_topup_page_uses_owner_active_deposit_state(
         "created_at": intent.created_at,
         "expires_at": intent.expires_at,
         "observed_at": page["active_deposit_request"]["observed_at"],
+        "can_cancel": status == "pending",
         # None here is the point: neither fixture has a rejected proof, so the
         # normal phases stay untouched.
         "rejection_reason": None,

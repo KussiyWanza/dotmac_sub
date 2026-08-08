@@ -45,9 +45,11 @@ def _command(subscriber, intent, *, reason="Failed pending intent"):
 
 def test_cancels_pending_unsubmitted_direct_transfer(db_session, subscriber):
     intent = _intent(db_session, subscriber)
+    command = _command(subscriber, intent)
+    db_session.rollback()
 
     outcome = payment_intent_management.cancel_unsubmitted_direct_transfer(
-        db_session, _command(subscriber, intent)
+        db_session, command
     )
 
     db_session.refresh(intent)
@@ -59,10 +61,12 @@ def test_cancels_pending_unsubmitted_direct_transfer(db_session, subscriber):
 
 def test_rejects_cancellation_after_payment_proof_is_linked(db_session, subscriber):
     intent = _intent(db_session, subscriber, metadata={"payment_proof_id": "proof-1"})
+    command = _command(subscriber, intent)
+    db_session.rollback()
 
     with pytest.raises(TopupIntentError) as exc:
         payment_intent_management.cancel_unsubmitted_direct_transfer(
-            db_session, _command(subscriber, intent)
+            db_session, command
         )
 
     assert exc.value.code == "financial.topup_intents.proof_link_conflict"
