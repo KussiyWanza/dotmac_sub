@@ -79,10 +79,16 @@ class AdminNotification(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    alert_id: Mapped[uuid.UUID] = mapped_column(
+    alert_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("admin_alerts.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
+    )
+    source_notification_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("notifications.id", ondelete="SET NULL"),
+        nullable=True,
+        unique=True,
     )
     system_user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -104,4 +110,5 @@ class AdminNotification(Base):
     )
 
     alert = relationship("AdminAlert", back_populates="notifications")
+    source_notification = relationship("Notification")
     system_user = relationship("SystemUser")
