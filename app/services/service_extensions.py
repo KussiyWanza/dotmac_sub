@@ -266,6 +266,13 @@ class ServiceExtensionScopeOptions:
     max_days: int
 
 
+CREATABLE_SERVICE_EXTENSION_SCOPES: tuple[ServiceExtensionScope, ...] = (
+    ServiceExtensionScope.pop_site,
+    ServiceExtensionScope.nas_device,
+    ServiceExtensionScope.subscribers,
+)
+
+
 @dataclass(frozen=True, slots=True)
 class ServiceExtensionTransitionEligibility:
     can_apply: bool
@@ -1582,6 +1589,13 @@ def create_service_extension(
             _error("invalid_window", "Outage end must be after its start.")
         days = _validated_days(db, command.days)
 
+        if command.scope_type not in CREATABLE_SERVICE_EXTENSION_SCOPES:
+            _error(
+                "network_scope_retired",
+                "Whole-network service extensions can no longer be created.",
+                scope_type=command.scope_type.value,
+            )
+
         resolved_subscriber_ids: list[uuid.UUID] = []
         if command.scope_type == ServiceExtensionScope.subscribers:
             resolver = (
@@ -2584,7 +2598,7 @@ def scope_options(db: Session) -> ServiceExtensionScopeOptions:
             ServiceExtensionScopeChoice(id=item.id, label=item.name)
             for item in db.scalars(select(NasDevice).order_by(NasDevice.name)).all()
         ),
-        scope_types=tuple(ServiceExtensionScope),
+        scope_types=CREATABLE_SERVICE_EXTENSION_SCOPES,
         max_days=_max_extension_days(db),
     )
 

@@ -21,12 +21,14 @@ Overridden work reaches production without staging having run it, so reconcile
    Do not edit `VERSION` in the source pull request; the version-bump workflow
    owns the separate rolling bump pull request after merge.
 2. Require CI, Mobile CI, and Version Impact to pass before merging.
-3. Merge into `dev`. Push CI and the GHCR workflow then validate and build the
-   exact `origin/dev` commit.
-4. Deploy the immutable `sha-<short-commit>` image only to the staging host.
-5. Complete staging acceptance against `http://10.120.121.20:8001`.
-6. Merge the rolling version-bump PR for `dev`, when one exists, and repeat the
-   staging gate for that final versioned dev commit.
+3. Merge into `dev` and let the rolling version-bump pull request be created.
+4. Merge the rolling version-bump PR for `dev`, when one exists, and require CI
+   and Mobile CI to pass on that final exact `origin/dev` commit.
+5. Dispatch `Build release candidate once` on `dev`, supplying that full dev
+   SHA as `candidate_sha`. The workflow refuses a stale SHA or non-green source,
+   builds the application once on GitHub, and records its immutable OCI digest.
+6. Let `Deploy dev to staging` deploy that exact digest, then complete staging
+   acceptance against `http://10.120.121.20:8001`.
 7. Promote the accepted dev tree to `main` without unrelated changes. The
    promotion PR uses `version:none` with a body explaining that the version was
    already established and validated on dev. **Merge it with a merge commit,
@@ -35,14 +37,27 @@ Overridden work reaches production without staging having run it, so reconcile
    commit exists only on `main`, so `dev` is left one commit behind and the
    ancestry check starts failing again until this is done — see "Fast-forward
    `dev` to `main` immediately after a promotion merges" below.
-9. Require main CI and the main GHCR build to pass. Only the default branch may
-   receive the moving `latest` image tag.
+9. During Step 2 migration, require main CI and the existing main GHCR build to
+   pass. Only the default branch may receive the moving `latest` image tag. A
+   later slice will authorize and retag the accepted candidate digest without
+   rebuilding it, then retire this temporary second-build path.
 10. Deploy the immutable main image to production only after Michael explicitly
     requests the named production host.
 
-The main build remains separate from the dev build. GitHub Actions layer
-caching makes the second build faster while preserving commit-specific OCI
-revision evidence.
+Invoke the candidate workflow only after the final rolling version bump. Do not
+build and stage every intermediate feature merge. Until the later publisher
+cutover, the legacy GHCR workflow may still publish compatibility images, but
+those tags are not staging acceptance evidence.
+
+### One-time workflow bootstrap
+
+GitHub accepts `workflow_dispatch` only after the workflow file exists on the
+default branch. Therefore, the promotion that first introduces
+`release-candidate.yml` cannot use that workflow to stage itself. Use the
+previously active dev-image staging path for that one promotion, with all of its
+existing CI, staging, and approval gates. Once the change reaches `main`, every
+later release uses the explicit candidate workflow. Do not fabricate an
+evidence artifact or bypass staging to shorten the bootstrap.
 
 ## Merge methods
 
@@ -222,17 +237,35 @@ all of the following are true:
   deployment runner. Interactive development, agents, and diagnostic edits use
   separate worktrees and never write into the deployment worktree.
 - The tracked deployment worktree is clean. The workflow refuses to discard
-  tracked changes and updates local `dev` only by fast-forward.
+  tracked changes, verifies the exact fetched `origin/dev` candidate, checks it
+  out at detached `HEAD`, and leaves every local branch pointer unchanged. A
+  local development branch is preserved as a reference but never controls or
+  blocks deployment checkout state.
 
-The workflow accepts only a successful push-triggered GHCR build from this
-repository's current `dev` tip. It waits for the CI and Mobile CI push workflows
-for the exact same commit, rejects stale or failed candidates, verifies that
-Celery Beat is absent, verifies the private `10.120.121.20:8001` binding, and
-then invokes `scripts/deploy_staging.sh`. That staging-only adapter proves the
-exact environment, server name, and private health endpoint before delegating
-to the hardened deployment owner. The deployment owner independently repeats
-the GitHub API decision for the image's full OCI revision and requires green
-`CI` and `Mobile CI` push runs on `dev` before any database or service change.
+The workflow accepts only a successful manually dispatched `Build release
+candidate once` run from this repository's current `dev` tip. Start it with an
+exact full SHA, for example:
+
+```bash
+gh workflow run release-candidate.yml --ref dev -f candidate_sha=<full-dev-sha>
+```
+
+The candidate workflow requires the exact dev SHA to have green CI and Mobile
+CI, refuses to overwrite an existing `candidate-<full-sha>` bootstrap tag,
+builds only on a GitHub-hosted runner, and uploads
+`release-candidate-evidence`. That typed document binds the source commit, Git
+tree, OCI digest, source-CI conclusion, and build run ID.
+
+The staging workflow downloads evidence only from its triggering run,
+independently recomputes the candidate tree, waits for the exact source checks,
+rejects stale or mismatched evidence, verifies that Celery Beat is absent, and
+verifies the private `10.120.121.20:8001` binding. It invokes
+`scripts/deploy_staging.sh` with the digest and verifies the running image
+reference plus revision, source-tree, and build-run labels. After successful
+health checks, a GitHub-hosted job uploads `staging-acceptance-<source-sha>` for
+the same commit, tree, and digest. The deployment owner independently repeats
+the GitHub API decision for the image's full OCI revision before any database
+or service change.
 
 ## Staging database-backup policy
 
@@ -260,8 +293,11 @@ files are retained until a separately approved retention action.
 ## Failure behavior
 
 - A missing runner, disabled repository switch, wrong host path, dirty tracked
-  checkout, stale dev SHA, failed check, missing image, unexpected port, or
-  active Celery Beat prevents deployment.
+  checkout, stale dev SHA, failed check, malformed or mismatched evidence,
+  missing digest, unexpected port, or active Celery Beat prevents deployment.
+- The deployment checkout never moves, merges, resets, or force-updates a local
+  branch. It detaches at the verified candidate so an unrelated local branch
+  cannot diverge from `origin/dev` and block or influence a release.
 - `scripts/deploy.sh` still owns backup, migration, candidate health, primary
   health, worker readiness, rollback, and image-retention behavior; the guarded
   staging adapter supplies only the staging-specific backup and proxy opt-outs.

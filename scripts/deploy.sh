@@ -7,7 +7,8 @@
 # (host build) is kept only as an air-gapped/registry-down fallback.
 #
 # Usage:
-#   deploy.sh sha-abc1234        deploy this image tag (CI builds one per commit on main)
+#   deploy.sh sha-abc1234        deploy an existing immutable image tag
+#   deploy.sh sha256:<64-hex>    deploy the repository image by exact OCI digest
 #   deploy.sh --status           show pinned vs running image
 #   SKIP_BACKUP=1 deploy.sh ...  skip the pre-migration DB backup (NOT recommended)
 #   HEALTH_CURL_TIMEOUT=N ...    cap each health-check curl attempt at N seconds
@@ -426,6 +427,7 @@ validate_image_revision() {
   local image="$1"
   local tag="$2"
   local revision="$3"
+  local repo_digests
   local tag_sha
   if [[ ! "${revision}" =~ ^[0-9a-f]{40}$ ]]; then
     echo "IMAGE INTEGRITY FAILURE: ${image} has no full OCI revision label." >&2
@@ -438,6 +440,16 @@ validate_image_revision() {
       return 1
     fi
   fi
+  if [[ "${tag}" == sha256:* ]]; then
+    repo_digests="$(
+      docker image inspect "${image}" \
+        --format '{{range .RepoDigests}}{{println .}}{{end}}'
+    )"
+    if ! grep -Fxq "${image}" <<<"${repo_digests}"; then
+      echo "IMAGE INTEGRITY FAILURE: pulled image is not pinned to ${image}." >&2
+      return 1
+    fi
+  fi
 }
 
 if [[ "${1:-}" == "--status" ]]; then
@@ -447,8 +459,15 @@ if [[ "${1:-}" == "--status" ]]; then
   exit 0
 fi
 
-TAG="${1:?usage: deploy.sh <image-tag>, e.g. deploy.sh sha-abc1234 (or --status)}"
-IMAGE="${IMAGE_REPO}:${TAG}"
+TAG="${1:?usage: deploy.sh <image-tag-or-digest>, e.g. sha-abc1234 or sha256:<64-hex> (or --status)}"
+if [[ "${TAG}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+  IMAGE="${IMAGE_REPO}@${TAG}"
+elif [[ "${TAG}" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+  IMAGE="${IMAGE_REPO}:${TAG}"
+else
+  echo "IMAGE INTEGRITY FAILURE: image selector must be a valid tag or sha256 digest." >&2
+  exit 1
+fi
 PREV_IMAGE="$(pinned_image)"
 PREV_IMAGE_PRESENT="$(grep -q '^APP_IMAGE=' .env && printf 1 || printf 0)"
 PREV_GIT_SHA="$(pinned_git_sha)"

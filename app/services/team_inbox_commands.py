@@ -31,6 +31,7 @@ from app.services import (
     team_inbox_assignment,
     team_inbox_contact_links,
     team_inbox_field_job,
+    team_inbox_filters,
     team_inbox_media,
     team_inbox_operations,
     team_inbox_outbound,
@@ -752,19 +753,25 @@ def save_filter(
     db: Session,
     *,
     name: str,
-    filter_payload: dict[str, Any],
+    filter_payload: team_inbox_filters.InboxSavedFilterPayload,
     actor_person_id: str | UUID | None = None,
     is_shared: bool = False,
 ) -> None:
-    _commit(
-        db,
-        lambda: team_inbox_operations.save_filter(
+    def action() -> None:
+        normalized_payload = team_inbox_filters.normalize_saved_filter_payload(
+            db, filter_payload
+        )
+        team_inbox_operations.save_filter(
             db,
             name=name,
-            filter_payload=filter_payload,
+            filter_payload=normalized_payload,
             owner_person_id=actor_person_id,
             is_shared=is_shared,
-        ),
+        )
+
+    _commit(
+        db,
+        action,
     )
 
 

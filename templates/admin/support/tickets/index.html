@@ -350,6 +350,12 @@ function ticketColumnPicker() {
     return {
         open: false,
         init() {
+            this.closeOnOutsideClick = (event) => {
+                if (!event.target.closest('#ticket-column-toggle, #ticket-column-options')) {
+                    this.open = false;
+                }
+            };
+            document.addEventListener('click', this.closeOnOutsideClick, true);
             const apply = () => {
                 const checked = Array.from(document.querySelectorAll('.ticket-col-toggle:checked')).map((el) => el.dataset.columnKey);
                 document.querySelectorAll('[data-column]').forEach((el) => {
@@ -362,6 +368,9 @@ function ticketColumnPicker() {
                 el.addEventListener('change', apply);
             });
             apply();
+        },
+        destroy() {
+            document.removeEventListener('click', this.closeOnOutsideClick, true);
         }
     };
 }

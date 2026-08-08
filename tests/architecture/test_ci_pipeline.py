@@ -64,7 +64,7 @@ def test_unit_shards_prefer_measured_durations_over_source_size(
     assert groups[0] == [slowest]
 
 
-def test_ci_uses_one_named_application_cache_and_one_branch_publisher() -> None:
+def test_ci_uses_one_named_application_cache_during_publisher_migration() -> None:
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
     e2e_workflow = (ROOT / ".github/workflows/e2e.yml").read_text(encoding="utf-8")
     ghcr_workflow = (ROOT / ".github/workflows/ghcr.yml").read_text(encoding="utf-8")
@@ -89,6 +89,15 @@ def test_ci_uses_one_named_application_cache_and_one_branch_publisher() -> None:
     assert "scope=genieacs" in ghcr_workflow
     assert "-genieacs:${{ steps.version.outputs.version }}" in ghcr_workflow
     assert "genieacs:latest" not in ghcr_workflow
+
+    candidate_workflow = (ROOT / ".github/workflows/release-candidate.yml").read_text(
+        encoding="utf-8"
+    )
+    assert candidate_workflow.count("uses: docker/build-push-action@v6") == 1
+    assert "on:\n  workflow_dispatch:" in candidate_workflow
+    assert "on:\n  push:" not in candidate_workflow
+    assert "scope=dotmac-sub-application" in candidate_workflow
+    assert "type=raw,value=latest" not in candidate_workflow
 
 
 def test_ci_removes_workstation_venv_pointer_before_cache_and_restore() -> None:
