@@ -141,7 +141,7 @@ def build_management_command_batch(
     """
     from app.services.network.olt_validators import (
         ValidationError,
-        validate_fsp,
+        validate_fsp_parts,
         validate_gem_index,
         validate_ip_address,
         validate_ont_id,
@@ -156,13 +156,14 @@ def build_management_command_batch(
             raise ValueError(exc.message) from exc
 
     commands: list[tuple[str, str]] = []
-    fsp = validate_value(validate_fsp, spec.fsp)
+    fsp_parts = validate_value(validate_fsp_parts, spec.fsp)
+    fsp = fsp_parts.fsp
     ont_id = validate_value(
         validate_ont_id, _validate_non_negative_int(spec.ont_id_on_olt, "ont_id_on_olt")
     )
     ip_index = _validate_non_negative_int(spec.ip_index, "ip_index")
     ip_priority = _validate_priority(spec.ip_priority)
-    frame, slot, port = fsp.split("/")
+    frame, slot, port = fsp_parts.frame, fsp_parts.slot, fsp_parts.port
 
     # Service-port stage (global config mode)
     if spec.has_service_port:

@@ -3687,6 +3687,37 @@ writers are retired; historical rows remain readable evidence.
    still require the control-plane intent readback contract. Protocol adapter,
    authorization, provisioning, and reconcile history persist the sanitized
    classifier projection as operation evidence; raw CLI output is not retained.
+   Classification happens **once, on raw device output, at the point of
+   capture**, and travels as the typed `HuaweiDeviceOutcome` carrier;
+   `OltOperationResult.response_code` is the authoritative verdict downstream.
+   Re-classifying an operator-facing message is forbidden: that string is
+   wrapped and truncated, and re-parsing it silently disabled the
+   duplicate-serial reuse/move branch in `network.ont_authorization` while
+   synthetic-message unit tests stayed green. Operator-facing rejection text is
+   owned here too (`describe_huawei_rejection`) so the envelope the classifier
+   parses and the envelope the stack emits cannot drift apart. Regression
+   fixtures must be verbatim device output; a paraphrased fixture masked the
+   BOI/Gudu empty-autofind misclassification for weeks. Enforced by
+   `tests/architecture/test_huawei_cli_response_sot.py`.
+40a. `network.huawei_command_transport`: owns how one command line reaches a
+   Huawei shelf. `app.services.network.olt_ssh_ont._common.send_ont_command` is
+   the single writer: the line is always written atomically, because Huawei
+   line editors coalesce separately-written space characters, and
+   `HuaweiCommandProfile.requires_slow_send` selects the pace *between*
+   commands rather than splitting one. ONT lifecycle, OMCI, IPHOST, TR-069,
+   profile, and session paths call it instead of keeping local senders.
+40b. `network.fsp_identity`: `app.services.network.parsers.cli.canonical_fsp`
+   owns Frame/Slot/Port normalization and shape, returning the typed
+   `FspParts`. `olt_validators.validate_fsp_parts` layers the Huawei range
+   checks and the raising contract on top and returns the same typed parts;
+   `validate_fsp` is its canonical-string projection. Device commands are built
+   from `FspParts.frame_slot` / `.port`, never from a caller's raw string:
+   validation normalizes port-name prefixes (`gpon-0/1/0`) before matching, so
+   a caller that split the raw value emitted `interface gpon gpon-0/1` and
+   `service-port … gpon gpon-0/1/0 …`. `PonPort.name` is a real source of
+   prefixed values, so canonicalization happens at the command boundary rather
+   than being assumed upstream. Enforced across the OLT command-building
+   surface by `tests/architecture/test_huawei_cli_response_sot.py`.
 41. `network.routeros_sot`: owns typed MikroTik desired state, the managed
    resource/field registry, Dotmac ownership markers, verified reconciliation,
    and periodic drift evidence. Router routes and tasks only orchestrate it,

@@ -21,7 +21,9 @@ from app.services.events import emit_event
 from app.services.events.types import EventType
 from app.services.network.cpe import ensure_cpe_for_ont
 from app.services.network.huawei_cli_response import (
+    HuaweiCliErrorCode,
     HuaweiCliResource,
+    classify_huawei_cli_response,
     is_huawei_resource_absent,
 )
 from app.services.network.ont_actions import ActionResult
@@ -64,6 +66,12 @@ def _parse_ont_id_on_olt(external_id: str | None) -> int | None:
     return None
 
 
+#: Failures that never reached the Huawei command grammar. Nothing to confirm.
+_TRANSPORT_FAILURE_CODES = frozenset(
+    {HuaweiCliErrorCode.CONNECTION_ERROR, HuaweiCliErrorCode.TIMEOUT}
+)
+
+
 def _is_ont_already_absent(message: str | None) -> bool:
     return is_huawei_resource_absent(message, HuaweiCliResource.ONT)
 
@@ -87,9 +95,20 @@ def _verify_service_port_absent_on_olt(
     return False, message
 
 
-def _should_reconcile_service_port_delete_failure(message: str | None) -> bool:
-    normalized = (message or "").casefold()
-    return _is_service_port_already_absent(message) or "olt rejected" in normalized
+def _should_reconcile_service_port_delete_failure(result: object) -> bool:
+    """Whether a failed delete is worth confirming against the device.
+
+    A *device* rejection may still mean the port is gone (or was never there),
+    so it earns a readback. A transport failure does not. This used to sniff
+    the ``"olt rejected"`` prefix out of the message, which coupled the
+    decision to one call site's wording; it now reads the typed verdict.
+    """
+    code = getattr(result, "response_code", None)
+    if code is None:
+        code = classify_huawei_cli_response(getattr(result, "message", None)).error_code
+    if code in _TRANSPORT_FAILURE_CODES:
+        return False
+    return code is not HuaweiCliErrorCode.NONE
 
 
 def _resolve_return_olt_context(
@@ -155,7 +174,7 @@ def cleanup_olt_state_for_return(
         delete_result = adapter.delete_service_port(service_port.index)
         if not delete_result.success:
             verify_message = "not checked"
-            if _should_reconcile_service_port_delete_failure(delete_result.message):
+            if _should_reconcile_service_port_delete_failure(delete_result):
                 absent, verify_message = _verify_service_port_absent_on_olt(
                     olt, service_port.index
                 )

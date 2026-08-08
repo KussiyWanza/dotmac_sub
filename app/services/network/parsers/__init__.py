@@ -2,6 +2,8 @@
 
 from app.services.network.parsers.cli import (
     HUAWEI_OPTIONAL_ARG_PROMPT,
+    FspParts,
+    canonical_fsp,
     is_error_output,
     needs_huawei_command_confirm,
     normalize_fsp,
@@ -27,10 +29,12 @@ from app.services.network.parsers.service_ports import (
 
 __all__ = [
     "FirmwareInfo",
+    "FspParts",
     "HUAWEI_OPTIONAL_ARG_PROMPT",
     "ParseError",
     "ParseResult",
     "ServicePortEntry",
+    "canonical_fsp",
     "is_error_output",
     "needs_huawei_command_confirm",
     "normalize_fsp",

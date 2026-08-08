@@ -9,13 +9,21 @@ from paramiko.ssh_exception import SSHException
 
 from app.models.network import OLTDevice
 from app.services.network._common import encode_to_hex_serial
+from app.services.network.huawei_cli_response import (
+    HuaweiCliErrorCode,
+    HuaweiDeviceOutcome,
+    describe_huawei_rejection,
+    parse_huawei_ont_add_result,
+)
 from app.services.network.olt_ssh_ont._common import (
     _SSH_CONNECTION_ERRORS,
-    _send_slow,
-    _validate_fsp,
+    OntAuthorizationOutcome,
     _validate_serial,
+    invalid_fsp_message,
+    send_ont_command,
 )
 from app.services.network.olt_validators import ValidationError, validate_ont_id
+from app.services.network.parsers.cli import canonical_fsp
 
 logger = logging.getLogger(__name__)
 
@@ -24,9 +32,9 @@ def reboot_ont_omci(olt: OLTDevice, fsp: str, ont_id: int) -> tuple[bool, str]:
     """Reboot an ONT via OMCI from the OLT."""
     from app.services.network import olt_ssh as core
 
-    ok, err = core._validate_fsp(fsp)
-    if not ok:
-        return False, err
+    parts = canonical_fsp(fsp)
+    if parts is None:
+        return False, invalid_fsp_message(fsp)
 
     # Validate ont_id before CLI interpolation
     try:
@@ -34,9 +42,8 @@ def reboot_ont_omci(olt: OLTDevice, fsp: str, ont_id: int) -> tuple[bool, str]:
     except ValidationError as e:
         return False, e.message
 
-    parts = fsp.split("/")
-    frame_slot = f"{parts[0]}/{parts[1]}"
-    port_num = parts[2]
+    frame_slot = parts.frame_slot
+    port_num = parts.port
 
     try:
         transport, channel, _policy = core._open_shell(olt)
@@ -71,7 +78,7 @@ def reboot_ont_omci(olt: OLTDevice, fsp: str, ont_id: int) -> tuple[bool, str]:
                 olt.name,
                 output.strip()[-150:],
             )
-            return False, f"OLT rejected: {output.strip()[-150:]}"
+            return False, describe_huawei_rejection(output, detail_limit=150)
 
         logger.info("ONT %d reset via OMCI on OLT %s", ont_id, olt.name)
         return True, f"ONT {ont_id} reboot command sent via OMCI"
@@ -86,9 +93,9 @@ def factory_reset_ont_omci(olt: OLTDevice, fsp: str, ont_id: int) -> tuple[bool,
     """Full factory reset of an ONT via OMCI from the OLT."""
     from app.services.network import olt_ssh as core
 
-    ok, err = core._validate_fsp(fsp)
-    if not ok:
-        return False, err
+    parts = canonical_fsp(fsp)
+    if parts is None:
+        return False, invalid_fsp_message(fsp)
 
     # Validate ont_id before CLI interpolation
     try:
@@ -96,9 +103,8 @@ def factory_reset_ont_omci(olt: OLTDevice, fsp: str, ont_id: int) -> tuple[bool,
     except ValidationError as e:
         return False, e.message
 
-    parts = fsp.split("/")
-    frame_slot = f"{parts[0]}/{parts[1]}"
-    port_num = parts[2]
+    frame_slot = parts.frame_slot
+    port_num = parts.port
 
     try:
         transport, channel, _policy = core._open_shell(olt)
@@ -133,7 +139,7 @@ def factory_reset_ont_omci(olt: OLTDevice, fsp: str, ont_id: int) -> tuple[bool,
                 olt.name,
                 output.strip()[-150:],
             )
-            return False, f"OLT rejected: {output.strip()[-150:]}"
+            return False, describe_huawei_rejection(output, detail_limit=150)
 
         logger.info("Factory reset ONT %d via OMCI on OLT %s", ont_id, olt.name)
         return True, f"ONT {ont_id} factory reset command sent via OMCI"
@@ -150,9 +156,9 @@ def deauthorize_ont(olt: OLTDevice, fsp: str, ont_id: int) -> tuple[bool, str]:
     """Delete an ONT from the OLT so it can be rediscovered via autofind."""
     from app.services.network import olt_ssh as core
 
-    ok, err = core._validate_fsp(fsp)
-    if not ok:
-        return False, err
+    parts = canonical_fsp(fsp)
+    if parts is None:
+        return False, invalid_fsp_message(fsp)
 
     # Validate ont_id before CLI interpolation
     try:
@@ -160,9 +166,8 @@ def deauthorize_ont(olt: OLTDevice, fsp: str, ont_id: int) -> tuple[bool, str]:
     except ValidationError as e:
         return False, e.message
 
-    parts = fsp.split("/")
-    frame_slot = f"{parts[0]}/{parts[1]}"
-    port_num = parts[2]
+    frame_slot = parts.frame_slot
+    port_num = parts.port
 
     try:
         transport, channel, _policy = core._open_shell(olt)
@@ -200,9 +205,9 @@ def deauthorize_ont(olt: OLTDevice, fsp: str, ont_id: int) -> tuple[bool, str]:
                 olt.name,
                 delete_out.strip()[-150:],
             )
-            return False, f"OLT rejected: {delete_out.strip()[-150:]}"
+            return False, describe_huawei_rejection(delete_out, detail_limit=150)
 
-        logger.info("Deleted ONT %d from OLT %s on %s", ont_id, olt.name, fsp)
+        logger.info("Deleted ONT %d from OLT %s on %s", ont_id, olt.name, parts.fsp)
         core._invalidate_olt_read_cache(
             olt, "autofind", "service_ports", "running_config", "ont_info"
         )
@@ -245,7 +250,7 @@ def authorize_ont(
     line_profile_id: int | None = None,
     service_profile_id: int | None = None,
     description: str | None = None,
-) -> tuple[bool, str, int | None]:
+) -> OntAuthorizationOutcome:
     """SSH into OLT and register an ONT via sn-auth on the given port.
 
     Args:
@@ -259,29 +264,45 @@ def authorize_ont(
             ``display ont info`` never shows ``ONT_NO_DESCRIPTION``.
 
     Returns:
-        Tuple of (success, message, assigned_ont_id).
+        :class:`OntAuthorizationOutcome`. Acceptance is decided by
+        ``app.services.network.huawei_cli_response``, never by matching
+        response text here, and a shelf that returns no recognizable verdict
+        is reported as :attr:`~OntAuthorizationOutcome.device_was_silent`
+        rather than assumed successful.
     """
     from app.services.network import olt_ssh as core
 
     if line_profile_id is None or service_profile_id is None:
-        return (
-            False,
-            "OLT authorization profiles were not resolved; refusing to use static profile defaults.",
-            None,
+        return OntAuthorizationOutcome(
+            HuaweiDeviceOutcome.transport_failure(
+                "OLT authorization profiles were not resolved; refusing to use static profile defaults.",
+                code=HuaweiCliErrorCode.PROFILE_NOT_EXIST,
+            )
         )
     line_pid = line_profile_id
     srv_pid = service_profile_id
-    ok, err = _validate_fsp(fsp)
-    if not ok:
-        return False, err, None
+    parts = canonical_fsp(fsp)
+    if parts is None:
+        return OntAuthorizationOutcome(
+            HuaweiDeviceOutcome.transport_failure(
+                invalid_fsp_message(fsp),
+                code=HuaweiCliErrorCode.PARAMETER_ERROR,
+            )
+        )
     ok, err = _validate_serial(serial_number)
     if not ok:
-        return False, err, None
+        return OntAuthorizationOutcome(
+            HuaweiDeviceOutcome.transport_failure(
+                err, code=HuaweiCliErrorCode.PARAMETER_ERROR
+            )
+        )
 
     try:
         transport, channel, policy = core._open_shell(olt)
     except (SSHException, OSError, TimeoutError, ValueError) as exc:
-        return False, f"Connection failed: {exc}", None
+        return OntAuthorizationOutcome(
+            HuaweiDeviceOutcome.transport_failure(f"Connection failed: {exc}")
+        )
 
     try:
         # Enter enable mode
@@ -293,12 +314,14 @@ def authorize_ont(
         channel.send("config\n")
         core._read_until_prompt(channel, config_prompt, timeout_sec=5)
 
-        # Enter GPON interface for the frame/slot
-        parts = fsp.split("/")
-        frame_slot = f"{parts[0]}/{parts[1]}"
-        port_num = parts[2]
+        # Enter GPON interface for the frame/slot. Commands are built from the
+        # canonical F/S/P, never the caller's raw string: a port name like
+        # ``gpon-0/1/0`` passes validation after normalization but would
+        # otherwise produce ``interface gpon gpon-0/1``.
+        frame_slot = parts.frame_slot
+        port_num = parts.port
 
-        _send_slow(channel, f"interface gpon {frame_slot}")
+        send_ont_command(olt, channel, f"interface gpon {frame_slot}")
         core._read_until_prompt(channel, config_prompt, timeout_sec=5)
 
         # Authorize the ONT — use hex serial format to avoid terminal corruption
@@ -319,7 +342,7 @@ def authorize_ont(
             f"ont-lineprofile-id {line_pid} ont-srvprofile-id {srv_pid} "
             f'desc "{desc_clean}"'
         )
-        _send_slow(channel, auth_cmd)
+        send_ont_command(olt, channel, auth_cmd)
         # With desc supplied we no longer expect the "{ <cr>|desc<K>|ont-type<K> }:"
         # follow-up prompt, but keep the fallback to handle older Huawei firmware
         # builds that still demand a CR confirmation.
@@ -336,41 +359,63 @@ def authorize_ont(
         channel.send("quit\n")
         core._read_until_prompt(channel, config_prompt, timeout_sec=3)
 
-        # Check for success indicators
-        ont_id_match = re.search(r"ont-?id\D+(\d+)", output, flags=re.IGNORECASE)
-        ont_id = int(ont_id_match.group(1)) if ont_id_match else None
+        # The classifier owns acceptance and rejection alike. It consults the
+        # error classification first, so a rejection that happens to name an
+        # ONT-ID can no longer be read as a successful authorization.
+        add_result = parse_huawei_ont_add_result(output)
 
-        if "success" in output.lower() or "ont-id" in output.lower():
+        if add_result.accepted:
             logger.info(
                 "Authorized ONT %s on OLT %s port %s",
                 serial_number,
                 olt.name,
-                fsp,
+                parts.fsp,
             )
-            message = f"ONT {serial_number} authorized on port {fsp}"
-            if ont_id is not None:
-                message += f" (ONT-ID {ont_id})"
+            message = f"ONT {serial_number} authorized on port {parts.fsp}"
+            if add_result.ont_id is not None:
+                message += f" (ONT-ID {add_result.ont_id})"
             core._invalidate_olt_read_cache(
                 olt, "autofind", "service_ports", "running_config", "ont_info"
             )
-            return True, message, ont_id
-        if core.is_error_output(output):
+            return OntAuthorizationOutcome(
+                HuaweiDeviceOutcome.accepted(message, code=add_result.code),
+                ont_id=add_result.ont_id,
+            )
+
+        if add_result.code is not HuaweiCliErrorCode.NONE:
             logger.warning(
                 "Failed to authorize ONT %s on OLT %s: %s",
                 serial_number,
                 olt.name,
-                output.strip(),
+                add_result.code.value,
             )
-            return False, f"OLT rejected command: {output.strip()[-200:]}", None
+            return OntAuthorizationOutcome(
+                HuaweiDeviceOutcome.rejected_by_device(output, action="ont add")
+            )
 
-        # Ambiguous — return output for inspection
+        # The shelf returned no recognizable verdict. This is not success. The
+        # write may still have landed, so the caller must confirm by readback
+        # instead of the old "command sent" optimism, which reported stale
+        # caches and unverified registrations as completed authorizations.
         logger.info(
-            "ONT authorize command sent for %s on OLT %s, output: %s",
+            "ONT authorize returned no verdict for %s on OLT %s; readback required",
             serial_number,
             olt.name,
-            output.strip(),
         )
-        return True, f"Command sent for {serial_number} on port {fsp}", ont_id
+        core._invalidate_olt_read_cache(
+            olt, "autofind", "service_ports", "running_config", "ont_info"
+        )
+        return OntAuthorizationOutcome(
+            HuaweiDeviceOutcome(
+                succeeded=False,
+                code=HuaweiCliErrorCode.NONE,
+                message=(
+                    f"OLT returned no verdict for {serial_number} on port "
+                    f"{parts.fsp}; registration must be confirmed by readback."
+                ),
+                device_detail=output.strip()[-200:],
+            )
+        )
     except (*_SSH_CONNECTION_ERRORS, RuntimeError) as exc:
         logger.error(
             "Error authorizing ONT %s on OLT %s: %s",
@@ -379,6 +424,8 @@ def authorize_ont(
             exc,
             exc_info=True,
         )
-        return False, f"Error: {exc}", None
+        return OntAuthorizationOutcome(
+            HuaweiDeviceOutcome.transport_failure(f"Error: {exc}")
+        )
     finally:
         transport.close()

@@ -13,6 +13,8 @@ import ipaddress
 import re
 from dataclasses import dataclass
 
+from app.services.network.parsers.cli import FspParts, canonical_fsp
+
 
 class ValidationError(Exception):
     """Raised when input validation fails."""
@@ -56,8 +58,7 @@ class ValidationResult:
     sanitized_value: str | None = None
 
 
-# Regex patterns for validation
-_FSP_PATTERN = re.compile(r"^(\d{1,2})/(\d{1,2})/(\d{1,3})$")
+# Regex patterns for validation. F/S/P shape lives in parsers.cli — one owner.
 _SERIAL_PATTERN = re.compile(r"^[A-Za-z0-9\-]{4,32}$")
 _PROFILE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_\-. ]{1,64}$")
 _VLAN_RANGE = range(1, 4095)
@@ -150,32 +151,33 @@ def validate_subnet_mask(mask: str, field: str = "subnet_mask") -> str:
     return mask
 
 
-def validate_fsp(fsp: str, field: str = "fsp") -> str:
-    """Validate Frame/Slot/Port format.
+def validate_fsp_parts(fsp: str, field: str = "fsp") -> FspParts:
+    """Validate a Frame/Slot/Port and return its canonical typed parts.
+
+    Shape and prefix normalization are owned by
+    ``app.services.network.parsers.cli.canonical_fsp``; this adds the Huawei
+    range checks and the raising contract. Callers build device commands from
+    the returned :class:`FspParts` rather than re-splitting a string, so a
+    port-name prefix can never survive into a command.
 
     Args:
-        fsp: F/S/P string (e.g., "0/2/1").
+        fsp: F/S/P string (e.g., "0/2/1" or "gpon-0/2/1").
         field: Field name for error messages.
 
-    Returns:
-        Validated F/S/P string.
-
     Raises:
-        ValidationError: If F/S/P format is invalid.
+        ValidationError: If F/S/P format is invalid or out of range.
     """
     if not fsp or not isinstance(fsp, str):
         raise ValidationError(f"{field} is required", field)
 
-    fsp = fsp.strip()
-
-    match = _FSP_PATTERN.match(fsp)
-    if not match:
+    parts = canonical_fsp(fsp)
+    if parts is None:
         raise ValidationError(
-            f"{field} must be in format 'F/S/P' (e.g., '0/2/1'): {fsp}",
+            f"{field} must be in format 'F/S/P' (e.g., '0/2/1'): {fsp.strip()}",
             field,
         )
 
-    frame, slot, port = int(match.group(1)), int(match.group(2)), int(match.group(3))
+    frame, slot, port = int(parts.frame), int(parts.slot), int(parts.port)
 
     # Reasonable upper bounds for Huawei OLTs
     if frame > 63:
@@ -185,7 +187,12 @@ def validate_fsp(fsp: str, field: str = "fsp") -> str:
     if port > 255:
         raise ValidationError(f"{field} port number too large: {port}", field)
 
-    return fsp
+    return parts
+
+
+def validate_fsp(fsp: str, field: str = "fsp") -> str:
+    """Validate a Frame/Slot/Port and return it in canonical string form."""
+    return validate_fsp_parts(fsp, field).fsp
 
 
 def validate_serial_number(serial: str, field: str = "serial_number") -> str:

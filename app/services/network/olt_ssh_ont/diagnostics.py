@@ -11,12 +11,14 @@ from app.models.network import OLTDevice
 from app.services.network.olt_ssh_ont._common import (
     _SSH_CONNECTION_ERRORS,
     ServicePortDiagnostics,
+    invalid_fsp_message,
 )
 from app.services.network.olt_validators import (
     ValidationError,
     validate_ip_address,
     validate_ont_id,
 )
+from app.services.network.parsers.cli import canonical_fsp
 
 logger = logging.getLogger(__name__)
 
@@ -38,9 +40,11 @@ def remote_ping_ont(
     except ValidationError as e:
         return False, e.message
 
-    parts = fsp.split("/")
-    frame_slot = f"{parts[0]}/{parts[1]}"
-    port_num = parts[2]
+    parts = canonical_fsp(fsp)
+    if parts is None:
+        return False, invalid_fsp_message(fsp)
+    frame_slot = parts.frame_slot
+    port_num = parts.port
     try:
         transport, channel, _policy = core._open_shell(olt)
     except (SSHException, OSError, TimeoutError, ValueError) as exc:
@@ -107,13 +111,12 @@ def diagnose_service_ports(
     """
     from app.services.network import olt_ssh as core
 
-    ok, err = core._validate_fsp(fsp)
-    if not ok:
-        return False, err, None
+    parts = canonical_fsp(fsp)
+    if parts is None:
+        return False, invalid_fsp_message(fsp), None
 
-    parts = fsp.split("/")
-    frame_slot = f"{parts[0]}/{parts[1]}"
-    port_num = parts[2]
+    frame_slot = parts.frame_slot
+    port_num = parts.port
 
     try:
         transport, channel, _policy = core._open_shell(olt)
@@ -130,7 +133,9 @@ def diagnose_service_ports(
         core._read_until_prompt(channel, r"#\s*$", timeout_sec=5)
 
         # 1. Get ONT info (online/offline status)
-        ont_info_cmd = f"display ont info {parts[0]} {parts[1]} {parts[2]} {ont_id}"
+        ont_info_cmd = (
+            f"display ont info {parts.frame} {parts.slot} {parts.port} {ont_id}"
+        )
         ont_info_output = core._run_huawei_cmd(channel, ont_info_cmd)
         raw_outputs["ont_info"] = ont_info_output
 

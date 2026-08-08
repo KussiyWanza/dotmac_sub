@@ -34,6 +34,7 @@ from app.models.network_operation import (
 from app.services.network._common import normalize_mac_address
 from app.services.network.equipment_identity import normalize_ont_equipment_id
 from app.services.network.huawei_cli_response import (
+    HuaweiCliErrorCode,
     is_huawei_serial_already_registered,
     project_huawei_result_evidence,
 )
@@ -180,8 +181,21 @@ class _AuthorizationWorkflow(StrEnum):
     COMMISSIONING = "commissioning"
 
 
-def _is_serial_already_registered_message(message: str | None) -> bool:
-    return is_huawei_serial_already_registered(message)
+def _is_serial_already_registered(result: object) -> bool:
+    """Whether the OLT rejected the write because the serial is already known.
+
+    Reads the typed verdict the adapter classified from raw device output. The
+    previous implementation re-classified ``result.message``, which by then had
+    been wrapped ("OLT rejected command: ...") and truncated — so the reuse and
+    move recovery branches below were unreachable for every real device
+    wording, while a synthetic-message unit test kept passing.
+    """
+    code = getattr(result, "response_code", None)
+    if code is not None:
+        return code == HuaweiCliErrorCode.SERIAL_ALREADY_EXISTS
+    # Adapters not yet carrying a typed verdict (for example test doubles and
+    # the NETCONF path) still expose only a message.
+    return is_huawei_serial_already_registered(getattr(result, "message", None))
 
 
 def _build_initial_ont_description(serial_number: str) -> str:
@@ -1145,7 +1159,7 @@ def _authorize_registration(
 
     # Handle "serial already exists" case
     if not auth_result.success or ont_id is None:
-        if _is_serial_already_registered_message(auth_result.message):
+        if _is_serial_already_registered(auth_result):
             find_result = adapter.find_ont_by_serial(normalized_serial)
             existing = (
                 find_result.data.get("registration") if find_result.success else None

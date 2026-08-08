@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from app.models.network import OLTDevice
 from app.services.adapters.olt_types import OltCapabilities, olt_type_registry
 from app.services.device_adapter_binding import AdapterBinding
+from app.services.network.parsers.cli import normalize_fsp
 
 
 @dataclass(frozen=True)
@@ -61,7 +62,7 @@ def _split_fsp(
     *,
     allow_board: bool = False,
 ) -> tuple[str, str, str | None]:
-    parts = str(fsp or "").split("/")
+    parts = normalize_fsp(str(fsp or "")).split("/")
     if len(parts) == 2 and allow_board:
         return parts[0], parts[1], None
     if len(parts) != 3:

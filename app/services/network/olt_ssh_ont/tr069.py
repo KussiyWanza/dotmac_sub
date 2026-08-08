@@ -9,6 +9,7 @@ from paramiko.ssh_exception import SSHException
 
 from app.models.network import OLTDevice
 from app.services.network.huawei_cli_response import (
+    describe_huawei_rejection,
     is_huawei_cli_unsupported,
     is_huawei_ont_offline,
 )
@@ -16,8 +17,10 @@ from app.services.network.huawei_command_profiles import get_huawei_command_prof
 from app.services.network.olt_ssh_ont._common import (
     _SSH_CONNECTION_ERRORS,
     _run_ont_config_command,
+    invalid_fsp_message,
 )
 from app.services.network.parsers import parse_ont_info_detail
+from app.services.network.parsers.cli import canonical_fsp
 
 logger = logging.getLogger(__name__)
 
@@ -136,13 +139,12 @@ def get_tr069_server_profile_binding(
     """Read the active TR-069 profile binding for an ONT from the GPON config."""
     from app.services.network import olt_ssh as core
 
-    ok, err = core._validate_fsp(fsp)
-    if not ok:
-        return False, err, None
+    parts = canonical_fsp(fsp)
+    if parts is None:
+        return False, invalid_fsp_message(fsp), None
 
-    parts = fsp.split("/")
-    frame_slot = f"{parts[0]}/{parts[1]}"
-    port_num = int(parts[2])
+    frame_slot = parts.frame_slot
+    port_num = int(parts.port)
 
     try:
         transport, channel, policy = core._open_shell(olt)
@@ -242,13 +244,12 @@ def bind_tr069_server_profile(
     """Bind a TR-069 server profile to an ONT via OLT SSH."""
     from app.services.network import olt_ssh as core
 
-    ok, err = core._validate_fsp(fsp)
-    if not ok:
-        return False, err
+    parts = canonical_fsp(fsp)
+    if parts is None:
+        return False, invalid_fsp_message(fsp)
 
-    parts = fsp.split("/")
-    frame_slot = f"{parts[0]}/{parts[1]}"
-    port_num = parts[2]
+    frame_slot = parts.frame_slot
+    port_num = parts.port
     logger.info(
         "TR-069 bind requested: olt=%s fsp=%s ont_id=%s profile_id=%s",
         olt.name,
@@ -294,7 +295,7 @@ def bind_tr069_server_profile(
                 profile_id,
                 output.strip()[-150:],
             )
-            return False, f"OLT rejected: {output.strip()[-150:]}"
+            return False, describe_huawei_rejection(output, detail_limit=150)
 
         reset_out = core._run_huawei_cmd(
             channel, f"ont reset {port_num} {ont_id}", prompt=r"[#)]\s*$|y/n"
@@ -359,8 +360,8 @@ def unbind_tr069_server_profile(
     ont_id: int,
 ) -> tuple[bool, str]:
     """Best-effort removal of an ONT TR-069 server profile binding."""
-    parts = fsp.split("/")
-    port_num = parts[2] if len(parts) > 2 else "0"
+    parts = canonical_fsp(fsp)
+    port_num = parts.port if parts else "0"
     return _run_ont_config_command(
         olt,
         fsp,
