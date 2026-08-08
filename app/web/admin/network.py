@@ -268,5 +268,6 @@ def comprehensive_network_map(request: Request, db: Session = Depends(get_db)):
     from app.services import network_map as network_map_service
 
     context = _base_context(request, db, active_page="network-map")
-    context.update(network_map_service.build_network_map_context(db))
+    projection = network_map_service.build_network_map_projection(db=db)
+    context.update(projection.to_template_context())
     return templates.TemplateResponse("admin/network/map.html", context)

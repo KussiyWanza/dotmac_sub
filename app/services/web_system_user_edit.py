@@ -1,130 +1,65 @@
-"""Mutation helper for admin system user edit form submission."""
+"""Typed admin-system-user form adapter for the staff identity owner."""
 
 from __future__ import annotations
 
-import logging
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from uuid import UUID
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
-
-from app.models.auth import AuthProvider, UserCredential
-from app.models.rbac import Permission, Role
-from app.models.subscriber import UserType
-from app.models.system_user import SystemUser
-from app.services import auth_cache
-from app.services import web_system_profiles as web_system_profiles_service
-from app.services.auth_flow import hash_password
-from app.services.common import coerce_uuid
-
-logger = logging.getLogger(__name__)
+from app.services import staff_provisioning
+from app.services.owner_commands import CommandContext
 
 
-def get_subscriber_or_none(db: Session, user_id: str) -> SystemUser | None:
-    return db.get(SystemUser, coerce_uuid(user_id))
+@dataclass(frozen=True)
+class StaffEditForm:
+    first_name: str
+    last_name: str
+    display_name: str | None
+    email: str
+    phone: str | None
+    new_password: str | None
+    confirm_password: str | None
+    require_password_change: bool
 
 
-def parse_edit_form(form_data) -> dict[str, object]:
-    return {
-        "first_name": form_data.get("first_name", ""),
-        "last_name": form_data.get("last_name", ""),
-        "display_name": form_data.get("display_name"),
-        "email": form_data.get("email", ""),
-        "phone": form_data.get("phone"),
-        "user_type": form_data.get("user_type"),
-        "new_password": form_data.get("new_password"),
-        "confirm_password": form_data.get("confirm_password"),
-        "require_password_change": form_data.get("require_password_change"),
-    }
+def parse_edit_form(form_data) -> StaffEditForm:
+    return StaffEditForm(
+        first_name=str(form_data.get("first_name", "")),
+        last_name=str(form_data.get("last_name", "")),
+        display_name=(str(form_data.get("display_name") or "").strip() or None),
+        email=str(form_data.get("email", "")),
+        phone=(str(form_data.get("phone") or "").strip() or None),
+        new_password=(str(form_data.get("new_password") or "") or None),
+        confirm_password=(str(form_data.get("confirm_password") or "") or None),
+        require_password_change=str(
+            form_data.get("require_password_change") or ""
+        ).lower()
+        in {"1", "true", "yes", "on"},
+    )
 
 
-def build_edit_state(db: Session, *, subscriber: SystemUser) -> dict[str, object]:
-    edit_data = web_system_profiles_service.get_user_edit_data(db, str(subscriber.id))
-    if edit_data is not None:
-        return edit_data
-    return {
-        "user": subscriber,
-        "roles": db.execute(
-            select(Role).where(Role.is_active.is_(True)).order_by(Role.name.asc())
-        )
-        .scalars()
-        .all(),
-        "current_role_ids": set(),
-        "managed_role_ids": set(),
-        "all_permissions": db.execute(
-            select(Permission)
-            .where(Permission.is_active.is_(True))
-            .where(Permission.is_ui_assignable.is_(True))
-            .order_by(Permission.key.asc())
-        )
-        .scalars()
-        .all(),
-        "direct_permission_ids": set(),
-    }
-
-
-def apply_user_edit(
-    db: Session,
+def build_update_command(
     *,
-    subscriber: SystemUser,
-    first_name: str,
-    last_name: str,
-    display_name: str | None,
-    email: str,
-    phone: str | None,
-    user_type: str | None,
-    new_password: str | None,
-    confirm_password: str | None,
-    require_password_change: bool,
-    is_admin: bool,
-) -> None:
-    """Apply submitted user edit changes and commit."""
-    subscriber.first_name = first_name.strip()
-    subscriber.last_name = last_name.strip()
-    subscriber.display_name = display_name.strip() if display_name else None
-    subscriber.email = email.strip()
-    subscriber.phone = phone.strip() if phone else None
-    subscriber.user_type = UserType.system_user
-
-    db.query(UserCredential).filter(
-        UserCredential.system_user_id == subscriber.id,
-        UserCredential.provider == AuthProvider.local,
-        UserCredential.is_active.is_(True),
-    ).update({"username": email.strip()})
-
-    if new_password or confirm_password:
-        if not is_admin:
+    user_id: UUID,
+    context: CommandContext,
+    form: StaffEditForm,
+    can_update_password: bool,
+) -> staff_provisioning.UpdateStaffIdentityCommand:
+    if form.new_password or form.confirm_password:
+        if not can_update_password:
             raise ValueError("Only admins can update passwords.")
-        if not new_password or not confirm_password:
+        if not form.new_password or not form.confirm_password:
             raise ValueError("Password and confirmation are required.")
-        if new_password != confirm_password:
+        if form.new_password != form.confirm_password:
             raise ValueError("Passwords do not match.")
-
-        updated = (
-            db.query(UserCredential)
-            .filter(
-                UserCredential.system_user_id == subscriber.id,
-                UserCredential.provider == AuthProvider.local,
-                UserCredential.is_active.is_(True),
-            )
-            .update(
-                {
-                    "password_hash": hash_password(new_password),
-                    "must_change_password": require_password_change,
-                    "password_updated_at": datetime.now(UTC),
-                }
-            )
-        )
-        if not updated:
-            db.add(
-                UserCredential(
-                    system_user_id=subscriber.id,
-                    provider=AuthProvider.local,
-                    username=email.strip(),
-                    password_hash=hash_password(new_password),
-                    must_change_password=require_password_change,
-                )
-            )
-
-    db.commit()
-    auth_cache.invalidate_principal("system_user", str(subscriber.id))
+    return staff_provisioning.UpdateStaffIdentityCommand(
+        context=context,
+        user_id=user_id,
+        fields=frozenset(staff_provisioning.StaffIdentityField),
+        first_name=form.first_name,
+        last_name=form.last_name,
+        display_name=form.display_name,
+        email=form.email,
+        phone=form.phone,
+        new_password=form.new_password,
+        require_password_change=form.require_password_change,
+    )

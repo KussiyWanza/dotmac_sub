@@ -32,6 +32,7 @@ class NotificationChannel(enum.Enum):
     instagram_dm = "instagram_dm"
     facebook_comment = "facebook_comment"
     instagram_comment = "instagram_comment"
+    nextcloud_talk = "nextcloud_talk"
     webhook = "webhook"
 
 
@@ -147,6 +148,22 @@ class NotificationTemplate(Base):
 
 class Notification(Base):
     __tablename__ = "notifications"
+    __table_args__ = (
+        Index(
+            "uq_notifications_channel_dedupe_key",
+            "channel",
+            "dedupe_key",
+            unique=True,
+            postgresql_where=text("dedupe_key IS NOT NULL"),
+        ),
+        Index(
+            "ix_notifications_talk_delivery_claim",
+            "channel",
+            "status",
+            "send_at",
+            "created_at",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
@@ -156,6 +173,11 @@ class Notification(Base):
     )
     connector_config_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("connector_configs.id")
+    )
+    integration_capability_binding_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("integration_capability_bindings.id", ondelete="RESTRICT"),
+        index=True,
     )
     subscriber_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
@@ -173,6 +195,7 @@ class Notification(Base):
         Enum(NotificationChannel), nullable=False
     )
     event_type: Mapped[str | None] = mapped_column(String(120), index=True)
+    dedupe_key: Mapped[str | None] = mapped_column(String(240))
     category: Mapped[str | None] = mapped_column(String(40), index=True)
     recipient: Mapped[str] = mapped_column(String(255), nullable=False)
     subject: Mapped[str | None] = mapped_column(String(200))
@@ -204,6 +227,7 @@ class Notification(Base):
     communication_intent = relationship(
         "CommunicationIntentRecord", back_populates="notifications"
     )
+    integration_capability_binding = relationship("IntegrationCapabilityBinding")
 
 
 class NotificationDelivery(Base):

@@ -218,6 +218,17 @@ coverage, anchor, access consequence, audit, event, and idempotency evidence
 commit together with zero economic delta. No payment, allocation, invoice
 status, balance, total, or ledger amount is rewritten.
 
+The same reconciliation owner has a separate entity-scoped path when the
+intended prepaid invoice is entirely missing. An operator must name the exact
+account, subscription, native Payment, issue/due/next-billing business dates,
+contract total, and expected residual account credit. Preview requires the
+selected successful unreturned Payment alone to have enough capacity for the
+full shared taxed renewal charge and rejects any competing document, coverage,
+changed date, amount, tax, or residual-credit fact. Confirmation creates,
+issues, allocates, entitles, and projects the anchor in one owner transaction.
+Exact native Payment funding does not consume or fabricate a migrated opening
+baseline; mixed or insufficient funding remains on the reviewed opening path.
+
 Bill Now performs the same service-document guard before creating a recovery
 draft. Every unresolved ordinary or recovery invoice with an active positive
 line for the exact subscription blocks replacement and routes the operator to
