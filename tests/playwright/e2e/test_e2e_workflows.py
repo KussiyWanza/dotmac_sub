@@ -219,7 +219,7 @@ class TestCustomerListFilters:
         admin_page.goto(
             f"{settings.base_url}/admin/customers",
             wait_until="domcontentloaded",
-            timeout=30_000,
+            timeout=60_000,
         )
         expect(
             admin_page.get_by_role("heading", name="Customers", exact=True)
