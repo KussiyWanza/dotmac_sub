@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -17,8 +18,34 @@ from app.services.customer_identity_normalization import (
 from app.services.customer_identity_resolution import (
     rebuild_identity_index_for_subscriber,
 )
+from app.services.validation_api import validate_email_format
 
 CONTACT_TYPES = ("general", "billing", "technical", "installation", "emergency")
+
+_MULTI_ADDRESS = re.compile(r"[,;]")
+
+
+def validated_contact_email(value: str | None) -> str | None:
+    """Return the contact email, or refuse anything not a single address.
+
+    A contact row feeds `Notification.recipient` directly, and that column is
+    handed to SMTP as one `RCPT TO`. Two addresses in this one field therefore
+    produce an SMTP 501 and the customer silently receives no billing notice at
+    all, so refuse the value at the point of entry rather than storing a row
+    that can never be delivered.
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if _MULTI_ADDRESS.search(raw):
+        raise ValueError(
+            "Enter a single email address. Add a separate contact for each "
+            "additional address."
+        )
+    valid, message = validate_email_format(raw)
+    if not valid:
+        raise ValueError(message or "Please enter a valid email address")
+    return raw
 
 
 @dataclass(frozen=True)
@@ -282,18 +309,19 @@ def create_contact_returning(
     self-care API. Scoping/validation are identical."""
     if not _has_contact_channel(form):
         raise ValueError("Enter at least one phone, email, or social media contact.")
+    email = validated_contact_email(form.email)
     subscriber_id = _target_subscriber_id(customer, db)
     warnings = duplicate_warnings(
         db,
         subscriber_id=subscriber_id,
-        email=form.email,
+        email=email,
         phone=form.phone,
     )
     contact = SubscriberContact(
         subscriber_id=UUID(str(subscriber_id)),
         full_name=form.full_name,
         phone=form.phone,
-        email=form.email,
+        email=email,
         whatsapp=form.whatsapp,
         facebook=form.facebook,
         instagram=form.instagram,
@@ -329,6 +357,7 @@ def update_contact_returning(
     Shared core for both the web flow (``update_contact``) and the API."""
     if not _has_contact_channel(form):
         raise ValueError("Enter at least one phone, email, or social media contact.")
+    email = validated_contact_email(form.email)
     try:
         contact_uuid = UUID(str(contact_id))
     except ValueError as exc:
@@ -346,13 +375,13 @@ def update_contact_returning(
     warnings = duplicate_warnings(
         db,
         subscriber_id=str(contact.subscriber_id),
-        email=form.email,
+        email=email,
         phone=form.phone,
         exclude_contact_id=contact_id,
     )
     contact.full_name = form.full_name
     contact.phone = form.phone
-    contact.email = form.email
+    contact.email = email
     contact.whatsapp = form.whatsapp
     contact.facebook = form.facebook
     contact.instagram = form.instagram

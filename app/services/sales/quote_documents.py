@@ -93,7 +93,7 @@ class QuoteBankTransferSnapshot:
 @dataclass(frozen=True, slots=True)
 class QuotePaymentSnapshot:
     bank_transfer: QuoteBankTransferSnapshot
-    paystack_url: str
+    paystack_url: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,6 +244,7 @@ def load_quote_document_snapshot(value: object) -> QuoteDocumentSnapshot:
                 )
             )
         expires_value = value.get("expires_at")
+        paystack_value = payment_value.get("paystack_url")
         snapshot = QuoteDocumentSnapshot(
             quote_id=UUID(str(value["quote_id"])),
             status=str(value["status"]),
@@ -292,14 +293,17 @@ def load_quote_document_snapshot(value: object) -> QuoteDocumentSnapshot:
                     account_number=str(bank_value["account_number"]),
                     account_name=str(bank_value["account_name"]),
                 ),
-                paystack_url=str(payment_value["paystack_url"]),
+                paystack_url=(
+                    str(paystack_value) if paystack_value is not None else None
+                ),
             ),
         )
-        _validate_quote_payment_url(
-            app_url=snapshot.brand.app_url,
-            quote_id=snapshot.quote_id,
-            payment_url=snapshot.payment.paystack_url,
-        )
+        if snapshot.payment.paystack_url is not None:
+            _validate_quote_payment_url(
+                app_url=snapshot.brand.app_url,
+                quote_id=snapshot.quote_id,
+                payment_url=snapshot.payment.paystack_url,
+            )
         return snapshot
     except (KeyError, TypeError, ValueError) as exc:
         raise _error(
@@ -448,12 +452,6 @@ def _snapshot(db: Session, quote: Quote) -> tuple[QuoteDocumentSnapshot, str | N
     recipient = resolve_quote_recipient(db, quote)
     brand = _resolved_brand(db, quote)
     logo_src = _logo_data_uri(db, brand.logo_url)
-    if quote.subscriber_id is None:
-        raise _error(
-            "payment_identity_required",
-            "This Quote has no customer portal identity for online payment",
-            quote_id=str(quote.id),
-        )
     transfer_account = CollectionAccounts.primary_presentment_account_projection(
         db,
         currency=quote.currency,
@@ -504,7 +502,11 @@ def _snapshot(db: Session, quote: Quote) -> tuple[QuoteDocumentSnapshot, str | N
                 account_number=transfer_account.account_number,
                 account_name=transfer_account.account_name,
             ),
-            paystack_url=_quote_payment_url(brand, quote.id),
+            paystack_url=(
+                _quote_payment_url(brand, quote.id)
+                if quote.subscriber_id is not None
+                else None
+            ),
         ),
     )
     return snapshot, logo_src
@@ -621,7 +623,19 @@ def _render_html(snapshot: QuoteDocumentSnapshot, logo_src: str | None) -> str:
         else ""
     )
     bank = snapshot.payment.bank_transfer
-    paystack_url = html.escape(snapshot.payment.paystack_url, quote=True)
+    paystack_url = snapshot.payment.paystack_url
+    bank_transfer_class = "payment-card bank-transfer"
+    paystack_markup = ""
+    if paystack_url is None:
+        bank_transfer_class += " bank-transfer-only"
+    else:
+        safe_paystack_url = html.escape(paystack_url, quote=True)
+        paystack_markup = (
+            "<div class='payment-card paystack'><h3>Pay with Paystack</h3>"
+            "<p class='paystack-copy'>Make a secure online payment through our "
+            "customer portal.</p>"
+            f"<a class='pay-button' href='{safe_paystack_url}'>Pay Now</a></div>"
+        )
     return f"""<!doctype html>
 <html><head><meta charset='utf-8'><style>
 @page {{ size: A4; margin: 15mm; }}
@@ -643,6 +657,7 @@ td {{ border-bottom:1px solid #e2e8f0; padding:9px; }}
 .payment-title {{ color:#0f172a; border-bottom:2px solid {primary}; font-size:15px; font-weight:700; margin:0; padding-bottom:7px; text-transform:uppercase; }}
 .payment-grid {{ border:1px solid #cbd5e1; display:table; table-layout:fixed; width:100%; }}
 .payment-card {{ display:table-cell; padding:15px; vertical-align:top; width:50%; }}
+.payment-card.bank-transfer-only {{ width:100%; }}
 .payment-card + .payment-card {{ border-left:1px solid #cbd5e1; }}
 .payment-card h3 {{ color:#0f172a; font-size:12px; margin:0 0 12px; text-transform:uppercase; }}
 .payment-row {{ display:flex; line-height:1.45; margin:0 0 7px; }}
@@ -664,13 +679,11 @@ td {{ border-bottom:1px solid #e2e8f0; padding:9px; }}
 <div><span>Tax</span><span>{currency} {_money(snapshot.tax_total)}</span></div>
 <div class='grand'><span>Total</span><span>{currency} {_money(snapshot.total)}</span></div></div>
 <section class='payment-section'><h2 class='payment-title'>Ways to make payment</h2>
-<div class='payment-grid'><div class='payment-card bank-transfer'><h3>Bank Transfer</h3>
+<div class='payment-grid'><div class='{bank_transfer_class}'><h3>Bank Transfer</h3>
 <div class='payment-row'><span class='payment-label'>Bank</span><span class='payment-value'>{html.escape(bank.bank_name)}</span></div>
 <div class='payment-row'><span class='payment-label'>Account Number</span><span class='payment-value'>{html.escape(bank.account_number)}</span></div>
 <div class='payment-row'><span class='payment-label'>Account Name</span><span class='payment-value'>{html.escape(bank.account_name)}</span></div></div>
-<div class='payment-card paystack'><h3>Pay with Paystack</h3>
-<p class='paystack-copy'>Make a secure online payment through our customer portal.</p>
-<a class='pay-button' href='{paystack_url}'>Pay Now</a></div></div></section>
+{paystack_markup}</div></section>
 <div class='footer'>This document was generated by {html.escape(brand.legal_name or brand.name or "Dotmac")}.</div>
 </body></html>"""
 

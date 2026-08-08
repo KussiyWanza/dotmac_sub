@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from enum import Enum
 from uuid import UUID
 
 from fastapi import HTTPException
@@ -1128,6 +1129,34 @@ def _reanchor_paid_prepaid_invoice_if_lapsed(
         },
     )
     return True
+
+
+class PaymentAllocationFinalizationMode(str, Enum):
+    """Bound the consequences requested by a payment-allocation caller."""
+
+    standard = "standard"
+    reviewed_document_correction = "reviewed_document_correction"
+
+
+def _finalize_reviewed_document_payment_effects(
+    db: Session,
+    invoice: Invoice,
+) -> None:
+    """Finalize documentary evidence without asserting new funding.
+
+    A reviewed historical correction consumes money that was already settled
+    and available. It creates the canonical paid document and entitlement, but
+    does not run financial-access restoration against an account whose opening
+    funding cutover may still be incomplete. The repair owner separately
+    projects its fingerprint-bound billing anchor.
+    """
+
+    _recalculate_invoice_totals(db, invoice)
+    db.flush()
+    if invoice.status == InvoiceStatus.paid:
+        ensure_prepaid_entitlements_for_paid_invoice(db, invoice)
+    else:
+        revoke_prepaid_entitlements_for_unpaid_invoice(db, invoice)
 
 
 def _finalize_invoice_payment_effects(db: Session, invoice: Invoice) -> None:
@@ -4192,6 +4221,23 @@ class PaymentAllocations(ListResponseMixin):
             db,
             payload,
             complete_transaction=False,
+            finalization_mode=PaymentAllocationFinalizationMode.standard,
+        )
+
+    @staticmethod
+    def stage_confirm_reviewed_document_correction(
+        db: Session,
+        payload: PaymentAllocationConfirm,
+    ) -> PaymentAllocationResult:
+        """Stage allocation evidence for one reviewed historical document repair."""
+
+        return PaymentAllocations._confirm(
+            db,
+            payload,
+            complete_transaction=False,
+            finalization_mode=(
+                PaymentAllocationFinalizationMode.reviewed_document_correction
+            ),
         )
 
     @staticmethod
@@ -4207,6 +4253,7 @@ class PaymentAllocations(ListResponseMixin):
             db,
             payload,
             complete_transaction=commit,
+            finalization_mode=PaymentAllocationFinalizationMode.standard,
         )
 
     @staticmethod
@@ -4215,6 +4262,7 @@ class PaymentAllocations(ListResponseMixin):
         payload: PaymentAllocationConfirm,
         *,
         complete_transaction: bool,
+        finalization_mode: PaymentAllocationFinalizationMode,
     ) -> PaymentAllocationResult:
         key = _normalize_payment_allocation_key(payload.idempotency_key)
         replay = PaymentAllocations._replay(
@@ -4297,7 +4345,13 @@ class PaymentAllocations(ListResponseMixin):
             # the parent to ensure the next sync page includes it.
             payment.updated_at = datetime.now(UTC)
             reservation.ref_id = str(allocation.id)
-            _finalize_invoice_payment_effects(db, invoice)
+            if (
+                finalization_mode
+                is PaymentAllocationFinalizationMode.reviewed_document_correction
+            ):
+                _finalize_reviewed_document_payment_effects(db, invoice)
+            else:
+                _finalize_invoice_payment_effects(db, invoice)
             AuditEvents.stage(
                 db,
                 AuditEventCreate(
@@ -4322,37 +4376,42 @@ class PaymentAllocations(ListResponseMixin):
                         "account_credit_after": str(preview.account_credit_after),
                         "receivable_before": str(preview.receivable_before),
                         "receivable_after": str(preview.receivable_after),
-                        "access_consequence": preview.access_consequence,
+                        "access_consequence": (
+                            "unchanged_reviewed_document_correction"
+                            if finalization_mode
+                            is PaymentAllocationFinalizationMode.reviewed_document_correction
+                            else preview.access_consequence
+                        ),
+                        "finalization_mode": finalization_mode.value,
                     },
                 ),
             )
             db.flush()
-            # `financial.payments` ends here: confirmed cash, invoice
-            # allocation and unallocated-credit evidence are committed. This
-            # durable funding-change event is the ONLY way the allocation path
-            # reaches `financial.prepaid_service_renewals`, which owns prepaid
-            # period funding, entitlements and billing-anchor advancement.
-            # Without it a standalone credit allocation created entitlements
-            # but left `next_billing_at` stale, and the account was suspended
-            # again for service it had already paid for.
-            emit_event(
-                db,
-                EventType.payment_received,
-                {
-                    "payment_id": str(payment.id),
-                    "settlement_id": str(preview.settlement_id),
-                    "allocation_id": str(allocation.id),
-                    "amount": str(preview.amount),
-                    "currency": preview.currency,
-                    "invoice_id": str(invoice.id),
-                    "status": payment.status.value if payment.status else None,
-                    "source": "payment_allocation",
-                    "prepaid_funding_before": str(preview.prepaid_funding_before),
-                    "prepaid_funding_after": str(preview.prepaid_funding_after),
-                },
-                account_id=payment.account_id,
-                invoice_id=invoice.id,
-            )
+            # An ordinary allocation is a new funding-change observation and
+            # reaches `financial.prepaid_service_renewals` only through this
+            # durable event. A reviewed historical document correction instead
+            # consumes money that was already observed; its owner projects the
+            # fingerprint-bound anchor in the same transaction and must not
+            # emit a second payment observation.
+            if finalization_mode is PaymentAllocationFinalizationMode.standard:
+                emit_event(
+                    db,
+                    EventType.payment_received,
+                    {
+                        "payment_id": str(payment.id),
+                        "settlement_id": str(preview.settlement_id),
+                        "allocation_id": str(allocation.id),
+                        "amount": str(preview.amount),
+                        "currency": preview.currency,
+                        "invoice_id": str(invoice.id),
+                        "status": payment.status.value if payment.status else None,
+                        "source": "payment_allocation",
+                        "prepaid_funding_before": str(preview.prepaid_funding_before),
+                        "prepaid_funding_after": str(preview.prepaid_funding_after),
+                    },
+                    account_id=payment.account_id,
+                    invoice_id=invoice.id,
+                )
             if complete_transaction:
                 db.commit()
                 db.refresh(allocation)

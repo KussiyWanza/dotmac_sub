@@ -5,6 +5,8 @@ import subprocess
 from pathlib import Path
 
 REVISION = "32eebc1a6ac05a21275ed4db6f3d1dd28514a045"
+IMAGE_DIGEST = "sha256:" + "a" * 64
+IMAGE_REFERENCE = f"ghcr.io/michaelayoade/dotmac_sub@{IMAGE_DIGEST}"
 
 # Everything the deploy recreates when a host declares the full stack.
 FULL_SERVICES = (
@@ -39,7 +41,10 @@ def _run_deploy(
     background_runtime_ready: bool = True,
     declared_services: tuple[str, ...] = FULL_SERVICES,
     write_override: bool = False,
+    image_selector: str = "sha-32eebc1",
+    repo_digest_matches: bool = True,
     extra_env: dict[str, str] | None = None,
+    deployment_target: str = "staging",
 ) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
     deploy_dir = tmp_path / "deploy"
     bin_dir = tmp_path / "bin"
@@ -49,11 +54,16 @@ def _run_deploy(
     docker_log.write_text("")
     migration_attempts = tmp_path / "migration-attempts"
     migration_attempts.write_text("0")
+    app_env, server_name = (
+        ("production", "dotmac-sub-prod")
+        if deployment_target == "production"
+        else ("staging", "dotmac-sub-staging")
+    )
     (deploy_dir / ".env").write_text(
         "APP_IMAGE=ghcr.io/michaelayoade/dotmac_sub:sha-old0000\n"
         "GIT_SHA=old0000000000000000000000000000000000000\n"
-        "APP_ENV=production\n"
-        "SERVER_NAME=dotmac-sub-prod\n"
+        f"APP_ENV={app_env}\n"
+        f"SERVER_NAME={server_name}\n"
     )
     declared_services_literal = " ".join(
         f"'{service}'" for service in declared_services
@@ -62,13 +72,22 @@ def _run_deploy(
         (deploy_dir / "docker-compose.override.yml").write_text(
             "services:\n  app: {}\n"
         )
+    reported_digest_reference = (
+        IMAGE_REFERENCE
+        if repo_digest_matches
+        else "ghcr.io/michaelayoade/dotmac_sub@sha256:" + "b" * 64
+    )
     _write_executable(
         bin_dir / "docker",
         f"""#!/usr/bin/env bash
 set -eu
 printf '%s\\n' "$*" >> "$DOCKER_LOG"
 if [[ "$1 $2" == "image inspect" ]]; then
-  printf '%s\\n' "{revision}"
+  if [[ "$*" == *"RepoDigests"* ]]; then
+    printf '%s\\n' "{reported_digest_reference}"
+  else
+    printf '%s\\n' "{revision}"
+  fi
 fi
 if [[ "$*" == *"alembic upgrade heads"* ]]; then
   attempts="$(cat "$MIGRATION_ATTEMPTS")"
@@ -149,7 +168,7 @@ exit 0
         "DEPLOY_DIR": str(deploy_dir),
         "REPO_DIR": str(repo_root),
         "DEPLOY_LOCK_FILE": str(tmp_path / "deploy.lock"),
-        "SKIP_BACKUP": "1",
+        "DEPLOY_BACKUP_MODE": "skip_staging",
         "IMAGE_RETAIN_COUNT": "0",
         "HEALTH_TIMEOUT_SECONDS": "0" if not health_success else "180",
         "CANDIDATE_DRAIN_SECONDS": "0",
@@ -161,7 +180,7 @@ exit 0
         **(extra_env or {}),
     }
     result = subprocess.run(
-        ["bash", str(repo_root / "scripts/deploy.sh"), "sha-32eebc1"],
+        ["bash", str(repo_root / "scripts/deploy.sh"), image_selector],
         cwd=repo_root,
         env=env,
         text=True,
@@ -178,6 +197,33 @@ def test_deploy_pins_git_sha_from_image_revision(tmp_path: Path) -> None:
     env_text = env_file.read_text()
     assert "APP_IMAGE=ghcr.io/michaelayoade/dotmac_sub:sha-32eebc1" in env_text
     assert f"GIT_SHA={REVISION}" in env_text
+
+
+def test_deploy_pins_exact_oci_digest(tmp_path: Path) -> None:
+    result, env_file, docker_log = _run_deploy(
+        tmp_path,
+        image_selector=IMAGE_DIGEST,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert f"APP_IMAGE={IMAGE_REFERENCE}" in env_file.read_text()
+    commands = docker_log.read_text().splitlines()
+    assert f"manifest inspect {IMAGE_REFERENCE}" in commands
+    assert f"pull {IMAGE_REFERENCE}" in commands
+
+
+def test_deploy_rejects_digest_not_reported_by_pulled_image(tmp_path: Path) -> None:
+    result, env_file, _docker_log = _run_deploy(
+        tmp_path,
+        image_selector=IMAGE_DIGEST,
+        repo_digest_matches=False,
+    )
+
+    assert result.returncode != 0
+    assert "pulled image is not pinned" in result.stderr
+    assert "APP_IMAGE=ghcr.io/michaelayoade/dotmac_sub:sha-old0000" in (
+        env_file.read_text()
+    )
 
 
 def test_deploy_rejects_non_green_github_revision_before_database_work(
@@ -203,6 +249,27 @@ def test_deploy_rejects_non_green_github_revision_before_database_work(
         "scripts.migration.reconcile_service_extension_duplicates" in command
         or "alembic upgrade heads" in command
         for command in commands[gate + 1 :]
+    )
+
+
+def test_production_rejects_generic_skip_backup_before_database_work(
+    tmp_path: Path,
+) -> None:
+    result, env_file, docker_log = _run_deploy(
+        tmp_path,
+        image_selector=IMAGE_DIGEST,
+        deployment_target="production",
+        extra_env={"SKIP_BACKUP": "1"},
+    )
+
+    assert result.returncode != 0
+    assert "production does not accept SKIP_BACKUP=1" in result.stderr
+    assert (
+        "APP_IMAGE=ghcr.io/michaelayoade/dotmac_sub:sha-old0000" in env_file.read_text()
+    )
+    assert not any(
+        "scripts.migration.reconcile_service_extension_duplicates" in command
+        for command in docker_log.read_text().splitlines()
     )
 
 

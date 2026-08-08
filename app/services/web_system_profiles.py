@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
@@ -13,10 +14,48 @@ from app.models.auth import ApiKey, AuthProvider, MFAMethod, UserCredential
 from app.models.rbac import Permission, Role, SystemUserPermission, SystemUserRole
 from app.models.system_user import SystemUser
 from app.services import session_manager as session_manager_service
+from app.services import staff_provisioning
 from app.services.auth_flow import verify_password
 from app.services.common import coerce_uuid
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class StaffCredentialRecoveryView:
+    allowed: bool
+    reason: str | None = None
+
+
+_CREDENTIAL_ISSUE_MESSAGES = {
+    staff_provisioning.StaffLoginIdentityIssue.missing_credential: (
+        "No local login credential is configured."
+    ),
+    staff_provisioning.StaffLoginIdentityIssue.multiple_credentials: (
+        "Multiple local login credentials require reconciliation."
+    ),
+    staff_provisioning.StaffLoginIdentityIssue.username_mismatch: (
+        "Login username does not match the profile email."
+    ),
+    staff_provisioning.StaffLoginIdentityIssue.username_conflict: (
+        "Profile email is already used by another local login credential."
+    ),
+    staff_provisioning.StaffLoginIdentityIssue.activation_mismatch: (
+        "Staff account and local credential activation states do not match."
+    ),
+}
+
+_RECOVERY_BLOCK_MESSAGES = {
+    staff_provisioning.StaffCredentialRecoveryBlock.inactive_account: (
+        "Activate the staff account first."
+    ),
+    staff_provisioning.StaffCredentialRecoveryBlock.multiple_credentials: (
+        "Multiple local login credentials require reconciliation."
+    ),
+    staff_provisioning.StaffCredentialRecoveryBlock.identity_conflict: (
+        "Profile email is already used by another local login credential."
+    ),
+}
 
 
 def get_subscriber(db: Session, user_id: str | UUID | None) -> SystemUser | None:
@@ -135,29 +174,6 @@ def verify_current_password(
     return bool(credential and verify_password(password, credential.password_hash))
 
 
-def update_profile(
-    db: Session,
-    *,
-    person: SystemUser,
-    first_name: str | None,
-    last_name: str | None,
-    email: str | None,
-    phone: str | None,
-) -> SystemUser:
-    """Apply profile updates and persist."""
-    if first_name:
-        person.first_name = first_name
-    if last_name:
-        person.last_name = last_name
-    if email:
-        person.email = email
-    if phone:
-        person.phone = phone
-    db.commit()
-    db.refresh(person)
-    return person
-
-
 def get_user_detail_data(
     db: Session, user_id: str | UUID | None
 ) -> dict[str, Any] | None:
@@ -178,15 +194,23 @@ def get_user_detail_data(
         .all()
     )
 
-    credential = (
-        db.execute(
-            select(UserCredential)
-            .where(UserCredential.system_user_id == user.id)
-            .where(UserCredential.is_active.is_(True))
-            .limit(1)
-        )
-        .scalars()
-        .first()
+    login_identity = staff_provisioning.get_staff_login_identity_view(
+        db,
+        user_id=user.id,
+    )
+    assert login_identity is not None
+    credential_issue = (
+        _CREDENTIAL_ISSUE_MESSAGES[login_identity.issue]
+        if login_identity.issue is not None
+        else None
+    )
+    credential_recovery = StaffCredentialRecoveryView(
+        allowed=login_identity.recovery.allowed,
+        reason=(
+            _RECOVERY_BLOCK_MESSAGES[login_identity.recovery.blocked_by]
+            if login_identity.recovery.blocked_by is not None
+            else None
+        ),
     )
 
     mfa_methods = (
@@ -198,7 +222,12 @@ def get_user_detail_data(
     return {
         "user": user,
         "roles": roles,
-        "credential": credential,
+        "credential": login_identity.credential,
+        "credential_issue": credential_issue,
+        "credential_issue_code": (
+            login_identity.issue.value if login_identity.issue is not None else None
+        ),
+        "credential_recovery": credential_recovery,
         "mfa_methods": mfa_methods,
     }
 

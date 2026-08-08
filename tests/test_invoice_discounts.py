@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import uuid4
 
@@ -28,6 +28,7 @@ from app.services import billing as billing_service
 from app.services import invoice_discounts, invoice_draft_authoring, quote_deposits
 from app.services.db_session_adapter import db_session_adapter
 from app.services.owner_commands import CommandContext
+from app.timezone import APP_TIMEZONE
 
 
 def _actor(db_session, label: str = "Invoice Sales") -> SystemUser:
@@ -343,12 +344,17 @@ def test_history_query_filters_customer_actor_type_and_status(
 ) -> None:
     actor = _actor(db_session, "Ada Finance")
     invoice = _create_discounted_draft(db_session, subscriber, actor)
+    discount_applied_at = invoice.discount_applied_at
+    assert discount_applied_at is not None
+    if discount_applied_at.tzinfo is None:
+        discount_applied_at = discount_applied_at.replace(tzinfo=UTC)
+    local_applied_date = discount_applied_at.astimezone(APP_TIMEZONE).date()
 
     result = invoice_discounts.list_invoice_discount_history(
         db_session,
         invoice_discounts.InvoiceDiscountHistoryQuery(
-            date_from=date.today(),
-            date_to=date.today(),
+            date_from=local_applied_date,
+            date_to=local_applied_date,
             salesperson_id=actor.id,
             discount_type=InvoiceDiscountType.percentage,
             invoice_status=InvoiceStatus.draft,

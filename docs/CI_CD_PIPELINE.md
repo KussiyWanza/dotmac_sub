@@ -96,7 +96,11 @@ The staging runner uses the dedicated persistent worktree
 `/home/dotmac/deploy-worktrees/dotmac-sub-staging`. Interactive development,
 agents, and diagnostic edits must use other worktrees. Sharing a checkout lets
 development writes race deployment verification, so the workflow pins the
-dedicated path and refuses tracked changes rather than discarding them.
+dedicated path and refuses tracked changes rather than discarding them. After
+verifying the fetched `origin/dev` commit, it checks out the exact candidate at
+detached `HEAD`; it never moves a local branch pointer. Local branch history is
+therefore preserved but cannot become deployment authority or block an
+otherwise valid immutable candidate.
 
 Each unit-test shard and the architecture job also has a 30-minute job timeout.
 The per-test watchdog catches a blocked unit test first; the job timeout remains

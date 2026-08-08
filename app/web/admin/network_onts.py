@@ -399,12 +399,18 @@ def ont_firmware_form(
 def ont_provision_wizard(
     request: Request,
     ont_id: str,
+    operation_id: str | None = None,
     status: str | None = None,
     message: str | None = None,
     db: Session = Depends(get_db),
 ) -> Response:
     """One-page gated ONT provisioning configuration workflow."""
-    context = web_network_onts_service.provision_wizard_context(request, db, ont_id)
+    context = web_network_onts_service.provision_wizard_context(
+        request,
+        db,
+        ont_id,
+        operation_id=operation_id,
+    )
     if context.get("error"):
         return templates.TemplateResponse(
             "admin/errors/404.html",
@@ -677,8 +683,11 @@ def ont_configure_submit(
     result = web_network_ont_actions_service.update_ont_config(
         db,
         ont_id,
-        wan_mode=(wan_mode or None) if push_wan else None,
-        ip_protocol=(ip_protocol or None) if push_wan else None,
+        # Empty select values are explicit "inherit/default" choices. Passing
+        # the empty string lets the owner clear an existing ONT override;
+        # ``None`` remains reserved for sections the operator did not submit.
+        wan_mode=wan_mode if push_wan else None,
+        ip_protocol=ip_protocol if push_wan else None,
         wan_static_ip=(wan_static_ip or None) if push_wan else None,
         wan_static_subnet=(wan_static_subnet or None) if push_wan else None,
         wan_static_gateway=(wan_static_gateway or None) if push_wan else None,
@@ -689,14 +698,14 @@ def ont_configure_submit(
         mgmt_ip_address=mgmt_ip_address if push_mgmt else None,
         mgmt_remote_access=mgmt_remote_access if push_mgmt else None,
         lan_gateway_ip=(lan_gateway_ip or None) if push_lan else None,
-        lan_subnet_mask=(lan_subnet_mask or None) if push_lan else None,
+        lan_subnet_mask=lan_subnet_mask if push_lan else None,
         lan_dhcp_enabled=lan_dhcp_enabled if push_lan else None,
         lan_dhcp_start=(lan_dhcp_start or None) if push_lan else None,
         lan_dhcp_end=(lan_dhcp_end or None) if push_lan else None,
         wifi_enabled=wifi_enabled if push_wifi else None,
         wifi_ssid=(wifi_ssid or None) if push_wifi else None,
-        wifi_channel=(wifi_channel or None) if push_wifi else None,
-        wifi_security_mode=(wifi_security_mode or None) if push_wifi else None,
+        wifi_channel=wifi_channel if push_wifi else None,
+        wifi_security_mode=wifi_security_mode if push_wifi else None,
         wifi_password=(wifi_password or None) if push_wifi else None,
         pppoe_wcd_index=pppoe_wcd_value,
         mgmt_wcd_index=mgmt_wcd_value,

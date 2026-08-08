@@ -148,3 +148,11 @@ adapters delegate to the typed transition command. A task cannot transition to
 is inactive or not itself `done`. Dependency replacement is atomic, replaces
 the full reviewed set, records audit evidence, and emits
 `project_task.dependencies_replaced` in the same owner transaction.
+
+Project and task comment creation now participates in the same typed Project
+owner boundary as attachment staging, audit evidence, and explicit-mention
+notification staging. Task assignment and explicit project/task comment
+mentions may stage one deduplicated `nextcloud_talk` row per mapped staff user.
+The feature defaults disabled, and no Nextcloud HTTP occurs before the Project
+transaction commits; delivery, room reuse, stale-room repair, and retry policy
+belong to `communications.nextcloud_talk_staff`.
