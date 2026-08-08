@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -176,7 +177,7 @@ def _content_type(asset: InboxMediaAsset) -> str:
     return asset.mime_type or "application/octet-stream"
 
 
-def _graph_version(config: dict[str, Any]) -> str:
+def _graph_version(config: Mapping[str, Any]) -> str:
     version = str(config.get("graph_version") or "v21.0").strip() or "v21.0"
     return version if version.startswith("v") else f"v{version}"
 
