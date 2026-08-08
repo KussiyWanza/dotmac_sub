@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import time
 from collections.abc import Callable
 from typing import Any
@@ -158,6 +159,39 @@ def send_template_message(
             "language": language or "en",
             "variables": variables or {},
             "components": components or [],
+        },
+        dry_run=dry_run,
+        correlation_id=correlation,
+        secret_resolver=secret_resolver,
+    )
+
+
+def send_media_message(
+    db: Session,
+    *,
+    recipient: str,
+    media_type: str,
+    content: bytes,
+    content_type: str,
+    filename: str | None = None,
+    caption: str | None = None,
+    dry_run: bool = False,
+    correlation_id: str | None = None,
+    secret_resolver: Callable[[str | None], str | None] = resolve_secret,
+) -> dict[str, Any]:
+    correlation = (
+        correlation_id or f"whatsapp:media:{recipient}:{filename or media_type}"
+    )
+    return _dispatch(
+        db,
+        action="send_media",
+        params={
+            "recipient": recipient,
+            "media_type": media_type,
+            "content_type": content_type,
+            "content_base64": base64.b64encode(content).decode("ascii"),
+            "filename": filename or "attachment",
+            "caption": caption or "",
         },
         dry_run=dry_run,
         correlation_id=correlation,
