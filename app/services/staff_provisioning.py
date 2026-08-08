@@ -12,10 +12,12 @@ import hashlib
 import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import Enum
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from sqlalchemy import select, text
+from pydantic import EmailStr, TypeAdapter, ValidationError
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -46,6 +48,10 @@ if TYPE_CHECKING:
 
 ERP_HR_ROLE_SOURCE = "erp_hr"
 STAFF_ASSIGN_SCOPE = "rbac:assign"
+STAFF_PROFILE_SCOPE = "profile:self"
+STAFF_LOGIN_IDENTITY_MAX_LENGTH = 150
+
+_EMAIL_ADAPTER = TypeAdapter(EmailStr)
 
 _PROVISION_COMMAND = OwnerCommandDefinition(
     owner="auth.staff_provisioning",
@@ -67,6 +73,21 @@ _SET_ACTIVE_COMMAND = OwnerCommandDefinition(
     concern="staff account provisioning",
     name="set_staff_account_active",
 )
+_UPDATE_IDENTITY_COMMAND = OwnerCommandDefinition(
+    owner="auth.staff_provisioning",
+    concern="staff identity maintenance",
+    name="update_staff_identity",
+)
+_PREPARE_RECOVERY_COMMAND = OwnerCommandDefinition(
+    owner="auth.staff_provisioning",
+    concern="staff identity maintenance",
+    name="prepare_staff_credential_recovery",
+)
+_RECONCILE_LOGIN_COMMAND = OwnerCommandDefinition(
+    owner="auth.staff_provisioning",
+    concern="staff identity maintenance",
+    name="reconcile_staff_login_identity",
+)
 
 
 class StaffProvisioningError(DomainError):
@@ -84,6 +105,16 @@ class UnknownRoleError(StaffProvisioningError):
             details={"role_names": list(normalized)},
         )
         self.role_names = normalized
+
+
+class StaffIdentityField(str, Enum):
+    """Closed set of mutable staff profile fields."""
+
+    first_name = "first_name"
+    last_name = "last_name"
+    display_name = "display_name"
+    email = "email"
+    phone = "phone"
 
 
 @dataclass(frozen=True)
@@ -129,6 +160,39 @@ class SetStaffAccountActiveCommand:
 
 
 @dataclass(frozen=True)
+class UpdateStaffIdentityCommand:
+    """Administrative or self-service staff identity change."""
+
+    context: CommandContext
+    user_id: UUID
+    fields: frozenset[StaffIdentityField]
+    first_name: str | None = None
+    last_name: str | None = None
+    display_name: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    new_password: str | None = None
+    require_password_change: bool = True
+
+
+@dataclass(frozen=True)
+class PrepareStaffCredentialRecoveryCommand:
+    """Ensure one active canonical local credential before recovery delivery."""
+
+    context: CommandContext
+    user_id: UUID
+
+
+@dataclass(frozen=True)
+class ReconcileStaffLoginIdentityCommand:
+    """Repair one reviewed staff email/credential-username mismatch."""
+
+    context: CommandContext
+    user_id: UUID
+    expected_email_sha256: str
+
+
+@dataclass(frozen=True)
 class StaffAccountOutcome:
     """Committed staff-account state returned without leaking an ORM entity."""
 
@@ -143,6 +207,102 @@ class StaffAccountOutcome:
     invite_requested: bool
     command_id: UUID
     correlation_id: UUID
+
+
+@dataclass(frozen=True)
+class StaffIdentityOutcome:
+    """Committed identity state without credential secrets."""
+
+    user_id: UUID
+    email: str
+    display_name: str | None
+    credential_username: str
+    credential_active: bool
+    changed_fields: tuple[StaffIdentityField, ...]
+    credential_reconciled: bool
+    password_changed: bool
+    revoked_sessions: int
+    command_id: UUID
+    correlation_id: UUID
+
+
+@dataclass(frozen=True)
+class StaffCredentialPreparationOutcome:
+    """Recovery preparation state without returning a password or token."""
+
+    user_id: UUID
+    email: str
+    credential_id: UUID
+    created: bool
+    changed: bool
+    revoked_sessions: int
+    command_id: UUID
+    correlation_id: UUID
+
+
+@dataclass(frozen=True)
+class StaffLoginIdentityReconciliationOutcome:
+    """Reconciliation result without exposing credential secrets."""
+
+    user_id: UUID
+    email: str
+    credential_id: UUID
+    credential_created: bool
+    username_reconciled: bool
+    activation_reconciled: bool
+    revoked_sessions: int
+    changed: bool
+    command_id: UUID
+    correlation_id: UUID
+
+
+class StaffLoginIdentityIssue(str, Enum):
+    missing_credential = "missing_credential"
+    multiple_credentials = "multiple_credentials"
+    username_mismatch = "username_mismatch"
+    username_conflict = "username_conflict"
+    activation_mismatch = "activation_mismatch"
+
+
+class StaffCredentialDisplayStatus(str, Enum):
+    active = "active"
+    disabled = "disabled"
+    needs_reconciliation = "needs_reconciliation"
+
+
+class StaffCredentialRecoveryBlock(str, Enum):
+    inactive_account = "inactive_account"
+    multiple_credentials = "multiple_credentials"
+    identity_conflict = "identity_conflict"
+
+
+@dataclass(frozen=True)
+class StaffLoginCredentialView:
+    username: str | None
+    is_active: bool
+    must_change_password: bool
+    password_updated_at: datetime | None
+    status: StaffCredentialDisplayStatus
+
+
+@dataclass(frozen=True)
+class StaffCredentialRecoveryEligibility:
+    allowed: bool
+    blocked_by: StaffCredentialRecoveryBlock | None = None
+
+
+@dataclass(frozen=True)
+class StaffLoginIdentityView:
+    credential: StaffLoginCredentialView | None
+    issue: StaffLoginIdentityIssue | None
+    recovery: StaffCredentialRecoveryEligibility
+
+
+@dataclass(frozen=True)
+class StaffLoginIdentityDrift:
+    user_id: UUID
+    issue: StaffLoginIdentityIssue
+    email_sha256: str
 
 
 def _error(
@@ -161,11 +321,15 @@ def _normalize_role_names(role_names: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(name.strip() for name in role_names if name.strip()))
 
 
-def _validate_context(context: CommandContext) -> tuple[AuditActorType, str]:
-    if context.scope != STAFF_ASSIGN_SCOPE:
+def _validate_context(
+    context: CommandContext,
+    *,
+    allowed_scopes: tuple[str, ...] = (STAFF_ASSIGN_SCOPE,),
+) -> tuple[AuditActorType, str]:
+    if context.scope not in allowed_scopes:
         raise _error(
             "invalid_command",
-            "Staff provisioning requires authorized RBAC assignment evidence.",
+            "Staff provisioning authorization evidence is not valid for this command.",
             field="scope",
         )
     actor_type_value, separator, actor_id = context.actor.partition(":")
@@ -189,7 +353,7 @@ def _validate_context(context: CommandContext) -> tuple[AuditActorType, str]:
 def _validate_identity(
     command: ProvisionStaffAccountCommand | CreateLocalStaffAccountCommand,
 ) -> tuple[str, str, str]:
-    email = command.email.strip().lower()
+    email = _normalize_email(command.email)
     first_name = command.first_name.strip()
     last_name = command.last_name.strip()
     invalid_fields = [
@@ -207,12 +371,88 @@ def _validate_identity(
             "Staff identity fields cannot be empty.",
             fields=invalid_fields,
         )
-    if len(email) > 255 or len(first_name) > 80 or len(last_name) > 80:
+    if len(first_name) > 80 or len(last_name) > 80:
         raise _error(
             "invalid_command",
             "Staff identity field length exceeds the canonical record limit.",
         )
     return email, first_name, last_name
+
+
+def _normalize_email(value: str | None) -> str:
+    email = (value or "").strip().lower()
+    try:
+        normalized = str(_EMAIL_ADAPTER.validate_python(email)).strip().lower()
+    except ValidationError as exc:
+        raise _error(
+            "invalid_command",
+            "Staff email address is not valid.",
+            field="email",
+        ) from exc
+    if len(normalized) > STAFF_LOGIN_IDENTITY_MAX_LENGTH:
+        raise _error(
+            "invalid_command",
+            "Staff email exceeds the local login identity limit.",
+            field="email",
+        )
+    return normalized
+
+
+def _validate_update_values(
+    command: UpdateStaffIdentityCommand,
+) -> tuple[str | None, str | None, str | None, str | None, str | None]:
+    if not command.fields:
+        raise _error(
+            "invalid_command",
+            "At least one staff identity field must be supplied.",
+            field="fields",
+        )
+    first_name = (
+        (command.first_name or "").strip()
+        if StaffIdentityField.first_name in command.fields
+        else None
+    )
+    last_name = (
+        (command.last_name or "").strip()
+        if StaffIdentityField.last_name in command.fields
+        else None
+    )
+    display_name = (
+        (command.display_name or "").strip() or None
+        if StaffIdentityField.display_name in command.fields
+        else None
+    )
+    email = (
+        _normalize_email(command.email)
+        if StaffIdentityField.email in command.fields
+        else None
+    )
+    phone = (
+        (command.phone or "").strip() or None
+        if StaffIdentityField.phone in command.fields
+        else None
+    )
+    if StaffIdentityField.first_name in command.fields and not first_name:
+        raise _error(
+            "invalid_command",
+            "Staff first name cannot be empty.",
+            field="first_name",
+        )
+    if StaffIdentityField.last_name in command.fields and not last_name:
+        raise _error(
+            "invalid_command",
+            "Staff last name cannot be empty.",
+            field="last_name",
+        )
+    if first_name is not None and len(first_name) > 80:
+        raise _error("invalid_command", "Staff first name is too long.")
+    if last_name is not None and len(last_name) > 80:
+        raise _error("invalid_command", "Staff last name is too long.")
+    if display_name is not None and len(display_name) > 120:
+        raise _error("invalid_command", "Staff display name is too long.")
+    if phone is not None and len(phone) > 40:
+        raise _error("invalid_command", "Staff phone number is too long.")
+    return first_name, last_name, display_name, email, phone
 
 
 def _role_names(role_names: tuple[str, ...]) -> tuple[str, ...]:
@@ -253,6 +493,182 @@ def _locked_user(db: Session, user_id: UUID) -> SystemUser:
             user_id=str(user_id),
         )
     return user
+
+
+def _lock_staff_identity(
+    db: Session,
+    *,
+    user_id: UUID,
+    new_email: str | None = None,
+) -> tuple[SystemUser, str, str]:
+    observed_email_value = db.execute(
+        select(SystemUser.email).where(SystemUser.id == user_id)
+    ).scalar_one_or_none()
+    if observed_email_value is None:
+        raise _error(
+            "staff_account_not_found",
+            "Staff account was not found.",
+            user_id=str(user_id),
+        )
+    observed_email = _normalize_email(observed_email_value)
+    desired_email = new_email or observed_email
+    for locked_email in sorted({observed_email, desired_email}):
+        _acquire_identity_lock(db, locked_email)
+    user = _locked_user(db, user_id)
+    if _normalize_email(user.email) != observed_email:
+        raise _error(
+            "concurrent_identity_change",
+            "Staff identity changed while this command was acquiring its locks.",
+            user_id=str(user_id),
+        )
+    return user, observed_email, desired_email
+
+
+def _locked_local_credentials(
+    db: Session,
+    user_id: UUID,
+) -> tuple[UserCredential, ...]:
+    return tuple(
+        db.execute(
+            select(UserCredential)
+            .where(UserCredential.system_user_id == user_id)
+            .where(UserCredential.provider == AuthProvider.local)
+            .order_by(UserCredential.created_at.asc(), UserCredential.id.asc())
+            .with_for_update()
+        ).scalars()
+    )
+
+
+def _one_local_credential(db: Session, user_id: UUID) -> UserCredential:
+    credentials = _locked_local_credentials(db, user_id)
+    if not credentials:
+        raise _error(
+            "credential_not_found",
+            "Staff account does not have a local login credential.",
+            user_id=str(user_id),
+        )
+    if len(credentials) != 1:
+        raise _error(
+            "credential_ambiguous",
+            "Staff account has multiple local login credentials.",
+            user_id=str(user_id),
+            credential_count=len(credentials),
+        )
+    return credentials[0]
+
+
+def _create_placeholder_local_credential(
+    db: Session,
+    *,
+    user_id: UUID,
+    email: str,
+    is_active: bool,
+) -> UserCredential:
+    credential = UserCredential(
+        system_user_id=user_id,
+        provider=AuthProvider.local,
+        username=email,
+        password_hash=auth_flow_service.hash_password(secrets.token_urlsafe(32)),
+        must_change_password=True,
+        is_active=is_active,
+    )
+    db.add(credential)
+    db.flush()
+    return credential
+
+
+def _ensure_login_identity_available(
+    db: Session,
+    *,
+    user_id: UUID,
+    email: str,
+) -> None:
+    system_user_conflict = db.execute(
+        select(SystemUser.id)
+        .where(SystemUser.id != user_id)
+        .where(func.lower(SystemUser.email) == email)
+        .limit(1)
+    ).scalar_one_or_none()
+    credential_conflict = db.execute(
+        select(UserCredential.id)
+        .where(UserCredential.provider == AuthProvider.local)
+        .where(
+            or_(
+                UserCredential.system_user_id.is_(None),
+                UserCredential.system_user_id != user_id,
+            )
+        )
+        .where(func.lower(UserCredential.username) == email)
+        .limit(1)
+    ).scalar_one_or_none()
+    if system_user_conflict is not None or credential_conflict is not None:
+        raise _error(
+            "identity_conflict",
+            "Staff login identity conflicts with an existing canonical record.",
+        )
+
+
+def _revoke_active_sessions(db: Session, user_id: UUID) -> int:
+    now = datetime.now(UTC)
+    return int(
+        db.query(AuthSession)
+        .filter(
+            AuthSession.system_user_id == user_id,
+            AuthSession.status == SessionStatus.active,
+            AuthSession.revoked_at.is_(None),
+        )
+        .update(
+            {"status": SessionStatus.revoked, "revoked_at": now},
+            synchronize_session=False,
+        )
+        or 0
+    )
+
+
+def _require_self_or_assign_scope(
+    command: UpdateStaffIdentityCommand,
+    *,
+    actor_type: AuditActorType,
+    actor_id: str,
+) -> None:
+    if command.context.scope == STAFF_ASSIGN_SCOPE:
+        return
+    if (
+        command.context.scope != STAFF_PROFILE_SCOPE
+        or actor_type != AuditActorType.user
+        or actor_id != str(command.user_id)
+        or command.new_password is not None
+    ):
+        raise _error(
+            "invalid_command_context",
+            "Self-service staff identity changes must target the authenticated user.",
+        )
+
+
+def _require_admin_password_actor(
+    db: Session,
+    *,
+    actor_type: AuditActorType,
+    actor_id: str,
+) -> None:
+    if actor_type != AuditActorType.user:
+        raise _error(
+            "password_update_forbidden",
+            "Only an administrator can set a staff password directly.",
+        )
+    try:
+        actor_uuid = UUID(actor_id)
+    except ValueError as exc:
+        raise _error(
+            "password_update_forbidden",
+            "Only an administrator can set a staff password directly.",
+        ) from exc
+    roles = assignment_service.system_user_role_names(db, actor_uuid)
+    if not any(role.lower() == "admin" for role in roles):
+        raise _error(
+            "password_update_forbidden",
+            "Only an administrator can set a staff password directly.",
+        )
 
 
 def _actor_metadata(context: CommandContext) -> dict[str, object]:
@@ -670,6 +1086,541 @@ def sync_staff_account_roles(
     )
 
 
+def update_staff_identity(
+    db: Session,
+    command: UpdateStaffIdentityCommand,
+) -> StaffIdentityOutcome:
+    """Update canonical staff profile and local login identity atomically."""
+
+    def operation() -> StaffIdentityOutcome:
+        actor_type, actor_id = _validate_context(
+            command.context,
+            allowed_scopes=(STAFF_ASSIGN_SCOPE, STAFF_PROFILE_SCOPE),
+        )
+        _require_self_or_assign_scope(
+            command,
+            actor_type=actor_type,
+            actor_id=actor_id,
+        )
+        first_name, last_name, display_name, email, phone = _validate_update_values(
+            command
+        )
+        user, _current_email, desired_email = _lock_staff_identity(
+            db,
+            user_id=command.user_id,
+            new_email=email,
+        )
+        _ensure_login_identity_available(
+            db,
+            user_id=user.id,
+            email=desired_email,
+        )
+        credential = _one_local_credential(db, user.id)
+
+        changed_fields: list[StaffIdentityField] = []
+        desired_values: tuple[tuple[StaffIdentityField, str | None], ...] = (
+            (StaffIdentityField.first_name, first_name),
+            (StaffIdentityField.last_name, last_name),
+            (StaffIdentityField.display_name, display_name),
+            (StaffIdentityField.email, email),
+            (StaffIdentityField.phone, phone),
+        )
+        for field, value in desired_values:
+            if field not in command.fields:
+                continue
+            if getattr(user, field.value) != value:
+                setattr(user, field.value, value)
+                changed_fields.append(field)
+
+        credential_reconciled = credential.username != desired_email
+        if credential_reconciled:
+            credential.username = desired_email
+
+        password_changed = command.new_password is not None
+        if password_changed:
+            _require_admin_password_actor(
+                db,
+                actor_type=actor_type,
+                actor_id=actor_id,
+            )
+            from app.services.auth_flow import hash_password, password_min_length_for
+
+            minimum = password_min_length_for(db, "system_user")
+            assert command.new_password is not None
+            if len(command.new_password) < minimum:
+                raise _error(
+                    "invalid_password",
+                    f"Password must be at least {minimum} characters.",
+                    minimum_length=minimum,
+                )
+            credential.password_hash = hash_password(command.new_password)
+            credential.must_change_password = command.require_password_change
+            credential.password_updated_at = datetime.now(UTC)
+            credential.failed_login_attempts = 0
+            credential.locked_until = None
+
+        login_identity_changed = (
+            StaffIdentityField.email in changed_fields or credential_reconciled
+        )
+        revoked_sessions = (
+            _revoke_active_sessions(db, user.id)
+            if login_identity_changed or password_changed
+            else 0
+        )
+        _invalidate_auth_after_commit(db, user.id)
+        changed_fields_tuple = tuple(
+            sorted(changed_fields, key=lambda item: item.value)
+        )
+        metadata = {
+            "changed_fields": [field.value for field in changed_fields_tuple],
+            "credential_reconciled": credential_reconciled,
+            "password_changed": password_changed,
+            "revoked_sessions": revoked_sessions,
+            "email_sha256": hashlib.sha256(desired_email.encode()).hexdigest(),
+        }
+        _stage_audit(
+            db,
+            action="auth.staff_identity_updated",
+            user_id=user.id,
+            context=command.context,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            metadata=metadata,
+        )
+        if changed_fields_tuple or credential_reconciled or password_changed:
+            _emit_staff_event(
+                db,
+                event_type=EventType.staff_account_identity_changed,
+                user=user,
+                context=command.context,
+                payload={"user_id": str(user.id), **metadata},
+            )
+        return StaffIdentityOutcome(
+            user_id=user.id,
+            email=desired_email,
+            display_name=user.display_name,
+            credential_username=desired_email,
+            credential_active=credential.is_active,
+            changed_fields=changed_fields_tuple,
+            credential_reconciled=credential_reconciled,
+            password_changed=password_changed,
+            revoked_sessions=revoked_sessions,
+            command_id=command.context.command_id,
+            correlation_id=command.context.correlation_id,
+        )
+
+    try:
+        return execute_owner_command(
+            db,
+            definition=_UPDATE_IDENTITY_COMMAND,
+            context=command.context,
+            operation=operation,
+        )
+    except IntegrityError as exc:
+        raise _error(
+            "identity_conflict",
+            "Staff login identity conflicts with an existing canonical record.",
+        ) from exc
+
+
+def prepare_staff_credential_recovery(
+    db: Session,
+    command: PrepareStaffCredentialRecoveryCommand,
+) -> StaffCredentialPreparationOutcome:
+    """Prepare one canonical active credential before invite/reset delivery."""
+
+    def operation() -> StaffCredentialPreparationOutcome:
+        actor_type, actor_id = _validate_context(command.context)
+        user, _current_email, email = _lock_staff_identity(
+            db,
+            user_id=command.user_id,
+        )
+        if not user.is_active:
+            raise _error(
+                "inactive_staff_account",
+                "Activate the staff account before sending login recovery.",
+                user_id=str(user.id),
+            )
+        _ensure_login_identity_available(db, user_id=user.id, email=email)
+        credentials = _locked_local_credentials(db, user.id)
+        if len(credentials) > 1:
+            raise _error(
+                "credential_ambiguous",
+                "Staff account has multiple local login credentials.",
+                user_id=str(user.id),
+                credential_count=len(credentials),
+            )
+        created = not credentials
+        if created:
+            credential = _create_placeholder_local_credential(
+                db,
+                user_id=user.id,
+                email=email,
+                is_active=True,
+            )
+        else:
+            credential = credentials[0]
+        changed = created
+        credential_reconciled = credential.username != email
+        if credential_reconciled:
+            credential.username = email
+            changed = True
+        if not credential.is_active:
+            credential.is_active = True
+            changed = True
+        if not credential.must_change_password:
+            credential.must_change_password = True
+            changed = True
+        revoked_sessions = (
+            _revoke_active_sessions(db, user.id) if credential_reconciled else 0
+        )
+        _invalidate_auth_after_commit(db, user.id)
+        metadata = {
+            "created": created,
+            "changed": changed,
+            "credential_reconciled": credential_reconciled,
+            "revoked_sessions": revoked_sessions,
+            "email_sha256": hashlib.sha256(email.encode()).hexdigest(),
+        }
+        _stage_audit(
+            db,
+            action="auth.staff_credential_recovery_prepared",
+            user_id=user.id,
+            context=command.context,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            metadata=metadata,
+        )
+        if changed:
+            _emit_staff_event(
+                db,
+                event_type=EventType.staff_account_credential_reconciled,
+                user=user,
+                context=command.context,
+                payload={"user_id": str(user.id), **metadata},
+            )
+        return StaffCredentialPreparationOutcome(
+            user_id=user.id,
+            email=email,
+            credential_id=credential.id,
+            created=created,
+            changed=changed,
+            revoked_sessions=revoked_sessions,
+            command_id=command.context.command_id,
+            correlation_id=command.context.correlation_id,
+        )
+
+    try:
+        return execute_owner_command(
+            db,
+            definition=_PREPARE_RECOVERY_COMMAND,
+            context=command.context,
+            operation=operation,
+        )
+    except IntegrityError as exc:
+        raise _error(
+            "identity_conflict",
+            "Staff login identity conflicts with an existing canonical record.",
+        ) from exc
+
+
+def list_staff_login_identity_drift(
+    db: Session,
+) -> tuple[StaffLoginIdentityDrift, ...]:
+    """Return PII-safe staff login drift evidence for preview and repair."""
+
+    users = tuple(
+        db.execute(select(SystemUser).order_by(SystemUser.id.asc())).scalars()
+    )
+    credentials = tuple(
+        db.execute(
+            select(UserCredential)
+            .where(UserCredential.provider == AuthProvider.local)
+            .order_by(UserCredential.id.asc())
+        ).scalars()
+    )
+    by_user: dict[UUID, list[UserCredential]] = {}
+    username_owners: dict[str, set[UUID]] = {}
+    for credential in credentials:
+        if credential.system_user_id is not None:
+            by_user.setdefault(credential.system_user_id, []).append(credential)
+        if credential.username:
+            username_owners.setdefault(credential.username.strip().lower(), set()).add(
+                credential.id
+            )
+
+    drift: list[StaffLoginIdentityDrift] = []
+    for user in users:
+        email = user.email.strip().lower()
+        email_digest = hashlib.sha256(email.encode()).hexdigest()
+        rows = by_user.get(user.id, [])
+        if not rows:
+            drift.append(
+                StaffLoginIdentityDrift(
+                    user_id=user.id,
+                    issue=StaffLoginIdentityIssue.missing_credential,
+                    email_sha256=email_digest,
+                )
+            )
+            if username_owners.get(email):
+                drift.append(
+                    StaffLoginIdentityDrift(
+                        user_id=user.id,
+                        issue=StaffLoginIdentityIssue.username_conflict,
+                        email_sha256=email_digest,
+                    )
+                )
+            continue
+        if len(rows) != 1:
+            drift.append(
+                StaffLoginIdentityDrift(
+                    user_id=user.id,
+                    issue=StaffLoginIdentityIssue.multiple_credentials,
+                    email_sha256=email_digest,
+                )
+            )
+            continue
+        credential = rows[0]
+        if (credential.username or "").strip().lower() != email:
+            owners = username_owners.get(email, set()) - {credential.id}
+            drift.append(
+                StaffLoginIdentityDrift(
+                    user_id=user.id,
+                    issue=(
+                        StaffLoginIdentityIssue.username_conflict
+                        if owners
+                        else StaffLoginIdentityIssue.username_mismatch
+                    ),
+                    email_sha256=email_digest,
+                )
+            )
+        if credential.is_active != user.is_active:
+            drift.append(
+                StaffLoginIdentityDrift(
+                    user_id=user.id,
+                    issue=StaffLoginIdentityIssue.activation_mismatch,
+                    email_sha256=email_digest,
+                )
+            )
+    return tuple(drift)
+
+
+def get_staff_login_identity_view(
+    db: Session,
+    *,
+    user_id: UUID,
+) -> StaffLoginIdentityView | None:
+    """Resolve credential status and recovery eligibility from owner state."""
+
+    user = db.get(SystemUser, user_id)
+    if user is None:
+        return None
+    credentials = tuple(
+        db.execute(
+            select(UserCredential)
+            .where(UserCredential.system_user_id == user.id)
+            .where(UserCredential.provider == AuthProvider.local)
+            .order_by(UserCredential.created_at.asc(), UserCredential.id.asc())
+        ).scalars()
+    )
+    conflict = db.execute(
+        select(UserCredential.id)
+        .where(UserCredential.provider == AuthProvider.local)
+        .where(
+            or_(
+                UserCredential.system_user_id.is_(None),
+                UserCredential.system_user_id != user.id,
+            )
+        )
+        .where(func.lower(UserCredential.username) == user.email.strip().lower())
+        .limit(1)
+    ).scalar_one_or_none()
+    if not credentials:
+        missing_issue = (
+            StaffLoginIdentityIssue.username_conflict
+            if conflict is not None
+            else StaffLoginIdentityIssue.missing_credential
+        )
+        blocked_by = (
+            StaffCredentialRecoveryBlock.identity_conflict
+            if conflict is not None
+            else (
+                StaffCredentialRecoveryBlock.inactive_account
+                if not user.is_active
+                else None
+            )
+        )
+        return StaffLoginIdentityView(
+            credential=None,
+            issue=missing_issue,
+            recovery=StaffCredentialRecoveryEligibility(
+                allowed=blocked_by is None,
+                blocked_by=blocked_by,
+            ),
+        )
+    if len(credentials) != 1:
+        return StaffLoginIdentityView(
+            credential=None,
+            issue=StaffLoginIdentityIssue.multiple_credentials,
+            recovery=StaffCredentialRecoveryEligibility(
+                allowed=False,
+                blocked_by=StaffCredentialRecoveryBlock.multiple_credentials,
+            ),
+        )
+    credential = credentials[0]
+    aligned = (credential.username or "").strip().lower() == user.email.strip().lower()
+    activation_aligned = credential.is_active == user.is_active
+    issue = (
+        StaffLoginIdentityIssue.username_conflict
+        if conflict is not None
+        else (
+            StaffLoginIdentityIssue.username_mismatch
+            if not aligned
+            else (
+                None
+                if activation_aligned
+                else StaffLoginIdentityIssue.activation_mismatch
+            )
+        )
+    )
+    status = (
+        StaffCredentialDisplayStatus.needs_reconciliation
+        if issue is not None
+        else (
+            StaffCredentialDisplayStatus.active
+            if credential.is_active
+            else StaffCredentialDisplayStatus.disabled
+        )
+    )
+    blocked_by = (
+        StaffCredentialRecoveryBlock.inactive_account
+        if not user.is_active
+        else (
+            StaffCredentialRecoveryBlock.identity_conflict
+            if conflict is not None
+            else None
+        )
+    )
+    return StaffLoginIdentityView(
+        credential=StaffLoginCredentialView(
+            username=credential.username,
+            is_active=credential.is_active,
+            must_change_password=credential.must_change_password,
+            password_updated_at=credential.password_updated_at,
+            status=status,
+        ),
+        issue=issue,
+        recovery=StaffCredentialRecoveryEligibility(
+            allowed=blocked_by is None,
+            blocked_by=blocked_by,
+        ),
+    )
+
+
+def reconcile_staff_login_identity(
+    db: Session,
+    command: ReconcileStaffLoginIdentityCommand,
+) -> StaffLoginIdentityReconciliationOutcome:
+    """Repair reviewed missing, username, or activation drift."""
+
+    def operation() -> StaffLoginIdentityReconciliationOutcome:
+        actor_type, actor_id = _validate_context(command.context)
+        user, _current_email, email = _lock_staff_identity(
+            db,
+            user_id=command.user_id,
+        )
+        email_digest = hashlib.sha256(email.encode()).hexdigest()
+        if email_digest != command.expected_email_sha256:
+            raise _error(
+                "stale_identity_evidence",
+                "Staff login identity changed after the repair preview.",
+                user_id=str(user.id),
+            )
+        _ensure_login_identity_available(db, user_id=user.id, email=email)
+        credentials = _locked_local_credentials(db, user.id)
+        if len(credentials) > 1:
+            raise _error(
+                "credential_ambiguous",
+                "Staff account has multiple local login credentials.",
+                user_id=str(user.id),
+                credential_count=len(credentials),
+            )
+        credential_created = not credentials
+        credential = (
+            _create_placeholder_local_credential(
+                db,
+                user_id=user.id,
+                email=email,
+                is_active=user.is_active,
+            )
+            if credential_created
+            else credentials[0]
+        )
+        username_reconciled = credential.username != email
+        if username_reconciled:
+            credential.username = email
+        activation_reconciled = credential.is_active != user.is_active
+        if activation_reconciled:
+            credential.is_active = user.is_active
+        changed = credential_created or username_reconciled or activation_reconciled
+        revoke_for_deactivation = activation_reconciled and not user.is_active
+        revoked_sessions = (
+            _revoke_active_sessions(db, user.id)
+            if username_reconciled or revoke_for_deactivation
+            else 0
+        )
+        _invalidate_auth_after_commit(db, user.id)
+        metadata = {
+            "credential_created": credential_created,
+            "username_reconciled": username_reconciled,
+            "activation_reconciled": activation_reconciled,
+            "revoked_sessions": revoked_sessions,
+            "email_sha256": email_digest,
+        }
+        _stage_audit(
+            db,
+            action="auth.staff_login_identity_reconciled",
+            user_id=user.id,
+            context=command.context,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            metadata=metadata,
+        )
+        if changed:
+            _emit_staff_event(
+                db,
+                event_type=EventType.staff_account_credential_reconciled,
+                user=user,
+                context=command.context,
+                payload={"user_id": str(user.id), **metadata},
+            )
+        return StaffLoginIdentityReconciliationOutcome(
+            user_id=user.id,
+            email=email,
+            credential_id=credential.id,
+            credential_created=credential_created,
+            username_reconciled=username_reconciled,
+            activation_reconciled=activation_reconciled,
+            revoked_sessions=revoked_sessions,
+            changed=changed,
+            command_id=command.context.command_id,
+            correlation_id=command.context.correlation_id,
+        )
+
+    try:
+        return execute_owner_command(
+            db,
+            definition=_RECONCILE_LOGIN_COMMAND,
+            context=command.context,
+            operation=operation,
+        )
+    except IntegrityError as exc:
+        raise _error(
+            "identity_conflict",
+            "Staff login identity conflicts with an existing canonical record.",
+        ) from exc
+
+
 def set_staff_account_active(
     db: Session,
     command: SetStaffAccountActiveCommand,
@@ -678,40 +1629,70 @@ def set_staff_account_active(
 
     def operation() -> StaffAccountOutcome:
         actor_type, actor_id = _validate_context(command.context)
-        user = _locked_user(db, command.user_id)
+        if command.is_active:
+            user, _current_email, email = _lock_staff_identity(
+                db,
+                user_id=command.user_id,
+            )
+        else:
+            user = _locked_user(db, command.user_id)
+            email = None
         if not command.is_active:
             assignment_service.ensure_can_deactivate_system_user(db, user.id)
         state_changed = user.is_active != command.is_active
         user.is_active = command.is_active
-        credential_changes = (
-            db.query(UserCredential)
-            .filter(
-                UserCredential.system_user_id == user.id,
-                UserCredential.is_active.is_not(command.is_active),
+        credential_reconciled = False
+        credential_created = False
+        if command.is_active:
+            assert email is not None
+            _ensure_login_identity_available(db, user_id=user.id, email=email)
+            credentials = _locked_local_credentials(db, user.id)
+            if len(credentials) > 1:
+                raise _error(
+                    "credential_ambiguous",
+                    "Staff account has multiple local login credentials.",
+                    user_id=str(user.id),
+                    credential_count=len(credentials),
+                )
+            credential_created = not credentials
+            credential = (
+                _create_placeholder_local_credential(
+                    db,
+                    user_id=user.id,
+                    email=email,
+                    is_active=True,
+                )
+                if credential_created
+                else credentials[0]
             )
-            .update(
-                {"is_active": command.is_active},
-                synchronize_session=False,
-            )
-        )
-        revoked_sessions = 0
-        if not command.is_active:
-            revoked_sessions = (
-                db.query(AuthSession)
+            credential_reconciled = credential.username != email
+            if credential_reconciled:
+                credential.username = email
+            credential_changes = int(credential_created or not credential.is_active)
+            credential.is_active = True
+        else:
+            credential_changes = int(
+                db.query(UserCredential)
                 .filter(
-                    AuthSession.system_user_id == user.id,
-                    AuthSession.status == SessionStatus.active,
-                    AuthSession.revoked_at.is_(None),
+                    UserCredential.system_user_id == user.id,
+                    UserCredential.provider == AuthProvider.local,
+                    UserCredential.is_active.is_(True),
                 )
                 .update(
-                    {
-                        "status": SessionStatus.revoked,
-                        "revoked_at": datetime.now(UTC),
-                    },
+                    {"is_active": False},
                     synchronize_session=False,
                 )
+                or 0
             )
-        changed = bool(state_changed or credential_changes or revoked_sessions)
+        revoked_sessions = 0
+        if not command.is_active or credential_reconciled:
+            revoked_sessions = _revoke_active_sessions(db, user.id)
+        changed = bool(
+            state_changed
+            or credential_changes
+            or credential_reconciled
+            or revoked_sessions
+        )
         role_names = assignment_service.system_user_role_names(db, user.id)
         _invalidate_auth_after_commit(db, user.id)
         _stage_audit(
@@ -728,6 +1709,8 @@ def set_staff_account_active(
             metadata={
                 "changed": changed,
                 "credential_changes": int(credential_changes or 0),
+                "credential_created": credential_created,
+                "credential_reconciled": credential_reconciled,
                 "revoked_sessions": int(revoked_sessions or 0),
             },
         )
@@ -744,6 +1727,8 @@ def set_staff_account_active(
                 payload={
                     "user_id": str(user.id),
                     "is_active": command.is_active,
+                    "credential_created": credential_created,
+                    "credential_reconciled": credential_reconciled,
                     "revoked_sessions": int(revoked_sessions or 0),
                 },
             )

@@ -29,6 +29,7 @@ def _team_inbox_contract(
     transaction_mode: TransactionMode,
     event_types: tuple[str, ...] = (),
     projections: tuple[str, ...] = (),
+    domain_error_codes: tuple[str, ...] = (),
     mapping_owner: str = "Team Inbox transport and web adapters",
     design_refs: tuple[str, ...] | None = None,
     test_refs: tuple[str, ...] | None = None,
@@ -96,6 +97,7 @@ def _team_inbox_contract(
                 f"{service_name}.identity_collision",
                 f"{service_name}.provider_event_identity_collision",
                 f"{service_name}.command_rejected",
+                *domain_error_codes,
                 *boundary_codes,
             ),
             mapping_owner=mapping_owner,
@@ -2358,6 +2360,7 @@ DOMAIN = DomainSOT(
                 "communications.team_inbox_delivery_receipts",
                 "communications.team_inbox_operator_state",
                 "communications.conversation_ticket_handoff",
+                "operations.service_team_lifecycle",
             ),
             contract=_team_inbox_contract(
                 service_name="communications.team_inbox_projection",
@@ -2404,14 +2407,24 @@ DOMAIN = DomainSOT(
                         kind=AuthorityKind.AUTHORITATIVE_RECORD,
                         source=("Ticket origin links issued from Inbox conversations."),
                     ),
+                    AuthorityInput(
+                        name="active service-team selector projection",
+                        owner="operations.service_team_lifecycle",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source="Current active native service-team identifiers and names.",
+                    ),
                 ),
                 transaction_mode=TransactionMode.READ_ONLY,
+                domain_error_codes=(
+                    "communications.team_inbox_projection.invalid_filter",
+                ),
                 projections=(
                     "Inbox queue detail metrics response cohorts actions and unread cohorts",
                 ),
                 test_refs=(
                     "tests/test_team_inbox_sot_completion.py",
                     "tests/test_team_inbox_needs_attention.py",
+                    "tests/test_team_inbox_filters.py",
                     "tests/architecture/test_team_inbox_boundaries.py",
                     "tests/architecture/test_team_inbox_sot_contracts.py",
                 ),

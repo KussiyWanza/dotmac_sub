@@ -345,6 +345,8 @@ class EventType(enum.Enum):
     staff_account_roles_changed = "staff_account.roles_changed"
     staff_account_activated = "staff_account.activated"
     staff_account_deactivated = "staff_account.deactivated"
+    staff_account_identity_changed = "staff_account.identity_changed"
+    staff_account_credential_reconciled = "staff_account.credential_reconciled"
     system_user_assignments_changed = "system_user.assignments_changed"
     subscriber_assignments_changed = "subscriber.assignments_changed"
 

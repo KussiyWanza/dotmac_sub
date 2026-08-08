@@ -31,7 +31,8 @@ def test_network_map_uses_server_semantic_tone_not_admin_status() -> None:
     service = (ROOT / "app/services/network_map.py").read_text()
     template = (ROOT / "templates/admin/network/map.html").read_text()
 
-    assert '"status_presentation": device.status_presentation.model_dump(' in service
+    assert "status_presentation=NetworkMapStatusPresentation.from_contract(" in service
+    assert "device.status_presentation" in service
     assert "device.status.value" not in service
     assert "p.status_presentation?.tone" in template
     assert "semanticToneColor(deviceTone)" in template

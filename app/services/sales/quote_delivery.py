@@ -115,6 +115,12 @@ def render_quote_email(
             "The company legal name is unavailable for Quote delivery",
         )
     payment_url = snapshot.payment.paystack_url
+    if payment_url is None:
+        raise _error(
+            "payment_link_unavailable",
+            "A secure Paystack payment link is unavailable for this Quote",
+            reason="sales.quote_documents.payment_identity_unavailable",
+        )
     background, foreground = _button_colors(brand.primary_color)
     total = f"{snapshot.currency} {snapshot.total:,.2f}"
     reference = str(snapshot.quote_id)

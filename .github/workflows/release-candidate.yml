@@ -1,0 +1,192 @@
+name: Build release candidate once
+
+# Explicitly build the final current dev commit after its source and rolling
+# version pull requests have landed. The output is one immutable OCI digest and
+# a typed evidence artifact; staging consumes the digest, never the bootstrap
+# tag. Ordinary pushes do not invoke this workflow.
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Exact full SHA of the current green dev tip
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+  packages: write
+
+concurrency:
+  group: release-candidate-${{ inputs.candidate_sha }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build:
+    name: Build immutable candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      source_revision: ${{ steps.candidate.outputs.sha }}
+      source_tree: ${{ steps.candidate.outputs.tree }}
+      image_digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Checkout current dev
+        uses: actions/checkout@v4
+        with:
+          ref: dev
+          fetch-depth: 0
+
+      - name: Require exact current dev candidate
+        id: candidate
+        env:
+          EXPECTED_SHA: ${{ inputs.candidate_sha }}
+          WORKFLOW_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [ "$WORKFLOW_REF" != "refs/heads/dev" ]; then
+            echo "Dispatch this workflow with --ref dev." >&2
+            exit 1
+          fi
+          if ! printf '%s' "$EXPECTED_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "candidate_sha must be a full lowercase Git SHA." >&2
+            exit 1
+          fi
+          source_sha="$(git rev-parse HEAD)"
+          if [ "$source_sha" != "$EXPECTED_SHA" ]; then
+            echo "Refusing stale candidate: dev is $source_sha, requested $EXPECTED_SHA." >&2
+            exit 1
+          fi
+          source_tree="$(git rev-parse 'HEAD^{tree}')"
+          echo "sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "tree=$source_tree" >> "$GITHUB_OUTPUT"
+
+      - name: Require green CI for the exact dev tip
+        uses: actions/github-script@v7
+        env:
+          CANDIDATE_SHA: ${{ steps.candidate.outputs.sha }}
+        with:
+          script: |
+            const candidate = process.env.CANDIDATE_SHA;
+            const branch = await github.rest.repos.getBranch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              branch: "dev",
+            });
+            if (branch.data.commit.sha !== candidate) {
+              core.setFailed(
+                `Refusing stale candidate: dev is ${branch.data.commit.sha}, candidate is ${candidate}.`
+              );
+              return;
+            }
+
+            const required = ["CI", "Mobile CI"];
+            const response = await github.rest.actions.listWorkflowRunsForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              head_sha: candidate,
+              event: "push",
+              per_page: 100,
+            });
+            const runs = response.data.workflow_runs.filter(
+              (run) => run.head_sha === candidate && run.event === "push"
+            );
+            const failures = [];
+            for (const workflowName of required) {
+              const run = runs
+                .filter((item) => item.name === workflowName)
+                .sort((left, right) => right.id - left.id)[0];
+              if (!run || run.status !== "completed" || run.conclusion !== "success") {
+                failures.push(
+                  `${workflowName}=${run ? `${run.status}/${run.conclusion || "pending"}` : "not-reported"}`
+                );
+              }
+            }
+            if (failures.length > 0) {
+              core.setFailed(`Candidate source checks are not green: ${failures.join(", ")}`);
+              return;
+            }
+            core.info(`Candidate ${candidate} is the current green dev tip.`);
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Refuse duplicate candidate build
+        env:
+          SOURCE_REVISION: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          candidate_ref="${REGISTRY}/${IMAGE_NAME}:candidate-${SOURCE_REVISION}"
+          manifest_error=""
+          if manifest_error="$(docker manifest inspect "$candidate_ref" 2>&1)"; then
+            echo "Candidate image already exists for $SOURCE_REVISION; refusing to rebuild it." >&2
+            exit 1
+          fi
+          if ! grep -qiE 'manifest unknown|no such manifest' <<<"$manifest_error"; then
+            echo "Cannot safely determine whether $candidate_ref already exists." >&2
+            printf '%s\n' "$manifest_error" >&2
+            exit 1
+          fi
+
+      - name: Build and push candidate once
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:candidate-${{ steps.candidate.outputs.sha }}
+          labels: |
+            org.opencontainers.image.revision=${{ steps.candidate.outputs.sha }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            io.dotmac.release.source-tree=${{ steps.candidate.outputs.tree }}
+            io.dotmac.release.build-run=${{ github.run_id }}
+          cache-from: type=gha,scope=dotmac-sub-application
+          cache-to: type=gha,mode=max,scope=dotmac-sub-application
+          secrets: |
+            forgejo_token=${{ secrets.FORGEJO_READ_TOKEN }}
+
+      - name: Verify published digest
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$IMAGE_DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+            echo "Build did not return an immutable OCI digest." >&2
+            exit 1
+          fi
+          docker buildx imagetools inspect \
+            "${REGISTRY}/${IMAGE_NAME}@${IMAGE_DIGEST}" >/dev/null
+
+      - name: Write typed candidate evidence
+        env:
+          SOURCE_REVISION: ${{ steps.candidate.outputs.sha }}
+          SOURCE_TREE: ${{ steps.candidate.outputs.tree }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          BUILD_RUN_ID: ${{ github.run_id }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/release-candidate-evidence"
+          python -m scripts.release_candidate_evidence write-candidate \
+            --source-revision "$SOURCE_REVISION" \
+            --source-tree "$SOURCE_TREE" \
+            --image-digest "$IMAGE_DIGEST" \
+            --build-run-id "$BUILD_RUN_ID" \
+            --output "$RUNNER_TEMP/release-candidate-evidence/candidate.json"
+
+      - name: Upload candidate evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-candidate-evidence
+          path: ${{ runner.temp }}/release-candidate-evidence/candidate.json
+          if-no-files-found: error
+          retention-days: 90

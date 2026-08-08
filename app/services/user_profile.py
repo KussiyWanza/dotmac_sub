@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import HTTPException, UploadFile
 from sqlalchemy.orm import Session
@@ -12,6 +13,9 @@ from app.models.subscriber import ContactMethod, Gender, Subscriber
 from app.models.system_user import SystemUser
 from app.schemas.auth_flow import AvatarUploadResponse, MeResponse, MeUpdateRequest
 from app.services import avatar as avatar_service
+from app.services import staff_provisioning
+from app.services.domain_errors import DomainError
+from app.services.owner_commands import CommandContext
 
 logger = logging.getLogger(__name__)
 
@@ -98,11 +102,9 @@ def update_me(
     scopes: list[str],
 ) -> MeResponse:
     """Update the current user's profile and return the updated profile."""
-    person: Subscriber | SystemUser
-    disallowed_fields: set[str]
+    update_data = payload.model_dump(exclude_unset=True)
     if principal_type == "system_user":
-        person = _get_system_user_or_404(db, principal_id)
-        disallowed_fields = {
+        system_disallowed_fields = {
             "date_of_birth",
             "gender",
             "preferred_contact_method",
@@ -115,11 +117,58 @@ def update_me(
             "postal_code",
             "country_code",
         }
-    else:
-        person = _get_subscriber_or_404(db, principal_id)
-        disallowed_fields = set()
+        supported = {
+            field.value: field for field in staff_provisioning.StaffIdentityField
+        }
+        fields = frozenset(
+            supported[name]
+            for name in update_data
+            if name in supported and name not in system_disallowed_fields
+        )
+        if fields:
+            desired_fingerprint = hashlib.sha256(
+                "\x1f".join(
+                    f"{field.value}={update_data.get(field.value)!s}"
+                    for field in sorted(fields, key=lambda item: item.value)
+                ).encode()
+            ).hexdigest()
+            command_id = uuid4()
+            try:
+                staff_provisioning.update_staff_identity(
+                    db,
+                    staff_provisioning.UpdateStaffIdentityCommand(
+                        context=CommandContext(
+                            command_id=command_id,
+                            correlation_id=command_id,
+                            actor=f"user:{principal_id}",
+                            scope=staff_provisioning.STAFF_PROFILE_SCOPE,
+                            reason="Authenticated staff API profile update",
+                            idempotency_key=(
+                                f"staff-api-profile:{principal_id}:"
+                                f"{desired_fingerprint}"
+                            ),
+                        ),
+                        user_id=principal_id,
+                        fields=fields,
+                        first_name=update_data.get("first_name"),
+                        last_name=update_data.get("last_name"),
+                        display_name=update_data.get("display_name"),
+                        email=update_data.get("email"),
+                        phone=update_data.get("phone"),
+                    ),
+                )
+            except DomainError as exc:
+                status_code = (
+                    404 if exc.code.endswith("staff_account_not_found") else 409
+                )
+                raise HTTPException(
+                    status_code=status_code, detail=exc.message
+                ) from exc
+        system_user = _get_system_user_or_404(db, principal_id)
+        return _build_me_response(system_user, roles, scopes)
 
-    update_data = payload.model_dump(exclude_unset=True)
+    person = _get_subscriber_or_404(db, principal_id)
+    disallowed_fields: set[str] = set()
 
     # Email is identity-bearing (unique, NOT NULL) and re-arms verification, so
     # it goes through the shared helper rather than a raw setattr. This is what

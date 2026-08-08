@@ -380,8 +380,9 @@ def test_ticket_full_and_htmx_views_share_canonical_accessible_partials():
     assert 'x-bind:aria-expanded="open.toString()"' in list_partial
     assert 'id="ticket-column-toggle"' in list_partial
     assert 'aria-labelledby="ticket-column-toggle"' in list_partial
+    assert "document.addEventListener('click', this.closeOnOutsideClick, true);" in page
     assert (
-        '@click.window="if (!$el.contains($event.target)) open = false"' in list_partial
+        "document.removeEventListener('click', this.closeOnOutsideClick, true);" in page
     )
     assert '@keydown.escape.window="open = false"' in list_partial
     assert "@click.outside" not in list_partial
