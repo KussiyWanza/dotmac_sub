@@ -185,6 +185,9 @@ class BillingHealthSnapshot:
     billing_profile_mismatch_count: int = 0
     billing_profile_mixed_count: int = 0
     account_credit_invariant_count: int = 0
+    # Drafts nobody has come back to. Reported, never acted on.
+    aged_draft_count: int = 0
+    aged_draft_total: Decimal = Decimal("0.00")
     # Invoices past draft with no issue date. They cannot age, cannot go
     # overdue, and drop out of anything filtering on issue date.
     paid_without_issue_count: int = 0
@@ -208,6 +211,8 @@ class BillingHealthSnapshot:
         out: list[str] = []
         if self.paid_with_balance_count > 0:
             out.append("paid_invoices_with_balance")
+        if self.aged_draft_count > 0:
+            out.append("aged_draft_invoices")
         if self.paid_without_issue_count > 0:
             out.append("invoices_paid_without_issue")
         if self.scan_ratio is not None and self.scan_ratio < self.scan_min_ratio:
@@ -247,6 +252,8 @@ def billing_health_observations(snapshot: BillingHealthSnapshot):  # noqa: ANN20
 
     values: list[tuple[str, str, int | float | Decimal]] = [
         ("paid_invoices_with_balance", "all", snapshot.paid_with_balance_count),
+        ("aged_draft_invoices", "all", snapshot.aged_draft_count),
+        ("aged_draft_invoice_total", "all", snapshot.aged_draft_total),
         ("invoices_paid_without_issue", "all", snapshot.paid_without_issue_count),
         ("invoice_last_scanned", "all", snapshot.last_scanned or 0),
         ("active_subscriptions", "all", snapshot.eligible_active_subs),
@@ -375,6 +382,39 @@ def publish_billing_health_snapshot(
         status="degraded" if snapshot.anomalies else "ok",
         now=now,
     )
+
+
+AGED_DRAFT_DAYS = 30
+
+
+def aged_draft_invoices(
+    db: Session, now: datetime | None = None
+) -> tuple[int, Decimal]:
+    """Count + sum of drafts old enough that nobody is coming back for them.
+
+    A draft is a legitimate holding state: awaiting confirmation, provisioning,
+    or a quote nobody has accepted. So this reports and never acts — auto
+    issuing would send bills nobody meant to send, and the data cannot tell a
+    deliberate hold from an abandoned one.
+
+    What it prevents is the third case: a draft that is simply forgotten. One
+    hand-made invoice for over a million naira sat unissued for days because
+    nothing counted drafts, so nothing could notice. An aged draft has three
+    honest dispositions — issue it, void it, or keep holding it deliberately —
+    and all three are fine. Not knowing it exists is not.
+    """
+    cutoff = (now or datetime.now(UTC)) - timedelta(days=AGED_DRAFT_DAYS)
+    count_, total = db.execute(
+        select(
+            func.count(Invoice.id),
+            func.coalesce(func.sum(Invoice.total), 0),
+        )
+        .where(Invoice.is_active.is_(True))
+        .where(Invoice.status == InvoiceStatus.draft)
+        .where(Invoice.total > 0)
+        .where(Invoice.created_at < cutoff)
+    ).one()
+    return int(count_ or 0), Decimal(str(total or 0))
 
 
 def paid_with_balance(db: Session) -> tuple[int, Decimal]:
@@ -773,6 +813,7 @@ def billing_health_snapshot(
         _health_thresholds(db)
     )
     pwb_count, pwb_total = paid_with_balance(db)
+    aged_draft_count, aged_draft_total = aged_draft_invoices(db, now=now)
     paid_without_issue_count = invoices_past_draft_without_issue_date(db)
     last_scanned, eligible, scan_ratio = invoice_scan_coverage(db)
     c24, avg7, ratio, collapsed = payment_volume(db, now=now)
@@ -796,6 +837,8 @@ def billing_health_snapshot(
     )
     return BillingHealthSnapshot(
         paid_with_balance_count=pwb_count,
+        aged_draft_count=aged_draft_count,
+        aged_draft_total=aged_draft_total,
         paid_without_issue_count=paid_without_issue_count,
         paid_with_balance_total=pwb_total,
         last_scanned=last_scanned,

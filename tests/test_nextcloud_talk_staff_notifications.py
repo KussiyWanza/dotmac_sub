@@ -152,7 +152,10 @@ def test_runtime_uses_v4_room_and_v1_chat_endpoints(monkeypatch) -> None:
     secret = {"app_password": "secret"}
 
     room = runner.execute(
-        _envelope(action="create_direct_room", params={"invite": "agent"}),
+        _envelope(
+            action="create_direct_room",
+            params={"invite": "Confidence Okaka"},
+        ),
         config=config,
         secret_material=secret,
     )
@@ -173,7 +176,10 @@ def test_runtime_uses_v4_room_and_v1_chat_endpoints(monkeypatch) -> None:
     assert room.output["room_token"] == "room-token"
     assert message.status is OperationStatus.succeeded
     assert calls[0]["url"].endswith("/ocs/v2.php/apps/spreed/api/v4/room")
-    assert calls[0]["json"] == {"roomType": 1, "invite": "agent"}
+    assert calls[0]["json"] == {
+        "roomType": 1,
+        "invite": "Confidence Okaka",
+    }
     assert calls[1]["url"].endswith("/ocs/v2.php/apps/spreed/api/v1/chat/room-token")
     assert calls[1]["data"] == {
         "message": "Assigned",
@@ -228,7 +234,7 @@ def test_worker_creates_room_once_and_reuses_it(db_session, monkeypatch) -> None
         db_session,
         system_user_id=user.id,
         integration_installation_id=installation.id,
-        nextcloud_username="worker.agent",
+        nextcloud_user_id=nextcloud_talk_staff.NextcloudUserId.parse("worker.agent"),
         actor="test",
     )
     monkeypatch.setattr(nextcloud_talk_staff, "resolve_value", lambda *_: True)
@@ -290,6 +296,55 @@ def test_missing_username_mapping_fails_visibly(db_session, monkeypatch) -> None
     assert notification.retry_count == nextcloud_talk_staff.MAX_RETRIES
 
 
+def test_mapping_accepts_exact_nextcloud_user_id_with_internal_spaces(
+    db_session,
+) -> None:
+    user, _person = add_bound_staff_user(
+        db_session,
+        email="confidence.okaka@example.test",
+    )
+    installation, _binding = _install_talk(db_session)
+    nextcloud_user_id = nextcloud_talk_staff.NextcloudUserId.parse(
+        "  Confidence Okaka  "
+    )
+
+    mapping = nextcloud_talk_staff.set_staff_account_mapping(
+        db_session,
+        system_user_id=user.id,
+        integration_installation_id=installation.id,
+        nextcloud_user_id=nextcloud_user_id,
+        actor="test",
+    )
+
+    assert nextcloud_user_id.value == "Confidence Okaka"
+    assert nextcloud_user_id.normalized == "confidence okaka"
+    assert mapping.nextcloud_username == "Confidence Okaka"
+    assert mapping.nextcloud_username_normalized == "confidence okaka"
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        "Confidence\tOkaka",
+        "Confidence\nOkaka",
+        "Confidence\x7fOkaka",
+        "Confidence\u00a0Okaka",
+    ),
+)
+def test_nextcloud_user_id_rejects_non_space_whitespace_and_controls(
+    value: str,
+) -> None:
+    with pytest.raises(
+        nextcloud_talk_staff.NextcloudTalkStaffCommandError,
+        match="unsupported whitespace or control characters",
+    ) as exc_info:
+        nextcloud_talk_staff.NextcloudUserId.parse(value)
+
+    assert exc_info.value.code == (
+        "communications.nextcloud_talk_staff.invalid_mapping"
+    )
+
+
 def test_connection_test_recreates_one_stale_room(db_session, monkeypatch) -> None:
     user, _person = add_bound_staff_user(db_session, email="test-action@example.test")
     installation, _binding = _install_talk(db_session)
@@ -297,7 +352,7 @@ def test_connection_test_recreates_one_stale_room(db_session, monkeypatch) -> No
         db_session,
         system_user_id=user.id,
         integration_installation_id=installation.id,
-        nextcloud_username="test.agent",
+        nextcloud_user_id=nextcloud_talk_staff.NextcloudUserId.parse("test.agent"),
         actor="test",
     )
     db_session.add(

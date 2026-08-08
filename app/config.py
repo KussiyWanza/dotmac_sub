@@ -113,13 +113,25 @@ class Settings:
     )
     avatar_url_prefix: str = os.getenv("AVATAR_URL_PREFIX", "/static/avatars")
 
-    # Splynx is decommissioned (2026-06-16; local ledger is the sole source of
-    # truth). The incremental-sync machinery and its sync-state tables are gone
-    # (migration 169). The remote-MySQL connection settings that fed that sync
-    # have been removed — nothing read them. Remove SPLYNX_MYSQL_* from .env too;
-    # rotate any value that was a live credential. Historical Splynx data
-    # (splynx_billing_transactions, id mappings, archives, splynx_* id columns)
-    # is retained READ-ONLY for audit/reconciliation only.
+    # The former billing system is decommissioned (2026-06-16; the local ledger
+    # is the sole source of truth). The incremental-sync machinery and its
+    # sync-state tables are gone (migration 169), the one-off importers that
+    # connected to its MySQL have been deleted, and the foreign-data wrapper
+    # onto its Postgres is dropped (migration 505). Nothing in the running
+    # application opens a connection to it.
+    #
+    # One tool still can: scripts/one_off/reconstruct_splynx_mirror.py, which
+    # rebuilds the frozen opening-balance evidence from a retained backup. It
+    # addresses a restore, not the decommissioned host, and is kept only until
+    # every account has a verified opening position.
+    #
+    # A deployed .env may still carry SPLYNX_MYSQL_* from the sync era. Remove
+    # it, and rotate any value that was ever a live credential.
+    #
+    # Historical data (the local splynx_* mirror tables, id mappings, archives
+    # and splynx_* id columns) is retained READ-ONLY for audit and
+    # reconciliation, and is covered by the separate rename to opening-balance
+    # vocabulary.
 
     # Cookie security
     secure_cookies: bool = os.getenv("SECURE_COOKIES", "true").lower() in (

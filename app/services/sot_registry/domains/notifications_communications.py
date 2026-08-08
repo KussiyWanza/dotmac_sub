@@ -1242,8 +1242,9 @@ DOMAIN = DomainSOT(
                         owner="auth.permission_gate",
                         kind=AuthorityKind.CONTROL_INPUT,
                         source=(
-                            "Authorized system-user CommandContext plus normalized "
-                            "mapping, disable, or connection-test input."
+                            "Authorized system-user CommandContext plus the normalized "
+                            "exact Nextcloud user ID mapping, disable, or connection-test "
+                            "input."
                         ),
                     ),
                     AuthorityInput(

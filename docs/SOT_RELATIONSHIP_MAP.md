@@ -3172,7 +3172,8 @@ in forms, or rotate key material directly.
    assigned system user; the target action performs its own domain permission
    check again.
 10. `communications.nextcloud_talk_staff` owns the explicit mapping from a
-   `SystemUser` to a Nextcloud username, the reusable direct-room projection,
+   `SystemUser` to the exact immutable Nextcloud user ID, including ordinary
+   internal spaces accepted by Nextcloud, the reusable direct-room projection,
    and Talk-specific delivery idempotency, retry, and reconciliation policy.
    Ticket and project owners stage a `nextcloud_talk` notification row in the
    same transaction as the assignment or explicit mention. The notification
