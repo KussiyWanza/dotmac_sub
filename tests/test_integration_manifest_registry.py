@@ -33,7 +33,7 @@ EXPECTED_MARKETPLACE = {
     "lead.capture.http": ("Lead Capture Webhook", "1.0.0", "sales"),
     "whatsapp": ("WhatsApp", "1.0.0", "messaging"),
     "nextcloud.talk": ("Nextcloud Talk", "1.0.0", "messaging"),
-    "meta.social": ("Meta Social Inbox", "1.0.0", "messaging"),
+    "meta.social": ("Meta Social Inbox", "1.1.0", "messaging"),
     "paystack": ("Paystack", "1.0.1", "payment"),
     "flutterwave": ("Flutterwave", "1.0.0", "payment"),
     "3cx": ("3CX", "1.0.0", "voice"),
