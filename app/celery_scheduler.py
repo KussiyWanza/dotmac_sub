@@ -3,9 +3,27 @@ import time
 
 from celery.beat import Scheduler
 
+from app.models.domain_settings import SettingDomain
 from app.services.scheduler_config import build_beat_schedule
+from app.services.settings_spec import get_spec
 
 logger = logging.getLogger(__name__)
+
+
+def _beat_refresh_default() -> int:
+    """The declared default for `scheduler.beat_refresh_seconds`.
+
+    `control.settings_spec` owns the value; this reads it rather than restating
+    it (docs/SOT_RELATIONSHIP_MAP.md).
+    """
+
+    spec = get_spec(SettingDomain.scheduler, "beat_refresh_seconds")
+    if spec is None or not isinstance(spec.default, int):
+        raise RuntimeError(
+            "scheduler.beat_refresh_seconds has no integer spec default; "
+            "beat cannot choose a refresh interval"
+        )
+    return spec.default
 
 
 class DbScheduler(Scheduler):
@@ -53,7 +71,13 @@ class DbScheduler(Scheduler):
         return super().tick(*args, **kwargs)
 
     def _refresh_schedule(self):
-        refresh_seconds = int(self.app.conf.get("beat_refresh_seconds", 30))
+        # The fallback comes from the spec, not a literal. It was 30 while the
+        # spec declares 300 — a disagreement that only shows when the key is
+        # absent from celery conf, i.e. exactly when nobody is looking.
+        # `get_spec` is a pure in-memory lookup; no DB read is added to tick().
+        refresh_seconds = int(
+            self.app.conf.get("beat_refresh_seconds", _beat_refresh_default())
+        )
         now = time.monotonic()
         if now - self._last_refresh_at < max(refresh_seconds, 1):
             return

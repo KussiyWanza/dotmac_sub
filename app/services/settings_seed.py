@@ -1369,12 +1369,6 @@ def seed_scheduler_settings(db: Session) -> None:
     )
     scheduler_settings.ensure_by_key(
         db,
-        key="refresh_minutes",
-        value_type=SettingValueType.integer,
-        value_text=os.getenv("CELERY_BEAT_REFRESH_MINUTES", "5"),
-    )
-    scheduler_settings.ensure_by_key(
-        db,
         key="event_dispatch_interval_seconds",
         value_type=SettingValueType.integer,
         value_text=os.getenv("EVENT_DISPATCH_INTERVAL_SECONDS", "60"),

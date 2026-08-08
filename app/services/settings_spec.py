@@ -1,8 +1,8 @@
+import json
 import logging
 from dataclasses import dataclass
+from enum import Enum
 from typing import TYPE_CHECKING, Any, cast
-
-from fastapi import HTTPException
 
 from app.models.domain_settings import SettingDomain
 from app.models.subscription_engine import SettingValueType
@@ -26,6 +26,13 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+class SettingStringNormalization(str, Enum):
+    """Canonical normalization applied to a declared string setting."""
+
+    NONE = "none"
+    LOWERCASE = "lowercase"
 
 
 def _coerce_int_value(value: object) -> int | None:
@@ -66,6 +73,7 @@ class SettingSpec(ListResponseMixin):
     min_value: int | None = None
     max_value: int | None = None
     is_secret: bool = False
+    string_normalization: SettingStringNormalization = SettingStringNormalization.NONE
 
 
 SCHEDULER_BOOLEAN_SETTING_KEYS = frozenset(
@@ -277,6 +285,7 @@ SETTINGS_SPECS: list[SettingSpec] = [
         value_type=SettingValueType.string,
         default="lax",
         allowed={"lax", "strict", "none"},
+        string_normalization=SettingStringNormalization.LOWERCASE,
     ),
     SettingSpec(
         domain=SettingDomain.auth,
@@ -1347,14 +1356,6 @@ SETTINGS_SPECS: list[SettingSpec] = [
         value_type=SettingValueType.integer,
         default=300,
         min_value=5,
-    ),
-    SettingSpec(
-        domain=SettingDomain.scheduler,
-        key="refresh_minutes",
-        env_var="CELERY_BEAT_REFRESH_MINUTES",
-        value_type=SettingValueType.integer,
-        default=5,
-        min_value=1,
     ),
     SettingSpec(
         domain=SettingDomain.scheduler,
@@ -4529,6 +4530,53 @@ SETTINGS_SPECS: list[SettingSpec] = [
         default=True,
         label="Cross-application drift detection",
     ),
+    # The request-audit middleware's five controls. They were writable through
+    # `settings_api_custom` with NO spec at all — the custom handler validates
+    # against its own `_AUDIT_SETTING_*` sets, so nothing required a
+    # declaration. Declared here at their EXACT current shape (seed:
+    # `seed_audit_settings`; runtime defaults: `app.main._default_audit_settings`)
+    # so the two agree before the handler is routed through the spec.
+    # `tests/architecture/test_audit_setting_defaults.py` pins that agreement.
+    SettingSpec(
+        domain=SettingDomain.audit,
+        key="enabled",
+        env_var=None,
+        value_type=SettingValueType.boolean,
+        default=True,
+        label="Request audit logging",
+    ),
+    SettingSpec(
+        domain=SettingDomain.audit,
+        key="methods",
+        env_var=None,
+        value_type=SettingValueType.json,
+        default=["POST", "PUT", "PATCH", "DELETE"],
+        label="Audited HTTP methods",
+    ),
+    SettingSpec(
+        domain=SettingDomain.audit,
+        key="skip_paths",
+        env_var=None,
+        value_type=SettingValueType.json,
+        default=["/static", "/web", "/health"],
+        label="Path prefixes excluded from audit logging",
+    ),
+    SettingSpec(
+        domain=SettingDomain.audit,
+        key="read_trigger_header",
+        env_var=None,
+        value_type=SettingValueType.string,
+        default="x-audit-read",
+        label="Header that opts a read request into audit logging",
+    ),
+    SettingSpec(
+        domain=SettingDomain.audit,
+        key="read_trigger_query",
+        env_var=None,
+        value_type=SettingValueType.string,
+        default="audit",
+        label="Query parameter that opts a read request into audit logging",
+    ),
     SettingSpec(
         domain=SettingDomain.billing,
         key="cutover_balance_audit_enabled",
@@ -5169,12 +5217,9 @@ def resolve_value(db, domain: SettingDomain, key: str) -> Any:
 
     # 2. Query database
     service = DOMAIN_SETTINGS_SERVICE.get(domain)
-    setting = None
-    if service:
-        try:
-            setting = service.get_by_key(db, key)
-        except HTTPException:
-            setting = None
+    setting = (
+        service.get_optional_by_key(db, key, active_only=True) if service else None
+    )
     raw = extract_db_value(setting)
     if raw is None:
         raw = spec.default
@@ -5372,8 +5417,34 @@ def coerce_value(spec: SettingSpec, raw: object) -> tuple[object | None, str | N
         return None, "Value must be an integer"
     if spec.value_type == SettingValueType.string:
         if isinstance(raw, str):
-            return raw, None
-        return str(raw), None
+            value = raw
+        else:
+            value = str(raw)
+        if spec.string_normalization is SettingStringNormalization.LOWERCASE:
+            value = value.lower()
+        return value, None
+    if spec.value_type == SettingValueType.json:
+        # A JSON setting reached through the settings form arrives as text. An
+        # object or array is parsed; anything else is read as a comma-separated
+        # list, which is the only established convention for these — the audit
+        # `methods`/`skip_paths` handler did exactly this before the shape moved
+        # to its owner. Without it, "POST, GET" would store as that string.
+        if isinstance(raw, str):
+            text = raw.strip()
+            if not text:
+                return [], None
+            if text.startswith(("[", "{")):
+                try:
+                    return json.loads(text), None
+                except ValueError:
+                    return None, "Value must be valid JSON"
+            return [item.strip() for item in text.split(",") if item.strip()], None
+        if isinstance(raw, list):
+            return [
+                item.strip() if isinstance(item, str) else item
+                for item in raw
+                if not isinstance(item, str) or item.strip()
+            ], None
     return raw, None
 
 
@@ -5381,8 +5452,12 @@ def normalize_for_db(
     spec: SettingSpec, value: object
 ) -> tuple[str | None, object | None]:
     if spec.value_type == SettingValueType.boolean:
+        # Both columns, deliberately. The seed writes both, the retired
+        # per-domain handlers wrote both, and `_to_bool` in app.main reads
+        # `value_json` first — leaving it NULL made a boolean row's shape depend
+        # on which writer produced it.
         bool_value = bool(value)
-        return ("true" if bool_value else "false"), None
+        return ("true" if bool_value else "false"), bool_value
     if spec.value_type == SettingValueType.integer:
         parsed = _coerce_int_value(value)
         if parsed is None:

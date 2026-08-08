@@ -30,6 +30,25 @@ write boundary — never enumerated as an enum or a CHECK constraint in
 domain; `registry_validation_errors()` rejects a second claimant. Adding a
 setting domain is therefore a declaration by its owner, not a migration.
 
+`control.settings_spec` owns each setting's SHAPE — value type, bounds, allowed
+values, default and secrecy. `SettingSpec` is the sole declaration of those
+facts, and `_normalize_spec_setting` is the sole function that decides whether a
+submitted value is acceptable. The settings API is an adapter: it selects a
+domain and key and delegates, exactly as `_upsert_domain_setting` and
+`_get_domain_setting` already do for the ten domains routed through
+`settings_api_generic`.
+
+A per-domain handler must not carry its own key list, type mapping, bound or
+allowed set. Such a copy is a second decision system, not an adapter, and it
+drifts in the details nobody re-reads — a bound, an allowed set, one key's type.
+It also defeats `tests/architecture/test_no_orphan_settings.py`, whose reader
+corpus counts a quoted key literal anywhere under `app/`: a key named only by a
+handler's private set looks read when nothing reads it.
+
+A setting with no `SettingSpec` is not a setting. `_get_domain_setting` and
+`_normalize_spec_setting` both reject an unspec'd key, so on the owned path an
+undeclared key is unreachable for read and write alike.
+
 ## UI Projection Boundary
 
 The approved cross-Dotmac presentation contract is
