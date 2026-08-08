@@ -581,6 +581,77 @@ SETTINGS_SPECS: list[SettingSpec] = [
         value_type=SettingValueType.boolean,
         default=True,
     ),
+    # The SMS channel's operational controls. They were read through
+    # `sms._get_setting`, which consulted the environment ABOVE the stored row
+    # and carried a per-call-site default — so `sms_enabled` defaulted to `true`
+    # in `notification_adapter` and `false` in the three other readers, and
+    # `is_available()` advertised a channel the send path refused. The
+    # credentials (`sms_api_key`, `sms_api_secret`) are NOT here: a credential is
+    # not a setting, and they are held in `app.config` (ADR-0009).
+    SettingSpec(
+        domain=SettingDomain.notification,
+        key="sms_enabled",
+        env_var="SMS_ENABLED",
+        value_type=SettingValueType.boolean,
+        default=False,
+        label="SMS channel enabled",
+    ),
+    SettingSpec(
+        domain=SettingDomain.notification,
+        key="sms_provider",
+        env_var="SMS_PROVIDER",
+        value_type=SettingValueType.string,
+        default="",
+        # "" is the deliberate unconfigured state: `send_sms` refuses and names
+        # the three real providers rather than defaulting to `webhook`, which
+        # with no webhook URL is a guaranteed failure dressed as a live channel.
+        allowed={"", "twilio", "africastalking", "webhook"},
+        label="SMS provider",
+    ),
+    SettingSpec(
+        domain=SettingDomain.notification,
+        key="sms_from_number",
+        env_var="SMS_FROM_NUMBER",
+        value_type=SettingValueType.string,
+        default="",
+        label="SMS sender number",
+    ),
+    SettingSpec(
+        domain=SettingDomain.notification,
+        key="sms_username",
+        env_var="SMS_USERNAME",
+        value_type=SettingValueType.string,
+        default="",
+        # Africa's Talking account identifier. Paired with the API key but not
+        # itself secret, so it stays a setting under the split.
+        label="SMS provider account username",
+    ),
+    SettingSpec(
+        domain=SettingDomain.notification,
+        key="sms_webhook_url",
+        env_var="SMS_WEBHOOK_URL",
+        value_type=SettingValueType.string,
+        default="",
+        label="SMS webhook URL",
+    ),
+    SettingSpec(
+        domain=SettingDomain.notification,
+        key="sms_api_timeout_seconds",
+        env_var="SMS_API_TIMEOUT_SECONDS",
+        value_type=SettingValueType.integer,
+        default=30,
+        min_value=1,
+        label="SMS provider request timeout (seconds)",
+    ),
+    SettingSpec(
+        domain=SettingDomain.notification,
+        key="sms_max_length",
+        env_var="SMS_MAX_LENGTH",
+        value_type=SettingValueType.integer,
+        default=160,
+        min_value=0,
+        label="SMS body truncation length (0 disables truncation)",
+    ),
     SettingSpec(
         domain=SettingDomain.notification,
         key="alert_notifications_default_channel",

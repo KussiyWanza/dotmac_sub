@@ -30,14 +30,12 @@ env 1 app/services/network/olt_polling_metrics.py
 env 1 app/services/network/ont_features.py
 env 1 app/services/network/reconcile/alerts.py
 env 3 app/services/notification.py
-env 1 app/services/notification_adapter.py
 env 2 app/services/poller_health.py
 env 3 app/services/push.py
 env 1 app/services/radius_population.py
 env 5 app/services/radius_probe.py
 env 1 app/services/radius_reconciliation.py
 env 2 app/services/session_store.py
-env 1 app/services/sms.py
 env 2 app/services/support.py
 env 5 app/services/uisp.py
 env 2 app/services/usage.py
@@ -76,7 +74,6 @@ setting 4 app/services/radius_auth.py
 setting 8 app/services/radius_population.py
 setting 6 app/services/radius_reject.py
 setting 4 app/services/smart_defaults.py
-setting 4 app/services/sms.py
 setting 5 app/services/web_admin_dashboard.py
 setting 3 app/services/web_catalog_subscriptions.py
 setting 3 app/services/web_customer_details.py

@@ -5,15 +5,17 @@ Supports:
 - Africa's Talking
 - Generic HTTP webhook
 
-Configuration via environment variables or DomainSettings:
-- SMS_PROVIDER: twilio | africastalking | webhook
-- SMS_API_KEY, SMS_API_SECRET
-- SMS_FROM_NUMBER
-- SMS_WEBHOOK_URL (for webhook provider)
+Operational configuration is settings-owned (`notification` domain, declared
+in `settings_spec`): sms_enabled, sms_provider, sms_from_number,
+sms_webhook_url, sms_api_timeout_seconds, sms_max_length. Their `env_var`s are
+bootstrap inputs, materialised by the seed — never a live override of a stored
+row.
+
+Provider credentials are held from boot in `app.config` (SMS_API_KEY,
+SMS_API_SECRET) and are not settings (ADR-0009).
 """
 
 import logging
-import os
 import re
 from datetime import UTC, datetime
 from typing import Any
@@ -21,7 +23,8 @@ from typing import Any
 import httpx
 from sqlalchemy.orm import Session
 
-from app.models.domain_settings import DomainSetting, SettingDomain
+from app.config import settings
+from app.models.domain_settings import SettingDomain
 from app.models.notification import (
     DeliveryStatus,
     NotificationChannel,
@@ -30,6 +33,7 @@ from app.models.notification import (
     NotificationTemplate,
 )
 from app.schemas.notification import NotificationCreate
+from app.services import settings_spec
 from app.services.customer_identity_normalization import normalize_phone_identifier
 from app.services.notification import notifications as notification_records
 from app.services.notification_template_renderer import render_template_text
@@ -39,25 +43,16 @@ logger = logging.getLogger(__name__)
 _UNRESOLVED_TEMPLATE_RE = re.compile(r"\{\{?\s*[a-zA-Z0-9_]+\s*\}?\}")
 
 
-def _get_setting(
-    db: Session, key: str, env_key: str | None = None, default: str | None = None
-) -> str | None:
-    """Get setting from environment or database."""
-    if env_key:
-        env_value = os.getenv(env_key)
-        if env_value:
-            return env_value
+def _sms_credentials() -> tuple[str, str]:
+    """The provider credentials, HELD from boot rather than resolved.
 
-    setting = (
-        db.query(DomainSetting)
-        .filter(DomainSetting.domain == SettingDomain.notification)
-        .filter(DomainSetting.key == key)
-        .filter(DomainSetting.is_active.is_(True))
-        .first()
-    )
-    if setting and setting.value_text:
-        return setting.value_text
-    return default
+    They used to be read through the same settings lookup as the operational
+    values, from `domain_settings` rows nothing could write. A credential is
+    not a setting (ADR-0009): `app.config` materialises these once at startup
+    and nothing on a read path reaches for them.
+    """
+
+    return settings.sms_api_key, settings.sms_api_secret
 
 
 def _normalize_phone(phone: str) -> str:
@@ -254,33 +249,32 @@ def send_sms(
     # expired_in_queue and 716 send_failed rows that way, with nothing
     # surfacing that the channel was dead. An unconfigured customer channel
     # must be off, not silently broken.
-    sms_enabled = _get_setting(db, "sms_enabled", "SMS_ENABLED", "false") or "false"
-    if sms_enabled.lower() not in ("true", "1", "yes", "on", "enabled"):
+    if not settings_spec.resolve_boolean(db, SettingDomain.notification, "sms_enabled"):
         logger.debug("SMS sending is disabled")
         return False
 
     # No default provider either: "webhook" with no webhook URL is a guaranteed
     # failure dressed up as a configured channel.
-    provider = _get_setting(db, "sms_provider", "SMS_PROVIDER", "")
-    api_key = _get_setting(db, "sms_api_key", "SMS_API_KEY")
-    api_secret = _get_setting(db, "sms_api_secret", "SMS_API_SECRET")
-    from_number = _get_setting(db, "sms_from_number", "SMS_FROM_NUMBER")
-    webhook_url = _get_setting(db, "sms_webhook_url", "SMS_WEBHOOK_URL")
-    try:
-        timeout = float(
-            _get_setting(db, "sms_api_timeout_seconds", "SMS_API_TIMEOUT_SECONDS", "30")
-            or "30"
+    provider = settings_spec.resolve_string(
+        db, SettingDomain.notification, "sms_provider"
+    )
+    api_key, api_secret = _sms_credentials()
+    from_number = settings_spec.resolve_string(
+        db, SettingDomain.notification, "sms_from_number"
+    )
+    webhook_url = settings_spec.resolve_string(
+        db, SettingDomain.notification, "sms_webhook_url"
+    )
+    timeout = float(
+        settings_spec.resolve_integer(
+            db, SettingDomain.notification, "sms_api_timeout_seconds"
         )
-    except ValueError:
-        timeout = 30.0
+    )
 
     normalized_phone = _normalize_phone(to_phone)
-    try:
-        max_length = int(
-            _get_setting(db, "sms_max_length", "SMS_MAX_LENGTH", "160") or 160
-        )
-    except ValueError:
-        max_length = 160
+    max_length = settings_spec.resolve_integer(
+        db, SettingDomain.notification, "sms_max_length"
+    )
     if max_length > 0 and len(body) > max_length:
         logger.warning(
             "SMS body length %d exceeds configured max %d; truncating",
@@ -320,7 +314,9 @@ def send_sms(
             )
 
     elif provider == "africastalking":
-        username = _get_setting(db, "sms_username", "SMS_USERNAME")
+        username = settings_spec.resolve_string(
+            db, SettingDomain.notification, "sms_username"
+        )
         if not api_key:
             error_message = "Africa's Talking API key not configured"
             logger.error(error_message)

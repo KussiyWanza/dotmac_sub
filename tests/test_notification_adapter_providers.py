@@ -3,22 +3,19 @@ signatures (they used to pass wrong kwargs and silently swallow the TypeError)."
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 from sqlalchemy.orm import Session
 
+from app.models.domain_settings import DomainSetting, SettingDomain
 from app.models.notification import NotificationChannel
+from app.models.subscription_engine import SettingValueType
+from app.services import sms as sms_service
+from app.services.db_session_adapter import db_session_adapter
 from app.services.notification_adapter import (
     EmailProvider,
     NotificationRequest,
     SmsProvider,
-)
-
-_SMS_ENV_KEYS = (
-    "SMS_ENABLED",
-    "SMS_PROVIDER",
-    "SMS_API_KEY",
-    "SMS_API_SECRET",
-    "SMS_FROM_NUMBER",
-    "SMS_WEBHOOK_URL",
 )
 
 
@@ -87,31 +84,85 @@ def test_sms_provider_send_invokes_send_sms_correctly(monkeypatch):
     assert captured["body"] == long_message
 
 
-def test_sms_provider_unavailable_without_provider_config(monkeypatch):
-    for key in _SMS_ENV_KEYS:
-        monkeypatch.delenv(key, raising=False)
-    # Enabled (via env, so it doesn't depend on DB state) but no provider
-    # credentials configured -> must report unavailable.
-    monkeypatch.setenv("SMS_ENABLED", "true")
-    monkeypatch.setenv("SMS_PROVIDER", "twilio")
+def _drive_availability(monkeypatch, db_session, rows: dict[str, str]):
+    """Point `is_available()` at a real session with real setting rows.
 
+    These tests used to configure SMS with environment variables. Env is a
+    declared BOOTSTRAP input now, materialised into rows by the seed and never
+    read at runtime, so an env-only test would assert nothing — worse, two of
+    the three would still pass, because a test session has no database and the
+    probe fails closed. Driving rows keeps them meaningful.
+    """
+
+    @contextmanager
+    def _session():
+        yield db_session
+
+    monkeypatch.setattr(db_session_adapter, "session", _session)
+    for key, value in rows.items():
+        db_session.add(
+            DomainSetting(
+                domain=SettingDomain.notification,
+                key=key,
+                value_type=SettingValueType.string,
+                value_text=value,
+                is_active=True,
+            )
+        )
+    db_session.commit()
+
+
+def test_sms_provider_unavailable_without_provider_config(db_session, monkeypatch):
+    monkeypatch.setattr(sms_service, "_sms_credentials", lambda: ("", ""))
+    _drive_availability(
+        monkeypatch, db_session, {"sms_enabled": "true", "sms_provider": "twilio"}
+    )
     assert SmsProvider().is_available() is False
 
 
-def test_sms_provider_available_with_webhook_config(monkeypatch):
-    for key in _SMS_ENV_KEYS:
-        monkeypatch.delenv(key, raising=False)
-    monkeypatch.setenv("SMS_ENABLED", "true")
-    monkeypatch.setenv("SMS_PROVIDER", "webhook")
-    monkeypatch.setenv("SMS_WEBHOOK_URL", "https://sms.example.test/send")
-
+def test_sms_provider_available_with_webhook_config(db_session, monkeypatch):
+    monkeypatch.setattr(sms_service, "_sms_credentials", lambda: ("", ""))
+    _drive_availability(
+        monkeypatch,
+        db_session,
+        {
+            "sms_enabled": "true",
+            "sms_provider": "webhook",
+            "sms_webhook_url": "https://sms.example.test/send",
+        },
+    )
     assert SmsProvider().is_available() is True
 
 
-def test_sms_provider_unavailable_when_disabled(monkeypatch):
-    for key in _SMS_ENV_KEYS:
-        monkeypatch.delenv(key, raising=False)
-    monkeypatch.setenv("SMS_ENABLED", "false")
+def test_sms_provider_unavailable_when_disabled(db_session, monkeypatch):
+    monkeypatch.setattr(sms_service, "_sms_credentials", lambda: ("", ""))
+    _drive_availability(
+        monkeypatch,
+        db_session,
+        {
+            "sms_enabled": "false",
+            "sms_provider": "webhook",
+            "sms_webhook_url": "https://sms.example.test/send",
+        },
+    )
+    assert SmsProvider().is_available() is False
+
+
+def test_sms_provider_unavailable_without_a_database(monkeypatch):
+    """The deliberate behaviour change, pinned.
+
+    The old code read env directly so a DB-less probe could still report an
+    env-configured channel. It cannot know any more, and an unconfigured
+    customer channel must be off rather than optimistically on.
+    """
+
+    @contextmanager
+    def _no_session():
+        raise RuntimeError("no database")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(db_session_adapter, "session", _no_session)
+    monkeypatch.setenv("SMS_ENABLED", "true")
     monkeypatch.setenv("SMS_PROVIDER", "webhook")
     monkeypatch.setenv("SMS_WEBHOOK_URL", "https://sms.example.test/send")
 
