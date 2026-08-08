@@ -74,6 +74,7 @@ jobs:
           script: |
             const candidateId = Number(process.env.CANDIDATE_RUN_ID);
             const stagingId = Number(process.env.STAGING_RUN_ID);
+            const expectedRepository = `${context.repo.owner}/${context.repo.repo}`;
             if (!Number.isSafeInteger(candidateId) || candidateId <= 0 ||
                 !Number.isSafeInteger(stagingId) || stagingId <= 0) {
               core.setFailed("Candidate and staging run IDs must be positive integers.");
@@ -81,7 +82,7 @@ jobs:
             }
             for (const expected of [
               [candidateId, "Build release candidate once", "dev", "workflow_dispatch"],
-              [stagingId, "Deploy dev to staging", "dev", "workflow_run"],
+              [stagingId, "Deploy dev to staging", "main", "workflow_run"],
             ]) {
               const response = await github.rest.actions.getWorkflowRun({
                 owner: context.repo.owner,
@@ -92,7 +93,7 @@ jobs:
               if (run.name !== expected[1] || run.head_branch !== expected[2] ||
                   run.event !== expected[3] || run.status !== "completed" ||
                   run.conclusion !== "success" ||
-                  run.head_repository.full_name !== context.repo.repo) {
+                  run.head_repository?.full_name !== expectedRepository) {
                 core.setFailed(`Run ${expected[0]} is not accepted ${expected[1]} evidence.`);
                 return;
               }
