@@ -150,8 +150,7 @@ before dedicated offers can reference one.
 `usage_allowances` is deliberately absent from this table. It owns billing —
 `included_gb`, `overage_rate`, `overage_cap_gb` — not enforcement, and reading
 it as a FUP authority produces wrong answers. Its one enforcement field,
-`throttle_rate_mbps`, is unmapped and pending a separate reviewed schema
-retirement (§12).
+`throttle_rate_mbps`, has been dropped (§12).
 
 ## 3. Enforcement — the RADIUS contract
 
@@ -529,8 +528,7 @@ parallel inventory. Close that before selling one.
    radreply before cutover.
 3. ~~Close the three §12 engine gaps — proportional throttle, night release,
    local-time windows.~~ **Done**, behind tests.
-4. ~~Retire `usage_allowances.throttle_rate_mbps` from application authority.~~
-   **Unmapped; physical schema retirement is deferred** (§12).
+4. ~~Retire `usage_allowances.throttle_rate_mbps`.~~ **Done** (§12).
 5. Enable `usage.fup_submonthly_rules` in System → Modules, after validating
    the samples-derived metrics source. §1's daily bucket cannot be configured
    until this is on.
@@ -617,17 +615,15 @@ projection in the FUP calculator. Production throttled every one of them to a
 flat 1 Mbps. The catalogue asserted a post-FUP speed that was wrong for four of
 the five, and no code would have noticed.
 
-**Unmapped, not yet dropped.** The application model and UI schema no longer
-expose `throttle_rate_mbps`, so nothing reads or writes it and `fup_policies`
-is the only answer. The column itself still exists in the database: the drop
-was deferred out of the 7.135 release because it is irreversible in practice —
-the down-migration restores the column but not the values.
+**Removed from application and database schema.** The application model and UI
+schema no longer expose `throttle_rate_mbps`, and migration 501 drops the
+physical column when it still exists. `fup_policies` remains the only FUP
+decision owner. The downgrade deliberately does not recreate the obsolete
+column or invent its discarded values.
 
-One staging database had already applied the original destructive revision 501
-before that revision was removed. Revisions 501–502 now preserve that recorded
-history and restore the nullable column where it is missing, without inventing
-the discarded legacy values. Databases that never ran the destructive revision
-keep their existing values unchanged.
+Migration 501 must remain in the repository because staging recorded it before
+its file was removed. Applied Alembic revisions are durable database history;
+removing the file makes that database impossible for Alembic to resolve.
 
 `included_gb`, `overage_rate`, `overage_cap_gb` and `rollover_enabled` stay —
 those are billing, which `usage_allowances` legitimately owns (§1).

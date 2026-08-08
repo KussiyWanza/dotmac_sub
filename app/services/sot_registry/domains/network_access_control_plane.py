@@ -1496,9 +1496,7 @@ DOMAIN = DomainSOT(
                         "fallback."
                     ),
                     fallback_retirement=(
-                        "usage_allowances.throttle_rate_mbps is unmapped and "
-                        "retained temporarily until its destructive schema "
-                        "retirement receives a separate reviewed change. The "
+                        "usage_allowances.throttle_rate_mbps is dropped. The "
                         "global setting is retained deliberately, for offers "
                         "with no rate to reduce."
                     ),

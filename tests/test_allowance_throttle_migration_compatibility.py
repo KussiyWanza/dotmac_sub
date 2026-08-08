@@ -5,17 +5,15 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
-import sqlalchemy as sa
 
 from app.services.sot_registry.registry import service_relationship
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION_501 = ROOT / "alembic/versions/501_retire_allowance_throttle_rate.py"
-MIGRATION_502 = ROOT / "alembic/versions/502_restore_deferred_allowance_throttle.py"
 
 
-def _load_migration(path: Path, module_name: str) -> ModuleType:
-    spec = importlib.util.spec_from_file_location(module_name, path)
+def _load_migration(module_name: str) -> ModuleType:
+    spec = importlib.util.spec_from_file_location(module_name, MIGRATION_501)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -31,31 +29,19 @@ class _Inspector:
         return [{"name": name} for name in self._columns]
 
 
-def test_compatibility_revisions_form_the_single_forward_chain() -> None:
-    migration_501 = _load_migration(MIGRATION_501, "migration_501_compat")
-    migration_502 = _load_migration(MIGRATION_502, "migration_502_repair")
+def test_501_extends_the_recorded_single_head() -> None:
+    migration = _load_migration("migration_501_identity")
 
-    assert migration_501.revision == "501_retire_allowance_throttle_rate"
-    assert migration_501.down_revision == "500_reconcile_staff_notification_inbox"
-    assert migration_502.revision == "502_restore_deferred_allowance_throttle"
-    assert migration_502.down_revision == "501_retire_allowance_throttle_rate"
+    assert migration.revision == "501_retire_allowance_throttle_rate"
+    assert migration.down_revision == "500_reconcile_staff_notification_inbox"
 
 
-def test_501_is_a_no_ddl_compatibility_marker() -> None:
-    migration = _load_migration(MIGRATION_501, "migration_501_no_ddl")
-
-    migration.upgrade()
-    migration.downgrade()
-
-    source = MIGRATION_501.read_text(encoding="utf-8")
-    assert "op.drop_column" not in source
-    assert "op.add_column" not in source
-
-
-def test_502_preserves_an_existing_column(monkeypatch: pytest.MonkeyPatch) -> None:
-    migration = _load_migration(MIGRATION_502, "migration_502_existing")
+def test_501_drops_the_obsolete_column_when_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    migration = _load_migration("migration_501_existing")
     executed: list[str] = []
-    added: list[tuple[str, sa.Column[object]]] = []
+    dropped: list[tuple[str, str]] = []
 
     monkeypatch.setattr(
         migration.op,
@@ -70,8 +56,8 @@ def test_502_preserves_an_existing_column(monkeypatch: pytest.MonkeyPatch) -> No
     )
     monkeypatch.setattr(
         migration.op,
-        "add_column",
-        lambda table, column: added.append((table, column)),
+        "drop_column",
+        lambda table, column: dropped.append((table, column)),
     )
 
     migration.upgrade()
@@ -80,14 +66,14 @@ def test_502_preserves_an_existing_column(monkeypatch: pytest.MonkeyPatch) -> No
         "SET LOCAL lock_timeout = '5s'",
         "SET LOCAL statement_timeout = '60s'",
     ]
-    assert added == []
+    assert dropped == [("usage_allowances", "throttle_rate_mbps")]
 
 
-def test_502_restores_only_the_missing_nullable_integer_column(
+def test_501_is_idempotent_when_the_obsolete_column_is_already_absent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    migration = _load_migration(MIGRATION_502, "migration_502_missing")
-    added: list[tuple[str, sa.Column[object]]] = []
+    migration = _load_migration("migration_501_absent")
+    dropped: list[tuple[str, str]] = []
 
     monkeypatch.setattr(migration.op, "execute", lambda _statement: None)
     monkeypatch.setattr(migration.op, "get_bind", lambda: object())
@@ -98,33 +84,29 @@ def test_502_restores_only_the_missing_nullable_integer_column(
     )
     monkeypatch.setattr(
         migration.op,
-        "add_column",
-        lambda table, column: added.append((table, column)),
+        "drop_column",
+        lambda table, column: dropped.append((table, column)),
     )
 
     migration.upgrade()
 
-    assert len(added) == 1
-    table_name, column = added[0]
-    assert table_name == "usage_allowances"
-    assert column.name == "throttle_rate_mbps"
-    assert isinstance(column.type, sa.Integer)
-    assert column.nullable is True
+    assert dropped == []
 
 
-def test_502_refuses_a_destructive_downgrade() -> None:
-    migration = _load_migration(MIGRATION_502, "migration_502_downgrade")
+def test_501_downgrade_does_not_recreate_the_retired_decision() -> None:
+    migration = _load_migration("migration_501_downgrade")
 
-    with pytest.raises(RuntimeError, match="forward-fix only"):
-        migration.downgrade()
+    migration.downgrade()
+
+    source = MIGRATION_501.read_text(encoding="utf-8")
+    assert "op.add_column" not in source
 
 
-def test_executable_owner_contract_records_the_deferred_schema_retirement() -> None:
+def test_executable_owner_contract_records_the_completed_schema_retirement() -> None:
     owner = service_relationship("access.fup_throttle_rate")
     assert owner.contract is not None
     assert owner.contract.migration is not None
     retirement = owner.contract.migration.fallback_retirement
 
     assert retirement is not None
-    assert "is unmapped" in retirement
-    assert "separate reviewed change" in retirement
+    assert "is dropped" in retirement

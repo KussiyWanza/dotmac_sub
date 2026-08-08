@@ -20,7 +20,6 @@ from app import config as app_config
 
 REVISION_500 = "500_reconcile_staff_notification_inbox"
 REVISION_501 = "501_retire_allowance_throttle_rate"
-REVISION_502 = "502_restore_deferred_allowance_throttle"
 TABLE = "usage_allowances"
 COLUMN = "throttle_rate_mbps"
 
@@ -118,7 +117,7 @@ def _column_exists(database_url: URL) -> bool:
         test_engine.dispose()
 
 
-def test_postgres_repairs_the_previously_applied_501_history(
+def test_postgres_drops_the_obsolete_column_and_keeps_501_resolvable(
     isolated_migration_database: URL,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -132,32 +131,33 @@ def test_postgres_repairs_the_previously_applied_501_history(
 
     command.upgrade(config, REVISION_500)
     assert _revision_rows(database_url) == {REVISION_500}
-    assert _column_exists(database_url)
 
-    # The replacement 501 is non-destructive for databases that never ran the
-    # deleted migration.
-    command.upgrade(config, REVISION_501)
-    assert _revision_rows(database_url) == {REVISION_501}
-    assert _column_exists(database_url)
-
-    # Recreate the exact staging state left by the original destructive 501.
+    # Recreate the incremental deployed shape that still carries the retired
+    # allowance-level decision. A squashed fresh baseline may already omit it.
     with psycopg.connect(_psycopg_url(database_url), autocommit=True) as connection:
         connection.execute(
-            sql.SQL("ALTER TABLE {} DROP COLUMN {}").format(
+            sql.SQL("ALTER TABLE {} ADD COLUMN IF NOT EXISTS {} INTEGER").format(
                 sql.Identifier(TABLE),
                 sql.Identifier(COLUMN),
             )
         )
-    assert not _column_exists(database_url)
+    assert _column_exists(database_url)
 
     command.upgrade(config, "head")
 
     expected_heads = set(ScriptDirectory.from_config(config).get_heads())
-    assert expected_heads == {REVISION_502}
+    assert expected_heads == {REVISION_501}
     assert _revision_rows(database_url) == expected_heads
-    assert _column_exists(database_url)
+    assert not _column_exists(database_url)
 
-    # Re-running the real head is safe and preserves the converged shape.
+    # A database that already recorded 501 remains resolvable, and moving the
+    # marker backward for compatibility checks does not recreate old data.
     command.upgrade(config, "head")
     assert _revision_rows(database_url) == expected_heads
-    assert _column_exists(database_url)
+    command.downgrade(config, REVISION_500)
+    assert _revision_rows(database_url) == {REVISION_500}
+    assert not _column_exists(database_url)
+
+    command.upgrade(config, "head")
+    assert _revision_rows(database_url) == expected_heads
+    assert not _column_exists(database_url)
