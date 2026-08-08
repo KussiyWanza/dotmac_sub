@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from playwright.sync_api import Page, expect
 
 
@@ -46,7 +48,7 @@ def test_column_picker_closes_from_trigger_and_outside_click(
         "element => { element.dataset.filterRefreshIdentity = 'preserved'; }"
     )
     admin_page.locator("#ticket-status-filter").select_option("not_closed")
-    admin_page.wait_for_url("**status=not_closed**")
+    expect(admin_page).to_have_url(re.compile(r".*status=not_closed.*"))
 
     expect(panel).to_be_hidden()
     expect(trigger).to_have_attribute("aria-expanded", "false")
@@ -84,7 +86,7 @@ def test_applied_filter_is_restored_after_returning_from_ticket_detail(
     admin_page.wait_for_url("**/admin/support/tickets")
 
     admin_page.locator("#ticket-status-filter").select_option("not_closed")
-    admin_page.wait_for_url("**status=not_closed**")
+    expect(admin_page).to_have_url(re.compile(r".*status=not_closed.*"))
     filtered_url = admin_page.url
 
     ticket_link = admin_page.locator(
