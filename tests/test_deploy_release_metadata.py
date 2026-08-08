@@ -265,8 +265,7 @@ def test_production_rejects_generic_skip_backup_before_database_work(
     assert result.returncode != 0
     assert "production does not accept SKIP_BACKUP=1" in result.stderr
     assert (
-        "APP_IMAGE=ghcr.io/michaelayoade/dotmac_sub:sha-old0000"
-        in env_file.read_text()
+        "APP_IMAGE=ghcr.io/michaelayoade/dotmac_sub:sha-old0000" in env_file.read_text()
     )
     assert not any(
         "scripts.migration.reconcile_service_extension_duplicates" in command

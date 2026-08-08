@@ -273,9 +273,7 @@ def read_production_authorization(path: Path) -> ReleaseCandidateRecord:
         },
     )
     try:
-        source_revision = GitCommitSha(
-            _required_string(document, "source_revision")
-        )
+        source_revision = GitCommitSha(_required_string(document, "source_revision"))
         source_tree = GitTreeSha(_required_string(document, "source_tree"))
         image_digest = OCIImageDigest(_required_string(document, "image_digest"))
         record = ReleaseCandidateRecord(
@@ -304,17 +302,13 @@ def read_production_authorization(path: Path) -> ReleaseCandidateRecord:
                 release_revision=GitCommitSha(
                     _required_string(document, "release_revision")
                 ),
-                release_tree=GitTreeSha(
-                    _required_string(document, "release_tree")
-                ),
+                release_tree=GitTreeSha(_required_string(document, "release_tree")),
                 required_ci_conclusion=EvidenceConclusion.SUCCESS,
                 source_revision_is_ancestor=True,
             ),
         )
     except ReleaseContractError as exc:
-        raise EvidenceDocumentError(
-            f"invalid production authorization: {exc}"
-        ) from exc
+        raise EvidenceDocumentError(f"invalid production authorization: {exc}") from exc
     outcome = evaluate_production_eligibility(record)
     if not outcome.approved:
         blockers = ", ".join(blocker.value for blocker in outcome.blockers)

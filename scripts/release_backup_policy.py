@@ -45,8 +45,7 @@ def _literal_assignment(module: ast.Module, name: str, path: Path) -> object:
         if isinstance(node, (ast.Assign, ast.AnnAssign)):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
             if any(
-                isinstance(target, ast.Name) and target.id == name
-                for target in targets
+                isinstance(target, ast.Name) and target.id == name for target in targets
             ):
                 value = node.value
                 if value is None:
@@ -54,9 +53,7 @@ def _literal_assignment(module: ast.Module, name: str, path: Path) -> object:
                 try:
                     return ast.literal_eval(value)
                 except (ValueError, TypeError) as exc:
-                    raise BackupEvidenceError(
-                        f"{path} has non-literal {name}"
-                    ) from exc
+                    raise BackupEvidenceError(f"{path} has non-literal {name}") from exc
     raise BackupEvidenceError(f"{path} has no {name} declaration")
 
 
@@ -114,10 +111,7 @@ def _read(path: Path, *, kind: str) -> dict[str, object]:
     if not isinstance(raw, dict):
         raise BackupEvidenceError("backup evidence must be a JSON object")
     document = {str(key): value for key, value in raw.items()}
-    if (
-        document.get("schema_version") != SCHEMA_VERSION
-        or document.get("kind") != kind
-    ):
+    if document.get("schema_version") != SCHEMA_VERSION or document.get("kind") != kind:
         raise BackupEvidenceError("unsupported backup evidence document")
     return document
 
@@ -126,8 +120,10 @@ def _image_state(path: Path) -> tuple[MigrationGraphDigest, AlembicHeads]:
     document = _read(path, kind=_IMAGE_KIND)
     digest = document.get("graph_digest")
     heads = document.get("heads")
-    if not isinstance(digest, str) or not isinstance(heads, list) or not all(
-        isinstance(head, str) for head in heads
+    if (
+        not isinstance(digest, str)
+        or not isinstance(heads, list)
+        or not all(isinstance(head, str) for head in heads)
     ):
         raise BackupEvidenceError("invalid migration image state")
     return MigrationGraphDigest(digest), AlembicHeads(tuple(heads))
@@ -138,9 +134,7 @@ def _required_string_list(
     field: str,
 ) -> tuple[str, ...]:
     value = document[field]
-    if not isinstance(value, list) or not all(
-        isinstance(item, str) for item in value
-    ):
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise BackupEvidenceError(f"{field} must be a list of strings")
     return tuple(value)
 

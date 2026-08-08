@@ -94,9 +94,9 @@ def test_ci_uses_one_named_application_cache_after_publisher_cutover() -> None:
     assert "scope=dotmac-sub-application" in candidate_workflow
     assert "type=raw,value=latest" not in candidate_workflow
 
-    promotion_workflow = (
-        ROOT / ".github/workflows/release-promotion.yml"
-    ).read_text(encoding="utf-8")
+    promotion_workflow = (ROOT / ".github/workflows/release-promotion.yml").read_text(
+        encoding="utf-8"
+    )
     assert "docker buildx imagetools create" in promotion_workflow
     assert "docker/build-push-action" not in promotion_workflow
 
