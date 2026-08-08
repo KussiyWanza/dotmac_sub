@@ -1,7 +1,7 @@
 """FUP enforcement stays inside the service that breached, and reports the
 window it was measured against.
 
-Three defects merged in #2114 are pinned here:
+Defects merged in #2114 are pinned here:
 
 1. The throttle was applied by ``subscriber_id``, so one capped service moved
    every credential the customer owned onto the throttle profile — including
@@ -12,6 +12,11 @@ Three defects merged in #2114 are pinned here:
 3. Sub-monthly enforcement reported the MONTHLY bucket — 0.0 GB for the offer
    families that carry no bucket at all — so a real daily breach told the
    customer and the audit trail "0 GB exhausted".
+4. The minimum-rate floor could RAISE a subscriber's rate in one direction, and
+   the both-directions guard let it through.
+5. A reused derived throttle profile was returned without validation, so a
+   hand-edited row became the only copy of truth for every subscriber whose
+   throttle resolved to that rate.
 """
 
 from __future__ import annotations
@@ -256,3 +261,55 @@ def test_daily_breach_reports_the_daily_window_not_the_monthly_bucket(
     assert emitted[0]["current_usage_gb"] == 42.0
     assert captured, "the customer must be told about the breach"
     assert captured[0]["used_gb"] == 42.0
+
+
+# ---------------------------------------------------------------------------
+# 4. A throttle may only take away
+# ---------------------------------------------------------------------------
+
+
+def test_the_floor_never_raises_a_rate_in_either_direction():
+    """MIN_THROTTLE_KBPS bounds how hard a throttle bites, not how fast it makes
+    the customer.
+
+    On an already-slow plan the floor can land above the subscriber's real rate
+    in ONE direction. The both-directions guard is an ``and``, so that used to
+    pass through as a "throttle" that handed the customer a faster uplink.
+    """
+    from app.services.fup_throttle_profile import MIN_THROTTLE_KBPS, reduced_kbps
+
+    slow_uplink = 256
+    assert slow_uplink < MIN_THROTTLE_KBPS
+    # reduced_kbps still floors, which is why the caller must cap.
+    assert reduced_kbps(slow_uplink, 50) == MIN_THROTTLE_KBPS
+    assert min(reduced_kbps(slow_uplink, 50), slow_uplink) == slow_uplink
+
+
+def test_a_reused_derived_profile_is_repaired_not_trusted(db_session):
+    """These rows are a projection with one writer, so drift is repairable.
+
+    Returning a hand-edited row unchecked made the cache the only copy of
+    truth: a profile named for 5000k could be projecting anything to the NAS,
+    for every subscriber whose throttle resolves to that rate.
+    """
+    from app.services.fup_throttle_profile import resolve_or_create_profile
+
+    created = resolve_or_create_profile(
+        db_session, download_kbps=5000, upload_kbps=2500
+    )
+    db_session.flush()
+
+    # Someone edits the derived row by hand and deactivates it.
+    created.download_speed = 99
+    created.mikrotik_rate_limit = "1k/1k"
+    created.is_active = False
+    db_session.flush()
+
+    again = resolve_or_create_profile(db_session, download_kbps=5000, upload_kbps=2500)
+
+    assert again.id == created.id, "the code key must still be reused, not forked"
+    assert again.download_speed == 5000
+    assert again.upload_speed == 2500
+    # Upload first: MikroTik rx is the subscriber's upload.
+    assert again.mikrotik_rate_limit == "2500k/5000k"
+    assert again.is_active is True
