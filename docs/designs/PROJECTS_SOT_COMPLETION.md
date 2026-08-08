@@ -35,14 +35,23 @@ the transition remains authoritative and the owner records durable
 `customer_status_notification_failed` audit evidence.
 
 When an existing task gains an assignee through the lifecycle update command,
-the owner queues one email for each newly added active staff member whose
+the owner queues one in-app notification and one email for each newly added
+active staff member whose
 assignment identifier resolves to either their `SystemUser` or canonical Person
 identity. Staff who were already assigned are not emailed again. Removing an
 assignee, changing any non-assignment task field, or assigning an unresolved or
-inactive identity does not queue this email. This consequence is part of the
-same owner transaction and does not add a push notification. Queue failures are
+inactive identity does not queue these notifications. This consequence is part
+of the same owner transaction. Queue failures are
 isolated in the approved owner savepoint and recorded as durable project-task
 audit evidence after rollback, so the reassignment itself remains valid.
+
+Project-level assignment and task-assignment consequences now use the shared
+staff audience resolver. Direct users and active members of an assigned Service
+Team receive an in-app notification and, when an email address exists, a queued
+email. Comment mentions use the same individual and Service Team group
+semantics across projects and tasks. The retired Site Project Coordinator
+column remains readable on historical records but is absent from new-project
+input and is no longer populated by regional or assignment rules.
 
 `operations.work_order_commands` remains the writer of WorkOrder bindings. The
 project owner validates the native Project-to-ProjectTask side; neither owner
@@ -125,6 +134,11 @@ the project aggregate. This makes preserved imports authoritative inputs to the
 counter and prevents a stale local sequence from restarting the series. The
 476 cutover repairs the native `4` through `7` drift as `PROJ-1104` through
 `PROJ-1107` and advances, but never rewinds, the sequence to at least 1108.
+The 496 follow-up repairs numeric `8` through `10` rows created during that
+cutover window. It locks numbering and project creation, assigns those rows in
+numeric order after both the highest canonical suffix and any value already
+reserved by the sequence when the migration runs, and then advances the
+sequence without rewinding it.
 
 State-changing commands stage audit and versioned domain-event evidence in the
 same transaction as authoritative state. Events are delivered after commit by

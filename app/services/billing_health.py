@@ -185,6 +185,10 @@ class BillingHealthSnapshot:
     billing_profile_mismatch_count: int = 0
     billing_profile_mixed_count: int = 0
     account_credit_invariant_count: int = 0
+    # Legacy imported book. Observed for the accounting disposition, but never
+    # an anomaly: no reconciler can drain invoices that arrived already paid
+    # without their payment records.
+    account_credit_invariant_imported_count: int = 0
     prepaid_coverage_unresolved_count: int = 0
     prepaid_coverage_repairable_count: int = 0
     prepaid_coverage_quarantined_count: int = 0
@@ -290,6 +294,11 @@ def billing_health_observations(snapshot: BillingHealthSnapshot):  # noqa: ANN20
             "account_credit_invariant_violations",
             "all",
             snapshot.account_credit_invariant_count,
+        ),
+        (
+            "account_credit_invariant_violations",
+            "legacy_import",
+            snapshot.account_credit_invariant_imported_count,
         ),
         (
             "unbilled_active_subscriptions",
@@ -749,6 +758,9 @@ def billing_health_snapshot(
     account_credit_invariant_count = AccountCreditApplications.summarize_invariants(
         db
     ).total
+    account_credit_invariant_imported_count = (
+        AccountCreditApplications.count_imported_underfunded_invoices(db)
+    )
     coverage_repairable_count, coverage_quarantined_count = (
         prepaid_coverage_reconciliation_counts(db)
     )
@@ -775,6 +787,9 @@ def billing_health_snapshot(
         billing_profile_mismatch_count=profile_mismatch_count,
         billing_profile_mixed_count=profile_mixed_count,
         account_credit_invariant_count=account_credit_invariant_count,
+        account_credit_invariant_imported_count=(
+            account_credit_invariant_imported_count
+        ),
         scan_min_ratio=scan_min_ratio,
         payment_volume_min_ratio=payment_volume_min_ratio,
         payment_baseline_min_daily=payment_baseline_min_daily,

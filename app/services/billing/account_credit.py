@@ -113,6 +113,125 @@ class AccountCreditInvariantViolation:
     detail: str
 
 
+# The legacy book was loaded into Sub in a single bulk import: 106,690 of the
+# 106,692 pre-import invoices share the 2026-03-15 14:00 UTC hour, and the first
+# natively authored invoice is 2026-03-16 06:45 UTC. Those imported rows arrived
+# already marked paid without their payment or allocation records, so 12.4% of
+# them can never satisfy the funding invariant — against 2.5% of the invoices
+# Sub itself settled. Counting them forever pins the gauge above zero and buries
+# the live defect underneath a backlog no reconciler can drain, so the invariant
+# measures what Sub is responsible for and reports the legacy book separately.
+LEGACY_INVOICE_IMPORT_BOUNDARY_AT = datetime(2026, 3, 16, tzinfo=UTC)
+
+
+def _count_underfunded_paid_invoices(db: Session, *, imported: bool) -> int:
+    """Count paid invoices whose funding evidence falls short of their total.
+
+    One definition, two populations. `imported=False` is the live invariant:
+    invoices Sub itself authored and settled. `imported=True` is the legacy book
+    loaded on 2026-03-15, which arrived already paid without its payment records
+    and can never satisfy the check. Splitting here rather than duplicating the
+    query keeps the partial-refund proration and rounding identical for both.
+    """
+    zero = Decimal("0.00")
+    boundary = (
+        Invoice.created_at < LEGACY_INVOICE_IMPORT_BOUNDARY_AT
+        if imported
+        else Invoice.created_at >= LEGACY_INVOICE_IMPORT_BOUNDARY_AT
+    )
+    effective_payment_amount = case(
+        (
+            Payment.status == PaymentStatus.succeeded,
+            PaymentAllocation.amount,
+        ),
+        (
+            and_(
+                Payment.status == PaymentStatus.partially_refunded,
+                Payment.amount > zero,
+            ),
+            PaymentAllocation.amount
+            * (Payment.amount - func.coalesce(Payment.refunded_amount, zero))
+            / func.nullif(Payment.amount, zero),
+        ),
+        else_=zero,
+    )
+    payment_totals = (
+        select(
+            PaymentAllocation.invoice_id.label("invoice_id"),
+            func.coalesce(func.sum(effective_payment_amount), zero).label("amount"),
+        )
+        .join(Payment, Payment.id == PaymentAllocation.payment_id)
+        .where(
+            PaymentAllocation.is_active.is_(True),
+            Payment.is_active.is_(True),
+            Payment.status.in_(
+                [PaymentStatus.succeeded, PaymentStatus.partially_refunded]
+            ),
+        )
+        .group_by(PaymentAllocation.invoice_id)
+        .subquery()
+    )
+    credit_totals = (
+        select(
+            CreditNoteApplication.invoice_id.label("invoice_id"),
+            func.coalesce(func.sum(CreditNoteApplication.amount), zero).label("amount"),
+        )
+        .group_by(CreditNoteApplication.invoice_id)
+        .subquery()
+    )
+    opening_funding_totals = (
+        select(
+            PrepaidOpeningFundingConsumption.invoice_id.label("invoice_id"),
+            func.coalesce(
+                func.sum(PrepaidOpeningFundingConsumption.amount),
+                zero,
+            ).label("amount"),
+        )
+        .group_by(PrepaidOpeningFundingConsumption.invoice_id)
+        .subquery()
+    )
+    payments_applied = func.round(
+        func.coalesce(payment_totals.c.amount, zero),
+        2,
+    )
+    credits_applied = func.round(
+        func.coalesce(credit_totals.c.amount, zero),
+        2,
+    )
+    opening_funding_applied = func.round(
+        func.coalesce(opening_funding_totals.c.amount, zero),
+        2,
+    )
+    funded_total = func.round(
+        payments_applied + credits_applied + opening_funding_applied,
+        2,
+    )
+    return int(
+        db.execute(
+            select(func.count(Invoice.id))
+            .outerjoin(
+                payment_totals,
+                payment_totals.c.invoice_id == Invoice.id,
+            )
+            .outerjoin(
+                credit_totals,
+                credit_totals.c.invoice_id == Invoice.id,
+            )
+            .outerjoin(
+                opening_funding_totals,
+                opening_funding_totals.c.invoice_id == Invoice.id,
+            )
+            .where(
+                Invoice.is_active.is_(True),
+                Invoice.status == InvoiceStatus.paid,
+                boundary,
+                funded_total < func.round(Invoice.total, 2),
+            )
+        ).scalar()
+        or 0
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class AccountCreditInvariantSummary:
     """Bounded full-fleet account-credit invariant observation."""
@@ -1204,98 +1323,7 @@ class AccountCreditApplications:
             ) > round_money(row.source_capacity):
                 negative_payment_credit_source_availability += 1
 
-        effective_payment_amount = case(
-            (
-                Payment.status == PaymentStatus.succeeded,
-                PaymentAllocation.amount,
-            ),
-            (
-                and_(
-                    Payment.status == PaymentStatus.partially_refunded,
-                    Payment.amount > zero,
-                ),
-                PaymentAllocation.amount
-                * (Payment.amount - func.coalesce(Payment.refunded_amount, zero))
-                / func.nullif(Payment.amount, zero),
-            ),
-            else_=zero,
-        )
-        payment_totals = (
-            select(
-                PaymentAllocation.invoice_id.label("invoice_id"),
-                func.coalesce(func.sum(effective_payment_amount), zero).label("amount"),
-            )
-            .join(Payment, Payment.id == PaymentAllocation.payment_id)
-            .where(
-                PaymentAllocation.is_active.is_(True),
-                Payment.is_active.is_(True),
-                Payment.status.in_(
-                    [PaymentStatus.succeeded, PaymentStatus.partially_refunded]
-                ),
-            )
-            .group_by(PaymentAllocation.invoice_id)
-            .subquery()
-        )
-        credit_totals = (
-            select(
-                CreditNoteApplication.invoice_id.label("invoice_id"),
-                func.coalesce(func.sum(CreditNoteApplication.amount), zero).label(
-                    "amount"
-                ),
-            )
-            .group_by(CreditNoteApplication.invoice_id)
-            .subquery()
-        )
-        opening_funding_totals = (
-            select(
-                PrepaidOpeningFundingConsumption.invoice_id.label("invoice_id"),
-                func.coalesce(
-                    func.sum(PrepaidOpeningFundingConsumption.amount),
-                    zero,
-                ).label("amount"),
-            )
-            .group_by(PrepaidOpeningFundingConsumption.invoice_id)
-            .subquery()
-        )
-        payments_applied = func.round(
-            func.coalesce(payment_totals.c.amount, zero),
-            2,
-        )
-        credits_applied = func.round(
-            func.coalesce(credit_totals.c.amount, zero),
-            2,
-        )
-        opening_funding_applied = func.round(
-            func.coalesce(opening_funding_totals.c.amount, zero),
-            2,
-        )
-        funded_total = func.round(
-            payments_applied + credits_applied + opening_funding_applied,
-            2,
-        )
-        paid_invoice_underfunded = int(
-            db.execute(
-                select(func.count(Invoice.id))
-                .outerjoin(
-                    payment_totals,
-                    payment_totals.c.invoice_id == Invoice.id,
-                )
-                .outerjoin(
-                    credit_totals,
-                    credit_totals.c.invoice_id == Invoice.id,
-                )
-                .outerjoin(
-                    opening_funding_totals,
-                    opening_funding_totals.c.invoice_id == Invoice.id,
-                )
-                .where(
-                    Invoice.is_active.is_(True),
-                    Invoice.status == InvoiceStatus.paid,
-                    funded_total < func.round(Invoice.total, 2),
-                )
-            ).scalar()
-            or 0
-        )
+        paid_invoice_underfunded = _count_underfunded_paid_invoices(db, imported=False)
 
         settled_deposit_without_exact_payment = int(
             db.execute(
@@ -1390,6 +1418,19 @@ class AccountCreditApplications:
             duplicate_provider_reference=duplicate_provider_reference,
             deposit_webhook_unresolved=deposit_webhook_unresolved,
         )
+
+    @staticmethod
+    def count_imported_underfunded_invoices(db: Session) -> int:
+        """Count legacy-book paid invoices lacking complete funding evidence.
+
+        Deliberately not a field on `AccountCreditInvariantSummary`: that type is
+        pinned one-field-per-forensic-violation-code, and this is an observation
+        rather than a live breach. The imported rows arrived already marked paid
+        without their payment records, so no reconciler can ever settle them —
+        they need a one-time accounting disposition. Reporting the figure keeps
+        the re-scoping from quietly losing it.
+        """
+        return _count_underfunded_paid_invoices(db, imported=True)
 
 
 __all__ = [

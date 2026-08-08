@@ -88,6 +88,27 @@ def _redirect_to_request_target(
     return response
 
 
+def _wants_html_response(request: Request) -> bool:
+    """Return whether a normal browser navigation expects an HTML response."""
+    return "text/html" in request.headers.get("accept", "").lower()
+
+
+def _provision_page_redirect(
+    ont_id: str,
+    *,
+    status: str,
+    message: str,
+    operation_id: str | None = None,
+) -> RedirectResponse:
+    query = f"status={quote_plus(status)}&message={quote_plus(message)}"
+    if operation_id:
+        query = f"operation_id={quote_plus(operation_id)}&{query}"
+    return RedirectResponse(
+        f"/admin/network/onts/{ont_id}/provision?{query}",
+        status_code=303,
+    )
+
+
 def _step_response(
     result: StepResult,
     *,
@@ -416,7 +437,7 @@ def provision_ont_direct(
     dry_run: bool = Form(default=False),
     async_execution: bool = Form(default=False),
     db: Session = Depends(get_db),
-) -> JSONResponse:
+) -> Response:
     """Repair/re-apply OLT authorization baseline for an ONT.
 
     Normal authorization applies this baseline automatically. This endpoint is
@@ -440,20 +461,25 @@ def provision_ont_direct(
             initiated_by=initiated_by,
         )
         if not command.accepted:
-            return _step_response(
-                StepResult(
-                    "authorization_baseline",
-                    False,
-                    f"Could not start ONT provisioning: {command.message}",
-                ),
+            message = f"Could not start ONT provisioning: {command.message}"
+            response = _step_response(
+                StepResult("authorization_baseline", False, message),
                 request=request,
                 ont_id=ont_id,
             )
-        return _step_response(
+            if _wants_html_response(request):
+                return _provision_page_redirect(
+                    ont_id,
+                    status="error",
+                    message=message,
+                )
+            return response
+        message = "ONT provisioning queued; waiting for device confirmation."
+        response = _step_response(
             StepResult(
                 "authorization_baseline",
                 True,
-                "ONT provisioning queued; waiting for device confirmation.",
+                message,
                 waiting=True,
                 data={
                     "operation_id": command.operation_id,
@@ -466,6 +492,14 @@ def provision_ont_direct(
             request=request,
             ont_id=ont_id,
         )
+        if _wants_html_response(request):
+            return _provision_page_redirect(
+                ont_id,
+                status="info",
+                message=message,
+                operation_id=command.operation_id,
+            )
+        return response
 
     from app.services.network.ont_provisioning_execution import (
         preview_ont_provisioning,

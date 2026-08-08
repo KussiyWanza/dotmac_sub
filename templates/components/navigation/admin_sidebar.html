@@ -12,10 +12,10 @@
     'service-requests': 'service-requests',
     'sales': 'sales', 'sales-dashboard': 'sales', 'sales-leads': 'sales',
     'sales-pipelines': 'sales',
-    'sales-quotes': 'sales', 'sales-quote-discounts': 'sales', 'sales-orders': 'sales',
+    'sales-quotes': 'sales', 'sales-orders': 'sales',
     'referrals': 'referrals',
     'projects': 'projects', 'project-tasks': 'projects', 'project-templates': 'projects',
-    'billing': 'billing', 'accounts': 'billing', 'invoices': 'billing', 'invoice_discounts': 'billing', 'payments': 'billing',
+    'billing': 'billing', 'accounts': 'billing', 'invoices': 'billing', 'payments': 'billing',
     'credits': 'billing', 'ar-aging': 'billing', 'dunning': 'billing', 'billing-cache': 'billing',
     'payment_arrangements': 'billing', 'payment_proofs': 'billing', 'payment_providers': 'billing',
     'payment_channels': 'system', 'payment_channel_accounts': 'system',
@@ -226,8 +226,10 @@
     {% endif %}
     {{ nav_link("Work Orders", "/admin/dispatch/work-orders", icon_projects, "dispatch-work-orders") }}
     {{ nav_link("Material Requests", "/admin/operations/material-requests", icon_projects, "material-requests") }}
+    {% if can(request, "operations:dispatch:read") %}
     {{ nav_link("Field Live Map", "/admin/dispatch/live-map", icon_gis, "field-live-map",
         active_pages=["field-live-map", "field-movement-playback"]) }}
+    {% endif %}
     {% set vendor_pages = ['vendors', 'vendor-operations', 'vendor-routes'] %}
     {% set vendor_group_active = active_page in vendor_pages %}
     <div x-data="{ vendorMenuOpen: {{ vendor_group_active | tojson }} }" class="relative">

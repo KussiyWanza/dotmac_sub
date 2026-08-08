@@ -462,6 +462,130 @@ SERVICES: tuple[SOTService, ...] = (
         ),
     ),
     SOTService(
+        name="financial.payment_intent_management",
+        module="app.services.payment_intent_management",
+        owns=(
+            "customer payment-intent history projection",
+            "unsubmitted direct-transfer intent cancellation",
+        ),
+        depends_on=("customer.accounts", "financial.topup_intents"),
+        notes=(
+            "This coordinator exposes account-scoped intent history and admits "
+            "customer or staff abandonment only while a direct-transfer intent is "
+            "pending and has no submitted payment evidence."
+        ),
+        contract=ServiceContract(
+            concerns=(
+                ConcernContract(
+                    name="customer payment-intent history projection",
+                    role=OwnerRole.RESOLVER,
+                    input_names=("canonical account payment intents",),
+                ),
+                ConcernContract(
+                    name="unsubmitted direct-transfer intent cancellation",
+                    role=OwnerRole.COMMAND_WRITER,
+                    input_names=(
+                        "canonical account payment intents",
+                        "typed payment-intent cancellation evidence",
+                    ),
+                    canonical_writer="financial.payment_intent_management",
+                ),
+            ),
+            authoritative_inputs=(
+                AuthorityInput(
+                    name="canonical account payment intents",
+                    owner="financial.topup_intents",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source=(
+                        "account-scoped TopupIntent identity, provider, status, "
+                        "amount, proof link, payment link, expiry, and provenance"
+                    ),
+                ),
+                AuthorityInput(
+                    name="typed payment-intent cancellation evidence",
+                    owner="financial.payment_intent_management",
+                    kind=AuthorityKind.CONTROL_INPUT,
+                    source=(
+                        "exact account and intent identities, customer or staff "
+                        "source, reason, actor, command, correlation, and scope"
+                    ),
+                ),
+            ),
+            transaction=TransactionContract(
+                mode=TransactionMode.OWNER_MANAGED,
+                boundary=(
+                    "cancel_unsubmitted_direct_transfer enters execute_owner_command "
+                    "once and commits or rolls back the transition and event once."
+                ),
+                locking=(
+                    "The coordinator locks the customer account before the exact "
+                    "intent and rechecks provider, status, and proof evidence."
+                ),
+                idempotency=(
+                    "A canceled intent replays without another event; any submitted, "
+                    "completed, or otherwise terminal intent fails closed."
+                ),
+                retries="Adapters may retry only with the same intent identity.",
+            ),
+            errors=ErrorContract(
+                domain_codes=(
+                    *owner_command_boundary_error_codes(
+                        "financial.payment_intent_management"
+                    ),
+                    "financial.topup_intents.not_found",
+                    "financial.topup_intents.account_mismatch",
+                    "financial.topup_intents.provider_mismatch",
+                    "financial.topup_intents.invalid_transition",
+                    "financial.topup_intents.proof_link_conflict",
+                ),
+                mapping_owner="Customer and admin payment-intent web adapters",
+                retryable_codes=(),
+                fail_closed_on=(
+                    "wrong account or provider",
+                    "submitted proof or completed payment evidence",
+                    "non-pending lifecycle status",
+                ),
+            ),
+            events=EventContract(
+                event_types=("topup_intent.direct_transfer_canceled",),
+                schema_version=1,
+                delivery_owner="events.dispatcher",
+                compatibility=(
+                    "Version 1 retains intent and account identities, status, "
+                    "reason, source, actor, command, and correlation evidence."
+                ),
+                replay=(
+                    "Event replay rebuilds downstream projections only and never "
+                    "mutates the canonical intent."
+                ),
+            ),
+            migration=MigrationContract(
+                state=AuthorityMigrationState.COMPLETE,
+                old_owner=(
+                    "No customer or staff cancellation boundary existed; pending "
+                    "unsubmitted bank-transfer intents could only expire or be "
+                    "changed by direct database intervention."
+                ),
+                new_owner="financial.payment_intent_management",
+                verification=(
+                    "Service, customer-adapter, admin-adapter, permission, and "
+                    "architecture contract tests."
+                ),
+                cutover_gate=(
+                    "Customer and admin cancellation adapters call only the "
+                    "registered command owner."
+                ),
+                fallback_retirement=(
+                    "Manual database cancellation is retired for unsubmitted "
+                    "customer transfer requests."
+                ),
+            ),
+            steward="finance operations",
+            design_refs=("docs/SOT_RELATIONSHIP_MAP.md",),
+            test_refs=("tests/test_payment_intent_management.py",),
+        ),
+    ),
+    SOTService(
         name="financial.direct_transfer_intent_commands",
         module="app.services.direct_transfer_intents",
         owns=("customer direct-transfer intent creation coordination",),

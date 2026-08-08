@@ -720,6 +720,261 @@ DOMAIN = DomainSOT(
             ),
         ),
         SOTService(
+            name="ui.network_map_projection",
+            module="app.services.network_map",
+            owns=(
+                "comprehensive network map typed projection",
+                "customer access-session map presentation",
+                "network map customer drill-down projection",
+            ),
+            depends_on=(
+                "network.identity",
+                "network.fiber_topology",
+                "network.device_state",
+                "network.radius_sessions",
+                "customer.accounts",
+                "access.subscription_lifecycle",
+                "control.settings_spec",
+                "ui.status_presentation",
+                "auth.permission_gate",
+            ),
+            notes=(
+                "Builds the read-only comprehensive operations map from typed "
+                "inventory, geometry, device-state, customer-address, and exact "
+                "RADIUS-session inputs. network.radius_sessions owns connected, "
+                "stale, offline, and inactive observations; "
+                "ui.status_presentation owns their label, tone, and icon. The "
+                "projection supplies immutable features, provenance, layer "
+                "membership, and permission-tagged customer links. The adapter "
+                "serializes once and the template renders without deriving "
+                "connectivity or infrastructure relationships."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name="comprehensive network map typed projection",
+                        role=OwnerRole.RESOLVER,
+                        input_names=(
+                            "canonical network inventory and geometry",
+                            "validated fiber route geometry",
+                            "binary device operation verdict",
+                            "canonical mapped customer addresses",
+                            "map projection limit",
+                        ),
+                    ),
+                    ConcernContract(
+                        name="customer access-session map presentation",
+                        role=OwnerRole.RESOLVER,
+                        input_names=(
+                            "subscription-scoped live-session snapshots",
+                            "canonical customer subscription cohort",
+                            "semantic status presentation vocabulary",
+                        ),
+                    ),
+                    ConcernContract(
+                        name="network map customer drill-down projection",
+                        role=OwnerRole.RESOLVER,
+                        input_names=(
+                            "canonical network inventory and geometry",
+                            "canonical mapped customer addresses",
+                            "customer read capability vocabulary",
+                        ),
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="canonical network inventory and geometry",
+                        owner="network.identity",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "typed POP, network-device, ONT, FDH, splice, access-"
+                            "point, support-structure, and fiber-segment identities "
+                            "with persisted coordinates or validated route geometry"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="binary device operation verdict",
+                        owner="network.device_state",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source=(
+                            "typed working/not-working verdict, machine reason, and "
+                            "server-owned StatusPresentation for devices and ONTs"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="validated fiber route geometry",
+                        owner="network.fiber_topology",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "canonical FiberSegment identity, declared segment and "
+                            "cable types, and persisted PostGIS LineString geometry"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="subscription-scoped live-session snapshots",
+                        owner="network.radius_sessions",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source=(
+                            "SubscriptionSessionSnapshot state, exact binding, and "
+                            "observed_at freshness evidence from the canonical active-"
+                            "session projection"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical mapped customer addresses",
+                        owner="customer.accounts",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "active customer identity and explicitly stored service-"
+                            "address latitude and longitude"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical customer subscription cohort",
+                        owner="access.subscription_lifecycle",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "current typed subscriptions used by network.radius_sessions "
+                            "to bind exact customer session observations"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="map projection limit",
+                        owner="control.settings_spec",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source="validated gis.map_customer_limit setting",
+                    ),
+                    AuthorityInput(
+                        name="semantic status presentation vocabulary",
+                        owner="ui.status_presentation",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "access-session label, semantic tone, and icon for each "
+                            "owner-resolved session state"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="customer read capability vocabulary",
+                        owner="auth.permission_gate",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "customer:read permission attached to typed detail and "
+                            "infrastructure-cohort links and enforced by destination "
+                            "routes"
+                        ),
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.READ_ONLY,
+                    boundary=(
+                        "The admin adapter owns one read session; the projection "
+                        "performs no write, commit, device I/O, or transport call."
+                    ),
+                    locking="Read projection acquires no mutation locks.",
+                    idempotency=(
+                        "The same inventory, customer, session, settings, and status "
+                        "inputs produce the same immutable map projection."
+                    ),
+                    retries="Read projection calls are safe to retry.",
+                ),
+                errors=ErrorContract(
+                    domain_codes=(),
+                    mapping_owner="app.web.admin.network",
+                ),
+                projections=(
+                    ProjectionContract(
+                        name="comprehensive network map typed projection",
+                        input_names=(
+                            "canonical network inventory and geometry",
+                            "validated fiber route geometry",
+                            "binary device operation verdict",
+                            "canonical mapped customer addresses",
+                            "map projection limit",
+                        ),
+                        writer="ui.network_map_projection",
+                        freshness=(
+                            "Recomputed on each map read from current inventory and "
+                            "persisted map coordinates; no map cache is authoritative."
+                        ),
+                        stale_behavior=(
+                            "Missing coordinates omit only that feature. Device and "
+                            "session owners retain their own explicit stale or "
+                            "unavailable semantics."
+                        ),
+                        drift_signal=(
+                            "Typed projection, registry, template-boundary, and map "
+                            "behavior tests."
+                        ),
+                        rebuild_operation=(
+                            "Recompute on read from current authoritative inputs; "
+                            "nothing is persisted by this projection."
+                        ),
+                        repair_owner="ui.network_map_projection",
+                    ),
+                    ProjectionContract(
+                        name="customer access-session map presentation",
+                        input_names=(
+                            "subscription-scoped live-session snapshots",
+                            "canonical customer subscription cohort",
+                            "semantic status presentation vocabulary",
+                        ),
+                        writer="ui.network_map_projection",
+                        freshness=(
+                            "Recomputed on read; observed_at and exact binding are "
+                            "retained from network.radius_sessions."
+                        ),
+                        stale_behavior=(
+                            "Stale renders as Last seen with warning semantics and is "
+                            "never promoted to Connected; offline and inactive remain "
+                            "distinct owner states with neutral presentation."
+                        ),
+                        drift_signal=(
+                            "Session-state projection tests and the absence of client-"
+                            "side is_online derivation."
+                        ),
+                        rebuild_operation=(
+                            "Recompute from current SubscriptionSessionSnapshot values."
+                        ),
+                        repair_owner="ui.network_map_projection",
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.COMPLETE,
+                    old_owner=(
+                        "app.services.network_map free-form dictionaries, direct "
+                        "RadiusAccountingSession inspection, and map-template "
+                        "is_online label/tone/layer decisions"
+                    ),
+                    new_owner="ui.network_map_projection",
+                    verification=(
+                        "Typed projection, authoritative session-state, permission-"
+                        "link, registry, and template-boundary tests."
+                    ),
+                    cutover_gate=(
+                        "The public builder returns NetworkMapProjection, the adapter "
+                        "alone serializes it, and the template consumes owner-supplied "
+                        "connectivity presentation, provenance, layers, and links."
+                    ),
+                    fallback_retirement=(
+                        "build_network_map_context, direct accounting-row queries, "
+                        "is_online transport fields, and template-generated customer "
+                        "drill-down URLs are absent."
+                    ),
+                ),
+                steward="network operations UI",
+                design_refs=(
+                    "docs/designs/NETWORK_OPERATIONS_MAP.md",
+                    "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                ),
+                test_refs=(
+                    "tests/test_customer_network_operations_map.py",
+                    "tests/test_network_map_support_structures.py",
+                    "tests/architecture/test_network_map_projection_boundary.py",
+                ),
+            ),
+        ),
+        SOTService(
             name="ui.customer_network_path_projection",
             module="app.services.customer_network_path",
             owns=(

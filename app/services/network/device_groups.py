@@ -12,6 +12,11 @@ from sqlalchemy.orm import Session
 
 from app.models.audit import AuditEvent
 from app.models.network import CPEDevice, DeviceGroup, DeviceGroupMember, OntUnit
+from app.services.audit_helpers import (
+    humanize_action,
+    load_audit_actor_subscribers,
+    resolve_actor_name,
+)
 
 DEVICE_GROUP_MEMBER_TYPES = {"ont", "cpe"}
 ONT_GROUP_ACTIONS = {
@@ -350,13 +355,17 @@ def list_device_group_action_history(
 ) -> list[dict[str, Any]]:
     """Return display-ready device-group audit events with task status."""
     rows: list[dict[str, Any]] = []
-    for event in list_device_group_action_events(db, group_id=group_id, limit=limit):
+    events = list_device_group_action_events(db, group_id=group_id, limit=limit)
+    actors = load_audit_actor_subscribers(db, events)
+    for event in events:
         metadata = dict(getattr(event, "metadata_", None) or {})
         task_id = str(metadata.get("task_id") or "").strip()
         task_state = _celery_task_state(task_id) if task_id else None
         rows.append(
             {
                 "event": event,
+                "actor_name": resolve_actor_name(event, actors),
+                "action_label": humanize_action(event.action),
                 "metadata": metadata,
                 "task_id": task_id or None,
                 "task_state": task_state,

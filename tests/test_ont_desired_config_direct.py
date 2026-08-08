@@ -884,7 +884,7 @@ def test_apply_saved_service_config_skips_wan_when_wan_mode_absent(
     }
 
 
-def test_provision_wizard_context_does_not_invent_missing_desired_config_defaults(
+def test_provision_wizard_context_supplies_status_without_inventing_config_defaults(
     db_session, monkeypatch
 ):
     from types import SimpleNamespace
@@ -929,6 +929,9 @@ def test_provision_wizard_context_does_not_invent_missing_desired_config_default
     assert "Select internet deployment method" in context["provision_gate_issues"]
     assert "Enter PPPoE username" not in context["provision_gate_issues"]
     assert context["pppoe_username"] is None
+    status = context["signal_info"]["status_presentation"]
+    assert status.value == "not_working"
+    assert status.label == "Not working"
 
 
 def test_save_provision_settings_does_not_persist_tr069_profile_override(

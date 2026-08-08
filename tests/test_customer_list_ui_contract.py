@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from html.parser import HTMLParser
 from pathlib import Path
 
 from fastapi.templating import Jinja2Templates
@@ -10,6 +11,16 @@ from app.services.status_presentation import account_status_presentation
 from app.services.web_customer_lists import build_customer_list_query
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+class _FirstTagParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.attributes: dict[str, str | None] = {}
+
+    def handle_starttag(self, _tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if not self.attributes:
+            self.attributes = dict(attrs)
 
 
 def test_customer_route_delegates_query_normalization_to_list_owner():
@@ -222,16 +233,47 @@ def test_customer_infrastructure_filter_is_lazy_and_bounded():
     )
 
     assert "/admin/customers/infrastructure-options" in template
+    assert "x-data='infrastructurePicker({" in template
+    assert 'x-data="infrastructurePicker({' not in template
     assert '@input="queueLookup()"' in template
     assert "window.setTimeout(() => this.lookup(), 300)" in template
     assert "@input.debounce.300ms" not in template
     assert "Infrastructure search could not be loaded" in template
-    assert "Type at least 2 characters" in template
+    assert "Choose an infrastructure type first." in template
+    assert ':disabled="!type"' not in template
+    assert ":placeholder=" not in template
+    assert "this.open = this.search.trim().length > 0" in template
     assert "limit: '20'" in template
     assert "nas_options" not in template
     assert "pop_site_options" not in template
     assert ".limit(bounded_limit)" in service
     assert "if len(term) < 2:" in service
+
+
+def test_customer_infrastructure_picker_renders_complete_setup_expression():
+    template = (PROJECT_ROOT / "templates/admin/customers/index.html").read_text(
+        encoding="utf-8"
+    )
+    component_position = template.index("infrastructurePicker({")
+    attribute_start = template.rfind("x-data=", 0, component_position)
+    attribute_end = template.index("})'", component_position) + len("})'")
+    attribute_template = template[attribute_start:attribute_end]
+
+    templates = Jinja2Templates(directory=str(PROJECT_ROOT / "templates"))
+    rendered = templates.env.from_string(f"<div {attribute_template}></div>").render(
+        infrastructure_type="",
+        infrastructure_id="",
+        selected_infrastructure=None,
+    )
+    parser = _FirstTagParser()
+    parser.feed(rendered)
+
+    expression = parser.attributes["x-data"]
+    assert expression is not None
+    assert 'type: ""' in expression
+    assert 'id: ""' in expression
+    assert "selected: null" in expression
+    assert expression.strip().endswith("})")
 
 
 def test_semantic_status_macro_renders_owner_label_tone_and_icon():

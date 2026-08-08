@@ -41,7 +41,7 @@
                                 class="block w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-900 transition-colors focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
                             <option value="">-- Manual Input --</option>
                             {% for profile in usage_allowances %}
-                            <option value="{{ profile.id }}" data-included="{{ profile.included_gb or 0 }}" data-overage="{{ profile.overage_rate or 0 }}" data-cap="{{ profile.overage_cap_gb or 0 }}" data-throttle="{{ profile.throttle_rate_mbps or 0 }}">
+                            <option value="{{ profile.id }}" data-included="{{ profile.included_gb or 0 }}" data-overage="{{ profile.overage_rate or 0 }}" data-cap="{{ profile.overage_cap_gb or 0 }}">
                                 {{ profile.name }} ({{ profile.included_gb or 'Unlimited' }} GB)
                             </option>
                             {% endfor %}
@@ -74,7 +74,11 @@
                             <input type="number" id="throttle_speed" value="2" min="0" step="0.1"
                                    class="block w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-900 transition-colors focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white"
                                    oninput="calculate()">
-                            <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">0 = No throttling</p>
+                            <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                                A what-if figure for this projection only. The rate actually
+                                applied is the offer's FUP rule percentage of the
+                                subscriber's own speed. 0 = no throttling.
+                            </p>
                         </div>
                     </div>
                 </div>
@@ -294,7 +298,6 @@ function loadProfile(profileId) {
         document.getElementById('included_gb').value = option.dataset.included || 0;
         document.getElementById('overage_rate').value = option.dataset.overage || 0;
         document.getElementById('overage_cap').value = option.dataset.cap || 0;
-        document.getElementById('throttle_speed').value = option.dataset.throttle || 0;
 
         // Update slider max based on included
         const included = parseFloat(option.dataset.included);

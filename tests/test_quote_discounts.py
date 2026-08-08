@@ -22,7 +22,6 @@ from app.models.sales import (
 )
 from app.models.system_user import SystemUser
 from app.schemas.sales import QuoteLineItemCreate
-from app.services import web_sales
 from app.services.db_session_adapter import db_session_adapter
 from app.services.domain_errors import DomainError
 from app.services.owner_commands import CommandContext
@@ -287,21 +286,3 @@ def test_history_query_filters_customer_actor_type_status_and_date(db_session):
         ),
     )
     assert empty.total_count == 0
-
-
-def test_history_failure_context_is_retryable_without_database_access():
-    context = web_sales.build_quote_discounts_failure_context(
-        date_from="2026-08-01",
-        date_to="2026-08-05",
-        customer="Discount Customer",
-        salesperson_id=None,
-        discount_type=QuoteDiscountType.percentage.value,
-        quote_status=QuoteStatus.draft.value,
-        page=1,
-        per_page=25,
-    )
-
-    assert context["discounts"] == []
-    assert context["total"] == 0
-    assert context["retry_url"].startswith("/admin/sales/quote-discounts")
-    assert "No Quote data was changed" in context["error"]

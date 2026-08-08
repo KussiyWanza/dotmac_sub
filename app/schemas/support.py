@@ -63,6 +63,9 @@ class TicketBase(BaseModel):
 
 
 class TicketCreate(TicketBase):
+    # Retained on TicketBase for historical response compatibility only.
+    site_coordinator_person_id: None = None
+
     @field_validator("status", "priority", "ticket_type", mode="before")
     @classmethod
     def _normalize_text_fields(cls, value):
@@ -248,7 +251,7 @@ class TicketCommentBase(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     body: str = Field(min_length=1)
-    is_internal: bool = False
+    is_internal: bool = True
     attachments: list[AttachmentMeta] = Field(default_factory=list)
 
 

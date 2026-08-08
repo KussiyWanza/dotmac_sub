@@ -1206,79 +1206,13 @@ def quotes_list(
 
 @router.get(
     "/quote-discounts",
-    response_class=HTMLResponse,
-    dependencies=[Depends(require_permission("crm:quote:read"))],
+    dependencies=[Depends(require_permission("reports:billing:read"))],
 )
-def quote_discounts_list(
-    request: Request,
-    date_from: str | None = Query(default=None),
-    date_to: str | None = Query(default=None),
-    customer: str | None = Query(default=None),
-    salesperson_id: str | None = Query(default=None),
-    discount_type: str | None = Query(default=None),
-    quote_status: str | None = Query(default=None),
-    page: int = Query(default=1),
-    per_page: int = Query(default=25),
-    db: Session = Depends(get_db),
-):
-    context = _ctx(request, db, "sales-quote-discounts")
-    try:
-        context.update(
-            web_sales_service.build_quote_discounts_list_context(
-                db,
-                date_from=date_from,
-                date_to=date_to,
-                customer=customer,
-                salesperson_id=salesperson_id,
-                discount_type=discount_type,
-                quote_status=quote_status,
-                page=page,
-                per_page=per_page,
-            )
-        )
-    except SQLAlchemyError as exc:
-        logger.error(
-            "sales_quote_discounts_list_load_failed",
-            extra={
-                "error_type": type(exc).__name__,
-                "route": "/admin/sales/quote-discounts",
-                "has_customer_filter": bool((customer or "").strip()),
-            },
-        )
-        db_session_adapter.release_read_transaction(db)
-        context.update(
-            web_sales_service.build_quote_discounts_failure_context(
-                date_from=date_from,
-                date_to=date_to,
-                customer=customer,
-                salesperson_id=salesperson_id,
-                discount_type=discount_type,
-                quote_status=quote_status,
-                page=page,
-                per_page=per_page,
-            )
-        )
-        return templates.TemplateResponse(
-            "admin/sales/quotes/discounts.html", context, status_code=503
-        )
-    except (DomainError, ValueError) as exc:
-        context.update(
-            web_sales_service.build_quote_discounts_failure_context(
-                date_from=date_from,
-                date_to=date_to,
-                customer=customer,
-                salesperson_id=salesperson_id,
-                discount_type=discount_type,
-                quote_status=quote_status,
-                page=page,
-                per_page=per_page,
-            )
-        )
-        context["error"] = _error_detail(exc)
-        return templates.TemplateResponse(
-            "admin/sales/quotes/discounts.html", context, status_code=400
-        )
-    return templates.TemplateResponse("admin/sales/quotes/discounts.html", context)
+def quote_discounts_report_redirect(request: Request) -> RedirectResponse:
+    suffix = f"&{request.url.query}" if request.url.query else ""
+    return RedirectResponse(
+        url=f"/admin/reports/discounts?tab=quotes{suffix}", status_code=307
+    )
 
 
 # NOTE: `/quotes/new` must stay above `/quotes/{quote_id}` or the detail route

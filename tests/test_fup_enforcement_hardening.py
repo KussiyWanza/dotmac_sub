@@ -1,7 +1,9 @@
 """FUP enforcement hardening:
 
-- reduce_speed with no throttle profile configured must NOT tell the customer
-  their speed was reduced (the handler silently no-ops); surface it instead.
+- reduce_speed with no GLOBAL throttle profile configured still enforces, using
+  the profile derived from the subscriber's own rate. The missing global
+  profile is a missing fallback, so it is counted and logged, not refused —
+  refusing made a deployment that never set it enforce nothing at all.
 - a queue-independent safety-net lifts FUP enforcement past its reset boundary
   even when the billing queue (where evaluate_fup_rules runs) is stalled.
 
@@ -99,17 +101,21 @@ def _run_evaluate(*, throttle_profile, should_enforce=True):
     return result, emit_mock, notif_mock
 
 
-def test_reduce_speed_without_profile_skips_notification_and_counts():
+def test_reduce_speed_without_global_profile_still_enforces_and_counts():
+    """The derived profile is the primary path; the global one is a fallback.
+
+    The absence of a fallback is worth counting — it is the only thing standing
+    between a failed derivation and no enforcement — but it must not stop the
+    breach from being enforced and reported.
+    """
     result, emit_mock, notif_mock = _run_evaluate(throttle_profile=None)
 
     assert result["throttle_unconfigured"] == 1
-    assert result["enforced"] == 0
-    # No usage_exhausted event (the handler would only no-op) ...
-    emit_mock.assert_not_called()
-    # ... and no "throttled" customer notification queued.
-    notif_mock.assert_called_once()
+    assert result["enforced"] == 1
+    emit_mock.assert_called_once()
     pending_arg = notif_mock.call_args[0][1]
-    assert pending_arg == []
+    assert len(pending_arg) == 1
+    assert pending_arg[0]["kind"] == "throttled"
 
 
 def test_reduce_speed_with_profile_still_notifies():

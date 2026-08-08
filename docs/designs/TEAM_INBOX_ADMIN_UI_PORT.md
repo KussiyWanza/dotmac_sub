@@ -359,6 +359,10 @@ in CI rather than on the test host.
    So *"what did agent X send"* is not a queryable question — it needs a JSON
    scan and no index helps. That is tolerable at 84 conversations and worth
    deciding before ~37k arrive. Surfacing it is precisely what this gate is for.
+   The conversation timeline may still bulk-resolve the sender IDs already
+   present on one thread to canonical staff display names; that read projection
+   does not make cross-message attribution queryable or move authority into the
+   UI.
 
 Both are pinned by tests so neither the columns nor the metadata keys can be
 dropped silently.

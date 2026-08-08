@@ -38,6 +38,7 @@ def _run(prior_action_status):
         "action": "reduce_speed",
         "rule_id": str(uuid4()),
         "threshold_gb": 10.0,
+        "current_usage_gb": 50.0,
         "name": "r",
         "cooldown_minutes": 0,
     }

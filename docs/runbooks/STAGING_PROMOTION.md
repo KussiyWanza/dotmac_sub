@@ -33,21 +33,21 @@ Overridden work reaches production without staging having run it, so reconcile
    promotion PR uses `version:none` with a body explaining that the version was
    already established and validated on dev. **Merge it with a merge commit,
    never a squash** — see "Merge methods" below.
-8. **Fast-forward `dev` to `main` as soon as the promotion merges.** The merge
-   commit exists only on `main`, so `dev` is left one commit behind and the
-   ancestry check starts failing again until this is done — see "Fast-forward
-   `dev` to `main` immediately after a promotion merges" below.
-9. During Step 2 migration, require main CI and the existing main GHCR build to
-   pass. Only the default branch may receive the moving `latest` image tag. A
-   later slice will authorize and retag the accepted candidate digest without
-   rebuilding it, then retire this temporary second-build path.
-10. Deploy the immutable main image to production only after Michael explicitly
-    requests the named production host.
+8. Require CI and Mobile CI on the exact resulting `main` commit. Dispatch
+   `Promote staged digest for production` on `main` with the candidate build
+   run, staging run, and full main SHA. It proves tree equality and ancestry,
+   records typed authorization, and attaches version and `latest` aliases to
+   the staged digest without rebuilding.
+9. Synchronize `main` back into `dev` through a zero-file pull request and merge
+   it with a merge commit. Branch protection rejects direct ref updates even
+   when they are fast-forwards; see "Synchronize `dev` after promotion" below.
+10. Dispatch `Deploy authorized digest to production` only after Michael names
+    `dotmac-sub-prod`, supplies the authorization run ID, and the protected
+    production environment approves it. The default path takes a backup.
 
 Invoke the candidate workflow only after the final rolling version bump. Do not
-build and stage every intermediate feature merge. Until the later publisher
-cutover, the legacy GHCR workflow may still publish compatibility images, but
-those tags are not staging acceptance evidence.
+build and stage every intermediate feature merge. The isolated GHCR workflow
+publishes only the pinned GenieACS runtime; it never builds an application image.
 
 ### One-time workflow bootstrap
 
@@ -123,21 +123,25 @@ validates the token and warns rather than falling back silently.
 Once automation is a separate identity, a review requirement becomes meaningful
 rather than ceremonial, and can be reconsidered.
 
-### Fast-forward `dev` to `main` immediately after a promotion merges
+### Synchronize `dev` after a promotion merges
 
 A merge-commit promotion creates a commit **on `main` only**. `main` becomes
 merge(`main`, `dev`), while `dev` stays at the commit that was promoted — one of
 that merge's own parents. So the moment the promotion lands, `main` is no longer
 an ancestor of `dev`, and the ancestry check above starts failing again.
 
-This is not divergence and does not need reconciliation. `dev` is simply behind
-by the merge commit, and `dev`'s head is still an ancestor of `main`'s. Close it
-with a fast-forward, which branch protection allows because it is not a force
-push:
+This is not content divergence. `dev` is simply behind by the merge commit and
+its head is still an ancestor of `main`. Close it with a zero-file
+reconciliation pull request from a short-lived branch at `main` into `dev`.
+GitHub branch protection requires every `dev` update to arrive through a pull
+request and rejects even a non-force fast-forward ref update:
 
 ```
-git fetch origin main
-git push origin "$(git rev-parse origin/main)":refs/heads/dev
+git fetch origin main dev
+git switch -c agent/reconcile-main-to-dev origin/main
+git push origin agent/reconcile-main-to-dev
+gh pr create --base dev --head agent/reconcile-main-to-dev \
+  --title "chore: reconcile main into dev" --label version:none
 ```
 
 Verify both invariants afterwards:
@@ -267,6 +271,27 @@ the same commit, tree, and digest. The deployment owner independently repeats
 the GitHub API decision for the image's full OCI revision before any database
 or service change.
 
+## Production workflow activation
+
+The production workflows are manual and run no repository test suite.
+`Promote staged digest for production` runs on a GitHub-hosted runner behind the
+protected `production` environment. It downloads exact candidate and staging
+artifacts by run ID, rechecks green `main`, tree equality, and ancestry, then
+registry-tags the same digest. It never invokes a Docker build.
+
+`Deploy authorized digest to production` remains fail-closed until the
+repository variable `PRODUCTION_DEPLOY_ENABLED` is exactly `true`. The
+`production` environment must define `PRODUCTION_DEPLOY_DIR`, and its runner
+must carry the dedicated `dotmac-sub-production` label. Each dispatch must name
+`dotmac-sub-prod` and provide the successful authorization run ID. Do not enable
+the variable or dispatch the workflow until Michael names and approves that
+production target.
+
+The GitHub-hosted verification job validates authorization before the production
+runner is scheduled. The host job checks out the exact authorized `main`
+revision in its runner workspace and uses the persistent directory only for
+host-owned `.env`, Compose overrides, and deployment state.
+
 ## Staging database-backup policy
 
 The staging database is non-authoritative and its PostgreSQL workload and local
@@ -277,18 +302,21 @@ application and workers of disk I/O without protecting production data.
 Every automatic or manual staging deployment must invoke
 `scripts/deploy_staging.sh`; operators must not call `scripts/deploy.sh`
 directly on staging. The adapter fails closed unless `.env` contains the exact
-staging host contract, then forces `SKIP_BACKUP=1` and the existing staging-only
+staging host contract, then selects `DEPLOY_BACKUP_MODE=skip_staging` and the staging-only
 proxy opt-out before delegating to `scripts/deploy.sh`. It also owns a fixed
 ten-minute health budget for candidate, primary, and rollback startup. Seabone
 has repeatedly needed more than three minutes to import the application under
 measured disk and swap pressure; the longer staging budget prevents a healthy
 cold start from being rolled back while preserving every health assertion.
 
-Production backup behavior remains unchanged. Production and other deployment
-targets continue to use `scripts/deploy.sh`, whose default remains to take the
-pre-migration backup and whose health budget remains 180 seconds. The offsite
-backup jobs under `scripts/backup/` are also unchanged. Existing staging backup
-files are retained until a separately approved retention action.
+Production requires a backup by default and rejects generic `SKIP_BACKUP=1`.
+Only `scripts/deploy_production.sh --hotfix-no-migrations` may request an
+exception, and it requires an incident/change reference plus reason. The
+adapter fingerprints the complete migration file set in the running and
+candidate images, derives both image-head sets, reads the exact database heads,
+and skips only when all comparisons match. Missing, changed, or malformed
+evidence keeps the backup enabled. The offsite jobs under `scripts/backup/` and
+existing staging backup files are unchanged.
 
 ## Failure behavior
 
@@ -302,3 +330,5 @@ files are retained until a separately approved retention action.
   health, worker readiness, rollback, and image-retention behavior; the guarded
   staging adapter supplies only the staging-specific backup and proxy opt-outs.
 - A failed staging deployment never authorizes promotion to `main`.
+- Production deploys only a typed, authorized digest. The self-hosted production
+  job runs bounded operational checks and no repository test suite.

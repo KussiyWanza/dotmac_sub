@@ -21,6 +21,12 @@ def get_dashboard_stats(db: Session) -> dict[str, object]:
     from app.models.rbac import Role
     from app.services import billing_invoice_pdf as billing_invoice_pdf_service
     from app.services import system_health as system_health_service
+    from app.services.audit_helpers import (
+        humanize_action,
+        humanize_entity,
+        load_audit_actor_subscribers,
+        resolve_actor_name,
+    )
     from app.services.web_system_users import get_user_stats
 
     # User stats (reuse existing helper)
@@ -69,6 +75,17 @@ def get_dashboard_stats(db: Session) -> dict[str, object]:
     recent_audits = (
         db.query(AuditEvent).order_by(AuditEvent.occurred_at.desc()).limit(10).all()
     )
+    audit_actors = load_audit_actor_subscribers(db, recent_audits)
+    recent_audit_views = [
+        {
+            "actor_name": resolve_actor_name(event, audit_actors),
+            "action_label": humanize_action(event.action),
+            "entity_label": humanize_entity(event.entity_type, event.entity_id),
+            "is_success": event.is_success,
+            "occurred_at": event.occurred_at,
+        }
+        for event in recent_audits
+    ]
     invoice_cache = billing_invoice_pdf_service.get_cache_dashboard_stats(db)
 
     return {
@@ -85,5 +102,5 @@ def get_dashboard_stats(db: Session) -> dict[str, object]:
             "disk_pct_value": health.get("disk", {}).get("used_pct_value"),
         },
         "invoice_cache_summary": invoice_cache,
-        "recent_audits": recent_audits,
+        "recent_audits": recent_audit_views,
     }

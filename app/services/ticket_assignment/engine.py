@@ -476,8 +476,6 @@ def _propose_direct_ticket_assignment(
     target = _assignment_target(rule)
     if target == "technical_supervisor":
         changed = not bool(ticket.ticket_manager_person_id)
-    elif target == "site_coordinator":
-        changed = not bool(ticket.site_coordinator_person_id)
     elif target == "technician":
         changed = not bool(ticket.assigned_to_person_id) or not any(
             str(existing.person_id) == assignee for existing in ticket.assignees

@@ -98,11 +98,10 @@
             <div class="flex items-start justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 dark:border-slate-700 dark:bg-slate-800/60">
                 <div>
                     <p class="text-sm font-medium text-slate-900 dark:text-white">
-                        {{ event.action|replace('_', ' ')|title }}
+                        {{ event.actor_name }} {{ event.action_label }}
                     </p>
                     <p class="text-xs text-slate-500 dark:text-slate-400">
-                        {{ event.entity_type|replace('_', ' ')|title }}
-                        {% if event.actor_id %}&middot; {{ event.actor_type.value if event.actor_type else 'system' }}{% endif %}
+                        {{ event.entity_label }}
                     </p>
                 </div>
                 <div class="flex flex-col items-end gap-1">

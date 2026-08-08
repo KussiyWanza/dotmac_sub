@@ -32,6 +32,157 @@ DOMAIN = DomainSOT(
             ),
         ),
         SOTService(
+            name="ui.document_discount_report",
+            module="app.services.web_document_discount_report",
+            owns=(
+                "admin Invoice and Quote discount report projection",
+                "Quote-inherited Invoice discount double-count disclosure",
+            ),
+            depends_on=(
+                "auth.permission_gate",
+                "financial.invoice_discounts",
+                "sales.quote_discount_reporting",
+                "ui.display_formatting",
+                "ui.list_contracts",
+                "ui.status_presentation",
+            ),
+            notes=(
+                "The Reports UI composes the two canonical append-only history "
+                "owners into separate typed tabs. It labels source-Quote provenance "
+                "and never adds Quote and inherited Invoice amounts into one total."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name="admin Invoice and Quote discount report projection",
+                        role=OwnerRole.RESOLVER,
+                        input_names=(
+                            "normalized document discount report query",
+                            "canonical Invoice discount history",
+                            "canonical Quote discount history projection",
+                            "canonical financial display formatting",
+                            "canonical document status presentation",
+                            "authorized billing-report scope",
+                        ),
+                    ),
+                    ConcernContract(
+                        name="Quote-inherited Invoice discount double-count disclosure",
+                        role=OwnerRole.RESOLVER,
+                        input_names=(
+                            "canonical Invoice discount history",
+                            "canonical Quote discount history projection",
+                        ),
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="normalized document discount report query",
+                        owner="ui.list_contracts",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "typed tab, inclusive date range, customer, actor, "
+                            "discount type, document status, source, and pagination"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical Invoice discount history",
+                        owner="financial.invoice_discounts",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "append-only Invoice discount revisions including manual "
+                            "or Quote source identity"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical Quote discount history projection",
+                        owner="sales.quote_discount_reporting",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source="typed filtered append-only Quote discount history",
+                    ),
+                    AuthorityInput(
+                        name="canonical financial display formatting",
+                        owner="ui.display_formatting",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source=(
+                            "currency-explicit money and configured-timezone timestamp "
+                            "formatting"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical document status presentation",
+                        owner="ui.status_presentation",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source="Invoice and Quote status labels, tones, and icon keys",
+                    ),
+                    AuthorityInput(
+                        name="authorized billing-report scope",
+                        owner="auth.permission_gate",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source="reports:billing:read route authorization",
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.READ_ONLY,
+                    boundary=(
+                        "The typed report reads one selected history owner on the "
+                        "adapter session and never mutates, flushes, commits, or rolls back."
+                    ),
+                    locking="Append-only history reporting requires no mutation lock.",
+                    idempotency=(
+                        "The same committed histories and normalized query produce the "
+                        "same deterministic rows, provenance labels, and pagination."
+                    ),
+                    retries="The bounded read-only report is safe to retry.",
+                ),
+                errors=ErrorContract(
+                    domain_codes=(
+                        "financial.invoice_discounts.date_range_invalid",
+                        "financial.invoice_discounts.page_invalid",
+                        "financial.invoice_discounts.page_size_invalid",
+                        "sales.quote_discount_reporting.date_range_invalid",
+                        "sales.quote_discount_reporting.page_invalid",
+                        "sales.quote_discount_reporting.page_size_invalid",
+                    ),
+                    mapping_owner="app.web.admin.reports discount adapter",
+                    fail_closed_on=(
+                        "missing reports:billing:read permission",
+                        "invalid date range",
+                        "invalid pagination",
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.COMPLETE,
+                    old_owner=(
+                        "separate billing and sales operational history pages and "
+                        "untyped web context builders"
+                    ),
+                    new_owner="ui.document_discount_report",
+                    verification=(
+                        "typed Invoice/Quote delegation, source provenance, route "
+                        "redirect, template render, permission, and architecture tests"
+                    ),
+                    cutover_gate=(
+                        "The Reports hub is the only rendered discount-history UI and "
+                        "both legacy URLs redirect to its typed tabs."
+                    ),
+                    fallback_retirement=(
+                        "Operational-page links, old templates, and untyped discount "
+                        "context builders are removed."
+                    ),
+                ),
+                steward="billing reports UI",
+                design_refs=(
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                    "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                    "docs/designs/DOCUMENT_DISCOUNT_REPORT.md",
+                ),
+                test_refs=(
+                    "tests/test_document_discount_report.py",
+                    "tests/architecture/test_invoice_discount_ownership.py",
+                ),
+            ),
+        ),
+        SOTService(
             name="ui.form_contracts",
             module="app.services.form_contracts",
             owns=(
@@ -422,6 +573,7 @@ DOMAIN = DomainSOT(
             owns=(
                 "admin support-ticket searchable fields",
                 "admin support-ticket filter semantics",
+                "admin support-ticket per-user applied-list restoration",
                 "admin support-ticket stable sort semantics",
                 "admin support-ticket page and status-summary projection",
                 "admin support-ticket export scope",
@@ -434,9 +586,16 @@ DOMAIN = DomainSOT(
             notes=(
                 "app.services.support.Tickets owns the canonical filtered "
                 "domain query. The web projection declares list capabilities, "
-                "normalizes request state, and renders full-page and HTMX "
-                "reads through one partial. Exports consume the same complete "
-                "scope without a silent row cap."
+                "normalizes request state, and renders full-page and targeted "
+                "HTMX result reads from the same table projection. Targeted "
+                "refreshes update the status summary and export URL while "
+                "leaving the filter and column controls mounted, expose loading "
+                "state, and retain current results with retry feedback on failure. "
+                "The browser stores the canonical typed ListQuery URL per signed-in "
+                "user after successful full-page or HTMX reads; a bare list visit "
+                "restores that URL, explicit query parameters take precedence, and "
+                "the cache never becomes authoritative for Ticket facts. "
+                "Exports consume the same complete scope without a silent row cap."
             ),
             contract=ServiceContract(
                 concerns=tuple(
@@ -452,6 +611,7 @@ DOMAIN = DomainSOT(
                     for name in (
                         "admin support-ticket searchable fields",
                         "admin support-ticket filter semantics",
+                        "admin support-ticket per-user applied-list restoration",
                         "admin support-ticket stable sort semantics",
                         "admin support-ticket page and status-summary projection",
                         "admin support-ticket export scope",
@@ -508,7 +668,7 @@ DOMAIN = DomainSOT(
                 ),
                 test_refs=(
                     "tests/test_support_ticket_list_ui_contract.py",
-                    "tests/playwright/e2e/test_customer_portal.py",
+                    "tests/playwright/e2e/test_support_tickets.py",
                 ),
             ),
         ),
@@ -527,6 +687,154 @@ DOMAIN = DomainSOT(
                 "The admin reseller surface is granularly gated by reseller:read "
                 "(list) and reseller:write (create/edit), split off the shared "
                 "customer:read/write."
+            ),
+        ),
+        SOTService(
+            name="ui.field_live_map_projection",
+            module="app.services.field_maps",
+            owns=(
+                "admin field-map sharing-authorized technician position projection",
+                "admin field-map searchable fields and focus coordinates",
+                "admin field-map stale-position semantics",
+            ),
+            depends_on=(
+                "customer.accounts",
+                "operations.work_orders",
+            ),
+            notes=(
+                "field_maps owns the typed admin live-map feed and search "
+                "projection. Technician visibility fails closed when location "
+                "sharing is disabled. Search resolves technician identity and "
+                "native work-order/customer/service-address facts before "
+                "returning only results with focusable coordinates. The admin "
+                "web adapter enforces operations:dispatch:read and the sidebar "
+                "uses the same permission for discoverability."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name=(
+                            "admin field-map sharing-authorized technician "
+                            "position projection"
+                        ),
+                        role=OwnerRole.RESOLVER,
+                        input_names=("native field-technician presence facts",),
+                    ),
+                    ConcernContract(
+                        name="admin field-map searchable fields and focus coordinates",
+                        role=OwnerRole.RESOLVER,
+                        input_names=(
+                            "native field-technician presence facts",
+                            "canonical work-order map facts",
+                            "canonical subscriber service-address facts",
+                            "admin field-map search input",
+                        ),
+                    ),
+                    ConcernContract(
+                        name="admin field-map stale-position semantics",
+                        role=OwnerRole.POLICY,
+                        input_names=(
+                            "native field-technician presence facts",
+                            "admin field-map freshness input",
+                        ),
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="native field-technician presence facts",
+                        owner="ui.field_live_map_projection",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source=(
+                            "FieldTechPresence technician/person identity, sharing "
+                            "preference, status, latest coordinates, accuracy, and "
+                            "observation time"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical work-order map facts",
+                        owner="operations.work_orders",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "active native WorkOrder public identity, searchable "
+                            "dispatch fields, subscriber binding, and mapped location"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical subscriber service-address facts",
+                        owner="customer.accounts",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "native Subscriber identity/contact fields and canonical "
+                            "Address street, locality, and coordinates"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="admin field-map search input",
+                        owner="ui.field_live_map_projection",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source="typed normalized search text and bounded result limit",
+                    ),
+                    AuthorityInput(
+                        name="admin field-map freshness input",
+                        owner="ui.field_live_map_projection",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source="typed bounded stale-after duration",
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.READ_ONLY,
+                    boundary=(
+                        "Feed and search queries read one adapter-owned session and "
+                        "perform no ORM mutation or transaction completion."
+                    ),
+                    locking="No locks; the projection is observational and read-only.",
+                    idempotency=(
+                        "Equivalent search/freshness inputs return the same typed "
+                        "projection for the same database snapshot."
+                    ),
+                    retries="Read availability failures may be retried safely.",
+                ),
+                errors=ErrorContract(
+                    domain_codes=(
+                        "ui.field_live_map_projection.invalid_search",
+                        "ui.field_live_map_projection.unauthorized",
+                    ),
+                    mapping_owner="admin field-map web adapter",
+                    fail_closed_on=(
+                        "missing operations:dispatch:read permission",
+                        "disabled technician location sharing",
+                        "missing focus coordinates",
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.COMPLETE,
+                    old_owner=(
+                        "untyped field-map feed and template-local visibility/search "
+                        "behavior"
+                    ),
+                    new_owner="ui.field_live_map_projection",
+                    verification=(
+                        "typed feed/search contracts, sharing/privacy tests, street "
+                        "search tests, route permission tests, and UI focus tests"
+                    ),
+                    cutover_gate=(
+                        "Routes return owner-provided typed outcomes and the template "
+                        "only renders or focuses those outcomes."
+                    ),
+                    fallback_retirement=(
+                        "The feed no longer exposes non-sharing technicians and no "
+                        "template-only street filtering or ungated navigation remains."
+                    ),
+                ),
+                steward="field operations UI",
+                design_refs=(
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                    "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                ),
+                test_refs=(
+                    "tests/test_admin_maps_web.py",
+                    "tests/architecture/test_field_live_map_boundary.py",
+                ),
             ),
         ),
         SOTService(
@@ -1715,11 +2023,14 @@ DOMAIN = DomainSOT(
         "app.api.tables",
         "app.services.subscriber",
         "app.services.table_config",
+        "app.services.web_document_discount_report",
         "app.web.admin.customers",
         "app.web.admin.billing_invoices",
+        "app.web.admin.reports",
         "app.web.admin.support_tickets",
         "templates.admin.billing.invoices",
         "templates.admin.customers",
+        "templates.admin.reports.discounts",
         "templates.admin.support.tickets",
     ),
     rule="List routes normalize request parameters through one declared list "

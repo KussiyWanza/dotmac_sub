@@ -1,7 +1,7 @@
 # Build-once release artifact promotion
 
-**Status:** Step 2 candidate build and digest-bound staging path implemented;
-production promotion and publisher cutover remain inactive
+**Status:** Build-once candidate, digest-bound staging, production promotion,
+production verification, backup enforcement, and publisher cutover implemented
 
 **Owner:** Dotmac Sub release control plane
 
@@ -14,13 +14,13 @@ Git-tree equality, ancestry, and the recorded staging acceptance. Registry-side
 tagging may add version or `latest` aliases, but it must not create a second
 application image.
 
-The explicit candidate path now uses the contracts through
+The active candidate path uses the contracts through
 `scripts/release_candidate_evidence.py`. The final current green `dev` commit
 is selected manually after the rolling version bump, built once, and recorded
 as a digest-bound artifact. Staging consumes and records that digest. The
-existing dev/main GHCR publisher remains in place during migration, and the
-separate main build remains the production path until the later authorization
-and cutover slices retire it.
+production authorization is recorded separately after the staged tree reaches
+green `main`. The application publisher no longer rebuilds on `dev` or `main`;
+only the independent pinned GenieACS runtime remains in `ghcr.yml`.
 
 ## Ownership and authoritative evidence
 
@@ -77,9 +77,10 @@ Backup behavior is owned by the identified deployment environment:
   candidate heads.
 - Missing or ambiguous hotfix evidence resolves to taking the backup.
 
-The later enforcement step will retire unrestricted `SKIP_BACKUP=1` use. It
-will replace it with an explicit production hotfix command carrying a non-secret
-change reference and reason. Step 1 does not alter current backup behavior.
+Unrestricted production `SKIP_BACKUP=1` use is retired. The explicit production
+adapter carries a non-secret change reference and reason, fingerprints both
+images' complete migration trees, derives their heads, reads the database
+heads, and re-evaluates the typed policy before `deploy.sh` permits a skip.
 
 ## Test and host boundary
 
@@ -102,34 +103,32 @@ not an input to the release-control decision.
 
 ### Old owner and paths
 
-- `.github/workflows/ghcr.yml` builds on every `dev` and `main` push.
-- `.github/workflows/staging-deploy.yml` treats each successful dev image build
-  as a staging candidate.
-- `scripts/deploy.sh` assumes the image source revision and environment release
-  authorization revision are the same commit.
-- `SKIP_BACKUP=1` is a generic process-environment override.
+- The retired `.github/workflows/ghcr.yml` application job built on every `dev`
+  and `main` push.
+- The retired staging path treated each successful dev image build as a
+  staging candidate.
+- The retired production gate assumed image source and release authorization
+  were the same commit and accepted a generic `SKIP_BACKUP=1` override.
 
 ### New owner and paths
 
-- An explicit release-candidate workflow will select the final current `dev`
+- The explicit release-candidate workflow selects the final current `dev`
   tip after the version bump and build the application image once.
 - A staging deployment record will bind acceptance to the immutable digest.
-- A promotion workflow will prove main tree equality, ancestry, main CI, and
+- The promotion workflow proves main tree equality, ancestry, main CI, and
   staging acceptance before adding production aliases to the same digest.
-- The production adapter will verify distinct source and release revisions and
+- The production adapter verifies distinct source and release revisions and
   deploy by digest.
-- A typed backup-policy decision will own the staging skip, production default,
+- A typed backup-policy decision owns the staging skip, production default,
   and proven no-migration hotfix exception.
 
 ### Shadow and verification phase
 
-The candidate workflow and staging evidence run without publishing production
-aliases. They reject stale candidates, a non-green exact `dev` SHA, malformed
-or mismatched build evidence, and any staging result not bound to the built
-digest. The existing main build remains the production path during this phase.
-The one promotion that places the new workflow on GitHub's default branch uses
-the previously active staging path because `workflow_dispatch` cannot activate
-a workflow that does not yet exist on the default branch.
+The candidate and staging slices ran in shadow before cutover and completed an
+accepted exact-digest rehearsal. The one promotion that first placed the new
+workflow on GitHub's default branch used the previously active staging path
+because `workflow_dispatch` cannot activate a workflow absent from the default
+branch. The shadow publisher is now retired.
 
 ### Cutover gate
 
@@ -147,17 +146,19 @@ Cutover requires all of the following:
 
 ### Fallback retirement
 
-After one accepted end-to-end rehearsal, remove ordinary application image
-publishing from dev/main push workflows, remove staging deployment triggers for
-intermediate dev builds, and retire the generic production backup-skip path.
-Keep any emergency path explicit, attributable, digest-pinned, and subject to
-the same staging and production evidence rules.
+Ordinary application publishing from dev/main pushes, intermediate staging
+triggers, and the generic production backup skip are retired. The emergency
+path remains explicit, attributable, digest-pinned, and subject to the same
+staging and production evidence rules.
 
 ## Planned implementation slices
 
 1. Typed contracts and design evidence (complete).
 2. Explicit one-time candidate build and digest-bound staging evidence
-   (implemented in this step).
-3. Main tree/ancestry authorization and registry-side digest promotion.
-4. Digest-based production verification and hotfix backup enforcement.
-5. Trigger cutover, duplicate publisher removal, and GenieACS build isolation.
+   (complete).
+3. Main tree/ancestry authorization and registry-side digest promotion
+   (complete).
+4. Digest-based production verification and hotfix backup enforcement
+   (complete).
+5. Trigger cutover, duplicate publisher removal, and GenieACS build isolation
+   (complete).

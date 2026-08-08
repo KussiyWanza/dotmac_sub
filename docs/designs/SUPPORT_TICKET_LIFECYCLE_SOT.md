@@ -122,6 +122,15 @@ comments do not trigger this consequence. The durable notification queue owns
 post-commit SMTP delivery and retry; transport failure never removes the saved
 reply.
 
+Ticket assignment consequences are independent of the legacy customer-support
+notification toggle. Newly assigned direct users and active members of an
+assigned Service Team receive an in-app notification and, when an email address
+exists, a queued email. Explicit comment mentions use the same individual and
+Service Team group semantics and the same two channels. The retired Site
+Project Coordinator column remains readable and filterable on historical
+Tickets, but new-ticket input and assignment configuration no longer populate
+it.
+
 ## Related owners
 
 `support.ticket_sla_clock` remains the Ticket SLA clock and breach owner.
@@ -143,11 +152,18 @@ comments, resolution, or native Work-Order issuance.
 
 `ui.support_ticket_list_projection` declares searchable fields, filters,
 stable sorting, pagination, summaries, and export scope through one typed
-`ListQuery`. `ui.support_ticket_bulk_action_projection` declares page-only
-selection and action presentation. `support.ticket_bulk_commands` resolves
-membership, normalizes the shared changes, previews eligibility, binds the
-preview to a deterministic scope token, and detects drift. Confirmed mutations
-delegate to `support.ticket_lifecycle`; there is no second bulk writer.
+`ListQuery`. Targeted HTMX refreshes replace the result table and refresh its
+summary, sort state, and export URL without rebuilding the filter and column
+controls. The control layer announces loading in place, retains the current
+results when a read fails, and offers retry. After a successful list read, the
+browser stores the canonical `ListQuery` URL under a signed-in-user-specific
+key. A bare return to the list restores that applied URL; an explicit URL wins
+and replaces the stored view. The browser cache controls navigation only and is
+never authoritative for Ticket facts. `ui.support_ticket_bulk_action_projection`
+declares page-only selection and action presentation. `support.ticket_bulk_commands`
+resolves membership, normalizes the shared changes, previews eligibility, binds
+the preview to a deterministic scope token, and detects drift. Confirmed
+mutations delegate to `support.ticket_lifecycle`; there is no second bulk writer.
 
 ## Cutover and repair
 

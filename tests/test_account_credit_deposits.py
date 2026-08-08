@@ -54,8 +54,15 @@ from app.services.account_credit_deposits import (
     SettleAccountCreditDepositCommand,
 )
 from app.services.billing._common import get_account_credit_balance
-from app.services.billing.account_credit import AccountCreditApplications
+from app.services.billing.account_credit import (
+    LEGACY_INVOICE_IMPORT_BOUNDARY_AT,
+    AccountCreditApplications,
+)
 from app.services.billing.invoices import Invoices
+from app.services.billing_health import (
+    billing_health_observations,
+    billing_health_snapshot,
+)
 from app.services.db_session_adapter import db_session_adapter
 from app.services.owner_commands import CommandContext
 from app.services.topup_intents import (
@@ -1333,3 +1340,114 @@ def test_invariant_summary_query_count_is_bounded(db_session, subscriber):
     # Full-fleet health uses a fixed set of aggregate reads instead of one or
     # more relationship/settlement queries for every payment and invoice.
     assert len(statements) <= 8
+
+
+def test_imported_underfunded_invoice_is_reported_but_not_a_live_violation(
+    db_session, subscriber
+):
+    """The legacy book arrived already paid, without its payment records.
+
+    Counting it as a live invariant breach pins the gauge above zero forever and
+    buries the defects Sub can actually act on, so it is observed separately.
+    """
+    db_session.add(
+        Invoice(
+            account_id=subscriber.id,
+            status=InvoiceStatus.paid,
+            currency="NGN",
+            total=Decimal("5000.00"),
+            balance_due=Decimal("0.00"),
+            created_at=LEGACY_INVOICE_IMPORT_BOUNDARY_AT - timedelta(seconds=1),
+        )
+    )
+    db_session.commit()
+
+    summary = AccountCreditApplications.summarize_invariants(db_session)
+
+    assert (
+        AccountCreditApplications.count_imported_underfunded_invoices(db_session) == 1
+    )
+    assert summary.paid_invoice_underfunded == 0
+    assert summary.total == 0
+
+
+def test_natively_authored_underfunded_invoice_is_a_live_violation(
+    db_session, subscriber
+):
+    db_session.add(
+        Invoice(
+            account_id=subscriber.id,
+            status=InvoiceStatus.paid,
+            currency="NGN",
+            total=Decimal("5000.00"),
+            balance_due=Decimal("0.00"),
+            created_at=LEGACY_INVOICE_IMPORT_BOUNDARY_AT,
+        )
+    )
+    db_session.commit()
+
+    summary = AccountCreditApplications.summarize_invariants(db_session)
+
+    assert summary.paid_invoice_underfunded == 1
+    assert (
+        AccountCreditApplications.count_imported_underfunded_invoices(db_session) == 0
+    )
+    assert summary.total == 1
+
+
+def test_underfunded_invoices_split_on_the_import_boundary(db_session, subscriber):
+    for created_at in (
+        LEGACY_INVOICE_IMPORT_BOUNDARY_AT - timedelta(days=400),
+        LEGACY_INVOICE_IMPORT_BOUNDARY_AT - timedelta(days=1),
+        LEGACY_INVOICE_IMPORT_BOUNDARY_AT,
+        LEGACY_INVOICE_IMPORT_BOUNDARY_AT + timedelta(days=90),
+    ):
+        db_session.add(
+            Invoice(
+                account_id=subscriber.id,
+                status=InvoiceStatus.paid,
+                currency="NGN",
+                total=Decimal("1000.00"),
+                balance_due=Decimal("0.00"),
+                created_at=created_at,
+            )
+        )
+    db_session.commit()
+
+    summary = AccountCreditApplications.summarize_invariants(db_session)
+
+    assert summary.paid_invoice_underfunded == 2
+    assert (
+        AccountCreditApplications.count_imported_underfunded_invoices(db_session) == 2
+    )
+    assert summary.total == 2
+
+
+def test_billing_health_reports_the_legacy_book_without_raising_an_anomaly(
+    db_session, subscriber
+):
+    """The legacy figure stays visible for the accounting disposition."""
+    db_session.add(
+        Invoice(
+            account_id=subscriber.id,
+            status=InvoiceStatus.paid,
+            currency="NGN",
+            total=Decimal("5000.00"),
+            balance_due=Decimal("0.00"),
+            created_at=LEGACY_INVOICE_IMPORT_BOUNDARY_AT - timedelta(days=30),
+        )
+    )
+    db_session.commit()
+
+    snapshot = billing_health_snapshot(db_session)
+
+    assert snapshot.account_credit_invariant_imported_count == 1
+    assert snapshot.account_credit_invariant_count == 0
+    assert "account_credit_invariant_violations" not in snapshot.anomalies
+
+    observed = {
+        (item.signal, item.scope): item.value
+        for item in billing_health_observations(snapshot)
+    }
+    assert observed[("account_credit_invariant_violations", "legacy_import")] == 1
+    assert observed[("account_credit_invariant_violations", "all")] == 0

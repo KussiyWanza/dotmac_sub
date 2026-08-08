@@ -1,5 +1,14 @@
+<span id="admin-notification-badge" hx-swap-oob="true">
+    {% if admin_unread_count > 0 %}
+    <span class="absolute right-1.5 top-1.5 flex h-2 w-2" title="{{ admin_unread_count }} unread notifications">
+        <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-75"></span>
+        <span class="relative inline-flex h-2 w-2 rounded-full bg-red-500"></span>
+    </span>
+    {% endif %}
+</span>
+
 {% if admin_notifications %}
-<div class="px-4 pb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Staff inbox</div>
+<div class="px-4 pb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Notifications</div>
 <div class="max-h-72 overflow-y-auto">
     {% for notification in admin_notifications %}
     <a href="/admin/notifications/inbox/{{ notification.id }}/open"
@@ -25,31 +34,7 @@
 </div>
 {% endif %}
 
-{% if notifications %}
-<div class="px-4 pb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Recent notifications</div>
-<div class="max-h-80 overflow-y-auto">
-    {% for notification in notifications %}
-    <div class="px-4 py-3 border-t border-slate-100 dark:border-slate-700">
-        <div class="flex items-center justify-between">
-            <p class="text-sm font-medium text-slate-900 dark:text-white">
-                {{ notification.subject or 'Notification' }}
-            </p>
-            <span class="text-xs text-slate-400">
-                {{ notification.created_at | app_datetime('%b %d, %H:%M', '') }}
-            </span>
-        </div>
-        <p class="mt-1 text-xs text-slate-500 dark:text-slate-400 truncate">
-            {{ notification.recipient }}
-        </p>
-        <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">
-            Status: {{ notification.status.value if notification.status else 'queued' }}
-        </p>
-    </div>
-    {% endfor %}
-</div>
-{% endif %}
-
-{% if not notifications and not admin_notifications %}
+{% if not admin_notifications %}
 <div class="px-4 py-6 text-center text-sm text-slate-500 dark:text-slate-400">
     No notifications yet.
 </div>

@@ -38,15 +38,16 @@
 
 {# Canonical list footer: result announcement, page-size state, and navigation
    all come from ListQuery/PageMeta. No caller assembles query strings. #}
-{% macro list_pagination(list_query, page_meta, base_url, entity='results') %}
+{% macro list_pagination(list_query, page_meta, base_url, entity='results', anchor=None, compact_range=false) %}
+{% set _fragment = '#' ~ anchor if anchor else '' %}
 {% if page_meta.total_items > 0 %}
 <div class="border-t border-slate-200 bg-slate-50/50 px-6 py-3 dark:border-slate-700 dark:bg-slate-800/50">
     <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <p class="text-sm text-slate-500 dark:text-slate-400" role="status" aria-live="polite">
-            Showing {{ page_meta.start_item }} to {{ page_meta.end_item }} of {{ page_meta.total_items }} {{ entity }}
+            {% if compact_range %}Showing {{ page_meta.start_item }}&ndash;{{ page_meta.end_item }} of {{ '{:,}'.format(page_meta.total_items) }} {{ entity }}{% else %}Showing {{ page_meta.start_item }} to {{ page_meta.end_item }} of {{ page_meta.total_items }} {{ entity }}{% endif %}
         </p>
         <div class="flex flex-wrap items-center gap-4">
-            <form method="get" action="{{ base_url }}" class="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
+            <form method="get" action="{{ base_url }}{{ _fragment }}" class="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
                 {% if list_query.search %}<input type="hidden" name="search" value="{{ list_query.search }}">{% endif %}
                 {% for key, value in list_query.filters %}<input type="hidden" name="{{ key }}" value="{{ value }}">{% endfor %}
                 <input type="hidden" name="sort" value="{{ list_query.sort_by }}">
@@ -63,7 +64,7 @@
             {% if page_meta.total_pages > 1 %}
             <nav class="flex items-center gap-1" aria-label="{{ entity|capitalize }} pagination">
                 {% if page_meta.has_previous %}
-                <a href="{{ list_query.url(base_url, page=page_meta.page - 1) }}" aria-label="Previous page"
+                <a href="{{ list_query.url(base_url, page=page_meta.page - 1) }}{{ _fragment }}" aria-label="Previous page"
                    class="rounded-lg px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 dark:text-slate-400 dark:hover:bg-slate-700">Previous</a>
                 {% endif %}
                 {% for page in page_meta.navigation %}
@@ -72,12 +73,12 @@
                     {% elif page == page_meta.page %}
                     <span aria-current="page" class="rounded-lg bg-slate-200 px-3 py-1.5 text-sm font-semibold text-slate-900 dark:bg-slate-700 dark:text-white">{{ page }}</span>
                     {% else %}
-                    <a href="{{ list_query.url(base_url, page=page) }}" aria-label="Page {{ page }}"
+                    <a href="{{ list_query.url(base_url, page=page) }}{{ _fragment }}" aria-label="Page {{ page }}"
                        class="rounded-lg px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 dark:text-slate-400 dark:hover:bg-slate-700">{{ page }}</a>
                     {% endif %}
                 {% endfor %}
                 {% if page_meta.has_next %}
-                <a href="{{ list_query.url(base_url, page=page_meta.page + 1) }}" aria-label="Next page"
+                <a href="{{ list_query.url(base_url, page=page_meta.page + 1) }}{{ _fragment }}" aria-label="Next page"
                    class="rounded-lg px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 dark:text-slate-400 dark:hover:bg-slate-700">Next</a>
                 {% endif %}
             </nav>

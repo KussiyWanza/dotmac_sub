@@ -30,7 +30,6 @@ templates = Jinja2Templates(directory="templates")
 ASSIGNMENT_TARGETS: tuple[str, ...] = (
     "technician",
     "technical_supervisor",
-    "site_coordinator",
 )
 
 

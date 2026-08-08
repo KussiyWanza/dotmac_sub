@@ -259,9 +259,10 @@ The complete command, evidence, migration, and page contract is
 `docs/designs/QUOTE_DISCOUNT_HISTORY.md`. `sales.quote_authoring` owns current
 discount application, replacement, removal, recalculation, and append-only
 history. `sales.quote_discount_reporting` owns the filtered staff projection at
-`/admin/sales/quote-discounts`. Previous Quote Line Item discounts remain
-read-only historical evidence and new writers always store zero in that legacy
-field.
+the Quote tab of `/admin/reports/discounts`; `ui.document_discount_report` owns
+the typed administrative page projection. The previous route redirects to the
+report. Previous Quote Line Item discounts remain read-only historical evidence
+and new writers always store zero in that legacy field.
 
 ## Configuration versus code contracts
 

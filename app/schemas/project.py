@@ -56,7 +56,8 @@ class ProjectBase(BaseModel):
 
 
 class ProjectCreate(ProjectBase):
-    pass
+    # Retained on ProjectBase for historical response compatibility only.
+    assistant_manager_person_id: None = None
 
 
 class ProjectUpdate(BaseModel):

@@ -160,9 +160,13 @@ owns the canonical filtered domain query, while
 `app.services.web_support_tickets` declares the admin list capabilities and owns
 query normalization, exact counts, stable sorting, clamped pages, status-summary
 links, and complete CSV scope. The route is a thin adapter, and full-page and
-HTMX reads share `_list.html` and `_table.html`. Advanced filters are validated
-and serialized by the same owner used by export; templates consume `ListQuery`
-and `PageMeta` rather than assembling query strings or estimating totals.
+targeted HTMX reads reuse the same `_table.html` projection. Result refreshes
+also update the status summary, sort state, and export URL out of band while
+leaving the filter and column controls mounted. A stable feedback row below
+advanced filters announces loading; failures keep the current results visible
+and offer retry. Advanced filters are validated and serialized by the same owner
+used by export; templates consume `ListQuery` and `PageMeta` rather than
+assembling query strings or estimating totals.
 
 Support-ticket bulk update is page-selection only. The authorized action
 projection comes from `app.services.web_support_ticket_bulk_actions`; templates
