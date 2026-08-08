@@ -1,6 +1,6 @@
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -13,9 +13,14 @@ from app.services.topup_intents import (
 )
 
 
-def _intent(db_session, subscriber, *, metadata=None) -> TopupIntent:
+def _intent(
+    db_session,
+    account_id: UUID,
+    *,
+    metadata: dict[str, object] | None = None,
+) -> tuple[TopupIntent, UUID]:
     intent = TopupIntent(
-        account_id=subscriber.id,
+        account_id=account_id,
         reference=f"TRF-{uuid4().hex[:12]}",
         provider_type="direct_bank_transfer",
         currency="NGN",
@@ -25,28 +30,35 @@ def _intent(db_session, subscriber, *, metadata=None) -> TopupIntent:
         metadata_=metadata or {"payment_flow": "account_topup"},
     )
     db_session.add(intent)
+    db_session.flush()
+    intent_id = intent.id
     db_session.commit()
-    return intent
+    return intent, intent_id
 
 
-def _command(subscriber, intent, *, reason="Failed pending intent"):
+def _command(
+    account_id: UUID,
+    intent_id: UUID,
+    *,
+    reason: str = "Failed pending intent",
+) -> payment_intent_management.CancelPaymentIntentCommand:
     return payment_intent_management.CancelPaymentIntentCommand(
         context=CommandContext.system(
             actor="user:samuel-ojo",
             scope=payment_intent_management.ADMIN_CANCEL_SCOPE,
             reason=reason,
-            idempotency_key=f"cancel:{intent.id}",
+            idempotency_key=f"cancel:{intent_id}",
         ),
-        account_id=subscriber.id,
-        intent_id=intent.id,
+        account_id=account_id,
+        intent_id=intent_id,
         source=DirectTransferCancellationSource.admin_customer_billing,
     )
 
 
 def test_cancels_pending_unsubmitted_direct_transfer(db_session, subscriber):
-    intent = _intent(db_session, subscriber)
-    command = _command(subscriber, intent)
-    db_session.rollback()
+    account_id = subscriber.id
+    intent, intent_id = _intent(db_session, account_id)
+    command = _command(account_id, intent_id)
 
     outcome = payment_intent_management.cancel_unsubmitted_direct_transfer(
         db_session, command
@@ -60,9 +72,11 @@ def test_cancels_pending_unsubmitted_direct_transfer(db_session, subscriber):
 
 
 def test_rejects_cancellation_after_payment_proof_is_linked(db_session, subscriber):
-    intent = _intent(db_session, subscriber, metadata={"payment_proof_id": "proof-1"})
-    command = _command(subscriber, intent)
-    db_session.rollback()
+    account_id = subscriber.id
+    intent, intent_id = _intent(
+        db_session, account_id, metadata={"payment_proof_id": "proof-1"}
+    )
+    command = _command(account_id, intent_id)
 
     with pytest.raises(TopupIntentError) as exc:
         payment_intent_management.cancel_unsubmitted_direct_transfer(
@@ -77,10 +91,13 @@ def test_rejects_cancellation_after_payment_proof_is_linked(db_session, subscrib
 def test_history_marks_only_unsubmitted_pending_transfer_cancelable(
     db_session, subscriber
 ):
-    cancelable = _intent(db_session, subscriber)
-    linked = _intent(db_session, subscriber, metadata={"payment_proof_id": "proof-2"})
+    account_id = subscriber.id
+    cancelable, _ = _intent(db_session, account_id)
+    linked, _ = _intent(
+        db_session, account_id, metadata={"payment_proof_id": "proof-2"}
+    )
 
-    views = payment_intent_management.list_for_account(db_session, subscriber.id)
+    views = payment_intent_management.list_for_account(db_session, account_id)
     by_id = {view.id: view for view in views}
 
     assert by_id[cancelable.id].can_cancel is True
