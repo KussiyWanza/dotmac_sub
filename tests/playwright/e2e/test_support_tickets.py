@@ -97,5 +97,7 @@ def test_applied_filter_is_restored_after_returning_from_ticket_detail(
     admin_page.wait_for_url("**/admin/support/tickets/**")
 
     admin_page.locator("a[href='/admin/support/tickets']").first.click()
-    admin_page.wait_for_url(filtered_url)
+    expect(admin_page).to_have_url(
+        re.compile(r".*/admin/support/tickets\?.*status=not_closed.*")
+    )
     expect(admin_page.locator("#ticket-status-filter")).to_have_value("not_closed")

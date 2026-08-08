@@ -216,7 +216,11 @@ class TestCustomerListFilters:
     """Tests for customer-list filter guidance."""
 
     def test_infrastructure_search_prompts_for_type(self, admin_page: Page, settings):
-        admin_page.goto(f"{settings.base_url}/admin/customers")
+        admin_page.goto(
+            f"{settings.base_url}/admin/customers",
+            wait_until="domcontentloaded",
+            timeout=30_000,
+        )
         expect(
             admin_page.get_by_role("heading", name="Customers", exact=True)
         ).to_be_visible()
