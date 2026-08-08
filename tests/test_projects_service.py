@@ -632,7 +632,7 @@ class TestTaskStateMachine:
             db_session.query(Notification)
             .filter(
                 Notification.channel == NotificationChannel.email,
-                Notification.recipient == first_user.email,
+                Notification.recipient == str(first_user.id),
             )
             .count()
         )
@@ -654,7 +654,7 @@ class TestTaskStateMachine:
             db_session.query(Notification)
             .filter(
                 Notification.channel == NotificationChannel.email,
-                Notification.recipient == first_user.email,
+                Notification.recipient == str(first_user.id),
             )
             .count()
             == first_email_count
@@ -663,7 +663,7 @@ class TestTaskStateMachine:
             db_session.query(Notification)
             .filter(
                 Notification.channel == NotificationChannel.email,
-                Notification.recipient == second_user.email,
+                Notification.recipient == str(second_user.id),
             )
             .all()
         )
@@ -671,7 +671,7 @@ class TestTaskStateMachine:
         assert second_emails[0].subject.startswith("New project task assigned:")
         assert (
             db_session.query(Notification)
-            .filter(Notification.recipient == inactive_user.email)
+            .filter(Notification.recipient == str(inactive_user.id))
             .count()
             == 0
         )
@@ -679,10 +679,10 @@ class TestTaskStateMachine:
             db_session.query(Notification)
             .filter(
                 Notification.channel == NotificationChannel.push,
-                Notification.recipient == second_user.email,
+                Notification.recipient == str(second_user.id),
             )
             .count()
-            == 0
+            == 1
         )
 
         project_tasks.update(
@@ -699,7 +699,7 @@ class TestTaskStateMachine:
             db_session.query(Notification)
             .filter(
                 Notification.channel == NotificationChannel.email,
-                Notification.recipient == second_user.email,
+                Notification.recipient == str(second_user.id),
             )
             .count()
             == 1

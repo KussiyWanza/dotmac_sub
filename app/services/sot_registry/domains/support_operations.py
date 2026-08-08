@@ -426,6 +426,7 @@ DOMAIN = DomainSOT(
                 "guarded ticket status transitions",
                 "ticket lifecycle timestamps and consequences",
                 "ticket team and person assignment",
+                "ticket assignment and mention staff notification consequence",
                 "ticket comments mentions and attachments",
                 "ticket links duplicates and merges",
                 "signed-link and authenticated resolution confirmation/dispute",
@@ -503,6 +504,16 @@ DOMAIN = DomainSOT(
                             "customer communication delivery intent",
                         ),
                     ),
+                    ConcernContract(
+                        name="ticket assignment and mention staff notification consequence",
+                        role=OwnerRole.EVENT_POLICY,
+                        input_names=(
+                            "typed ticket command",
+                            "canonical ticket state",
+                            "active assigned staff contact identity",
+                            "staff notification delivery queue",
+                        ),
+                    ),
                 ),
                 authoritative_inputs=(
                     AuthorityInput(
@@ -577,7 +588,8 @@ DOMAIN = DomainSOT(
                         kind=AuthorityKind.AUTHORITATIVE_RECORD,
                         source=(
                             "active SystemUser identity and email resolved from current "
-                            "Ticket SystemUser or canonical Person assignment identifiers"
+                            "Ticket SystemUser or canonical Person assignment identifiers "
+                            "and active assigned Service Team membership"
                         ),
                     ),
                     AuthorityInput(
