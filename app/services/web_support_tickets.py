@@ -643,9 +643,7 @@ def build_ticket_create_payload(**kwargs) -> TicketCreate:
         ticket_manager_person_id=parse_uuid_or_none(
             kwargs.get("ticket_manager_person_id")
         ),
-        site_coordinator_person_id=parse_uuid_or_none(
-            kwargs.get("site_coordinator_person_id")
-        ),
+        site_coordinator_person_id=None,
         service_team_id=parse_uuid_or_none(kwargs.get("service_team_id")),
         ticket_type=kwargs.get("ticket_type") or None,
         priority=kwargs["priority"],

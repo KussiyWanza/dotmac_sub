@@ -77,7 +77,7 @@ from app.services.owner_commands import (
     owner_command_active,
 )
 from app.services.sales import lifecycle as lead_lifecycle
-from app.services.staff_notifications import queue_staff_email, queue_staff_push
+from app.services.staff_notifications import queue_staff_email
 
 logger = logging.getLogger(__name__)
 
@@ -1102,15 +1102,6 @@ class Tickets:
                 region_rule.get("ticket_manager_person_id")
             )
             changed["ticket_manager_person_id"] = str(ticket.ticket_manager_person_id)
-        if not ticket.site_coordinator_person_id and region_rule.get(
-            "site_coordinator_person_id"
-        ):
-            ticket.site_coordinator_person_id = _coerce_uuid(
-                region_rule.get("site_coordinator_person_id")
-            )
-            changed["site_coordinator_person_id"] = str(
-                ticket.site_coordinator_person_id
-            )
         if not ticket.technician_person_id and region_rule.get("technician_person_id"):
             ticket.technician_person_id = _coerce_uuid(
                 region_rule.get("technician_person_id")
@@ -1223,9 +1214,6 @@ class Tickets:
         elif result.assignment_target == "technical_supervisor" and assignee_id:
             if not ticket.ticket_manager_person_id:
                 ticket.ticket_manager_person_id = assignee_id
-        elif result.assignment_target == "site_coordinator" and assignee_id:
-            if not ticket.site_coordinator_person_id:
-                ticket.site_coordinator_person_id = assignee_id
         elif result.assignment_target == "technician" and assignee_id:
             if not ticket.assigned_to_person_id:
                 ticket.assigned_to_person_id = assignee_id
@@ -1292,10 +1280,16 @@ class Tickets:
 
     @staticmethod
     def _queue_notifications_for_assignments(
-        db: Session, ticket: Ticket, actor_id: str | None
+        db: Session,
+        ticket: Ticket,
+        actor_id: str | None,
+        *,
+        previous_user_ids: frozenset[str] = frozenset(),
     ) -> None:
-        if not Tickets._notifications_enabled(db):
-            return
+        from app.services.staff_notifications import (
+            queue_staff_assignment_notifications,
+            resolve_assignment_users,
+        )
 
         recipients: set[str] = set()
         for candidate in [
@@ -1312,57 +1306,33 @@ class Tickets:
         )
         recipients.update(str(row.person_id) for row in assignee_rows)
 
-        if ticket.service_team_id:
-            from app.services.ticket_assignment.selectors import (
-                list_team_candidate_person_ids,
-            )
-
-            team_members = list_team_candidate_person_ids(
-                db, str(ticket.service_team_id)
-            )
-            for member in team_members:
-                member_uuid = _coerce_uuid(str(member))
-                if member_uuid:
-                    recipients.add(str(member_uuid))
-
-        if actor_id:
-            recipients.discard(str(actor_id))
-
         subject = f"Ticket assigned: {ticket.number or str(ticket.id)[:8]}"
         body = f"Ticket {ticket.number or ticket.id} assignment updated."
-        for recipient in recipients:
-            queue_staff_push(
-                db,
-                recipient=recipient,
-                subject=subject,
-                body=body,
-            )
+        users = resolve_assignment_users(
+            db,
+            person_ids=recipients,
+            service_team_ids=(str(ticket.service_team_id),)
+            if ticket.service_team_id
+            else (),
+        )
+        users = [user for user in users if str(user.id) not in previous_user_ids]
+        queue_staff_assignment_notifications(
+            db,
+            users=users,
+            subject=subject,
+            body=body,
+            actor_id=actor_id,
+        )
 
         try:
 
             def stage_talk_notifications() -> None:
-                from app.models.system_user import SystemUser
                 from app.services.nextcloud_talk_staff import (
                     StaffTalkEventType,
                     StageStaffTalkNotification,
                     stage_staff_talk_notification,
                 )
 
-                recipient_ids = [_coerce_uuid(value) for value in recipients]
-                resolved_ids = [value for value in recipient_ids if value is not None]
-                users = (
-                    db.query(SystemUser)
-                    .filter(SystemUser.is_active.is_(True))
-                    .filter(
-                        or_(
-                            SystemUser.id.in_(resolved_ids),
-                            SystemUser.person_party_id.in_(resolved_ids),
-                        )
-                    )
-                    .all()
-                    if resolved_ids
-                    else []
-                )
                 context = current_command_context(db)
                 for user in users:
                     if actor_id and str(actor_id) in {
@@ -1391,15 +1361,33 @@ class Tickets:
                 ticket.id,
             )
 
-        # Email queue for service-team assignments.
-        if ticket.service_team_id:
-            for recipient in recipients:
-                queue_staff_email(
-                    db,
-                    recipient=recipient,
-                    subject=subject,
-                    body=body,
-                )
+    @staticmethod
+    def _assignment_user_ids(db: Session, ticket: Ticket) -> frozenset[str]:
+        from app.services.staff_notifications import resolve_assignment_users
+
+        recipients = {
+            str(value)
+            for value in (
+                ticket.technician_person_id,
+                ticket.ticket_manager_person_id,
+                ticket.assigned_to_person_id,
+            )
+            if value
+        }
+        recipients.update(
+            str(row.person_id)
+            for row in db.query(TicketAssignee)
+            .filter(TicketAssignee.ticket_id == ticket.id)
+            .all()
+        )
+        users = resolve_assignment_users(
+            db,
+            person_ids=recipients,
+            service_team_ids=(str(ticket.service_team_id),)
+            if ticket.service_team_id
+            else (),
+        )
+        return frozenset(str(user.id) for user in users)
 
     @staticmethod
     def _queue_mention_notifications(
@@ -2899,6 +2887,7 @@ class Tickets:
     ) -> Ticket:
         ticket = Tickets.get(db, ticket_id)
         _ensure_not_merged_source(ticket)
+        previous_assignment_user_ids = Tickets._assignment_user_ids(db, ticket)
 
         before = {
             "status": ticket.status,
@@ -2955,7 +2944,12 @@ class Tickets:
             sla_assignment.update_sla_clocks_for_status_change(
                 db, ticket, before["status"], ticket.status
             )
-        Tickets._queue_notifications_for_assignments(db, ticket, actor_id)
+        Tickets._queue_notifications_for_assignments(
+            db,
+            ticket,
+            actor_id,
+            previous_user_ids=previous_assignment_user_ids,
+        )
 
         after = {
             "status": ticket.status,
@@ -3116,6 +3110,7 @@ class Tickets:
     ) -> dict[str, Any]:
         ticket = Tickets.get(db, ticket_id)
         _ensure_not_merged_source(ticket)
+        previous_assignment_user_ids = Tickets._assignment_user_ids(db, ticket)
         result = Tickets._apply_auto_assignment(ticket, db)
         log_audit_event(
             db=db,
@@ -3126,7 +3121,12 @@ class Tickets:
             actor_id=actor_id,
             metadata={"result": result},
         )
-        Tickets._queue_notifications_for_assignments(db, ticket, actor_id)
+        Tickets._queue_notifications_for_assignments(
+            db,
+            ticket,
+            actor_id,
+            previous_user_ids=previous_assignment_user_ids,
+        )
         db.flush()
         return result
 
