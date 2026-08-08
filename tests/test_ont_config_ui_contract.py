@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -7,6 +9,7 @@ from fastapi.responses import HTMLResponse
 from starlette.requests import Request
 
 from app.services.network.ont_actions import ActionResult
+from app.services.web_network_operations import ProvisionOperationProgress
 from app.web.admin import network_onts
 from app.web.templates import templates
 
@@ -165,3 +168,121 @@ def test_empty_default_values_remove_existing_ont_overrides(db_session) -> None:
 
     assert result.success is True
     assert ont.desired_config == {}
+
+
+def _provision_template_context() -> dict[str, object]:
+    return {
+        "request": _request(),
+        "ont": SimpleNamespace(
+            id="ont-1",
+            serial_number="HWTC-PROVISION-001",
+            external_id=None,
+            authorization_status=None,
+        ),
+        "olt": None,
+        "signal_info": {
+            "status_presentation": SimpleNamespace(
+                label="Online",
+                tone=SimpleNamespace(value="success"),
+                icon=SimpleNamespace(value="check"),
+            ),
+            "olt_rx_dbm": None,
+        },
+        "assignment": None,
+        "subscriber": None,
+        "acs_bound": False,
+        "operational_acs_server_name": None,
+        "pon_label": None,
+        "provision_feedback": None,
+        "provision_operation": None,
+    }
+
+
+def test_provision_page_blocks_when_authorization_is_ready_but_provisioning_is_not(
+) -> None:
+    context = _provision_template_context()
+    context["provision_preflight"] = SimpleNamespace(
+        ready_to_authorize=True,
+        ready_to_provision=False,
+        checks=[],
+    )
+
+    html = templates.env.get_template("admin/network/onts/provision.html").render(
+        **context
+    )
+
+    assert "Blocked" in html
+    assert '<button type="submit"\n                        disabled' in html
+    assert "bg-slate-400 cursor-not-allowed" in html
+
+
+def test_provision_page_shows_the_queued_operation_progress() -> None:
+    context = _provision_template_context()
+    context["provision_preflight"] = SimpleNamespace(
+        ready_to_authorize=True,
+        ready_to_provision=True,
+        checks=[],
+    )
+    context["provision_operation"] = ProvisionOperationProgress(
+        operation_id="11111111-1111-1111-1111-111111111111",
+        title="ONT Provision",
+        status="Pending",
+        status_value="pending",
+        status_class="pending-status",
+        control_plane_phase="queued",
+        message="",
+        occurred_at=datetime(2026, 8, 8, tzinfo=UTC),
+        duration=None,
+        is_active=True,
+    )
+
+    html = templates.env.get_template("admin/network/onts/provision.html").render(
+        **context
+    )
+
+    assert "Provisioning progress" in html
+    assert "Pending" in html
+    assert "queued and waiting for the provisioning worker or device" in html
+    assert "Operation 11111111-1111-1111-1111-111111111111" in html
+    assert "?operation_id=11111111-1111-1111-1111-111111111111" in html
+
+
+def test_provision_operation_progress_is_scoped_to_the_ont(db_session) -> None:
+    from app.models.network import OntUnit
+    from app.models.network_operation import (
+        NetworkOperation,
+        NetworkOperationStatus,
+        NetworkOperationTargetType,
+        NetworkOperationType,
+    )
+    from app.services.web_network_operations import get_provision_operation_progress
+
+    target_ont = OntUnit(serial_number="UI-PROGRESS-TARGET")
+    other_ont = OntUnit(serial_number="UI-PROGRESS-OTHER")
+    db_session.add_all([target_ont, other_ont])
+    db_session.flush()
+    operation = NetworkOperation(
+        operation_type=NetworkOperationType.ont_provision,
+        target_type=NetworkOperationTargetType.ont,
+        target_id=target_ont.id,
+        status=NetworkOperationStatus.pending,
+    )
+    db_session.add(operation)
+    db_session.commit()
+
+    progress = get_provision_operation_progress(
+        db_session,
+        ont_id=str(target_ont.id),
+        operation_id=str(operation.id),
+    )
+    cross_ont_progress = get_provision_operation_progress(
+        db_session,
+        ont_id=str(other_ont.id),
+        operation_id=str(operation.id),
+    )
+
+    assert progress is not None
+    assert progress.operation_id == str(operation.id)
+    assert progress.status == "Pending"
+    assert progress.is_active is True
+    assert cross_ont_progress is None

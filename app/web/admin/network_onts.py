@@ -399,12 +399,18 @@ def ont_firmware_form(
 def ont_provision_wizard(
     request: Request,
     ont_id: str,
+    operation_id: str | None = None,
     status: str | None = None,
     message: str | None = None,
     db: Session = Depends(get_db),
 ) -> Response:
     """One-page gated ONT provisioning configuration workflow."""
-    context = web_network_onts_service.provision_wizard_context(request, db, ont_id)
+    context = web_network_onts_service.provision_wizard_context(
+        request,
+        db,
+        ont_id,
+        operation_id=operation_id,
+    )
     if context.get("error"):
         return templates.TemplateResponse(
             "admin/errors/404.html",

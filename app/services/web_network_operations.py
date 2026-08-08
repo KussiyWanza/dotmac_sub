@@ -4,10 +4,16 @@ from __future__ import annotations
 
 import logging
 import secrets
+from dataclasses import dataclass
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
 from app.models.network_operation import (
+    NetworkOperation,
+    NetworkOperationStatus,
     NetworkOperationTargetType,
+    NetworkOperationType,
 )
 from app.services.control_plane_intent import phase_for_network_operation
 from app.services.network.ont_authorization import LOCAL_INVENTORY_FAILED_HEADLINE
@@ -19,6 +25,23 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ProvisionOperationProgress:
+    """Typed operator-facing projection of one ONT provisioning operation."""
+
+    operation_id: str
+    title: str
+    status: str
+    status_value: str
+    status_class: str
+    control_plane_phase: str
+    message: str
+    occurred_at: datetime
+    duration: str | None
+    is_active: bool
+
 
 OPERATION_DISPLAY: dict[str, str] = {
     "olt_ont_sync": "OLT ONT Discovery",
@@ -130,6 +153,54 @@ def _format_duration(op: Any) -> str | None:
         return f"{minutes}m {seconds}s"
     hours, minutes = divmod(minutes, 60)
     return f"{hours}h {minutes}m"
+
+
+def get_provision_operation_progress(
+    db: Session,
+    *,
+    ont_id: str,
+    operation_id: str | None,
+) -> ProvisionOperationProgress | None:
+    """Return an ONT-scoped provisioning operation for the wizard page.
+
+    The requested operation must be an ``ont_provision`` operation belonging
+    to the ONT in the URL. This prevents an arbitrary operation identifier from
+    exposing another device's progress.
+    """
+    if not operation_id:
+        return None
+    try:
+        parsed_operation_id = UUID(operation_id)
+    except (TypeError, ValueError):
+        return None
+
+    op = db.get(NetworkOperation, parsed_operation_id)
+    if (
+        op is None
+        or op.operation_type != NetworkOperationType.ont_provision
+        or op.target_type != NetworkOperationTargetType.ont
+        or str(op.target_id) != ont_id
+    ):
+        return None
+
+    status = op.status or NetworkOperationStatus.pending
+    status_value = status.value
+    return ProvisionOperationProgress(
+        operation_id=str(op.id),
+        title=_operation_title(op),
+        status=STATUS_DISPLAY.get(status_value, status_value),
+        status_value=status_value,
+        status_class=STATUS_CLASSES.get(status_value, STATUS_CLASSES["pending"]),
+        control_plane_phase=phase_for_network_operation(status).value,
+        message=op.error or op.waiting_reason or "",
+        occurred_at=op.created_at,
+        duration=_format_duration(op),
+        is_active=status in {
+            NetworkOperationStatus.pending,
+            NetworkOperationStatus.running,
+            NetworkOperationStatus.waiting,
+        },
+    )
 
 
 def build_operation_history(

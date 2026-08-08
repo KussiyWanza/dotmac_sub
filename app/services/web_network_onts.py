@@ -802,10 +802,17 @@ def bulk_action_summary_context(
     }
 
 
-def provision_wizard_context(request: Any, db: Session, ont_id: str) -> dict[str, Any]:
+def provision_wizard_context(
+    request: Any,
+    db: Session,
+    ont_id: str,
+    *,
+    operation_id: str | None = None,
+) -> dict[str, Any]:
     """Build template context for the ONT provisioning wizard page."""
     from app.services import network as network_service
     from app.services import web_admin as web_admin_service
+    from app.services.web_network_operations import get_provision_operation_progress
     from app.services.web_network_onts_provisioning import (
         preflight_result,
         validate_provision_form_fields,
@@ -994,6 +1001,11 @@ def provision_wizard_context(request: Any, db: Session, ont_id: str) -> dict[str
         "ont_plan": {},
         "provision_gate_issues": provision_gate_issues,
         "provision_preflight": provision_preflight,
+        "provision_operation": get_provision_operation_progress(
+            db,
+            ont_id=ont_id,
+            operation_id=operation_id,
+        ),
         "config_pack": config_pack.to_dict() if config_pack else None,
         "config_pack_validation": config_pack_validation.to_dict()
         if config_pack_validation
