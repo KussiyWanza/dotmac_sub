@@ -1,0 +1,69 @@
+# Settings the operator console offers that no owner declares.
+#
+# A setting is a decision input, so it belongs to the owner of the decision it
+# parameterises. These are offered by web_system_config and declared by nobody:
+# an operator can set them, save them, and change nothing. Several read as
+# enforcement controls and are not.
+#
+# Shrink-only. Remove an entry by deleting the setting, or by having its
+# decision owner declare and read it. Never add one.
+allow_unknown_nas
+attach_invoices
+billing_day
+blocking_wave_bcc
+blocking_wave_email_template
+blocking_wave_enabled
+blocking_wave_sms_template
+credit_note_format
+debug_auto_off_minutes
+debug_enabled
+debug_level
+default_nas_id
+invoice_caching
+invoice_number_format
+ip_pool_location_linking
+mac_binding_enabled
+max_mac_addresses
+monitoring_device_types
+monitoring_groups
+monitoring_vendors
+nas_type_default
+nas_types_list
+payment_method_filter
+payment_period
+periodic_restart_enabled
+pre_block_wave1_days
+pre_block_wave1_email_template
+pre_block_wave1_enabled
+pre_block_wave1_sms_template
+pre_block_wave2_days
+pre_block_wave2_email_template
+pre_block_wave2_enabled
+pre_block_wave2_sms_template
+proforma_enabled
+proforma_generation_day
+proforma_payment_period
+receipt_number_format
+reject_ip_bad_mac
+reject_ip_bad_password
+reject_ip_blocked
+reject_ip_negative
+reject_ip_not_found
+reminder_send_time
+reminders_enabled
+restart_frequency
+restart_time
+use_creation_date
+wave1_days
+wave1_email_template
+wave1_sms_template
+wave1_subject
+wave2_days
+wave2_email_template
+wave2_sms_template
+wave2_subject
+wave3_days
+wave3_email_template
+wave3_sms_template
+wave3_subject
+zero_total_invoices
