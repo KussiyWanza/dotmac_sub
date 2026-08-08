@@ -203,6 +203,40 @@ def test_vendor_propose_splice_rejects_unassigned_work_order(db_session):
     assert exc.value.kind == "not_found"
 
 
+def test_vendor_closure_pin_is_review_gated_and_project_scoped(db_session):
+    subscriber = _subscriber(db_session)
+    vendor = _vendor(db_session, "Closure Pins Ltd")
+    project, installation, work_order = _vendor_project(db_session, vendor, subscriber)
+    db_session.commit()
+
+    receipt = vendor_fiber.register_closure(
+        db_session,
+        vendor_id=str(vendor.id),
+        vendor_user_id=str(uuid4()),
+        work_order_id=work_order.public_id,
+        installation_project_id=str(installation.id),
+        name="Proposed CL-101",
+        latitude=9.0312,
+        longitude=7.4811,
+        notes="Pinned during route walk",
+    )
+
+    assert receipt.status.value == "pending"
+    assert (
+        db_session.query(FiberSpliceClosure).filter_by(name="Proposed CL-101").first()
+        is None
+    )
+    change = db_session.get(FiberChangeRequest, receipt.change_request_id)
+    assert change.asset_type == "splice_closure"
+    assert change.payload["is_active"] is False
+    assert change.payload["geom"] == {
+        "type": "Point",
+        "coordinates": [7.4811, 9.0312],
+    }
+    assert change.payload["provenance"]["work_order_id"] == str(work_order.id)
+    assert project.id == work_order.project_id
+
+
 def test_verification_blocked_until_vendor_splices_reviewed(db_session):
     subscriber = _subscriber(db_session)
     vendor = _vendor(db_session, "ReviewGate Ltd")

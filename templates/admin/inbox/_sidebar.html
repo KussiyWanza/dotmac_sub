@@ -237,6 +237,66 @@
                 </label>
             </div>
 
+            <div x-data='inboxTeamFilterBuilder({{ filters | tojson }})'
+                 class="rounded-lg border border-slate-200/70 bg-slate-50/70 dark:border-slate-700/70 dark:bg-slate-800/40">
+                <input type="hidden" name="filters" :value="filtersJson">
+                <details {% if filters %}open{% endif %} class="group">
+                    <summary class="flex min-h-10 cursor-pointer list-none items-center justify-between gap-2 px-3 text-xs font-semibold text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:text-slate-300">
+                        <span>Advanced team conditions</span>
+                        <span class="text-[10px] font-medium text-slate-400" x-text="conditions.length ? `${conditions.length} active` : 'Optional'"></span>
+                    </summary>
+                    <div class="space-y-2 border-t border-slate-200/70 p-2.5 dark:border-slate-700/70">
+                        <p class="text-[10px] leading-4 text-slate-500 dark:text-slate-400">Every “must match” condition applies. When “any of these” conditions are present, at least one must also match.</p>
+                        <template x-for="condition in conditions" :key="condition.id">
+                            <div class="space-y-2 rounded-lg border border-slate-200 bg-white p-2 dark:border-slate-700 dark:bg-slate-900">
+                                <div class="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_2.5rem] gap-2">
+                                    <label>
+                                        <span class="sr-only">Condition group</span>
+                                        <select x-model="condition.bucket" @change="syncFilters()" class="h-10 w-full rounded-lg border-slate-200 bg-white text-[11px] text-slate-700 focus:border-amber-500 focus:ring-amber-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
+                                            <option value="and">Must match</option>
+                                            <option value="or">Any of these</option>
+                                        </select>
+                                    </label>
+                                    <label>
+                                        <span class="sr-only">Service Team operator</span>
+                                        <select x-model="condition.operator" @change="operatorChanged(condition)" class="h-10 w-full rounded-lg border-slate-200 bg-white text-[11px] text-slate-700 focus:border-amber-500 focus:ring-amber-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
+                                            <option value="=">is</option>
+                                            <option value="!=">is not</option>
+                                            <option value="in">is any of</option>
+                                            <option value="not in">is none of</option>
+                                            <option value="is">is empty</option>
+                                            <option value="is not">is not empty</option>
+                                        </select>
+                                    </label>
+                                    <button type="button" @click="removeCondition(condition.id)" class="inline-flex h-10 w-10 items-center justify-center rounded-lg text-slate-400 hover:bg-rose-50 hover:text-rose-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 dark:hover:bg-rose-500/10" aria-label="Remove Service Team condition">✕</button>
+                                </div>
+                                <label x-show="needsTeam(condition) && !usesMany(condition)" class="block">
+                                    <span class="sr-only">Service Team</span>
+                                    <select x-model="condition.value" @change="syncFilters()" :required="needsTeam(condition) && !usesMany(condition)" class="h-10 w-full rounded-lg border-slate-200 bg-white text-xs text-slate-700 focus:border-amber-500 focus:ring-amber-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
+                                        <option value="">Choose a team</option>
+                                        {% for team in service_team_options %}<option value="{{ team.id }}">{{ team.name }}</option>{% endfor %}
+                                    </select>
+                                </label>
+                                <label x-show="needsTeam(condition) && usesMany(condition)" class="block">
+                                    <span class="mb-1 block text-[10px] font-medium text-slate-500 dark:text-slate-400">Choose one or more teams</span>
+                                    <select multiple x-model="condition.values" @change="syncFilters()" :required="needsTeam(condition) && usesMany(condition)" class="min-h-24 w-full rounded-lg border-slate-200 bg-white text-xs text-slate-700 focus:border-amber-500 focus:ring-amber-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
+                                        {% for team in service_team_options %}<option value="{{ team.id }}">{{ team.name }}</option>{% endfor %}
+                                    </select>
+                                </label>
+                            </div>
+                        </template>
+                        <p x-show="conditions.length === 0" class="rounded-lg border border-dashed border-slate-200 px-3 py-2 text-[11px] text-slate-400 dark:border-slate-700">No advanced team conditions.</p>
+                        <div class="flex flex-wrap items-center justify-between gap-2">
+                            <button type="button" @click="addCondition()" class="min-h-10 rounded-lg px-2.5 text-xs font-semibold text-amber-700 hover:bg-amber-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:text-amber-300 dark:hover:bg-amber-500/10">Add condition</button>
+                            <div class="flex gap-1.5">
+                                <button type="button" x-show="conditions.length" @click="clear($el.form)" class="min-h-10 rounded-lg px-2.5 text-xs font-semibold text-slate-500 hover:text-rose-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500">Clear</button>
+                                <button type="button" x-show="conditions.length" @click="apply($el.form)" class="min-h-10 rounded-lg bg-amber-600 px-3 text-xs font-semibold text-white hover:bg-amber-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500">Apply</button>
+                            </div>
+                        </div>
+                    </div>
+                </details>
+            </div>
+
             <div id="inbox-by-agent-panel" x-show="byAgentOpen" x-cloak class="space-y-2 rounded-lg border border-slate-200/60 bg-slate-50 p-2.5 dark:border-slate-700/60 dark:bg-slate-800/50">
                     <label class="block">
                         <span class="sr-only">Agent</span>
@@ -276,9 +336,9 @@
         <div class="mt-2 flex flex-wrap gap-1.5">
             {% for view in saved_filters %}
             <span class="inline-flex min-h-10 items-center overflow-hidden rounded-lg border"
-                  :class='savedViewIsActive({{ view.filter_payload | tojson }}) ? "border-amber-300 bg-amber-50 dark:border-amber-500/40 dark:bg-amber-500/10" : "border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800"'>
-                <button type="button" @click='applySavedView({{ view.filter_payload | tojson }})'
-                        :aria-pressed='savedViewIsActive({{ view.filter_payload | tojson }}).toString()'
+                  :class='savedViewIsActive({{ view.filter_payload_transport | tojson }}) ? "border-amber-300 bg-amber-50 dark:border-amber-500/40 dark:bg-amber-500/10" : "border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800"'>
+                <button type="button" @click='applySavedView({{ view.filter_payload_transport | tojson }})'
+                        :aria-pressed='savedViewIsActive({{ view.filter_payload_transport | tojson }}).toString()'
                         class="min-h-10 px-2.5 text-xs font-medium text-slate-700 dark:text-slate-200">{{ view.name }}</button>
                 {% if view.owner_person_id == actor_person_id %}
                 <form method="post" action="/admin/inbox/filters/{{ view.id }}/delete" class="contents" onsubmit="return confirm('Delete this saved view?')">

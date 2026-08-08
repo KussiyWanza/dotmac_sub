@@ -326,6 +326,7 @@ def test_unified_config_context_includes_configure_form_values(
         "resolve_effective_ont_config",
         lambda *_args, **_kwargs: {
             "config_pack": SimpleNamespace(
+                olt_id="olt-config-pack-id",
                 name="Residential GPON",
                 tr069_profile_name="DotMac ACS",
             ),
@@ -354,14 +355,15 @@ def test_unified_config_context_includes_configure_form_values(
     assert context["ip_protocol"] == "ipv4"
     assert context["pppoe_username"] == "subscriber@example"
     assert context["wan_vlan"] == 203
-    assert context["wan_vlan_id"] == "wan-vlan-id"
+    assert "wan_vlan_id" not in context
     assert context["mgmt_ip_mode"] == "static_ip"
     assert context["mgmt_ip_address"] == "10.30.0.44"
     assert context["mgmt_vlan"] == 300
-    assert context["mgmt_vlan_id"] == "mgmt-vlan-id"
+    assert "mgmt_vlan_id" not in context
     assert context["lan_gateway_ip"] == "192.168.1.1"
     assert context["wifi_ssid"] == "DesiredWiFi"
     assert context["config_pack_name"] == "Residential GPON"
+    assert context["config_pack_olt_id"] == "olt-config-pack-id"
     assert context["tr069_profile_name"] == "DotMac ACS"
 
 

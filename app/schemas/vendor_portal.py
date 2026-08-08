@@ -6,9 +6,35 @@ from decimal import Decimal
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.schemas.network import FiberSplicePlanDiffRead, FiberSplicePlanRead
+
+
+def linestring_length_meters(geojson: dict[str, object]) -> float:
+    """Return geodesic length for a validated WGS84 LineString."""
+
+    coordinates = geojson.get("coordinates")
+    if not isinstance(coordinates, list) or len(coordinates) < 2:
+        raise ValueError("Route geometry requires at least two coordinates")
+    radius_m = 6_371_000.0
+    total = 0.0
+    for first, second in zip(coordinates, coordinates[1:], strict=False):
+        if not isinstance(first, (list, tuple)) or not isinstance(
+            second, (list, tuple)
+        ):
+            raise ValueError("Route coordinates must be coordinate pairs")
+        lon1, lat1 = float(first[0]), float(first[1])
+        lon2, lat2 = float(second[0]), float(second[1])
+        lat1_rad = math.radians(lat1)
+        lat2_rad = math.radians(lat2)
+        lat_delta = math.radians(lat2 - lat1)
+        lon_delta = math.radians(lon2 - lon1)
+        value = math.sin(lat_delta / 2) ** 2 + (
+            math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(lon_delta / 2) ** 2
+        )
+        total += 2 * radius_m * math.asin(min(1.0, math.sqrt(value)))
+    return round(total, 1)
 
 
 class VendorQuoteCreate(BaseModel):
@@ -78,6 +104,11 @@ class VendorRouteRevisionCreate(BaseModel):
 
         return {"type": "LineString", "coordinates": normalized}
 
+    @model_validator(mode="after")
+    def derive_authoritative_length(self) -> VendorRouteRevisionCreate:
+        self.length_meters = linestring_length_meters(self.geojson)
+        return self
+
 
 class VendorAsBuiltLineCreate(VendorQuoteLineCreate):
     pass
@@ -92,6 +123,12 @@ class VendorAsBuiltCreate(BaseModel):
     variation_reason: str | None = Field(default=None, max_length=2000)
     work_order_ref: str | None = Field(default=None, max_length=120)
     line_items: list[VendorAsBuiltLineCreate] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def derive_authoritative_length(self) -> VendorAsBuiltCreate:
+        if self.geojson:
+            self.actual_length_meters = linestring_length_meters(self.geojson)
+        return self
 
 
 class VendorSpliceCreate(BaseModel):

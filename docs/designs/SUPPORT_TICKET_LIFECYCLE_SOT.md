@@ -73,8 +73,12 @@ The region projection is recomputed from workflow configuration and distinct
 non-empty Region values on active Tickets in the caller's current database
 transaction; it has no cache or stale fallback. Re-reading is its idempotent
 rebuild path, and form-context parity tests are its drift signal.
-The database deduplicates the combined inputs and orders the result by region
-value ascending before it reaches forms and filters.
+The database normalizes configured and observed values to a trimmed lowercase
+identity, deduplicates the combined inputs, and orders the result by region
+value ascending before it reaches forms and filters. Ticket list, count,
+summary, and export queries compare that same normalized identity, so legacy
+case variants such as `Garki` and `garki` remain one operational cohort even
+before stored values are repaired.
 `TicketCreationRoutingMode.preserve_requested_team` then prevents assignment
 rules and `assign_team` creation automation from replacing either the resolved
 team or the intentional unassigned result. Other creation automation continues
@@ -166,3 +170,13 @@ Repair reruns deterministic list/preview queries, SLA reconciliation, or the
 provenance verifier from canonical records. It never re-enables a legacy writer
 or infers lifecycle authority from CRM, tags, templates, cached UI state, or
 communication delivery.
+
+## Staff Talk consequences
+
+Assignment changes and explicit ticket-comment mentions stage a durable
+`nextcloud_talk` staff notification inside the Ticket owner command. The
+assignment command ID or comment ID is part of the delivery dedupe identity,
+and the comment author is excluded. The Ticket owner does not resolve
+Nextcloud credentials, create rooms, or perform HTTP; those consequences belong
+to `communications.nextcloud_talk_staff` after commit. Staging failure is
+isolated in an owner savepoint and cannot reject the ticket mutation.

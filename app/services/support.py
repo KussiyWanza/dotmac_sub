@@ -13,7 +13,7 @@ from functools import wraps
 from typing import Any, ParamSpec, TypeVar
 from uuid import UUID
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.domain_settings import SettingDomain
@@ -48,7 +48,12 @@ from app.services import domain_settings as domain_settings_service
 from app.services import notification as notification_service
 from app.services import numbering as numbering_service
 from app.services import service_address as service_address_service
-from app.services import settings_spec, support_ticket_filters, ticket_validation
+from app.services import (
+    settings_spec,
+    support_ticket_filters,
+    support_ticket_region_projection,
+    ticket_validation,
+)
 from app.services import support_ticket_settings as support_ticket_settings_service
 from app.services.audit_helpers import log_audit_event
 from app.services.common import apply_ordering, apply_pagination
@@ -66,6 +71,7 @@ from app.services.events.types import EventType
 from app.services.owner_commands import (
     CommandContext,
     OwnerCommandDefinition,
+    current_command_context,
     execute_owner_command,
     execute_owner_savepoint,
     owner_command_active,
@@ -1330,6 +1336,59 @@ class Tickets:
                 recipient=recipient,
                 subject=subject,
                 body=body,
+            )
+
+        try:
+
+            def stage_talk_notifications() -> None:
+                from app.models.system_user import SystemUser
+                from app.services.nextcloud_talk_staff import (
+                    StaffTalkEventType,
+                    StageStaffTalkNotification,
+                    stage_staff_talk_notification,
+                )
+
+                recipient_ids = [_coerce_uuid(value) for value in recipients]
+                resolved_ids = [value for value in recipient_ids if value is not None]
+                users = (
+                    db.query(SystemUser)
+                    .filter(SystemUser.is_active.is_(True))
+                    .filter(
+                        or_(
+                            SystemUser.id.in_(resolved_ids),
+                            SystemUser.person_party_id.in_(resolved_ids),
+                        )
+                    )
+                    .all()
+                    if resolved_ids
+                    else []
+                )
+                context = current_command_context(db)
+                for user in users:
+                    if actor_id and str(actor_id) in {
+                        str(user.id),
+                        str(user.person_party_id),
+                    }:
+                        continue
+                    stage_staff_talk_notification(
+                        db,
+                        StageStaffTalkNotification(
+                            system_user_id=user.id,
+                            source_event_id=context.command_id,
+                            event_type=StaffTalkEventType.ticket_assignment,
+                            subject=subject,
+                            body=body,
+                            target_url=f"/admin/support/tickets/{ticket.id}",
+                            source_entity_type="support_ticket",
+                            source_entity_id=ticket.id,
+                        ),
+                    )
+
+            execute_owner_savepoint(db, stage_talk_notifications)
+        except Exception:  # noqa: BLE001 - Talk cannot reject an assignment
+            logger.exception(
+                "ticket_assignment_talk_staging_failed ticket_id=%s",
+                ticket.id,
             )
 
         # Email queue for service-team assignments.
@@ -2684,7 +2743,12 @@ class Tickets:
         if ticket_type:
             query = query.filter(Ticket.ticket_type == ticket_type)
         if region:
-            query = query.filter(Ticket.region == str(region).strip())
+            normalized_region = support_ticket_region_projection.normalize_region_value(
+                region
+            )
+            query = query.filter(
+                func.lower(func.trim(Ticket.region)) == normalized_region
+            )
         if priority:
             query = query.filter(Ticket.priority == str(priority).strip())
         if channel:
@@ -3094,6 +3158,7 @@ class Tickets:
                 comment_preview=payload.body[:300],
                 mentioned_agent_ids=[str(item) for item in mentioned_agent_ids],
                 actor_person_id=actor_id,
+                source_event_id=comment.id,
             )
         db.flush()
         db.refresh(comment)

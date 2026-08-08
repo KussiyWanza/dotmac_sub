@@ -1,5 +1,6 @@
 """Admin system management web routes."""
 
+import hashlib
 import json
 import logging
 import re
@@ -47,6 +48,7 @@ from app.services import email as email_service
 from app.services import file_upload as file_upload_service
 from app.services import import_runs as import_runs_service
 from app.services import module_manager as module_manager_service
+from app.services import nextcloud_talk_staff as nextcloud_talk_staff_service
 from app.services import radius_reject as radius_reject_service
 from app.services import rbac_catalog, settings_spec
 from app.services import (
@@ -1601,24 +1603,48 @@ def user_profile_update(
     success = None
     updated_person_id = None
 
-    if current_user and current_user.get("person_id"):
-        person_id = current_user["person_id"]
-        system_user = web_system_profiles_service.get_subscriber(db, person_id)
-        if system_user:
-            try:
-                person = web_system_profiles_service.update_profile(
+    if system_user_id:
+        try:
+            target_id = UUID(str(system_user_id))
+            values = {
+                staff_provisioning_service.StaffIdentityField.first_name: first_name,
+                staff_provisioning_service.StaffIdentityField.last_name: last_name,
+                staff_provisioning_service.StaffIdentityField.email: email,
+                staff_provisioning_service.StaffIdentityField.phone: phone,
+            }
+            fields = frozenset(
+                field for field, value in values.items() if value is not None
+            )
+            if fields:
+                desired_fingerprint = hashlib.sha256(
+                    "\x1f".join(
+                        f"{field.value}={values[field] or ''}"
+                        for field in sorted(fields, key=lambda item: item.value)
+                    ).encode()
+                ).hexdigest()
+                outcome = staff_provisioning_service.update_staff_identity(
                     db,
-                    person=system_user,
-                    first_name=first_name,
-                    last_name=last_name,
-                    email=email,
-                    phone=phone,
+                    staff_provisioning_service.UpdateStaffIdentityCommand(
+                        context=_system_command_context(
+                            request,
+                            reason="Self-service staff profile update",
+                            idempotency_key=(
+                                f"staff-self-profile:{target_id}:{desired_fingerprint}"
+                            ),
+                            scope=staff_provisioning_service.STAFF_PROFILE_SCOPE,
+                        ),
+                        user_id=target_id,
+                        fields=fields,
+                        first_name=first_name,
+                        last_name=last_name,
+                        email=email,
+                        phone=phone,
+                    ),
                 )
-                updated_person_id = person.id
-                success = "Profile updated successfully."
-            except Exception as e:
-                db.rollback()
-                error = str(e)
+                updated_person_id = outcome.user_id
+            success = "Profile updated successfully."
+        except (DomainError, ValueError) as exc:
+            error = exc.message if isinstance(exc, DomainError) else str(exc)
     state = web_system_profiles_service.build_profile_page_state(
         db,
         current_user=current_user,
@@ -1907,6 +1933,7 @@ def users_bulk_delete(
     "/users/bulk/invite", dependencies=[Depends(require_permission("rbac:assign"))]
 )
 def users_bulk_invite(
+    request: Request,
     data: dict = Depends(parse_json_body),
     db: Session = Depends(get_db),
 ):
@@ -1914,9 +1941,24 @@ def users_bulk_invite(
     if not user_ids or not isinstance(user_ids, list):
         raise HTTPException(status_code=400, detail="user_ids is required")
 
+    try:
+        normalized_ids = tuple(dict.fromkeys(UUID(str(item)) for item in user_ids))
+        commands = tuple(
+            staff_provisioning_service.PrepareStaffCredentialRecoveryCommand(
+                context=_system_command_context(
+                    request,
+                    reason="Administrative bulk staff invitation preparation",
+                    idempotency_key=f"staff-recovery:{user_id}:invite",
+                ),
+                user_id=user_id,
+            )
+            for user_id in normalized_ids
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid user id") from exc
     sent, failed = web_system_user_mutations_service.bulk_send_user_invites(
         db,
-        user_ids=[str(item) for item in user_ids],
+        commands=commands,
     )
     return {
         "message": f"Sent {sent} invite(s). Failed {failed}.",
@@ -1948,13 +1990,131 @@ def user_detail(request: Request, user_id: str, db: Session = Depends(get_db)):
             "user": detail_data["user"],
             "roles": detail_data["roles"],
             "credential": detail_data["credential"],
+            "credential_issue": detail_data["credential_issue"],
+            "credential_issue_code": detail_data["credential_issue_code"],
+            "credential_recovery": detail_data["credential_recovery"],
             "mfa_methods": detail_data["mfa_methods"],
             "audit_items": _system_user_audit_items(db, user_id),
+            "nextcloud_talk_accounts": (
+                nextcloud_talk_staff_service.staff_account_mapping_rows(
+                    db, system_user_id=coerce_uuid(user_id)
+                )
+            ),
             "active_page": "users",
             "active_menu": "system",
             "current_user": get_current_user(request),
             "sidebar_stats": get_sidebar_stats(db),
         },
+    )
+
+
+@router.post(
+    "/users/{user_id}/nextcloud-talk",
+    dependencies=[Depends(require_permission("rbac:assign"))],
+)
+def user_nextcloud_talk_mapping_save(
+    request: Request,
+    user_id: str,
+    installation_id: UUID = Form(...),
+    nextcloud_username: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    _require_system_user_principal(request)
+    try:
+        nextcloud_talk_staff_service.execute_set_staff_account_mapping(
+            db,
+            nextcloud_talk_staff_service.SetStaffAccountMappingCommand(
+                context=_system_command_context(
+                    request,
+                    scope=nextcloud_talk_staff_service.COMMAND_SCOPE,
+                    reason="Administrative Nextcloud Talk staff mapping update",
+                    idempotency_key=(
+                        f"nextcloud-talk-mapping:{user_id}:{installation_id}:"
+                        f"{nextcloud_username.strip().casefold()}"
+                    ),
+                ),
+                system_user_id=coerce_uuid(user_id),
+                integration_installation_id=installation_id,
+                nextcloud_username=nextcloud_username,
+            ),
+        )
+    except (DomainError, ValueError, IntegrityError) as exc:
+        detail = exc.message if isinstance(exc, DomainError) else str(exc)
+        raise HTTPException(status_code=409, detail=detail) from exc
+    return RedirectResponse(
+        f"/admin/system/users/{user_id}?talk_mapping_saved=1",
+        status_code=303,
+    )
+
+
+@router.post(
+    "/users/{user_id}/nextcloud-talk/{installation_id}/disable",
+    dependencies=[Depends(require_permission("rbac:assign"))],
+)
+def user_nextcloud_talk_mapping_disable(
+    request: Request,
+    user_id: str,
+    installation_id: UUID,
+    db: Session = Depends(get_db),
+):
+    _require_system_user_principal(request)
+    try:
+        nextcloud_talk_staff_service.execute_disable_staff_account_mapping(
+            db,
+            nextcloud_talk_staff_service.DisableStaffAccountMappingCommand(
+                context=_system_command_context(
+                    request,
+                    scope=nextcloud_talk_staff_service.COMMAND_SCOPE,
+                    reason="Administrative Nextcloud Talk staff mapping disable",
+                    idempotency_key=(
+                        f"nextcloud-talk-mapping-disable:{user_id}:{installation_id}"
+                    ),
+                ),
+                system_user_id=coerce_uuid(user_id),
+                integration_installation_id=installation_id,
+            ),
+        )
+    except (DomainError, ValueError) as exc:
+        detail = exc.message if isinstance(exc, DomainError) else str(exc)
+        raise HTTPException(status_code=409, detail=detail) from exc
+    return RedirectResponse(
+        f"/admin/system/users/{user_id}?talk_mapping_disabled=1",
+        status_code=303,
+    )
+
+
+@router.post(
+    "/users/{user_id}/nextcloud-talk/{installation_id}/test",
+    dependencies=[Depends(require_permission("rbac:assign"))],
+)
+def user_nextcloud_talk_mapping_test(
+    request: Request,
+    user_id: str,
+    installation_id: UUID,
+    db: Session = Depends(get_db),
+):
+    _require_system_user_principal(request)
+    try:
+        nextcloud_talk_staff_service.execute_test_staff_talk_connection(
+            db,
+            nextcloud_talk_staff_service.TestStaffTalkConnectionCommand(
+                context=_system_command_context(
+                    request,
+                    scope=nextcloud_talk_staff_service.COMMAND_SCOPE,
+                    reason="Administrative Nextcloud Talk connection test",
+                    idempotency_key=(
+                        f"nextcloud-talk-test:{user_id}:{installation_id}:{uuid4()}"
+                    ),
+                ),
+                system_user_id=coerce_uuid(user_id),
+                integration_installation_id=installation_id,
+            ),
+        )
+    except DomainError as exc:
+        raise HTTPException(status_code=409, detail=exc.message) from exc
+    return RedirectResponse(
+        f"/admin/system/users/{user_id}?talk_test_sent=1",
+        status_code=303,
     )
 
 
@@ -2025,70 +2185,60 @@ def user_edit_submit(
 ):
     from app.web.admin import get_current_user, get_sidebar_stats
 
-    system_user = web_system_user_edit_service.get_subscriber_or_none(db, user_id)
-    if not system_user:
+    try:
+        normalized_user_id = UUID(user_id)
+    except ValueError:
         return templates.TemplateResponse(
             "admin/errors/404.html",
             {"request": request, "message": "User not found"},
             status_code=404,
         )
     parsed = web_system_user_edit_service.parse_edit_form(form_data)
-    display_name = cast(str | None, parsed["display_name"])
-    phone = cast(str | None, parsed["phone"])
-    user_type = cast(str | None, parsed["user_type"])
-    new_password = cast(str | None, parsed["new_password"])
-    confirm_password = cast(str | None, parsed["confirm_password"])
-    require_password_change = cast(str | None, parsed["require_password_change"])
-    before_snapshot = _system_user_audit_snapshot(db, system_user)
+    desired_fingerprint = hashlib.sha256(
+        "\x1f".join(
+            (
+                parsed.first_name,
+                parsed.last_name,
+                parsed.display_name or "",
+                parsed.email,
+                parsed.phone or "",
+                parsed.new_password or "",
+                str(parsed.require_password_change),
+            )
+        ).encode()
+    ).hexdigest()
 
     try:
-        web_system_user_edit_service.apply_user_edit(
-            db,
-            subscriber=system_user,
-            first_name=str(parsed["first_name"]),
-            last_name=str(parsed["last_name"]),
-            display_name=display_name,
-            email=str(parsed["email"]),
-            phone=phone,
-            user_type=user_type,
-            new_password=new_password,
-            confirm_password=confirm_password,
-            require_password_change=web_system_common_service.form_bool(
-                require_password_change
-            ),
-            is_admin=web_system_common_service.is_admin_request(request),
-        )
-        after_snapshot = _system_user_audit_snapshot(db, system_user)
-        changes = _diff_audit_snapshots(before_snapshot, after_snapshot)
-        if new_password or confirm_password:
-            changes["password"] = {"from": "unchanged", "to": "updated"}
-            changes["require_password_change"] = {
-                "from": None,
-                "to": web_system_common_service.form_bool(require_password_change),
-            }
-        if changes:
-            _log_system_user_event(
-                db,
+        command = web_system_user_edit_service.build_update_command(
+            user_id=normalized_user_id,
+            context=_system_command_context(
                 request,
-                action="update",
-                user_id=user_id,
-                metadata={"changes": changes},
-            )
-    except Exception as exc:
-        db.rollback()
-        edit_data = web_system_user_edit_service.build_edit_state(
-            db, subscriber=system_user
+                reason="Administrative staff identity update",
+                idempotency_key=(
+                    f"staff-identity:{normalized_user_id}:{desired_fingerprint}"
+                ),
+            ),
+            form=parsed,
+            can_update_password=web_system_common_service.is_admin_request(request),
         )
+        staff_provisioning_service.update_staff_identity(
+            db,
+            command,
+        )
+    except (DomainError, ValueError) as exc:
+        edit_data = web_system_profiles_service.get_user_edit_data(db, user_id)
+        if edit_data is None:
+            return templates.TemplateResponse(
+                "admin/errors/404.html",
+                {"request": request, "message": "User not found"},
+                status_code=404,
+            )
+        message = exc.message if isinstance(exc, DomainError) else str(exc)
         return templates.TemplateResponse(
             "admin/system/users/edit.html",
             {
                 "request": request,
-                "user": edit_data["user"],
-                "roles": edit_data["roles"],
-                "current_role_ids": edit_data["current_role_ids"],
-                "managed_role_ids": edit_data["managed_role_ids"],
-                "all_permissions": edit_data["all_permissions"],
-                "direct_permission_ids": edit_data["direct_permission_ids"],
+                **edit_data,
                 "audit_items": _system_user_audit_items(db, user_id),
                 "user_type_options": web_system_users_service.USER_TYPE_OPTIONS,
                 "can_update_password": web_system_common_service.is_admin_request(
@@ -2098,7 +2248,7 @@ def user_edit_submit(
                 "active_menu": "system",
                 "current_user": get_current_user(request),
                 "sidebar_stats": get_sidebar_stats(db),
-                "error": str(exc),
+                "error": message,
             },
             status_code=400,
         )
@@ -2246,7 +2396,14 @@ def user_reset_password(request: Request, user_id: str, db: Session = Depends(ge
     try:
         note = web_system_user_mutations_service.send_password_reset_link_for_user(
             db,
-            user_id=user_id,
+            command=staff_provisioning_service.PrepareStaffCredentialRecoveryCommand(
+                context=_system_command_context(
+                    request,
+                    reason="Administrative staff password recovery preparation",
+                    idempotency_key=f"staff-recovery:{user_id}:password-reset",
+                ),
+                user_id=UUID(user_id),
+            ),
         )
         if "queued" in note.lower():
             _log_system_user_event(
@@ -2291,9 +2448,16 @@ def user_send_invite(request: Request, user_id: str, db: Session = Depends(get_d
     try:
         note = web_system_user_mutations_service.send_user_invite_for_user(
             db,
-            user_id=user_id,
+            command=staff_provisioning_service.PrepareStaffCredentialRecoveryCommand(
+                context=_system_command_context(
+                    request,
+                    reason="Administrative staff invitation preparation",
+                    idempotency_key=f"staff-recovery:{user_id}:invite",
+                ),
+                user_id=UUID(user_id),
+            ),
         )
-        if "sent" in note.lower():
+        if web_system_user_mutations_service.user_invite_succeeded(note):
             _log_system_user_event(
                 db,
                 request,
@@ -2303,7 +2467,11 @@ def user_send_invite(request: Request, user_id: str, db: Session = Depends(get_d
             )
     except Exception as exc:
         note = str(exc)
-    success = "success" if "sent" in note.lower() else "error"
+    success = (
+        "success"
+        if web_system_user_mutations_service.user_invite_succeeded(note)
+        else "error"
+    )
     trigger = {
         "showToast": {
             "type": success,

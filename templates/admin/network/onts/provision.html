@@ -28,8 +28,29 @@
     </div>
 
     {% if provision_feedback %}
-    <div class="rounded-lg border px-3 py-2 text-sm {% if provision_feedback.status == 'success' %}border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900/30 dark:bg-emerald-900/10 dark:text-emerald-300{% else %}border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-900/30 dark:bg-rose-900/10 dark:text-rose-300{% endif %}">
+    <div class="rounded-lg border px-3 py-2 text-sm {% if provision_feedback.status == 'success' %}border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900/30 dark:bg-emerald-900/10 dark:text-emerald-300{% elif provision_feedback.status == 'info' %}border-blue-200 bg-blue-50 text-blue-800 dark:border-blue-900/30 dark:bg-blue-900/10 dark:text-blue-300{% else %}border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-900/30 dark:bg-rose-900/10 dark:text-rose-300{% endif %}">
         {{ provision_feedback.message }}
+    </div>
+    {% endif %}
+
+    {% if provision_operation %}
+    <div class="rounded-lg border border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-800" aria-live="polite">
+        <div class="flex flex-wrap items-start justify-between gap-3">
+            <div>
+                <div class="flex items-center gap-2">
+                    <h2 class="text-sm font-semibold text-slate-900 dark:text-white">Provisioning progress</h2>
+                    <span class="rounded-full px-2 py-0.5 text-xs font-medium {{ provision_operation.status_class }}">{{ provision_operation.status }}</span>
+                </div>
+                <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">
+                    {% if provision_operation.message %}{{ provision_operation.message }}{% elif provision_operation.is_active %}The request is queued and waiting for the provisioning worker or device.{% else %}The provisioning operation has reached a final state.{% endif %}
+                </p>
+                <p class="mt-1 font-mono text-xs text-slate-500 dark:text-slate-400">Operation {{ provision_operation.operation_id }}</p>
+            </div>
+            <div class="flex items-center gap-3 text-xs">
+                <a href="/admin/network/onts/{{ ont.id }}/provision?operation_id={{ provision_operation.operation_id }}" class="font-medium text-blue-600 hover:text-blue-700 dark:text-blue-400">Refresh status</a>
+                <a href="/admin/network/onts/{{ ont.id }}?tab=history" class="font-medium text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white">View history</a>
+            </div>
+        </div>
     </div>
     {% endif %}
 
@@ -40,9 +61,9 @@
             <div class="rounded-lg border border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-800">
                 <div class="flex items-center justify-between mb-3">
                     <h3 class="text-sm font-semibold text-slate-900 dark:text-white">Preflight Checks</h3>
-                    {% set ready_to_authorize = provision_preflight.ready_to_authorize if provision_preflight else false %}
-                    <span class="rounded px-2 py-0.5 text-xs font-medium {{ 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300' if ready_to_authorize else 'bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300' }}">
-                        {{ 'Ready' if ready_to_authorize else 'Blocked' }}
+                    {% set ready_to_provision = provision_preflight.ready_to_provision if provision_preflight else false %}
+                    <span class="rounded px-2 py-0.5 text-xs font-medium {{ 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300' if ready_to_provision else 'bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300' }}">
+                        {{ 'Ready' if ready_to_provision else 'Blocked' }}
                     </span>
                 </div>
                 {% if provision_preflight and provision_preflight.checks %}
@@ -137,8 +158,8 @@
                         <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Push network and service settings to the OLT and ACS</p>
                     </div>
                     <button type="submit"
-                        {% if not provision_preflight or not provision_preflight.ready_to_authorize %}disabled{% endif %}
-                        class="inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium text-white {{ 'bg-blue-600 hover:bg-blue-700' if provision_preflight and provision_preflight.ready_to_authorize else 'bg-slate-400 cursor-not-allowed' }}">
+                        {% if not provision_preflight or not provision_preflight.ready_to_provision %}disabled{% endif %}
+                        class="inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium text-white {{ 'bg-blue-600 hover:bg-blue-700' if provision_preflight and provision_preflight.ready_to_provision else 'bg-slate-400 cursor-not-allowed' }}">
                         <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
                         </svg>

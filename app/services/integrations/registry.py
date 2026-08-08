@@ -356,6 +356,41 @@ _DEFINITIONS: tuple[ConnectorManifest, ...] = (
         health=HealthManifest(operation="connection.validate.v1"),
     ),
     ConnectorManifest(
+        key="nextcloud.talk",
+        name="Nextcloud Talk",
+        version="1.0.0",
+        connector_type="messaging",
+        description="Staff collaboration notifications through Nextcloud Talk.",
+        runtime=RuntimeManifest(
+            type=ConnectorRuntimeType.builtin_worker,
+            module="app.services.integrations.connectors.nextcloud_talk",
+        ),
+        capabilities=(
+            CapabilityManifest(
+                id="collaboration.message.send.v1",
+                modes=(CapabilityMode.event, CapabilityMode.interactive),
+            ),
+        ),
+        config_schema={
+            "type": "object",
+            "properties": {
+                "url": {"type": "string"},
+                "notifier_username": {"type": "string"},
+                "timeout_seconds": {"type": "integer", "default": 30},
+            },
+            "required": ["url", "notifier_username"],
+            "additionalProperties": False,
+        },
+        secrets=(SecretBindingManifest(name="app_password"),),
+        data_access=DataAccessManifest(
+            reads=("communications.staff_notification",),
+            emits=("communications.external_delivery_receipt",),
+            classifications=("staff_identity", "support_content", "message_content"),
+        ),
+        egress=EgressManifest(allow_installation_hosts=True),
+        health=HealthManifest(operation="connection.validate.v1"),
+    ),
+    ConnectorManifest(
         key="meta.social",
         name="Meta Social Inbox",
         version="1.0.0",
