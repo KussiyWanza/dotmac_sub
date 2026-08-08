@@ -1424,12 +1424,17 @@ DOMAIN = DomainSOT(
                     domain_codes=(
                         "access.fup_throttle_rate.invalid_reduction_percent",
                         "access.fup_throttle_rate.invalid_full_rate",
+                        "access.fup_throttle_rate.no_throttle_profile_available",
                     ),
                     mapping_owner="access.session_enforcement",
                     fail_closed_on=(
                         "a reduction percentage outside 1..99, which would "
                         "produce either a no-op or a disconnection",
                         "a non-positive rate to reduce",
+                        "no derivable rate AND no configured fallback profile, "
+                        "which would otherwise leave a breaching subscriber at "
+                        "full speed while the sweep counted the enforcement as "
+                        "done",
                     ),
                 ),
                 events=EventContract(

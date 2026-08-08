@@ -33,7 +33,10 @@ from app.models.catalog import (
     Subscription,
     SubscriptionStatus,
 )
-from app.services.enforcement import apply_radius_profile_to_subscription
+from app.services.enforcement import (
+    SubscriptionCredentialScopeError,
+    apply_radius_profile_to_subscription,
+)
 from app.services.fup_enforcement import EvaluateFupSubscriptionCommand
 from app.services.fup_usage import FupUsageWindow, fup_window_bounds
 from app.services.owner_commands import CommandContext
@@ -86,17 +89,44 @@ def test_throttle_does_not_touch_a_sibling_subscription(
     sibling_cred = _cred(db_session, subscriber, sibling, full, "paid-service")
     db_session.commit()
 
-    updated, usernames = apply_radius_profile_to_subscription(
+    application = apply_radius_profile_to_subscription(
         db_session, str(breaching.id), str(throttle.id)
     )
 
-    assert updated == 1
-    assert usernames == {"capped-service"}
+    assert application.matched == 1
+    assert application.updated == 1
+    assert application.usernames == frozenset({"capped-service"})
     db_session.refresh(breaching_cred)
     db_session.refresh(sibling_cred)
     assert breaching_cred.radius_profile_id == throttle.id
     # The customer's other service is still paid for and must stay at full rate.
     assert sibling_cred.radius_profile_id == full.id
+
+
+def test_reasserting_an_existing_throttle_still_reports_a_match(
+    db_session, subscriber, catalog_offer
+):
+    """ "Already throttled" is not "nothing to enforce".
+
+    A re-assertion after a cooldown changes nothing on the wire, but the caller
+    still has to record the decision. Reporting only `updated` made this
+    indistinguishable from having no credentials at all, so state, event and
+    customer notification were all skipped.
+    """
+    throttle = RadiusProfile(name=f"throttle-{uuid4().hex[:6]}", is_active=True)
+    db_session.add(throttle)
+    db_session.flush()
+
+    sub = _sub(db_session, subscriber, catalog_offer)
+    _cred(db_session, subscriber, sub, throttle, "already-throttled")
+    db_session.commit()
+
+    application = apply_radius_profile_to_subscription(
+        db_session, str(sub.id), str(throttle.id)
+    )
+
+    assert application.matched == 1
+    assert application.updated == 0
 
 
 def test_unlinked_credential_is_claimed_only_when_no_sibling_serves(
@@ -124,10 +154,10 @@ def test_unlinked_credential_is_claimed_only_when_no_sibling_serves(
     db_session.add(legacy)
     db_session.commit()
 
-    updated, _ = apply_radius_profile_to_subscription(
+    application = apply_radius_profile_to_subscription(
         db_session, str(only.id), str(throttle.id)
     )
-    assert updated == 1
+    assert application.updated == 1
     db_session.refresh(legacy)
     assert legacy.radius_profile_id == throttle.id
 
@@ -138,12 +168,32 @@ def test_unlinked_credential_is_claimed_only_when_no_sibling_serves(
     _sub(db_session, subscriber, catalog_offer)
     db_session.commit()
 
-    updated_again, _ = apply_radius_profile_to_subscription(
-        db_session, str(only.id), str(throttle.id)
-    )
-    assert updated_again == 0
+    # Ambiguity must FAIL, not return zero. Returning zero let the caller skip
+    # state, event and notification, so a breaching service was silently left
+    # at full speed while the sweep counted the enforcement as done.
+    with pytest.raises(SubscriptionCredentialScopeError) as captured:
+        apply_radius_profile_to_subscription(db_session, str(only.id), str(throttle.id))
+
+    assert captured.value.code == ("access.session_enforcement.credentials_ambiguous")
     db_session.refresh(legacy)
     assert legacy.radius_profile_id == full.id
+
+
+def test_a_subscription_with_no_credential_at_all_fails_visibly(
+    db_session, subscriber, catalog_offer
+):
+    throttle = RadiusProfile(name=f"throttle-{uuid4().hex[:6]}", is_active=True)
+    db_session.add(throttle)
+    db_session.flush()
+    sub = _sub(db_session, subscriber, catalog_offer)
+    db_session.commit()
+
+    with pytest.raises(SubscriptionCredentialScopeError) as captured:
+        apply_radius_profile_to_subscription(db_session, str(sub.id), str(throttle.id))
+
+    assert captured.value.code == (
+        "access.session_enforcement.no_subscription_credentials"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -177,12 +227,12 @@ def test_apply_does_not_commit_the_caller_owns_the_transaction(
     with patch.object(
         db_session, "commit", side_effect=AssertionError("apply must not commit")
     ):
-        updated, usernames = apply_radius_profile_to_subscription(
+        application = apply_radius_profile_to_subscription(
             db_session, str(sub.id), str(throttle.id)
         )
 
-    assert updated == 1
-    assert usernames == {"commit-owner"}
+    assert application.updated == 1
+    assert application.usernames == frozenset({"commit-owner"})
     # Applied in-session and visible to the caller, but not yet durable.
     assert cred.radius_profile_id == throttle.id
 

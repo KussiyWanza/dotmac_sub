@@ -6,6 +6,7 @@ import logging
 import re
 import threading
 import time
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -1374,26 +1375,77 @@ def subscription_credentials(
     )
 
 
+class SubscriptionCredentialScopeError(DomainError):
+    """This subscription's credentials cannot be resolved unambiguously.
+
+    Raised rather than returning "nothing to do", because a consequence that
+    was already decided and then silently applied to nothing is the failure
+    mode this whole scoping rule exists to remove: the sweep counts the
+    enforcement as done while the subscriber stays at full speed.
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class RadiusProfileApplication:
+    """Outcome of binding one subscription's credentials to a profile.
+
+    ``matched`` and ``updated`` are deliberately separate. A re-assertion after
+    a cooldown legitimately changes nothing on the wire, but the state row that
+    records the decision still has to be written — collapsing the two made
+    "already throttled" indistinguishable from "no credentials at all", and
+    both silently skipped state, event, and customer notification.
+    """
+
+    matched: int
+    updated: int
+    usernames: frozenset[str]
+
+
 def apply_radius_profile_to_subscription(
     db: Session, subscription_id: str, profile_id: str
-) -> tuple[int, set[str]]:
+) -> RadiusProfileApplication:
     """Move one subscription's credentials onto ``profile_id``.
 
-    Returns ``(updated_count, usernames_touched)`` and deliberately does NOT
-    commit or project to external RADIUS. Both are the caller's to sequence:
-    the local credential change and whatever state row records *why* it
-    happened must land in the same transaction, and the external projection
-    must follow that state — never precede it. The previous account-scoped
-    version committed here, which released the handler's savepoint and left a
-    throttled credential durable even when the FUP state row that justified it
-    failed to persist.
+    Deliberately does NOT commit or project to external RADIUS. Both are the
+    caller's to sequence: the local credential change and whatever state row
+    records *why* it happened must land in the same transaction, and the
+    external projection must follow that state — never precede it. The previous
+    account-scoped version committed here, which released the handler's
+    savepoint and left a throttled credential durable even when the FUP state
+    row that justified it failed to persist.
     """
     subscription = db.get(Subscription, coerce_uuid(subscription_id))
     if subscription is None:
         raise HTTPException(status_code=404, detail="Subscription not found")
     credentials = subscription_credentials(db, subscription)
     if not credentials:
-        return 0, set()
+        # Distinguish "this service has no credential" from "it has one, but it
+        # cannot be told apart from a sibling's". The second is the legacy
+        # NULL-subscription_id case, and it is repairable — linking the
+        # credential to its subscription resolves it — so name it separately.
+        unlinked = (
+            db.query(AccessCredential.id)
+            .filter(AccessCredential.subscriber_id == subscription.subscriber_id)
+            .filter(AccessCredential.subscription_id.is_(None))
+            .filter(AccessCredential.is_active.is_(True))
+            .first()
+        )
+        if unlinked is not None:
+            raise SubscriptionCredentialScopeError(
+                code="access.session_enforcement.credentials_ambiguous",
+                message=(
+                    "This subscription has no credential of its own, and the "
+                    "subscriber's unlinked credentials cannot be attributed to "
+                    "it while another service is still serving. Link the "
+                    "credential to its subscription to resolve this."
+                ),
+                details={"subscription_id": str(subscription.id)},
+            )
+        raise SubscriptionCredentialScopeError(
+            code="access.session_enforcement.no_subscription_credentials",
+            message="This subscription has no active access credential to act on.",
+            details={"subscription_id": str(subscription.id)},
+        )
     profile = db.get(RadiusProfile, coerce_uuid(profile_id))
     if not profile or not profile.is_active:
         raise HTTPException(status_code=404, detail="RADIUS profile not found")
@@ -1403,10 +1455,14 @@ def apply_radius_profile_to_subscription(
             cred.radius_profile_id = profile.id
             updated += 1
     db.flush()
-    return updated, {credential.username for credential in credentials}
+    return RadiusProfileApplication(
+        matched=len(credentials),
+        updated=updated,
+        usernames=frozenset(credential.username for credential in credentials),
+    )
 
 
-def project_credentials_to_radius(db: Session, usernames: set[str]) -> None:
+def project_credentials_to_radius(db: Session, usernames: AbstractSet[str]) -> None:
     """Push credential rows to external RADIUS after their state is recorded.
 
     Idempotent and rebuildable from ``source_db``, so a failure here is drift a
@@ -1416,7 +1472,7 @@ def project_credentials_to_radius(db: Session, usernames: set[str]) -> None:
         return
     from app.services.radius_population import reconcile_usernames
 
-    reconcile_usernames(usernames, dry_run=False, source_db=db)
+    reconcile_usernames(set(usernames), dry_run=False, source_db=db)
 
 
 def apply_subscription_address_list_block(db: Session, subscription_id: str) -> int:
@@ -1527,11 +1583,21 @@ def lift_fup_enforcement(
                 # Restore only the service that was throttled. Restoring by
                 # account would push this subscription's profile onto every
                 # sibling service the customer owns.
-                _, usernames = apply_radius_profile_to_subscription(
+                application = apply_radius_profile_to_subscription(
                     db, str(subscription.id), target
                 )
-                project_credentials_to_radius(db, usernames)
+                if application.updated:
+                    project_credentials_to_radius(db, application.usernames)
                 actions.append("restore_profile")
+            except SubscriptionCredentialScopeError as exc:
+                # A lift that cannot find the credential it throttled leaves the
+                # subscriber slow with the state cleared below — name it.
+                logger.error(
+                    "FUP lift: cannot resolve credentials for %s (%s): %s",
+                    subscription_id,
+                    exc.code,
+                    exc.message,
+                )
             except Exception as exc:
                 logger.warning(
                     "FUP lift: profile restore failed for %s: %s",

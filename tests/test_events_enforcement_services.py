@@ -35,6 +35,7 @@ from app.models.notification import (
 )
 from app.models.provisioning import ProvisioningVendor
 from app.models.subscriber import SubscriberStatus as AccountStatus
+from app.services.enforcement import RadiusProfileApplication
 from app.services.events.dispatcher import EventDispatcher
 from app.services.events.handlers.enforcement import EnforcementHandler
 from app.services.events.handlers.lifecycle import LifecycleHandler
@@ -871,7 +872,9 @@ class TestEnforcementHandler:
             return None
 
         mock_settings.resolve_value.side_effect = settings_side_effect
-        mock_apply_profile.return_value = (1, {"fup-user"})
+        mock_apply_profile.return_value = RadiusProfileApplication(
+            matched=1, updated=1, usernames=frozenset({"fup-user"})
+        )
 
         handler = EnforcementHandler()
         event = self._make_event(
@@ -889,7 +892,7 @@ class TestEnforcementHandler:
         mock_disconnect.assert_called_once_with(
             db_session, str(subscription_id), reason="fup_throttle"
         )
-        mock_project.assert_called_once_with(db_session, {"fup-user"})
+        mock_project.assert_called_once_with(db_session, frozenset({"fup-user"}))
 
     @patch("app.services.events.handlers.enforcement.project_credentials_to_radius")
     @patch("app.services.events.handlers.enforcement.disconnect_subscription_sessions")
@@ -925,7 +928,9 @@ class TestEnforcementHandler:
             return None
 
         mock_settings.resolve_value.side_effect = settings_side_effect
-        mock_apply_profile.return_value = (1, {"fup-user"})
+        mock_apply_profile.return_value = RadiusProfileApplication(
+            matched=1, updated=1, usernames=frozenset({"fup-user"})
+        )
 
         handler = EnforcementHandler()
         event = self._make_event(
@@ -964,6 +969,8 @@ class TestEnforcementHandler:
                 return "throttle"
             if key == "fup_throttle_radius_profile_id":
                 return None
+            if key == "refresh_sessions_on_profile_change":
+                return "true"
             return None
 
         mock_settings.resolve_value.side_effect = settings_side_effect

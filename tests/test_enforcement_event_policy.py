@@ -96,7 +96,7 @@ def test_missing_throttle_profile_leaves_the_fallback_unset(monkeypatch) -> None
                 (SettingDomain.usage, "fup_action"): "throttle",
                 (SettingDomain.usage, "fup_throttle_radius_profile_id"): None,
                 (
-                    SettingDomain.usage,
+                    SettingDomain.radius,
                     "refresh_sessions_on_profile_change",
                 ): "true",
             }

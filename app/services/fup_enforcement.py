@@ -421,7 +421,22 @@ def _evaluate_subscription(
             # audit trail "0 GB exhausted". evaluate_rules already resolved the
             # right number per rule and falls back to the monthly value for
             # monthly rules, so this is correct for every consumption period.
-            rule_usage = float(rule_result.get("current_usage_gb") or 0.0)
+            #
+            # A measured 0.0 is valid evidence; a MISSING measurement is not.
+            # `or 0.0` conflated them, which is the same substitution of a
+            # plausible zero for an unknown that this block exists to fix.
+            # evaluate_rules sets the key on every triggered row, so absence is
+            # a contract breach — fail closed rather than enforce blind.
+            raw_rule_usage = rule_result.get("current_usage_gb")
+            if raw_rule_usage is None:
+                logger.error(
+                    "FUP rule %s triggered for sub %s with no measured usage; "
+                    "not enforcing on unknown evidence",
+                    rule_result.get("rule_id"),
+                    subscription.id,
+                )
+                continue
+            rule_usage = float(raw_rule_usage)
             if rule_result.get("usage_source") == "no_data":
                 continue
             action = rule_result.get("action")
@@ -568,8 +583,10 @@ def _evaluate_subscription(
                         "threshold_gb": nearest_rule.get("threshold_gb"),
                         # The ratio above is measured on this rule's own window,
                         # so the GB figure quoted to the customer has to come
-                        # from the same window or the warning contradicts itself.
-                        "used_gb": float(nearest_rule.get("current_usage_gb") or 0.0),
+                        # from the same window or the warning contradicts
+                        # itself. The row was selected BY usage_percent, so a
+                        # measured value is guaranteed present here.
+                        "used_gb": float(nearest_rule["current_usage_gb"]),
                     }
                 )
 
