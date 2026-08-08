@@ -115,6 +115,9 @@ class Ticket(Base):
     number: Mapped[str | None] = mapped_column(String(50), unique=True)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
+    description_is_internal: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )
     region: Mapped[str | None] = mapped_column(String(80))
     status: Mapped[str] = mapped_column(
         String(80),
@@ -233,7 +236,7 @@ class TicketComment(Base):
         UUID(as_uuid=True), ForeignKey("system_users.id")
     )
     body: Mapped[str] = mapped_column(Text, nullable=False)
-    is_internal: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_internal: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     attachments: Mapped[list[dict] | None] = mapped_column(
         MutableList.as_mutable(JSON()), default=list
     )

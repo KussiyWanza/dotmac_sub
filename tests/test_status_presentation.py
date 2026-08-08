@@ -411,6 +411,7 @@ def test_ticket_read_serializes_status_presentation_for_api_clients() -> None:
     ticket = Ticket(
         id=uuid4(),
         title="Slow browsing",
+        description_is_internal=True,
         status=TicketStatus.waiting_on_customer.value,
         priority="normal",
         channel="web",

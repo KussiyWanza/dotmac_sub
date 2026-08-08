@@ -47,6 +47,7 @@ from app.request_meta import client_ip
 from app.schemas.auth_flow import LoginResponse, LogoutResponse, TokenResponse
 from app.services import auth_cache
 from app.services import radius_auth as radius_auth_service
+from app.services.capability_recipient import resolve_capability_recipient
 from app.services.common import coerce_uuid
 from app.services.credential_crypto import decrypt_credential, encrypt_credential
 from app.services.response import ListResponseMixin
@@ -1869,11 +1870,16 @@ def send_email_verification(db: Session, subscriber_id: str) -> bool:
         # Already verified: nothing to send.
         return False
 
+    # Resolve the one authorised address before minting anything: a capability
+    # that cannot be delivered to exactly one mailbox should not exist.
+    recipient = resolve_capability_recipient(
+        subscriber.email, subject=f"subscriber:{subscriber.id}"
+    )
     ttl_minutes = _email_verification_ttl_minutes(db)
     token = _issue_email_verification_token(
         db,
         str(subscriber.id),
-        subscriber.email,
+        recipient,
         ttl_minutes=ttl_minutes,
     )
     record_audit_event(
@@ -1883,11 +1889,11 @@ def send_email_verification(db: Session, subscriber_id: str) -> bool:
         entity_id=str(subscriber.id),
         actor_type=AuditActorType.user,
         actor_id=str(subscriber.id),
-        metadata={"email": subscriber.email},
+        metadata={"email": recipient},
     )
     return send_email_verification_email(
         db=db,
-        to_email=subscriber.email,
+        to_email=recipient,
         verification_token=token,
         person_name=subscriber.display_name or subscriber.first_name,
         expires_minutes=ttl_minutes,

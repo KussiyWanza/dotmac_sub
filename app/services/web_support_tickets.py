@@ -96,7 +96,9 @@ def get_customer_visible_ticket_attachment_file(
     ticket = db.get(Ticket, ticket_id)
     if ticket is None:
         return None
-    visible_attachment_lists = [ticket.attachments or []]
+    visible_attachment_lists = (
+        [] if ticket.description_is_internal else [ticket.attachments or []]
+    )
     visible_attachment_lists.extend(
         comment.attachments or []
         for comment in ticket.comments
@@ -520,6 +522,11 @@ def build_ticket_form_context(
         "description": ticket.description
         if ticket
         else str(params.get("description", "") or ""),
+        "description_is_internal": (
+            ticket.description_is_internal
+            if ticket
+            else not bool(params.get("publish_description", False))
+        ),
         "subscriber_id": str(ticket.subscriber_id)
         if ticket and ticket.subscriber_id
         else str(params.get("subscriber_id", "") or ""),
@@ -634,6 +641,7 @@ def build_ticket_create_payload(**kwargs) -> TicketCreate:
     return TicketCreate(
         title=kwargs["title"],
         description=kwargs["description"] or None,
+        description_is_internal=not bool(kwargs.get("publish_description")),
         subscriber_id=parse_uuid_or_none(kwargs.get("subscriber_id")),
         customer_account_id=parse_uuid_or_none(kwargs.get("customer_account_id")),
         customer_person_id=parse_uuid_or_none(kwargs.get("customer_person_id")),
@@ -668,6 +676,7 @@ def build_ticket_update_payload(**kwargs) -> TicketUpdate:
     return TicketUpdate(
         title=kwargs["title"],
         description=kwargs["description"] or None,
+        description_is_internal=not bool(kwargs.get("publish_description")),
         subscriber_id=parse_uuid_or_none(kwargs.get("subscriber_id")),
         customer_account_id=parse_uuid_or_none(kwargs.get("customer_account_id")),
         customer_person_id=parse_uuid_or_none(kwargs.get("customer_person_id")),

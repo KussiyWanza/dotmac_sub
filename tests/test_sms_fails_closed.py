@@ -7,114 +7,135 @@ deployment that had never configured SMS still presented the channel as live
 and queued sends into nothing.
 """
 
-import pytest
-
+from app.models.domain_settings import DomainSetting, SettingDomain
+from app.models.subscription_engine import SettingValueType
 from app.services import sms as sms_service
 from app.services import web_notifications
 
 
-@pytest.fixture
-def unconfigured(monkeypatch):
-    """No SMS settings and no SMS env vars — a fresh deployment."""
+def _set(db, key: str, value: str) -> None:
+    """Write a notification setting the way an operator would."""
 
-    def _get(_db, _key, _env, default=None):
-        return default
+    db.add(
+        DomainSetting(
+            domain=SettingDomain.notification,
+            key=key,
+            value_type=SettingValueType.string,
+            value_text=value,
+            is_active=True,
+        )
+    )
+    db.commit()
 
-    monkeypatch.setattr(sms_service, "_get_setting", _get)
-    monkeypatch.setattr(web_notifications.sms_service, "_get_setting", _get)
+
+# "Unconfigured" is now literally no rows: the SMS values are declared settings,
+# so an absent row resolves to the SPEC's default. The suite used to stub the
+# reader; driving the real resolution path also proves the defaults are right,
+# which is the bug class that produced the incident above.
 
 
-def test_unconfigured_sms_does_not_send(unconfigured):
+def test_unconfigured_sms_does_not_send(db_session):
     """The default must be off, not 'on and pointed at nothing'."""
-    assert sms_service.send_sms(None, "+2348000000000", "hi", track=False) is False
+    assert (
+        sms_service.send_sms(db_session, "+2348000000000", "hi", track=False) is False
+    )
 
 
-def test_unconfigured_sms_reports_not_ready(unconfigured):
-    ready, message = web_notifications._sms_channel_ready(None)
+def test_unconfigured_sms_reports_not_ready(db_session):
+    ready, message = web_notifications._sms_channel_ready(db_session)
     assert ready is False
     assert "disabled" in message.lower()
 
 
-def test_readiness_probe_agrees_with_the_send_path(unconfigured):
+def test_readiness_probe_agrees_with_the_send_path(db_session):
     """A channel the operator is told is ready must actually attempt a send.
 
     These two drifting apart is how a dead channel stays invisible.
     """
-    ready, _ = web_notifications._sms_channel_ready(None)
-    sent = sms_service.send_sms(None, "+2348000000000", "hi", track=False)
+    ready, _ = web_notifications._sms_channel_ready(db_session)
+    sent = sms_service.send_sms(db_session, "+2348000000000", "hi", track=False)
     assert ready == sent
 
 
-def test_enabled_without_a_provider_is_not_ready(monkeypatch):
-    values = {"sms_enabled": "true"}
-
-    def _get(_db, key, _env, default=None):
-        return values.get(key, default)
-
-    monkeypatch.setattr(web_notifications.sms_service, "_get_setting", _get)
-    ready, message = web_notifications._sms_channel_ready(None)
+def test_enabled_without_a_provider_is_not_ready(db_session, monkeypatch):
+    monkeypatch.setattr(
+        web_notifications.sms_service, "_sms_credentials", lambda: ("", "")
+    )
+    _set(db_session, "sms_enabled", "true")
+    ready, message = web_notifications._sms_channel_ready(db_session)
     assert ready is False
     assert "provider" in message.lower()
 
 
-def test_enabled_provider_still_needs_its_credentials(monkeypatch):
-    values = {"sms_enabled": "true", "sms_provider": "africastalking"}
+def test_enabled_provider_still_needs_its_credentials(db_session, monkeypatch):
+    credentials = {"key": "", "secret": ""}
+    monkeypatch.setattr(
+        web_notifications.sms_service,
+        "_sms_credentials",
+        lambda: (credentials["key"], credentials["secret"]),
+    )
+    _set(db_session, "sms_enabled", "true")
+    _set(db_session, "sms_provider", "africastalking")
 
-    def _get(_db, key, _env, default=None):
-        return values.get(key, default)
-
-    monkeypatch.setattr(web_notifications.sms_service, "_get_setting", _get)
-    ready, message = web_notifications._sms_channel_ready(None)
+    ready, message = web_notifications._sms_channel_ready(db_session)
     assert ready is False
     assert "api key" in message.lower()
 
-    values["sms_api_key"] = "k"
-    ready, _ = web_notifications._sms_channel_ready(None)
+    credentials["key"] = "k"
+    ready, _ = web_notifications._sms_channel_ready(db_session)
     assert ready is True
 
 
-def test_explicit_enable_is_required_not_merely_non_false(monkeypatch):
-    """ "" or a typo must not read as enabled."""
+def test_explicit_enable_is_required_not_merely_non_false(db_session, monkeypatch):
+    """ "" or a typo must not read as enabled.
+
+    The spec's boolean coercion rejects them and resolution falls back to the
+    declared default, which is off. No stub decides this any more.
+    """
+    monkeypatch.setattr(
+        web_notifications.sms_service, "_sms_credentials", lambda: ("k", "s")
+    )
+    row = DomainSetting(
+        domain=SettingDomain.notification,
+        key="sms_enabled",
+        value_type=SettingValueType.string,
+        value_text="true",
+        is_active=True,
+    )
+    db_session.add(row)
+    db_session.commit()
+
     for value in ("", "  ", "maybe", "0", "no"):
-        monkeypatch.setattr(
-            web_notifications.sms_service,
-            "_get_setting",
-            lambda _db, key, _env, default=None, v=value: (
-                v if key == "sms_enabled" else default
-            ),
-        )
-        ready, _ = web_notifications._sms_channel_ready(None)
+        row.value_text = value
+        db_session.commit()
+        ready, _ = web_notifications._sms_channel_ready(db_session)
         assert ready is False, f"{value!r} should not enable SMS"
 
 
 # --- SMS retired via the channel disable mechanism --------------------------
 
 
-def test_absent_sms_config_reads_as_disabled(monkeypatch):
+def test_absent_sms_config_reads_as_disabled(db_session):
     """Retirement is the default: with no sms_enabled row, SMS is disabled, so
     a spec that still defaults to SMS is cancelled cleanly at queue time rather
     than created and left to fail."""
     from app.models.notification import NotificationChannel
     from app.services import customer_notification_policy as policy
 
-    monkeypatch.setattr(
-        "app.services.sms._get_setting",
-        lambda _db, _key, _env, default=None: default,
+    assert (
+        policy.channel_disabled_in_config(db_session, NotificationChannel.sms) is True
     )
-    assert policy.channel_disabled_in_config(None, NotificationChannel.sms) is True
 
 
-def test_a_future_plugin_re_enables_sms_by_flipping_the_flag(monkeypatch):
+def test_a_future_plugin_re_enables_sms_by_flipping_the_flag(db_session):
     """Nothing is deleted — enabling the channel brings it back."""
     from app.models.notification import NotificationChannel
     from app.services import customer_notification_policy as policy
 
-    values = {"sms_enabled": "true"}
-    monkeypatch.setattr(
-        "app.services.sms._get_setting",
-        lambda _db, key, _env, default=None: values.get(key, default),
+    _set(db_session, "sms_enabled", "true")
+    assert (
+        policy.channel_disabled_in_config(db_session, NotificationChannel.sms) is False
     )
-    assert policy.channel_disabled_in_config(None, NotificationChannel.sms) is False
 
 
 def test_matrix_marks_a_disabled_channel_unavailable(monkeypatch):

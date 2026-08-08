@@ -111,8 +111,27 @@ def list_intents(
 
 
 def _subscriber_addresses(
-    db: Session, subscriber: Subscriber, channel: NotificationChannel
+    db: Session,
+    subscriber: Subscriber,
+    channel: NotificationChannel,
+    category: str | None = None,
 ) -> list[str]:
+    """Compose the addresses a customer communication should reach.
+
+    `SubscriberContact` carries a `contact_type` and an `is_billing_contact`
+    flag, and until now nothing read either: every contact with
+    `receives_notifications` received everything. A contact typed *technical*
+    got billing notices, and naming a billing contact selected nobody.
+
+    Roles are honoured only when the account has actually designated one. If a
+    subscriber has a billing contact, billing communications go to them; if
+    they have not, every notification contact keeps receiving billing as
+    before. That way switching this on takes nothing away from an account that
+    never expressed a preference — the model starts meaning something without
+    silently narrowing anyone's mail.
+
+    The account holder's own address is always included regardless.
+    """
     addresses: list[str] = []
     if channel == NotificationChannel.email:
         if subscriber.email:
@@ -130,6 +149,11 @@ def _subscriber_addresses(
             .filter(SubscriberContact.receives_notifications.is_(True))
             .all()
         )
+        if str(category or "").strip().lower() == "billing":
+            designated = [contact for contact in contacts if contact.is_billing_contact]
+            # Only narrow when the account has actually named someone.
+            if designated:
+                contacts = designated
         for contact in contacts:
             if channel == NotificationChannel.email and contact.email:
                 addresses.append(contact.email)
@@ -279,7 +303,7 @@ def submit(db: Session, intent: CommunicationIntent) -> CommunicationIntentResul
         delivery_recipients = (
             [explicit_recipient]
             if explicit_recipient
-            else _subscriber_addresses(db, subscriber, channel)
+            else _subscriber_addresses(db, subscriber, channel, intent.category)
             if subscriber
             else []
         )

@@ -7,6 +7,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from app.models.domain_settings import SettingDomain
 from app.models.notification import (
     DeliveryStatus,
     NotificationChannel,
@@ -20,6 +21,7 @@ from app.services import email as email_service
 from app.services import notification as notification_service
 from app.services import notification_template_conditions as condition_service
 from app.services import notification_template_renderer as template_renderer
+from app.services import settings_spec
 from app.services import sms as sms_service
 from app.services.integrations import whatsapp_capability
 from app.services.list_query import (
@@ -437,29 +439,31 @@ def _email_channel_ready(db: Session) -> tuple[bool, str]:
 def _sms_channel_ready(db: Session) -> tuple[bool, str]:
     # Mirrors sms.send_sms exactly, and fails closed for the same reason: an
     # unconfigured channel must report "not ready", never "ready".
-    enabled = (
-        sms_service._get_setting(db, "sms_enabled", "SMS_ENABLED", "false") or "false"
-    )
-    if enabled.strip().lower() not in {"true", "1", "yes", "on", "enabled"}:
+    if not settings_spec.resolve_boolean(db, SettingDomain.notification, "sms_enabled"):
         return False, "SMS is disabled"
 
-    provider = sms_service._get_setting(db, "sms_provider", "SMS_PROVIDER", "") or ""
+    provider = settings_spec.resolve_string(
+        db, SettingDomain.notification, "sms_provider"
+    )
     if not provider:
         return False, "No SMS provider configured"
     if provider == "twilio":
-        account_sid = sms_service._get_setting(db, "sms_api_key", "SMS_API_KEY")
-        auth_token = sms_service._get_setting(db, "sms_api_secret", "SMS_API_SECRET")
-        from_number = sms_service._get_setting(db, "sms_from_number", "SMS_FROM_NUMBER")
+        account_sid, auth_token = sms_service._sms_credentials()
+        from_number = settings_spec.resolve_string(
+            db, SettingDomain.notification, "sms_from_number"
+        )
         if account_sid and auth_token and from_number:
             return True, "Twilio credentials configured"
         return False, "Twilio credentials are incomplete"
     if provider == "africastalking":
-        api_key = sms_service._get_setting(db, "sms_api_key", "SMS_API_KEY")
+        api_key, _ = sms_service._sms_credentials()
         if api_key:
             return True, "Africa's Talking API key configured"
         return False, "Africa's Talking API key is missing"
     if provider == "webhook":
-        webhook_url = sms_service._get_setting(db, "sms_webhook_url", "SMS_WEBHOOK_URL")
+        webhook_url = settings_spec.resolve_string(
+            db, SettingDomain.notification, "sms_webhook_url"
+        )
         if webhook_url:
             return True, "Webhook endpoint configured"
         return False, "Webhook URL is missing"

@@ -44,10 +44,10 @@
         </div>
     </div>
 
-    <!-- Description -->
+    <!-- Customer-published description only; internal text never enters this context. -->
     <section class="rounded-2xl border border-stone-200/60 bg-white p-6 shadow-premium dark:border-stone-700/60 dark:bg-stone-800">
         <h2 class="mb-3 text-sm font-bold uppercase tracking-wider text-stone-500 dark:text-stone-400">Description</h2>
-        <p class="whitespace-pre-wrap text-sm text-stone-700 dark:text-stone-300">{{ ticket.get('description') or 'No description provided.' }}</p>
+        <p class="whitespace-pre-wrap text-sm text-stone-700 dark:text-stone-300">{{ ticket.get('description') or 'No customer-facing description has been published for this ticket.' }}</p>
         {% if ticket.get('attachments') %}
         <div class="mt-4 flex flex-wrap gap-2">
             {% for attachment in ticket.get('attachments', []) %}

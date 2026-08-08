@@ -145,8 +145,17 @@ def test_postgres_drops_the_obsolete_column_and_keeps_501_resolvable(
 
     command.upgrade(config, "head")
 
-    expected_heads = set(ScriptDirectory.from_config(config).get_heads())
-    assert expected_heads == {REVISION_501}
+    # Single-headedness and 501's presence in the head's ancestry — NOT a
+    # literal head revision, which every later migration would falsify. See
+    # tests/architecture/test_migration_chain_assertions.py.
+    script = ScriptDirectory.from_config(config)
+    heads = script.get_heads()
+    assert len(heads) == 1
+    assert REVISION_501 in {
+        item.revision
+        for item in script.iterate_revisions(heads[0], REVISION_501, inclusive=True)
+    }
+    expected_heads = set(heads)
     assert _revision_rows(database_url) == expected_heads
     assert not _column_exists(database_url)
 

@@ -27,6 +27,12 @@ from app.services.sot_registry.model import DomainSOT
 
 DOMAIN = DomainSOT(
     domain="network",
+    setting_domains=(
+        "network",
+        "network_monitoring",
+        "snmp",
+        "tr069",
+    ),
     services=(
         *FOUNDATION_SERVICES,
         *FIBER_PLANT_SERVICES,

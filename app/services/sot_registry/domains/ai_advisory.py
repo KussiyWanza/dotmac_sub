@@ -21,6 +21,7 @@ from app.services.sot_registry.model import DomainSOT
 
 DOMAIN = DomainSOT(
     domain="ai_advisory",
+    setting_domains=("integration",),
     services=(
         SOTService(
             name="ai.gateway",

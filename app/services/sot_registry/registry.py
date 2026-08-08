@@ -20,10 +20,46 @@ def all_services() -> tuple[SOTService, ...]:
     )
 
 
+def setting_domain_declaration_errors() -> tuple[str, ...]:
+    """Return structural errors in ``setting_domains`` ownership.
+
+    Lives here rather than in ``app.services.setting_domain_registry`` so the
+    registry module can depend on this one without a cycle, and so one call
+    still answers "is the SOT registry sound".
+    """
+
+    errors: list[str] = []
+    seen: dict[str, str] = {}
+    for domain_sot in DOMAIN_SOT_RELATIONSHIPS:
+        for setting_domain in domain_sot.setting_domains:
+            if not setting_domain or setting_domain != setting_domain.strip():
+                errors.append(
+                    f"{domain_sot.domain} declares a blank or padded setting "
+                    f"domain {setting_domain!r}"
+                )
+                continue
+            previous = seen.get(setting_domain)
+            if previous == domain_sot.domain:
+                errors.append(
+                    f"{domain_sot.domain} declares setting domain "
+                    f"{setting_domain!r} more than once"
+                )
+                continue
+            if previous is not None:
+                errors.append(
+                    f"setting domain {setting_domain!r} is declared by both "
+                    f"{previous!r} and {domain_sot.domain!r}; exactly one SOT "
+                    "domain may own it"
+                )
+                continue
+            seen[setting_domain] = domain_sot.domain
+    return tuple(sorted(errors))
+
+
 def registry_validation_errors() -> tuple[str, ...]:
     """Return structural errors that make ownership resolution ambiguous."""
 
-    errors: list[str] = []
+    errors: list[str] = list(setting_domain_declaration_errors())
     services = all_services()
 
     duplicate_domains = sorted(

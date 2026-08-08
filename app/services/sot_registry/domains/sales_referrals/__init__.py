@@ -21,6 +21,7 @@ from app.services.sot_registry.model import DomainSOT
 
 DOMAIN = DomainSOT(
     domain="sales_referrals",
+    setting_domains=("workflow",),
     services=(
         *ACQUISITION_SERVICES,
         *CUSTOMER_HANDOFF_SERVICES,

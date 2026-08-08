@@ -210,6 +210,14 @@ class Settings:
         os.getenv("TR069_PERIODIC_INFORM_INTERVAL", "300")
     )  # seconds, default 5 minutes
     tr069_auth_shared_secret: str = os.getenv("TR069_AUTH_SHARED_SECRET", "")
+    # SMS provider credentials are HELD, not resolved (ADR-0009): materialised
+    # once at boot and never read from `domain_settings`, where they previously
+    # lived as a row nothing could write and a lookup that could never find one.
+    # The four operational SMS values ARE settings and are declared in
+    # settings_spec under the `notification` domain; only these two moved here,
+    # because a credential is not a setting.
+    sms_api_key: str = os.getenv("SMS_API_KEY", "")
+    sms_api_secret: str = os.getenv("SMS_API_SECRET", "")
     acs_routable_management_cidrs: str = os.getenv(
         "ACS_ROUTABLE_MANAGEMENT_CIDRS",
         "172.16.0.0/16",

@@ -22,6 +22,7 @@ from app.services.sot_registry.model import DomainSOT
 
 DOMAIN = DomainSOT(
     domain="network_access_control_plane",
+    setting_domains=("radius",),
     services=(
         SOTService(
             name="access.subscription_lifecycle",

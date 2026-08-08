@@ -114,7 +114,9 @@ def test_pull_crm_ticket_preserves_number_and_maps_subscriber(db_session, subscr
     assert ticket.subscriber_id == subscriber.id
     assert ticket.title == "Router offline"
     assert ticket.metadata_["crm_ticket_id"] == crm_ticket_id
-    assert db_session.query(TicketComment).filter_by(ticket_id=ticket.id).count() == 1
+    comments = db_session.query(TicketComment).filter_by(ticket_id=ticket.id).all()
+    assert len(comments) == 1
+    assert comments[0].is_internal is True
 
 
 def test_pull_advances_native_ticket_sequence_past_imported_numbers(

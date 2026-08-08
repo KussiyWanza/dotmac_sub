@@ -42,6 +42,7 @@ class TicketBase(BaseModel):
 
     title: str = Field(min_length=1, max_length=255)
     description: str | None = None
+    description_is_internal: bool = True
     region: str | None = Field(default=None, max_length=80)
     status: str | None = None
     priority: str = TicketPriority.normal.value
@@ -93,6 +94,7 @@ class TicketUpdate(BaseModel):
 
     title: str | None = Field(default=None, min_length=1, max_length=255)
     description: str | None = None
+    description_is_internal: bool | None = None
     region: str | None = Field(default=None, max_length=80)
     status: str | None = None
     priority: str | None = None
@@ -145,6 +147,7 @@ class TicketRead(BaseModel):
 
     title: str
     description: str | None
+    description_is_internal: bool
     region: str | None
     status: str
     priority: str

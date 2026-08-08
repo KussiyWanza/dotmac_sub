@@ -335,6 +335,7 @@ def ticket_create(
     request: Request,
     title: str = Form(...),
     description: str = Form(""),
+    publish_description: bool = Form(False),
     subscriber_id: str | None = Form(default=None),
     customer_account_id: str | None = Form(default=None),
     customer_person_id: str | None = Form(default=None),
@@ -370,6 +371,7 @@ def ticket_create(
             duplicate_override=duplicate_confirmed,
             title=title,
             description=description,
+            publish_description=publish_description,
             subscriber_id=subscriber_id,
             customer_account_id=customer_account_id,
             customer_person_id=customer_person_id,
@@ -399,6 +401,7 @@ def ticket_create(
                 query_params={
                     "title": title,
                     "description": description,
+                    "publish_description": publish_description,
                     "subscriber_id": subscriber_id or "",
                     "customer_account_id": customer_account_id or "",
                     "customer_person_id": customer_person_id or "",
@@ -447,6 +450,7 @@ def ticket_create(
                     **(context.get("prefill") or {}),
                     "title": title,
                     "description": description,
+                    "description_is_internal": not publish_description,
                 },
             }
         )
@@ -607,6 +611,7 @@ def ticket_edit(
     ticket_id: UUID,
     title: str = Form(...),
     description: str = Form(""),
+    publish_description: bool = Form(False),
     subscriber_id: str | None = Form(default=None),
     customer_account_id: str | None = Form(default=None),
     customer_person_id: str | None = Form(default=None),
@@ -631,6 +636,7 @@ def ticket_edit(
         actor_id=_actor_id(request),
         title=title,
         description=description,
+        publish_description=publish_description,
         subscriber_id=subscriber_id,
         customer_account_id=customer_account_id,
         customer_person_id=customer_person_id,

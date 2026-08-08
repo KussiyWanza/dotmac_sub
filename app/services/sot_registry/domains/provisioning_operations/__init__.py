@@ -15,6 +15,12 @@ from app.services.sot_registry.model import DomainSOT
 
 DOMAIN = DomainSOT(
     domain="provisioning_operations",
+    setting_domains=(
+        "provisioning",
+        "projects",
+        "inventory",
+        "field",
+    ),
     services=(
         *CORE_SERVICES,
         *VENDOR_IDENTITY_SERVICES,

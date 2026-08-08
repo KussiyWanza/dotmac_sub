@@ -7,7 +7,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
 
@@ -2212,6 +2212,18 @@ class Invoices(ListResponseMixin):
             "invoice_number_padding",
             "invoice_number_start",
         )
+        # An invoice that calls itself issued must carry the dates that make
+        # that true. Declaring the status without them produced invoices with no
+        # issue date and no due date: they could never age, never go overdue,
+        # and dropped out of anything filtering on issue date. Settlement then
+        # advanced them to paid, so they were paid without ever being issued.
+        # `issue_draft_system` remains the owner of the draft -> issued
+        # transition; this path builds the state directly and must therefore
+        # match it.
+        from app.services.billing_settings import resolve_payment_due_days
+
+        issued_at = datetime.now(UTC)
+        due_days = resolve_payment_due_days(db, subscriber=subscriber)
         invoice = Invoice(
             account_id=subscriber_id,
             invoice_number=invoice_number,
@@ -2221,6 +2233,8 @@ class Invoices(ListResponseMixin):
             total=total,
             balance_due=total,
             status=InvoiceStatus.issued,
+            issued_at=issued_at,
+            due_at=issued_at + timedelta(days=due_days),
         )
         db.add(invoice)
         db.flush()

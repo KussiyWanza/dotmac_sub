@@ -22,6 +22,7 @@ from app.services.sot_registry.model import DomainSOT
 
 DOMAIN = DomainSOT(
     domain="integration_control_plane",
+    setting_domains=("imports",),
     services=(
         SOTService(
             name="integration.registry",

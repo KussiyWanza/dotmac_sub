@@ -19,6 +19,7 @@ from app.services.sot_registry.model import DomainSOT
 
 DOMAIN = DomainSOT(
     domain="subscriber_sessions",
+    setting_domains=("usage",),
     services=(
         SOTService(
             name="sessions.radius_reconciliation",

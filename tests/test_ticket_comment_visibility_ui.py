@@ -23,3 +23,16 @@ def test_admin_comment_route_inverts_customer_reply_flag():
 
     assert "reply_to_customer: bool = Form(False)" in route
     assert "is_internal=not reply_to_customer" in route
+
+
+def test_admin_description_requires_explicit_customer_publication():
+    template = (
+        ROOT / "templates" / "admin" / "support" / "tickets" / "new.html"
+    ).read_text(encoding="utf-8")
+    route = (ROOT / "app" / "web" / "admin" / "support_tickets.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'name="publish_description"' in template
+    assert "Share description with customer" in template
+    assert "publish_description: bool = Form(False)" in route

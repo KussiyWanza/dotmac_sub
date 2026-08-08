@@ -38,12 +38,13 @@ Usage:
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from app.models.domain_settings import SettingDomain
+from app.services import settings_spec
 from app.services.adapters import adapter_registry
 
 if TYPE_CHECKING:
@@ -321,56 +322,51 @@ class SmsProvider:
     def channel(self) -> NotificationChannel:
         return NotificationChannel.sms
 
-    _SETTING_KEYS = (
-        ("sms_enabled", "SMS_ENABLED", "true"),
-        ("sms_provider", "SMS_PROVIDER", "webhook"),
-        ("sms_api_key", "SMS_API_KEY", None),
-        ("sms_api_secret", "SMS_API_SECRET", None),
-        ("sms_from_number", "SMS_FROM_NUMBER", None),
-        ("sms_webhook_url", "SMS_WEBHOOK_URL", None),
-    )
+    def is_available(self) -> bool:
+        """Mirror `send_sms`'s configuration requirements exactly.
 
-    def _resolve_settings(self) -> dict[str, str | None]:
-        """domain_settings with env fallback; env-only when no DB is
-        reachable (health probe before migrations, unit env) — env-configured
-        SMS must still report availability correctly."""
+        This carried its own `(db_key, env_key, default)` table and read the
+        environment ABOVE the stored row, with `sms_enabled` defaulting to
+        `"true"` — while `send_sms`, the readiness probe and the customer
+        policy all defaulted it to `"false"`. A deployment with only
+        `SMS_WEBHOOK_URL` set therefore advertised a channel the send path
+        refused. The spec owns those defaults now, so there is one answer.
+
+        Failing closed when the database is unreachable is deliberate. The old
+        fallback read env directly so a DB-less health probe could still report
+        an env-configured channel; env is a declared BOOTSTRAP input now,
+        materialised into rows by the seed, so a probe with no database
+        genuinely cannot know — and an unconfigured customer channel must be
+        off, not optimistically on.
+        """
+
         try:
             from app.services.db_session_adapter import db_session_adapter
-            from app.services.sms import _get_setting
+            from app.services.sms import _sms_credentials
 
             with db_session_adapter.session() as db:
-                return {
-                    env_key: _get_setting(db, db_key, env_key, default)
-                    for db_key, env_key, default in self._SETTING_KEYS
-                }
-        except Exception:
-            return {
-                env_key: os.getenv(env_key) or default
-                for _db_key, env_key, default in self._SETTING_KEYS
-            }
-
-    def is_available(self) -> bool:
-        # SMS config lives in domain_settings/env via the sms service, not
-        # app.config attributes. Mirror send_sms() provider requirements so
-        # health/selection does not report SMS as usable when the send path is
-        # guaranteed to fail.
-        try:
-            values = self._resolve_settings()
-            enabled = (values.get("SMS_ENABLED") or "").lower()
-            if enabled in ("false", "0", "no", "disabled"):
-                return False
-            provider = (values.get("SMS_PROVIDER") or "webhook").lower()
-            if provider == "twilio":
-                return bool(
-                    values.get("SMS_API_KEY")
-                    and values.get("SMS_API_SECRET")
-                    and values.get("SMS_FROM_NUMBER")
+                if not settings_spec.resolve_boolean(
+                    db, SettingDomain.notification, "sms_enabled"
+                ):
+                    return False
+                provider = settings_spec.resolve_string(
+                    db, SettingDomain.notification, "sms_provider"
                 )
-            if provider == "africastalking":
-                return bool(values.get("SMS_API_KEY"))
-            if provider == "webhook":
-                return bool(values.get("SMS_WEBHOOK_URL"))
-            return False
+                api_key, api_secret = _sms_credentials()
+                if provider == "twilio":
+                    from_number = settings_spec.resolve_string(
+                        db, SettingDomain.notification, "sms_from_number"
+                    )
+                    return bool(api_key and api_secret and from_number)
+                if provider == "africastalking":
+                    return bool(api_key)
+                if provider == "webhook":
+                    return bool(
+                        settings_spec.resolve_string(
+                            db, SettingDomain.notification, "sms_webhook_url"
+                        )
+                    )
+                return False
         except Exception:
             return False
 

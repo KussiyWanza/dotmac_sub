@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "profile_id": "dotmac-sub-engineering-standards",
   "repository": {
     "canonical_url": "https://github.com/michaelayoade/dotmac_sub",
@@ -8,7 +8,7 @@
   "governance_model": {
     "kind": "pinned",
     "canonical_url": "https://github.com/michaelayoade/dotmac_governance",
-    "revision": "1f5f1372238ef37eff71154694d5620008de0959",
+    "revision": "b1dfd824bde6f9644ad5c805a71714b5093ced7f",
     "source": "docs/adr/0006-cross-repository-engineering-conformance.md",
     "status": "accepted"
   },
@@ -24,7 +24,9 @@
       "owner_component": "source-of-truth-manifest",
       "owner_implementation": "app/services/sot_manifest.py",
       "decision_interface": "app.services.sot_manifest.contract_validation_errors",
-      "canonical_writer_paths": ["app/services/sot_manifest.py"],
+      "canonical_writer_paths": [
+        "app/services/sot_manifest.py"
+      ],
       "adapter_paths": [],
       "drift_test_paths": [
         "tests/architecture/test_sot_manifest_contracts.py",
@@ -35,10 +37,30 @@
   "typed_contract_surfaces": [
     {
       "surface_id": "source-of-truth-service-contracts",
-      "paths": ["app/services/sot_manifest.py"],
+      "paths": [
+        "app/services/sot_manifest.py"
+      ],
       "require_public_annotations": true,
       "forbid_any": true,
       "require_immutable_records": true
+    }
+  ],
+  "module_declared_vocabularies": [
+    {
+      "vocabulary_id": "setting-domains",
+      "subject": "Setting domains are declared by the SOT domain that owns the settings and validated at the domain_settings write boundary.",
+      "member_type": "SettingDomain",
+      "member_type_path": "app/models/domain_settings.py",
+      "registry_interface": "app.services.setting_domain_registry.require_declared_domain",
+      "registry_implementation": "app/services/setting_domain_registry.py",
+      "declaration_field": "setting_domains",
+      "declaration_paths": [
+        "app/services/sot_registry/model.py"
+      ],
+      "storage_column": "domain",
+      "storage_paths": [
+        "app/models/domain_settings.py"
+      ]
     }
   ]
 }

@@ -9,6 +9,10 @@ from app.services.sot_registry.model import DomainSOT
 
 DOMAIN = DomainSOT(
     domain="geospatial",
+    setting_domains=(
+        "geocoding",
+        "gis",
+    ),
     services=(
         SOTService(
             name="gis.geocoding",

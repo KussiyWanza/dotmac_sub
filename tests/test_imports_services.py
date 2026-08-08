@@ -9,6 +9,7 @@ from fastapi import HTTPException, UploadFile
 from app.models.domain_settings import DomainSetting, SettingDomain
 from app.models.subscription_engine import SettingValueType
 from app.services import imports as imports_service
+from app.services import settings_spec
 
 # =============================================================================
 # Helper Function Tests
@@ -16,77 +17,101 @@ from app.services import imports as imports_service
 
 
 class TestImportsIntSetting:
-    """Tests for _imports_int_setting function."""
+    """`_imports_int_setting` resolves through the spec, not a caller default.
 
-    def test_returns_default_when_no_setting(self, db_session):
-        """Test returns default when setting not found."""
-        result = imports_service._imports_int_setting(db_session, "nonexistent", 100)
-        assert result == 100
+    It used to take a `default` argument and query `DomainSetting` directly, so
+    `imports.py` restated defaults the specs already declared and skipped the
+    specs' bounds. These tests were rewritten with that contract: the key must
+    be registered, the row wins when present, and everything else falls back to
+    the SPEC's default rather than one the call site invented.
+    """
 
-    def test_returns_value_text_as_int(self, db_session):
-        """Test returns value_text parsed as int."""
-        setting = DomainSetting(
-            domain=SettingDomain.imports,
-            key="max_rows",
-            value_type=SettingValueType.string,
-            value_text="500",
-            is_active=True,
+    def test_absent_row_resolves_the_spec_default(self, db_session):
+        spec = settings_spec.get_spec(SettingDomain.imports, "max_rows")
+        assert spec is not None
+        assert imports_service._imports_int_setting(db_session, "max_rows") == (
+            spec.default
         )
-        db_session.add(setting)
+
+    def test_a_stored_row_wins(self, db_session):
+        db_session.add(
+            DomainSetting(
+                domain=SettingDomain.imports,
+                key="max_rows",
+                value_type=SettingValueType.integer,
+                value_text="500",
+                is_active=True,
+            )
+        )
         db_session.commit()
 
-        result = imports_service._imports_int_setting(db_session, "max_rows", 100)
-        assert result == 500
+        assert imports_service._imports_int_setting(db_session, "max_rows") == 500
 
-    def test_returns_default_on_parse_error(self, db_session):
-        """Test returns default when value cannot be parsed."""
-        setting = DomainSetting(
-            domain=SettingDomain.imports,
-            key="bad_value",
-            value_type=SettingValueType.string,
-            value_text="not-a-number",
-            is_active=True,
+    def test_an_unparseable_row_falls_back_to_the_spec_default(self, db_session):
+        db_session.add(
+            DomainSetting(
+                domain=SettingDomain.imports,
+                key="max_rows",
+                value_type=SettingValueType.integer,
+                value_text="not-a-number",
+                is_active=True,
+            )
         )
-        db_session.add(setting)
         db_session.commit()
 
-        result = imports_service._imports_int_setting(db_session, "bad_value", 100)
-        assert result == 100
-
-    def test_returns_default_for_json_values(self, db_session):
-        """Test returns value_json when value_text is None."""
-        setting = DomainSetting(
-            domain=SettingDomain.imports,
-            key="json_value",
-            value_type=SettingValueType.json,
-            value_json=200,
-            is_active=True,
+        spec = settings_spec.get_spec(SettingDomain.imports, "max_rows")
+        assert spec is not None
+        assert imports_service._imports_int_setting(db_session, "max_rows") == (
+            spec.default
         )
-        db_session.add(setting)
+
+    def test_an_inactive_row_is_ignored(self, db_session):
+        db_session.add(
+            DomainSetting(
+                domain=SettingDomain.imports,
+                key="max_rows",
+                value_type=SettingValueType.integer,
+                value_text="999",
+                is_active=False,
+            )
+        )
         db_session.commit()
 
-        result = imports_service._imports_int_setting(db_session, "json_value", 100)
-        assert result == 200
-
-    def test_ignores_inactive_settings(self, db_session):
-        """Test ignores inactive settings."""
-        setting = DomainSetting(
-            domain=SettingDomain.imports,
-            key="inactive_key",
-            value_type=SettingValueType.string,
-            value_text="999",
-            is_active=False,
+        spec = settings_spec.get_spec(SettingDomain.imports, "max_rows")
+        assert spec is not None
+        assert imports_service._imports_int_setting(db_session, "max_rows") == (
+            spec.default
         )
-        db_session.add(setting)
+
+    def test_a_row_below_the_spec_floor_falls_back(self, db_session):
+        """The bound is the spec's, and it now applies on the READ path too."""
+
+        db_session.add(
+            DomainSetting(
+                domain=SettingDomain.imports,
+                key="max_file_bytes",
+                value_type=SettingValueType.integer,
+                value_text="512",
+                is_active=True,
+            )
+        )
         db_session.commit()
 
-        result = imports_service._imports_int_setting(db_session, "inactive_key", 100)
-        assert result == 100
+        spec = settings_spec.get_spec(SettingDomain.imports, "max_file_bytes")
+        assert spec is not None and spec.min_value == 1024
+        assert imports_service._imports_int_setting(db_session, "max_file_bytes") == (
+            spec.default
+        )
 
+    def test_an_unregistered_key_is_a_programming_error(self, db_session):
+        """The old signature accepted any key with a caller default.
 
-# =============================================================================
-# Import Function Tests
-# =============================================================================
+        Nothing declared such a key's type or bounds, so an unregistered key
+        silently became a setting. It is now loud.
+        """
+
+        with pytest.raises(RuntimeError):
+            imports_service._imports_int_setting(db_session, "nonexistent")
 
 
 class TestImportSubscriberCustomFieldsFromCsv:

@@ -20,6 +20,7 @@ from app.services.secrets import (
     read_secret_fields,
     write_secret,
 )
+from app.services.setting_domain_registry import is_declared
 from app.services.settings_cache import SettingsCache
 
 
@@ -134,6 +135,17 @@ class DomainSettings(ListResponseMixin):
         if self.domain:
             return self.domain
         if payload_domain:
+            # `SettingDomain` is an open type, so the request schema no longer
+            # rejects an unknown domain the way the enum did. This is the one
+            # funnel where a request BODY becomes a row's domain, so the
+            # declaration check belongs here — reaching the ORM listener
+            # instead would turn a bad request into a 500. The listener stays
+            # as the backstop for non-HTTP writers.
+            if not is_declared(payload_domain):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unknown setting domain '{payload_domain}'",
+                )
             return payload_domain
         raise HTTPException(status_code=400, detail="Setting domain is required")
 
@@ -428,7 +440,10 @@ comms_settings = DomainSettings(SettingDomain.comms)
 tr069_settings = DomainSettings(SettingDomain.tr069)
 snmp_settings = DomainSettings(SettingDomain.snmp)
 bandwidth_settings = DomainSettings(SettingDomain.bandwidth)
-subscription_engine_settings = DomainSettings(SettingDomain.subscription_engine)
+# `subscription_engine_settings` went with the domain: it had no spec, no
+# route, no reader and no writer, and the concern moved to the dedicated
+# `subscription_engine_settings` TABLE long ago. See the accessor note in
+# app/models/domain_settings.py.
 gis_settings = DomainSettings(SettingDomain.gis)
 scheduler_settings = DomainSettings(SettingDomain.scheduler)
 modules_settings = DomainSettings(SettingDomain.modules)

@@ -184,6 +184,10 @@ def _team_inbox_contract(
 
 DOMAIN = DomainSOT(
     domain="notifications_communications",
+    setting_domains=(
+        "notification",
+        "comms",
+    ),
     services=(
         SOTService(
             name="communication.document_delivery",

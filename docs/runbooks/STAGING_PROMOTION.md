@@ -28,7 +28,9 @@ Overridden work reaches production without staging having run it, so reconcile
    SHA as `candidate_sha`. The workflow refuses a stale SHA or non-green source,
    builds the application once on GitHub, and records its immutable OCI digest.
 6. Let `Deploy dev to staging` deploy that exact digest, then complete staging
-   acceptance against `http://10.120.121.20:8001`.
+   acceptance against `http://10.120.121.20:8001`. **That acceptance covers
+   application behaviour only — it does not exercise network equipment.** See
+   "What staging acceptance does not cover" below.
 7. Promote the accepted dev tree to `main` without unrelated changes. The
    promotion PR uses `version:none` with a body explaining that the version was
    already established and validated on dev. **Merge it with a merge commit,
@@ -58,6 +60,42 @@ previously active dev-image staging path for that one promotion, with all of its
 existing CI, staging, and approval gates. Once the change reaches `main`, every
 later release uses the explicit candidate workflow. Do not fabricate an
 evidence artifact or bypass staging to shorten the bootstrap.
+
+## What staging acceptance does not cover
+
+Staging cannot execute any live OLT operation. Its OpenBao instance is reachable
+but unseeded — `/admin/system/secrets` reports **0 secret paths, 0 fields** —
+while the staging database carries `bao://` credential references inherited from
+a production copy. Every reference therefore 404s:
+
+```
+Autofind query failed: Failed to resolve credential secret reference:
+404: OpenBao secret not found
+```
+
+Confirmed 2026-08-08 against BOI and Gudu, on staging `v7.141.6`. Resolution
+happens in `credential_crypto.decrypt_credential` -> `secrets.resolve_openbao_ref`,
+inside `_open_shell` and before any SSH session opens, so no application change
+compensates and no amount of staging soak exercises device behaviour.
+
+**Consequence.** Changes to OLT/ONT device interaction — Huawei CLI transport,
+command construction, response classification, ONT authorization, service ports,
+TR-069 binding — reach production having been exercised against a shelf at **no
+point** in the pipeline, because CI cannot reach one either. Do not read a green
+staging acceptance as evidence that device-facing behaviour works.
+
+For such a change, either arrange verification another way before promoting, or
+promote deliberately with a named post-deploy check and record that decision in
+the promotion pull request.
+
+`scripts/setup/openbao_init.sh` seeds project-level secrets from environment
+variables. It does **not** create per-OLT credential paths and will not fix this.
+
+Tracked remediation: provision read-only accounts on the Huawei shelves and seed
+those at the referenced paths, giving staging real read acceptance (autofind,
+status, inventory, config readback) with no ability to write to production fibre
+plant. Seeding staging with the existing full-access credentials would let a
+staging bug mutate live plant, and is not recommended.
 
 ## Merge methods
 

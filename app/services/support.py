@@ -1945,6 +1945,7 @@ class Tickets:
 
         audit_metadata = {
             "number": ticket.number,
+            "description_is_internal": ticket.description_is_internal,
             "region": ticket.region,
             "service_team_id": (
                 str(ticket.service_team_id)
@@ -2892,6 +2893,7 @@ class Tickets:
         before = {
             "status": ticket.status,
             "priority": ticket.priority,
+            "description_is_internal": ticket.description_is_internal,
             "assigned_to_person_id": str(ticket.assigned_to_person_id)
             if ticket.assigned_to_person_id
             else None,
@@ -2954,6 +2956,7 @@ class Tickets:
         after = {
             "status": ticket.status,
             "priority": ticket.priority,
+            "description_is_internal": ticket.description_is_internal,
             "assigned_to_person_id": str(ticket.assigned_to_person_id)
             if ticket.assigned_to_person_id
             else None,

@@ -42,6 +42,10 @@ from app.services.sot_registry.model import DomainSOT
 
 DOMAIN = DomainSOT(
     domain="financial_access",
+    setting_domains=(
+        "billing",
+        "collections",
+    ),
     services=(
         *BILLING_SERVICES,
         *CUSTOMER_SUBLEDGER_SERVICES,

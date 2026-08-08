@@ -524,6 +524,14 @@ def _recalculate_invoice_totals(db: Session, invoice: Invoice):
     )
     # A draft is pre-issue: keep its computed balance for display but do NOT
     # auto-advance it to paid/partially_paid (it must be explicitly issued).
+    #
+    # Deliberately NOT extended to "or issued_at is None". Refusing to advance a
+    # settled invoice leaves money applied against a balance of zero while the
+    # status still reads issued — an open receivable that collections would keep
+    # chasing. That trades a missing date for a wrong debt. Invoices that reach
+    # here without an issue date are surfaced by the billing-health signal
+    # `invoices_paid_without_issue` instead, and the paths that create them are
+    # fixed at the source.
     if invoice.status == InvoiceStatus.draft:
         return
     if invoice.balance_due <= 0:

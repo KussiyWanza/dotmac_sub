@@ -113,37 +113,33 @@ class AccountCreditInvariantViolation:
     detail: str
 
 
-# Where Sub's own book begins. Everything before this instant is opening
-# balance: the position carried in at the handoff, loaded in a single bulk
-# write where 106,690 of the 106,692 earlier invoices share the 2026-03-15
-# 14:00 UTC hour, against a first natively authored invoice of 2026-03-16
-# 06:45 UTC.
-#
-# Opening-balance invoices arrived already settled, without the allocations
-# that tie a payment to an invoice, so 12.4% of them cannot satisfy the funding
-# invariant — against 2.5% of the invoices Sub itself settled. Their balance due
-# is zero and no reconciler can produce evidence that was never carried in, so
-# counting them forever would pin the gauge above zero and bury the live defect
-# under a backlog nobody can act on. The invariant measures the book Sub is
-# responsible for; the opening balance is reported separately.
-OPENING_BALANCE_BOUNDARY_AT = datetime(2026, 3, 16, tzinfo=UTC)
-
-
 def _count_underfunded_paid_invoices(db: Session, *, opening_balance: bool) -> int:
     """Count paid invoices whose funding evidence falls short of their total.
 
-    One definition, two populations. `opening_balance=False` is the live
-    invariant: the book Sub itself authored and settled. `opening_balance=True`
-    is the position carried in at the handoff, which cannot satisfy the check
-    because its allocations were never part of what was carried in. Splitting
-    here rather than duplicating the query keeps the partial-refund proration
-    and rounding identical for both.
+    One definition, two populations, split on provenance. An invoice carrying a
+    prior-system identity is opening balance: it was carried in already settled,
+    without the allocations that tie a payment to an invoice, so it can never
+    satisfy this check. Its balance due is zero and no reconciler can produce
+    evidence that was never carried in, so counting it forever would pin the
+    gauge above zero and bury the live defect underneath it. An invoice with no
+    prior-system identity is Sub's own work, and underfunding there is a real
+    defect.
+
+    Provenance, not creation date. The carried-in book was loaded in one bulk
+    write, which makes a timestamp look like a clean boundary — but backfill
+    continued for months afterwards, so 111 carried-in invoices were created
+    after any such instant and a date test reports them as live defects. By
+    identity the split is exact: 12.1% of the carried-in book is underfunded,
+    against 0.29% of the book Sub authored.
+
+    Splitting here rather than duplicating the query keeps the partial-refund
+    proration and rounding identical for both populations.
     """
     zero = Decimal("0.00")
-    boundary = (
-        Invoice.created_at < OPENING_BALANCE_BOUNDARY_AT
+    carried_in = (
+        Invoice.splynx_invoice_id.is_not(None)
         if opening_balance
-        else Invoice.created_at >= OPENING_BALANCE_BOUNDARY_AT
+        else Invoice.splynx_invoice_id.is_(None)
     )
     effective_payment_amount = case(
         (
@@ -230,7 +226,7 @@ def _count_underfunded_paid_invoices(db: Session, *, opening_balance: bool) -> i
             .where(
                 Invoice.is_active.is_(True),
                 Invoice.status == InvoiceStatus.paid,
-                boundary,
+                carried_in,
                 funded_total < func.round(Invoice.total, 2),
             )
         ).scalar()

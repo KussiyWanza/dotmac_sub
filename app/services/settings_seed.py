@@ -444,6 +444,41 @@ def seed_usage_settings(db: Session) -> None:
 
 
 def seed_notification_settings(db: Session) -> None:
+    # SMS channel controls. `env_var` is a BOOTSTRAP input: it is materialised
+    # into a row here and never consulted again at runtime, which is what
+    # replaced `sms._get_setting`'s env-above-row read. The credentials are not
+    # seeded — they are held in app.config (ADR-0009).
+    sms_enabled_raw = os.getenv("SMS_ENABLED", "false")
+    notification_settings.ensure_by_key(
+        db,
+        key="sms_enabled",
+        value_type=SettingValueType.boolean,
+        value_text=sms_enabled_raw,
+        value_json=sms_enabled_raw.lower() in {"1", "true", "yes", "on", "enabled"},
+    )
+    for key, env_key, fallback in (
+        ("sms_provider", "SMS_PROVIDER", ""),
+        ("sms_from_number", "SMS_FROM_NUMBER", ""),
+        ("sms_username", "SMS_USERNAME", ""),
+        ("sms_webhook_url", "SMS_WEBHOOK_URL", ""),
+    ):
+        notification_settings.ensure_by_key(
+            db,
+            key=key,
+            value_type=SettingValueType.string,
+            value_text=os.getenv(env_key, fallback),
+        )
+    for key, env_key, fallback in (
+        ("sms_api_timeout_seconds", "SMS_API_TIMEOUT_SECONDS", "30"),
+        ("sms_max_length", "SMS_MAX_LENGTH", "160"),
+    ):
+        notification_settings.ensure_by_key(
+            db,
+            key=key,
+            value_type=SettingValueType.integer,
+            value_text=os.getenv(env_key, fallback),
+        )
+
     enabled_raw = os.getenv("ALERT_NOTIFICATIONS_ENABLED", "true")
     notification_settings.ensure_by_key(
         db,
@@ -1331,12 +1366,6 @@ def seed_scheduler_settings(db: Session) -> None:
         key="beat_refresh_seconds",
         value_type=SettingValueType.integer,
         value_text=os.getenv("CELERY_BEAT_REFRESH_SECONDS", "300"),
-    )
-    scheduler_settings.ensure_by_key(
-        db,
-        key="refresh_minutes",
-        value_type=SettingValueType.integer,
-        value_text=os.getenv("CELERY_BEAT_REFRESH_MINUTES", "5"),
     )
     scheduler_settings.ensure_by_key(
         db,

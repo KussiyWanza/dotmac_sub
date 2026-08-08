@@ -56,7 +56,9 @@ def _setting_key(node: ast.Call) -> tuple[SettingDomain, str]:
         and domain_node.value.id == "SettingDomain"
     )
     assert isinstance(key_node, ast.Constant) and isinstance(key_node.value, str)
-    return SettingDomain[domain_node.attr], key_node.value
+    # `getattr`, not `SettingDomain[...]`: the member type is an open `str`
+    # subclass now, so it has no enum-style subscript lookup.
+    return getattr(SettingDomain, domain_node.attr), key_node.value
 
 
 def test_scheduler_tuning_uses_only_registered_typed_settings() -> None:

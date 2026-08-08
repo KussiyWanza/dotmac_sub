@@ -401,7 +401,10 @@ def _sync_comments(
                 author_person_id=None,
                 author_type="system",
                 body=str(comment.get("body") or "").strip() or "(empty comment)",
-                is_internal=bool(comment.get("is_internal", False)),
+                # CRM is provenance-only for tickets. Its legacy boolean was a
+                # storage default, not evidence that a customer publication
+                # decision occurred in Selfcare.
+                is_internal=True,
                 attachments=_clean_attachments(comment.get("attachments")),
                 metadata_={
                     "sync_source": "crm",
