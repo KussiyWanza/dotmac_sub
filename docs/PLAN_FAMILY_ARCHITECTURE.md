@@ -615,7 +615,7 @@ projection in the FUP calculator. Production throttled every one of them to a
 flat 1 Mbps. The catalogue asserted a post-FUP speed that was wrong for four of
 the five, and no code would have noticed.
 
-**Dropped** (migration `490_retire_allowance_throttle_rate`). `included_gb`,
+**Dropped** (migration `501_retire_allowance_throttle_rate`). `included_gb`,
 `overage_rate`, `overage_cap_gb` and `rollover_enabled` stay — those are
 billing, which `usage_allowances` legitimately owns (§1). Only the enforcement
 decision left. The down-migration restores the column but not the values:

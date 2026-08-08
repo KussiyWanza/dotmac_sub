@@ -19,8 +19,8 @@ The down-migration restores the column but not the values. They were never
 authoritative, and re-materialising them would recreate the second answer this
 removes.
 
-Revision ID: 498_retire_allowance_throttle_rate
-Revises: 497_vendor_route_lengths
+Revision ID: 501_retire_allowance_throttle_rate
+Revises: 500_reconcile_staff_notification_inbox
 """
 
 from __future__ import annotations
@@ -29,8 +29,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision = "498_retire_allowance_throttle_rate"
-down_revision = "497_vendor_route_lengths"
+revision = "501_retire_allowance_throttle_rate"
+down_revision = "500_reconcile_staff_notification_inbox"
 branch_labels = None
 depends_on = None
 
