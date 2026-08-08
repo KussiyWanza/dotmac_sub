@@ -279,6 +279,12 @@ protected `production` environment. It downloads exact candidate and staging
 artifacts by run ID, rechecks green `main`, tree equality, and ancestry, then
 registry-tags the same digest. It never invokes a Docker build.
 
+GitHub records the manually dispatched candidate run on `dev`, but records the
+downstream `Deploy dev to staging` `workflow_run` on the default `main` branch
+where that workflow executes. Production promotion validates those transport
+branches independently from the typed staging acceptance, which still binds the
+exact `dev` candidate revision, tree, digest, and build run.
+
 `Deploy authorized digest to production` remains fail-closed until the
 repository variable `PRODUCTION_DEPLOY_ENABLED` is exactly `true`. The
 `production` environment must define `PRODUCTION_DEPLOY_DIR`, and its runner

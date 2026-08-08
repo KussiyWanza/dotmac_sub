@@ -64,6 +64,7 @@ jobs:
         with:
           script: |
             const runId = Number(process.env.AUTHORIZATION_RUN_ID);
+            const expectedRepository = `${context.repo.owner}/${context.repo.repo}`;
             if (!Number.isSafeInteger(runId) || runId <= 0) {
               core.setFailed("authorization_run_id must be a positive integer.");
               return;
@@ -77,7 +78,7 @@ jobs:
             if (run.name !== "Promote staged digest for production" ||
                 run.head_branch !== "main" || run.event !== "workflow_dispatch" ||
                 run.status !== "completed" || run.conclusion !== "success" ||
-                run.head_repository.full_name !== context.repo.repo) {
+                run.head_repository?.full_name !== expectedRepository) {
               core.setFailed(`Run ${runId} is not accepted production authorization.`);
               return;
             }
