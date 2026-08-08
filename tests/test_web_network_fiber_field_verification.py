@@ -14,6 +14,10 @@ from app.services.network.fiber_topology_field_worklist import (
 )
 
 
+def _deny_permissions(*_args: object, **_kwargs: object) -> bool:
+    return False
+
+
 def _report(total: int) -> FiberTopologyFieldWorklistReport:
     rows = tuple(
         {
@@ -117,6 +121,7 @@ def test_field_worklist_template_renders_the_typed_page_projection():
         loader=FileSystemLoader(str(templates)),
         autoescape=True,
     )
+    environment.globals["can"] = _deny_permissions
 
     html = environment.get_template(
         "admin/network/fiber/field_verification_worklist.html"
