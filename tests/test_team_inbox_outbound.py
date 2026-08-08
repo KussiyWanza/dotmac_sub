@@ -238,8 +238,10 @@ def test_whatsapp_notification_delivers_inbox_attachment_as_media(
     monkeypatch.setattr(
         notification_tasks.whatsapp_service,
         "send_text_message",
-        lambda *args, **kwargs: text_calls.append(kwargs)
-        or {"ok": True, "provider_message_id": "wamid.text"},
+        lambda *args, **kwargs: (
+            text_calls.append(kwargs)
+            or {"ok": True, "provider_message_id": "wamid.text"}
+        ),
     )
     monkeypatch.setattr(
         notification_tasks.team_inbox_media,

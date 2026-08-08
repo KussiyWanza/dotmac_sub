@@ -311,11 +311,7 @@ def _deliver_notification_queue_stats(db, batch_size: int = 50) -> dict[str, int
         delivery_metadata = dict(notification.metadata_ or {})
         raw_inbox_attachment_ids = delivery_metadata.get("inbox_attachment_ids")
         inbox_attachment_ids = (
-            [
-                str(value)
-                for value in raw_inbox_attachment_ids
-                if isinstance(value, str)
-            ]
+            [str(value) for value in raw_inbox_attachment_ids if isinstance(value, str)]
             if isinstance(raw_inbox_attachment_ids, list)
             else []
         )

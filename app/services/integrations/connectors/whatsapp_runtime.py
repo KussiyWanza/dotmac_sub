@@ -168,8 +168,7 @@ def _media_endpoint(config: Mapping[str, Any]) -> str:
     if provider == WHATSAPP_PROVIDER_META:
         phone_number = str(config.get("phone_number") or "").strip()
         return (
-            f"https://graph.facebook.com/{_graph_version(config)}/"
-            f"{phone_number}/media"
+            f"https://graph.facebook.com/{_graph_version(config)}/{phone_number}/media"
         )
     raise ValueError("unsupported_whatsapp_provider")
 
