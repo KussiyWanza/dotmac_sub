@@ -21,6 +21,15 @@ The manifest has one canonical graph. Domain, capability/module, and journey
 hierarchies are derived navigation views; they do not own parallel dependency
 lists or service declarations.
 
+A domain also declares the setting domains it owns, on
+`DomainSOT.setting_domains`. `domain_settings.domain` is an open vocabulary
+whose members belong to the domains that own the settings, so the members are
+declared here and validated by `app/services/setting_domain_registry.py` at the
+write boundary — never enumerated as an enum or a CHECK constraint in
+`app/models/domain_settings.py`. Exactly one domain may declare a given setting
+domain; `registry_validation_errors()` rejects a second claimant. Adding a
+setting domain is therefore a declaration by its owner, not a migration.
+
 ## UI Projection Boundary
 
 The approved cross-Dotmac presentation contract is

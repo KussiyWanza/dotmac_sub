@@ -259,6 +259,48 @@ registry/resolver (seed + cache). The kernel's settings stack targets a
 same-named model and table (collision above). One writer rule: kernel settings
 adapt behind the Sub resolver after parity, or not at all.
 
+#### Amendment — setting-domain vocabulary conformance (ADR-0008)
+
+`SettingDomain` is no longer a closed `enum.Enum` stored as the native
+`settingdomain` PostgreSQL type. Per the fleet-wide standard that a vocabulary
+whose members belong to modules is declared by those modules and validated by a
+registry, the members moved OUT of the hosting layer:
+
+- **Declared** on `DomainSOT.setting_domains`
+  (`app/services/sot_registry/domains/`), so the SOT domain that owns the
+  settings also owns the right to name them. Sub needed no new ownership
+  structure for this — the canonical registry already existed, which is why the
+  declaration is a field on it rather than a second list to drift. The
+  annotated field on a frozen record is also the shape the governance schema-v3
+  `declaration_field` gate resolves.
+- **Validated** by `app/services/setting_domain_registry.py`, enforced at the
+  WRITE boundary (an ORM listener on `DomainSetting`) rather than at
+  construction — a resolver must be able to name a domain in order to reject
+  it, and rows under a since-undeclared domain must still read.
+- **Widened** by migration `502_open_setting_domain_vocabulary`:
+  `VARCHAR(120)`, every value preserved, the enum type dropped only after
+  `pg_depend` proves nothing else needs it, never `CASCADE`. This retires the
+  class of migration that `144_vas_wallets`, `225_add_field_setting_domain` and
+  `249_field_erp_sync_outbox` belong to — files whose entire content is an
+  `ALTER TYPE ... ADD VALUE` on some module's behalf.
+
+27 of the 28 members are declared. `subscription_engine` is deliberately NOT:
+it had no spec, no route, no reader and no writer, and its concern moved to the
+dedicated `subscription_engine_settings` table long ago. Its rows survive the
+migration and become unwritable, which is the intended outcome for a dead
+domain — the ERP equivalent was `operations`.
+
+Consequences worth knowing before the kernel cutover:
+
+- `SettingDomain` is an open `str` subclass, so `SettingDomain(x)` no longer
+  raises on an unknown value and `is` comparisons against members are always
+  false. Both were relied on — once each, both fixed and pinned by tests.
+- `domain` serialises in OpenAPI as a plain string; the `SettingDomain`
+  component is gone, so generated clients lose the enum. Hence `version:major`.
+- This does not move Sub any closer to importing the kernel's settings modules:
+  they stay `defer-db` and off the allowlist. It removes the vocabulary
+  blocker, nothing else.
+
 ### Audit writers
 
 Sub's two sanctioned surfaces are `record_audit_event`

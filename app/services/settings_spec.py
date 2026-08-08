@@ -5063,7 +5063,6 @@ DOMAIN_SETTINGS_SERVICE = {
     SettingDomain.tr069: settings_service.tr069_settings,
     SettingDomain.snmp: settings_service.snmp_settings,
     SettingDomain.bandwidth: settings_service.bandwidth_settings,
-    SettingDomain.subscription_engine: settings_service.subscription_engine_settings,
     SettingDomain.gis: settings_service.gis_settings,
     SettingDomain.scheduler: settings_service.scheduler_settings,
     SettingDomain.integration: settings_service.integration_settings,

@@ -19,6 +19,10 @@ from app.services.sot_registry.model import DomainSOT
 
 DOMAIN = DomainSOT(
     domain="observability",
+    setting_domains=(
+        "audit",
+        "bandwidth",
+    ),
     services=(
         SOTService(
             name="observability.audit_log",

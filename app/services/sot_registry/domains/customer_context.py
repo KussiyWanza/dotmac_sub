@@ -22,6 +22,7 @@ from app.services.sot_registry.model import DomainSOT
 
 DOMAIN = DomainSOT(
     domain="customer_context",
+    setting_domains=("subscriber",),
     services=(
         SOTService(
             name="customer.accounts",

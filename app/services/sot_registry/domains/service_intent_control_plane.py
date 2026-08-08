@@ -20,6 +20,10 @@ from app.services.sot_registry.model import DomainSOT
 
 DOMAIN = DomainSOT(
     domain="service_intent_control_plane",
+    setting_domains=(
+        "catalog",
+        "lifecycle",
+    ),
     services=(
         SOTService(
             name="service_intent.catalog_policy",
