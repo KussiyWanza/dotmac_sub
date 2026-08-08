@@ -10,7 +10,8 @@
 #   deploy.sh sha-abc1234        deploy an existing immutable image tag
 #   deploy.sh sha256:<64-hex>    deploy the repository image by exact OCI digest
 #   deploy.sh --status           show pinned vs running image
-#   SKIP_BACKUP=1 deploy.sh ...  skip the pre-migration DB backup (NOT recommended)
+#   Production backups may be omitted only through deploy_production.sh with
+#   a typed, verified no-migration hotfix decision.
 #   HEALTH_CURL_TIMEOUT=N ...    cap each health-check curl attempt at N seconds
 #                                (default 5) so a hung health endpoint can't stall
 #                                a retry indefinitely
@@ -480,9 +481,19 @@ PREV_GIT_SHA_PRESENT="$(grep -q '^GIT_SHA=' .env && printf 1 || printf 0)"
 case "$(env_value APP_ENV):$(env_value SERVER_NAME)" in
   production:dotmac-sub-prod)
     GITHUB_RELEASE_BRANCH="main"
+    DEPLOYMENT_TARGET="production"
+    if [[ "${SKIP_BACKUP:-0}" == "1" ]]; then
+      echo "BACKUP POLICY REJECTED: production does not accept SKIP_BACKUP=1." >&2
+      exit 1
+    fi
     ;;
   staging:dotmac-sub-staging)
     GITHUB_RELEASE_BRANCH="dev"
+    DEPLOYMENT_TARGET="staging"
+    if [[ "${SKIP_BACKUP:-0}" == "1" ]]; then
+      echo "BACKUP POLICY REJECTED: use the verified staging adapter." >&2
+      exit 1
+    fi
     ;;
   *)
     echo "GITHUB RELEASE GATE REJECTED: APP_ENV and SERVER_NAME do not identify an approved deployment host." >&2
@@ -543,9 +554,30 @@ if ! command -v "${PYTHON_BIN}" >/dev/null; then
   exit 1
 fi
 log "Verifying exact ${GITHUB_RELEASE_BRANCH} revision passed GitHub-hosted CI"
+GITHUB_RELEASE_REVISION="${FULL_SHA}"
+if [[ "${DEPLOYMENT_TARGET}" == "production" ]]; then
+  if [[ ! "${TAG}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    echo "PRODUCTION RELEASE GATE REJECTED: production requires an exact OCI digest." >&2
+    exit 1
+  fi
+  if [[ -z "${PRODUCTION_RELEASE_EVIDENCE:-}" || ! -f "${PRODUCTION_RELEASE_EVIDENCE}" ]]; then
+    echo "PRODUCTION RELEASE GATE REJECTED: typed production authorization is required." >&2
+    exit 1
+  fi
+  if ! GITHUB_RELEASE_REVISION="$(
+    PYTHONPATH="${REPO_DIR}" "${PYTHON_BIN}" -m scripts.release_candidate_evidence \
+      verify-production \
+      --path "${PRODUCTION_RELEASE_EVIDENCE}" \
+      --expected-source-revision "${FULL_SHA}" \
+      --expected-image-digest "${TAG}"
+  )"; then
+    echo "PRODUCTION RELEASE GATE REJECTED: authorization evidence did not match the image." >&2
+    exit 1
+  fi
+fi
 "${PYTHON_BIN}" "${REPO_DIR}/scripts/verify_github_release.py" \
   --repository "${GITHUB_RELEASE_REPOSITORY}" \
-  --revision "${FULL_SHA}" \
+  --revision "${GITHUB_RELEASE_REVISION}" \
   --branch "${GITHUB_RELEASE_BRANCH}"
 
 # If this script is killed mid-backup -- an SSH session dropping is enough --
@@ -563,12 +595,36 @@ cleanup_children() {
 }
 trap 'cleanup_children; echo "Deploy interrupted -- backup child terminated, nothing pinned or migrated" >&2; exit 130' INT TERM HUP
 
-if [[ "${SKIP_BACKUP:-0}" != "1" ]]; then
-  log "Backing up database before migrations (SKIP_BACKUP=1 to skip)"
+BACKUP_MODE="required"
+if [[ "${DEPLOYMENT_TARGET}" == "staging" ]]; then
+  if [[ "${DEPLOY_BACKUP_MODE:-}" != "skip_staging" ]]; then
+    echo "BACKUP POLICY REJECTED: staging deployments must use scripts/deploy_staging.sh." >&2
+    exit 1
+  fi
+  BACKUP_MODE="skip_staging"
+elif [[ -n "${PRODUCTION_BACKUP_DECISION_FILE:-}" ]]; then
+  if ! BACKUP_MODE="$(
+    PYTHONPATH="${REPO_DIR}" "${PYTHON_BIN}" -m scripts.release_backup_policy \
+      verify-production-decision --path "${PRODUCTION_BACKUP_DECISION_FILE}"
+  )"; then
+    echo "BACKUP POLICY REJECTED: production hotfix evidence is invalid." >&2
+    exit 1
+  fi
+fi
+
+if [[ "${BACKUP_MODE}" == "required" ]]; then
+  log "Backing up database before migrations"
   bash "${REPO_DIR}/scripts/db_backup.sh" &
   BACKUP_PID=$!
   wait "${BACKUP_PID}"
   BACKUP_PID=""
+elif [[ "${BACKUP_MODE}" == "skip_staging" ]]; then
+  log "Skipping staging database backup under the verified staging host policy"
+elif [[ "${BACKUP_MODE}" == "skip_production_hotfix" ]]; then
+  log "Skipping production backup under verified no-migration hotfix evidence"
+else
+  echo "BACKUP POLICY REJECTED: unrecognized backup mode ${BACKUP_MODE}." >&2
+  exit 1
 fi
 
 repin_prev() {

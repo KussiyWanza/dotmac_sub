@@ -1,0 +1,165 @@
+name: Deploy authorized digest to production
+
+on:
+  workflow_dispatch:
+    inputs:
+      authorization_run_id:
+        description: Successful Promote staged digest for production run ID
+        required: true
+        type: string
+      target_server_name:
+        description: Explicit production target (must match the host contract)
+        required: true
+        type: string
+      hotfix_no_migrations:
+        description: Request the verified no-migration hotfix backup exception
+        required: true
+        default: false
+        type: boolean
+      change_reference:
+        description: Required incident or change reference for a hotfix exception
+        required: false
+        type: string
+      reason:
+        description: Required reason for a hotfix exception
+        required: false
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: dotmac-sub-production
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    outputs:
+      source_revision: ${{ steps.evidence.outputs.source_revision }}
+      release_revision: ${{ steps.evidence.outputs.release_revision }}
+      image_digest: ${{ steps.evidence.outputs.image_digest }}
+    steps:
+      - name: Require explicit enabled production target
+        env:
+          ENABLED: ${{ vars.PRODUCTION_DEPLOY_ENABLED }}
+          TARGET: ${{ inputs.target_server_name }}
+        run: |
+          set -euo pipefail
+          test "$ENABLED" = "true" || {
+            echo "Production deployment workflow is disabled." >&2
+            exit 1
+          }
+          test "$TARGET" = "dotmac-sub-prod" || {
+            echo "Explicit target must be dotmac-sub-prod." >&2
+            exit 1
+          }
+
+      - name: Require successful exact authorization run
+        id: authorization-run
+        uses: actions/github-script@v7
+        env:
+          AUTHORIZATION_RUN_ID: ${{ inputs.authorization_run_id }}
+        with:
+          script: |
+            const runId = Number(process.env.AUTHORIZATION_RUN_ID);
+            if (!Number.isSafeInteger(runId) || runId <= 0) {
+              core.setFailed("authorization_run_id must be a positive integer.");
+              return;
+            }
+            const response = await github.rest.actions.getWorkflowRun({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: runId,
+            });
+            const run = response.data;
+            if (run.name !== "Promote staged digest for production" ||
+                run.head_branch !== "main" || run.event !== "workflow_dispatch" ||
+                run.status !== "completed" || run.conclusion !== "success" ||
+                run.head_repository.full_name !== context.repo.repo) {
+              core.setFailed(`Run ${runId} is not accepted production authorization.`);
+              return;
+            }
+            core.setOutput("release_sha", run.head_sha);
+
+      - name: Checkout authorized release-control verifier
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.authorization-run.outputs.release_sha }}
+
+      - name: Download exact production authorization
+        uses: actions/download-artifact@v4
+        with:
+          pattern: production-authorization-*
+          path: ${{ runner.temp }}/authorization
+          merge-multiple: true
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.authorization_run_id }}
+
+      - name: Verify typed production authorization
+        id: evidence
+        env:
+          AUTHORIZATION_RUN_ID: ${{ inputs.authorization_run_id }}
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(find "$RUNNER_TEMP/authorization" -type f -name authorization.json)
+          test "${#files[@]}" -eq 1
+          python -m scripts.release_candidate_evidence verify-production \
+            --path "${files[0]}" \
+            --expected-authorization-run-id "$AUTHORIZATION_RUN_ID" \
+            --expected-release-revision "${{ steps.authorization-run.outputs.release_sha }}" \
+            --github-output "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: verify
+    runs-on: [self-hosted, linux, x64, dotmac-sub-production]
+    environment: production
+    timeout-minutes: 45
+    steps:
+      - name: Checkout authorized main release
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.verify.outputs.release_revision }}
+
+      - name: Download exact production authorization
+        uses: actions/download-artifact@v4
+        with:
+          pattern: production-authorization-*
+          path: ${{ runner.temp }}/authorization
+          merge-multiple: true
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.authorization_run_id }}
+
+      - name: Verify production host contract
+        env:
+          PRODUCTION_DEPLOY_DIR: ${{ vars.PRODUCTION_DEPLOY_DIR }}
+        run: |
+          set -euo pipefail
+          test -n "$PRODUCTION_DEPLOY_DIR"
+          test -f "$PRODUCTION_DEPLOY_DIR/.env"
+          grep -Fqx 'APP_ENV=production' "$PRODUCTION_DEPLOY_DIR/.env"
+          grep -Fqx 'SERVER_NAME=dotmac-sub-prod' "$PRODUCTION_DEPLOY_DIR/.env"
+
+      - name: Deploy authorized digest
+        env:
+          PRODUCTION_DEPLOY_DIR: ${{ vars.PRODUCTION_DEPLOY_DIR }}
+          IMAGE_DIGEST: ${{ needs.verify.outputs.image_digest }}
+          HOTFIX: ${{ inputs.hotfix_no_migrations }}
+          CHANGE_REFERENCE: ${{ inputs.change_reference }}
+          HOTFIX_REASON: ${{ inputs.reason }}
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(find "$RUNNER_TEMP/authorization" -type f -name authorization.json)
+          test "${#files[@]}" -eq 1
+          args=("$IMAGE_DIGEST" "${files[0]}")
+          if [ "$HOTFIX" = "true" ]; then
+            args+=(--hotfix-no-migrations --change-reference "$CHANGE_REFERENCE" --reason "$HOTFIX_REASON")
+          elif [ -n "$CHANGE_REFERENCE" ] || [ -n "$HOTFIX_REASON" ]; then
+            echo "Hotfix attribution was supplied without hotfix_no_migrations." >&2
+            exit 1
+          fi
+          REPO_DIR="$GITHUB_WORKSPACE" DEPLOY_DIR="$PRODUCTION_DEPLOY_DIR" \
+            bash scripts/deploy_production.sh "${args[@]}"

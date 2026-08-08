@@ -14,6 +14,7 @@ from enum import Enum
 _FULL_GIT_SHA = re.compile(r"^[0-9a-f]{40}$")
 _SHA256_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ALEMBIC_REVISION = re.compile(r"^[A-Za-z0-9_.-]+$")
+_CHANGE_REFERENCE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 
 
 class ReleaseContractErrorCode(str, Enum):
@@ -211,6 +212,7 @@ class ProductionEligibilityBlocker(str, Enum):
     MAIN_CI_NOT_GREEN = "main_ci_not_green"
     MAIN_TREE_MISMATCH = "main_tree_mismatch"
     SOURCE_REVISION_NOT_IN_MAIN = "source_revision_not_in_main"
+    SOURCE_AND_RELEASE_REVISION_MATCH = "source_and_release_revision_match"
 
 
 @dataclass(frozen=True, slots=True)
@@ -260,6 +262,10 @@ def evaluate_production_eligibility(
             blockers.append(ProductionEligibilityBlocker.MAIN_TREE_MISMATCH)
         if not main.source_revision_is_ancestor:
             blockers.append(ProductionEligibilityBlocker.SOURCE_REVISION_NOT_IN_MAIN)
+        if main.release_revision == artifact.source_revision:
+            blockers.append(
+                ProductionEligibilityBlocker.SOURCE_AND_RELEASE_REVISION_MATCH
+            )
 
     return ProductionEligibilityOutcome(
         candidate=candidate,
@@ -345,12 +351,12 @@ class HotfixNoMigrationEvidence:
     def __post_init__(self) -> None:
         if (
             not isinstance(self.change_reference, str)
-            or not self.change_reference.strip()
+            or _CHANGE_REFERENCE.fullmatch(self.change_reference) is None
         ):
             raise ReleaseContractError(
                 code=ReleaseContractErrorCode.HOTFIX_CHANGE_REFERENCE_REQUIRED,
                 field="hotfix change reference",
-                message="hotfix change reference is required",
+                message="hotfix change reference must be a stable identifier",
             )
         if not isinstance(self.reason, str) or not self.reason.strip():
             raise ReleaseContractError(

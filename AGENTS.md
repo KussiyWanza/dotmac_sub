@@ -96,7 +96,7 @@ authoritative documents in the same change that updates the contract.
   feature branch -> `dev` -> `origin/dev` -> prescribed validation on that exact
   remote commit -> rolling version bump -> explicit one-time candidate build ->
   immutable candidate digest -> staging deployment and acceptance -> `main` ->
-  immutable main image -> production deployment.
+  main authorization of the same immutable digest -> production deployment.
 - Do not merge a feature branch directly into `main`. Merge it into `dev`,
   update `origin/dev`, and require the repository-prescribed tests and CI to
   pass on that exact `origin/dev` commit before merging `dev` into `main`.
@@ -111,7 +111,7 @@ authoritative documents in the same change that updates the contract.
   do not bypass staging or manually emulate candidate evidence during bootstrap.
 - Promote only the staged and accepted code from `dev` to `main`; do not add
   unrelated changes during promotion. Require the resulting `main` CI and
-  immutable image build to pass before any production deployment.
+  digest-bound production authorization to pass before any production deployment.
 - Keep each implementation slice coherent and reviewable even when several
   slices are assembled into a larger release.
 - Every pull request must declare exactly one appropriate `version:major`,
