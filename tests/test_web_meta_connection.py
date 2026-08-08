@@ -29,7 +29,7 @@ def _page() -> web_integrations_meta_social.MetaSocialConfigPage:
     return web_integrations_meta_social.MetaSocialConfigPage(
         installation_id="installation-id",
         installation_state="disabled",
-        connector_version="1.0.0",
+        connector_version="1.1.0",
         auth_mode="individual",
         auth_mode_options=(
             {"id": "oauth", "label": "Meta OAuth"},

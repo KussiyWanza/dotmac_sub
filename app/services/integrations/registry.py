@@ -219,6 +219,102 @@ def _dotmac_crm_manifest(
     )
 
 
+def _meta_social_manifest(
+    *, version: str, include_shared_oauth: bool
+) -> ConnectorManifest:
+    """Build immutable Meta Social manifests for exact version/digest pins."""
+    properties: dict[str, dict[str, object]] = {
+        "provider": {"type": "string", "enum": ["meta_social"]},
+        "app_id": {"type": "string"},
+        "facebook_page_id": {"type": "string"},
+        "facebook_auth_mode": {
+            "type": "string",
+            "enum": (
+                ["meta_oauth", "page_access_token"]
+                if include_shared_oauth
+                else ["page_access_token"]
+            ),
+        },
+        "instagram_account_id": {"type": "string"},
+        "instagram_auth_mode": {
+            "type": "string",
+            "enum": (
+                ["meta_oauth", "instagram_login"]
+                if include_shared_oauth
+                else ["instagram_login"]
+            ),
+        },
+        "webhook_url": {"type": "string"},
+        "graph_version": {"type": "string"},
+        "timeout_seconds": {"type": "integer"},
+    }
+    required = [
+        "provider",
+        "app_id",
+        "facebook_page_id",
+        "facebook_auth_mode",
+        "instagram_account_id",
+        "instagram_auth_mode",
+        "graph_version",
+    ]
+    secrets = [
+        SecretBindingManifest(
+            name="facebook_page_access_token", required=not include_shared_oauth
+        ),
+        SecretBindingManifest(
+            name="instagram_login_access_token", required=not include_shared_oauth
+        ),
+        SecretBindingManifest(name="webhook_signing_secret"),
+        SecretBindingManifest(name="webhook_verify_token"),
+    ]
+    if include_shared_oauth:
+        properties["auth_mode"] = {
+            "type": "string",
+            "enum": ["oauth", "individual"],
+        }
+        required.insert(1, "auth_mode")
+        secrets.insert(
+            0, SecretBindingManifest(name="meta_oauth_access_token", required=False)
+        )
+    return ConnectorManifest(
+        key="meta.social",
+        name="Meta Social Inbox",
+        version=version,
+        connector_type="messaging",
+        description=(
+            "Facebook Page Messenger and Instagram Login transport for Team Inbox."
+        ),
+        runtime=RuntimeManifest(
+            type=ConnectorRuntimeType.builtin_worker,
+            module="app.services.integrations.connectors.meta_social_runtime",
+        ),
+        capabilities=(
+            CapabilityManifest(
+                id="messaging.send.v1",
+                modes=(CapabilityMode.interactive, CapabilityMode.event),
+            ),
+            CapabilityManifest(
+                id="messaging.receive.v1",
+                modes=(CapabilityMode.inbound,),
+            ),
+        ),
+        config_schema={
+            "type": "object",
+            "properties": properties,
+            "required": required,
+            "additionalProperties": False,
+        },
+        secrets=tuple(secrets),
+        data_access=DataAccessManifest(
+            reads=("communications.outbound_message",),
+            emits=("communications.inbound_message_observation",),
+            classifications=("customer_contact", "message_content"),
+        ),
+        egress=EgressManifest(hosts=("graph.facebook.com", "graph.instagram.com")),
+        health=HealthManifest(operation="connection.validate.v1"),
+    )
+
+
 _DEFINITIONS: tuple[ConnectorManifest, ...] = (
     ConnectorManifest(
         key="lead.capture.http",
@@ -390,78 +486,7 @@ _DEFINITIONS: tuple[ConnectorManifest, ...] = (
         egress=EgressManifest(allow_installation_hosts=True),
         health=HealthManifest(operation="connection.validate.v1"),
     ),
-    ConnectorManifest(
-        key="meta.social",
-        name="Meta Social Inbox",
-        version="1.0.0",
-        connector_type="messaging",
-        description=(
-            "Facebook Page Messenger and Instagram Login transport for Team Inbox."
-        ),
-        runtime=RuntimeManifest(
-            type=ConnectorRuntimeType.builtin_worker,
-            module="app.services.integrations.connectors.meta_social_runtime",
-        ),
-        capabilities=(
-            CapabilityManifest(
-                id="messaging.send.v1",
-                modes=(CapabilityMode.interactive, CapabilityMode.event),
-            ),
-            CapabilityManifest(
-                id="messaging.receive.v1",
-                modes=(CapabilityMode.inbound,),
-            ),
-        ),
-        config_schema={
-            "type": "object",
-            "properties": {
-                "provider": {"type": "string", "enum": ["meta_social"]},
-                "auth_mode": {
-                    "type": "string",
-                    "enum": ["oauth", "individual"],
-                },
-                "app_id": {"type": "string"},
-                "facebook_page_id": {"type": "string"},
-                "facebook_auth_mode": {
-                    "type": "string",
-                    "enum": ["meta_oauth", "page_access_token"],
-                },
-                "instagram_account_id": {"type": "string"},
-                "instagram_auth_mode": {
-                    "type": "string",
-                    "enum": ["meta_oauth", "instagram_login"],
-                },
-                "webhook_url": {"type": "string"},
-                "graph_version": {"type": "string"},
-                "timeout_seconds": {"type": "integer"},
-            },
-            "required": [
-                "provider",
-                "auth_mode",
-                "app_id",
-                "facebook_page_id",
-                "facebook_auth_mode",
-                "instagram_account_id",
-                "instagram_auth_mode",
-                "graph_version",
-            ],
-            "additionalProperties": False,
-        },
-        secrets=(
-            SecretBindingManifest(name="meta_oauth_access_token", required=False),
-            SecretBindingManifest(name="facebook_page_access_token", required=False),
-            SecretBindingManifest(name="instagram_login_access_token", required=False),
-            SecretBindingManifest(name="webhook_signing_secret"),
-            SecretBindingManifest(name="webhook_verify_token"),
-        ),
-        data_access=DataAccessManifest(
-            reads=("communications.outbound_message",),
-            emits=("communications.inbound_message_observation",),
-            classifications=("customer_contact", "message_content"),
-        ),
-        egress=EgressManifest(hosts=("graph.facebook.com", "graph.instagram.com")),
-        health=HealthManifest(operation="connection.validate.v1"),
-    ),
+    _meta_social_manifest(version="1.1.0", include_shared_oauth=True),
     ConnectorManifest(
         key="dotmac.erp",
         name="DotMac ERP",
@@ -600,6 +625,9 @@ _HISTORICAL_DEFINITIONS: tuple[ConnectorManifest, ...] = (
     # CRM 1.0.0 remains executable while production adopts the explicit
     # temporary chat-session capability in 1.1.0.
     _dotmac_crm_manifest(version="1.0.0", include_chat_session=False),
+    # Meta Social 1.0.0 remains executable for installations pinned before
+    # shared OAuth support introduced the reviewed 1.1.0 manifest.
+    _meta_social_manifest(version="1.0.0", include_shared_oauth=False),
     # Pre-#1567 Paystack 1.0.0. Production installations created before the
     # payment control-plane cutover pin this exact digest.
     _paystack_manifest(

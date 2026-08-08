@@ -80,7 +80,7 @@ def _envelope(
         capability_binding_id=uuid4(),
         capability_id=meta_social_runtime.META_SOCIAL_SEND_CAPABILITY,
         connector_key="meta.social",
-        connector_version="1.0.0",
+        connector_version="1.1.0",
         manifest_digest="a" * 64,
         config_revision_id=uuid4(),
         trigger=OperationTrigger.event,
