@@ -615,12 +615,18 @@ projection in the FUP calculator. Production throttled every one of them to a
 flat 1 Mbps. The catalogue asserted a post-FUP speed that was wrong for four of
 the five, and no code would have noticed.
 
-**Dropped** (migration `501_retire_allowance_throttle_rate`). `included_gb`,
-`overage_rate`, `overage_cap_gb` and `rollover_enabled` stay — those are
-billing, which `usage_allowances` legitimately owns (§1). Only the enforcement
-decision left. The down-migration restores the column but not the values:
-they were never authoritative, and re-materialising them would recreate the
-second answer.
+**Unmapped, not yet dropped.** The model and schema no longer expose
+`throttle_rate_mbps`, so nothing reads or writes it and `fup_policies` is the
+only answer. The column itself still exists in the database: the drop was
+deferred out of the 7.135 release because it is irreversible in practice — the
+down-migration restores the column but not the values.
+
+`included_gb`, `overage_rate`, `overage_cap_gb` and `rollover_enabled` stay —
+those are billing, which `usage_allowances` legitimately owns (§1).
+
+Retiring the column is still the right end state. It should land as its own
+change, once the unmapped column has been observed doing nothing across a
+release, rather than riding inside a feature.
 
 An unread column holding a wrong answer is worse than a missing one: it is
 evidence, and someone eventually acts on it.
