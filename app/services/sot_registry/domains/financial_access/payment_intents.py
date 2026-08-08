@@ -472,7 +472,7 @@ SERVICES: tuple[SOTService, ...] = (
         notes=(
             "This coordinator exposes account-scoped intent history and admits "
             "customer or staff abandonment only while a direct-transfer intent is "
-            "pending and has no submitted payment evidence.",
+            "pending and has no submitted payment evidence."
         ),
         contract=ServiceContract(
             concerns=(
