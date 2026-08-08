@@ -568,6 +568,10 @@ from app.models.network_operation import (  # noqa: F401
     NetworkOperationTargetType,
     NetworkOperationType,
 )
+from app.models.nextcloud_talk import (  # noqa: F401
+    NextcloudTalkNotificationRoom,
+    NextcloudTalkStaffAccount,
+)
 from app.models.notification import (  # noqa: F401
     AlertNotificationLog,
     AlertNotificationPolicy,
@@ -678,6 +682,7 @@ from app.models.payment_proof import (  # noqa: F401
     WithholdingTaxTransition,
     WithholdingTaxTransitionImmutableError,
 )
+from app.models.plan_family_catalogue import PlanFamilyCatalogue  # noqa: F401
 from app.models.portal_message import (  # noqa: F401
     PortalMessage,
     PortalMessageStatus,

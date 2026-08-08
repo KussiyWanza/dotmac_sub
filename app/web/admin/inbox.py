@@ -8,7 +8,16 @@ from datetime import UTC, datetime
 from urllib.parse import parse_qsl, quote_plus, urlencode, urlsplit, urlunsplit
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -17,6 +26,7 @@ from sqlalchemy.orm import Session
 from app.db import finish_read_transaction, get_db
 from app.models.audit import AuditActorType
 from app.models.team_inbox import InboxChannelType
+from app.schemas.plan_family_catalogue import ResolveShareablePlanFamilyCatalogueQuery
 from app.services import (
     conversation_lead_relationships,
     conversation_ticket_handoff,
@@ -25,6 +35,7 @@ from app.services import (
     team_inbox_agent_introduction,
     team_inbox_commands,
     team_inbox_contact_links,
+    team_inbox_filters,
     team_inbox_media,
     team_inbox_metrics,
     team_inbox_operations,
@@ -38,6 +49,7 @@ from app.services import (
     team_inbox_contact_context as contact_context_service,
 )
 from app.services.auth_dependencies import can, require_permission
+from app.services.catalog import plan_family_catalogues
 from app.services.domain_errors import DomainError
 from app.services.owner_commands import CommandContext
 from app.services.sales import lead_intake
@@ -139,6 +151,7 @@ def team_inbox_queue(
     channel_type: str | None = Query(default=None),
     service_team_id: str | None = Query(default=None),
     service_team_ids: str | None = Query(default=None),
+    filters: str | None = Query(default=None),
     assigned_person_id: str | None = Query(default=None),
     needs_response: bool = Query(default=False),
     needs_attention: bool = Query(default=False),
@@ -174,45 +187,53 @@ def team_inbox_queue(
         actor_person_id = UUID(actor_id) if actor_id else None
     except ValueError:
         actor_person_id = None
-    projection = team_inbox_projection.build_queue_projection(
-        db,
-        team_inbox_projection.InboxQueueRequest(
-            search=_query_text(search),
-            status=_query_text(status),
-            channel_type=_query_text(channel_type),
-            service_team_id=_query_text(service_team_id),
-            service_team_ids=tuple(
-                item.strip()
-                for item in (_query_text(service_team_ids) or "").split(",")
-                if item.strip()
+    try:
+        projection = team_inbox_projection.build_queue_projection(
+            db,
+            team_inbox_projection.InboxQueueRequest(
+                search=_query_text(search),
+                status=_query_text(status),
+                channel_type=_query_text(channel_type),
+                service_team_id=_query_text(service_team_id),
+                service_team_ids=tuple(
+                    item.strip()
+                    for item in (_query_text(service_team_ids) or "").split(",")
+                    if item.strip()
+                ),
+                advanced_filters=team_inbox_filters.InboxAdvancedFilterPayload(
+                    raw_json=_query_text(filters)
+                ),
+                assigned_person_id=_query_text(assigned_person_id),
+                needs_response=_query_bool(needs_response),
+                needs_attention=_query_bool(needs_attention),
+                contact_resolution_status=_query_text(contact_resolution_status),
+                priority_at_most=_query_int(priority_at_most),
+                muted=_query_optional_bool(muted),
+                snoozed=_query_optional_bool(snoozed),
+                open_only=_query_bool(open_only),
+                unassigned=_query_bool(unassigned),
+                unread=_query_bool(unread),
+                ai_handling=_query_optional_bool(ai_handling),
+                has_ticket=_query_optional_bool(has_ticket),
+                activity_from=_parse_datetime_field(activity_from),
+                activity_to=_parse_datetime_field(activity_to),
+                sort_by=_query_text(sort_by),
+                sort_dir=_query_text(sort_dir),
+                page=_query_int(page, default=1) or 1,
+                per_page=_query_int(per_page, default=25) or 25,
+                selected_conversation_id=(
+                    _query_text(conversation_id) or _query_text(c)
+                ),
+                actor_person_id=actor_person_id,
+                composition=(
+                    team_inbox_projection.InboxQueueComposition.sidebar
+                    if is_list_fragment_request
+                    else team_inbox_projection.InboxQueueComposition.full_workspace
+                ),
             ),
-            assigned_person_id=_query_text(assigned_person_id),
-            needs_response=_query_bool(needs_response),
-            needs_attention=_query_bool(needs_attention),
-            contact_resolution_status=_query_text(contact_resolution_status),
-            priority_at_most=_query_int(priority_at_most),
-            muted=_query_optional_bool(muted),
-            snoozed=_query_optional_bool(snoozed),
-            open_only=_query_bool(open_only),
-            unassigned=_query_bool(unassigned),
-            unread=_query_bool(unread),
-            ai_handling=_query_optional_bool(ai_handling),
-            has_ticket=_query_optional_bool(has_ticket),
-            activity_from=_parse_datetime_field(activity_from),
-            activity_to=_parse_datetime_field(activity_to),
-            sort_by=_query_text(sort_by),
-            sort_dir=_query_text(sort_dir),
-            page=_query_int(page, default=1) or 1,
-            per_page=_query_int(per_page, default=25) or 25,
-            selected_conversation_id=(_query_text(conversation_id) or _query_text(c)),
-            actor_person_id=actor_person_id,
-            composition=(
-                team_inbox_projection.InboxQueueComposition.sidebar
-                if is_list_fragment_request
-                else team_inbox_projection.InboxQueueComposition.full_workspace
-            ),
-        ),
-    )
+        )
+    except team_inbox_filters.InboxFilterError as exc:
+        raise HTTPException(status_code=422, detail=exc.message) from exc
     if projection.canonical_url is not None:
         return RedirectResponse(url=projection.canonical_url, status_code=307)
     can_manage_inbox = can(request, "support:ticket:update")
@@ -242,6 +263,7 @@ def team_inbox_queue(
             "status": projection.status,
             "channel_type": projection.channel_type,
             "service_team_id": projection.service_team_id,
+            "filters": projection.advanced_filters_json,
             "assigned_person_id": projection.assigned_person_id,
             "needs_response": projection.needs_response,
             "needs_attention": projection.needs_attention,
@@ -262,6 +284,7 @@ def team_inbox_queue(
             "assignment_counts": projection.assignment_counts,
             "status_options": projection.status_options,
             "channel_options": projection.channel_options,
+            "priority_options": projection.priority_options,
             "label_options": projection.label_options,
             "saved_filters": projection.saved_filters,
             "new_conversation_template_options": (
@@ -270,6 +293,7 @@ def team_inbox_queue(
                 else ()
             ),
             "can_manage_inbox": can_manage_inbox,
+            "can_manage_leads": can(request, "crm:lead:write"),
             "manager_dashboard": manager_dashboard,
             "selected": (
                 projection.selected.timeline
@@ -294,6 +318,7 @@ def team_inbox_queue(
                 "conversation_labels": projection.selected.conversation_labels,
                 "macro_options": projection.selected.macro_options,
                 "template_options": projection.selected.template_options,
+                "catalogue_options": projection.selected.catalogue_options,
                 "action_eligibility": projection.selected.action_eligibility,
                 "is_unread": projection.selected.is_unread,
                 "priority_options": projection.selected.priority_options,
@@ -418,6 +443,7 @@ def team_inbox_detail(
             "conversation_labels": projection.conversation_labels,
             "macro_options": projection.macro_options,
             "template_options": projection.template_options,
+            "catalogue_options": projection.catalogue_options,
             "action_eligibility": projection.action_eligibility,
             "is_unread": projection.is_unread,
             "actor_person_id": str(actor_person_id) if actor_person_id else "",
@@ -428,6 +454,7 @@ def team_inbox_detail(
             ),
             "priority_options": projection.priority_options,
             "agent_options": team_inbox_projection.list_agent_options(db),
+            "can_manage_leads": can(request, "crm:lead:write"),
         }
         if projection is not None
         else None
@@ -920,6 +947,66 @@ def team_inbox_reply(
 
 
 @router.post(
+    "/{conversation_id}/share-catalogue",
+    dependencies=[Depends(require_permission("support:ticket:update"))],
+)
+def team_inbox_share_catalogue(
+    conversation_id: UUID,
+    request: Request,
+    plan_family: str = Form(...),
+    idempotency_key: str | None = Form(default=None),
+    next_url: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
+    try:
+        catalogue = plan_family_catalogues.resolve_shareable_catalogue(
+            db,
+            ResolveShareablePlanFamilyCatalogueQuery(plan_family=plan_family),
+        )
+        download_url = str(
+            request.url_for(
+                "public_catalogue_download", catalogue_id=str(catalogue.catalogue_id)
+            )
+        )
+        body = f"Here is our {catalogue.display_name}: {download_url}"
+        _prepare_mutation(db)
+        outcome = team_inbox_commands.reply(
+            db,
+            conversation_id=conversation_id,
+            body_text=body,
+            idempotency_key=_query_text(idempotency_key),
+            actor_person_id=_actor_id_from_request(request),
+        )
+    except plan_family_catalogues.PlanFamilyCatalogueError as exc:
+        return _detail_redirect(
+            conversation_id,
+            status="error",
+            message=exc.message,
+            next_url=next_url,
+        )
+    except (
+        team_inbox_commands.InboxCommandError,
+        team_inbox_operations.InboxOperationError,
+    ) as exc:
+        return _detail_redirect(
+            conversation_id,
+            status="error",
+            message=str(exc),
+            next_url=next_url,
+        )
+    return _detail_redirect(
+        conversation_id,
+        status="success",
+        message=(
+            "Catalogue share already submitted."
+            if outcome.replayed
+            else f"{catalogue.display_name} queued."
+        ),
+        next_url=next_url,
+    )
+
+
+@router.post(
     "/{conversation_id}/ai-draft",
     dependencies=[Depends(require_permission("support:ticket:update"))],
 )
@@ -1329,6 +1416,7 @@ def team_inbox_saved_filter_create(
     channel_type: str | None = Form(default=None),
     service_team_id: str | None = Form(default=None),
     service_team_ids: str | None = Form(default=None),
+    filters: str | None = Form(default=None),
     assigned_person_id: str | None = Form(default=None),
     needs_response: bool = Form(default=False),
     needs_attention: bool = Form(default=False),
@@ -1353,32 +1441,34 @@ def team_inbox_saved_filter_create(
         team_inbox_commands.save_filter(
             db,
             name=name,
-            filter_payload={
-                "search": search,
-                "status": status_value,
-                "channel_type": channel_type,
-                "service_team_id": service_team_id,
-                "service_team_ids": service_team_ids,
-                "assigned_person_id": assigned_person_id,
-                "needs_response": needs_response,
-                "needs_attention": needs_attention,
-                "contact_resolution_status": contact_resolution_status,
-                "priority_at_most": priority_at_most,
-                "muted": muted,
-                "snoozed": snoozed,
-                "open_only": clean_open_only,
-                "unassigned": clean_unassigned,
-                "unread": unread,
-                "ai_handling": ai_handling,
-                "has_ticket": has_ticket,
-                "activity_from": activity_from,
-                "activity_to": activity_to,
-            },
+            filter_payload=team_inbox_filters.InboxSavedFilterPayload(
+                search=_query_text(search),
+                status=_query_text(status_value),
+                channel_type=_query_text(channel_type),
+                service_team_id=_query_text(service_team_id),
+                service_team_ids=_query_text(service_team_ids),
+                advanced_filters_json=_query_text(filters),
+                assigned_person_id=_query_text(assigned_person_id),
+                needs_response=_query_bool(needs_response),
+                needs_attention=_query_bool(needs_attention),
+                contact_resolution_status=_query_text(contact_resolution_status),
+                priority_at_most=_query_int(priority_at_most),
+                muted=_query_optional_bool(muted),
+                snoozed=_query_optional_bool(snoozed),
+                open_only=clean_open_only,
+                unassigned=clean_unassigned,
+                unread=_query_bool(unread),
+                ai_handling=_query_bool(ai_handling),
+                has_ticket=_query_bool(has_ticket),
+                activity_from=_query_text(activity_from),
+                activity_to=_query_text(activity_to),
+            ),
             actor_person_id=_actor_id_from_request(request),
             is_shared=is_shared,
         )
     except (
         team_inbox_commands.InboxCommandError,
+        team_inbox_filters.InboxFilterError,
         team_inbox_operations.InboxOperationError,
     ) as exc:
         return RedirectResponse(

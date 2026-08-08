@@ -4,20 +4,33 @@ from __future__ import annotations
 
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from threading import Barrier
 
 from sqlalchemy.orm import sessionmaker
 
-from app.models.billing import Invoice, InvoiceLine, InvoiceStatus
+from app.models.billing import (
+    Invoice,
+    InvoiceLine,
+    InvoiceStatus,
+    LedgerEntry,
+    LedgerEntryType,
+    LedgerSource,
+    Payment,
+    PaymentSettlement,
+    PaymentSettlementOrigin,
+    PaymentStatus,
+)
 from app.models.catalog import (
     AccessType,
     BillingCycle,
     BillingMode,
     CatalogOffer,
+    OfferPrice,
     OfferStatus,
     PriceBasis,
+    PriceType,
     ServiceType,
     Subscription,
     SubscriptionStatus,
@@ -30,7 +43,11 @@ from app.models.prepaid_funding import (
 from app.models.subscriber import Reseller, Subscriber, SubscriberStatus
 from app.services.owner_commands import CommandContext
 from app.services.prepaid_draft_reconciliation import (
+    CreateReviewedPaidPrepaidInvoiceCommand,
+    MissingPaidPrepaidInvoiceRepairQuery,
     ReconcilePrepaidDraftCommand,
+    create_reviewed_paid_prepaid_invoice,
+    preview_missing_paid_prepaid_invoice_repair,
     preview_prepaid_draft_reconciliation,
     reconcile_prepaid_draft_invoice,
 )
@@ -184,3 +201,147 @@ def test_concurrent_opening_funding_confirmations_converge_on_one_consumption(
                     id=batch_id
                 ).delete(synchronize_session=False)
             cleanup.commit()
+
+
+def test_concurrent_missing_invoice_repairs_converge_on_one_paid_invoice(
+    engine,
+) -> None:
+    """Account locking and one idempotency key admit one reviewed invoice."""
+
+    session_factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    suffix = uuid.uuid4().hex[:12]
+    paid_at = datetime(2026, 8, 6, 8, 22, 57, tzinfo=UTC)
+    with session_factory() as setup:
+        reseller = Reseller(
+            name=f"Missing Invoice {suffix}",
+            code=f"missing-invoice-{suffix}",
+            is_active=True,
+        )
+        account = Subscriber(
+            first_name="Missing",
+            last_name="Invoice",
+            email=f"missing-invoice-{suffix}@example.com",
+            reseller=reseller,
+            status=SubscriberStatus.active,
+            is_active=True,
+            billing_enabled=True,
+            billing_mode=BillingMode.prepaid,
+        )
+        offer = CatalogOffer(
+            name=f"Missing Invoice Offer {suffix}",
+            service_type=ServiceType.residential,
+            access_type=AccessType.fiber,
+            price_basis=PriceBasis.flat,
+            status=OfferStatus.active,
+            is_active=True,
+            billing_mode=BillingMode.prepaid,
+            billing_cycle=BillingCycle.monthly,
+        )
+        setup.add_all([reseller, account, offer])
+        setup.flush()
+        setup.add(
+            OfferPrice(
+                offer_id=offer.id,
+                price_type=PriceType.recurring,
+                amount=Decimal("100.00"),
+                currency="NGN",
+                billing_cycle=BillingCycle.monthly,
+                is_active=True,
+            )
+        )
+        subscription = Subscription(
+            subscriber_id=account.id,
+            offer_id=offer.id,
+            status=SubscriptionStatus.active,
+            billing_mode=BillingMode.prepaid,
+            billing_cycle=BillingCycle.monthly,
+            unit_price=Decimal("100.00"),
+            next_billing_at=datetime(2026, 8, 3, tzinfo=UTC),
+        )
+        setup.add(subscription)
+        setup.flush()
+        payment = Payment(
+            account_id=account.id,
+            amount=Decimal("100.00"),
+            currency="NGN",
+            status=PaymentStatus.succeeded,
+            paid_at=paid_at,
+            is_active=True,
+            created_at=paid_at,
+        )
+        setup.add(payment)
+        setup.flush()
+        credit = LedgerEntry(
+            account_id=account.id,
+            payment_id=payment.id,
+            entry_type=LedgerEntryType.credit,
+            source=LedgerSource.payment,
+            amount=Decimal("100.00"),
+            currency="NGN",
+            memo="Concurrent reviewed payment",
+            is_active=True,
+            effective_date=paid_at,
+            created_at=paid_at,
+        )
+        setup.add(credit)
+        setup.flush()
+        setup.add(
+            PaymentSettlement(
+                payment_id=payment.id,
+                unallocated_ledger_entry_id=credit.id,
+                amount=Decimal("100.00"),
+                unallocated_amount=Decimal("100.00"),
+                prepaid_amount=Decimal("0.00"),
+                currency="NGN",
+                origin=PaymentSettlementOrigin.system,
+                idempotency_key=f"pg-missing-invoice-settlement-{suffix}",
+                created_at=paid_at,
+            )
+        )
+        setup.commit()
+        query = MissingPaidPrepaidInvoiceRepairQuery(
+            account_id=account.id,
+            subscription_id=subscription.id,
+            payment_id=payment.id,
+            issued_on=date(2026, 8, 6),
+            due_on=date(2026, 9, 5),
+            next_billing_on=date(2026, 9, 5),
+            expected_total=Decimal("100.00"),
+            expected_remaining_credit=Decimal("0.00"),
+        )
+        preview = preview_missing_paid_prepaid_invoice_repair(setup, query)
+        command = CreateReviewedPaidPrepaidInvoiceCommand(
+            context=CommandContext.system(
+                actor="pytest:billing-operator",
+                scope="prepaid_draft_reconciliation",
+                reason="Concurrent reviewed missing-invoice repair",
+                idempotency_key=f"pg-missing-invoice-repair-{suffix}",
+            ),
+            query=query,
+            preview_fingerprint=preview.fingerprint,
+        )
+        setup.commit()
+
+    barrier = Barrier(2)
+
+    def reconcile() -> tuple[uuid.UUID, bool]:
+        with session_factory() as worker:
+            barrier.wait(timeout=10)
+            result = create_reviewed_paid_prepaid_invoice(worker, command)
+            return result.invoice_id, result.replayed
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _index: reconcile(), range(2)))
+
+    assert len({invoice_id for invoice_id, _replayed in results}) == 1
+    assert sorted(replayed for _invoice_id, replayed in results) == [False, True]
+    with session_factory() as check:
+        invoices = (
+            check.query(Invoice)
+            .filter(Invoice.account_id == account.id)
+            .filter(Invoice.is_active.is_(True))
+            .all()
+        )
+        assert len(invoices) == 1
+        assert invoices[0].status is InvoiceStatus.paid
+        assert invoices[0].balance_due == Decimal("0.00")

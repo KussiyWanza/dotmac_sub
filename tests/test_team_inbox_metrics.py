@@ -91,6 +91,7 @@ def _message(
     *,
     direction: str,
     at: datetime,
+    sent_by_person_id: object | None = None,
 ) -> InboxMessage:
     message = InboxMessage(
         conversation_id=conversation.id,
@@ -100,6 +101,11 @@ def _message(
         body="Body",
         received_at=at if direction == InboxMessageDirection.inbound.value else None,
         sent_at=at if direction == InboxMessageDirection.outbound.value else None,
+        metadata_=(
+            {"sent_by_person_id": str(sent_by_person_id)}
+            if sent_by_person_id is not None
+            else None
+        ),
     )
     db_session.add(message)
     db_session.flush()
@@ -205,6 +211,19 @@ def test_agent_performance_metrics_tracks_active_assignments_and_wait(db_session
     base = datetime(2026, 7, 10, 8, 0, tzinfo=UTC)
     person_id = uuid4()
     conversation = _conversation(db_session, team, first_at=base)
+    _message(
+        db_session,
+        conversation,
+        direction=InboxMessageDirection.inbound.value,
+        at=base,
+    )
+    _message(
+        db_session,
+        conversation,
+        direction=InboxMessageDirection.outbound.value,
+        at=base + timedelta(minutes=9),
+        sent_by_person_id=person_id,
+    )
     db_session.add(
         InboxConversationAssignment(
             conversation_id=conversation.id,
@@ -224,7 +243,43 @@ def test_agent_performance_metrics_tracks_active_assignments_and_wait(db_session
 
     assert metrics.active_assignment_count == 1
     assert metrics.handled_conversation_count == 1
+    assert metrics.average_first_response_seconds == 540
     assert metrics.average_queue_wait_seconds == 300
+
+
+def test_agent_first_response_ignores_automated_outbound_messages(db_session):
+    team = _team(db_session)
+    base = datetime(2026, 7, 10, 8, 0, tzinfo=UTC)
+    person_id = uuid4()
+    conversation = _conversation(db_session, team, first_at=base)
+    _message(
+        db_session,
+        conversation,
+        direction=InboxMessageDirection.inbound.value,
+        at=base,
+    )
+    _message(
+        db_session,
+        conversation,
+        direction=InboxMessageDirection.outbound.value,
+        at=base + timedelta(minutes=1),
+    )
+    _message(
+        db_session,
+        conversation,
+        direction=InboxMessageDirection.outbound.value,
+        at=base + timedelta(minutes=6),
+        sent_by_person_id=person_id,
+    )
+    db_session.commit()
+
+    metrics = team_inbox_metrics.agent_performance_metrics(
+        db_session,
+        service_team_id=team.id,
+        person_id=person_id,
+    )
+
+    assert metrics.average_first_response_seconds == 360
 
 
 def test_team_performance_report_uses_team_sla_metadata(db_session):

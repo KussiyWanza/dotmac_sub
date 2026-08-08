@@ -73,6 +73,16 @@ and nothing consumed the value. Removed in favour of the policy:
 `tests/test_notification_channel_policy_admin.py` asserts they stay gone from
 both the config key lists and the templates.
 
+## Internal Nextcloud Talk delivery
+
+`nextcloud_talk` is an internal staff transport and is intentionally excluded
+from `SELECTABLE_CHANNELS`. Ticket/project assignment and explicit-mention
+owners stage it through `communications.nextcloud_talk_staff`; customer channel
+preferences and the customer channel policy do not apply. The feature flag
+defaults off, while connector URL, notifier username, timeout, and the
+app-password secret reference belong to the version-pinned integration
+installation.
+
 ## Related
 
 - `docs/SOT_RELATIONSHIP_MAP.md` — `notifications_communications` domain

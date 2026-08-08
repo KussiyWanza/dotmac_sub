@@ -118,8 +118,13 @@ def test_workspace_exposes_responsive_realtime_and_accessible_controls():
     assert "/admin/inbox/presence" in sidebar
     assert "Only online agents receive auto-assigned inbox conversations." in sidebar
     assert "conversation_id" in sidebar
+    assert "Advanced team conditions" in sidebar
+    assert "inboxTeamFilterBuilder" in javascript
+    assert 'filters: "filters"' in javascript
+    assert 'name="priority_at_most"' in sidebar
     assert "data-reply-composer" in conversation
     assert "idempotency_key" in conversation
+    assert "import message_bubble with context" in conversation
     triage = Path("templates/components/ui/triage.html").read_text()
     assert 'set priority_label = "Urgent"' in triage
     assert "assignee.initials" in triage

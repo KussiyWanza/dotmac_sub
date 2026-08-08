@@ -47,6 +47,166 @@ DOMAIN = DomainSOT(
             ),
         ),
         SOTService(
+            name="service_intent.plan_family_catalogues",
+            module="app.services.catalog.plan_family_catalogues",
+            owns=(
+                "approved plan-family catalogue publication",
+                "current and historical public catalogue resolution",
+            ),
+            depends_on=(
+                "control.settings_spec",
+                "auth.permission_gate",
+                "events.dispatcher",
+                "observability.audit_log",
+            ),
+            notes=(
+                "Owns approved marketing PDF versions, not the commercial offer "
+                "configuration inside those brochures. Settings and Inbox routes are "
+                "adapters; superseded public versions remain readable so previously "
+                "sent links are stable, while withdrawn versions fail closed."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name="approved plan-family catalogue publication",
+                        role=OwnerRole.AUTHORITATIVE_RECORD,
+                        input_names=(
+                            "authenticated catalogue publication command",
+                            "configured plan-family vocabulary",
+                            "validated catalogue PDF storage record",
+                        ),
+                        canonical_writer="service_intent.plan_family_catalogues",
+                    ),
+                    ConcernContract(
+                        name="current and historical public catalogue resolution",
+                        role=OwnerRole.RESOLVER,
+                        input_names=(
+                            "approved catalogue version records",
+                            "validated catalogue PDF storage record",
+                        ),
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="authenticated catalogue publication command",
+                        owner="auth.permission_gate",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "Typed plan family, approved display metadata, PDF bytes, "
+                            "staff principal, reason, correlation, and idempotency key."
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="configured plan-family vocabulary",
+                        owner="control.settings_spec",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source="Catalog plan_families setting with built-in defaults.",
+                    ),
+                    AuthorityInput(
+                        name="validated catalogue PDF storage record",
+                        owner="service_intent.plan_family_catalogues",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "PDF-only content-addressed StoredFile staged by the owner "
+                            "through the private object-storage participant."
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="approved catalogue version records",
+                        owner="service_intent.plan_family_catalogues",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "PlanFamilyCatalogue family, version, publication status, "
+                            "file identity, staff provenance, and lifecycle timestamps."
+                        ),
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.OWNER_MANAGED,
+                    boundary=(
+                        "publish_catalogue enters one root owner transaction; file "
+                        "metadata, prior-version supersession, audit, and event are staged "
+                        "before the boundary commits."
+                    ),
+                    locking=(
+                        "Publication locks every existing version for the selected family; "
+                        "a partial unique index permits only one published version."
+                    ),
+                    idempotency=(
+                        "A retry with the current PDF SHA-256 returns that version; "
+                        "object keys are content-addressed."
+                    ),
+                    retries=(
+                        "Validation failures do not retry; concurrent publication retries "
+                        "from a fresh read after the unique/locking conflict."
+                    ),
+                ),
+                errors=ErrorContract(
+                    domain_codes=(
+                        "service_intent.plan_family_catalogues.active_caller_transaction",
+                        "service_intent.plan_family_catalogues.command_contract_violation",
+                        "service_intent.plan_family_catalogues.invalid_command_context",
+                        "service_intent.plan_family_catalogues.nested_owner_command",
+                        "service_intent.plan_family_catalogues.nested_transaction_completion",
+                        "service_intent.plan_family_catalogues.invalid_plan_family",
+                        "service_intent.plan_family_catalogues.display_name_required",
+                        "service_intent.plan_family_catalogues.display_name_too_long",
+                        "service_intent.plan_family_catalogues.file_required",
+                        "service_intent.plan_family_catalogues.invalid_file",
+                        "service_intent.plan_family_catalogues.catalogue_unavailable",
+                        "service_intent.plan_family_catalogues.actor_not_eligible",
+                    ),
+                    mapping_owner=(
+                        "app.web.admin.catalog_settings and app.web.public.catalogues"
+                    ),
+                    fail_closed_on=(
+                        "unconfigured family",
+                        "missing or non-PDF payload",
+                        "withdrawn or missing object",
+                    ),
+                ),
+                events=EventContract(
+                    event_types=("catalog.plan_family_catalogue_published",),
+                    schema_version=1,
+                    delivery_owner="events.dispatcher",
+                    compatibility=(
+                        "The event carries stable catalogue, family, version, and stored "
+                        "file identifiers; consumers read the owner for display metadata."
+                    ),
+                    replay=(
+                        "Replay is informational and never republishes or changes the "
+                        "current version."
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.NATIVE,
+                    new_owner="service_intent.plan_family_catalogues",
+                    verification=(
+                        "Focused owner, web adapter, public delivery, migration, and "
+                        "architecture tests."
+                    ),
+                    cutover_gate=(
+                        "Inbox exposes only owner-resolved published PDFs and Settings "
+                        "publishes only through the owner command."
+                    ),
+                    fallback_retirement=(
+                        "No generic setting stores file paths or independently selects a "
+                        "current brochure."
+                    ),
+                ),
+                steward="commercial operations",
+                design_refs=(
+                    "docs/designs/INBOX_PLAN_CATALOGUE_SHARING.md",
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                ),
+                test_refs=(
+                    "tests/test_plan_family_catalogues.py",
+                    "tests/test_admin_inbox_catalogue_sharing.py",
+                    "tests/architecture/test_plan_family_catalogue_boundary.py",
+                ),
+            ),
+        ),
+        SOTService(
             name="service_intent.subscription_nas_assignment",
             module="app.services.subscription_nas_assignment",
             owns=(

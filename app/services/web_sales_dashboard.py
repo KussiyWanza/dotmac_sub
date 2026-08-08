@@ -9,6 +9,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from app.models.system_user import SystemUser
 from app.services import display_format
 from app.services.sales import reports
 from app.services.sales.service import pipelines
@@ -42,6 +43,21 @@ def _money_groups(
 
 def _percent(value: Decimal | None) -> str:
     return f"{value:.1f}%" if value is not None else display_format.MISSING_DISPLAY
+
+
+def _system_user_name(user: SystemUser) -> str:
+    display_name = str(user.display_name or "").strip()
+    if display_name:
+        return display_name
+    full_name = " ".join(
+        part
+        for part in (
+            str(user.first_name or "").strip(),
+            str(user.last_name or "").strip(),
+        )
+        if part
+    )
+    return full_name or str(user.email or "").strip() or "Unavailable sales agent"
 
 
 def build_dashboard_shell_context(
@@ -97,6 +113,15 @@ def build_dashboard_data_context(
     default_currency = display_format.default_currency(db)
     summary = report.summary
     maximum_stage_count = max((stage.count for stage in summary.stages), default=0)
+    agent_ids = {agent.agent_id for agent in report.agent_performance}
+    agent_names = (
+        {
+            user.id: _system_user_name(user)
+            for user in db.query(SystemUser).filter(SystemUser.id.in_(agent_ids)).all()
+        }
+        if agent_ids
+        else {}
+    )
 
     stage_rows = [
         {
@@ -199,7 +224,7 @@ def build_dashboard_data_context(
         "agent_rows": [
             {
                 "id": str(agent.agent_id),
-                "name": f"Agent {str(agent.agent_id)[:8]}",
+                "name": agent_names.get(agent.agent_id, "Unavailable sales agent"),
                 "deals_won": agent.deals_won,
                 "deals_lost": agent.deals_lost,
                 "total_deals": agent.total_deals,

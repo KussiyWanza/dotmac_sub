@@ -154,6 +154,14 @@ DOMAIN_CONFIGS: dict[str, FileDomainConfig] = {
         require_magic_bytes=True,
         compute_checksum=True,
     ),
+    "catalogues": FileDomainConfig(
+        prefix="catalogues",
+        max_size_bytes=20 * 1024 * 1024,
+        allowed_mime_types=frozenset({"application/pdf"}),
+        allowed_extensions=frozenset({".pdf"}),
+        require_magic_bytes=True,
+        compute_checksum=True,
+    ),
 }
 
 

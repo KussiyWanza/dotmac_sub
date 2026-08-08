@@ -26,14 +26,19 @@ def test_public_form_has_required_privacy_address_and_customer_fields():
     assert "/lead-intake/" in _CSRF_PROTECTED_PATHS
 
 
-def test_inbox_drawer_exposes_only_permission_gated_issue_and_revoke_actions():
-    template = Path("templates/admin/inbox/_contact_drawer.html").read_text(
+def test_inbox_composer_issues_forms_while_drawer_only_manages_history():
+    composer = Path("templates/admin/inbox/_conversation.html").read_text(
         encoding="utf-8"
     )
-    assert "can_manage_leads" in template
-    assert "/lead-intake/issue" in template
-    assert "/revoke" in template
-    assert "invitation.token" not in template
+    drawer = Path("templates/admin/inbox/_contact_drawer.html").read_text(
+        encoding="utf-8"
+    )
+    assert "can_manage_leads" in composer
+    assert "action_eligibility.can_issue_lead_form" in composer
+    assert "/lead-intake/issue" in composer
+    assert "/lead-intake/issue" not in drawer
+    assert "/revoke" in drawer
+    assert "invitation.token" not in drawer
 
 
 def test_admin_template_surface_explains_publish_gate_and_immutability():
