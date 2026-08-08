@@ -14,6 +14,8 @@ The lifecycle owner controls, in one root owner command:
 - guarded status transitions and their resolved/closed timestamps;
 - team, technician, manager, coordinator, and additional-assignee state;
 - comments, explicit mentions, attachment metadata, and the official timeline;
+- explicit customer-publication decisions for descriptions, comments, and their
+  attachments;
 - links, duplicate evidence, merges, and merged-source immutability;
 - resolution requests, active confirmation capabilities, confirmation, disputes,
   and automatic confirmation after the configured grace period;
@@ -147,6 +149,27 @@ competing workspace lifecycle.
 External CRM and communications products are observations, transports, or
 provenance. Imported identifiers do not own Ticket status, assignment,
 comments, resolution, or native Work-Order issuance.
+
+## Customer portal publication boundary
+
+Selfcare is the authoritative origin for new customer tickets and replies. A
+customer-authored Selfcare description or reply is customer-visible. Staff and
+system descriptions, comments, and their attachments are internal unless a
+staff command explicitly publishes them. Portal adapters consume these stored
+decisions; they never infer publication from subscriber linkage, CRM metadata,
+or the absence of an internal-note checkbox.
+
+CRM ticket import is retired as an authority. Any residual retry or historical
+observation is provenance-only and is forced internal; it cannot publish
+narrative into the customer portal.
+
+Legacy CRM-era narrative has no evidence of customer publication because the
+old system exposed no customer ticket timeline. Migration 503 therefore marks
+every description and comment already stored at cutover as internal. Ticket
+identity, number, status, priority, and dates remain available for customer
+reference. Operators may deliberately publish a reviewed description or post a
+new reviewed customer reply after the cutover through the normal Selfcare
+controls.
 
 ## List and bulk UI contracts
 

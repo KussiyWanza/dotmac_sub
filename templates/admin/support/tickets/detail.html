@@ -52,6 +52,7 @@
     <div class="grid gap-6 xl:grid-cols-12">
         <div class="space-y-6 xl:col-span-8">
             {% call support_card(title='Description', subtitle='Issue context and ticket-level files.', icon='<svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 8h10M7 12h6m-6 4h10M5 21h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>') %}
+            {% if ticket.description_is_internal %}<span class="mb-3 inline-flex rounded-lg bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">Internal description</span>{% else %}<span class="mb-3 inline-flex rounded-lg bg-emerald-100 px-2 py-0.5 text-[11px] font-semibold text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300">Customer visible</span>{% endif %}
             <p class="whitespace-pre-wrap text-sm text-slate-700 dark:text-slate-200">{{ ticket.description or 'No description provided.' }}</p>
             {% if ticket.attachments %}
             <div class="mt-4 flex flex-wrap gap-2">

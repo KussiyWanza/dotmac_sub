@@ -47,6 +47,30 @@ def test_support_services_have_complete_registered_contracts() -> None:
         assert SERVICES_BY_NAME[name].contract is not None, name
 
 
+def test_customer_publication_is_owned_and_legacy_visibility_is_reconciled() -> None:
+    contract = SERVICES_BY_NAME["support.ticket_lifecycle"].contract
+    assert contract is not None
+    assert any(
+        concern.name == "ticket customer publication visibility"
+        for concern in contract.concerns
+    )
+
+    migration = _source("alembic/versions/503_reconcile_ticket_portal_visibility.py")
+    assert '"description_is_internal"' in migration
+    assert "UPDATE support_ticket_comments" in migration
+    assert "SET is_internal = true" in migration
+    assert "server_default=sa.true()" in migration
+    lifecycle = _source("app/services/support.py")
+    assert (
+        lifecycle.count('"description_is_internal": ticket.description_is_internal')
+        >= 3
+    )
+    assert "is_internal=True" in _source("app/services/crm_ticket_pull.py")
+    assert (
+        ROOT / "docs/runbooks/SUPPORT_TICKET_PORTAL_VISIBILITY_RECONCILIATION.md"
+    ).exists()
+
+
 def test_migrated_support_services_do_not_own_transport_or_transactions() -> None:
     forbidden = ("HTTPException", ".commit(", ".rollback(", ".begin_nested(")
     for relative_path in MIGRATED_MODULES:

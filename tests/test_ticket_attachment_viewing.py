@@ -113,6 +113,7 @@ def test_portal_projection_keeps_ticket_and_comment_attachments(db_session) -> N
     comment_file_id = str(uuid.uuid4())
     ticket = Ticket(
         title="Attachment ticket",
+        description_is_internal=False,
         attachments=[{"file_name": "ticket.pdf", "stored_file_id": ticket_file_id}],
     )
     comment = TicketComment(
@@ -130,6 +131,24 @@ def test_portal_projection_keeps_ticket_and_comment_attachments(db_session) -> N
     assert (
         crm_portal._comment_to_dict(comment, set())["attachments"][0]["stored_file_id"]
         == comment_file_id
+    )
+
+
+def test_customer_attachment_access_excludes_internal_description(db_session) -> None:
+    ticket = Ticket(title="Private attachment", description_is_internal=True)
+    db_session.add(ticket)
+    db_session.commit()
+    record = _stored_ticket_file(
+        db_session, ticket, entity_type="support_ticket_attachment"
+    )
+    ticket.attachments = [{"stored_file_id": str(record.id)}]
+    db_session.commit()
+
+    assert (
+        web_support_tickets.get_customer_visible_ticket_attachment_file(
+            db_session, ticket_id=ticket.id, file_id=record.id
+        )
+        is None
     )
 
 

@@ -1515,6 +1515,7 @@ def my_create_ticket(
     ticket_payload = TicketCreate(
         title=payload.title,
         description=payload.description,
+        description_is_internal=False,
         priority=payload.priority,
         ticket_type=payload.ticket_type,
         channel=TicketChannel.web,

@@ -27,6 +27,7 @@ def _ticket(
     number="TCK-1",
     title="Title",
     description="desc",
+    description_is_internal=False,
     status="open",
     priority="normal",
     created="2026-01-01T00:00:00+00:00",
@@ -42,6 +43,7 @@ def _ticket(
     t.number = number
     t.title = title
     t.description = description
+    t.description_is_internal = description_is_internal
     t.status = status
     t.priority = priority
     t.created_at = datetime.fromisoformat(created)
@@ -242,6 +244,26 @@ def test_ticket_to_dict_includes_native_sla_resolution_timestamps() -> None:
     }
 
 
+def test_ticket_to_dict_suppresses_internal_description_and_attachments() -> None:
+    ticket = _ticket(description="private diagnosis", description_is_internal=True)
+    ticket.attachments = [{"file_name": "private.pdf"}]
+
+    payload = crm_portal._ticket_to_dict(ticket)
+
+    assert payload["description"] == ""
+    assert payload["description_available_to_customer"] is False
+    assert payload["attachments"] == []
+
+
+def test_ticket_to_dict_includes_explicit_customer_description() -> None:
+    ticket = _ticket(description="Customer report", description_is_internal=False)
+
+    payload = crm_portal._ticket_to_dict(ticket)
+
+    assert payload["description"] == "Customer report"
+    assert payload["description_available_to_customer"] is True
+
+
 def test_tickets_list_context_skips_blank_subscriber_ids(monkeypatch) -> None:
     called = {"list": False}
 
@@ -362,7 +384,7 @@ def test_ticket_create_context_exposes_canonical_form_choices(db_session) -> Non
 
 def test_handle_ticket_create_normalizes_unknown_priority(monkeypatch) -> None:
     sid = str(uuid4())
-    captured: dict[str, str] = {}
+    captured: dict[str, object] = {}
 
     def _create(
         db,
@@ -373,6 +395,7 @@ def test_handle_ticket_create_normalizes_unknown_priority(monkeypatch) -> None:
     ):
         captured["priority"] = payload.priority
         captured["region"] = payload.region
+        captured["description_is_internal"] = payload.description_is_internal
         captured["routing_mode"] = routing_mode.value
         return _ticket(id="ticket-1", subscriber_id=sid)
 
@@ -395,6 +418,7 @@ def test_handle_ticket_create_normalizes_unknown_priority(monkeypatch) -> None:
     assert result["success"] is True
     assert result["ticket"]["id"] == "ticket-1"
     assert captured["priority"] == "normal"
+    assert captured["description_is_internal"] is False
     assert captured["region"] == "north"
     assert captured["routing_mode"] == "preserve_requested_team"
 
