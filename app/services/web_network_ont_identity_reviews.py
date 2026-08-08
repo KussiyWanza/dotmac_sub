@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from typing import NotRequired, TypedDict
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -35,6 +36,17 @@ from app.services.network.ont_assignment_identity import (
 from app.services.ui_contracts import Action
 
 DECISION_STATUSES = ("proposed", "approved", "declined", "applied", "closed")
+
+
+class OntAssignmentReviewListRow(TypedDict):
+    batch: OntAssignmentCutoverProposalBatch
+    decisions: list[OntAssignmentIdentityDecision]
+    latest_verification: OntAssignmentCutoverVerificationAttestation | None
+    review: OntAssignmentCutoverBatchReview | None
+    status: str
+    proposed_by_name: NotRequired[str]
+    reviewed_by_name: NotRequired[str | None]
+    verified_by_name: NotRequired[str | None]
 
 
 @dataclass(frozen=True)
@@ -200,7 +212,7 @@ def list_topology_observation_reviews(
         db, OntUnit, {evidence.ont_unit_id for evidence in evidence_rows}
     )
     normalized_query = str(query or "").strip().lower()
-    rows: list[dict[str, object]] = []
+    rows: list[OntAssignmentReviewListRow] = []
     for evidence in evidence_rows:
         ont = ont_by_id.get(evidence.ont_unit_id)
         searchable = " ".join(

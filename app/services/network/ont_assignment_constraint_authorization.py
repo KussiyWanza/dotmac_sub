@@ -12,6 +12,7 @@ import json
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import NotRequired, TypedDict
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -33,6 +34,34 @@ from app.services.network.ont_assignment_cutover_verification import (
 )
 
 REVIEW_ACTIONS = frozenset({"approve", "decline"})
+
+
+class OntAssignmentConstraintAuthorizationReviewRow(TypedDict):
+    action: str
+    attestation_sha256: str
+    id: str
+    review_notes: str
+    reviewed_at: str
+    reviewed_by: str
+    reviewed_by_name: NotRequired[str]
+
+
+class OntAssignmentConstraintAuthorizationRow(TypedDict):
+    created_at: str
+    coverage_report_sha256: str
+    cutover_report_sha256: str
+    eligible_for_separate_ddl_change_review: bool
+    evidence_current: bool
+    expired: bool
+    expires_at: str
+    id: str
+    reason: str
+    request_sha256: str
+    requested_by: str
+    requested_by_name: NotRequired[str]
+    review: OntAssignmentConstraintAuthorizationReviewRow | None
+    state: str
+    target_environment: str
 
 
 class OntAssignmentConstraintAuthorizationError(ValueError):
@@ -746,7 +775,7 @@ def inspect_ont_assignment_constraint_authorizations(
         statement = statement.where(
             OntAssignmentConstraintAuthorizationRequest.target_environment == target
         )
-    rows: list[dict[str, object]] = []
+    rows: list[OntAssignmentConstraintAuthorizationRow] = []
     current_approval_count = 0
     for request in db.scalars(statement):
         review = _review_for_request(db, request.id)
@@ -793,19 +822,20 @@ def inspect_ont_assignment_constraint_authorizations(
             actor
             for row in rows
             for actor in (
-                row.get("requested_by"),
-                (row.get("review") or {}).get("reviewed_by"),
+                row["requested_by"],
+                row["review"]["reviewed_by"] if row["review"] is not None else None,
             )
             if actor
         },
     )
     for row in rows:
         row["requested_by_name"] = actor_labels.get(
-            str(row.get("requested_by") or ""), "Former or unknown user"
+            row["requested_by"], "Former or unknown user"
         )
-        if row.get("review"):
-            row["review"]["reviewed_by_name"] = actor_labels.get(
-                str(row["review"].get("reviewed_by") or ""),
+        review_row = row["review"]
+        if review_row is not None:
+            review_row["reviewed_by_name"] = actor_labels.get(
+                review_row["reviewed_by"],
                 "Former or unknown user",
             )
     return {
