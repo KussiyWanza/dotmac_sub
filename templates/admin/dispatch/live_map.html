@@ -38,6 +38,21 @@
         </div>
     </div>
 
+    <div class="relative rounded-2xl border border-slate-200/60 bg-white p-4 shadow-sm dark:border-slate-700/60 dark:bg-slate-800">
+        <label for="map-search" class="mb-2 block text-sm font-semibold text-slate-900 dark:text-white">Search the map</label>
+        <div class="relative">
+            <svg class="pointer-events-none absolute left-3 top-3 h-5 w-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m21 21-4.35-4.35m1.35-5.65a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z"/></svg>
+            <input id="map-search" type="search" autocomplete="off"
+                   placeholder="Technician, work order, customer, phone, or street"
+                   aria-describedby="map-search-help map-search-status"
+                   aria-controls="map-search-results"
+                   class="w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-10 pr-4 text-sm text-slate-900 shadow-sm outline-none transition focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20 dark:border-slate-600 dark:bg-slate-900 dark:text-white" />
+        </div>
+        <p id="map-search-help" class="mt-2 text-xs text-slate-500 dark:text-slate-400">Search includes service streets and addresses. Select a result to centre the map.</p>
+        <p id="map-search-status" class="mt-2 min-h-5 text-xs text-slate-500 dark:text-slate-400" aria-live="polite"></p>
+        <div id="map-search-results" class="hidden max-h-64 divide-y divide-slate-100 overflow-y-auto rounded-xl border border-slate-200 dark:divide-slate-700 dark:border-slate-600" role="listbox" aria-label="Map search results"></div>
+    </div>
+
     <div class="grid grid-cols-1 gap-6 lg:grid-cols-4">
         <div class="lg:col-span-3">
             <div class="relative overflow-hidden rounded-2xl border border-slate-200/60 bg-white shadow-sm dark:border-slate-700/60 dark:bg-slate-800">
@@ -83,6 +98,7 @@
 <script>
 (function() {
     const FEED_URL = '/admin/dispatch/live-map/feed?stale_after_seconds=120&limit=500';
+    const SEARCH_URL = '/admin/dispatch/live-map/search';
     const REFRESH_MS = 30000;
 
     function escapeHtml(v) {
@@ -97,6 +113,9 @@
     }).addTo(map);
 
     const markers = new Map();
+    let searchMarker = null;
+    let searchTimer = null;
+    let searchController = null;
     let hasFit = false;
 
     function markerColor(item) {
@@ -175,7 +194,77 @@
             .catch(function() { /* transient; next tick retries */ });
     }
 
+    function clearSearchResults(message) {
+        const results = document.getElementById('map-search-results');
+        results.innerHTML = '';
+        results.classList.add('hidden');
+        document.getElementById('map-search-status').textContent = message || '';
+    }
+
+    function focusSearchResult(item) {
+        const latlng = [item.latitude, item.longitude];
+        map.setView(latlng, 16);
+        const existing = item.kind === 'technician' ? markers.get(item.id) : null;
+        if (existing) {
+            existing.openPopup();
+            return;
+        }
+        if (searchMarker) map.removeLayer(searchMarker);
+        let popup = '<div style="font-weight:600">' + escapeHtml(item.label) + '</div>';
+        if (item.detail) popup += '<div style="font-size:12px;opacity:0.75">' + escapeHtml(item.detail) + '</div>';
+        if (item.status) popup += '<div style="font-size:11px;margin-top:3px;text-transform:capitalize">' + escapeHtml(item.status.replace(/_/g, ' ')) + '</div>';
+        if (item.href) popup += '<a href="' + escapeHtml(item.href) + '" style="display:inline-block;margin-top:6px;font-size:12px;color:#f97316;font-weight:500">Open work order &rarr;</a>';
+        searchMarker = L.marker(latlng).addTo(map).bindPopup(popup).openPopup();
+    }
+
+    function renderSearchResults(data) {
+        const items = (data && data.items) || [];
+        const results = document.getElementById('map-search-results');
+        results.innerHTML = '';
+        if (!items.length) {
+            clearSearchResults('No mapped technicians or work orders matched your search.');
+            return;
+        }
+        items.forEach(function(item) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'block w-full px-4 py-3 text-left transition hover:bg-orange-50 focus:bg-orange-50 focus:outline-none dark:hover:bg-slate-700 dark:focus:bg-slate-700';
+            button.setAttribute('role', 'option');
+            button.innerHTML = '<span class="block text-sm font-semibold text-slate-900 dark:text-white">' + escapeHtml(item.label) + '</span>' +
+                '<span class="block text-xs text-slate-500 dark:text-slate-400">' + escapeHtml(item.detail || item.kind.replace(/_/g, ' ')) + '</span>';
+            button.addEventListener('click', function() { focusSearchResult(item); });
+            results.appendChild(button);
+        });
+        results.classList.remove('hidden');
+        document.getElementById('map-search-status').textContent = items.length + (items.length === 1 ? ' result' : ' results');
+    }
+
+    function runSearch(value) {
+        const query = value.trim();
+        if (query.length < 2) {
+            clearSearchResults(query ? 'Enter at least two characters.' : '');
+            return;
+        }
+        if (searchController) searchController.abort();
+        searchController = new AbortController();
+        document.getElementById('map-search-status').textContent = 'Searching…';
+        fetch(SEARCH_URL + '?q=' + encodeURIComponent(query) + '&limit=20', {
+            headers: { 'Accept': 'application/json' },
+            signal: searchController.signal
+        })
+            .then(function(r) { return r.ok ? r.json() : Promise.reject(r.status); })
+            .then(renderSearchResults)
+            .catch(function(error) {
+                if (error && error.name === 'AbortError') return;
+                clearSearchResults('Search is temporarily unavailable.');
+            });
+    }
+
     document.getElementById('btn-refresh').addEventListener('click', refresh);
+    document.getElementById('map-search').addEventListener('input', function(event) {
+        window.clearTimeout(searchTimer);
+        searchTimer = window.setTimeout(function() { runSearch(event.target.value); }, 250);
+    });
     refresh();
     setInterval(refresh, REFRESH_MS);
 })();

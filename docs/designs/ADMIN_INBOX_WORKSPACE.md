@@ -133,6 +133,15 @@ selector is rendered only after the projection exposes a specific receiving
 account or mailbox identifier and real choices; Team must never be relabelled
 as Inbox.
 
+Advanced Service Team conditions sit behind an optional progressive-disclosure
+panel. Operators can require all conditions, require at least one condition in
+an OR group, use positive or negative team membership, or select conversations
+with or without any active team link. The browser only builds the shared JSON
+transport and preserves it in the URL and saved views. The server projection
+validates active team identifiers and owns all queue-membership semantics;
+invalid input returns a controlled adapter error rather than widening the
+queue.
+
 ## Queue below Stats and Filters
 
 Saved Views remains part of the expanded Stats and Filters disclosure. The
@@ -261,7 +270,9 @@ Keyboard shortcuts are disabled while focus is in an editable control.
 ## Validation
 
 Focused tests cover direct conversation selection, search/filter URL state,
-duplicate-send prevention, draft restoration, status and assignment controls,
+advanced Service Team positive, negative, empty, AND/OR, invalid-input, and
+saved-view behavior, duplicate-send prevention, draft restoration, status and
+assignment controls,
 attachment staging, realtime activity handling, mobile navigation, dark-mode
 classes, and keyboard navigation. Repository formatter, linter, type checker,
 architecture tests, and relevant service tests remain the merge gate.

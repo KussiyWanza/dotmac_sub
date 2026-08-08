@@ -26,6 +26,7 @@ from app.services.network import (
 )
 from app.services.network.fiber_inventory_proposals import (
     CableRegistrationReceipt,
+    ClosureRegistrationReceipt,
     StrandDamageReceipt,
 )
 from app.services.network.fiber_splice_proposals import (
@@ -165,6 +166,53 @@ def register_cable(
         fibers_per_tube=fibers_per_tube,
         color_standard=color_standard,
         length_m=length_m,
+        notes=notes,
+        work_order=work_order,
+    )
+
+
+def register_closure(
+    db: Session,
+    *,
+    vendor_id: str,
+    vendor_user_id: str | None,
+    work_order_id: str,
+    installation_project_id: str,
+    name: str,
+    latitude: float,
+    longitude: float,
+    notes: str | None = None,
+) -> ClosureRegistrationReceipt:
+    """Submit a mapped closure as reviewed inventory for an assigned job."""
+
+    vendor_uuid = coerce_uuid(vendor_id)
+    work_order = _scoped_vendor_work_order(db, vendor_uuid, work_order_id)
+    assignment = (
+        db.query(InstallationProject)
+        .filter(
+            InstallationProject.id == coerce_uuid(installation_project_id),
+            InstallationProject.project_id == work_order.project_id,
+            InstallationProject.assigned_vendor_id == vendor_uuid,
+            InstallationProject.is_active.is_(True),
+        )
+        .one_or_none()
+    )
+    if assignment is None:
+        raise SpliceProposalError(
+            code="work_order_not_found",
+            message="Work order not found",
+            kind="not_found",
+        )
+    actor = VendorActor(
+        vendor_id=vendor_uuid,
+        vendor_user_id=coerce_uuid(vendor_user_id) if vendor_user_id else None,
+    )
+    return fiber_inventory_proposals.register_closure(
+        db,
+        actor=actor,
+        name=name,
+        latitude=latitude,
+        longitude=longitude,
         notes=notes,
         work_order=work_order,
     )

@@ -1,9 +1,9 @@
 name: Deploy dev to staging
 
-# The GHCR workflow builds an immutable sha-* image for every dev commit. This
-# workflow waits for that build plus the required dev push checks, proves the
-# candidate is still the current dev tip, and only then hands the exact SHA to
-# the dedicated staging runner.
+# The explicit release-candidate workflow builds the final current dev commit
+# once and publishes typed evidence for its immutable OCI digest. This workflow
+# independently proves the candidate is still the current green dev tip, then
+# hands the exact digest to the dedicated staging runner.
 #
 # Fail-closed activation contract:
 # - repository variable STAGING_AUTO_DEPLOY_ENABLED must equal "true";
@@ -11,7 +11,7 @@ name: Deploy dev to staging
 # - a self-hosted runner must carry the dotmac-sub-staging label.
 on:
   workflow_run:
-    workflows: ["Build & Push to GHCR"]
+    workflows: ["Build release candidate once"]
     branches: [dev]
     types: [completed]
 
@@ -29,14 +29,16 @@ jobs:
     if: >-
       vars.STAGING_AUTO_DEPLOY_ENABLED == 'true' &&
       github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.event == 'workflow_dispatch' &&
       github.event.workflow_run.head_branch == 'dev' &&
       github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 40
     outputs:
       candidate_sha: ${{ steps.candidate.outputs.sha }}
-      image_tag: ${{ steps.candidate.outputs.tag }}
+      source_tree: ${{ steps.evidence.outputs.source_tree }}
+      image_digest: ${{ steps.evidence.outputs.image_digest }}
+      build_run_id: ${{ steps.evidence.outputs.build_run_id }}
     steps:
       - name: Resolve immutable candidate
         id: candidate
@@ -49,7 +51,36 @@ jobs:
             exit 1
           fi
           echo "sha=$CANDIDATE_SHA" >> "$GITHUB_OUTPUT"
-          echo "tag=sha-${CANDIDATE_SHA:0:7}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.candidate.outputs.sha }}
+          fetch-depth: 1
+
+      - name: Download candidate evidence from the triggering build
+        uses: actions/download-artifact@v4
+        with:
+          name: release-candidate-evidence
+          path: ${{ runner.temp }}/release-candidate-evidence
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: Verify typed candidate evidence
+        id: evidence
+        env:
+          CANDIDATE_SHA: ${{ steps.candidate.outputs.sha }}
+          BUILD_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          source_tree="$(git rev-parse 'HEAD^{tree}')"
+          python -m scripts.release_candidate_evidence verify-candidate \
+            --path "$RUNNER_TEMP/release-candidate-evidence/candidate.json" \
+            --expected-source-revision "$CANDIDATE_SHA" \
+            --expected-source-tree "$source_tree" \
+            --expected-build-run-id "$BUILD_RUN_ID" \
+            --github-output "$GITHUB_OUTPUT"
 
       - name: Require current dev tip and green push checks
         uses: actions/github-script@v7
@@ -137,7 +168,7 @@ jobs:
     environment: staging
     timeout-minutes: 90
     steps:
-      - name: Fast-forward the staging checkout to the verified dev commit
+      - name: Check out exact candidate without moving deployment branches
         env:
           CANDIDATE_SHA: ${{ needs.verify.outputs.candidate_sha }}
           STAGING_DEPLOY_DIR: ${{ vars.STAGING_DEPLOY_DIR }}
@@ -163,9 +194,15 @@ jobs:
             echo "origin/dev moved after candidate verification." >&2
             exit 1
           fi
-          git -C "$STAGING_DEPLOY_DIR" checkout dev
-          git -C "$STAGING_DEPLOY_DIR" merge --ff-only "$CANDIDATE_SHA"
+          git -C "$STAGING_DEPLOY_DIR" checkout --detach "$CANDIDATE_SHA"
           test "$(git -C "$STAGING_DEPLOY_DIR" rev-parse HEAD)" = "$CANDIDATE_SHA"
+          if git -C "$STAGING_DEPLOY_DIR" symbolic-ref -q HEAD >/dev/null; then
+            echo "The staging deployment checkout must remain detached." >&2
+            exit 1
+          fi
+          test -z "$(
+            git -C "$STAGING_DEPLOY_DIR" status --porcelain --untracked-files=no
+          )"
 
       - name: Verify staging-only host contract
         env:
@@ -202,33 +239,79 @@ jobs:
 
       - name: Verify immutable image exists
         env:
-          IMAGE_TAG: ${{ needs.verify.outputs.image_tag }}
+          IMAGE_DIGEST: ${{ needs.verify.outputs.image_digest }}
         run: |
           docker manifest inspect \
-            "ghcr.io/michaelayoade/dotmac_sub:$IMAGE_TAG" >/dev/null
+            "ghcr.io/michaelayoade/dotmac_sub@$IMAGE_DIGEST" >/dev/null
 
       - name: Deploy verified dev image
         env:
           COMPOSE_PROJECT_NAME: dotmac_sub
-          IMAGE_TAG: ${{ needs.verify.outputs.image_tag }}
+          IMAGE_DIGEST: ${{ needs.verify.outputs.image_digest }}
           STAGING_DEPLOY_DIR: ${{ vars.STAGING_DEPLOY_DIR }}
         run: |
           set -euo pipefail
           cd "$STAGING_DEPLOY_DIR"
-          bash scripts/deploy_staging.sh "$IMAGE_TAG"
+          bash scripts/deploy_staging.sh "$IMAGE_DIGEST"
 
-      - name: Verify deployed revision and health
+      - name: Verify deployed digest, evidence labels, and health
         env:
           CANDIDATE_SHA: ${{ needs.verify.outputs.candidate_sha }}
-          IMAGE_TAG: ${{ needs.verify.outputs.image_tag }}
+          SOURCE_TREE: ${{ needs.verify.outputs.source_tree }}
+          IMAGE_DIGEST: ${{ needs.verify.outputs.image_digest }}
+          BUILD_RUN_ID: ${{ needs.verify.outputs.build_run_id }}
         run: |
           set -euo pipefail
-          expected_image="ghcr.io/michaelayoade/dotmac_sub:$IMAGE_TAG"
+          expected_image="ghcr.io/michaelayoade/dotmac_sub@$IMAGE_DIGEST"
           test "$(docker inspect dotmac_sub_app --format '{{.Config.Image}}')" = \
             "$expected_image"
           test "$(
             docker inspect dotmac_sub_app \
               --format '{{index .Config.Labels "org.opencontainers.image.revision"}}'
           )" = "$CANDIDATE_SHA"
+          test "$(
+            docker inspect dotmac_sub_app \
+              --format '{{index .Config.Labels "io.dotmac.release.source-tree"}}'
+          )" = "$SOURCE_TREE"
+          test "$(
+            docker inspect dotmac_sub_app \
+              --format '{{index .Config.Labels "io.dotmac.release.build-run"}}'
+          )" = "$BUILD_RUN_ID"
           curl -fsS --connect-timeout 5 --max-time 10 \
             http://10.120.121.20:8001/health
+
+  record-acceptance:
+    name: Record digest-bound staging acceptance
+    needs: [verify, deploy]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.verify.outputs.candidate_sha }}
+          fetch-depth: 1
+
+      - name: Write typed staging acceptance
+        env:
+          DEPLOYMENT_ID: ${{ github.run_id }}
+          SOURCE_REVISION: ${{ needs.verify.outputs.candidate_sha }}
+          SOURCE_TREE: ${{ needs.verify.outputs.source_tree }}
+          IMAGE_DIGEST: ${{ needs.verify.outputs.image_digest }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/staging-acceptance"
+          python -m scripts.release_candidate_evidence write-staging-acceptance \
+            --deployment-id "$DEPLOYMENT_ID" \
+            --source-revision "$SOURCE_REVISION" \
+            --source-tree "$SOURCE_TREE" \
+            --image-digest "$IMAGE_DIGEST" \
+            --output "$RUNNER_TEMP/staging-acceptance/acceptance.json"
+
+      - name: Upload staging acceptance
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-acceptance-${{ needs.verify.outputs.candidate_sha }}
+          path: ${{ runner.temp }}/staging-acceptance/acceptance.json
+          if-no-files-found: error
+          retention-days: 90

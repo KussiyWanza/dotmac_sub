@@ -39,6 +39,7 @@ from app.services import (
 from app.services import (
     team_inbox_assignment,
     team_inbox_contact_links,
+    team_inbox_filters,
     team_inbox_outbound,
     team_inbox_read,
     ticket_validation,
@@ -364,6 +365,13 @@ def list_inbox_conversations(
     status: str | None = Query(default=None),
     channel_type: str | None = Query(default=None),
     service_team_id: str | None = Query(default=None),
+    filters: str | None = Query(
+        default=None,
+        description=(
+            "Advanced Service Team JSON filter using InboxConversation rows and "
+            "the =, !=, in, not in, is, or is not operators."
+        ),
+    ),
     assigned_person_id: str | None = Query(default=None),
     needs_response: bool = Query(default=False),
     contact_resolution_status: str | None = Query(default=None),
@@ -385,12 +393,22 @@ def list_inbox_conversations(
     )
     clean_muted = muted if isinstance(muted, bool) else None
     clean_snoozed = snoozed if isinstance(snoozed, bool) else None
+    try:
+        advanced_filters, _team_options = team_inbox_filters.resolve_filter_query(
+            db,
+            team_inbox_filters.InboxAdvancedFilterPayload(
+                raw_json=filters if isinstance(filters, str) else None
+            ),
+        )
+    except team_inbox_filters.InboxFilterError as exc:
+        raise HTTPException(status_code=400, detail=exc.message) from exc
     result = team_inbox_read.list_conversations(
         db,
         search=search,
         status=status,
         channel_type=channel_type,
         service_team_id=service_team_id,
+        advanced_filters=advanced_filters,
         assigned_person_id=assigned_person_id,
         needs_response=needs_response,
         contact_resolution_status=clean_contact_resolution_status,

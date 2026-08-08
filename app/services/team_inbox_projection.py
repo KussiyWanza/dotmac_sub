@@ -29,7 +29,7 @@ from app.services import (
     conversation_ticket_handoff,
     subscriber_summary,
     team_inbox_contact_links,
-    team_inbox_metrics,
+    team_inbox_filters,
     team_inbox_operations,
     team_inbox_read,
     team_inbox_read_state,
@@ -73,6 +73,7 @@ INBOX_LIST_DEFINITION = ListDefinition(
         # redirect; undeclared, the redirect silently widened the queue back to
         # every team.
         ListFieldDefinition("service_team_ids", "Teams", filterable=True),
+        ListFieldDefinition("filters", "Advanced filters", filterable=True),
         ListFieldDefinition("assigned_person_id", "Assignee", filterable=True),
         ListFieldDefinition("contact_resolution_status", "Contact", filterable=True),
         ListFieldDefinition("needs_response", "Unreplied", filterable=True),
@@ -91,8 +92,8 @@ INBOX_LIST_DEFINITION = ListDefinition(
         ListFieldDefinition("last_message_at", "Last activity", sortable=True),
         ListFieldDefinition("created_at", "Created", sortable=True),
     ),
-    default_sort=InboxListSort.priority.value,
-    default_sort_dir=InboxSortDirection.ascending.value,
+    default_sort=InboxListSort.last_message_at.value,
+    default_sort_dir=InboxSortDirection.descending.value,
     per_page_options=(10, 25, 50, 100),
     default_per_page=25,
 )
@@ -107,6 +108,9 @@ class InboxQueueRequest:
     # Multi-team scope for "My team": an agent may belong to several teams and
     # the my_team count spans all of them, so the filter must select the same set.
     service_team_ids: tuple[str, ...] = ()
+    advanced_filters: team_inbox_filters.InboxAdvancedFilterPayload = (
+        team_inbox_filters.InboxAdvancedFilterPayload()
+    )
     assigned_person_id: str | UUID | None = None
     needs_response: bool = False
     needs_attention: bool = False
@@ -267,6 +271,7 @@ class InboxQueueProjection:
     status: str
     channel_type: str
     service_team_id: str
+    advanced_filters_json: str | None
     assigned_person_id: str
     needs_response: bool
     needs_attention: bool
@@ -287,6 +292,7 @@ class InboxQueueProjection:
     assignment_counts: InboxAssignmentCounts
     status_options: tuple[str, ...]
     channel_options: tuple[str, ...]
+    priority_options: tuple[InboxPriorityOption, ...]
     label_options: tuple[team_inbox_operations.LabelOption, ...]
     saved_filters: tuple[team_inbox_operations.SavedFilterOption, ...]
     selected_id: str | None
@@ -876,6 +882,7 @@ def _filter_params(
     channel_type: str | None,
     service_team_id: str | None,
     service_team_ids: tuple[str, ...],
+    advanced_filters_json: str | None,
     assigned_person_id: str | None,
     contact_resolution_status: str | None,
     needs_response: bool,
@@ -904,6 +911,7 @@ def _filter_params(
         "channel_type": channel_type,
         "service_team_id": service_team_id,
         "service_team_ids": ",".join(service_team_ids) or None,
+        "filters": advanced_filters_json,
         "assigned_person_id": assigned_person_id,
         "contact_resolution_status": contact_resolution_status,
         "needs_response": "true" if needs_response else None,
@@ -949,6 +957,10 @@ def build_queue_projection(
     raw_direction = request.sort_dir
     raw_page = request.page
     raw_per_page = request.per_page
+    advanced_filter_query, active_team_options = (
+        team_inbox_filters.resolve_filter_query(db, request.advanced_filters)
+    )
+    advanced_filters_json = advanced_filter_query.canonical_json()
 
     status = (
         raw_status
@@ -996,6 +1008,7 @@ def build_queue_projection(
         channel_type=channel,
         service_team_id=str(team_id) if team_id else None,
         service_team_ids=team_id_scope,
+        advanced_filters_json=advanced_filters_json,
         assigned_person_id=str(assignee_id) if assignee_id else None,
         contact_resolution_status=contact_status,
         needs_response=needs_response,
@@ -1028,6 +1041,7 @@ def build_queue_projection(
             channel_type=channel,
             service_team_id=team_id,
             service_team_ids=team_id_scope,
+            advanced_filters=advanced_filter_query,
             ai_handling=request.ai_handling,
             has_ticket=request.has_ticket,
             activity_from=request.activity_from,
@@ -1064,6 +1078,7 @@ def build_queue_projection(
             channel_type=raw_channel,
             service_team_id=raw_team_text,
             service_team_ids=team_id_scope,
+            advanced_filters_json=request.advanced_filters.raw_json,
             assigned_person_id=raw_assignee_text,
             contact_resolution_status=raw_contact_status,
             needs_response=needs_response,
@@ -1100,7 +1115,6 @@ def build_queue_projection(
         )
         else None
     )
-    service_teams = team_inbox_metrics.active_service_team_options(db)
     queue_metrics = team_inbox_operations.queue_metrics(db)
     return InboxQueueProjection(
         rows=tuple(result.items),
@@ -1118,6 +1132,7 @@ def build_queue_projection(
         status=status or "",
         channel_type=channel or "",
         service_team_id=str(team_id) if team_id else "",
+        advanced_filters_json=advanced_filters_json,
         assigned_person_id=str(assignee_id) if assignee_id else "",
         needs_response=needs_response,
         needs_attention=needs_attention,
@@ -1133,7 +1148,8 @@ def build_queue_projection(
         activity_from=_activity_param(request.activity_from),
         activity_to=_activity_param(request.activity_to),
         service_team_options=tuple(
-            InboxServiceTeamOption(id=team.id, name=team.name) for team in service_teams
+            InboxServiceTeamOption(id=team_id, name=name)
+            for team_id, name in active_team_options
         ),
         agent_options=list_agent_options(db),
         agent_presence=get_agent_presence(db, request.actor_person_id),
@@ -1144,6 +1160,7 @@ def build_queue_projection(
         ),
         status_options=tuple(item.value for item in InboxConversationStatus),
         channel_options=tuple(item.value for item in InboxChannelType),
+        priority_options=INBOX_PRIORITY_OPTIONS,
         label_options=tuple(team_inbox_operations.list_labels(db)),
         saved_filters=tuple(
             team_inbox_operations.list_saved_filters(

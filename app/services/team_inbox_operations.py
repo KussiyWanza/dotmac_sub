@@ -26,7 +26,12 @@ from app.models.team_inbox import (
     InboxTeamRole,
     InboxTeamSource,
 )
-from app.services import team_inbox_assignment, team_inbox_outbound, team_inbox_status
+from app.services import (
+    team_inbox_assignment,
+    team_inbox_filters,
+    team_inbox_outbound,
+    team_inbox_status,
+)
 from app.services.common import coerce_uuid
 
 _ALLOWED_LABEL_COLORS = {
@@ -122,9 +127,15 @@ class MessageTemplateOption:
 class SavedFilterOption:
     id: str
     name: str
-    filter_payload: dict[str, Any]
+    filter_payload: team_inbox_filters.InboxSavedFilterPayload
     is_shared: bool
     owner_person_id: str | None
+
+    @property
+    def filter_payload_transport(
+        self,
+    ) -> team_inbox_filters.InboxSavedFilterTransport:
+        return self.filter_payload.to_storage()
 
 
 @dataclass(frozen=True)
@@ -786,7 +797,7 @@ def save_filter(
     db: Session,
     *,
     name: str,
-    filter_payload: dict[str, Any],
+    filter_payload: team_inbox_filters.InboxSavedFilterPayload,
     owner_person_id: str | UUID | None = None,
     is_shared: bool = False,
 ) -> InboxSavedFilter:
@@ -795,11 +806,7 @@ def save_filter(
         raise InboxOperationError("Filter name is required.")
     saved_filter = InboxSavedFilter(
         name=clean_name[:120],
-        filter_payload={
-            key: value
-            for key, value in filter_payload.items()
-            if value not in (None, "")
-        },
+        filter_payload=filter_payload.to_storage(),
         owner_person_id=coerce_uuid(owner_person_id),
         is_shared=bool(is_shared),
         is_active=True,
@@ -829,7 +836,9 @@ def list_saved_filters(
         SavedFilterOption(
             id=str(row.id),
             name=row.name,
-            filter_payload=dict(row.filter_payload or {}),
+            filter_payload=team_inbox_filters.saved_filter_payload_from_storage(
+                row.filter_payload
+            ),
             is_shared=row.is_shared,
             owner_person_id=str(row.owner_person_id) if row.owner_person_id else None,
         )

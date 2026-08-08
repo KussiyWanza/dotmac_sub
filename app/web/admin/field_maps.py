@@ -17,6 +17,12 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.schemas.field import (
+    FieldLiveMapFeed,
+    FieldLiveMapFeedQuery,
+    FieldLiveMapSearchQuery,
+    FieldLiveMapSearchResponse,
+)
 from app.services import field_maps as field_maps_service
 from app.services.auth_dependencies import require_permission
 
@@ -58,15 +64,36 @@ def field_live_map(request: Request, db: Session = Depends(get_db)):
 
 @router.get(
     "/live-map/feed",
+    response_model=FieldLiveMapFeed,
     dependencies=[Depends(require_permission("operations:dispatch:read"))],
 )
 def field_live_map_feed(
     stale_after_seconds: int = Query(120, ge=15, le=3600),
     limit: int = Query(500, ge=1, le=2000),
     db: Session = Depends(get_db),
-):
+) -> FieldLiveMapFeed:
     return field_maps_service.list_technician_positions(
-        db, stale_after_seconds=stale_after_seconds, limit=limit
+        db=db,
+        query=FieldLiveMapFeedQuery(
+            stale_after_seconds=stale_after_seconds,
+            limit=limit,
+        ),
+    )
+
+
+@router.get(
+    "/live-map/search",
+    response_model=FieldLiveMapSearchResponse,
+    dependencies=[Depends(require_permission("operations:dispatch:read"))],
+)
+def field_live_map_search(
+    q: str = Query(min_length=1, max_length=160),
+    limit: int = Query(20, ge=1, le=50),
+    db: Session = Depends(get_db),
+) -> FieldLiveMapSearchResponse:
+    return field_maps_service.search_live_map(
+        db=db,
+        search=FieldLiveMapSearchQuery(query=q, limit=limit),
     )
 
 
