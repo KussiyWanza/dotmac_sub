@@ -36,6 +36,10 @@ from app.services import auth_flow as auth_flow_service
 from app.services import context_signing
 from app.services import email as email_service
 from app.services.audit_adapter import stage_audit_event
+from app.services.capability_recipient import (
+    CapabilityRecipientError,
+    resolve_capability_recipient,
+)
 from app.services.communication_intents import (
     CommunicationClass,
     CommunicationIntent,
@@ -604,10 +608,19 @@ def materialize_enrollment_email(
     if _local_credential(db, subscriber.id) is not None:
         raise EphemeralActionRejected("already_enrolled")
 
+    # Resolve the one authorised address before minting the token. Enrollment
+    # grants portal access, so it must reach a single authorised mailbox.
+    try:
+        recipient = resolve_capability_recipient(
+            subscriber.email, subject=f"subscriber:{subscriber.id}"
+        )
+    except CapabilityRecipientError as exc:
+        raise EphemeralActionRejected("unresolved_recipient") from exc
+
     token, _ = _issue_token(db, canonical)
     rendered = email_service.render_user_invite_email(
         db,
-        to_email=subscriber.email,
+        to_email=recipient,
         reset_token=token,
         person_name=subscriber.display_name or subscriber.first_name,
         expires_minutes=_token_ttl_minutes(db),
