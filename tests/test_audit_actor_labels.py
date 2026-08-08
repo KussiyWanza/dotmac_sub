@@ -57,13 +57,13 @@ def test_api_key_actor_resolves_to_its_label():
     assert name == "crm-service-integration"
 
 
-def test_service_actor_shows_its_readable_id():
-    """Service ids are already readable; they must survive, not become "System"."""
+def test_service_actor_shows_a_human_readable_label():
+    """Named services remain attributable without exposing a raw identifier."""
     name = audit_helpers.resolve_actor_name(
         _event("system:outage-classifier", AuditActorType.service), {}
     )
 
-    assert name == "system:outage-classifier"
+    assert name == "System: outage classifier"
 
 
 def test_snapshotted_name_is_used_when_the_actor_is_gone():
