@@ -35,7 +35,6 @@ from app.models.notification import (
 )
 from app.models.provisioning import ProvisioningVendor
 from app.models.subscriber import SubscriberStatus as AccountStatus
-from app.services.enforcement_event_policy import AccessEventPolicyError
 from app.services.events.dispatcher import EventDispatcher
 from app.services.events.handlers.enforcement import EnforcementHandler
 from app.services.events.handlers.lifecycle import LifecycleHandler
@@ -51,6 +50,7 @@ from app.services.events.types import (
     Event,
     EventType,
 )
+from app.services.fup_throttle_profile import FupThrottleRateError
 from app.services.provisioning_adapters import (
     ProvisioningResult,
     UnsupportedProvisioner,
@@ -837,14 +837,18 @@ class TestEnforcementHandler:
 
         assert has_active_lock(db_session, str(subscription.id), EnforcementReason.fup)
 
-    @patch("app.services.events.handlers.enforcement.disconnect_account_sessions")
-    @patch("app.services.events.handlers.enforcement.apply_radius_profile_to_account")
+    @patch("app.services.events.handlers.enforcement.project_credentials_to_radius")
+    @patch("app.services.events.handlers.enforcement.disconnect_subscription_sessions")
+    @patch(
+        "app.services.events.handlers.enforcement.apply_radius_profile_to_subscription"
+    )
     @patch("app.services.enforcement_event_policy.settings_spec")
     def test_usage_exhausted_throttle_action(
         self,
         mock_settings,
         mock_apply_profile,
         mock_disconnect,
+        mock_project,
         db_session,
         subscription,
     ):
@@ -867,7 +871,7 @@ class TestEnforcementHandler:
             return None
 
         mock_settings.resolve_value.side_effect = settings_side_effect
-        mock_apply_profile.return_value = 1
+        mock_apply_profile.return_value = (1, {"fup-user"})
 
         handler = EnforcementHandler()
         event = self._make_event(
@@ -877,21 +881,28 @@ class TestEnforcementHandler:
         )
         handler.handle(db_session, event)
 
+        # A FUP breach is scoped to the breaching SUBSCRIPTION. Applying it by
+        # account throttled every service the customer owned.
         mock_apply_profile.assert_called_once_with(
-            db_session, str(account_id), str(throttle_profile_id)
+            db_session, str(subscription_id), str(throttle_profile_id)
         )
         mock_disconnect.assert_called_once_with(
-            db_session, str(account_id), reason="fup_throttle"
+            db_session, str(subscription_id), reason="fup_throttle"
         )
+        mock_project.assert_called_once_with(db_session, {"fup-user"})
 
-    @patch("app.services.events.handlers.enforcement.disconnect_account_sessions")
-    @patch("app.services.events.handlers.enforcement.apply_radius_profile_to_account")
+    @patch("app.services.events.handlers.enforcement.project_credentials_to_radius")
+    @patch("app.services.events.handlers.enforcement.disconnect_subscription_sessions")
+    @patch(
+        "app.services.events.handlers.enforcement.apply_radius_profile_to_subscription"
+    )
     @patch("app.services.enforcement_event_policy.settings_spec")
     def test_usage_exhausted_payload_reduce_speed_overrides_global_block(
         self,
         mock_settings,
         mock_apply_profile,
         mock_disconnect,
+        mock_project,
         db_session,
         subscription,
     ):
@@ -914,7 +925,7 @@ class TestEnforcementHandler:
             return None
 
         mock_settings.resolve_value.side_effect = settings_side_effect
-        mock_apply_profile.return_value = 1
+        mock_apply_profile.return_value = (1, {"fup-user"})
 
         handler = EnforcementHandler()
         event = self._make_event(
@@ -926,17 +937,28 @@ class TestEnforcementHandler:
         handler.handle(db_session, event)
 
         mock_apply_profile.assert_called_once_with(
-            db_session, str(account_id), str(throttle_profile_id)
+            db_session, str(subscription_id), str(throttle_profile_id)
         )
         mock_disconnect.assert_called_once_with(
-            db_session, str(account_id), reason="fup_throttle"
+            db_session, str(subscription_id), reason="fup_throttle"
         )
 
-    @patch("app.services.events.handlers.enforcement.apply_radius_profile_to_account")
+    @patch(
+        "app.services.events.handlers.enforcement.apply_radius_profile_to_subscription"
+    )
     @patch("app.services.enforcement_event_policy.settings_spec")
-    def test_usage_exhausted_throttle_without_profile_fails_visibly(
-        self, mock_settings, mock_apply_profile, db_session
+    def test_usage_exhausted_throttle_without_any_resolvable_profile_fails_visibly(
+        self, mock_settings, mock_apply_profile, db_session, subscription
     ):
+        """No global fallback AND nothing to derive from is a visible failure.
+
+        A missing global profile alone no longer refuses the throttle — the
+        derived, per-subscriber profile is the primary path. But when the
+        subscriber has no rate to reduce either, there is genuinely no throttle
+        to apply, and that must surface rather than silently leave a breaching
+        subscriber at full speed.
+        """
+
         def settings_side_effect(db, domain, key):
             if key == "fup_action":
                 return "throttle"
@@ -947,17 +969,17 @@ class TestEnforcementHandler:
         mock_settings.resolve_value.side_effect = settings_side_effect
 
         handler = EnforcementHandler()
-        sub_id = uuid.uuid4()
-        acc_id = uuid.uuid4()
         event = self._make_event(
             EventType.usage_exhausted,
-            subscription_id=sub_id,
-            account_id=acc_id,
+            subscription_id=subscription.id,
+            account_id=subscription.subscriber_id,
         )
-        with pytest.raises(AccessEventPolicyError) as captured:
+        with pytest.raises(FupThrottleRateError) as captured:
             handler.handle(db_session, event)
 
-        assert captured.value.code == "access.event_policy.throttle_profile_required"
+        assert captured.value.code == (
+            "access.fup_throttle_rate.no_throttle_profile_available"
+        )
         mock_apply_profile.assert_not_called()
 
     def test_enforcement_handler_ignores_unrelated_events(self, db_session):

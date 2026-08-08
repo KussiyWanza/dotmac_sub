@@ -56,6 +56,24 @@ class FupEventPolicyDecision:
             )
         return self.throttle_profile_id
 
+    def throttle_fallback_profile_id(self) -> UUID | None:
+        """The globally configured profile, which is a FALLBACK and may be unset.
+
+        The throttle a subscriber actually gets is derived from their own rate
+        (``app/services/fup_throttle_profile.py``); this global profile only
+        stands in when that derivation cannot produce a rate. Requiring it up
+        front — via ``required_throttle_profile_id`` — made the fallback a
+        precondition for the primary path, so a deployment that had never set
+        it silently never throttled anyone, however carefully its ladders were
+        configured.
+        """
+        if self.action is not FupEnforcementAction.THROTTLE:
+            raise _error(
+                "invalid_throttle_decision",
+                "The resolved FUP policy is not an executable throttle decision.",
+            )
+        return self.throttle_profile_id
+
 
 def _error(suffix: str, message: str) -> AccessEventPolicyError:
     return AccessEventPolicyError(

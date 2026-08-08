@@ -1333,17 +1333,67 @@ def disconnect_account_sessions(
     return count
 
 
-def apply_radius_profile_to_account(
-    db: Session, account_id: str, profile_id: str
-) -> int:
-    credentials = (
+def subscription_credentials(
+    db: Session, subscription: Subscription
+) -> list[AccessCredential]:
+    """The active credentials that serve THIS subscription, and only this one.
+
+    Scoping a per-service consequence by ``subscriber_id`` reaches every service
+    the customer buys. That defect was already found and fixed once on the
+    suspension path below (see the comment in
+    ``cleanup_subscription_on_suspend``), where it took sibling *paid* services
+    offline; this is the same rule, named once so the next per-subscription
+    consequence inherits it instead of rediscovering it.
+
+    Legacy credentials predate the subscription link and carry a NULL
+    ``subscription_id``. Those are included only when this is the subscriber's
+    ONLY serving subscription, so an unlinked credential can never be
+    attributed to a sibling service that is still meant to be running.
+    """
+    other_serving_subscription = (
+        db.query(Subscription.id)
+        .filter(Subscription.subscriber_id == subscription.subscriber_id)
+        .filter(Subscription.id != subscription.id)
+        .filter(
+            Subscription.status.in_(
+                (SubscriptionStatus.active, SubscriptionStatus.pending)
+            )
+        )
+        .first()
+    )
+    credential_scope = [AccessCredential.subscription_id == subscription.id]
+    if other_serving_subscription is None:
+        credential_scope.append(AccessCredential.subscription_id.is_(None))
+
+    return (
         db.query(AccessCredential)
-        .filter(AccessCredential.subscriber_id == coerce_uuid(account_id))
+        .filter(AccessCredential.subscriber_id == subscription.subscriber_id)
+        .filter(or_(*credential_scope))
         .filter(AccessCredential.is_active.is_(True))
         .all()
     )
+
+
+def apply_radius_profile_to_subscription(
+    db: Session, subscription_id: str, profile_id: str
+) -> tuple[int, set[str]]:
+    """Move one subscription's credentials onto ``profile_id``.
+
+    Returns ``(updated_count, usernames_touched)`` and deliberately does NOT
+    commit or project to external RADIUS. Both are the caller's to sequence:
+    the local credential change and whatever state row records *why* it
+    happened must land in the same transaction, and the external projection
+    must follow that state — never precede it. The previous account-scoped
+    version committed here, which released the handler's savepoint and left a
+    throttled credential durable even when the FUP state row that justified it
+    failed to persist.
+    """
+    subscription = db.get(Subscription, coerce_uuid(subscription_id))
+    if subscription is None:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    credentials = subscription_credentials(db, subscription)
     if not credentials:
-        return 0
+        return 0, set()
     profile = db.get(RadiusProfile, coerce_uuid(profile_id))
     if not profile or not profile.is_active:
         raise HTTPException(status_code=404, detail="RADIUS profile not found")
@@ -1352,15 +1402,21 @@ def apply_radius_profile_to_account(
         if cred.radius_profile_id != profile.id:
             cred.radius_profile_id = profile.id
             updated += 1
-    db.commit()
+    db.flush()
+    return updated, {credential.username for credential in credentials}
+
+
+def project_credentials_to_radius(db: Session, usernames: set[str]) -> None:
+    """Push credential rows to external RADIUS after their state is recorded.
+
+    Idempotent and rebuildable from ``source_db``, so a failure here is drift a
+    later reconcile repairs — unlike a durable throttle with no state row.
+    """
+    if not usernames:
+        return
     from app.services.radius_population import reconcile_usernames
 
-    reconcile_usernames(
-        {credential.username for credential in credentials},
-        dry_run=False,
-        source_db=db,
-    )
-    return updated
+    reconcile_usernames(usernames, dry_run=False, source_db=db)
 
 
 def apply_subscription_address_list_block(db: Session, subscription_id: str) -> int:
@@ -1468,9 +1524,13 @@ def lift_fup_enforcement(
             target = str(prof.id) if prof else None
         if target and subscription is not None:
             try:
-                apply_radius_profile_to_account(
-                    db, str(subscription.subscriber_id), target
+                # Restore only the service that was throttled. Restoring by
+                # account would push this subscription's profile onto every
+                # sibling service the customer owns.
+                _, usernames = apply_radius_profile_to_subscription(
+                    db, str(subscription.id), target
                 )
+                project_credentials_to_radius(db, usernames)
                 actions.append("restore_profile")
             except Exception as exc:
                 logger.warning(
@@ -1723,28 +1783,7 @@ def cleanup_subscription_on_suspend(
     # attributed to a sibling service that is still paid for.
     # A sibling that should still be ON. A suspended sibling needs no protection —
     # its own credentials are meant to be gone.
-    other_serving_subscription = (
-        db.query(Subscription.id)
-        .filter(Subscription.subscriber_id == subscription.subscriber_id)
-        .filter(Subscription.id != subscription.id)
-        .filter(
-            Subscription.status.in_(
-                (SubscriptionStatus.active, SubscriptionStatus.pending)
-            )
-        )
-        .first()
-    )
-    credential_scope = [AccessCredential.subscription_id == subscription.id]
-    if other_serving_subscription is None:
-        credential_scope.append(AccessCredential.subscription_id.is_(None))
-
-    credentials = (
-        db.query(AccessCredential)
-        .filter(AccessCredential.subscriber_id == subscription.subscriber_id)
-        .filter(or_(*credential_scope))
-        .filter(AccessCredential.is_active.is_(True))
-        .all()
-    )
+    credentials = subscription_credentials(db, subscription)
     projection_ready = True
     if credentials:
         try:

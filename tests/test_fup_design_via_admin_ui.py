@@ -40,7 +40,10 @@ from app.models.catalog import (
 from app.models.fup import FupAction, FupConsumptionPeriod, FupPolicy
 from app.services.db_session_adapter import db_session_adapter
 from app.services.fup import evaluate_rules, fup_policies
-from app.services.fup_throttle_profile import resolve_fup_throttle_profile
+from app.services.fup_throttle_profile import (
+    FupThrottleRateError,
+    resolve_fup_throttle_profile,
+)
 from app.services.fup_usage import FupUsageWindow, accrual_intervals, fup_window_bounds
 from app.services.owner_commands import CommandContext
 from app.services.web_fup import handle_add_rule, handle_policy_update
@@ -379,6 +382,81 @@ def test_the_configured_percentage_produces_a_proportional_profile(
     assert decision.download_kbps == 5_000
     assert decision.upload_kbps == 5_000
     assert decision.profile_id != fallback.id
+
+
+def test_a_proportional_throttle_needs_no_global_fallback_profile(
+    db_session, homeflex_offer, submonthly_enabled, subscriber
+):
+    """The global profile is a fallback, so its absence must not block a derive.
+
+    Requiring it up front made the fallback a precondition for the primary
+    path: a deployment that had never set ``fup_throttle_radius_profile_id``
+    enforced nothing at all, however carefully its ladders were configured.
+    """
+    offer, _profile = homeflex_offer
+    ensure_fup_policy(db_session, str(offer.id))
+    db_session.commit()
+    _add_throttle_rule(db_session, offer.id, threshold_gb=5)
+
+    subscription = Subscription(
+        subscriber_id=subscriber.id,
+        offer_id=offer.id,
+        status=SubscriptionStatus.active,
+        billing_mode=offer.billing_mode,
+        next_billing_at=datetime.now(UTC),
+    )
+    db_session.add(subscription)
+    db_session.commit()
+
+    rule = next(
+        r
+        for r in _policy(db_session, offer.id).rules
+        if r.action is FupAction.reduce_speed
+    )
+
+    decision = resolve_fup_throttle_profile(
+        db_session,
+        subscription=subscription,
+        rule_id=str(rule.id),
+        fallback_profile_id=None,
+    )
+    assert decision.derived is True, decision.reason
+    assert decision.download_kbps == 5_000
+
+
+def test_no_derived_rate_and_no_fallback_refuses_visibly(
+    db_session, homeflex_offer, submonthly_enabled, subscriber
+):
+    """Silence here would leave a breaching subscriber at full speed.
+
+    The sweep would count the enforcement as done, so the failure has to be
+    raised rather than returned as "no profile".
+    """
+    offer, _profile = homeflex_offer
+    ensure_fup_policy(db_session, str(offer.id))
+    db_session.commit()
+
+    subscription = Subscription(
+        subscriber_id=subscriber.id,
+        offer_id=offer.id,
+        status=SubscriptionStatus.active,
+        billing_mode=offer.billing_mode,
+        next_billing_at=datetime.now(UTC),
+    )
+    db_session.add(subscription)
+    db_session.commit()
+
+    with pytest.raises(FupThrottleRateError) as captured:
+        resolve_fup_throttle_profile(
+            db_session,
+            subscription=subscription,
+            # No rule on the event is one of the paths that used to fall back.
+            rule_id=None,
+            fallback_profile_id=None,
+        )
+    assert captured.value.code == (
+        "access.fup_throttle_rate.no_throttle_profile_available"
+    )
 
 
 def test_an_admin_can_read_back_what_they_configured(

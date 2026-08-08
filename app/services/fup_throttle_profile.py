@@ -168,39 +168,48 @@ def resolve_fup_throttle_profile(
     *,
     subscription: Subscription,
     rule_id: str | UUID | None,
-    fallback_profile_id: UUID,
+    fallback_profile_id: UUID | None,
 ) -> ThrottleProfileDecision:
     """Which RADIUS profile expresses ``rule_id``'s throttle for this subscriber.
 
-    Falls back to the configured global profile — rather than refusing — when
-    the rule carries no reduction or the subscriber has no rate to reduce.
-    Enforcement that already decided to throttle must still throttle; the
-    fallback is a worse answer, not no answer.
+    Derivation from the subscriber's own rate is the primary path. The globally
+    configured profile is consulted only when derivation cannot produce a rate,
+    and it may legitimately be unset — deriving a proportional throttle does not
+    need one. When derivation fails AND no fallback exists there is no throttle
+    to apply, and that is raised rather than papered over: silently returning
+    "no profile" would leave a breaching subscriber at full speed while the
+    sweep counted the enforcement as done.
     """
     from app.services.enforcement import _resolve_effective_profile
 
-    if rule_id is None:
+    def _fallback(reason: str) -> ThrottleProfileDecision:
+        if fallback_profile_id is None:
+            raise _error(
+                "no_throttle_profile_available",
+                (
+                    "This FUP throttle could not be derived from the "
+                    "subscriber's rate and no global fallback profile is "
+                    "configured."
+                ),
+                reason=reason,
+                subscription_id=str(subscription.id),
+            )
         return ThrottleProfileDecision(
             profile_id=fallback_profile_id,
             derived=False,
-            reason="no rule on the enforcement event",
+            reason=reason,
         )
+
+    if rule_id is None:
+        return _fallback("no rule on the enforcement event")
 
     rule = db.get(FupRule, UUID(str(rule_id)))
     if rule is None or rule.speed_reduction_percent is None:
-        return ThrottleProfileDecision(
-            profile_id=fallback_profile_id,
-            derived=False,
-            reason="rule carries no speed_reduction_percent",
-        )
+        return _fallback("rule carries no speed_reduction_percent")
 
     full = _resolve_effective_profile(db, subscription)
     if full is None or not full.download_speed or not full.upload_speed:
-        return ThrottleProfileDecision(
-            profile_id=fallback_profile_id,
-            derived=False,
-            reason="subscriber has no full-speed profile to reduce",
-        )
+        return _fallback("subscriber has no full-speed profile to reduce")
 
     # A rule holding an out-of-range percentage is a data defect, not a missing
     # value. Enforcement still has to throttle, so it degrades to the global
@@ -210,23 +219,15 @@ def resolve_fup_throttle_profile(
         download = reduced_kbps(full.download_speed, rule.speed_reduction_percent)
         upload = reduced_kbps(full.upload_speed, rule.speed_reduction_percent)
     except FupThrottleRateError as exc:
-        return ThrottleProfileDecision(
-            profile_id=fallback_profile_id,
-            derived=False,
-            reason=f"{exc.code}: {exc.message}",
-        )
+        return _fallback(f"{exc.code}: {exc.message}")
 
     # A "reduction" that leaves the subscriber at or above their current rate
     # is not a throttle. This happens when the floor bites on an already-slow
     # plan, and applying it would be a no-op dressed up as enforcement.
     if download >= full.download_speed and upload >= full.upload_speed:
-        return ThrottleProfileDecision(
-            profile_id=fallback_profile_id,
-            derived=False,
-            reason=(
-                f"{rule.speed_reduction_percent:g}% of "
-                f"{full.download_speed}k floors above the current rate"
-            ),
+        return _fallback(
+            f"{rule.speed_reduction_percent:g}% of "
+            f"{full.download_speed}k floors above the current rate"
         )
 
     profile = resolve_or_create_profile(db, download_kbps=download, upload_kbps=upload)

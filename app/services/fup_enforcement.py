@@ -413,6 +413,15 @@ def _evaluate_subscription(
                 if bucket is not None and bucket.period_end
                 else None
             )
+            # Report the usage of the window this rule was MEASURED against,
+            # not the monthly bucket. A daily rule breaches on its own window,
+            # and `current_usage` is the monthly figure — 0.0 for the families
+            # that carry no quota bucket at all (home_flex). Using it here made
+            # a real daily breach tell the customer, the event stream, and the
+            # audit trail "0 GB exhausted". evaluate_rules already resolved the
+            # right number per rule and falls back to the monthly value for
+            # monthly rules, so this is correct for every consumption period.
+            rule_usage = float(rule_result.get("current_usage_gb") or 0.0)
             if rule_result.get("usage_source") == "no_data":
                 continue
             action = rule_result.get("action")
@@ -428,7 +437,7 @@ def _evaluate_subscription(
                         db,
                         subscription,
                         rule_result,
-                        current_usage=current_usage,
+                        current_usage=rule_usage,
                         cap_resets_at=cap_resets_at,
                     )
                     enforced += 1
@@ -439,7 +448,7 @@ def _evaluate_subscription(
                             "kind": "blocked",
                             "rule_name": rule_result.get("name"),
                             "threshold_gb": rule_result.get("threshold_gb"),
-                            "used_gb": current_usage,
+                            "used_gb": rule_usage,
                             "cap_resets_at": cap_resets_at,
                         }
                     )
@@ -453,14 +462,20 @@ def _evaluate_subscription(
                 break
             if action == "reduce_speed":
                 if not command.throttle_profile_configured:
+                    # Observability only. The throttle a subscriber gets is
+                    # DERIVED from their own rate, so a missing global profile
+                    # is a missing fallback, not a missing throttle. Refusing
+                    # here meant a deployment that never set the global setting
+                    # enforced nothing at all, however carefully its ladders
+                    # were configured; the handler now raises if derivation
+                    # fails and there is no fallback either.
                     throttle_unconfigured += 1
-                    logger.warning(
-                        "FUP reduce_speed triggered for sub %s rule %s but no "
-                        "canonical throttle profile is configured",
+                    logger.info(
+                        "FUP reduce_speed for sub %s rule %s has no global "
+                        "fallback profile; relying on the derived profile",
                         subscription.id,
                         rule_result.get("rule_id"),
                     )
-                    break
                 if _fup_should_enforce(
                     prior_status=prior_status,
                     target_status="throttled",
@@ -472,7 +487,7 @@ def _evaluate_subscription(
                         db,
                         subscription,
                         rule_result,
-                        current_usage=current_usage,
+                        current_usage=rule_usage,
                         cap_resets_at=cap_resets_at,
                     )
                     enforced += 1
@@ -483,7 +498,7 @@ def _evaluate_subscription(
                             "kind": "throttled",
                             "rule_name": rule_result.get("name"),
                             "threshold_gb": rule_result.get("threshold_gb"),
-                            "used_gb": current_usage,
+                            "used_gb": rule_usage,
                             "cap_resets_at": cap_resets_at,
                         }
                     )
@@ -514,7 +529,7 @@ def _evaluate_subscription(
                         "kind": "notified",
                         "rule_name": rule_result.get("name"),
                         "threshold_gb": rule_result.get("threshold_gb"),
-                        "used_gb": current_usage,
+                        "used_gb": rule_usage,
                     }
                 )
                 break
@@ -551,7 +566,10 @@ def _evaluate_subscription(
                         "kind": "approaching",
                         "rule_name": nearest_rule.get("name"),
                         "threshold_gb": nearest_rule.get("threshold_gb"),
-                        "used_gb": current_usage,
+                        # The ratio above is measured on this rule's own window,
+                        # so the GB figure quoted to the customer has to come
+                        # from the same window or the warning contradicts itself.
+                        "used_gb": float(nearest_rule.get("current_usage_gb") or 0.0),
                     }
                 )
 
