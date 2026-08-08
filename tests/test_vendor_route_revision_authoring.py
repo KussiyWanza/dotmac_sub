@@ -47,6 +47,8 @@ def test_route_payload_requires_a_valid_linestring() -> None:
         "type": "LineString",
         "coordinates": [[7.4, 9.0], [7.5, 9.1]],
     }
+    assert payload.length_meters == pytest.approx(15_627.5, abs=1)
+    assert payload.length_meters != 125.5
 
     invalid_geometries = (
         {"type": "Point", "coordinates": [7.4, 9.0]},
@@ -173,6 +175,9 @@ def test_authoring_ui_draws_saves_and_submits_owned_revisions() -> None:
     assert "window.alert" not in AUTHORING_JS
     assert 'role="alert"' in TEMPLATE
     assert "Submitting locks that revision for review" in TEMPLATE
+    assert 'id="closure-pin-toggle"' in TEMPLATE
+    assert 'id="closure-proposal-form"' in TEMPLATE
+    assert "pending staff review" in TEMPLATE
 
     create_source = inspect.getsource(vendor_portal.vendor_create_route_revision)
     submit_source = inspect.getsource(vendor_portal.vendor_submit_route_revision)

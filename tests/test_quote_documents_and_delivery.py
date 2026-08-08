@@ -155,11 +155,11 @@ def _context(*, key: str | None = None) -> CommandContext:
     )
 
 
-def _stub_pdf_storage(monkeypatch) -> None:
+def _stub_pdf_storage(monkeypatch, *, brand: ResolvedBrand | None = None) -> None:
     monkeypatch.setattr(
         quote_documents,
         "resolve_brand",
-        lambda *_args, **_kwargs: _brand(),
+        lambda *_args, **_kwargs: brand or _brand(),
     )
     monkeypatch.setattr(quote_documents, "_render_pdf", lambda *_args: b"%PDF-test")
 
@@ -515,6 +515,24 @@ def test_quote_email_requires_authoritative_legal_name(db_session, subscriber):
     assert exc.value.code == "sales.quote_delivery.brand_legal_name_required"
 
 
+def test_quote_email_still_requires_customer_payment_identity(db_session, subscriber):
+    quote, _primary, _quote_id = _quote(db_session, subscriber)
+    recipient = quote_documents.resolve_quote_recipient(db_session, quote)
+    snapshot, _logo_src = quote_documents._snapshot(db_session, quote)
+    assert recipient is not None
+
+    with pytest.raises(quote_delivery.QuoteDeliveryError) as exc:
+        quote_delivery.render_quote_email(
+            snapshot=replace(
+                snapshot,
+                payment=replace(snapshot.payment, paystack_url=None),
+            ),
+            recipient=recipient,
+        )
+
+    assert exc.value.code == "sales.quote_delivery.payment_link_unavailable"
+
+
 def test_stored_quote_payment_url_must_match_secure_company_route(
     db_session, subscriber
 ):
@@ -575,19 +593,38 @@ def test_quote_document_fails_closed_without_eligible_bank_details(
         raise AssertionError("missing bank details must fail closed")
 
 
-def test_quote_document_fails_closed_without_customer_portal_identity(
-    db_session, subscriber
+def test_active_draft_quote_exports_bank_only_without_customer_portal_identity(
+    db_session, subscriber, monkeypatch
 ):
-    quote, _primary, _quote_id = _quote(db_session, subscriber)
+    quote, _primary, quote_id = _quote(db_session, subscriber)
     quote.subscriber_id = None
-    db_session.flush()
+    db_session.commit()
+    preview_brand = replace(_brand(), app_url="", portal_domain="")
+    _stub_pdf_storage(monkeypatch, brand=preview_brand)
 
-    try:
-        quote_documents._snapshot(db_session, quote)
-    except quote_documents.QuoteDocumentError as exc:
-        assert exc.code == "sales.quote_documents.payment_identity_required"
-    else:  # pragma: no cover - assertion guard
-        raise AssertionError("missing portal identity must fail closed")
+    outcome = quote_documents.generate_quote_pdf(
+        db_session,
+        quote_documents.GenerateQuotePdfCommand(
+            context=_context(),
+            quote_id=quote_id,
+        ),
+    )
+
+    export = db_session.get(QuotePdfExport, outcome.export_id)
+    assert export is not None
+    snapshot = quote_documents.load_quote_document_snapshot(export.snapshot)
+    rendered = quote_documents._render_html(snapshot, None)
+    stored_file = db_session.get(StoredFile, export.stored_file_id)
+
+    assert snapshot.status == QuoteStatus.draft.value
+    assert snapshot.payment.paystack_url is None
+    assert export.snapshot["payment"]["paystack_url"] is None
+    assert stored_file is not None
+    assert stored_file.owner_subscriber_id is None
+    assert "Bank Transfer" in rendered
+    assert "bank-transfer-only" in rendered
+    assert "Pay with Paystack" not in rendered
+    assert ">Pay Now</a>" not in rendered
 
 
 def test_primary_presentment_skips_disabled_incomplete_and_other_currency(

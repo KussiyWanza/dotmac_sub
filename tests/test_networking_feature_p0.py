@@ -1595,18 +1595,21 @@ def test_network_map_context_includes_network_device_markers(db_session):
     )
     db_session.commit()
 
-    context = network_map_service.build_network_map_context(db_session)
+    projection = network_map_service.build_network_map_projection(db=db_session)
     device_features = [
         item
-        for item in context["map_data"]["features"]
-        if item.get("properties", {}).get("type") == "network_device"
+        for item in projection.features
+        if item.properties.feature_type.value == "network_device"
     ]
     assert len(device_features) == 1
-    assert device_features[0]["properties"]["name"] == "Core Router 1"
-    assert device_features[0]["properties"]["status"] == "working"
-    assert device_features[0]["properties"]["status_presentation"]["tone"] == "positive"
-    assert context["stats"]["network_devices"] == 1
-    assert context["stats"]["network_devices_working"] == 1
+    properties = device_features[0].properties
+    assert properties.name == "Core Router 1"
+    assert properties.status is not None
+    assert properties.status.value == "working"
+    assert properties.status_presentation is not None
+    assert properties.status_presentation.tone.value == "positive"
+    assert projection.stats.network_devices == 1
+    assert projection.stats.network_devices_working == 1
 
 
 def test_network_map_context_uses_operational_ont_status(db_session):
@@ -1623,18 +1626,20 @@ def test_network_map_context_uses_operational_ont_status(db_session):
     db_session.add(ont)
     db_session.commit()
 
-    context = network_map_service.build_network_map_context(db_session)
+    projection = network_map_service.build_network_map_projection(db=db_session)
     ont_features = [
         item
-        for item in context["map_data"]["features"]
-        if item.get("properties", {}).get("type") == "ont"
+        for item in projection.features
+        if item.properties.feature_type.value == "ont"
     ]
 
     assert len(ont_features) == 1
-    assert ont_features[0]["properties"]["status"] == "working"
-    assert ont_features[0]["properties"]["status_reason"] == "olt_online"
-    assert context["stats"]["onts_working"] == 1
-    assert context["stats"]["onts_not_working"] == 0
+    properties = ont_features[0].properties
+    assert properties.status is not None
+    assert properties.status.value == "working"
+    assert properties.status_reason == "olt_online"
+    assert projection.stats.onts_working == 1
+    assert projection.stats.onts_not_working == 0
 
 
 def test_monitoring_dashboard_stats_use_operational_state(db_session, monkeypatch):

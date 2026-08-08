@@ -27,13 +27,16 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.models.stored_file import StoredFile
 from app.services import web_support_ticket_bulk as support_ticket_bulk_service
 from app.services import (
     web_support_ticket_bulk_actions as support_ticket_bulk_actions_service,
 )
 from app.services import web_support_tickets as support_web_service
 from app.services.auth_dependencies import can, require_permission
+from app.services.file_storage import build_content_disposition, file_uploads
 from app.services.list_query import ListQuery
+from app.services.object_storage import ObjectNotFoundError
 from app.web.request_parsing import parse_json_body
 
 router = APIRouter(prefix="/support/tickets", tags=["web-admin-support-tickets"])
@@ -77,6 +80,26 @@ def _actor_id(request: Request) -> str | None:
         else None
     )
     return str(value) if value else None
+
+
+def _ticket_attachment_response(record: StoredFile) -> StreamingResponse:
+    try:
+        stream = file_uploads.stream_file(record)
+    except ObjectNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Attachment not found") from exc
+    disposition = build_content_disposition(record.original_filename)
+    if (record.content_type or "").startswith(
+        "image/"
+    ) or record.content_type == "application/pdf":
+        disposition = disposition.replace("attachment;", "inline;", 1)
+    headers = {"Content-Disposition": disposition}
+    if stream.content_length is not None:
+        headers["Content-Length"] = str(stream.content_length)
+    return StreamingResponse(
+        stream.chunks,
+        media_type=stream.content_type or "application/octet-stream",
+        headers=headers,
+    )
 
 
 @router.get(
@@ -452,6 +475,21 @@ def ticket_detail(request: Request, ticket_lookup: str, db: Session = Depends(ge
     context["handoff_notice"] = request.query_params.get("handoff_notice")
     context["handoff_error"] = request.query_params.get("handoff_error")
     return templates.TemplateResponse("admin/support/tickets/detail.html", context)
+
+
+@router.get(
+    "/{ticket_id}/attachments/{file_id}",
+    dependencies=[Depends(require_permission("support:ticket:read"))],
+)
+def ticket_attachment_download(
+    ticket_id: UUID, file_id: UUID, db: Session = Depends(get_db)
+) -> StreamingResponse:
+    record = support_web_service.get_ticket_attachment_file(
+        db, ticket_id=ticket_id, file_id=file_id
+    )
+    if record is None:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    return _ticket_attachment_response(record)
 
 
 @router.post(

@@ -2,19 +2,22 @@
 
 from __future__ import annotations
 
+import hashlib
 import uuid
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
 
 from app.models.audit import AuditEvent
-from app.models.auth import AuthProvider, UserCredential
+from app.models.auth import AuthProvider, SessionStatus, UserCredential
+from app.models.auth import Session as AuthSession
 from app.models.event_store import EventStore
 from app.models.notification import CommunicationIntentRecord, Notification
 from app.models.party import Party, PartyType
 from app.models.rbac import Role, SystemUserRole
 from app.models.system_user import SystemUser
-from app.services import credential_recovery, staff_provisioning
+from app.services import auth_flow, credential_recovery, staff_provisioning
 from app.services.ephemeral_communication_actions import (
     EPHEMERAL_ACTION_METADATA_KEY,
     STAFF_ACCOUNT_INVITE_ACTION,
@@ -54,6 +57,21 @@ def _command(
         last_name="Test",
         role_names=("staff",),
         send_invite=send_invite,
+    )
+
+
+def _staff_command(
+    email: str,
+    *,
+    key: str,
+) -> staff_provisioning.ProvisionStaffAccountCommand:
+    return staff_provisioning.ProvisionStaffAccountCommand(
+        context=_context(key),
+        email=email,
+        first_name="Identity",
+        last_name="Test",
+        role_names=("staff",),
+        send_invite=False,
     )
 
 
@@ -274,3 +292,308 @@ def test_local_admin_create_uses_same_atomic_provisioning_boundary(
         .count()
         == 1
     )
+
+
+def test_email_update_reconciles_disabled_credential_and_revokes_sessions(
+    db_session,
+) -> None:
+    _role(db_session)
+    result = staff_provisioning.provision_staff_account(
+        db_session,
+        _staff_command("disabled.identity@dotmac.io", key="disabled-identity"),
+    )
+    user = db_session.get(SystemUser, result.user_id)
+    credential = (
+        db_session.query(UserCredential)
+        .filter(UserCredential.system_user_id == result.user_id)
+        .one()
+    )
+    user.is_active = False
+    credential.is_active = False
+    active_session = AuthSession(
+        system_user_id=user.id,
+        status=SessionStatus.active,
+        token_hash="staff-identity-active-session",
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    db_session.add(active_session)
+    db_session.commit()
+
+    outcome = staff_provisioning.update_staff_identity(
+        db_session,
+        staff_provisioning.UpdateStaffIdentityCommand(
+            context=_context("update-disabled-identity"),
+            user_id=result.user_id,
+            fields=frozenset({staff_provisioning.StaffIdentityField.email}),
+            email="corrected.identity@dotmac.io",
+        ),
+    )
+
+    db_session.refresh(user)
+    db_session.refresh(credential)
+    db_session.refresh(active_session)
+    assert outcome.credential_reconciled is True
+    assert outcome.credential_active is False
+    assert outcome.revoked_sessions == 1
+    assert user.email == "corrected.identity@dotmac.io"
+    assert credential.username == "corrected.identity@dotmac.io"
+    assert credential.is_active is False
+    assert active_session.status == SessionStatus.revoked
+    assert active_session.revoked_at is not None
+
+
+def test_email_update_retires_old_active_login_identifier(db_session) -> None:
+    _role(db_session)
+    result = staff_provisioning.provision_staff_account(
+        db_session,
+        _staff_command("old.login@dotmac.io", key="active-login-identity"),
+    )
+
+    staff_provisioning.update_staff_identity(
+        db_session,
+        staff_provisioning.UpdateStaffIdentityCommand(
+            context=_context("retire-old-login-identity"),
+            user_id=result.user_id,
+            fields=frozenset({staff_provisioning.StaffIdentityField.email}),
+            email="new.login@dotmac.io",
+        ),
+    )
+
+    old_credential = auth_flow._resolve_login_credential(
+        db_session,
+        provider=AuthProvider.local,
+        identifier="old.login@dotmac.io",
+    )
+    new_credential = auth_flow._resolve_login_credential(
+        db_session,
+        provider=AuthProvider.local,
+        identifier="new.login@dotmac.io",
+    )
+    assert old_credential is None
+    assert new_credential is not None
+    assert new_credential.system_user_id == result.user_id
+
+
+def test_activation_reconciles_stale_disabled_credential(db_session) -> None:
+    _role(db_session)
+    result = staff_provisioning.provision_staff_account(
+        db_session,
+        _staff_command("activation.identity@dotmac.io", key="activation-identity"),
+    )
+    user = db_session.get(SystemUser, result.user_id)
+    credential = (
+        db_session.query(UserCredential)
+        .filter(UserCredential.system_user_id == result.user_id)
+        .one()
+    )
+    user.is_active = False
+    credential.is_active = False
+    credential.username = "old.activation@dotmac.io"
+    db_session.commit()
+
+    outcome = staff_provisioning.set_staff_account_active(
+        db_session,
+        staff_provisioning.SetStaffAccountActiveCommand(
+            context=_context("activate-reconciled-identity"),
+            user_id=result.user_id,
+            is_active=True,
+        ),
+    )
+
+    db_session.refresh(user)
+    db_session.refresh(credential)
+    assert outcome.changed is True
+    assert user.is_active is True
+    assert credential.is_active is True
+    assert credential.username == user.email
+
+
+def test_activation_recreates_missing_local_credential(db_session) -> None:
+    _role(db_session)
+    result = staff_provisioning.provision_staff_account(
+        db_session,
+        _staff_command("missing.identity@dotmac.io", key="missing-identity"),
+    )
+    user = db_session.get(SystemUser, result.user_id)
+    credential = (
+        db_session.query(UserCredential)
+        .filter(UserCredential.system_user_id == result.user_id)
+        .one()
+    )
+    user.is_active = False
+    db_session.delete(credential)
+    db_session.commit()
+
+    outcome = staff_provisioning.set_staff_account_active(
+        db_session,
+        staff_provisioning.SetStaffAccountActiveCommand(
+            context=_context("activate-missing-identity"),
+            user_id=result.user_id,
+            is_active=True,
+        ),
+    )
+
+    replacement = (
+        db_session.query(UserCredential)
+        .filter(UserCredential.system_user_id == result.user_id)
+        .one()
+    )
+    assert outcome.changed is True
+    assert replacement.username == "missing.identity@dotmac.io"
+    assert replacement.is_active is True
+    assert replacement.must_change_password is True
+
+
+def test_recovery_preparation_reconciles_nonblank_stale_username(db_session) -> None:
+    _role(db_session)
+    result = staff_provisioning.provision_staff_account(
+        db_session,
+        _staff_command("recovery.identity@dotmac.io", key="recovery-identity"),
+    )
+    credential = (
+        db_session.query(UserCredential)
+        .filter(UserCredential.system_user_id == result.user_id)
+        .one()
+    )
+    credential.username = "old.recovery@dotmac.io"
+    credential.is_active = False
+    credential.must_change_password = False
+    db_session.commit()
+
+    outcome = staff_provisioning.prepare_staff_credential_recovery(
+        db_session,
+        staff_provisioning.PrepareStaffCredentialRecoveryCommand(
+            context=_context("prepare-recovery-identity"),
+            user_id=result.user_id,
+        ),
+    )
+
+    db_session.refresh(credential)
+    assert outcome.created is False
+    assert outcome.changed is True
+    assert credential.username == "recovery.identity@dotmac.io"
+    assert credential.is_active is True
+    assert credential.must_change_password is True
+
+
+def test_identity_conflict_rolls_back_profile_and_credential(db_session) -> None:
+    _role(db_session)
+    first = staff_provisioning.provision_staff_account(
+        db_session,
+        _staff_command("first.identity@dotmac.io", key="first-identity"),
+    )
+    staff_provisioning.provision_staff_account(
+        db_session,
+        _staff_command("occupied.identity@dotmac.io", key="occupied-identity"),
+    )
+
+    with pytest.raises(staff_provisioning.StaffProvisioningError) as captured:
+        staff_provisioning.update_staff_identity(
+            db_session,
+            staff_provisioning.UpdateStaffIdentityCommand(
+                context=_context("conflicting-identity"),
+                user_id=first.user_id,
+                fields=frozenset({staff_provisioning.StaffIdentityField.email}),
+                email="occupied.identity@dotmac.io",
+            ),
+        )
+
+    assert captured.value.code == "auth.staff_provisioning.identity_conflict"
+    assert not db_session.in_transaction()
+    user = db_session.get(SystemUser, first.user_id)
+    credential = (
+        db_session.query(UserCredential)
+        .filter(UserCredential.system_user_id == first.user_id)
+        .one()
+    )
+    assert user.email == "first.identity@dotmac.io"
+    assert credential.username == "first.identity@dotmac.io"
+
+
+def test_drift_preview_reports_username_and_activation_mismatches(db_session) -> None:
+    _role(db_session)
+    result = staff_provisioning.provision_staff_account(
+        db_session,
+        _staff_command("drift.identity@dotmac.io", key="drift-identity"),
+    )
+    credential = (
+        db_session.query(UserCredential)
+        .filter(UserCredential.system_user_id == result.user_id)
+        .one()
+    )
+    credential.username = "old.drift@dotmac.io"
+    credential.is_active = False
+    db_session.commit()
+
+    drift = staff_provisioning.list_staff_login_identity_drift(db_session)
+    issues = {item.issue for item in drift if item.user_id == result.user_id}
+
+    assert issues == {
+        staff_provisioning.StaffLoginIdentityIssue.username_mismatch,
+        staff_provisioning.StaffLoginIdentityIssue.activation_mismatch,
+    }
+    assert all("@" not in item.email_sha256 for item in drift)
+
+
+def test_reviewed_repair_fails_closed_on_stale_email_evidence(db_session) -> None:
+    _role(db_session)
+    result = staff_provisioning.provision_staff_account(
+        db_session,
+        _staff_command("repair.identity@dotmac.io", key="repair-identity"),
+    )
+    credential = (
+        db_session.query(UserCredential)
+        .filter(UserCredential.system_user_id == result.user_id)
+        .one()
+    )
+    credential.username = "old.repair@dotmac.io"
+    db_session.commit()
+
+    with pytest.raises(staff_provisioning.StaffProvisioningError) as captured:
+        staff_provisioning.reconcile_staff_login_identity(
+            db_session,
+            staff_provisioning.ReconcileStaffLoginIdentityCommand(
+                context=_context("stale-reviewed-repair"),
+                user_id=result.user_id,
+                expected_email_sha256="0" * 64,
+            ),
+        )
+
+    assert captured.value.code == "auth.staff_provisioning.stale_identity_evidence"
+    assert not db_session.in_transaction()
+    db_session.refresh(credential)
+    assert credential.username == "old.repair@dotmac.io"
+
+
+def test_reviewed_repair_recreates_missing_inactive_credential(db_session) -> None:
+    _role(db_session)
+    email = "missing.repair@dotmac.io"
+    result = staff_provisioning.provision_staff_account(
+        db_session,
+        _staff_command(email, key="missing-repair"),
+    )
+    user = db_session.get(SystemUser, result.user_id)
+    credential = (
+        db_session.query(UserCredential)
+        .filter(UserCredential.system_user_id == result.user_id)
+        .one()
+    )
+    user.is_active = False
+    db_session.delete(credential)
+    db_session.commit()
+
+    outcome = staff_provisioning.reconcile_staff_login_identity(
+        db_session,
+        staff_provisioning.ReconcileStaffLoginIdentityCommand(
+            context=_context("repair-missing-inactive-identity"),
+            user_id=result.user_id,
+            expected_email_sha256=hashlib.sha256(email.encode()).hexdigest(),
+        ),
+    )
+
+    replacement = db_session.get(UserCredential, outcome.credential_id)
+    assert outcome.credential_created is True
+    assert outcome.changed is True
+    assert replacement is not None
+    assert replacement.username == email
+    assert replacement.is_active is False

@@ -690,6 +690,154 @@ DOMAIN = DomainSOT(
             ),
         ),
         SOTService(
+            name="ui.field_live_map_projection",
+            module="app.services.field_maps",
+            owns=(
+                "admin field-map sharing-authorized technician position projection",
+                "admin field-map searchable fields and focus coordinates",
+                "admin field-map stale-position semantics",
+            ),
+            depends_on=(
+                "customer.accounts",
+                "operations.work_orders",
+            ),
+            notes=(
+                "field_maps owns the typed admin live-map feed and search "
+                "projection. Technician visibility fails closed when location "
+                "sharing is disabled. Search resolves technician identity and "
+                "native work-order/customer/service-address facts before "
+                "returning only results with focusable coordinates. The admin "
+                "web adapter enforces operations:dispatch:read and the sidebar "
+                "uses the same permission for discoverability."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name=(
+                            "admin field-map sharing-authorized technician "
+                            "position projection"
+                        ),
+                        role=OwnerRole.RESOLVER,
+                        input_names=("native field-technician presence facts",),
+                    ),
+                    ConcernContract(
+                        name="admin field-map searchable fields and focus coordinates",
+                        role=OwnerRole.RESOLVER,
+                        input_names=(
+                            "native field-technician presence facts",
+                            "canonical work-order map facts",
+                            "canonical subscriber service-address facts",
+                            "admin field-map search input",
+                        ),
+                    ),
+                    ConcernContract(
+                        name="admin field-map stale-position semantics",
+                        role=OwnerRole.POLICY,
+                        input_names=(
+                            "native field-technician presence facts",
+                            "admin field-map freshness input",
+                        ),
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="native field-technician presence facts",
+                        owner="ui.field_live_map_projection",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source=(
+                            "FieldTechPresence technician/person identity, sharing "
+                            "preference, status, latest coordinates, accuracy, and "
+                            "observation time"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical work-order map facts",
+                        owner="operations.work_orders",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "active native WorkOrder public identity, searchable "
+                            "dispatch fields, subscriber binding, and mapped location"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical subscriber service-address facts",
+                        owner="customer.accounts",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "native Subscriber identity/contact fields and canonical "
+                            "Address street, locality, and coordinates"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="admin field-map search input",
+                        owner="ui.field_live_map_projection",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source="typed normalized search text and bounded result limit",
+                    ),
+                    AuthorityInput(
+                        name="admin field-map freshness input",
+                        owner="ui.field_live_map_projection",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source="typed bounded stale-after duration",
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.READ_ONLY,
+                    boundary=(
+                        "Feed and search queries read one adapter-owned session and "
+                        "perform no ORM mutation or transaction completion."
+                    ),
+                    locking="No locks; the projection is observational and read-only.",
+                    idempotency=(
+                        "Equivalent search/freshness inputs return the same typed "
+                        "projection for the same database snapshot."
+                    ),
+                    retries="Read availability failures may be retried safely.",
+                ),
+                errors=ErrorContract(
+                    domain_codes=(
+                        "ui.field_live_map_projection.invalid_search",
+                        "ui.field_live_map_projection.unauthorized",
+                    ),
+                    mapping_owner="admin field-map web adapter",
+                    fail_closed_on=(
+                        "missing operations:dispatch:read permission",
+                        "disabled technician location sharing",
+                        "missing focus coordinates",
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.COMPLETE,
+                    old_owner=(
+                        "untyped field-map feed and template-local visibility/search "
+                        "behavior"
+                    ),
+                    new_owner="ui.field_live_map_projection",
+                    verification=(
+                        "typed feed/search contracts, sharing/privacy tests, street "
+                        "search tests, route permission tests, and UI focus tests"
+                    ),
+                    cutover_gate=(
+                        "Routes return owner-provided typed outcomes and the template "
+                        "only renders or focuses those outcomes."
+                    ),
+                    fallback_retirement=(
+                        "The feed no longer exposes non-sharing technicians and no "
+                        "template-only street filtering or ungated navigation remains."
+                    ),
+                ),
+                steward="field operations UI",
+                design_refs=(
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                    "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                ),
+                test_refs=(
+                    "tests/test_admin_maps_web.py",
+                    "tests/architecture/test_field_live_map_boundary.py",
+                ),
+            ),
+        ),
+        SOTService(
             name="ui.work_order_list_projection",
             module="app.services.web_dispatch_work_orders",
             owns=(

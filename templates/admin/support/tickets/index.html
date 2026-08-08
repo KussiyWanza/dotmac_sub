@@ -390,6 +390,12 @@ function ticketListControls() {
         storageVersion: 1,
 
         init() {
+            this.closeOnOutsideClick = (event) => {
+                if (!event.target.closest('#ticket-column-toggle, #ticket-column-options')) {
+                    this.open = false;
+                }
+            };
+            document.addEventListener('click', this.closeOnOutsideClick, true);
             const userId = this.$el.getAttribute('data-current-user-id') || 'anonymous';
             this.storageKey = `tickets.filter.state.${userId}`;
             document.querySelectorAll('.ticket-col-toggle').forEach((el) => {
@@ -410,6 +416,7 @@ function ticketListControls() {
         },
 
         destroy() {
+            document.removeEventListener('click', this.closeOnOutsideClick, true);
             if (this.afterSwapHandler) {
                 document.body.removeEventListener('htmx:afterSwap', this.afterSwapHandler);
             }

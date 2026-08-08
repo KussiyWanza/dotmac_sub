@@ -173,6 +173,7 @@ def _ticket_to_dict(ticket: Any) -> dict[str, Any]:
         "ticket_number": ticket.number,
         "title": ticket.title,
         "description": ticket.description or "",
+        "attachments": list(ticket.attachments or []),
         "status": ticket.status,
         "status_presentation": ticket_status_presentation(ticket.status).model_dump(
             mode="json"
@@ -271,6 +272,7 @@ def _comment_to_dict(comment: Any, customer_subscriber_ids: set[str]) -> dict[st
         is_customer = str(author_person_id) in customer_subscriber_ids
     return {
         "body": comment.body,
+        "attachments": list(comment.attachments or []),
         "author_name": "You" if is_customer else "Support Team",
         "is_internal": comment.is_internal,
         "created_at": comment.created_at.isoformat() if comment.created_at else None,

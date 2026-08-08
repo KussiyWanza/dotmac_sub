@@ -20,6 +20,7 @@ from app.models.tr069 import (
     Tr069Session,
 )
 from app.schemas.tr069 import Tr069AcsServerCreate
+from app.services.auth_dependencies import can
 from app.services.events.types import EventType
 from app.services.network.tr069_job_commands import Tr069CommandError
 from app.web.brand_globals import _app_datetime_filter
@@ -780,6 +781,9 @@ class TestAutoLinkOnts:
         # a bare Environment doesn't get it (that's registered on Jinja2Templates
         # instances), so register it here to keep the test isolation-safe.
         env.filters["app_datetime"] = _app_datetime_filter
+        # Rendering the full admin layout also exercises permission-gated
+        # navigation, whose helper is an application template global.
+        env.globals["can"] = can
         html = env.get_template("admin/network/onts/index.html").render(context)
 
         assert "UI-ACS-LAST-SEEN-001" in html
