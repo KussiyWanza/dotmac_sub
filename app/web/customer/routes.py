@@ -5,7 +5,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from urllib.parse import quote_plus, urlsplit
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import anyio
 from fastapi import (
@@ -39,6 +39,7 @@ from app.services import chat_session as chat_session_service
 from app.services import (
     crm_portal,
     customer_portal,
+    payment_intent_management,
     portal_ticket_deflection,
     support_ticket_settings,
     team_inbox_widget,
@@ -66,12 +67,15 @@ from app.services.customer_portal_context import (
     resolve_allowed_subscriber_ids,
     resolve_customer_subscription,
 )
+from app.services.domain_errors import DomainError
 from app.services.file_storage import build_content_disposition, file_uploads
 from app.services.nin_matching import mask_nin
 from app.services.object_storage import ObjectNotFoundError
+from app.services.owner_commands import CommandContext
 from app.services.prepaid_funding_reconstruction import (
     PrepaidFundingBaselineMissingError,
 )
+from app.services.topup_intents import DirectTransferCancellationSource
 from app.web.customer.auth import get_current_customer_from_request
 from app.web.customer.branding import get_customer_templates
 
@@ -2417,6 +2421,53 @@ def customer_create_topup_intent(
         return JSONResponse({"detail": PAYMENT_START_ERROR_MESSAGE}, status_code=400)
 
     return JSONResponse(content=jsonable_encoder(result))
+
+
+@router.post("/billing/topup/intents/{intent_id}/cancel")
+def customer_cancel_topup_intent(
+    request: Request,
+    intent_id: UUID,
+    db: Session = Depends(get_db),
+) -> Response:
+    """Let a customer abandon an unsubmitted bank-transfer request."""
+    customer = get_current_customer_from_request(request, db)
+    if not customer:
+        return RedirectResponse(url="/portal/auth/login", status_code=303)
+    if _is_read_only_customer(customer):
+        return _read_only_response(request, customer, active_page="billing")
+    account_id = optional_customer_account_id(db, customer)
+    if account_id is None:
+        raise HTTPException(status_code=404, detail="Customer account not found")
+    command_id = uuid4()
+    try:
+        finish_read_transaction(db)
+        payment_intent_management.cancel_unsubmitted_direct_transfer(
+            db,
+            payment_intent_management.CancelPaymentIntentCommand(
+                context=CommandContext(
+                    command_id=command_id,
+                    correlation_id=command_id,
+                    actor=f"customer:{account_id}",
+                    scope=payment_intent_management.CUSTOMER_CANCEL_SCOPE,
+                    reason="Customer canceled an unsubmitted bank-transfer request",
+                    idempotency_key=f"customer-cancel-payment-intent:{intent_id}",
+                ),
+                account_id=UUID(str(account_id)),
+                intent_id=intent_id,
+                source=DirectTransferCancellationSource.customer_selfcare,
+            ),
+        )
+    except (ValueError, DomainError) as exc:
+        message = exc.message if isinstance(exc, DomainError) else str(exc)
+        return RedirectResponse(
+            url=f"/portal/billing/topup?autopay_error={quote_plus(message)}",
+            status_code=303,
+        )
+    return RedirectResponse(
+        url="/portal/billing/topup?transfer_success="
+        + quote_plus("The pending bank-transfer request was canceled."),
+        status_code=303,
+    )
 
 
 @router.post("/billing/topup/preview")
