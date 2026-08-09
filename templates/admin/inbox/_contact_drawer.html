@@ -1,6 +1,7 @@
 {% from "components/ui/macros.html" import status_badge %}
 {% from "components/ui/triage.html" import ctx_section, ts %}
 {% set resolution = (timeline.metadata.get('contact_resolution') if timeline.metadata else {}) or {} %}
+{% set lead_capture = (timeline.metadata.get('lead_capture') if timeline.metadata else {}) or {} %}
 
 <div data-contact-context="{{ timeline.id }}">
     {% call ctx_section("Identity") %}
@@ -78,19 +79,24 @@
         <a href="{{ subscriber_summary.url }}" class="mt-3 inline-flex min-h-10 w-full items-center justify-center rounded-lg border border-slate-300 px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800">Open subscriber 360</a>
         {% else %}
         <p class="text-xs text-slate-500">Resolution: {{ (resolution.get('status') or 'unmatched') | replace('_',' ') | title }}</p>
-        <form method="post" action="/admin/inbox/{{ timeline.id }}/contact-link" class="mt-3 space-y-2">
-            {% include "components/forms/csrf_input.html" %}
-            <input type="hidden" name="target_type" value="subscriber">
-            {% if contact_link_candidates and contact_link_candidates.subscribers %}
-            <select name="subscriber_id" required class="h-10 w-full rounded-lg border-slate-300 text-xs dark:border-slate-700 dark:bg-slate-950">
-                <option value="">Link to subscriber…</option>
-                {% for candidate in contact_link_candidates.subscribers %}<option value="{{ candidate.id }}">{{ candidate.label }}</option>{% endfor %}
-            </select>
-            {% else %}
-            <input name="subscriber_id_manual" required placeholder="Subscriber ID" class="h-10 w-full rounded-lg border-slate-300 font-mono text-xs dark:border-slate-700 dark:bg-slate-950">
-            {% endif %}
-            <button type="submit" class="min-h-10 w-full rounded-lg bg-amber-500 px-3 text-xs font-semibold text-white hover:bg-amber-600">Link customer</button>
-        </form>
+        {% if lead_capture.get('merge') %}
+        <p class="mt-2 rounded-lg bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-200">Lead merged to {{ lead_capture.get('merge').get('target_type') | replace('_',' ') | title }}</p>
+        {% else %}
+        <details class="mt-3 rounded-lg border border-slate-200 dark:border-slate-700">
+            <summary class="cursor-pointer px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-800">Merge contact</summary>
+            <form method="post" action="/admin/inbox/{{ timeline.id }}/merge-contact" class="space-y-2 px-3 pb-3">
+                {% include "components/forms/csrf_input.html" %}
+                <select name="target_type" required class="h-10 w-full rounded-lg border-slate-300 text-xs dark:border-slate-700 dark:bg-slate-950">
+                    <option value="lead">New lead</option>
+                    <option value="subscriber">Customer</option>
+                    <option value="reseller">Reseller</option>
+                    <option value="organization">Business</option>
+                </select>
+                <input name="target_query" placeholder="Search name, email, phone, account, code, or domain" class="h-10 w-full rounded-lg border-slate-300 text-xs dark:border-slate-700 dark:bg-slate-950">
+                <button type="submit" class="min-h-10 w-full rounded-lg bg-amber-500 px-3 text-xs font-semibold text-white hover:bg-amber-600">Merge contact</button>
+            </form>
+        </details>
+        {% endif %}
         {% endif %}
     {% endcall %}
 

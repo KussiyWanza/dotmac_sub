@@ -95,6 +95,7 @@ def test_every_inbox_route_declares_a_permission():
 # deliberately gated on :read. Anything else posting under :read is a mistake.
 READ_GATED_POSTS = {"/filters/save"}
 SALES_LEAD_GATED_POSTS = {
+    "/{conversation_id}/merge-contact",
     "/{conversation_id}/lead-intake/issue",
     "/{conversation_id}/lead-intake/{invitation_id}/revoke",
 }
@@ -123,6 +124,7 @@ def test_the_read_gated_post_allowlist_stays_small():
 
 def test_sales_owned_post_permissions_stay_explicit():
     assert SALES_LEAD_GATED_POSTS == {
+        "/{conversation_id}/merge-contact",
         "/{conversation_id}/lead-intake/issue",
         "/{conversation_id}/lead-intake/{invitation_id}/revoke",
     }

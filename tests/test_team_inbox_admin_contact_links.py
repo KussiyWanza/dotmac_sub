@@ -5,6 +5,7 @@ import uuid
 from starlette.requests import Request
 
 from app.models.notification import Notification, NotificationStatus
+from app.models.sales import Lead
 from app.models.subscriber import Reseller, Subscriber, SubscriberStatus
 from app.models.team_inbox import (
     InboxChannelType,
@@ -127,6 +128,41 @@ def test_admin_contact_link_route_reports_missing_target(db_session):
     assert response.status_code == 303
     assert "status=error" in response.headers["location"]
     assert db_session.query(InboxContactLink).count() == 0
+
+
+def test_admin_merge_contact_route_finds_customer_and_attaches_lead(
+    db_session, monkeypatch
+):
+    actor_id = uuid.uuid4()
+    subscriber = _subscriber(db_session)
+    conversation = _conversation(db_session, subject="Please connect my account")
+    from app.services import web_admin as web_admin_service
+
+    monkeypatch.setattr(
+        web_admin_service, "get_actor_id", lambda request: str(actor_id)
+    )
+
+    response = inbox_web.team_inbox_merge_contact(
+        conversation.id,
+        _request(),
+        target_type="subscriber",
+        target_query=subscriber.email,
+        db=db_session,
+    )
+
+    lead = db_session.query(Lead).one()
+    link = db_session.query(InboxContactLink).one()
+    db_session.refresh(conversation)
+    db_session.refresh(subscriber)
+    assert response.status_code == 303
+    assert "status=success" in response.headers["location"]
+    assert lead.subscriber_id == subscriber.id
+    assert subscriber.party_id == lead.party_id
+    assert link.subscriber_id == subscriber.id
+    assert conversation.subscriber_id == subscriber.id
+    assert (
+        conversation.metadata_["lead_capture"]["merge"]["target_type"] == "subscriber"
+    )
 
 
 def test_admin_internal_note_route_records_private_message(db_session, monkeypatch):

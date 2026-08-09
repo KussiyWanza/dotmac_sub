@@ -144,6 +144,7 @@ class ContactLinkCandidate:
 class ContactLinkCandidateSet:
     subscribers: tuple[ContactLinkCandidate, ...]
     resellers: tuple[ContactLinkCandidate, ...]
+    organizations: tuple[ContactLinkCandidate, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -653,6 +654,10 @@ def contact_link_candidates(
         resellers=tuple(
             ContactLinkCandidate(id=str(item["id"]), label=str(item["label"]))
             for item in values.get("resellers", [])
+        ),
+        organizations=tuple(
+            ContactLinkCandidate(id=str(item["id"]), label=str(item["label"]))
+            for item in values.get("organizations", [])
         ),
     )
 

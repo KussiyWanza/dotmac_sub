@@ -16,9 +16,22 @@ from typing import Any, TypeVar
 from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.models.audit import AuditActorType
+from app.models.organization import Organization
+from app.models.party import (
+    Party,
+    PartyContactPointType,
+    PartyRelationship,
+    PartyRelationshipType,
+    PartyRoleStatus,
+    PartyRoleType,
+    PartyType,
+)
+from app.models.sales import Lead, LeadCaptureMethod, LeadSourcePlatform
+from app.models.subscriber import Reseller, Subscriber
 from app.models.team_inbox import (
     InboxAgentPresence,
     InboxChannelType,
@@ -26,6 +39,15 @@ from app.models.team_inbox import (
     InboxConversationStatus,
     InboxMessage,
     InboxSavedFilter,
+)
+from app.schemas.sales import (
+    LeadCapturePartyCreate,
+    LeadCaptureRequest,
+    LeadContactObservation,
+    LeadOriginCaptureCreate,
+)
+from app.services import (
+    party as party_service,
 )
 from app.services import (
     team_inbox_assignment,
@@ -49,6 +71,8 @@ from app.services.owner_commands import (
     execute_owner_command,
     owner_command_active,
 )
+from app.services.sales import account_conversion
+from app.services.sales import capture as sales_capture
 from app.services.validation_api import validate_email_format
 
 T = TypeVar("T")
@@ -111,6 +135,33 @@ class ContactLinkOutcome:
     conversation_id: str
     channel_type: str
     target: str
+
+
+@dataclass(frozen=True)
+class LeadCreationOutcome:
+    conversation_id: str
+    lead_id: str
+    party_id: str
+    replayed: bool
+
+
+@dataclass(frozen=True)
+class LeadMergeOutcome:
+    conversation_id: str
+    lead_id: str
+    target_type: str
+    target_id: str
+    subscriber_id: str | None = None
+    reseller_id: str | None = None
+    organization_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ContactMergeOutcome:
+    conversation_id: str
+    target_type: str
+    target_id: str
+    lead_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -942,6 +993,618 @@ def link_contact(
             conversation_id=str(conversation.id),
             channel_type=conversation.channel_type,
             target="subscriber" if result.subscriber_id else "reseller",
+        )
+
+    return _commit(db, action)
+
+
+def _lead_source_for_channel(channel_type: str) -> str:
+    return {
+        InboxChannelType.email.value: "Email",
+        InboxChannelType.whatsapp.value: "Whatsapp",
+        InboxChannelType.facebook_messenger.value: "Facebook",
+        InboxChannelType.instagram_dm.value: "Instagram",
+        InboxChannelType.chat_widget.value: "Website",
+    }.get(channel_type, "Website")
+
+
+def _party_contact_type_for_channel(channel_type: str) -> PartyContactPointType | None:
+    values = {
+        InboxChannelType.email.value: PartyContactPointType.email,
+        InboxChannelType.whatsapp.value: PartyContactPointType.whatsapp,
+        InboxChannelType.facebook_messenger.value: PartyContactPointType.facebook_messenger,
+        InboxChannelType.instagram_dm.value: PartyContactPointType.instagram_dm,
+    }
+    return values.get(channel_type)
+
+
+def _lead_capture_payload(
+    conversation: InboxConversation,
+    *,
+    title: str | None,
+    note: str | None,
+) -> LeadCaptureRequest:
+    metadata = dict(conversation.metadata_ or {})
+    channel_type = conversation.channel_type
+    contact_type = _party_contact_type_for_channel(channel_type)
+    contact_address = str(conversation.contact_address or "").strip()
+    contacts: list[LeadContactObservation] = []
+    if contact_type is not None:
+        provider = None
+        provider_account_id = None
+        external_subject_id = None
+        if channel_type in {
+            InboxChannelType.facebook_messenger.value,
+            InboxChannelType.instagram_dm.value,
+        }:
+            provider = str(metadata.get("provider") or "team_inbox")
+            provider_account_id = str(
+                metadata.get("external_account_id")
+                or metadata.get("page_id")
+                or metadata.get("instagram_account_id")
+                or channel_type
+            )
+            external_subject_id = contact_address
+        contacts.append(
+            LeadContactObservation(
+                channel_type=contact_type,
+                value=contact_address,
+                display_value=contact_address,
+                provider=provider,
+                provider_account_id=provider_account_id,
+                external_subject_id=external_subject_id,
+                is_primary=True,
+            )
+        )
+    clean_title = (
+        str(title or "").strip()
+        or conversation.subject
+        or f"{channel_type.replace('_', ' ').title()} inbox enquiry"
+    )
+    return LeadCaptureRequest(
+        party=LeadCapturePartyCreate(
+            display_name=contact_address,
+            contacts=contacts,
+        ),
+        title=clean_title[:200],
+        lead_source=_lead_source_for_channel(channel_type),
+        origin=LeadOriginCaptureCreate(
+            capture_method=LeadCaptureMethod.agent_declared,
+            source_platform=LeadSourcePlatform.agent,
+            source_interaction_id=f"team-inbox:{conversation.id}",
+            capture_source="admin_inbox",
+            capture_reason="Operator captured an unmatched inbox contact as a lead",
+        ),
+        notes=str(note or "").strip() or None,
+    )
+
+
+def create_lead_from_conversation_uncommitted(
+    db: Session,
+    *,
+    conversation: InboxConversation,
+    actor_person_id: str | UUID | None = None,
+    title: str | None = None,
+    note: str | None = None,
+) -> LeadCreationOutcome:
+    if conversation.subscriber_id is not None:
+        raise InboxCommandRejected(
+            "This conversation is already linked to a customer.",
+            conversation_id=conversation.id,
+        )
+    if not conversation.contact_address:
+        raise InboxCommandRejected(
+            "Conversation has no contact address to capture as a lead.",
+            conversation_id=conversation.id,
+        )
+    metadata = dict(conversation.metadata_ or {})
+    existing = metadata.get("lead_capture")
+    if (
+        isinstance(existing, dict)
+        and existing.get("lead_id")
+        and existing.get("party_id")
+    ):
+        return LeadCreationOutcome(
+            conversation_id=str(conversation.id),
+            lead_id=str(existing["lead_id"]),
+            party_id=str(existing["party_id"]),
+            replayed=True,
+        )
+    try:
+        result = sales_capture.capture_lead(
+            db,
+            _lead_capture_payload(conversation, title=title, note=note),
+            actor_id=str(actor_person_id or "system:team-inbox-admin"),
+            commit=False,
+        )
+    except sales_capture.LeadCaptureError as exc:
+        raise InboxCommandRejected(str(exc), conversation_id=conversation.id) from exc
+    metadata["lead_capture"] = {
+        "lead_id": str(result.lead.id),
+        "party_id": str(result.party_id),
+        "origin_capture_id": str(result.origin.id),
+        "source": "admin_inbox",
+        "actor_person_id": str(actor_person_id or "") or None,
+        "replayed": result.replayed,
+    }
+    conversation.metadata_ = metadata
+    db.flush()
+    return LeadCreationOutcome(
+        conversation_id=str(conversation.id),
+        lead_id=str(result.lead.id),
+        party_id=str(result.party_id),
+        replayed=result.replayed,
+    )
+
+
+def create_lead_from_conversation(
+    db: Session,
+    *,
+    conversation_id: str | UUID,
+    actor_person_id: str | UUID | None = None,
+    title: str | None = None,
+    note: str | None = None,
+) -> LeadCreationOutcome:
+    def action() -> LeadCreationOutcome:
+        return create_lead_from_conversation_uncommitted(
+            db,
+            conversation=_active_conversation(db, conversation_id, for_update=True),
+            actor_person_id=actor_person_id,
+            title=title,
+            note=note,
+        )
+
+    return _commit(db, action)
+
+
+def _lead_from_conversation_metadata(
+    db: Session, conversation: InboxConversation
+) -> Lead:
+    metadata = dict(conversation.metadata_ or {})
+    lead_capture = metadata.get("lead_capture")
+    lead_id = (
+        coerce_uuid(lead_capture.get("lead_id"))
+        if isinstance(lead_capture, dict)
+        else None
+    )
+    lead = db.get(Lead, lead_id) if lead_id is not None else None
+    if lead is None or lead.party_id is None:
+        raise InboxCommandRejected(
+            "Create a lead from this conversation before merging it.",
+            conversation_id=conversation.id,
+        )
+    return lead
+
+
+def _lead_from_conversation_or_create(
+    db: Session,
+    *,
+    conversation: InboxConversation,
+    actor_person_id: str | UUID | None,
+) -> Lead:
+    try:
+        return _lead_from_conversation_metadata(db, conversation)
+    except InboxCommandRejected:
+        created = create_lead_from_conversation_uncommitted(
+            db,
+            conversation=conversation,
+            actor_person_id=actor_person_id,
+            note="Created during Inbox contact merge",
+        )
+        lead = db.get(Lead, coerce_uuid(created.lead_id))
+        if lead is None or lead.party_id is None:
+            raise InboxCommandRejected("Created lead could not be reloaded.")
+        return lead
+
+
+def _unique_target(rows: list[T], *, target_name: str, query: str) -> T:
+    if not rows:
+        raise InboxCommandRejected(f"No {target_name} matched '{query}'.")
+    if len(rows) > 1:
+        raise InboxCommandRejected(
+            f"More than one {target_name} matched '{query}'. Narrow the search."
+        )
+    return rows[0]
+
+
+def _search_subscriber(db: Session, query_text: str) -> Subscriber:
+    like = f"%{query_text}%"
+    rows = (
+        db.query(Subscriber)
+        .filter(Subscriber.is_active.is_(True))
+        .filter(
+            or_(
+                Subscriber.email.ilike(like),
+                Subscriber.phone.ilike(like),
+                Subscriber.first_name.ilike(like),
+                Subscriber.last_name.ilike(like),
+                Subscriber.display_name.ilike(like),
+                Subscriber.company_name.ilike(like),
+                Subscriber.account_number.ilike(like),
+                Subscriber.subscriber_number.ilike(like),
+            )
+        )
+        .order_by(Subscriber.updated_at.desc().nullslast())
+        .limit(2)
+        .all()
+    )
+    return _unique_target(rows, target_name="customer", query=query_text)
+
+
+def _search_reseller(db: Session, query_text: str) -> Reseller:
+    like = f"%{query_text}%"
+    rows = (
+        db.query(Reseller)
+        .filter(Reseller.is_active.is_(True))
+        .filter(
+            or_(
+                Reseller.name.ilike(like),
+                Reseller.code.ilike(like),
+                Reseller.contact_email.ilike(like),
+                Reseller.contact_phone.ilike(like),
+            )
+        )
+        .order_by(Reseller.name.asc())
+        .limit(2)
+        .all()
+    )
+    return _unique_target(rows, target_name="reseller", query=query_text)
+
+
+def _search_organization(db: Session, query_text: str) -> Organization:
+    like = f"%{query_text}%"
+    rows = (
+        db.query(Organization)
+        .filter(Organization.is_active.is_(True))
+        .filter(
+            or_(
+                Organization.name.ilike(like),
+                Organization.legal_name.ilike(like),
+                Organization.domain.ilike(like),
+                Organization.email.ilike(like),
+                Organization.phone.ilike(like),
+            )
+        )
+        .order_by(Organization.updated_at.desc().nullslast())
+        .limit(2)
+        .all()
+    )
+    return _unique_target(rows, target_name="business", query=query_text)
+
+
+def _organization_party_for_reseller(db: Session, reseller: Reseller) -> Party:
+    if reseller.party_id is not None:
+        party = db.get(Party, reseller.party_id)
+        if party is None:
+            raise InboxCommandRejected("Reseller Party binding is missing.")
+        return party
+    party = party_service.create_party(
+        db,
+        party_type=PartyType.organization,
+        display_name=reseller.name,
+        metadata={"created_by": "team_inbox_lead_merge"},
+    )
+    party_service.bind_reseller_profile(
+        db,
+        reseller_id=reseller.id,
+        party_id=party.id,
+        source="team_inbox_lead_merge",
+        reason="Reviewed Inbox Lead association to reseller profile",
+    )
+    return party
+
+
+def _organization_party_for_business(db: Session, organization: Organization) -> Party:
+    if organization.party_id is not None:
+        party = db.get(Party, organization.party_id)
+        if party is None:
+            raise InboxCommandRejected("Business Party binding is missing.")
+        return party
+    party = party_service.create_party(
+        db,
+        party_type=PartyType.organization,
+        display_name=organization.name,
+        metadata={"created_by": "team_inbox_lead_merge"},
+    )
+    party_service.bind_organization_profile(
+        db,
+        organization_id=organization.id,
+        party_id=party.id,
+        source="team_inbox_lead_merge",
+        reason="Reviewed Inbox Lead association to business profile",
+    )
+    return party
+
+
+def _relate_lead_party_to_target(
+    db: Session,
+    *,
+    lead: Lead,
+    target_party_id: UUID,
+    target_type: str,
+) -> None:
+    if lead.party_id == target_party_id:
+        return
+    existing = (
+        db.query(PartyRelationship)
+        .filter(PartyRelationship.subject_party_id == lead.party_id)
+        .filter(PartyRelationship.object_party_id == target_party_id)
+        .filter(
+            PartyRelationship.relationship_type
+            == PartyRelationshipType.contact_for.value
+        )
+        .filter(PartyRelationship.relationship_key == "default")
+        .one_or_none()
+    )
+    if existing is not None:
+        existing.status = "active"
+        metadata = dict(existing.metadata_ or {})
+        metadata["last_reviewed_by"] = "team_inbox_lead_merge"
+        existing.metadata_ = metadata
+        return
+    db.add(
+        PartyRelationship(
+            subject_party_id=lead.party_id,
+            object_party_id=target_party_id,
+            relationship_type=PartyRelationshipType.contact_for.value,
+            relationship_key="default",
+            status="active",
+            source="team_inbox_lead_merge",
+            metadata_={
+                "reason": f"Inbox lead contact merged to {target_type}",
+                "lead_id": str(lead.id),
+            },
+        )
+    )
+
+
+def _record_lead_merge(
+    conversation: InboxConversation,
+    lead: Lead,
+    *,
+    target_type: str,
+    target_id: UUID,
+    actor_person_id: str | UUID | None,
+) -> None:
+    lead_metadata = dict(lead.metadata_ or {})
+    lead_metadata["inbox_merge"] = {
+        "conversation_id": str(conversation.id),
+        "target_type": target_type,
+        "target_id": str(target_id),
+        "actor_person_id": str(actor_person_id or "") or None,
+    }
+    lead.metadata_ = lead_metadata
+    conversation_metadata = dict(conversation.metadata_ or {})
+    capture = dict(conversation_metadata.get("lead_capture") or {})
+    capture.update({"lead_id": str(lead.id), "party_id": str(lead.party_id)})
+    capture["merge"] = {
+        "target_type": target_type,
+        "target_id": str(target_id),
+        "actor_person_id": str(actor_person_id or "") or None,
+    }
+    conversation_metadata["lead_capture"] = capture
+    conversation.metadata_ = conversation_metadata
+
+
+def _merge_conversation_lead_uncommitted(
+    db: Session,
+    *,
+    conversation: InboxConversation,
+    lead: Lead,
+    target_type: str,
+    subscriber: Subscriber | None = None,
+    reseller: Reseller | None = None,
+    organization: Organization | None = None,
+    actor_person_id: str | UUID | None,
+) -> LeadMergeOutcome:
+    if lead.party_id is None:
+        raise InboxCommandRejected(
+            "Create a lead from this conversation before merging it.",
+            conversation_id=conversation.id,
+        )
+    lead_party_id = lead.party_id
+    if target_type == "subscriber":
+        if subscriber is None:
+            raise InboxCommandRejected("Choose a customer to merge this lead into.")
+        account_conversion.stage_lead_account_conversion(
+            db,
+            lead_id=lead.id,
+            party_id=lead_party_id,
+            subscriber_id=subscriber.id,
+            actor_id=str(actor_person_id or "system:team-inbox-admin"),
+        )
+        team_inbox_contact_links.link_conversation_contact(
+            db,
+            conversation=conversation,
+            subscriber_id=subscriber.id,
+            linked_by_person_id=actor_person_id,
+            note="Lead merged to customer from Inbox",
+        )
+        _record_lead_merge(
+            conversation,
+            lead,
+            target_type="subscriber",
+            target_id=subscriber.id,
+            actor_person_id=actor_person_id,
+        )
+        return LeadMergeOutcome(
+            conversation_id=str(conversation.id),
+            lead_id=str(lead.id),
+            target_type="subscriber",
+            target_id=str(subscriber.id),
+            subscriber_id=str(subscriber.id),
+        )
+    if target_type == "reseller":
+        if reseller is None:
+            raise InboxCommandRejected("Choose a reseller to merge this lead into.")
+        reseller_party = _organization_party_for_reseller(db, reseller)
+        party_service.ensure_role(
+            db,
+            party_id=reseller_party.id,
+            role_type=PartyRoleType.reseller,
+            status=PartyRoleStatus.active,
+            source="team_inbox_lead_merge",
+        )
+        _relate_lead_party_to_target(
+            db, lead=lead, target_party_id=reseller_party.id, target_type="reseller"
+        )
+        team_inbox_contact_links.link_conversation_contact(
+            db,
+            conversation=conversation,
+            reseller_id=reseller.id,
+            linked_by_person_id=actor_person_id,
+            note="Lead merged to reseller from Inbox",
+        )
+        _record_lead_merge(
+            conversation,
+            lead,
+            target_type="reseller",
+            target_id=reseller.id,
+            actor_person_id=actor_person_id,
+        )
+        return LeadMergeOutcome(
+            conversation_id=str(conversation.id),
+            lead_id=str(lead.id),
+            target_type="reseller",
+            target_id=str(reseller.id),
+            reseller_id=str(reseller.id),
+        )
+    if target_type == "organization":
+        if organization is None:
+            raise InboxCommandRejected("Choose a business to merge this lead into.")
+        organization_party = _organization_party_for_business(db, organization)
+        party_service.ensure_role(
+            db,
+            party_id=organization_party.id,
+            role_type=PartyRoleType.customer,
+            status=PartyRoleStatus.active,
+            source="team_inbox_lead_merge",
+        )
+        _relate_lead_party_to_target(
+            db,
+            lead=lead,
+            target_party_id=organization_party.id,
+            target_type="business",
+        )
+        _record_lead_merge(
+            conversation,
+            lead,
+            target_type="organization",
+            target_id=organization.id,
+            actor_person_id=actor_person_id,
+        )
+        return LeadMergeOutcome(
+            conversation_id=str(conversation.id),
+            lead_id=str(lead.id),
+            target_type="organization",
+            target_id=str(organization.id),
+            organization_id=str(organization.id),
+        )
+    raise InboxCommandError("Choose customer, reseller, or business.")
+
+
+def merge_conversation_lead(
+    db: Session,
+    *,
+    conversation_id: str | UUID,
+    target_type: str,
+    subscriber_id: str | UUID | None = None,
+    reseller_id: str | UUID | None = None,
+    organization_id: str | UUID | None = None,
+    actor_person_id: str | UUID | None = None,
+) -> LeadMergeOutcome:
+    def action() -> LeadMergeOutcome:
+        conversation = _active_conversation(db, conversation_id, for_update=True)
+        lead = _lead_from_conversation_metadata(db, conversation)
+        subscriber = (
+            db.get(Subscriber, coerce_uuid(subscriber_id)) if subscriber_id else None
+        )
+        reseller = db.get(Reseller, coerce_uuid(reseller_id)) if reseller_id else None
+        organization = (
+            db.get(Organization, coerce_uuid(organization_id))
+            if organization_id
+            else None
+        )
+        return _merge_conversation_lead_uncommitted(
+            db,
+            conversation=conversation,
+            lead=lead,
+            target_type=target_type,
+            subscriber=subscriber,
+            reseller=reseller,
+            organization=organization,
+            actor_person_id=actor_person_id,
+        )
+
+    return _commit(db, action)
+
+
+def merge_contact(
+    db: Session,
+    *,
+    conversation_id: str | UUID,
+    target_type: str,
+    target_query: str | None = None,
+    actor_person_id: str | UUID | None = None,
+) -> ContactMergeOutcome:
+    clean_target = str(target_type or "").strip().lower()
+    clean_query = str(target_query or "").strip()
+
+    def action() -> ContactMergeOutcome:
+        conversation = _active_conversation(db, conversation_id, for_update=True)
+        if clean_target == "lead":
+            created = create_lead_from_conversation_uncommitted(
+                db,
+                conversation=conversation,
+                actor_person_id=actor_person_id,
+            )
+            return ContactMergeOutcome(
+                conversation_id=str(conversation.id),
+                target_type="lead",
+                target_id=created.lead_id,
+                lead_id=created.lead_id,
+            )
+        if clean_target not in {"subscriber", "reseller", "organization"}:
+            raise InboxCommandError("Choose lead, customer, reseller, or business.")
+        if not clean_query:
+            raise InboxCommandRejected(
+                "Search for the customer, reseller, or business."
+            )
+        lead = _lead_from_conversation_or_create(
+            db, conversation=conversation, actor_person_id=actor_person_id
+        )
+        if clean_target == "subscriber":
+            outcome = _merge_conversation_lead_uncommitted(
+                db,
+                conversation=conversation,
+                lead=lead,
+                target_type="subscriber",
+                subscriber=_search_subscriber(db, clean_query),
+                actor_person_id=actor_person_id,
+            )
+        elif clean_target == "reseller":
+            outcome = _merge_conversation_lead_uncommitted(
+                db,
+                conversation=conversation,
+                lead=lead,
+                target_type="reseller",
+                reseller=_search_reseller(db, clean_query),
+                actor_person_id=actor_person_id,
+            )
+        else:
+            outcome = _merge_conversation_lead_uncommitted(
+                db,
+                conversation=conversation,
+                lead=lead,
+                target_type="organization",
+                organization=_search_organization(db, clean_query),
+                actor_person_id=actor_person_id,
+            )
+        return ContactMergeOutcome(
+            conversation_id=outcome.conversation_id,
+            target_type=outcome.target_type,
+            target_id=outcome.target_id,
+            lead_id=outcome.lead_id,
         )
 
     return _commit(db, action)
