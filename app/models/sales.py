@@ -782,6 +782,74 @@ class QuoteDepositInvoiceLink(Base):
     account = relationship("Subscriber")
 
 
+class SalesOrderInvoiceLink(Base):
+    """Structural identity joining one SalesOrder to an Invoice raised for it.
+
+    Sale-to-money was joined through ``Project.metadata_`` — a JSON string
+    comparison on ``sales_order_id`` plus ``selfcare_installation_invoice_id``,
+    with a full-scan fallback. That join carries no foreign key, no uniqueness
+    and no referential integrity, so settlement evidence could not be
+    attributed to the commercial order and nothing could derive the order's
+    financial status from it.
+
+    The row lives in Sales, not Billing, on purpose: Sales owns the commercial
+    order and therefore owns which invoices belong to it. ``Invoice`` gains no
+    ``sales_order_id`` column, so Finance keeps owning settlement without
+    depending on Sales. Mirrors ``QuoteDepositInvoiceLink``.
+
+    One invoice belongs to at most one sales order; one sales order may raise
+    several (installation, deposit, subscription).
+    """
+
+    __tablename__ = "sales_order_invoice_links"
+    __table_args__ = (
+        Index("ix_sales_order_invoice_links_sales_order_id", "sales_order_id"),
+        UniqueConstraint("invoice_id", name="uq_sales_order_invoice_links_invoice_id"),
+        CheckConstraint(
+            "purpose IN ('installation', 'deposit', 'subscription')",
+            name="ck_sales_order_invoice_links_purpose",
+        ),
+        CheckConstraint(
+            "origin IN ('native', 'backfill')",
+            name="ck_sales_order_invoice_links_origin",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    sales_order_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("sales_orders.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    invoice_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("invoices.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    account_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("subscribers.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    #: Why this invoice was raised for the order. Kept narrow and checked so a
+    #: future projection can weigh an installation charge differently from a
+    #: deposit without re-deriving it from metadata.
+    purpose: Mapped[str] = mapped_column(String(32), nullable=False)
+    #: Provenance of the row itself: 'native' for links written at the time the
+    #: invoice was raised, 'backfill' for rows recovered from the historical
+    #: metadata join. A parity check must be able to tell them apart.
+    origin: Mapped[str] = mapped_column(String(16), nullable=False, default="native")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+
+    sales_order = relationship("SalesOrder")
+    invoice = relationship("Invoice")
+    account = relationship("Subscriber")
+
+
 class QuoteDeliveryRequest(Base):
     """Durable, idempotent request to email one exact Quote PDF."""
 
