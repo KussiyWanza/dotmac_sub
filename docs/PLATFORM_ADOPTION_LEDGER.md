@@ -182,6 +182,7 @@ parses this section).
 - `dotmac_kernel.profiles`
 - `dotmac_kernel.providers`
 - `dotmac_kernel.providers.provisioning`
+- `dotmac_kernel.secret_sources`
 
 `dotmac_kernel.models` is admitted for **two names only** — `Tenant` and
 `TenantDomain` (ADR-0009). Every other name in it, including `Party`,
@@ -189,6 +190,14 @@ parses this section).
 `import dotmac_kernel.models` is refused because it reaches all of them. The
 guard enforces the narrowing through `RESTRICTED_MODULE_NAMES`, not a comment.
 Sub identity is not replaced by this amendment.
+
+`dotmac_kernel.secret_sources` was added 2026-08-09 for the secret
+classification ruled that day. It is a PLACE TO PUT material Sub read itself —
+the kernel declares a one-method protocol and holds the result; it ships no
+OpenBao client and performs no I/O. Sub's implementation is
+`app/services/kernel_secret_source.py`, over the client in
+`app/services/secrets.py`. ADR-0009 (`dotmac_starter_mt`): a secret is held,
+never dereferenced, so nothing on a settings read path reaches OpenBao.
 
 Rules the guard enforces beyond the module list:
 
