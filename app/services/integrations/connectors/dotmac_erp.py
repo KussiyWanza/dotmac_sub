@@ -18,6 +18,8 @@ from app.services.integrations.backoffice_contracts import (
     ERP_OUTBOX_CAPABILITY,
     ERP_REGULATORY_CAPABILITY,
     ERP_STATUS_CAPABILITY,
+    WORKFORCE_ATTENDANCE_PUNCH_CAPABILITY,
+    WORKFORCE_ATTENDANCE_READ_CAPABILITY,
 )
 from app.services.integrations.manifest import ConnectorManifest
 from app.services.integrations.runtime import (
@@ -46,14 +48,24 @@ class DotmacErpRunner:
         self,
         config: Mapping[str, Any],
         secret_material: Mapping[str, str],
+        *,
+        interactive: bool = False,
     ) -> DotMacERPClient:
         if self._client_override is not None:
             return self._client_override
         return DotMacERPClient(
             base_url=str(config.get("base_url") or ""),
             token=secret_material.get("service_credentials") or "",
-            timeout=int(config.get("timeout_seconds") or 30),
-            retries=int(config.get("max_retries") or 3),
+            timeout=int(
+                config.get("interactive_timeout_seconds") or 5
+                if interactive
+                else config.get("timeout_seconds") or 30
+            ),
+            retries=int(
+                config.get("interactive_max_retries") or 1
+                if interactive
+                else config.get("max_retries") or 3
+            ),
         )
 
     def validate(
@@ -96,8 +108,12 @@ class DotmacErpRunner:
                 error_code="params_invalid",
             )
         try:
+            is_attendance = envelope.capability_id in {
+                WORKFORCE_ATTENDANCE_READ_CAPABILITY,
+                WORKFORCE_ATTENDANCE_PUNCH_CAPABILITY,
+            }
             output = self._execute_action(
-                self._client(config, secret_material),
+                self._client(config, secret_material, interactive=is_attendance),
                 capability_id=envelope.capability_id,
                 action=action,
                 params=params,
@@ -116,11 +132,13 @@ class DotmacErpRunner:
                 status=OperationStatus.retryable,
                 error_code="erp_transport_retryable",
             )
-        except DotMacERPError:
+        except DotMacERPError as exc:
+            detail = (exc.response or {}).get("detail")
+            error_code = detail.get("code") if isinstance(detail, dict) else None
             return OperationResult(
                 operation_id=envelope.operation_id,
                 status=OperationStatus.rejected,
-                error_code="erp_operation_rejected",
+                error_code=str(error_code or "erp_operation_rejected"),
             )
         except (KeyError, TypeError, ValueError):
             return OperationResult(
@@ -200,6 +218,25 @@ class DotmacErpRunner:
                 return client.get_ncc_financials(**params)
             if action == "get_ncc_staff_headcount":
                 return client.get_ncc_staff_headcount()
+        elif capability_id == WORKFORCE_ATTENDANCE_READ_CAPABILITY:
+            if action == "attendance_today":
+                return client.get_attendance_today(
+                    str(params["subject"]), str(params["request_id"])
+                )
+        elif capability_id == WORKFORCE_ATTENDANCE_PUNCH_CAPABILITY:
+            if action in {"attendance_check_in", "attendance_check_out"}:
+                punch_action = (
+                    "check-in" if action.endswith("check_in") else "check-out"
+                )
+                return client.punch_attendance(
+                    punch_action,
+                    str(params["subject"]),
+                    dict(params["location"]),
+                    idempotency_key=str(
+                        params.get("idempotency_key") or idempotency_key
+                    ),
+                    request_id=str(params["request_id"]),
+                )
         raise ValueError("unsupported ERP capability operation")
 
     def health(

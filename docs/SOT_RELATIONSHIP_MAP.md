@@ -4759,7 +4759,13 @@ live owners are:
    observes or reconciles provider outcomes. The current connector is
    `dotmac.erp`; replacing it changes the binding and connector, not Sub's
    service-workflow owner or provider-neutral fields.
-10. `events.store` remains the domain-event fact owner,
+10. `integration.workforce_attendance_adapter`: captures the authenticated
+   staff subject and browser location, then invokes the enabled provider-neutral
+   attendance capability. Dotmac ERP remains the sole attendance decision and
+   record owner; Selfcare keeps no attendance ledger, inferred success, shift,
+   timezone, geofence, or work-hours calculation. The contract is documented in
+   `docs/designs/WORKFORCE_ATTENDANCE_INTEGRATION.md`.
+11. `events.store` remains the domain-event fact owner,
    `scheduler.registry` remains cadence owner, and `secrets.reference_store`
    remains secret resolution owner.
 

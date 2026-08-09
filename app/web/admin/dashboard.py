@@ -1,10 +1,12 @@
 """Admin dashboard web routes."""
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, Form, Header, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.schemas.workforce_attendance import DashboardAttendanceLocation
+from app.services import web_admin_attendance as web_admin_attendance_service
 from app.services import web_admin_dashboard as web_admin_dashboard_service
 from app.services import worker_control as worker_control_service
 from app.services.audit_helpers import log_audit_event
@@ -47,6 +49,56 @@ def dashboard_stats_partial(request: Request, db: Session = Depends(get_db)):
 def dashboard_activity_partial(request: Request, db: Session = Depends(get_db)):
     """HTMX partial for recent activity feed."""
     return web_admin_dashboard_service.dashboard_activity_partial(request, db)
+
+
+@router.get(
+    "/dashboard/attendance",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("attendance:self:use"))],
+)
+def dashboard_attendance_partial(request: Request, db: Session = Depends(get_db)):
+    """Load the current staff member's ERP-owned attendance independently."""
+    return web_admin_attendance_service.load(request, db)
+
+
+@router.post(
+    "/dashboard/attendance/check-in",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("attendance:self:use"))],
+)
+def dashboard_attendance_check_in(
+    request: Request,
+    payload: DashboardAttendanceLocation,
+    idempotency_key: str = Header(..., alias="Idempotency-Key", max_length=200),
+    db: Session = Depends(get_db),
+):
+    return web_admin_attendance_service.punch(
+        request,
+        db,
+        action="check_in",
+        payload=payload,
+        idempotency_key=idempotency_key,
+    )
+
+
+@router.post(
+    "/dashboard/attendance/check-out",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("attendance:self:use"))],
+)
+def dashboard_attendance_check_out(
+    request: Request,
+    payload: DashboardAttendanceLocation,
+    idempotency_key: str = Header(..., alias="Idempotency-Key", max_length=200),
+    db: Session = Depends(get_db),
+):
+    return web_admin_attendance_service.punch(
+        request,
+        db,
+        action="check_out",
+        payload=payload,
+        idempotency_key=idempotency_key,
+    )
 
 
 @router.get(

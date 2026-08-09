@@ -47,6 +47,8 @@ DEFAULT_PERMISSIONS = [
     ("*", "Full access (wildcard) — grants every permission"),
     # Audit
     ("audit:read", "Read audit events"),
+    # Workforce attendance (pilot: intentionally not granted to seeded roles)
+    ("attendance:self:use", "Use personal ERP attendance from the dashboard"),
     # Integrations (service ApiKey scopes)
     ("integration:crm", "CRM service integration API access"),
     # Auth & System
