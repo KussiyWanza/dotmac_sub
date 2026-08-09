@@ -14,7 +14,7 @@ models became ``SettingValueTypeType`` a fresh database stopped having the type
 at all — while every DEPLOYED database still has it, on three tables.
 
 So a fresh chain is not evidence here. ``_install_deployed_shape`` reconstructs
-what production actually looks like at 510 — the native enum on all three
+what production actually looks like at 511 — the native enum on all three
 columns and the old value-alignment CHECK that names ``json`` — and 512 is run
 against that. The second test covers the other real case: a database built
 after the model change, where 512 must be a well-behaved no-op rather than an
