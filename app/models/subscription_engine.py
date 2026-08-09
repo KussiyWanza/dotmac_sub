@@ -34,7 +34,7 @@ class SettingValueType(str):
     It is not hypothetical. Four Sub settings hold LISTS and thirteen hold money
     amounts as decimal strings with the currency in a separate setting; the
     kernel declares ``list`` and ``money`` and neither could be written here.
-    See ``511_open_setting_value_type_vocabulary``.
+    See ``512_open_setting_value_type_vocabulary``.
 
     A ``str`` SUBCLASS rather than a bare alias, for the same reasons as
     :class:`~app.models.domain_settings.SettingDomain`: ``.value`` keeps

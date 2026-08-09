@@ -15,9 +15,9 @@ at all — while every DEPLOYED database still has it, on three tables.
 
 So a fresh chain is not evidence here. ``_install_deployed_shape`` reconstructs
 what production actually looks like at 510 — the native enum on all three
-columns and the old value-alignment CHECK that names ``json`` — and 511 is run
+columns and the old value-alignment CHECK that names ``json`` — and 512 is run
 against that. The second test covers the other real case: a database built
-after the model change, where 511 must be a well-behaved no-op rather than an
+after the model change, where 512 must be a well-behaved no-op rather than an
 error.
 
 The behavioural claim being proved is not "the column is text now". It is that
@@ -44,8 +44,8 @@ from sqlalchemy.engine import URL, make_url
 from alembic import command
 from app import config as app_config
 
-REVISION_510 = "510_inbox_manager_ai_permission"
-REVISION_511 = "511_open_setting_value_type_vocabulary"
+REVISION_511 = "511_sales_order_invoice_links"
+REVISION_512 = "512_open_setting_value_type_vocabulary"
 ENUM_NAME = "settingvaluetype"
 ALIGNMENT_CONSTRAINT = "ck_domain_settings_value_alignment"
 
@@ -265,7 +265,7 @@ def test_the_enum_becomes_open_text_and_a_second_json_type_becomes_writable(
     _use_database(monkeypatch, database_url)
     config = _alembic_config()
 
-    command.upgrade(config, REVISION_510)
+    command.upgrade(config, REVISION_511)
     _install_deployed_shape(database_url)
 
     for table, _ in LEGACY_COLUMNS:
@@ -277,7 +277,7 @@ def test_the_enum_becomes_open_text_and_a_second_json_type_becomes_writable(
     _insert_json(database_url, "kept_json", "json", '{"a": 1}')
 
     # The claim, stated as two failures first. Both must be impossible BEFORE
-    # 511, and they are separate walls: the CHECK and the enum.
+    # 512, and they are separate walls: the CHECK and the enum.
     #
     # 1. The CHECK reserved the JSON column for the type literally named
     #    `json`, so any other type storing a JSON value is rejected.
@@ -293,9 +293,9 @@ def test_the_enum_becomes_open_text_and_a_second_json_type_becomes_writable(
     script = ScriptDirectory.from_config(config)
     heads = script.get_heads()
     assert len(heads) == 1
-    assert REVISION_511 in {
+    assert REVISION_512 in {
         item.revision
-        for item in script.iterate_revisions(heads[0], REVISION_511, inclusive=True)
+        for item in script.iterate_revisions(heads[0], REVISION_512, inclusive=True)
     }
 
     for table, _ in LEGACY_COLUMNS:
@@ -386,7 +386,7 @@ def test_a_database_built_after_the_model_change_migrates_cleanly(
     isolated_migration_database: URL,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The other real case: no enum to convert, and 511 must not error.
+    """The other real case: no enum to convert, and 512 must not error.
 
     A fresh chain never creates ``settingvaluetype`` — the models stopped
     declaring it — so every branch in the migration has to tolerate its absence

@@ -32,8 +32,8 @@ and the database only needs to know that one of them is.
 Values are preserved via ``USING value_type::text``. Nothing is reclassified:
 this migration widens what may be stored, and stores nothing.
 
-Revision ID: 511_open_setting_value_type_vocabulary
-Revises: 510_inbox_manager_ai_permission
+Revision ID: 512_open_setting_value_type_vocabulary
+Revises: 511_sales_order_invoice_links
 Create Date: 2026-08-09
 """
 
@@ -45,8 +45,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "511_open_setting_value_type_vocabulary"
-down_revision: str | None = "510_inbox_manager_ai_permission"
+revision: str = "512_open_setting_value_type_vocabulary"
+down_revision: str | None = "511_sales_order_invoice_links"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

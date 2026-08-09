@@ -197,7 +197,7 @@ class DomainSetting(Base):
         UniqueConstraint("domain", "key", name="uq_domain_settings_domain_key"),
         # A row carries a value in at least one column. The old form named the
         # type (`value_type = 'json'`), which is the same closed list migration
-        # 511 removed from the column itself — a second JSON-stored type such
+        # 512 removed from the column itself — a second JSON-stored type such
         # as `list` or `money` could not satisfy it.
         #
         # NOT "exactly one", which is what the kernel's equivalent constraint
