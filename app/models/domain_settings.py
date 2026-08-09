@@ -206,6 +206,22 @@ class DomainSetting(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
+    # Scope columns, declared so metadata matches the migrated schema and so
+    # `dotmac_kernel.settings_models.DomainSetting` can read this table at all.
+    # Sub reads none of them: it is a single-operator deployment, so every row
+    # is platform scope. `scope_kind` defaults to "platform" rather than the
+    # kernel's "tenant" — a Sub row has no tenant, and inheriting that default
+    # would make every row claim a scope its own `tenant_id` contradicts.
+    # See migration 507_domain_settings_scope_columns.
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    scope_kind: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="platform", server_default="platform"
+    )
+    scope_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
     domain: Mapped[SettingDomain] = mapped_column(
         SettingDomainType(120), nullable=False
     )
