@@ -3,7 +3,7 @@
 **Status:** Rebaselined 2026-08-02 for slice S1 of the selective kernel-adoption
 plan; amended the same day for slice S2 (dependency pinned — see "S2 acceptance
 claim") and slice S3 (composition declared in `app/composition.py` — see "S3
-acceptance claim"). The pin moved to `dotmac-kernel==0.1.0a13` on 2026-08-07 —
+acceptance claim"). The pin moved to `dotmac-kernel==0.1.0a23` on 2026-08-09 —
 see "Pin history". Supersedes the
 2026-07-19 Phase-0 draft, which was surveyed before the kernel was released and
 against `origin/main` 7807afcd. No code, schema, or dependency change is
@@ -41,6 +41,28 @@ exists to hold.
 
 
 ## Pin history
+
+**2026-08-09 — `0.1.0a13` → `0.1.0a23`.** Taken to make the settings cutover
+testable. a13 PREDATES the settings re-base: at that pin,
+`dotmac_kernel.settings_*` is the original from-scratch module — a five-member
+`SettingDomain` enum behind a CHECK constraint — which is the module that was
+replaced precisely because no product could adopt it. A parity harness built
+against a13 would therefore diff Sub's resolver against a subsystem nobody
+intends to adopt. a14 is the re-base; a15–a23 carry open value types, scope
+depth, bulk reads, per-scope requirements, BYOK, the `KeyProvider` seam, and
+ADR-0011's rule that resolution reads rows and defaults and never the
+environment.
+
+**Nothing in `app/` changed by the bump itself.** Every BREAKING entry across
+a14–a23 is in the settings subsystem — `resolve()`, `Keyring.active`, per-scope
+requirements, BYOK — and Sub imports none of it. Sub's kernel surface remains
+`app/composition.py` (`assembly`, `capabilities`, `features`, `profiles`) plus
+`Tenant`/`TenantDomain` under ADR-0009, all held by
+`tests/architecture/test_kernel_import_boundary.py`.
+
+An earlier version of this section recorded that "a14–a17 never existed as
+artifacts". That was accurate on 2026-08-07 and is not now: a14 and a18 were
+published on 2026-08-08, and a23 is the current release.
 
 **2026-08-07 — `0.1.0a8` → `0.1.0a13`.** The kernel release carrying the
 white-label foundation: the module registry and manifest declarations, D1's
