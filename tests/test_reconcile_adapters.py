@@ -11,6 +11,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from cryptography.fernet import Fernet
 
 from app.models.network import (
     OLTDevice,
@@ -23,6 +24,7 @@ from app.models.network import (
 from app.models.ont_observation import OntObservation
 from app.models.tr069 import Tr069AcsServer
 from app.services.control_plane_intent import DesiredValueProvenance
+from app.services.credential_crypto import decrypt_credential
 from app.services.network.reconcile import (
     AcsObservedFields,
     OltObservedFields,
@@ -337,8 +339,13 @@ def test_desired_description_uses_serial_stub_when_no_subscriber_binding(
 # ── apply_proposed_change ───────────────────────────────────────────────────
 
 
-def test_apply_writes_wifi_to_desired_config(db_session, ont):
+def test_apply_writes_wifi_to_desired_config(db_session, ont, monkeypatch):
     """A successful WiFi-change reconcile writes ssid+password to the JSON blob."""
+    encryption_key = Fernet.generate_key()
+    monkeypatch.setattr(
+        "app.services.credential_crypto.get_encryption_key",
+        lambda: encryption_key,
+    )
     initial = desired_from_ont_unit(db_session, ont)
     import dataclasses
 
@@ -351,7 +358,9 @@ def test_apply_writes_wifi_to_desired_config(db_session, ont):
     db_session.refresh(ont)
 
     assert ont.desired_config["wifi"]["ssid"] == "NEW_SSID"
-    assert ont.desired_config["wifi"]["password"] == "new-pass"
+    stored_password = ont.desired_config["wifi"]["password"]
+    assert stored_password.startswith("enc:")
+    assert decrypt_credential(stored_password) == "new-pass"
     assert "ip_protocol" not in ont.desired_config.get("wan", {})
 
 

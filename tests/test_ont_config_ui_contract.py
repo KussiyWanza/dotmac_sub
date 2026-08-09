@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from fastapi import HTTPException
 from fastapi.responses import HTMLResponse
 from starlette.requests import Request
 
@@ -53,6 +55,49 @@ def test_configure_form_renders_olt_owned_vlans_as_read_only() -> None:
     assert "Edit OLT config" in html
 
 
+def test_configure_form_exposes_only_section_scoped_routed_actions() -> None:
+    html = templates.env.get_template("admin/network/onts/_configure_form.html").render(
+        request=_request(),
+        ont_id="ont-1",
+        wan_mode="setup_via_onu",
+        has_tr069=False,
+        configure_readiness=SimpleNamespace(
+            olt_assigned=True,
+            config_pack_ready=True,
+            acs_registered=False,
+        ),
+    )
+
+    assert 'value="all"' not in html
+    assert "Apply All" not in html
+    assert "Apply one section at a time" in html
+    assert 'value="setup_via_onu" disabled selected' in html
+    assert "Bridge / Via ONU is provisioning-only" in html
+    assert ":disabled=\"wanMode === 'setup_via_onu'\"" in html
+    assert "Leave blank to keep the current PPPoE password" in html
+    assert "Leave blank to keep the current Wi-Fi password" in html
+    assert "Supported path: Huawei routed ONTs" in html
+    assert "ACS registration" in html
+    assert "Not ready" in html
+
+
+def test_configure_form_distinguishes_pending_delivery_from_success() -> None:
+    html = templates.env.get_template("admin/network/onts/_configure_form.html").render(
+        request=_request(),
+        ont_id="ont-1",
+        config_result=ActionResult(
+            success=True,
+            waiting=True,
+            message="Saved; waiting for device inform.",
+        ),
+    )
+
+    assert "Pending delivery" in html
+    assert "Saved; waiting for device inform." in html
+    assert "border-amber-200" in html
+    assert "border-emerald-200" not in html
+
+
 def _submit_values(push_scope: str) -> dict[str, object]:
     return {
         "wan_mode": "",
@@ -84,6 +129,66 @@ def _submit_values(push_scope: str) -> dict[str, object]:
         "push_to_device": False,
         "push_scope": push_scope,
     }
+
+
+def test_configure_submit_rejects_bridge_before_service_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service_call = MagicMock()
+    monkeypatch.setattr(
+        network_onts.web_network_ont_actions_service,
+        "update_ont_config",
+        service_call,
+    )
+    values = _submit_values("wan")
+    values["wan_mode"] = "setup_via_onu"
+
+    with pytest.raises(HTTPException) as exc_info:
+        network_onts.ont_configure_submit(
+            request=_request(),
+            ont_id="ont-1",
+            db=MagicMock(),
+            **values,
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "provisioning" in str(exc_info.value.detail).lower()
+    service_call.assert_not_called()
+
+
+def test_configure_submit_uses_warning_toast_for_pending_delivery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        network_onts.web_network_ont_actions_service,
+        "update_ont_config",
+        lambda *_args, **_kwargs: ActionResult(
+            success=True,
+            waiting=True,
+            message="Saved; waiting for device inform.",
+        ),
+    )
+    monkeypatch.setattr(
+        network_onts.web_network_ont_actions_service,
+        "configure_form_context",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        network_onts.templates,
+        "TemplateResponse",
+        lambda *_args, **_kwargs: HTMLResponse("updated"),
+    )
+    monkeypatch.setattr(network_onts, "_log_ont_action_result", lambda **_kwargs: None)
+
+    response = network_onts.ont_configure_submit(
+        request=_request(),
+        ont_id="ont-1",
+        db=MagicMock(),
+        **_submit_values("lan"),
+    )
+
+    toast = json.loads(response.headers["HX-Trigger"])["showToast"]
+    assert toast["type"] == "warning"
 
 
 @pytest.mark.parametrize(

@@ -163,6 +163,33 @@ def test_first_time_allocation_of_service_port_is_accepted():
     assert validate_desired(target, current).ok is True
 
 
+# ── Wi-Fi credential validation ─────────────────────────────────────────────
+
+
+def test_short_raw_wifi_password_is_rejected():
+    current = _base()
+    target = dataclasses.replace(current, wifi_password_ref="short")
+
+    _assert_rejected(
+        validate_desired(target, current),
+        reason_contains="WiFi password",
+    )
+
+
+@pytest.mark.parametrize(
+    "protected_ref",
+    (
+        "enc:" + ("a" * 120),
+        "bao://network/onts/ont-1#wifi_password",
+    ),
+)
+def test_protected_wifi_password_reference_is_accepted(protected_ref: str):
+    current = _base()
+    target = dataclasses.replace(current, wifi_password_ref=protected_ref)
+
+    assert validate_desired(target, current).ok is True
+
+
 # ── Mode contradictions ─────────────────────────────────────────────────────
 
 

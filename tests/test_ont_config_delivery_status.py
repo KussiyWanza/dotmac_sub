@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+from fastapi import HTTPException
+
 
 def _make_subscriber(db_session, email: str):
     from app.models.subscriber import Subscriber, SubscriberStatus
@@ -24,7 +27,16 @@ def test_configure_push_scope_sections_are_individual() -> None:
     assert _configure_push_scope_sections("wan") == (True, False, False, False)
     assert _configure_push_scope_sections("lan") == (False, True, False, False)
     assert _configure_push_scope_sections("management") == (False, False, True, False)
-    assert _configure_push_scope_sections("all") == (True, True, True, True)
+
+
+@pytest.mark.parametrize("scope", ("all", "unknown", ""))
+def test_configure_push_scope_rejects_unsafe_or_unknown_values(scope: str) -> None:
+    from app.web.admin.network_onts import _configure_push_scope_sections
+
+    with pytest.raises(HTTPException) as exc_info:
+        _configure_push_scope_sections(scope)
+
+    assert exc_info.value.status_code == 400
 
 
 def test_update_ont_config_reports_pending_when_acs_delivery_is_unavailable(

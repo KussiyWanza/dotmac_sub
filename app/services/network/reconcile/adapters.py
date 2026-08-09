@@ -44,6 +44,7 @@ from app.services.control_plane_intent import (
     DesiredValueProvenance,
     has_executable_desired_provenance,
 )
+from app.services.credential_crypto import encrypt_credential
 from app.services.network.acs_resolution import resolve_acs_for_ont
 from app.services.network.effective_ont_config import resolve_effective_ont_config
 from app.services.network.ont_provisioning_defaults import (
@@ -476,7 +477,8 @@ def apply_proposed_change(
     if changed("wifi_ssid"):
         _set_desired_value(ont, "wifi", "ssid", target.wifi_ssid)
     if changed("wifi_password_ref"):
-        _set_desired_value(ont, "wifi", "password", target.wifi_password_ref)
+        protected_wifi_password = encrypt_credential(target.wifi_password_ref)
+        _set_desired_value(ont, "wifi", "password", protected_wifi_password or "")
     existing_wifi = dict((ont.desired_config or {}).get("wifi") or {})
     for key, field, value in (
         ("enabled", "wifi_enabled", target.wifi_enabled),

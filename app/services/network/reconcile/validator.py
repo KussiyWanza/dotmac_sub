@@ -29,6 +29,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from ipaddress import AddressValueError, IPv4Address, IPv4Network
 
+from app.services.credential_crypto import is_encrypted
+from app.services.secrets import is_secret_ref
+
 from .state import OntDesiredState
 
 
@@ -128,6 +131,8 @@ def _check_wifi(target: OntDesiredState, current: OntDesiredState) -> Validation
         return Validation(False, "wifi_ssid must be at most 32 characters")
     if (
         target.wifi_password_ref != current.wifi_password_ref
+        and not is_encrypted(target.wifi_password_ref)
+        and not is_secret_ref(target.wifi_password_ref)
         and not 8 <= len(target.wifi_password_ref) <= 63
     ):
         return Validation(False, "WiFi password must be 8-63 characters")

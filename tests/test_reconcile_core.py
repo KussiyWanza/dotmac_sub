@@ -14,10 +14,15 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
+from cryptography.fernet import Fernet
 from sqlalchemy import text
 
 from app.models.network import OLTDevice, OntSyncStatus, OntUnit
 from app.models.ont_observation import OntObservation
+from app.services.credential_crypto import (
+    decrypt_credential,
+    encrypt_credential_with_key,
+)
 from app.services.network.reconcile import (
     OntDesiredState,
     OntWanProposedChange,
@@ -487,18 +492,28 @@ def test_dual_stack_tr181_reconciles_and_persists_verified_observation(
 
 
 def test_wifi_password_change_on_synced_ont_pushes_once(
-    db_session, ont, stub_desired, stub_ont_status
+    db_session, ont, stub_desired, stub_ont_status, monkeypatch
 ):
     """Operator password changes are explicit writes even though PSK is
     write-only. Verification should not re-emit the password write.
     """
     olt = _StubOltAdapter(present=True)
     acs = _StubAcsClient(device=_synced_acs_device(ont))
+    encryption_key = Fernet.generate_key()
+    monkeypatch.setattr(
+        "app.services.credential_crypto.get_encryption_key",
+        lambda: encryption_key,
+    )
+    protected_password = encrypt_credential_with_key(
+        "kursimining@98765",
+        encryption_key,
+    )
+    assert protected_password is not None
 
     result = reconcile_ont(
         db_session,
         ont.id,
-        proposed_change={"wifi_password_ref": "kursimining@98765"},
+        proposed_change={"wifi_password_ref": protected_password},
         mode="sync",
         olt_adapter=olt,
         acs_client=acs,
@@ -513,7 +528,9 @@ def test_wifi_password_change_on_synced_ont_pushes_once(
     assert len(psk_writes) == 1
     # apply_proposed_change writes the new password into desired_config.
     db_session.refresh(ont)
-    assert ont.desired_config["wifi"]["password"] == "kursimining@98765"
+    stored_password = ont.desired_config["wifi"]["password"]
+    assert stored_password.startswith("enc:")
+    assert decrypt_credential(stored_password) == "kursimining@98765"
 
 
 def test_persisted_admin_wan_change_scopes_delivery_without_writing_back(

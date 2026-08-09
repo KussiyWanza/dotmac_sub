@@ -1673,9 +1673,15 @@ def test_ont_config_form_has_single_operator_path():
     assert "x-show=\"activeConfigScope === 'wan'\"" in source
     assert "x-show=\"activeConfigScope === 'lan'\"" in source
     assert "x-show=\"activeConfigScope === 'wifi'\"" in source
-    assert "x-show=\"activeConfigScope === 'all'\"" in source
+    assert "x-show=\"activeConfigScope === 'all'\"" not in source
+    assert 'value="all"' not in source
+    assert "Apply All" not in source
+    assert "Apply one section at a time" in source
     assert 'name="push_to_device" value="true"' in source
-    assert "Save and apply device changes" in source
+    assert "Apply Mgmt" in source
+    assert "Apply WAN" in source
+    assert "Apply LAN" in source
+    assert "Apply WiFi" in source
     assert "/wan/probe" not in panel
     assert "/wan/ensure-instance" not in panel
     assert "/wan/normalize" not in panel
