@@ -64,6 +64,7 @@ def test_inbox_workspace_templates_compile():
         "admin/inbox/_floating_surfaces.html",
         "admin/inbox/_overlays.html",
         "admin/inbox/_ticket_panel.html",
+        "admin/inbox/manager_ai.html",
     ):
         assert environment.get_template(template_name) is not None
 
