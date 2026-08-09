@@ -122,6 +122,18 @@ def test_reply_form_submits_macro_and_template_identity():
     assert "resolvedTemplateId()" in CONVERSATION
 
 
+def test_reply_submission_refreshes_inbox_fragments_without_page_navigation():
+    assert 'hx-post="/admin/inbox/{{ timeline.id }}/reply"' in CONVERSATION
+    assert 'hx-swap="none"' in CONVERSATION
+    assert '@inbox-reply-completed.window="completeSend($event.detail)"' in CONVERSATION
+    assert "completeSend(result)" in JAVASCRIPT
+    assert "workspace?.refreshThread?.(this.conversationId, true)" in JAVASCRIPT
+    assert 'workspace?.refreshConversationList?.("reply")' in JAVASCRIPT
+    assert 'this.draft = ""' in JAVASCRIPT
+    assert "window.location.reload" not in JAVASCRIPT
+    assert "admin-inbox.js?v=20260809a" in INDEX
+
+
 def test_macro_menu_dispatches_identity_not_just_text():
     assert '"macroId"' in CONVERSATION
 

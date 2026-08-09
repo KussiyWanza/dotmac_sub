@@ -20,6 +20,7 @@ from app.models.network import OLTDevice, OntSyncStatus, OntUnit
 from app.models.ont_observation import OntObservation
 from app.services.network.reconcile import (
     OntDesiredState,
+    OntWanProposedChange,
     ReconcileFailureReason,
     reconcile_ont,
 )
@@ -513,6 +514,49 @@ def test_wifi_password_change_on_synced_ont_pushes_once(
     # apply_proposed_change writes the new password into desired_config.
     db_session.refresh(ont)
     assert ont.desired_config["wifi"]["password"] == "kursimining@98765"
+
+
+def test_persisted_admin_wan_change_scopes_delivery_without_writing_back(
+    db_session, ont, stub_desired, stub_ont_status, monkeypatch
+):
+    """The admin action persists WAN intent before entering reconciliation.
+
+    Effective config values in the typed command scope delivery only. Writing
+    them back would turn inherited config-pack values into per-ONT overrides.
+    """
+    persisted = []
+
+    def _capture_persistence(*args, **kwargs):
+        persisted.append((args, kwargs))
+
+    monkeypatch.setattr(
+        "app.services.network.reconcile.core.apply_proposed_change",
+        _capture_persistence,
+    )
+
+    result = reconcile_ont(
+        db_session,
+        ont.id,
+        proposed_change=OntWanProposedChange(
+            changed_fields=frozenset({"wan_mode"}),
+            wan_mode="pppoe",
+            wan_pppoe_username="100024456",
+            wan_pppoe_password_ref="bao://pppoe",
+            wan_pppoe_wcd_index=1,
+            wan_static_ip=None,
+            wan_static_subnet=None,
+            wan_static_gateway=None,
+            wan_static_dns=None,
+            wan_static_ip_is_public=None,
+            ipv6_enabled=False,
+        ),
+        mode="sync",
+        olt_adapter=_StubOltAdapter(present=True),
+        acs_client=_StubAcsClient(device=_synced_acs_device(ont)),
+    )
+
+    assert result.success is True
+    assert persisted == []
 
 
 def test_bootstrap_mode_pushes_wifi_password_on_synced_ont(

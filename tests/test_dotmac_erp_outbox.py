@@ -404,7 +404,10 @@ def test_erp_manifest_owns_config_secrets_and_capabilities():
         "erp.inventory.read.v1",
         "erp.operational_context.sync.v1",
         "erp.regulatory.read.v1",
+        "workforce.attendance.read.v1",
+        "workforce.attendance.punch.v1",
     }
+    assert definition.version == "1.1.0"
 
 
 def test_erp_capability_fails_closed_without_binding(db_session):

@@ -60,6 +60,7 @@ from app.models.sales import (
     QuoteLineItem,
     QuoteStatus,
     SalesOrder,
+    SalesOrderInvoiceLink,
     SalesOrderLine,
     SalesOrderPaymentStatus,
     SalesOrderStatus,
@@ -400,9 +401,66 @@ def _find_existing_related_installation_invoice(
     return None
 
 
+def link_sales_order_invoice(
+    db: Session,
+    *,
+    sales_order_id: str | UUID,
+    invoice_id: str | UUID,
+    purpose: str = "installation",
+) -> SalesOrderInvoiceLink | None:
+    """Record structurally that an invoice was raised for a sales order.
+
+    Sale-to-money is otherwise joined through ``Project.metadata_`` — a JSON
+    string comparison with no foreign key, no uniqueness and no referential
+    integrity — so settlement evidence cannot be attributed to the commercial
+    order and nothing can derive its financial status.
+
+    Idempotent: an invoice already linked is left alone, including when it was
+    recovered by the backfill, so replaying an invoice attachment neither
+    duplicates the row nor rewrites its provenance.
+    """
+    try:
+        order_uuid = coerce_uuid(str(sales_order_id))
+        invoice_uuid = coerce_uuid(str(invoice_id))
+    except (TypeError, ValueError):
+        return None
+
+    existing = db.scalar(
+        select(SalesOrderInvoiceLink).where(
+            SalesOrderInvoiceLink.invoice_id == invoice_uuid
+        )
+    )
+    if existing is not None:
+        return existing
+
+    sales_order = db.get(SalesOrder, order_uuid)
+    if sales_order is None or sales_order.subscriber_id is None:
+        # A dangling id is left for review rather than forced through a
+        # RESTRICT foreign key mid-transaction.
+        return None
+
+    link = SalesOrderInvoiceLink(
+        sales_order_id=sales_order.id,
+        invoice_id=invoice_uuid,
+        account_id=sales_order.subscriber_id,
+        purpose=purpose,
+        origin="native",
+    )
+    db.add(link)
+    db.flush()
+    return link
+
+
 def _store_invoice_metadata(
-    project: Project, invoice_id: str, amount: Decimal | None
+    db: Session, project: Project, invoice_id: str, amount: Decimal | None
 ) -> None:
+    """Record the installation invoice on the project and the sales order.
+
+    Dual-write for the sale-to-money migration: the historical metadata keys
+    remain the read path, and ``sales_order_invoice_links`` records the same
+    fact structurally, so a parity check can compare the two before any read
+    cutover.
+    """
     # Metadata keys keep their historical names — they are local Fact now
     #: the ids point at sub's own invoice rows.
     metadata = dict(project.metadata_ or {})
@@ -411,6 +469,15 @@ def _store_invoice_metadata(
         metadata["selfcare_installation_invoice_amount"] = str(amount)
     metadata.pop("selfcare_installation_invoice_error", None)
     project.metadata_ = metadata
+
+    # The order comes from ``projects.sales_order_id`` — a real FK with a
+    # unique constraint — not from the metadata key beside it. ADR 0007 makes
+    # metadata provenance only, and reading the identity out of it here would
+    # build the structural link on exactly the join it exists to replace.
+    if project.sales_order_id is not None:
+        link_sales_order_invoice(
+            db, sales_order_id=project.sales_order_id, invoice_id=invoice_id
+        )
 
 
 def _record_invoice_failure(project: Project, detail: str) -> None:
@@ -520,7 +587,7 @@ def ensure_installation_invoice_for_sales_order(
     related_invoice = _find_existing_related_installation_invoice(db, project)
     if related_invoice:
         invoice_id, amount = related_invoice
-        _store_invoice_metadata(project, invoice_id, amount)
+        _store_invoice_metadata(db, project, invoice_id, amount)
         db.add(project)
         if commit:
             db.commit()
@@ -570,7 +637,7 @@ def ensure_installation_invoice_for_sales_order(
     if not invoice:
         return
 
-    _store_invoice_metadata(project, str(invoice.id), amount)
+    _store_invoice_metadata(db, project, str(invoice.id), amount)
     db.add(project)
     if commit:
         db.commit()

@@ -684,6 +684,13 @@ ONT lifecycle:
 3. **Pre-flight** — Run 9-point validation check
 4. **Provision** — Generate OLT CLI commands (T-CONT, GEM, service-port, VLAN, WAN)
 
+For an already assigned and provisioned Huawei ONT, **Apply WAN** on the
+Configuration tab is a section-scoped repair. It may create the configured WAN
+service port when that exact port is missing, and it may deliver the routed WAN
+settings through the selected OLT/ACS path. It does not authorize, reprofile,
+change management/LAN/WiFi state, or delete other observed service ports.
+Full-device reconciliation remains the separate drift-repair path.
+
 ### Network Cutover Checklist
 
 - Device reachable on management IP
