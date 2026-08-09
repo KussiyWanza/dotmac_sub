@@ -2,7 +2,12 @@
 
 Pulls the UISP inventory (read-only) and reconciles the wireless/UFiber
 customer-device relationship layer into sub's own tables. Routed to the
-``ingestion`` queue like the other topology tasks; commits on success.
+``ingestion`` queue like the other topology tasks.
+
+The pass commits at phase boundaries rather than once at the end: it fans out
+one UISP request per AP and one per UF-OLT, and a transaction may not be held
+across that. A failed pass can therefore leave earlier phases committed, which
+is safe because the sync is idempotent — see ``uisp_sync.sync``.
 
 Single-flight: the run is guarded by ``db_session_adapter.advisory_lock``
 (the repo's safe helper — rolls back before unlocking and wraps the unlock in
@@ -24,8 +29,11 @@ from app.services.uisp import UispClient, UispClientError, uisp_configured
 
 logger = logging.getLogger(__name__)
 
-# Statement timeout for the lock session; also bounds the sync's own
-# statements (all small single-row/index lookups).
+# Statement timeout for acquiring the advisory lock. Applied with SET LOCAL,
+# so it also bounds the sync's statements up to the first phase commit and no
+# further; the task's own soft/hard time limits bound the rest of the run. It
+# is deliberately not made session-level: this connection returns to the pool,
+# and a lingering statement_timeout would leak to whoever checks it out next.
 _LOCK_TIMEOUT_MS = 30_000
 
 

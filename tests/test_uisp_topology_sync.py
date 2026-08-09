@@ -1925,3 +1925,57 @@ def test_ip_name_link_is_idempotent(db_session, subscriber, catalog_offer):
     assert db_session.query(CPEDevice).count() == 1
     db_session.refresh(subscription)
     assert subscription.mac_address == ROUTER_MAC
+
+
+# ---------------------------------------------------------------------------
+# Transaction span: no transaction may be held across the UISP fan-outs
+# ---------------------------------------------------------------------------
+
+
+class _OrderRecordingClient(FakeUispClient):
+    """Records UISP calls into a shared log alongside checkpoint markers."""
+
+    def __init__(self, log: list[str], **kwargs):
+        super().__init__(**kwargs)
+        self._log = log
+
+    def list_airmax_stations(self, ap_id):
+        self._log.append("http:stations")
+        return super().list_airmax_stations(ap_id)
+
+    def list_olt_onus(self, olt_id):
+        self._log.append("http:onus")
+        return super().list_olt_onus(olt_id)
+
+    def list_data_links(self):
+        self._log.append("http:links")
+        return super().list_data_links()
+
+
+def test_each_uisp_fanout_is_preceded_by_a_checkpoint(
+    db_session, subscriber, catalog_offer
+):
+    """The pass must commit before every block of UISP HTTP.
+
+    Holding the transaction across the per-AP and per-OLT fan-outs is what
+    exceeded ``idle_in_transaction_session_timeout`` in production and lost
+    the whole pass after UISP had already answered.
+    """
+    _ap_node(db_session)
+    _active_subscription(db_session, subscriber, catalog_offer, STATION_MAC)
+    log: list[str] = []
+    client = _OrderRecordingClient(
+        log,
+        devices=_wireless_payload(),
+        stations_by_ap={AP_ID: [_station_entry()]},
+    )
+
+    sync(db_session, client, checkpoint=lambda: log.append("checkpoint"))
+
+    assert "http:stations" in log, "the AP-side fan-out should have run"
+    for index, event in enumerate(log):
+        if event.startswith("http:"):
+            assert "checkpoint" in log[:index], (
+                f"{event} ran with no preceding checkpoint, so a transaction "
+                f"was still open across it: {log}"
+            )
