@@ -135,6 +135,160 @@ _REPAIR_FAILED = PrepaidCoverageRepairOutcome(
 )
 
 
+@dataclass(frozen=True, slots=True)
+class PrepaidRenewalTermsRepairOutcome:
+    """Typed result of one scheduled renewal-terms repair pass."""
+
+    blocked: int
+    repairable: int
+    restored: int
+    work_items: int
+    status: PrepaidCoverageRepairStatus
+
+    def as_stats(self, prefix: str = "renewal_terms_repair_") -> dict[str, int | str]:
+        """Serialize for the Celery/task boundary only."""
+        return {
+            f"{prefix}blocked": self.blocked,
+            f"{prefix}repairable": self.repairable,
+            f"{prefix}restored": self.restored,
+            f"{prefix}work_items": self.work_items,
+            f"{prefix}status": self.status.value,
+        }
+
+
+_RENEWAL_TERMS_REPAIR_FAILED = PrepaidRenewalTermsRepairOutcome(
+    blocked=0,
+    repairable=0,
+    restored=0,
+    work_items=0,
+    status=PrepaidCoverageRepairStatus.error,
+)
+
+_RENEWAL_TERMS_REPAIR_NOOP = PrepaidRenewalTermsRepairOutcome(
+    blocked=0,
+    repairable=0,
+    restored=0,
+    work_items=0,
+    status=PrepaidCoverageRepairStatus.ok,
+)
+
+
+def restore_prepaid_renewal_terms(
+    session: Session,
+    *,
+    deadline: datetime | None = None,
+    now: datetime | None = None,
+) -> PrepaidRenewalTermsRepairOutcome:
+    """Restore contracted renewal terms from paid evidence, then enforce.
+
+    Prepaid enforcement fails closed with
+    ``contracted_prepaid_renewal_terms_unavailable`` when an active prepaid
+    subscription carries no frozen contracted amount, because no threshold can
+    be computed without one. The repair owner for that
+    (``financial.prepaid_renewal_terms_backfill``) has existed since ADR 0007
+    stage 3 but had no caller, so the block was permanent: the affected
+    accounts kept consuming service, and — because the owner also owns the
+    evidence work-item sync — they never even surfaced as finance work items.
+
+    This runner is the missing sequencing, and deliberately mirrors
+    ``repair_prepaid_coverage_evidence``: preview, then confirm through the
+    owner boundary under the reviewed fingerprint.
+
+    It never infers an amount. The owner restores one only from the
+    subscription's own paid base-invoice lines; a subscription whose evidence
+    is absent, ambiguous or self-contradictory stays fail-closed and becomes
+    an owned, SLA-bound finance work item instead. Restoring a term does not
+    fund the account — it lets the sweep in this same run compute the
+    threshold and take the adverse action it was already owed.
+
+    TRANSITIONAL (ADR 0007): retire with the backfill owner at the Phase 1
+    cutover, when ``billing.contracts`` becomes the renewal-charge authority
+    and ``Subscription.unit_price`` stops being it.
+    """
+    from app.services.owner_commands import CommandContext
+    from app.services.prepaid_renewal_terms_backfill import (
+        CaptureRenewalTermsBackfillCommand,
+        PrepaidRenewalTermsBackfillError,
+        capture_prepaid_renewal_terms_backfill,
+        preview_prepaid_renewal_terms_backfill,
+    )
+
+    observed_at = now or datetime.now(UTC)
+    if observed_at.tzinfo is None:
+        observed_at = observed_at.replace(tzinfo=UTC)
+
+    preview = preview_prepaid_renewal_terms_backfill(session, now=observed_at)
+    # The owner-command boundary requires a transaction-free session; the
+    # preview above is read-only, so completing its snapshot loses nothing.
+    session.commit()
+
+    if not preview.items:
+        return _RENEWAL_TERMS_REPAIR_NOOP
+
+    if deadline is not None and datetime.now(UTC) >= deadline:
+        logger.warning(
+            "prepaid_renewal_terms_repair_budget_exhausted: deferred=%d "
+            "blocked subscription(s) to the next run",
+            len(preview.items),
+        )
+        return PrepaidRenewalTermsRepairOutcome(
+            blocked=len(preview.items),
+            repairable=preview.repairable_count,
+            restored=0,
+            work_items=0,
+            status=PrepaidCoverageRepairStatus.ok,
+        )
+
+    command = CaptureRenewalTermsBackfillCommand(
+        preview_fingerprint=preview.fingerprint,
+        as_of=preview.as_of,
+    )
+    context = CommandContext.system(
+        actor="task:prepaid-renewal-terms-repair",
+        scope="financial.prepaid_renewal_terms_backfill:scheduled",
+        reason=(
+            "scheduled restoration of contracted renewal terms blocking "
+            "prepaid enforcement"
+        ),
+        idempotency_key=f"scheduled-renewal-terms-repair:{preview.fingerprint}",
+    )
+    try:
+        result = capture_prepaid_renewal_terms_backfill(
+            session, command, context=context
+        )
+    except PrepaidRenewalTermsBackfillError as exc:
+        if exc.code.endswith("stale_preview"):
+            # Evidence moved between preview and confirmation; the next sweep
+            # re-previews and repairs the current state.
+            logger.warning(
+                "prepaid_renewal_terms_repair_stale_preview: deferred to the next run"
+            )
+            return PrepaidRenewalTermsRepairOutcome(
+                blocked=len(preview.items),
+                repairable=preview.repairable_count,
+                restored=0,
+                work_items=0,
+                status=PrepaidCoverageRepairStatus.stale_preview,
+            )
+        raise
+
+    if preview.unresolved_count:
+        # Every unresolvable subscription now carries a live, owned, SLA-bound
+        # finance work item; items close once the evidence is corrected.
+        logger.error(
+            "prepaid_renewal_terms_evidence_requires_review: count=%d of %d blocked",
+            preview.unresolved_count,
+            len(preview.items),
+        )
+    return PrepaidRenewalTermsRepairOutcome(
+        blocked=len(preview.items),
+        repairable=preview.repairable_count,
+        restored=result.repaired_count,
+        work_items=result.work_item_count,
+        status=PrepaidCoverageRepairStatus.ok,
+    )
+
+
 def repair_prepaid_coverage_evidence(
     session: Session,
     *,
@@ -463,12 +617,22 @@ def run_prepaid_balance_sweep() -> dict[str, int | str]:
             session.rollback()
             logger.exception("prepaid_coverage_repair_failed")
             repair = _REPAIR_FAILED
+        # Restore contracted renewal terms on the same terms as the coverage
+        # repair above: before the sweep, so this run evaluates what it
+        # restored, and isolated, so a repair failure never stops enforcement.
+        try:
+            renewal_repair = restore_prepaid_renewal_terms(session, deadline=deadline)
+        except Exception:
+            session.rollback()
+            logger.exception("prepaid_renewal_terms_repair_failed")
+            renewal_repair = _RENEWAL_TERMS_REPAIR_FAILED
         result = run_sweep(session, deadline=deadline)
         try:
             _publish_prepaid_enforcement_snapshot(repair, result)
         except Exception:
             logger.exception("prepaid_enforcement_snapshot_failed")
         result.update(repair.as_stats())
+        result.update(renewal_repair.as_stats())
         logger.info("prepaid_balance_sweep completed: %s", result)
         return result
     except Exception:
