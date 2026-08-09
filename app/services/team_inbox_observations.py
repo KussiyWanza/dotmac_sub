@@ -67,6 +67,7 @@ class InboundAttachmentObservation:
     source_url: str | None = None
     caption: str | None = None
     file_size: int | None = None
+    download_status: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +90,11 @@ class InboundMessageObservation:
     # DKIM result for a message already accepted — so it is carried even though
     # no admission policy reads it yet.
     authentication: dict[str, object] | None = None
+    provider_account_id: str | None = None
+    external_account_id: str | None = None
+    page_id: str | None = None
+    instagram_account_id: str | None = None
+    contact_profile: dict[str, str | None] | None = None
     attachments: tuple[InboundAttachmentObservation, ...] = ()
 
 

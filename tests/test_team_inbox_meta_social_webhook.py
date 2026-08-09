@@ -13,7 +13,13 @@ from starlette.requests import Request
 
 from app.api import meta_inbox_webhooks
 from app.models.integration_platform import IntegrationInbox
-from app.models.team_inbox import InboxChannelType, InboxConversation, InboxMessage
+from app.models.team_inbox import (
+    InboxChannelType,
+    InboxConversation,
+    InboxMediaAsset,
+    InboxMessage,
+)
+from app.services import team_inbox_read
 from app.services.integrations import installations
 from app.services.integrations.meta_social_installation import (
     META_SOCIAL_CONFIGURATION_SCOPE,
@@ -99,6 +105,14 @@ def _install_meta_social(db_session) -> None:
     db_session.commit()
 
 
+def _disable_profile_lookup(monkeypatch) -> None:
+    monkeypatch.setattr(
+        meta_inbox_webhooks,
+        "fetch_contact_profile",
+        lambda *args, **kwargs: None,
+    )
+
+
 def test_meta_inbox_webhook_verify_returns_challenge(db_session, monkeypatch):
     monkeypatch.setattr(meta_inbox_webhooks, "_verify_token", lambda db: "verify-token")
 
@@ -156,6 +170,15 @@ def test_meta_signature_accepts_whatsapp_secret_fallback(db_session, monkeypatch
 def test_meta_inbox_webhook_creates_facebook_messenger_message(db_session, monkeypatch):
     _install_meta_social(db_session)
     monkeypatch.setattr(
+        meta_inbox_webhooks,
+        "fetch_contact_profile",
+        lambda *args, **kwargs: SimpleNamespace(
+            display_name="Jane Customer",
+            username=None,
+            profile_pic="https://example.test/jane.jpg",
+        ),
+    )
+    monkeypatch.setattr(
         meta_inbox_webhooks, "_verify_meta_signature", lambda db, body, sig: None
     )
     payload = {
@@ -191,16 +214,22 @@ def test_meta_inbox_webhook_creates_facebook_messenger_message(db_session, monke
     assert response["items"][0]["resolution_status"] == "unmatched"
     assert conversation.channel_type == InboxChannelType.facebook_messenger.value
     assert conversation.contact_address == "123456789012345"
+    assert conversation.subject == "Jane Customer"
     assert conversation.external_thread_id == "facebook_messenger:123456789012345"
     assert message.external_message_id == "m_fb_1"
     assert message.from_address == "123456789012345"
     assert message.body == "Hello support"
     assert message.metadata_["provider"] == "meta_social"
+    assert message.metadata_["page_id"] == "page-1"
+    assert message.metadata_["external_account_id"] == "page-1"
+    assert message.metadata_["provider_account_id"] == "page-1"
+    assert message.metadata_["contact_profile"]["display_name"] == "Jane Customer"
     assert "platform" not in message.metadata_
 
 
 def test_meta_inbox_webhook_creates_instagram_dm_message(db_session, monkeypatch):
     _install_meta_social(db_session)
+    _disable_profile_lookup(monkeypatch)
     monkeypatch.setattr(
         meta_inbox_webhooks, "_verify_meta_signature", lambda db, body, sig: None
     )
@@ -238,10 +267,14 @@ def test_meta_inbox_webhook_creates_instagram_dm_message(db_session, monkeypatch
     assert conversation.external_thread_id == "instagram_dm:17841400000000000"
     assert message.external_message_id == "m_ig_1"
     assert message.body == "Please check my account"
+    assert message.metadata_["instagram_account_id"] == "ig-1"
+    assert message.metadata_["external_account_id"] == "ig-1"
+    assert message.metadata_["provider_account_id"] == "ig-1"
 
 
 def test_meta_inbox_webhook_deduplicates_external_message_id(db_session, monkeypatch):
     _install_meta_social(db_session)
+    _disable_profile_lookup(monkeypatch)
     monkeypatch.setattr(
         meta_inbox_webhooks, "_verify_meta_signature", lambda db, body, sig: None
     )
@@ -280,6 +313,7 @@ def test_meta_inbox_webhook_deduplicates_external_message_id(db_session, monkeyp
 
 def test_meta_inbox_webhook_preserves_attachment_messages(db_session, monkeypatch):
     _install_meta_social(db_session)
+    _disable_profile_lookup(monkeypatch)
     monkeypatch.setattr(
         meta_inbox_webhooks, "_verify_meta_signature", lambda db, body, sig: None
     )
@@ -314,8 +348,17 @@ def test_meta_inbox_webhook_preserves_attachment_messages(db_session, monkeypatc
     )
 
     message = db_session.query(InboxMessage).one()
+    asset = db_session.query(InboxMediaAsset).one()
+    timeline = team_inbox_read.get_conversation_timeline(
+        db_session,
+        conversation_id=asset.conversation_id,
+    )
     assert response["processed"] == 1
     assert message.body == "[image]"
     assert message.metadata_["attachments"][0]["type"] == "image"
     assert message.metadata_["attachments"][0]["url"] == "https://example.test/i.jpg"
+    assert asset.asset_type == "image"
+    assert asset.source_url == "https://example.test/i.jpg"
+    assert asset.download_status == "remote_available"
+    assert timeline.messages[0].attachments[0]["url"].startswith("/admin/inbox/media/")
     assert "raw" not in message.metadata_

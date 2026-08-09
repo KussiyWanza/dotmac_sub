@@ -1210,10 +1210,13 @@ def receive_inbound_channel_batch_committed(
         provider_value = str(metadata.get("provider") or "meta_social")
         provider = team_inbox_observations.InboxProvider(provider_value)
         provider_scope = str(
-            metadata.get("page_or_account_id")
+            metadata.get("provider_account_scope")
+            or metadata.get("provider_account_id")
+            or metadata.get("page_or_account_id")
             or metadata.get("account_scope")
             or "default"
         )
+        contact_profile = metadata.get("contact_profile")
         recorded = team_inbox_observations.record_provider_observation(
             db,
             team_inbox_observations.RecordProviderObservationCommand(
@@ -1241,6 +1244,45 @@ def receive_inbound_channel_batch_committed(
                         payload.fallback_service_team_id
                     ),
                     campaign_attributed=_campaign_attributed(metadata),
+                    provider_account_id=(
+                        str(metadata["provider_account_id"])
+                        if metadata.get("provider_account_id")
+                        else None
+                    ),
+                    external_account_id=(
+                        str(metadata["external_account_id"])
+                        if metadata.get("external_account_id")
+                        else None
+                    ),
+                    page_id=str(metadata["page_id"])
+                    if metadata.get("page_id")
+                    else None,
+                    instagram_account_id=(
+                        str(metadata["instagram_account_id"])
+                        if metadata.get("instagram_account_id")
+                        else None
+                    ),
+                    contact_profile=(
+                        {
+                            "display_name": (
+                                str(contact_profile["display_name"])
+                                if contact_profile.get("display_name")
+                                else None
+                            ),
+                            "username": (
+                                str(contact_profile["username"])
+                                if contact_profile.get("username")
+                                else None
+                            ),
+                            "profile_pic": (
+                                str(contact_profile["profile_pic"])
+                                if contact_profile.get("profile_pic")
+                                else None
+                            ),
+                        }
+                        if isinstance(contact_profile, dict)
+                        else None
+                    ),
                     attachments=tuple(
                         team_inbox_observations.InboundAttachmentObservation(
                             asset_type=str(item.get("type") or "file"),
@@ -1254,12 +1296,22 @@ def receive_inbound_channel_batch_committed(
                             else None,
                             provider_media_id=str(item.get("id"))
                             if item.get("id")
+                            else str(item.get("provider_media_id"))
+                            if item.get("provider_media_id")
                             else None,
                             source_url=str(item.get("url"))
                             if item.get("url")
+                            else str(item.get("source_url"))
+                            if item.get("source_url")
                             else None,
                             caption=str(item.get("caption"))
                             if item.get("caption")
+                            else None,
+                            file_size=int(item["file_size"])
+                            if item.get("file_size") is not None
+                            else None,
+                            download_status=str(item["download_status"])
+                            if item.get("download_status")
                             else None,
                         )
                         for item in (metadata.get("attachments") or ())
