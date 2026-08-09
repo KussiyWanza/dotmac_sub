@@ -216,6 +216,7 @@ def test_update_ont_config_pushes_static_wan_fields(db_session, monkeypatch) -> 
         db_session,
         str(ont.id),
         wan_mode="static_ip",
+        ip_protocol="",
         wan_static_ip="100.64.1.2",
         wan_static_subnet="255.255.255.252",
         wan_static_gateway="100.64.1.1",
@@ -229,6 +230,14 @@ def test_update_ont_config_pushes_static_wan_fields(db_session, monkeypatch) -> 
 
     assert result.success is True
     assert calls[0]["mode"] == "sync"
+    assert calls[0]["proposed_change"].as_mapping() == {
+        "wan_mode": "static",
+        "wan_static_ip": "100.64.1.2",
+        "wan_static_subnet": "255.255.255.252",
+        "wan_static_gateway": "100.64.1.1",
+        "wan_static_dns": "1.1.1.1",
+        "wan_static_ip_is_public": False,
+    }
     db_session.refresh(ont)
     wan = desired_config(ont)["wan"]
     assert wan["mode"] == "static_ip"

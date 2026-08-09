@@ -387,6 +387,39 @@ def test_apply_writes_pppoe_via_model_accessor(db_session, ont):
     assert ont.pppoe_password == "newpass"
 
 
+def test_apply_scoped_wan_change_preserves_unrelated_desired_sections(db_session, ont):
+    import copy
+    import dataclasses
+
+    ont.desired_config = {
+        "wan": {
+            "pppoe_username": "100000000",
+            "pppoe_password": "existing-ref",
+        },
+        "wifi": {"ssid": "KEEP_WIFI", "password": "keep-wifi-ref"},
+        "lan": {"dhcp_enabled": False, "dhcp_start": "192.168.2.10"},
+        "management": {"subnet": "255.255.255.0", "gateway": "172.16.1.1"},
+    }
+    db_session.commit()
+    before = copy.deepcopy(ont.desired_config)
+    target = dataclasses.replace(
+        desired_from_ont_unit(db_session, ont),
+        wan_pppoe_username="100099999",
+    )
+
+    apply_proposed_change(
+        ont,
+        target,
+        changed_fields=frozenset({"wan_pppoe_username"}),
+    )
+
+    assert ont.pppoe_username == "100099999"
+    assert ont.pppoe_password == "existing-ref"
+    assert ont.desired_config["wifi"] == before["wifi"]
+    assert ont.desired_config["lan"] == before["lan"]
+    assert ont.desired_config["management"] == before["management"]
+
+
 def test_apply_empty_value_clears_section_key(db_session, ont):
     """Setting a field to '' removes the key from desired_config — matches the
     model's existing _set_desired_value semantics."""
