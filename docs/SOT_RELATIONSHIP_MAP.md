@@ -21,6 +21,31 @@ The manifest has one canonical graph. Domain, capability/module, and journey
 hierarchies are derived navigation views; they do not own parallel dependency
 lists or service declarations.
 
+## What counts as an adapter
+
+An adapter must be identifiable by a RULE, not by inspection (ADR-0010 in
+`dotmac_starter_mt`). **A module is a SERVICE when the SOT registry declares it,
+and an undeclared `app/services/web_*.py` module is an ADAPTER** — it validates,
+authorizes, delegates and renders, and it does not issue direct database access.
+
+Registration rather than a naming convention, because the registry already
+answers "who owns this decision?"; asking it "is this a service?" adds no second
+source to keep in sync, and a module that genuinely owns a decision is declared
+there anyway. A `web_*` module that should own its reads earns direct access by
+being DECLARED, not by being left alone.
+
+Location is explicitly NOT the rule. `tests/architecture/test_thin_wrappers.py`
+is scoped to `app/web` and `app/api`, while the presenter layer those routes
+delegate to lives in `app/services/web_*.py` — 181 modules, imported by 86 of the
+130 `app/web` files, holding several times the direct access the checked
+directories do. A directory-scoped check reports compliance while missing most
+of what it is about, which is worse than no rule: it converts an unknown into a
+false assurance.
+
+`tests/architecture/test_adapter_identifiability.py` enforces this, with the
+existing debt captured as a shrink-only baseline so the number is bounded and
+visible rather than unknown.
+
 A domain also declares the setting domains it owns, on
 `DomainSOT.setting_domains`. `domain_settings.domain` is an open vocabulary
 whose members belong to the domains that own the settings, so the members are
