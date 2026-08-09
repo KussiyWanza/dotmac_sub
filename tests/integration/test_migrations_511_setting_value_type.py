@@ -197,8 +197,7 @@ def _install_deployed_shape(database_url: URL) -> None:
         )
     _execute(
         database_url,
-        f"ALTER TABLE domain_settings DROP CONSTRAINT IF EXISTS "
-        f"{ALIGNMENT_CONSTRAINT}",
+        f"ALTER TABLE domain_settings DROP CONSTRAINT IF EXISTS {ALIGNMENT_CONSTRAINT}",
     )
     _execute(
         database_url,
