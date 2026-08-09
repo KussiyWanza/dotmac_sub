@@ -75,10 +75,11 @@
 {% macro conversation_list_item(row, active_id="", agent_options=()) %}
 {% set is_active = (row.id | string) == (active_id | string) %}
 {% set contact_name = row.contact_name or row.contact_address or "(unknown contact)" %}
-{% set assignee = namespace(initials="") %}
+{% set assignee = namespace(name="", initials="") %}
 {% if row.active_assigned_person_id %}
     {% for agent in agent_options %}
         {% if (agent.id | string) == (row.active_assigned_person_id | string) %}
+            {% set assignee.name = agent.name %}
             {% set assignee.initials = agent.initials %}
         {% endif %}
     {% endfor %}
@@ -140,7 +141,7 @@
                 {% if row.latest_delivery_status == 'failed' %}{{ status_badge("Send failed", "negative", size="sm") }}{% endif %}
                 {% if row.is_snoozed %}{{ status_badge("Snoozed", "neutral", size="sm", show_icon=False) }}{% endif %}
                 {% if row.is_muted %}<span title="Muted" aria-label="Muted">🔕</span>{% endif %}
-                {% if row.is_unread %}<span class="ml-auto inline-flex min-w-5 items-center justify-center rounded-lg bg-amber-500 px-1.5 py-0.5 text-[10px] font-bold text-white" aria-label="Unread conversation">1</span>{% elif row.active_assigned_person_id %}<span class="ml-auto flex h-5 min-w-5 items-center justify-center rounded-lg bg-slate-200 px-1 text-[9px] font-bold text-slate-600 dark:bg-slate-700 dark:text-slate-200" title="Assigned agent">{{ assignee.initials or "AG" }}</span>{% endif %}
+                {% if row.is_unread %}<span class="ml-auto inline-flex min-w-5 items-center justify-center rounded-lg bg-amber-500 px-1.5 py-0.5 text-[10px] font-bold text-white" aria-label="Unread conversation">1</span>{% elif row.active_assigned_person_id %}<span class="ml-auto flex h-5 min-w-5 items-center justify-center rounded-lg bg-slate-200 px-1 text-[9px] font-bold text-slate-600 dark:bg-slate-700 dark:text-slate-200" title="{{ assignee.name or 'Assigned agent' }}" aria-label="{{ assignee.name or 'Assigned agent' }}">{{ assignee.initials or "AG" }}</span>{% endif %}
             </div>
             {% if row.labels %}
             <div class="mt-1 flex min-w-0 items-center gap-1">
