@@ -494,6 +494,22 @@ def _billing_cycle_start(next_billing_at: datetime, cycle: BillingCycle) -> date
     return _add_months(next_billing_at, -1)
 
 
+def contracted_amount_for_offer(db: Session, offer_id) -> Decimal:
+    """The recurring amount a new subscription snapshots from its offer.
+
+    Public because ``Subscriptions.create`` is not the only writer that
+    persists a ``Subscription``: bulk activation builds one directly, and a
+    subscription created without this amount is blocked from birth — prepaid
+    enforcement fails closed with
+    ``contracted_prepaid_renewal_terms_unavailable`` when ``unit_price`` is
+    NULL or <= 0, and no threshold can be computed without it.
+
+    Exposed rather than reimplemented so there is one definition of what a
+    subscription is contracted at. Callers must not derive it themselves.
+    """
+    return _offer_recurring_price_amount(db, offer_id)
+
+
 def _offer_recurring_price_amount(db: Session, offer_id) -> Decimal:
     """Return the active recurring amount for an offer, or zero."""
     price = (
