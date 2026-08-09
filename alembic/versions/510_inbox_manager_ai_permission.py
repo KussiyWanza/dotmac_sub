@@ -1,6 +1,6 @@
 """Add manager AI permission for Team Inbox.
 
-Revision ID: 508_inbox_manager_ai_permission
+Revision ID: 510_inbox_manager_ai_permission
 Revises: 507_domain_settings_scope_columns
 Create Date: 2026-08-09
 """
@@ -15,8 +15,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "508_inbox_manager_ai_permission"
-down_revision: str | None = "507_domain_settings_scope_columns"
+revision: str = "510_inbox_manager_ai_permission"
+down_revision: str | None = "509_backfill_operator_tenant_scope"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
