@@ -224,9 +224,7 @@ def test_csrf_middleware_exempts_customer_logout_without_token():
 
 
 def test_attendance_check_in_requires_csrf_header():
-    request = _build_request(
-        path="/admin/dashboard/attendance/check-in", method="POST"
-    )
+    request = _build_request(path="/admin/dashboard/attendance/check-in", method="POST")
 
     async def call_next(_request: Request) -> Response:
         raise AssertionError("attendance POST without CSRF must not reach its route")
