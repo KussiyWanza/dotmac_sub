@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import re
 from collections import Counter
 from dataclasses import asdict, dataclass
 from functools import cache
@@ -18,7 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Iterable, Iterator, Sequence
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SERVICE_DIR = PROJECT_ROOT / "app" / "services"
@@ -27,6 +28,9 @@ WRITER_BASELINE = ARCHITECTURE_TEST_DIR / "sot_writer_baseline.txt"
 DECISION_INPUT_BASELINE = ARCHITECTURE_TEST_DIR / "decision_input_bypass_baseline.txt"
 ADAPTER_TRANSACTION_BASELINE = (
     ARCHITECTURE_TEST_DIR / "adapter_transaction_baseline.txt"
+)
+UNRELEASED_READ_HANDOFF_BASELINE = (
+    ARCHITECTURE_TEST_DIR / "unreleased_read_handoff_baseline.txt"
 )
 HTTP_EXCEPTION_BASELINE = ARCHITECTURE_TEST_DIR / "service_http_exception_baseline.txt"
 LEGACY_MANIFEST_BASELINE = ARCHITECTURE_TEST_DIR / "sot_manifest_legacy_baseline.txt"
@@ -74,6 +78,30 @@ _ADAPTER_TRANSACTION_HELPERS = {
     "get_uow",
     "task_session",
 }
+# Reading a database-authoritative decision input opens a SQLAlchemy read
+# transaction on the caller's session. An owner command requires a
+# transaction-free session at entry, so an adapter that reads and then hands
+# the same session onward must release that read transaction in between.
+_DECISION_INPUT_RESOLVERS = {
+    "resolve_boolean",
+    "resolve_integer",
+    "resolve_string",
+    "resolve_value",
+    "resolve_values_atomic",
+}
+_READ_RELEASE_HELPERS = {
+    "read_session",
+    "release_read_transaction",
+}
+_NESTED_SCOPES = (ast.AsyncFunctionDef, ast.FunctionDef, ast.Lambda)
+# An adapter is identified by the registry, not by which directory it sits in:
+# a module is a service when app/services/sot_registry/ declares it, and an
+# undeclared app/services/web_*.py presenter module is an adapter. Read the
+# registry statically so this scanner does not depend on the application
+# importing cleanly.
+REGISTRY_DIR = PROJECT_ROOT / "app" / "services" / "sot_registry"
+PRESENTER_GLOB = "app/services/web_*.py"
+_DECLARED_MODULE = re.compile(r'module="(app\.services\.[A-Za-z_0-9.]+)"')
 
 
 @dataclass(frozen=True, order=True)
@@ -81,6 +109,15 @@ class AdapterTransactionUse:
     """One counted adapter-owned transaction operation."""
 
     operation: str
+    count: int
+    path: str
+
+
+@dataclass(frozen=True, order=True)
+class UnreleasedReadHandoff:
+    """One adapter decision-input read handed on without a read release."""
+
+    resolver: str
     count: int
     path: str
 
@@ -239,6 +276,105 @@ def adapter_transaction_uses(
     )
 
 
+def _scope_nodes(scope: ast.AST) -> Iterator[ast.AST]:
+    """Yield nodes owned by one function scope, excluding nested scopes."""
+
+    stack = list(ast.iter_child_nodes(scope))
+    while stack:
+        node = stack.pop()
+        yield node
+        if isinstance(node, _NESTED_SCOPES):
+            continue
+        stack.extend(ast.iter_child_nodes(node))
+
+
+def _session_arguments(node: ast.Call) -> set[str]:
+    """Return session-like identifiers passed as arguments to one call."""
+
+    arguments = [*node.args, *(keyword.value for keyword in node.keywords)]
+    return {
+        argument.id
+        for argument in arguments
+        if isinstance(argument, ast.Name)
+        and set(argument.id.lower().split("_")) & _PERSISTENCE_RECEIVER_TOKENS
+    }
+
+
+@cache
+def declared_service_modules() -> frozenset[str]:
+    """Dotted module paths the source-of-truth registry declares as owners."""
+
+    text = "".join(
+        path.read_text(encoding="utf-8") for path in sorted(REGISTRY_DIR.rglob("*.py"))
+    )
+    return frozenset(_DECLARED_MODULE.findall(text))
+
+
+@cache
+def adapter_paths(*, roots: Sequence[Path] = ADAPTER_ROOTS) -> tuple[Path, ...]:
+    """Return every adapter source file, by registration and by root."""
+
+    paths: set[Path] = set()
+    for root in roots:
+        if not root.exists():
+            continue
+        paths.update(
+            path
+            for path in root.rglob("*.py")
+            if path.is_file() and "__pycache__" not in path.parts
+        )
+    declared = declared_service_modules()
+    paths.update(
+        path
+        for path in PROJECT_ROOT.glob(PRESENTER_GLOB)
+        if module_name(path) not in declared
+    )
+    return tuple(sorted(paths))
+
+
+@cache
+def unreleased_read_handoffs(
+    *, roots: Sequence[Path] = ADAPTER_ROOTS
+) -> tuple[UnreleasedReadHandoff, ...]:
+    """Count adapter reads whose session is handed on without a read release.
+
+    Resolving a database-authoritative decision input opens a SQLAlchemy read
+    transaction on the caller's session. Passing that same session to another
+    call without first releasing the read transaction breaks any registered
+    owner command downstream, which requires a transaction-free session at
+    entry. Argument-position reads count: Python evaluates them before the
+    enclosing call runs, so the transaction is already open on entry.
+    """
+
+    counts: Counter[tuple[str, str]] = Counter()
+    for path in adapter_paths(roots=roots):
+        relative = path.relative_to(PROJECT_ROOT).as_posix()
+        for scope in ast.walk(_tree(path)):
+            if not isinstance(scope, _NESTED_SCOPES):
+                continue
+            calls = [node for node in _scope_nodes(scope) if isinstance(node, ast.Call)]
+            if any(_call_name(node.func) in _READ_RELEASE_HELPERS for node in calls):
+                continue
+            handed_off: set[str] = set()
+            reads: list[tuple[str, str]] = []
+            for node in calls:
+                name = _call_name(node.func)
+                if name in _DECISION_INPUT_RESOLVERS:
+                    reads.extend(
+                        (name, session) for session in _session_arguments(node)
+                    )
+                elif name not in _READ_RELEASE_HELPERS:
+                    handed_off |= _session_arguments(node)
+            for resolver, session in reads:
+                if session in handed_off:
+                    counts[(resolver, relative)] += 1
+
+    return tuple(
+        UnreleasedReadHandoff(resolver, count, path)
+        for (resolver, path), count in sorted(counts.items())
+    )
+
+
 @cache
 def read_count_baseline(path: Path) -> Counter[tuple[str, str]]:
     """Read ``kind count path`` entries from a shrink-only baseline."""
@@ -342,6 +478,11 @@ def build_report(domains: Sequence[Any]) -> dict[str, Any]:
         {(use.operation, use.path): use.count for use in adapter_uses}
     )
     adapter_baseline = read_count_baseline(ADAPTER_TRANSACTION_BASELINE)
+    read_handoffs = unreleased_read_handoffs()
+    read_handoff_counts = Counter(
+        {(handoff.resolver, handoff.path): handoff.count for handoff in read_handoffs}
+    )
+    read_handoff_baseline = read_count_baseline(UNRELEASED_READ_HANDOFF_BASELINE)
     http_exception_files = service_http_exception_files()
     http_exception_baseline = read_name_baseline(HTTP_EXCEPTION_BASELINE)
     legacy_manifest = {
@@ -397,6 +538,13 @@ def build_report(domains: Sequence[Any]) -> dict[str, Any]:
             "baseline_occurrences": sum(adapter_baseline.values()),
             "baseline_files": len({path for _kind, path in adapter_baseline}),
             "uses": [asdict(use) for use in adapter_uses],
+        },
+        "unreleased_read_handoffs": {
+            "occurrences": sum(read_handoff_counts.values()),
+            "files": len({path for _resolver, path in read_handoff_counts}),
+            "baseline_occurrences": sum(read_handoff_baseline.values()),
+            "baseline_files": len({path for _resolver, path in read_handoff_baseline}),
+            "handoffs": [asdict(handoff) for handoff in read_handoffs],
         },
         "service_http_exceptions": {
             "current": len(http_exception_files),

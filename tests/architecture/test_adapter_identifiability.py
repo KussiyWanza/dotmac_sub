@@ -30,30 +30,16 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from scripts.architecture.sot_debt import declared_service_modules
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ADAPTER_GLOB = "app/services/web_*.py"
-REGISTRY_DIR = PROJECT_ROOT / "app" / "services" / "sot_registry"
 BASELINE = Path(__file__).with_name("adapter_identifiability_baseline.txt")
 
 #: Direct database access — the same three shapes `test_thin_wrappers` forbids.
 DISALLOWED = re.compile(r"\bdb\.query\(|\bdb\.execute\(|\bselect\(")
 
-#: Modules the SOT registry names as owning a decision.
-_DECLARED = re.compile(r'module="(app\.services\.[A-Za-z_0-9.]+)"')
-
-
-def declared_service_modules() -> frozenset[str]:
-    """Dotted module paths the SOT registry declares as owners.
-
-    Read statically. Importing the registry would make this guard depend on the
-    application importing cleanly, which is a different failure from the one it
-    is testing.
-    """
-
-    text = "".join(
-        path.read_text(encoding="utf-8") for path in sorted(REGISTRY_DIR.rglob("*.py"))
-    )
-    return frozenset(_DECLARED.findall(text))
+__all__ = ["declared_service_modules"]
 
 
 def _module_path(path: Path) -> str:
