@@ -14,6 +14,7 @@ from app.services.dotmac_erp.client import (
 )
 from app.services.integrations.connectors.dotmac_erp import DotmacErpRunner
 from app.services.workforce_attendance import (
+    AttendanceAction,
     AttendanceState,
     BrowserLocation,
     WorkforceAttendanceError,
@@ -54,7 +55,7 @@ def test_workforce_facade_forwards_subject_location_and_idempotency(monkeypatch)
     )
 
     result = WorkforceAttendanceService(MagicMock()).punch(
-        "check_in",
+        AttendanceAction.CHECK_IN,
         SUBJECT,
         location,
         idempotency_key="request-1",

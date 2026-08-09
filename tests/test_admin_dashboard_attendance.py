@@ -9,7 +9,11 @@ from uuid import uuid4
 from app.models.system_user import SystemUser
 from app.schemas.workforce_attendance import DashboardAttendanceLocation
 from app.services import web_admin_attendance
-from app.services.workforce_attendance import AttendanceState, AttendanceView
+from app.services.workforce_attendance import (
+    AttendanceAction,
+    AttendanceState,
+    AttendanceView,
+)
 
 
 def _request(user: SystemUser):
@@ -47,9 +51,13 @@ def _view(state: AttendanceState) -> AttendanceView:
         working_hours=None,
         status="PRESENT" if state != AttendanceState.NOT_CHECKED_IN else None,
         allowed_actions=(
-            ("check_in",)
+            (AttendanceAction.CHECK_IN,)
             if state == AttendanceState.NOT_CHECKED_IN
-            else (("check_out",) if state == AttendanceState.CHECKED_IN else ())
+            else (
+                (AttendanceAction.CHECK_OUT,)
+                if state == AttendanceState.CHECKED_IN
+                else ()
+            )
         ),
     )
 
@@ -120,18 +128,43 @@ def test_dashboard_punch_forwards_only_browser_location(monkeypatch):
     web_admin_attendance.punch(
         _request(user),
         MagicMock(),
-        action="check_in",
+        action=AttendanceAction.CHECK_IN,
         payload=payload,
         idempotency_key="request-1",
     )
 
     args, kwargs = service.punch.call_args
-    assert args[0:2] == ("check_in", user.id)
+    assert args[0:2] == (AttendanceAction.CHECK_IN, user.id)
     assert args[2].latitude == payload.latitude
     assert args[2].longitude == payload.longitude
     assert kwargs["idempotency_key"] == "request-1"
     assert not hasattr(args[2], "employee_id")
     assert captured["attendance"].state == AttendanceState.CHECKED_IN
+
+
+def test_attendance_audit_uses_the_sanctioned_writer_without_adapter_commit(
+    monkeypatch,
+):
+    user = _user()
+    db = MagicMock()
+    audit = MagicMock()
+    monkeypatch.setattr(web_admin_attendance, "record_audit_event", audit)
+
+    web_admin_attendance._audit(
+        _request(user),
+        db,
+        user.id,
+        AttendanceAction.CHECK_IN,
+        "success",
+        12.5,
+        True,
+    )
+
+    audit.assert_called_once()
+    assert audit.call_args.kwargs["action"] == "attendance_check_in"
+    assert audit.call_args.kwargs["defer_until_commit"] is False
+    db.commit.assert_not_called()
+    db.rollback.assert_not_called()
 
 
 def test_dashboard_templates_and_script_preserve_lazy_safe_states():

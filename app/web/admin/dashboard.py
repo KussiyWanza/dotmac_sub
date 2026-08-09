@@ -11,6 +11,7 @@ from app.services import web_admin_dashboard as web_admin_dashboard_service
 from app.services import worker_control as worker_control_service
 from app.services.audit_helpers import log_audit_event
 from app.services.auth_dependencies import require_any_permission, require_permission
+from app.services.workforce_attendance import AttendanceAction
 
 router = APIRouter(tags=["web-admin-dashboard"])
 
@@ -75,7 +76,7 @@ def dashboard_attendance_check_in(
     return web_admin_attendance_service.punch(
         request,
         db,
-        action="check_in",
+        action=AttendanceAction.CHECK_IN,
         payload=payload,
         idempotency_key=idempotency_key,
     )
@@ -95,7 +96,7 @@ def dashboard_attendance_check_out(
     return web_admin_attendance_service.punch(
         request,
         db,
-        action="check_out",
+        action=AttendanceAction.CHECK_OUT,
         payload=payload,
         idempotency_key=idempotency_key,
     )

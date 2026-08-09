@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
-from enum import Enum
+from enum import StrEnum
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -19,7 +19,12 @@ from app.services.dotmac_erp.client import DotMacERPError, DotMacERPTransientErr
 from app.services.integrations.erp_capability import capability_client
 
 
-class AttendanceState(str, Enum):
+class AttendanceAction(StrEnum):
+    CHECK_IN = "check_in"
+    CHECK_OUT = "check_out"
+
+
+class AttendanceState(StrEnum):
     NOT_CHECKED_IN = "not_checked_in"
     CHECKED_IN = "checked_in"
     CHECKED_OUT = "checked_out"
@@ -69,7 +74,7 @@ class AttendanceView:
     check_out_at: datetime | None
     working_hours: Decimal | None
     status: str | None
-    allowed_actions: tuple[str, ...]
+    allowed_actions: tuple[AttendanceAction, ...]
     reason: str | None = None
 
 
@@ -92,8 +97,11 @@ def _normalize(response: dict) -> AttendanceView:
         state = AttendanceState(str(response["state"]))
         attendance_date = str(response["attendance_date"])
         timezone = str(response["timezone"])
+        allowed_actions_raw = response.get("allowed_actions", [])
+        if not isinstance(allowed_actions_raw, (list, tuple)):
+            raise TypeError("allowed_actions must be a collection")
         allowed_actions = tuple(
-            str(item) for item in response.get("allowed_actions", [])
+            AttendanceAction(str(item)) for item in allowed_actions_raw
         )
         working_hours_raw = response.get("working_hours")
         return AttendanceView(
@@ -140,18 +148,18 @@ class WorkforceAttendanceService:
 
     def punch(
         self,
-        action: str,
+        action: AttendanceAction,
         subject: UUID,
         location: BrowserLocation,
         *,
         idempotency_key: str,
         request_id: str,
     ) -> AttendanceView:
-        if action not in {"check_in", "check_out"}:
+        if action not in {AttendanceAction.CHECK_IN, AttendanceAction.CHECK_OUT}:
             raise ValueError("unsupported attendance action")
         try:
             response = capability_client(self.db).punch_attendance(
-                action,
+                action.value,
                 str(subject),
                 location.as_payload(),
                 idempotency_key=idempotency_key,

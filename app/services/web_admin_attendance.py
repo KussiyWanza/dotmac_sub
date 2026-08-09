@@ -14,6 +14,7 @@ from app.schemas.workforce_attendance import DashboardAttendanceLocation
 from app.services.audit_adapter import record_audit_event
 from app.services.rate_limiter_adapter import allow_operation
 from app.services.workforce_attendance import (
+    AttendanceAction,
     AttendanceState,
     AttendanceView,
     BrowserLocation,
@@ -85,7 +86,7 @@ def punch(
     request: Request,
     db: Session,
     *,
-    action: str,
+    action: AttendanceAction,
     payload: DashboardAttendanceLocation,
     idempotency_key: str,
 ):
@@ -156,7 +157,7 @@ def _audit(
     request: Request,
     db: Session,
     subject: UUID,
-    action: str,
+    action: AttendanceAction,
     outcome: str,
     accuracy_m: float | None,
     success: bool,
@@ -164,7 +165,7 @@ def _audit(
     try:
         record_audit_event(
             db=db,
-            action=f"attendance_{action}",
+            action=f"attendance_{action.value}",
             entity_type="workforce_attendance_transport",
             entity_id=str(subject),
             actor_id=str(subject),
