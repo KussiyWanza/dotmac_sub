@@ -157,6 +157,7 @@ def refresh_billing_health_snapshot() -> dict:
 def _append_billing_health_snapshot(session, result: dict) -> None:
     try:
         from app.services.billing_health import (
+            AGED_DRAFT_DAYS,
             billing_health_snapshot,
             publish_billing_health_snapshot,
         )
@@ -248,6 +249,76 @@ def _append_billing_health_snapshot(session, result: dict) -> None:
                 "have no reviewed opening baseline, so they are excluded from "
                 "funding enforcement and from the negative-exposure figures",
                 health.negative_prepaid_funding_quarantined_count,
+            )
+        if "invoices_paid_without_issue" in anomalies:
+            logger.error(
+                "billing_invoices_paid_without_issue: %d invoice(s) are past "
+                "draft with no issue date - they cannot age, cannot go "
+                "overdue, and drop out of any read filtering on issue date",
+                health.paid_without_issue_count,
+            )
+        if "account_credit_invariant_violations" in anomalies:
+            logger.error(
+                "billing_account_credit_invariant_violations: %d account "
+                "credit invariant violation(s) - customer credit no longer "
+                "reconciles to its allocations",
+                health.account_credit_invariant_count,
+            )
+        if "billing_profile_mismatch" in anomalies:
+            logger.error(
+                "billing_profile_mismatch: %d account/subscription billing-mode "
+                "mismatch(es) - enforcement reads a mode the subscription "
+                "contradicts",
+                health.billing_profile_mismatch_count,
+            )
+        if "billing_profile_mixed_modes" in anomalies:
+            logger.error(
+                "billing_profile_mixed_modes: %d account(s) carry subscriptions "
+                "in more than one billing mode, so no single enforcement policy "
+                "applies to the account",
+                health.billing_profile_mixed_count,
+            )
+        if "aged_draft_invoices" in anomalies:
+            # Warning, not error: a draft is a legitimate holding state and
+            # this signal never acts on one. Issue, void, or keep holding are
+            # all fine; not knowing the draft exists is not.
+            logger.warning(
+                "billing_aged_draft_invoices: %d draft invoice(s) older than "
+                "%d days totalling %s await a disposition - issue, void, or a "
+                "deliberate hold",
+                health.aged_draft_count,
+                AGED_DRAFT_DAYS,
+                health.aged_draft_total,
+            )
+        if "prepaid_coverage_quarantined" in anomalies:
+            # Warning: quarantined coverage evidence is a human review queue
+            # with its own SLA-bound work items, not a runtime defect.
+            logger.warning(
+                "billing_prepaid_coverage_quarantined: %d subscription(s) hold "
+                "coverage evidence the repair owner cannot resolve without a "
+                "human decision",
+                health.prepaid_coverage_quarantined_count,
+            )
+        if "prepaid_coverage_unresolved" in anomalies:
+            logger.error(
+                "billing_prepaid_coverage_unresolved: %d subscription(s) have "
+                "unresolved coverage projections, so prepaid enforcement is "
+                "parked for their accounts",
+                health.prepaid_coverage_unresolved_count,
+            )
+        if "prepaid_coverage_repair_required" in anomalies:
+            # Info: the scheduled repair drains this every sweep. It is only
+            # notable when it persists, which the alert rule watches for.
+            logger.info(
+                "billing_prepaid_coverage_repair_required: %d subscription(s) "
+                "are repairable by the next scheduled coverage repair",
+                health.prepaid_coverage_repairable_count,
+            )
+        if "negative_prepaid_exposure_unmeasurable" in anomalies:
+            logger.error(
+                "billing_negative_prepaid_exposure_unmeasurable: prepaid "
+                "exposure could not be measured, so a real figure is being "
+                "reported as unavailable rather than as a false zero"
             )
     except SoftTimeLimitExceeded:
         raise
