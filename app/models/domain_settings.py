@@ -34,7 +34,6 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
-    Enum,
     String,
     Text,
     TypeDecorator,
@@ -45,7 +44,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
-from app.models.subscription_engine import SettingValueType
+from app.models.subscription_engine import SettingValueType, SettingValueTypeType
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from pydantic import GetCoreSchemaHandler
@@ -196,9 +195,15 @@ class DomainSetting(Base):
     __tablename__ = "domain_settings"
     __table_args__ = (
         UniqueConstraint("domain", "key", name="uq_domain_settings_domain_key"),
+        # A value lands in exactly one column. The old form named the type
+        # (`value_type = 'json'`), which is the same closed list migration 511
+        # removed from the column itself — a second JSON-stored type such as
+        # `list` or `money` could not satisfy it. Which column a type uses is a
+        # property of the TYPE (the kernel's `ValueTypeSpec.storage`); the
+        # database only needs to know that exactly one is populated.
         CheckConstraint(
-            "(value_type = 'json' AND value_json IS NOT NULL AND value_text IS NULL) "
-            "OR (value_type != 'json' AND value_text IS NOT NULL)",
+            "(value_text IS NOT NULL AND value_json IS NULL) "
+            "OR (value_text IS NULL AND value_json IS NOT NULL)",
             name="ck_domain_settings_value_alignment",
         ),
     )
@@ -227,7 +232,7 @@ class DomainSetting(Base):
     )
     key: Mapped[str] = mapped_column(String(120), nullable=False)
     value_type: Mapped[SettingValueType] = mapped_column(
-        Enum(SettingValueType), default=SettingValueType.string
+        SettingValueTypeType(40), default=SettingValueType.string
     )
     value_text: Mapped[str | None] = mapped_column(Text)
     value_json: Mapped[dict | None] = mapped_column(JSON(none_as_null=True))
