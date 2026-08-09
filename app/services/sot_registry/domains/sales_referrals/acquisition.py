@@ -116,7 +116,9 @@ SERVICES: tuple[SOTService, ...] = (
                 boundary=(
                     "Direct capture owns one optional root transaction; verified "
                     "receipt capture locks receipt, stages Party, Lead, origin, "
-                    "receipt consequence and events, then commits once."
+                    "receipt consequence and events, then commits once. The signed "
+                    "fiber inquiry coordinator may invoke the flush-only participant "
+                    "so Inbox and prospect evidence commit atomically."
                 ),
                 locking=(
                     "Verified receipts are selected FOR UPDATE; unique interaction "
@@ -196,6 +198,7 @@ SERVICES: tuple[SOTService, ...] = (
             ),
             test_refs=(
                 "tests/test_lead_capture_webhook.py",
+                "tests/test_fiber_inquiry_webhook.py",
                 "tests/test_sales_capture_account_conversion.py",
                 "tests/architecture/test_service_http_boundary.py",
             ),

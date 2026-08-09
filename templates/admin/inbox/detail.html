@@ -258,7 +258,7 @@
                     <input id="template_name" name="name" placeholder="Template name" class="w-full rounded-lg border-slate-300 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
                     <select name="channel_type" class="w-full rounded-lg border-slate-300 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
                         <option value="any">Any channel</option>
-                        {% for option in ['email', 'whatsapp', 'facebook_messenger', 'instagram_dm', 'chat_widget'] %}
+                        {% for option in ['email', 'whatsapp', 'facebook_messenger', 'instagram_dm', 'chat_widget', 'website_fiber'] %}
                         <option value="{{ option }}">{{ option | replace('_', ' ') | title }}</option>
                         {% endfor %}
                     </select>

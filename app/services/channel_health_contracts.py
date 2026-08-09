@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 CHANNEL_HEALTH_CONTRACTS_SETTING = "channel_health_contracts"
 SUPPORTED_EXTERNAL_CHANNELS = (
     "email",
+    "website_fiber",
     "whatsapp",
     "facebook_messenger",
     "facebook_comment",
@@ -53,6 +54,20 @@ DEFAULT_CHANNEL_HEALTH_CONTRACTS: dict[str, Any] = {
             "timezone": APP_TIMEZONE_NAME,
             "severity": "critical",
             "runbook": "docs/designs/CHANNEL_OBSERVABILITY.md#email",
+        },
+        {
+            "channel": "website_fiber",
+            "owner": "communications.team_inbox",
+            "enabled": False,
+            "disabled_reason": "Fiber website inquiry intake is not activated in this environment",
+            "monitoring_mode": "natural",
+            "max_quiet_seconds": 14_400,
+            "active_days": [1, 2, 3, 4, 5, 6, 7],
+            "active_start": "07:00",
+            "active_end": "23:00",
+            "timezone": APP_TIMEZONE_NAME,
+            "severity": "warning",
+            "runbook": "docs/designs/CHANNEL_OBSERVABILITY.md#fiber-website",
         },
         {
             "channel": "whatsapp",

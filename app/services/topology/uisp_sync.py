@@ -41,6 +41,7 @@ from __future__ import annotations
 import logging
 import re
 from collections import Counter
+from collections.abc import Callable, Container
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
@@ -708,7 +709,7 @@ class ApStationIndex:
 
 
 def _ap_side_station_index(
-    client, aps: list[dict], ap_nodes: dict[str, NetworkDevice]
+    client, aps: list[dict], matched_ap_ids: Container[str]
 ) -> ApStationIndex:
     """AP-side association + RSSI per station, from active node-matched APs.
 
@@ -719,11 +720,15 @@ def _ap_side_station_index(
     or unmatched) only leaves its stations absent from the index — the caller
     then retains prior signal values and lets the read-side TTL age them out,
     never clearing on missing evidence.
+
+    Takes the matched AP ids rather than the matched nodes: this is the run's
+    HTTP fan-out and must be callable with no transaction open, so it must not
+    hold ORM entities whose attribute access would reopen one.
     """
     index = ApStationIndex()
     for ap in aps:
         ap_id = _device_id(ap)
-        if not ap_id or ap_id not in ap_nodes or _device_status(ap) != "active":
+        if not ap_id or ap_id not in matched_ap_ids or _device_status(ap) != "active":
             continue
         try:
             entries = client.list_airmax_stations(ap_id)
@@ -1225,18 +1230,20 @@ def _import_data_links(session: Session, client, now: datetime, stats: Counter) 
     (a malformed link is skipped, never fatal); UISP unreachable is counted and
     leaves existing links untouched.
     """
-    node_by_uisp: dict[str, UUID] = {
-        uid: nid
-        for uid, nid in session.query(
-            NetworkDevice.uisp_device_id, NetworkDevice.id
-        ).filter(NetworkDevice.uisp_device_id.isnot(None))
-    }
+    # Fetch before the endpoint lookup so the HTTP call runs with no
+    # transaction open behind it.
     try:
         links = client.list_data_links()
     except Exception as exc:  # UISP unreachable must not abort the sync
         stats["link_fetch_failures"] += 1
         logger.warning("uisp_data_links_fetch_failed: %s", exc)
         return
+    node_by_uisp: dict[str, UUID] = {
+        uid: nid
+        for uid, nid in session.query(
+            NetworkDevice.uisp_device_id, NetworkDevice.id
+        ).filter(NetworkDevice.uisp_device_id.isnot(None))
+    }
 
     existing_active_links = (
         session.query(NetworkTopologyLink)
@@ -1319,7 +1326,13 @@ def _import_data_links(session: Session, client, now: datetime, stats: Counter) 
     session.flush()
 
 
-def sync(session: Session, client, now: datetime | None = None) -> dict:
+def sync(
+    session: Session,
+    client,
+    now: datetime | None = None,
+    *,
+    checkpoint: Callable[[], None] | None = None,
+) -> dict:
     """Run one UISP topology sync pass; returns the counter summary.
 
     Read-only against UISP. Idempotent: every row is keyed by its stable
@@ -1329,8 +1342,23 @@ def sync(session: Session, client, now: datetime | None = None) -> dict:
     is counted as ``failed`` and never aborts the run or poisons the
     session. Single-flight locking lives in the Celery task wrapper
     (``db_session_adapter.advisory_lock``), not here.
+
+    ``checkpoint`` commits the work so far and must leave the session
+    transaction-free. It is called immediately before each block of UISP
+    HTTP, because this pass fans out one request per AP and one per UF-OLT:
+    holding the transaction across that fan-out exceeded PostgreSQL's
+    ``idle_in_transaction_session_timeout`` in production and lost the whole
+    pass. The per-item SAVEPOINTs are unaffected — they open and close well
+    inside a single phase.
+
+    Checkpointing means a failed pass can leave earlier phases committed.
+    That is safe precisely because this sync is idempotent: the next pass
+    re-derives the same rows from the same stable ids. Single-flight still
+    holds across a checkpoint — the advisory lock is session-level and its
+    connection is pinned, so a commit does not release it.
     """
     now = now or _now()
+    checkpoint = checkpoint or session.commit
     stats = _blank_stats()
     sites = client.list_sites()
     devices = client.list_devices()
@@ -1361,14 +1389,6 @@ def sync(session: Session, client, now: datetime | None = None) -> dict:
     # station whose name matches an existing network_devices row must not
     # create a duplicate CPE (match-don't-create).
     infra_names, _infra_ips = build_device_index(session)
-    # Unconditional: the AP-side listing is both the association fallback and
-    # the ONLY source of the station RSSI, so it is fetched every run to
-    # ingest the RF signal together with the edge it describes.
-    ap_index = (
-        _ap_side_station_index(client, aps, ap_nodes)
-        if stations
-        else (ApStationIndex())
-    )
 
     # Subscriber matching moved BEFORE creation (match-then-create):
     # cpe_devices.subscriber_id is NOT NULL, so the owner must be resolved
@@ -1378,6 +1398,22 @@ def sync(session: Session, client, now: datetime | None = None) -> dict:
     # built once per run like the MAC index. Reads ipv4_address only — the
     # subscription MAC is never touched by the IP+name path.
     ip_index = _active_subscriber_ips(session) if stations else {}
+
+    # Every read this phase needs is now materialized, so end the transaction
+    # before the per-AP fan-out below. The matched AP ids are captured as
+    # plain strings while they are still loaded.
+    matched_ap_ids = set(ap_nodes)
+    checkpoint()
+
+    # Unconditional: the AP-side listing is both the association fallback and
+    # the ONLY source of the station RSSI, so it is fetched every run to
+    # ingest the RF signal together with the edge it describes. One request
+    # per matched active AP, with no transaction open.
+    ap_index = (
+        _ap_side_station_index(client, aps, matched_ap_ids)
+        if stations
+        else (ApStationIndex())
+    )
 
     # Seen = what UISP *reports*, taken from the raw inventory BEFORE the
     # upsert loop: a device whose upsert fails transiently is still present
@@ -1500,6 +1536,9 @@ def sync(session: Session, client, now: datetime | None = None) -> dict:
             olt_ids_by_uisp[_device_id(device)] = olt.id
 
     # --- PON-port granularity: per-OLT ONU listings (onu.port) ---
+    # Second fan-out: one request per UF-OLT. The OLT upserts above supply its
+    # input, so commit them and enter the fan-out transaction-free.
+    checkpoint()
     onu_ports_by_uisp = _collect_onu_ports(client, olt_ids_by_uisp, stats)
     # --- UFiber ONUs -> ont_units ---
     seen_onu_keys: set[tuple] = set()
@@ -1556,6 +1595,9 @@ def sync(session: Session, client, now: datetime | None = None) -> dict:
     session.flush()
 
     # --- Backhaul topology: UISP data-links -> NetworkTopologyLink ---
+    # One more request; it is issued first inside the importer, so end the
+    # transaction here too.
+    checkpoint()
     _import_data_links(session, client, now, stats)
 
     # Reuse this exact inventory read for desired/observed convergence. The

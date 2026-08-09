@@ -403,6 +403,119 @@ DOMAIN = DomainSOT(
             ),
         ),
         SOTService(
+            name="ai.inbox_manager_insight",
+            module="app.services.team_inbox_manager_ai_chat",
+            owns=(
+                "manager-only Team Inbox conversation insight answers",
+                "bounded read-only conversation and queue AI projection",
+            ),
+            depends_on=(
+                "ai.gateway",
+                "ai.generation",
+                "communications.team_inbox_projection",
+                "communications.team_inbox_threads",
+                "auth.permission_gate",
+            ),
+            notes=(
+                "Read-only manager assistant behind support:inbox_ai:read. It "
+                "may summarize bounded Inbox context but cannot assign, reply, "
+                "close, refund, profile-update, or mutate any domain row. It "
+                "uses the default-off ai.generation control and the configured "
+                "provider gate."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name="manager-only Team Inbox conversation insight answers",
+                        role=OwnerRole.RESOLVER,
+                        input_names=(
+                            "bounded Inbox conversation and queue projection",
+                            "operator authorization",
+                            "generation control",
+                            "observed provider response",
+                        ),
+                    ),
+                    ConcernContract(
+                        name="bounded read-only conversation and queue AI projection",
+                        role=OwnerRole.RESOLVER,
+                        input_names=(
+                            "bounded Inbox conversation and queue projection",
+                            "operator authorization",
+                        ),
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="bounded Inbox conversation and queue projection",
+                        owner="communications.team_inbox_projection",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source=(
+                            "Recent active Inbox conversations and at most "
+                            "forty messages for the selected conversation."
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="operator authorization",
+                        owner="auth.permission_gate",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source="support:inbox_ai:read route permission.",
+                    ),
+                    AuthorityInput(
+                        name="generation control",
+                        owner="ai.generation",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source="Default-off AI generation control registry gate.",
+                    ),
+                    AuthorityInput(
+                        name="observed provider response",
+                        owner="external:llm_provider",
+                        kind=AuthorityKind.EXTERNAL_OBSERVATION,
+                        source="Provider text response returned through ai.gateway.",
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.READ_ONLY,
+                    boundary=(
+                        "The service reads Inbox rows and AI controls only; it "
+                        "performs no database write and emits no command."
+                    ),
+                    locking="No locks are acquired because the projection is advisory.",
+                    idempotency=(
+                        "Manager questions are manual reads; repeated asks may "
+                        "generate a new advisory answer but no durable state."
+                    ),
+                    retries="No synchronous retry beyond ai.gateway fallback routing.",
+                ),
+                errors=ErrorContract(
+                    domain_codes=(
+                        "ai.gateway.disabled",
+                        "ai.gateway.provider_unavailable",
+                    ),
+                    mapping_owner="Team Inbox manager AI web adapter",
+                    retryable_codes=("ai.gateway.provider_unavailable",),
+                    fail_closed_on=("missing permission", "disabled generation"),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.NATIVE,
+                    old_owner=None,
+                    new_owner="ai.inbox_manager_insight",
+                    verification=(
+                        "Permission-gated route tests, template compilation, "
+                        "and AI boundary architecture tests."
+                    ),
+                    cutover_gate="Feature is available only to explicitly permitted staff.",
+                    fallback_retirement="No legacy manager AI page exists.",
+                ),
+                steward="customer experience platform",
+                design_refs=("docs/designs/AI_SOT.md", "docs/SOT_RELATIONSHIP_MAP.md"),
+                test_refs=(
+                    "tests/test_admin_inbox_workspace.py",
+                    "tests/test_team_inbox_readiness_gate.py",
+                    "tests/architecture/test_ai_boundaries.py",
+                ),
+            ),
+        ),
+        SOTService(
             name="ai.insights",
             module="app.services.ai_operations",
             owns=(

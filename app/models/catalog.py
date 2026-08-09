@@ -563,9 +563,6 @@ class CatalogOffer(Base):
     policy_set_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("policy_sets.id")
     )
-    splynx_tariff_id: Mapped[int | None] = mapped_column(Integer)
-    splynx_service_name: Mapped[str | None] = mapped_column(String(160))
-    splynx_tax_id: Mapped[int | None] = mapped_column(Integer)
     with_vat: Mapped[bool] = mapped_column(Boolean, default=False)
     vat_percent: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
     speed_download_mbps: Mapped[int | None] = mapped_column(Integer)

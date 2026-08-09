@@ -16,6 +16,27 @@ sessions use Sub's native Team Inbox:
 - authoritative conversation/message state: `InboxConversation` and
   `InboxMessage`.
 
+The public fiber website uses the same native transport through
+`POST /widget/fiber/session`. Its adapter accepts only the exact
+`FIBER_CHAT_ALLOWED_ORIGIN` (default `https://fiber.dotmac.ng`), applies a
+five-start/fifteen-minute per-address throttle and a hidden honeypot/timing
+gate, then issues the same bounded visitor token used by `/widget` and
+`/ws/inbox`. Subsequent messages are limited to 30 per minute per session and
+address.
+
+Public fiber chat is stored as `channel_type=chat_widget` with
+`surface=fiber_website`; this keeps the established reply-capable chat
+transport separate from one-way `website_fiber` inquiry conversations. Exact
+email/phone matches link an active Subscriber. Unmatched visitors create or
+reuse a Party-backed prospect Lead through `sales.capture`; ambiguous matches
+create the conversation without a Subscriber or automatic Lead and carry
+`identity_review_required` for human review.
+
+The fiber WordPress site loads `/static/js/fiber-chat-widget.js` from the Sub
+base URL configured outside Git as `DOTMAC_FIBER_CHAT_API_URL`. That public base
+URL is not a secret. The signed inquiry endpoint and its HMAC secret must never
+be exposed to the browser.
+
 ## Temporary CRM authority
 
 With `chat_session_authority=crm`, the same Sub broker endpoints authenticate

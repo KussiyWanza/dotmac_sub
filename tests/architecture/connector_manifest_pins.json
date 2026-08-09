@@ -1,6 +1,12 @@
 [
     {
         "current": true,
+        "key": "fiber.inquiry.http",
+        "manifest_digest": "ad7d0c65b4796d83484c8d842657824a36b102d575428035caf8405654cd1aef",
+        "version": "1.0.0"
+    },
+    {
+        "current": true,
         "key": "lead.capture.http",
         "manifest_digest": "feb50c12ef932cd5fa5d7a71dd4ff3dfed49843a404bd9f26c869d3e94ce90e3",
         "version": "1.0.0"

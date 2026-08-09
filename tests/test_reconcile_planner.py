@@ -683,6 +683,92 @@ def test_bootstrap_without_proposed_fields_still_plans_olt_side():
     assert any(action.surface == "olt" for action in plan.actions)
 
 
+def test_wan_only_change_preserves_service_ports_and_excludes_unrelated_drift():
+    """An operator WAN edit is not permission to reconcile the whole ONT."""
+    desired = _desired(wan_pppoe_username="100024456")
+    observed_desired = dataclasses.replace(
+        desired,
+        description="old-description",
+        mgmt_ip="172.16.210.99",
+        dhcp_enabled=False,
+        wifi_ssid="OLD_SSID",
+        cr_username="old-admin",
+    )
+    observed = _synced_observed(observed_desired)
+    observed = dataclasses.replace(
+        observed,
+        olt=dataclasses.replace(
+            observed.olt,
+            olt_service_ports=(
+                *observed.olt.olt_service_ports,
+                {"index": 99, "vlan": 999, "gem": 3, "state": "up"},
+            ),
+        ),
+        acs=dataclasses.replace(
+            observed.acs,
+            acs_observed_pppoe_username="100000000",
+        ),
+    )
+
+    plan = compute_plan(
+        desired,
+        observed,
+        "sync",
+        proposed_fields=frozenset({"wan_pppoe_username"}),
+    )
+
+    assert AcsSetPppoe in _types(plan)
+    assert OltDeleteServicePort not in _types(plan)
+    assert OltModifyDescription not in _types(plan)
+    assert OltIpconfig not in _types(plan)
+    assert AcsSetDhcpServer not in _types(plan)
+    assert AcsSetWifiConfig not in _types(plan)
+    assert AcsSetManagementServer not in _types(plan)
+
+
+def test_wan_only_change_creates_only_the_missing_wan_service_port():
+    desired = _desired()
+    observed = _synced_observed(desired)
+    observed = dataclasses.replace(
+        observed,
+        olt=dataclasses.replace(
+            observed.olt,
+            olt_service_ports=(),
+        ),
+    )
+
+    plan = compute_plan(
+        desired,
+        observed,
+        "sync",
+        proposed_fields=frozenset({"wan_mode"}),
+    )
+
+    creates = [
+        action for action in plan.actions if isinstance(action, OltCreateServicePort)
+    ]
+    assert [action.slot for action in creates] == ["wan"]
+    assert OltDeleteServicePort not in _types(plan)
+
+
+def test_wan_only_password_change_forces_one_pppoe_write():
+    """The PPP secret is write-only, so an explicit edit must force delivery."""
+    desired = _desired(wan_pppoe_password_ref="new-secret-ref")
+    observed = _synced_observed(
+        dataclasses.replace(desired, wan_pppoe_password_ref="old-secret-ref")
+    )
+
+    plan = compute_plan(
+        desired,
+        observed,
+        "sync",
+        proposed_fields=frozenset({"wan_pppoe_password_ref"}),
+    )
+
+    assert _types(plan) == [AcsSetPppoe]
+    assert plan.actions[0].password_ref == "new-secret-ref"
+
+
 def test_wifi_ssid_change_scopes_out_unrelated_olt_drift():
     desired = _desired(wifi_ssid="NEW_SSID")
     observed = _synced_observed(_desired(description="old"))

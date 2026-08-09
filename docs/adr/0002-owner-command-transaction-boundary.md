@@ -149,6 +149,52 @@ the registry does not declare an owner. A presenter therefore leaves this debt
 list two ways — by releasing the read, or by being declared an owner when it
 genuinely owns its reads.
 
+## External I/O inside a transaction, and the one approved exception
+
+Added 2026-08-09 while repairing this defect class in production.
+
+A database transaction must not stay open across slow or unbounded external
+I/O — device SSH, HTTP to a third party, TR-069/ACS, RADIUS. Latency is a
+property of the transport, not of the happy path. PostgreSQL closes the
+backend at `idle_in_transaction_session_timeout`, and the damage is not a
+clean error: the device write already succeeded while the record of it is
+lost, so the aggregate status lies and blind retry is unsafe.
+
+The required shape is: project the rows into plain typed values, finish the
+read transaction, perform the I/O, then open a fresh short transaction and
+persist by the captured identifiers. Where a pass must interleave I/O with
+writes, commit at the phase boundaries instead — legitimate only when the
+pass is idempotent, so a failure between phases is re-derived by the next run.
+
+Never raise `idle_in_transaction_session_timeout` as containment. It converts
+a loud failure into a slow one and hides every remaining site.
+
+Repaired sites: `fetch_olt_running_config` (#1549), `app/tasks/olt_config_backup.py`
+(#2211), and the UISP topology sync (#2212).
+
+### Approved exception: the ONT reconcile row lock
+
+`app/services/network/reconcile/sweeper.py` holds the `OntUnit` row lock
+across device contact **deliberately**, and must keep doing so.
+
+`eligibility_under_lock` re-reads operator holds and admissions inside that
+same transaction, while holding the row lock. The pass-level held set is only
+a pre-filter: a hold placed after the pass began is invisible to it. Releasing
+the lock before device contact reopens exactly that race — the reconciler
+touches a customer device an operator had just decided to protect, which is a
+worse failure than the timeout it would fix, and it silently undoes work
+someone deliberately built.
+
+So the rule is not "never hold a lock across I/O". It is **never hold one
+incidentally**. Where the lock is the enforcement point for a safety property,
+holding it is correct and the timeout is the cost of that property; bound the
+I/O instead of splitting the transaction.
+
+Drift prevention: this section is the record. A future change that "completes"
+the repair programme by splitting the reconcile is a regression, not a fix,
+and must be rejected on review unless it first replaces the hold-enforcement
+mechanism that the lock currently provides.
+
 ## Rollback or forward-fix
 
 Forward-fix the command, manifest, or adapter together. Reintroducing direct

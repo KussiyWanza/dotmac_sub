@@ -21,9 +21,10 @@ The incident was on the CRM stack, whose email path polled IMAP with a
 last-seen-UID cursor and whose webhooks *enqueued* for a worker. Sub is
 different, and the design must match Sub, not CRM:
 
-- **Inbound is entirely push.** WhatsApp, Messenger/Instagram, and CRM arrive
-  as HMAC-verified webhooks (`app/api/inbox_webhooks.py`,
-  `meta_inbox_webhooks.py`, `crm_webhooks.py`); when its explicit deployment
+- **Inbound is entirely push.** WhatsApp, Messenger/Instagram, CRM, and signed
+  fiber-website inquiries arrive as HMAC-verified webhooks
+  (`app/api/inbox_webhooks.py`, `meta_inbox_webhooks.py`,
+  `crm_webhooks.py`, `fiber_inquiry_webhooks.py`); when its explicit deployment
   profile is active, email arrives over the dedicated SMTP runtime
   (`app/team_inbox_smtp.py`), which delegates ingestion to
   `app/services/team_inbox_smtp_inbound.py`. There is no poller and no cursor,
@@ -68,6 +69,7 @@ production activation:
 | facebook_messenger | natural | daily 07:00–23:00 WAT | quiet: 4h | warning |
 | instagram_dm | natural | daily 07:00–23:00 WAT | quiet: 4h | warning |
 | chat_widget | natural | daily 07:00–23:00 WAT | quiet: 1h | critical |
+| website_fiber | natural | daily 07:00–23:00 WAT | quiet: 4h | warning |
 
 Defaults explicitly disable each channel because supported code is not proof
 that an environment has credentials, routing, or a live upstream subscription.
@@ -87,7 +89,8 @@ process.
 ### 1. Channel ingestion freshness — the dead-man's-switch
 
 Worker snapshot, domain `channel_ingestion`. Per channel scope (`whatsapp`,
-`email`, `facebook_messenger`, `instagram_dm`, `chat_widget`):
+`email`, `facebook_messenger`, `instagram_dm`, `chat_widget`,
+`website_fiber`):
 
 | signal | meaning | alert |
 | --- | --- | --- |
@@ -218,9 +221,11 @@ another.
 
 ### Chat widget
 
-Enable the chat-widget contract only after the CRM bridge/configuration is
-active and an authenticated customer or reseller session can create a native
-inbox message end to end.
+Enable the chat-widget contract only after the selected authority is active and
+an authenticated customer/reseller or exact-origin fiber visitor can create a
+native inbox message end to end. For the fiber cutover, verify the public widget
+script, `POST /widget/fiber/session`, `/widget` history/message calls, and
+`/ws/inbox` agent replies before retiring the CRM page embed.
 
 ## Production integration with Dotmac Observability
 

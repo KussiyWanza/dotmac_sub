@@ -287,9 +287,63 @@ def update_ont_config(
             )
         )
         if wan_push_requested:
-            from app.services.network.reconcile import reconcile_ont
+            from app.services.network.reconcile import (
+                OntWanProposedChange,
+                OntWanProposedField,
+                desired_from_ont_unit,
+                reconcile_ont,
+            )
 
-            reconciled = reconcile_ont(db, ont_id, mode="sync")
+            # The form has already persisted the requested WAN intent. Resolve
+            # that effective state back into the reconciler's typed field names
+            # and carry only the fields the engineer submitted. Without this
+            # proposal scope, ``reconcile_ont`` treats Apply WAN as permission
+            # to repair the entire ONT, including unrelated service ports,
+            # management, LAN and WiFi state.
+            desired = desired_from_ont_unit(db, ont)
+            changed_fields: set[OntWanProposedField] = set()
+            if wan_mode is not None or config_method is not None:
+                changed_fields.add("wan_mode")
+            if ip_protocol is not None and ip_protocol.strip().lower() in {
+                "ipv4",
+                "dual_stack",
+            }:
+                changed_fields.add("ipv6_enabled")
+            if wan_static_ip is not None:
+                changed_fields.update({"wan_static_ip", "wan_static_ip_is_public"})
+            if wan_static_subnet is not None:
+                changed_fields.add("wan_static_subnet")
+            if wan_static_gateway is not None:
+                changed_fields.add("wan_static_gateway")
+            if wan_static_dns is not None:
+                changed_fields.add("wan_static_dns")
+            if pppoe_username is not None:
+                changed_fields.add("wan_pppoe_username")
+            if pppoe_password is not None:
+                changed_fields.add("wan_pppoe_password_ref")
+            if pppoe_wcd_index is not None:
+                changed_fields.add("wan_pppoe_wcd_index")
+
+            proposed_change = OntWanProposedChange(
+                changed_fields=frozenset(changed_fields),
+                wan_mode=desired.wan_mode,
+                wan_pppoe_username=desired.wan_pppoe_username,
+                wan_pppoe_password_ref=desired.wan_pppoe_password_ref,
+                wan_pppoe_wcd_index=desired.wan_pppoe_wcd_index,
+                wan_static_ip=desired.wan_static_ip,
+                wan_static_subnet=desired.wan_static_subnet,
+                wan_static_gateway=desired.wan_static_gateway,
+                wan_static_dns=desired.wan_static_dns,
+                wan_static_ip_is_public=desired.wan_static_ip_is_public,
+                ipv6_enabled=desired.ipv6_enabled,
+            )
+
+            reconciled = reconcile_ont(
+                db,
+                ont_id,
+                proposed_change=proposed_change,
+                mode="sync",
+            )
             result = ActionResult(
                 success=reconciled.success,
                 message=(

@@ -5,26 +5,48 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, TypeVar
+from urllib.parse import urlsplit
 
 from jose import JWTError, jwt
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.models.party import PartyContactPointType, PartyType
+from app.models.sales import LeadCaptureMethod, LeadSourcePlatform
 from app.models.subscriber import Reseller, ResellerUser, Subscriber
 from app.models.team_inbox import (
+    InboxAutomationTrigger,
     InboxChannelType,
     InboxConversation,
     InboxConversationStatus,
     InboxMessage,
     InboxMessageDirection,
 )
+from app.schemas.sales import (
+    LeadCapturePartyCreate,
+    LeadCaptureRequest,
+    LeadContactObservation,
+    LeadOriginCaptureCreate,
+)
 from app.services import auth_flow as auth_flow_service
-from app.services import team_inbox_realtime, team_inbox_status
+from app.services import (
+    conversation_lead_relationships,
+    team_inbox_automation,
+    team_inbox_participants,
+    team_inbox_realtime,
+    team_inbox_routing,
+    team_inbox_status,
+)
 from app.services.chat_session_authority import (
     ChatSessionAuthority,
     resolve_chat_session_authority,
 )
 from app.services.common import coerce_uuid
+from app.services.customer_identity_normalization import (
+    default_country_code,
+    normalize_email_identifier,
+    normalize_phone_identifier,
+)
 from app.services.customer_support_links import (
     ticket_customer_link_filter,
     ticket_customer_linked_ids,
@@ -41,7 +63,7 @@ T = TypeVar("T")
 OWNER = "communications.team_inbox_widget"
 _WIDGET_COMMAND = OwnerCommandDefinition(
     owner=OWNER,
-    concern="authenticated visitor message and read-state commands",
+    concern="visitor chat session, message, and read-state commands",
     name="execute_team_inbox_widget_command",
 )
 
@@ -74,6 +96,31 @@ class WidgetPrincipal:
     surface: str
     subscriber_id: str | None = None
     reseller_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class FiberWidgetSessionCommand:
+    client_session_id: uuid.UUID
+    full_name: str
+    email: str
+    phone: str | None
+    message: str
+    page_url: str
+    referrer_url: str | None
+    started_at: datetime
+    actor: str
+
+
+@dataclass(frozen=True, slots=True)
+class FiberWidgetSessionOutcome:
+    session_id: str
+    visitor_token: str
+    conversation_id: str
+    message_id: str
+    ws_url: str
+    api_base: str
+    resolution_status: str
+    replayed: bool
 
 
 def _require_enabled(db: Session) -> None:
@@ -495,6 +542,303 @@ def broker_reseller_session_committed(
         )
 
     return _commit(db, action)
+
+
+def _capture_fiber_chat_prospect(
+    db: Session,
+    *,
+    command: FiberWidgetSessionCommand,
+):
+    from app.services.sales import capture
+
+    contacts = [
+        LeadContactObservation(
+            channel_type=PartyContactPointType.email,
+            value=command.email,
+            display_value=command.email,
+            provider="fiber_website",
+            provider_account_id="fiber.dotmac.ng",
+            is_primary=True,
+        )
+    ]
+    normalized_phone = normalize_phone_identifier(
+        command.phone,
+        default_country_code=default_country_code(db),
+    )
+    if normalized_phone:
+        contacts.append(
+            LeadContactObservation(
+                channel_type=PartyContactPointType.phone,
+                value=normalized_phone,
+                display_value=command.phone,
+                provider="fiber_website",
+                provider_account_id="fiber.dotmac.ng",
+            )
+        )
+    landing_path = urlsplit(command.page_url).path or "/"
+    return capture.capture_lead_participant(
+        db,
+        LeadCaptureRequest(
+            party=LeadCapturePartyCreate(
+                party_type=PartyType.person,
+                display_name=command.full_name,
+                contacts=contacts,
+            ),
+            title="Fiber website chat",
+            lead_source="Website",
+            origin=LeadOriginCaptureCreate(
+                capture_method=LeadCaptureMethod.landing_page,
+                source_platform=LeadSourcePlatform.website,
+                source_interaction_id=f"fiber-chat:{command.client_session_id}",
+                external_form_id="fiber-chat-v1",
+                landing_path=landing_path[:500],
+                captured_at=command.started_at,
+                capture_source="fiber.website_chat",
+                capture_reason="Fiber website visitor started a Team Inbox chat",
+            ),
+            notes=f"Initial chat message:\n\n{command.message}",
+        ),
+        actor_id=command.actor,
+    )
+
+
+def _apply_fiber_chat_routing(
+    db: Session,
+    *,
+    conversation: InboxConversation,
+) -> None:
+    routing = team_inbox_routing.resolve_channel_routing_decision(
+        db,
+        channel_type=InboxChannelType.chat_widget.value,
+        provider="fiber_website",
+        account_scope="fiber.dotmac.ng",
+        fallback_service_team_id=team_inbox_routing.default_service_team_id(db),
+        metadata={"surface": "fiber_website"},
+    )
+    participant_team_ids = [
+        team_id
+        for team_id in (
+            routing.primary_service_team_id,
+            routing.channel_service_team_id,
+        )
+        if team_id
+    ]
+    team_inbox_routing.apply_email_routing_plan(
+        db,
+        conversation=conversation,
+        plan=team_inbox_routing.EmailTeamRoutingPlan(
+            primary_service_team_id=routing.primary_service_team_id,
+            participant_service_team_ids=list(dict.fromkeys(participant_team_ids)),
+            matches=[],
+            unmatched_recipients=[],
+        ),
+    )
+
+
+def broker_fiber_visitor_session(
+    db: Session,
+    *,
+    command: FiberWidgetSessionCommand,
+    context: CommandContext,
+) -> FiberWidgetSessionOutcome:
+    """Create or replay one anonymous fiber visitor's native chat session."""
+
+    from app.services import team_inbox_fiber_receive
+
+    _require_enabled(db)
+    external_message_id = f"fiber-chat:{command.client_session_id}:initial"
+    existing_message = (
+        db.query(InboxMessage)
+        .filter(InboxMessage.external_message_id == external_message_id)
+        .filter(InboxMessage.channel_type == InboxChannelType.chat_widget.value)
+        .one_or_none()
+    )
+    if existing_message is not None:
+        existing_conversation = db.get(
+            InboxConversation, existing_message.conversation_id
+        )
+        if existing_conversation is None or not existing_conversation.is_active:
+            raise _error("conversation_not_found", "Conversation not found.")
+        session = _session_response(
+            db,
+            conversation=existing_conversation,
+            surface="fiber_website",
+            subscriber_id=existing_conversation.subscriber_id,
+        )
+        resolution = dict(existing_conversation.metadata_ or {}).get(
+            "contact_resolution", {}
+        )
+        status = (
+            str(resolution.get("status") or "unmatched")
+            if isinstance(resolution, dict)
+            else "unmatched"
+        )
+        return FiberWidgetSessionOutcome(
+            session_id=str(session["session_id"]),
+            visitor_token=str(session["visitor_token"]),
+            conversation_id=str(existing_conversation.id),
+            message_id=str(existing_message.id),
+            ws_url=str(session["ws_url"]),
+            api_base=str(session["api_base"]),
+            resolution_status=status,
+            replayed=True,
+        )
+
+    normalized_email = normalize_email_identifier(command.email)
+    if normalized_email is None:
+        raise _error("invalid_identity", "A valid email address is required.")
+    identity = team_inbox_fiber_receive.resolve_fiber_identity(
+        db,
+        email=normalized_email,
+        phone=command.phone,
+    )
+    lead_result = None
+    if identity.status == "unmatched":
+        lead_result = _capture_fiber_chat_prospect(db, command=command)
+
+    conversation = _conversation(
+        db,
+        surface="fiber_website",
+        entity_id=str(command.client_session_id),
+        contact_address=normalized_email,
+        subject="Fiber website chat",
+        subscriber_id=identity.subscriber_id,
+    )
+    metadata: dict[str, object] = dict(conversation.metadata_ or {})
+    metadata.update(
+        {
+            "customer_name": command.full_name,
+            "contact_resolution": identity.as_metadata(),
+            "fiber_chat": {
+                "form_version": "fiber-chat-v1",
+                "phone": command.phone,
+                "page_url": command.page_url,
+                "referrer_url": command.referrer_url,
+                "site_id": "fiber.dotmac.ng",
+            },
+        }
+    )
+    if identity.identity_review_required:
+        metadata["identity_review_required"] = True
+    if lead_result is not None:
+        metadata["lead_id"] = str(lead_result.lead.id)
+        metadata["party_id"] = str(lead_result.party_id)
+    conversation.metadata_ = metadata
+    _apply_fiber_chat_routing(db, conversation=conversation)
+
+    now = datetime.now(UTC)
+    message = InboxMessage(
+        conversation_id=conversation.id,
+        channel_type=InboxChannelType.chat_widget.value,
+        direction=InboxMessageDirection.inbound.value,
+        body=command.message,
+        external_message_id=external_message_id,
+        external_thread_id=conversation.external_thread_id,
+        from_address=normalized_email,
+        received_at=now,
+        metadata_={
+            "source": "native_chat_widget",
+            "surface": "fiber_website",
+            "client_message_id": external_message_id,
+            "session_id": str(conversation.id),
+            "provider": "fiber_website",
+            "provider_account_scope": "fiber.dotmac.ng",
+            "contact_resolution": identity.as_metadata(),
+        },
+    )
+    db.add(message)
+    conversation.first_message_at = conversation.first_message_at or now
+    conversation.last_message_at = now
+    db.flush()
+    team_inbox_participants.record_message_participants(
+        db,
+        conversation=conversation,
+        message=message,
+    )
+    if lead_result is not None:
+        conversation_lead_relationships.link_conversation_lead_participant(
+            db,
+            conversation_lead_relationships.ConversationLeadLinkCommand(
+                context=context,
+                conversation_id=conversation.id,
+                lead_id=lead_result.lead.id,
+                party_id=lead_result.party_id,
+                actor_person_id=None,
+                source=(
+                    conversation_lead_relationships.ConversationLeadLinkSource.fiber_website_chat
+                ),
+                reason="Prospect created from fiber website live chat",
+            ),
+        )
+    team_inbox_automation.execute_matching_rules(
+        db,
+        conversation=conversation,
+        trigger=InboxAutomationTrigger.conversation_created,
+    )
+    team_inbox_automation.execute_matching_rules(
+        db,
+        conversation=conversation,
+        trigger=InboxAutomationTrigger.inbound_message_received,
+    )
+    payload = team_inbox_realtime.message_event_payload(
+        conversation_id=str(conversation.id),
+        message_id=str(message.id),
+        body=message.body,
+        direction=message.direction,
+        channel_type=message.channel_type,
+        created_at=message.created_at,
+        extra={"sender_type": "visitor", "from_customer": True},
+    )
+    team_inbox_realtime.publish_conversation_event(
+        db,
+        str(conversation.id),
+        event_type=EventType.MESSAGE_NEW,
+        payload=payload,
+    )
+    team_inbox_realtime.publish_queue_event(
+        db,
+        conversation_id=str(conversation.id),
+        created=True,
+    )
+    session = _session_response(
+        db,
+        conversation=conversation,
+        surface="fiber_website",
+        subscriber_id=identity.subscriber_id,
+    )
+    return FiberWidgetSessionOutcome(
+        session_id=str(session["session_id"]),
+        visitor_token=str(session["visitor_token"]),
+        conversation_id=str(conversation.id),
+        message_id=str(message.id),
+        ws_url=str(session["ws_url"]),
+        api_base=str(session["api_base"]),
+        resolution_status=identity.status,
+        replayed=False,
+    )
+
+
+def broker_fiber_visitor_session_committed(
+    db: Session,
+    *,
+    command: FiberWidgetSessionCommand,
+) -> FiberWidgetSessionOutcome:
+    context = CommandContext.system(
+        actor=command.actor,
+        scope="team-inbox:fiber-widget-session",
+        reason="start an anonymous fiber website Team Inbox chat",
+        idempotency_key=str(command.client_session_id),
+    )
+    return execute_owner_command(
+        db,
+        definition=_WIDGET_COMMAND,
+        context=context,
+        operation=lambda: broker_fiber_visitor_session(
+            db,
+            command=command,
+            context=context,
+        ),
+    )
 
 
 def list_session_messages(

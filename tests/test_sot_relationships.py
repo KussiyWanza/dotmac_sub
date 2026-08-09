@@ -20,6 +20,7 @@ def test_domain_sot_relationships_cover_expected_domains():
         "observability",
         "workforce_operations",
         "support_operations",
+        "tenancy",
         "ai_advisory",
         "provisioning_operations",
         "feature_control_plane",

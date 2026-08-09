@@ -94,6 +94,10 @@ def test_every_inbox_route_declares_a_permission():
 # Saving a personal view is a preference, not a conversation mutation, so it is
 # deliberately gated on :read. Anything else posting under :read is a mistake.
 READ_GATED_POSTS = {"/filters/save"}
+MANAGER_AI_ROUTES = {
+    ("GET", "/manager-ai"): "support:inbox_ai:read",
+    ("POST", "/manager-ai"): "support:inbox_ai:read",
+}
 SALES_LEAD_GATED_POSTS = {
     "/{conversation_id}/merge-contact",
     "/{conversation_id}/lead-intake/issue",
@@ -104,7 +108,10 @@ SALES_LEAD_GATED_POSTS = {
 def test_mutating_routes_require_update_and_reads_require_read():
     wrong = []
     for method, path, permission in _inbox_routes():
-        if method == "GET":
+        route_key = (method, path)
+        if route_key in MANAGER_AI_ROUTES:
+            expected = MANAGER_AI_ROUTES[route_key]
+        elif method == "GET":
             expected = "support:ticket:read"
         elif path in READ_GATED_POSTS:
             expected = "support:ticket:read"
@@ -120,6 +127,13 @@ def test_mutating_routes_require_update_and_reads_require_read():
 def test_the_read_gated_post_allowlist_stays_small():
     """Each entry weakens the write gate, so it must be justified and few."""
     assert READ_GATED_POSTS == {"/filters/save"}
+
+
+def test_manager_ai_routes_use_their_own_permission():
+    assert MANAGER_AI_ROUTES == {
+        ("GET", "/manager-ai"): "support:inbox_ai:read",
+        ("POST", "/manager-ai"): "support:inbox_ai:read",
+    }
 
 
 def test_sales_owned_post_permissions_stay_explicit():

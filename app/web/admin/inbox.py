@@ -25,14 +25,20 @@ from fastapi.responses import (
     StreamingResponse,
 )
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.orm import Session
 
 from app.db import finish_read_transaction, get_db
 from app.models.audit import AuditActorType
 from app.models.team_inbox import InboxChannelType
+from app.schemas.ai_operations import (
+    AiIntakeConfigMetadata,
+    AiIntakeConfigUpsert,
+    AiIntakeDepartmentMapping,
+)
 from app.schemas.plan_family_catalogue import ResolveShareablePlanFamilyCatalogueQuery
 from app.services import (
+    ai_intake,
     conversation_lead_relationships,
     conversation_ticket_handoff,
     inbox_lead_actions,
@@ -41,6 +47,7 @@ from app.services import (
     team_inbox_commands,
     team_inbox_contact_links,
     team_inbox_filters,
+    team_inbox_manager_ai_chat,
     team_inbox_media,
     team_inbox_metrics,
     team_inbox_operations,
@@ -53,6 +60,7 @@ from app.services import email as email_service
 from app.services import (
     team_inbox_contact_context as contact_context_service,
 )
+from app.services.ai.client import AIClientError
 from app.services.auth_dependencies import can, require_permission
 from app.services.catalog import plan_family_catalogues
 from app.services.domain_errors import DomainError
@@ -81,6 +89,25 @@ def _json_object_list(value: str | None) -> tuple[dict[str, object], ...]:
     ):
         raise ValueError("WhatsApp template components must be a JSON array.")
     return tuple(dict(item) for item in parsed)
+
+
+def _json_mapping_list(value: str | None) -> tuple[dict[str, object], ...]:
+    text = str(value or "").strip()
+    if not text:
+        return ()
+    parsed = json.loads(text)
+    if not isinstance(parsed, list) or any(
+        not isinstance(item, dict) for item in parsed
+    ):
+        raise ValueError("Department mappings must be a JSON array of objects.")
+    return tuple(dict(item) for item in parsed)
+
+
+def _uuid_form_value(value: str | None) -> UUID | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    return UUID(text)
 
 
 def _form_flag(value: object) -> bool:
@@ -444,6 +471,61 @@ def team_inbox_media_content(
         media_type=stream.content_type or asset.mime_type or "application/octet-stream",
         headers=headers,
     )
+
+
+@router.get(
+    "/manager-ai",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("support:inbox_ai:read"))],
+)
+def team_inbox_manager_ai_page(
+    request: Request,
+    conversation_id: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    context = _ctx(request, db)
+    context.update(
+        {
+            "state": team_inbox_manager_ai_chat.build_page_state(
+                db, conversation_id=conversation_id
+            )
+        }
+    )
+    return templates.TemplateResponse("admin/inbox/manager_ai.html", context)
+
+
+@router.post(
+    "/manager-ai",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("support:inbox_ai:read"))],
+)
+def team_inbox_manager_ai_ask(
+    request: Request,
+    conversation_id: str | None = Form(default=None),
+    question: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    answer = None
+    error = None
+    try:
+        answer = team_inbox_manager_ai_chat.answer_manager_question(
+            db, question=question, conversation_id=conversation_id
+        )
+    except (ValueError, AIClientError) as exc:
+        error = str(exc)
+    context = _ctx(request, db)
+    context.update(
+        {
+            "state": team_inbox_manager_ai_chat.build_page_state(
+                db,
+                conversation_id=conversation_id,
+                question=question,
+                answer=answer,
+                error=error,
+            )
+        }
+    )
+    return templates.TemplateResponse("admin/inbox/manager_ai.html", context)
 
 
 @router.get(
@@ -2063,11 +2145,40 @@ def _settings_context(
         if actor_person_id
         else None
     )
+    intake_configs = ai_intake.list_configs(db, limit=100)
+    selected_intake_config = next(
+        (item for item in intake_configs if item.scope_key == "global"),
+        intake_configs[0] if intake_configs else None,
+    )
+    if selected_intake_config is None:
+        intake_mapping_json = (
+            '[{"intent":"technical_support","department":"technical_support",'
+            '"service_team_id":null},'
+            '{"intent":"billing_issue","department":"helpdesk",'
+            '"service_team_id":null}]'
+        )
+    else:
+        intake_mapping_json = json.dumps(
+            [
+                {
+                    "intent": mapping.intent.value,
+                    "department": mapping.department,
+                    "service_team_id": str(mapping.service_team_id)
+                    if mapping.service_team_id
+                    else None,
+                }
+                for mapping in selected_intake_config.department_mappings
+            ],
+            indent=2,
+        )
     context.update(
         {
             "email_routes": team_inbox_routing.list_email_routes(db),
             "channel_routes": team_inbox_routing.list_channel_routes(db),
             "ai_routes": team_inbox_routing.list_ai_routes(db),
+            "ai_intake_configs": intake_configs,
+            "ai_intake_config": selected_intake_config,
+            "ai_intake_mapping_json": intake_mapping_json,
             "service_team_options": team_inbox_metrics.active_service_team_options(db),
             "smtp_sender_options": email_service.list_smtp_sender_options(db),
             "channel_options": [
@@ -2157,6 +2268,75 @@ def _routes_redirect(*, status: str, message: str) -> RedirectResponse:
         ),
         status_code=303,
     )
+
+
+@settings_router.post(
+    "/ai-intake-policy",
+    dependencies=[Depends(require_permission("support:ticket:update"))],
+)
+def team_inbox_ai_intake_policy_update(
+    request: Request,
+    scope_key: str = Form("global"),
+    channel_type: str = Form("any"),
+    is_enabled: bool = Form(default=False),
+    confidence_threshold: float = Form(default=0.75),
+    allow_followup_questions: bool = Form(default=True),
+    max_clarification_turns: int = Form(default=1),
+    escalate_after_minutes: int = Form(default=5),
+    exclude_campaign_attribution: bool = Form(default=True),
+    fallback_team_id: str | None = Form(default=None),
+    data_cleaning_support_team_id: str | None = Form(default=None),
+    instructions: str | None = Form(default=None),
+    department_mappings_json: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
+    actor_person_id = _actor_uuid_from_request(request)
+    if actor_person_id is None:
+        return _routes_redirect(status="error", message="Agent identity is required.")
+    try:
+        department_mappings = tuple(
+            AiIntakeDepartmentMapping.model_validate(item)
+            for item in _json_mapping_list(department_mappings_json)
+        )
+        policy = AiIntakeConfigUpsert(
+            scope_key=scope_key,
+            channel_type=channel_type,
+            is_enabled=is_enabled,
+            confidence_threshold=confidence_threshold,
+            allow_followup_questions=allow_followup_questions,
+            max_clarification_turns=max_clarification_turns,
+            escalate_after_minutes=escalate_after_minutes,
+            exclude_campaign_attribution=exclude_campaign_attribution,
+            fallback_team_id=_uuid_form_value(fallback_team_id),
+            instructions=(instructions or None),
+            department_mappings=department_mappings,
+            metadata=AiIntakeConfigMetadata(
+                data_cleaning_support_team_id=_uuid_form_value(
+                    data_cleaning_support_team_id
+                )
+            ),
+        )
+    except (TypeError, ValueError, ValidationError, json.JSONDecodeError) as exc:
+        return _routes_redirect(status="error", message=str(exc))
+
+    _prepare_mutation(db)
+    try:
+        ai_intake.upsert_config(
+            db,
+            ai_intake.UpsertAiIntakeConfigCommand(
+                context=CommandContext.system(
+                    actor=f"person:{actor_person_id}",
+                    scope=ai_intake.CONFIG_SCOPE,
+                    reason="update Team Inbox AI intake policy from admin UI",
+                ),
+                policy=policy,
+            ),
+        )
+    except DomainError as exc:
+        return _routes_redirect(status="error", message=exc.message)
+    except ValueError as exc:
+        return _routes_redirect(status="error", message=str(exc))
+    return _routes_redirect(status="success", message="AI intake policy saved.")
 
 
 @router.post(

@@ -15,9 +15,11 @@ from app.models.team_inbox import (
     InboxObservationStatus,
     InboxProviderObservation,
 )
+from app.schemas.fiber_inquiry import FiberInquiryInterest, FiberInquiryRequest
 from app.services import (
     team_inbox_channel_receive,
     team_inbox_delivery_receipts,
+    team_inbox_fiber_receive,
     team_inbox_media,
     team_inbox_observations,
     team_inbox_receive,
@@ -174,8 +176,27 @@ def process_provider_observation(
             inbound_result: (
                 team_inbox_receive.InboundEmailReceiveResult
                 | team_inbox_channel_receive.InboundChannelReceiveResult
+                | team_inbox_fiber_receive.FiberInquiryReceiveResult
             )
-            if row.channel_type == InboxChannelType.email.value:
+            if row.channel_type == InboxChannelType.website_fiber.value:
+                data = row.normalized_payload
+                inbound_result = team_inbox_receive.receive_fiber_inquiry(
+                    db,
+                    payload=FiberInquiryRequest(
+                        form_version=str(data.get("form_version") or ""),
+                        full_name=str(data.get("full_name") or ""),
+                        phone=str(data["phone"]) if data.get("phone") else None,
+                        email=str(data.get("email") or ""),
+                        interest=FiberInquiryInterest(str(data.get("interest") or "")),
+                        message=str(data["message"]) if data.get("message") else None,
+                        submitted_at=observed_at,
+                    ),
+                    delivery_id=str(row.external_message_id or ""),
+                    site_id=row.provider_account_scope,
+                    observation_id=row.id,
+                    context=context,
+                )
+            elif row.channel_type == InboxChannelType.email.value:
                 email_result = team_inbox_receive.receive_inbound_email(
                     db,
                     team_inbox_receive.InboundEmailPayload(

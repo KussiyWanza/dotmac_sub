@@ -30,6 +30,7 @@ from app.services.integrations.runtime import (
 from app.services.web_integrations import build_marketplace_data
 
 EXPECTED_MARKETPLACE = {
+    "fiber.inquiry.http": ("Fiber Website Inquiry", "1.0.0", "messaging"),
     "lead.capture.http": ("Lead Capture Webhook", "1.0.0", "sales"),
     "whatsapp": ("WhatsApp", "1.0.0", "messaging"),
     "nextcloud.talk": ("Nextcloud Talk", "1.0.0", "messaging"),
@@ -54,6 +55,7 @@ def test_explicit_registry_preserves_marketplace_catalogue_parity() -> None:
         )
 
     assert tuple(definition.key for definition in connector_definitions()) == (
+        "fiber.inquiry.http",
         "lead.capture.http",
         "webhook.http",
         "dotmac.crm",
@@ -71,7 +73,7 @@ def test_explicit_registry_preserves_marketplace_catalogue_parity() -> None:
 def test_marketplace_projection_exposes_all_available_cards(db_session) -> None:
     data = build_marketplace_data(db_session)
 
-    assert data["stats"] == {"available": 8, "installed": 0, "updates": 0}
+    assert data["stats"] == {"available": 9, "installed": 0, "updates": 0}
     assert {card["key"] for card in data["marketplace_cards"]} == set(
         EXPECTED_MARKETPLACE
     )
