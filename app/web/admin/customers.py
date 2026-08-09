@@ -1706,6 +1706,55 @@ def business_edit(
 
 
 @router.post(
+    "/person/{customer_id}/billing-notifications",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("customer:write"))],
+)
+def update_customer_billing_notifications(
+    request: Request,
+    customer_id: str,
+    send_billing_notifications: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    enabled = send_billing_notifications.strip().lower() in {"1", "true", "yes", "on"}
+    try:
+        before, after = (
+            web_customer_actions_service.update_billing_notification_preference(
+                db=db,
+                customer_id=customer_id,
+                send_billing_notifications=enabled,
+            )
+        )
+        log_audit_event(
+            db=db,
+            request=request,
+            action="update",
+            entity_type="subscriber",
+            entity_id=str(customer_id),
+            actor_id=_get_actor_id(request),
+            metadata={
+                "billing_notification_preference": {
+                    "before": (before.metadata_ or {}).get(
+                        "send_billing_notifications", True
+                    ),
+                    "after": (after.metadata_ or {}).get(
+                        "send_billing_notifications", True
+                    ),
+                }
+            },
+        )
+        return RedirectResponse(
+            url=f"/admin/customers/person/{customer_id}#billing",
+            status_code=303,
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to update billing notifications for %s", customer_id)
+        raise
+
+
+@router.post(
     "/person/{customer_id}/edit",
     response_class=HTMLResponse,
     dependencies=[Depends(require_permission("customer:write"))],

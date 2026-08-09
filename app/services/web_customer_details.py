@@ -320,6 +320,31 @@ def _billing_policy_snapshot(
     }
 
 
+def _billing_notification_flag_enabled(metadata: dict | None) -> bool:
+    raw_value = (metadata or {}).get("send_billing_notifications")
+    if raw_value is None:
+        return True
+    if isinstance(raw_value, bool):
+        return raw_value
+    if isinstance(raw_value, str):
+        return raw_value.strip().lower() not in {"0", "false", "no", "off"}
+    return bool(raw_value)
+
+
+def _billing_config_snapshot(customer: Subscriber) -> dict[str, object]:
+    metadata = dict(getattr(customer, "metadata_", None) or {})
+    return {
+        "category": getattr(customer, "category", None),
+        "billing_day": getattr(customer, "billing_day", None),
+        "payment_due_days": getattr(customer, "payment_due_days", None),
+        "grace_period_days": getattr(customer, "grace_period_days", None),
+        "min_balance": getattr(customer, "min_balance", None),
+        "billing_enabled": bool(getattr(customer, "billing_enabled", True)),
+        "auto_create_invoices": bool(metadata.get("auto_create_invoices", True)),
+        "send_billing_notifications": _billing_notification_flag_enabled(metadata),
+    }
+
+
 def _dedupe_accounts(accounts):
     unique = {}
     for account in accounts:
@@ -1964,6 +1989,7 @@ def build_customer_detail_snapshot(
         "crm_sync_status": _build_crm_sync_status(db, customer),
         "identity_profile": _build_identity_profile(customer),
         "pppoe_access": pppoe_access,
+        "billing_config": _billing_config_snapshot(customer),
         "billing_policy": _billing_policy_snapshot(db, accounts),
         "billing_workspace": billing_workspace,
         "network_connection_status": network_connection_status,
