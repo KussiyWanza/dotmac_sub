@@ -181,10 +181,41 @@ property that makes this cheap to do now. Once a later slice makes a second
 table tenant-scoped, rollback stops being clean; that is the point at which
 this decision hardens.
 
+## Relationship to the vendor control plane
+
+Recorded because this decision creates a tenant identity locally, and it is
+reasonable to ask whether the platform should be issuing it.
+
+**It does not today, and the two sides name different things.**
+`dotmac_vendor_control_plane` speaks `deployment_ref`/`deployment_id` — 68
+references in its source against 7 for `tenant_id` — and kernel licensing binds
+an envelope to a `deployment_ref`. Kernel entitlements, by contrast, key
+`tenant_entitlement_grants` on `tenant_id`.
+
+So a licence is deployment-scoped and a grant is tenant-scoped, and something
+must join them. In the starter's reference receiver that projection happens in
+the RECEIVING assembly. When Sub becomes a licence receiver (ledger S8, still
+deferred) it will project a deployment-scoped licence into grants for its
+operator tenant — and because Sub owns both the receiver and the tenant, a
+locally chosen id is correct there rather than merely tolerable.
+
+The risk this leaves is narrow: ADR-0003 gives the control plane "vendor-side
+accounts, provisioning contracts, and (later) deployment lifecycle". If "later"
+ever extends to ISSUING tenant identity, Sub's self-chosen id becomes something
+to reconcile. Two properties keep that cheap, and both should be preserved
+deliberately:
+
+- **Sub never exposes the tenant id.** No API, contract or export emits it, so
+  reconciliation would map a platform reference onto the local tenant rather
+  than rewriting every `tenant_id`.
+- **`Tenant.slug` is unique** and is the natural join column, being what a
+  multi-ISP resolver would key on.
+
 ## Review and retirement
 
-- Review date: when the first of the six colliding tables is scheduled, or when
-  a second operator is proposed, whichever is first.
+- Review date: when the first of the six colliding tables is scheduled, when a
+  second operator is proposed, or when the vendor control plane begins issuing
+  tenant identity — whichever is first.
 - Retirement condition: superseded by an ADR that either admits further kernel
   models or establishes genuine multi-tenancy.
 - Supersedes or is superseded by: amends the kernel import allowlist in
