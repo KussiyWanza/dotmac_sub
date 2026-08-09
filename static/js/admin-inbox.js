@@ -1688,6 +1688,42 @@
         event.currentTarget.form?.requestSubmit();
       },
 
+      completeSend(result) {
+        if (
+          !result ||
+          String(result.conversation_id || "") !== String(this.conversationId)
+        ) {
+          return;
+        }
+        this.sending = false;
+        this.workspace()?.showToast?.(
+          result.message ||
+            (result.status === "success" ? "Reply sent." : "Reply failed."),
+        );
+        if (result.status !== "success") return;
+
+        this.draft = "";
+        this.files = [];
+        this.replyTo = null;
+        this.scheduled = false;
+        this.scheduledAt = "";
+        this.macroId = "";
+        this.templateId = "";
+        this.identityBody = "";
+        this.polishSuggestion = null;
+        localStorage.removeItem(`${KEYS.draftPrefix}${this.conversationId}`);
+
+        const workspace = this.workspace();
+        workspace?.refreshThread?.(this.conversationId, true);
+        workspace?.refreshConversationList?.("reply");
+      },
+
+      finishSendRequest(event) {
+        if (event.detail?.successful) return;
+        this.sending = false;
+        this.workspace()?.showToast?.("Could not send reply. Try again.");
+      },
+
       prepareSend(event) {
         if (this.sending) {
           event.preventDefault();

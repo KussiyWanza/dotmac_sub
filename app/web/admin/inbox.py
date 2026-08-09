@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime
+from typing import Literal
 from urllib.parse import parse_qsl, quote_plus, urlencode, urlsplit, urlunsplit
 from uuid import UUID
 
@@ -22,6 +23,7 @@ from fastapi.responses import (
     HTMLResponse,
     JSONResponse,
     RedirectResponse,
+    Response,
     StreamingResponse,
 )
 from fastapi.templating import Jinja2Templates
@@ -77,6 +79,12 @@ logger = logging.getLogger(__name__)
 class InboxPolishRequest(BaseModel):
     text: str = Field(min_length=1, max_length=5000)
     context: str = Field(default="crm_reply", max_length=80)
+
+
+class InboxReplyPresentation(BaseModel):
+    conversation_id: UUID
+    status: Literal["success", "error"]
+    message: str
 
 
 def _json_object_list(value: str | None) -> tuple[dict[str, object], ...]:
@@ -154,6 +162,19 @@ def _query_bool(value: object, *, default: bool = False) -> bool:
 
 def _query_optional_bool(value: object) -> bool | None:
     return value if isinstance(value, bool) else None
+
+
+def _is_htmx_request(request: Request) -> bool:
+    # Direct route tests construct the smallest valid-enough Request scope and
+    # may omit ASGI headers entirely. Reading ``request.headers`` would ask
+    # Starlette to normalize that incomplete scope and raise ``KeyError``.
+    # Inspect the transport facts directly so an absent header means the
+    # progressive-enhancement fallback, just as it does for a normal request.
+    raw_headers = getattr(request, "scope", {}).get("headers", ())
+    return any(
+        name.lower() == b"hx-request" and value.lower() == b"true"
+        for name, value in raw_headers
+    )
 
 
 def _query_int(value: object, *, default: int | None = None) -> int | None:
@@ -444,6 +465,29 @@ def _detail_redirect(
             f"&message={quote_plus(message)}"
         ),
         status_code=303,
+    )
+
+
+def _reply_presentation_response(
+    conversation_id: UUID,
+    *,
+    status: Literal["success", "error"],
+    message: str,
+) -> Response:
+    """Return the typed HTMX result consumed by the Inbox composer adapter."""
+
+    payload = InboxReplyPresentation(
+        conversation_id=conversation_id,
+        status=status,
+        message=message,
+    )
+    return Response(
+        status_code=204,
+        headers={
+            "HX-Trigger": json.dumps(
+                {"inbox-reply-completed": payload.model_dump(mode="json")}
+            )
+        },
     )
 
 
@@ -1010,7 +1054,7 @@ def team_inbox_reply(
     reply_to_message_id: str | None = Form(default=None),
     next_url: str | None = Form(default=None),
     db: Session = Depends(get_db),
-):
+) -> Response:
     _prepare_mutation(db)
     try:
         outcome = team_inbox_commands.reply(
@@ -1030,6 +1074,12 @@ def team_inbox_reply(
             actor_person_id=_actor_id_from_request(request),
         )
     except team_inbox_commands.ConversationNotFoundError:
+        if _is_htmx_request(request):
+            return _reply_presentation_response(
+                conversation_id,
+                status="error",
+                message="Conversation not found.",
+            )
         return RedirectResponse(
             url="/admin/inbox?status=error&message=Conversation%20not%20found",
             status_code=303,
@@ -1038,24 +1088,37 @@ def team_inbox_reply(
         team_inbox_commands.InboxCommandError,
         team_inbox_operations.InboxOperationError,
     ) as exc:
+        if _is_htmx_request(request):
+            return _reply_presentation_response(
+                conversation_id,
+                status="error",
+                message=str(exc),
+            )
         return _detail_redirect(
             conversation_id,
             status="error",
             message=str(exc),
             next_url=next_url,
         )
+    message = (
+        "Reply already submitted."
+        if outcome.replayed
+        else "Reply scheduled."
+        if outcome.kind == "scheduled"
+        else f"Reply queued from {outcome.sender}."
+        if outcome.kind == "queued"
+        else f"Reply sent from {outcome.sender}."
+    )
+    if _is_htmx_request(request):
+        return _reply_presentation_response(
+            conversation_id,
+            status="success",
+            message=message,
+        )
     return _detail_redirect(
         conversation_id,
         status="success",
-        message=(
-            "Reply already submitted."
-            if outcome.replayed
-            else "Reply scheduled."
-            if outcome.kind == "scheduled"
-            else f"Reply queued from {outcome.sender}."
-            if outcome.kind == "queued"
-            else f"Reply sent from {outcome.sender}."
-        ),
+        message=message,
         next_url=next_url,
     )
 
