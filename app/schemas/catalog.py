@@ -460,7 +460,6 @@ class SubscriptionBase(BaseModel):
     next_billing_at: datetime | None = None
     canceled_at: datetime | None = None
     cancel_reason: str | None = Field(default=None, max_length=200)
-    splynx_service_id: int | None = None
     router_id: int | None = None
     service_description: str | None = None
     quantity: int | None = None
@@ -500,7 +499,6 @@ class SubscriptionUpdate(BaseModel):
     next_billing_at: datetime | None = None
     canceled_at: datetime | None = None
     cancel_reason: str | None = Field(default=None, max_length=200)
-    splynx_service_id: int | None = None
     router_id: int | None = None
     service_description: str | None = None
     quantity: int | None = None
@@ -542,7 +540,6 @@ class SubscriptionTechnicalUpdate(BaseModel):
     billing_mode: BillingMode | None = None
     contract_term: ContractTerm | None = None
     billing_cycle: BillingCycle | None = None
-    splynx_service_id: int | None = None
     router_id: int | None = None
     service_description: str | None = None
     quantity: int | None = None
