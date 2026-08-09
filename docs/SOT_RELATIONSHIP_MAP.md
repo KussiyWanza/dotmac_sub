@@ -121,27 +121,27 @@ but equivalent state and actions resolve through the same backend owners.
 11. `observability`
 12. `workforce_operations`
 13. `support_operations`
-14. `ai_advisory`
-15. `provisioning_operations`
-16. `feature_control_plane`
-17. `authorization_control_plane`
-18. `scheduler_control_plane`
-19. `network_access_control_plane`
-20. `service_intent_control_plane`
-21. `integration_control_plane`
-22. `ui_list_projection`
-23. `ui_bulk_actions`
-24. `ui_display_formatting`
-25. `ui_action_forms`
-26. `ui_semantic_presentation`
-27. `vpn_remote_access`
-28. `geospatial`
-29. `sales_referrals`
+14. `tenancy`
+15. `ai_advisory`
+16. `provisioning_operations`
+17. `feature_control_plane`
+18. `authorization_control_plane`
+19. `scheduler_control_plane`
+20. `network_access_control_plane`
+21. `service_intent_control_plane`
+22. `integration_control_plane`
+23. `ui_list_projection`
+24. `ui_bulk_actions`
+25. `ui_display_formatting`
+26. `ui_action_forms`
+27. `ui_semantic_presentation`
+28. `vpn_remote_access`
+29. `geospatial`
+30. `sales_referrals`
 
 Rule: each change should finish one coherent domain boundary: define the owner
 service, migrate the highest-risk callers, and add focused tests. Avoid broad
 mechanical rewrites that obscure business behavior.
-
 ## Dotmac CRM Application Retirement
 
 The complete migration contract is
@@ -697,6 +697,9 @@ Edit the owning domain shard and regenerate; do not hand-edit these rows.
 | `support.ticket_bulk_commands` | support-ticket bulk update eligibility preview | `policy` | typed bulk selection and changes ← `support.ticket_bulk_commands`<br>canonical ticket lifecycle state ← `support.ticket_lifecycle`<br>ticket configuration ← `support.ticket_configuration` | `read_only` | `complete` | support operations | `docs/designs/SUPPORT_TICKET_LIFECYCLE_SOT.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_support_ticket_bulk_actions.py`<br>`tests/architecture/test_support_ticket_sot_boundary.py` |
 | `support.ticket_bulk_commands` | support-ticket bulk confirmation drift detection | `policy` | typed bulk selection and changes ← `support.ticket_bulk_commands`<br>canonical ticket lifecycle state ← `support.ticket_lifecycle`<br>ticket configuration ← `support.ticket_configuration` | `read_only` | `complete` | support operations | `docs/designs/SUPPORT_TICKET_LIFECYCLE_SOT.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_support_ticket_bulk_actions.py`<br>`tests/architecture/test_support_ticket_sot_boundary.py` |
 | `support.ticket_bulk_commands` | structured support-ticket bulk update outcomes | `resolver` | typed bulk selection and changes ← `support.ticket_bulk_commands`<br>canonical ticket lifecycle state ← `support.ticket_lifecycle`<br>ticket configuration ← `support.ticket_configuration` | `read_only` | `complete` | support operations | `docs/designs/SUPPORT_TICKET_LIFECYCLE_SOT.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_support_ticket_bulk_actions.py`<br>`tests/architecture/test_support_ticket_sot_boundary.py` |
+| `tenancy.operator_tenant` | operator tenant identity | `authoritative_record` | deterministic operator tenant id ← `tenancy.operator_tenant` | `owner_managed` | `native` | platform | `docs/adr/0009-operator-tenant-bridge.md`<br>`docs/PLATFORM_ADOPTION_LEDGER.md`<br>`tests/test_operator_tenant.py`<br>`tests/architecture/test_kernel_import_boundary.py` |
+| `tenancy.operator_tenant` | operator tenant provisioning | `command_writer` | deterministic operator tenant id ← `tenancy.operator_tenant` | `owner_managed` | `native` | platform | `docs/adr/0009-operator-tenant-bridge.md`<br>`docs/PLATFORM_ADOPTION_LEDGER.md`<br>`tests/test_operator_tenant.py`<br>`tests/architecture/test_kernel_import_boundary.py` |
+| `tenancy.operator_tenant` | single-tenant deployment invariant | `policy` | deterministic operator tenant id ← `tenancy.operator_tenant` | `owner_managed` | `native` | platform | `docs/adr/0009-operator-tenant-bridge.md`<br>`docs/PLATFORM_ADOPTION_LEDGER.md`<br>`tests/test_operator_tenant.py`<br>`tests/architecture/test_kernel_import_boundary.py` |
 | `ai.gateway` | LLM provider transport | `transport` | assembled advisory prompt ← `ai.generation`<br>resolved provider credential ← `secrets.reference_store` | `not_applicable` | `native` | customer experience platform | `docs/designs/AI_SOT.md`<br>`tests/test_ai_engine.py`<br>`tests/architecture/test_ai_boundaries.py` |
 | `ai.gateway` | provider circuit-breaker and endpoint health | `resolver` | observed provider response ← `external:llm_provider` | `not_applicable` | `native` | customer experience platform | `docs/designs/AI_SOT.md`<br>`tests/test_ai_engine.py`<br>`tests/architecture/test_ai_boundaries.py` |
 | `ai.voice_transcription` | zero-retention voice transcription provider transport | `transport` | authenticated bounded audio upload ← `auth.permission_gate`<br>resolved transcription credential ← `secrets.reference_store`<br>observed transcription response ← `external:voice_transcription_provider` | `not_applicable` | `native` | customer experience platform | `docs/designs/VOICE_TRANSCRIPTION_DATA_PROTECTION.md`<br>`docs/designs/AI_SOT.md`<br>`docs/runbooks/VOICE_TRANSCRIPTION.md`<br>`tests/test_admin_inbox_implemented_features.py`<br>`tests/architecture/test_ai_boundaries.py` |

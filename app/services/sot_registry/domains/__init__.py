@@ -52,6 +52,7 @@ from app.services.sot_registry.domains.subscriber_sessions import (
 from app.services.sot_registry.domains.support_operations import (
     DOMAIN as SUPPORT_OPERATIONS,
 )
+from app.services.sot_registry.domains.tenancy import DOMAIN as TENANCY
 from app.services.sot_registry.domains.ui_action_forms import DOMAIN as UI_ACTION_FORMS
 from app.services.sot_registry.domains.ui_bulk_actions import DOMAIN as UI_BULK_ACTIONS
 from app.services.sot_registry.domains.ui_display_formatting import (
@@ -84,6 +85,7 @@ DOMAIN_DECLARATIONS = (
     OBSERVABILITY,
     WORKFORCE_OPERATIONS,
     SUPPORT_OPERATIONS,
+    TENANCY,
     AI_ADVISORY,
     PROVISIONING_OPERATIONS,
     FEATURE_CONTROL_PLANE,

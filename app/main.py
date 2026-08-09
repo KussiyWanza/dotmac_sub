@@ -442,6 +442,13 @@ def _seed_startup_settings() -> None:
         )
     db = SessionLocal()
     try:
+        # Before every settings seed: settings are tenant-scoped (ADR-0009), so
+        # the tenant they belong to must exist first. Idempotent — an existing
+        # tenant is returned untouched, never reverted.
+        from app.services.operator_tenant import provision_operator_tenant
+
+        provision_operator_tenant(db)
+
         seed_auth_settings(db)
         seed_auth_policy_settings(db)
         seed_audit_settings(db)
