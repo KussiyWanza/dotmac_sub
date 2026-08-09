@@ -3,40 +3,23 @@
 from pathlib import Path
 
 import pytest
-from playwright.sync_api import Page, Route, expect, sync_playwright
+from playwright.sync_api import Page, Route, expect
 
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = ROOT / "static/js/admin-attendance.js"
 
 
 @pytest.fixture()
-def attendance_page():
-    """Use an isolated browser lifecycle for this fully mocked contract test.
+def attendance_page(browser):
+    """Isolate mocked attendance state within the shared E2E browser."""
 
-    These scenarios do not need the shared E2E browser/session fixtures. Keeping
-    the browser function-scoped also guarantees that Playwright is stopped before
-    pytest starts its session teardown.
-    """
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(
-            headless=True,
-            args=[
-                "--headless=new",
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--disable-crash-reporter",
-            ],
-        )
-        context = browser.new_context()
-        page = context.new_page()
-        try:
-            yield page
-        finally:
-            page.close()
-            context.close()
-            browser.close()
+    context = browser.new_context()
+    page = context.new_page()
+    try:
+        yield page
+    finally:
+        page.close()
+        context.close()
 
 
 def _page_html(action: str = "check-in") -> str:

@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.models.system_user import SystemUser
 from app.schemas.workforce_attendance import DashboardAttendanceLocation
-from app.services.audit_helpers import log_audit_event
+from app.services.audit_adapter import record_audit_event
 from app.services.rate_limiter_adapter import allow_operation
 from app.services.workforce_attendance import (
     AttendanceState,
@@ -162,9 +162,8 @@ def _audit(
     success: bool,
 ) -> None:
     try:
-        log_audit_event(
+        record_audit_event(
             db=db,
-            request=request,
             action=f"attendance_{action}",
             entity_type="workforce_attendance_transport",
             entity_id=str(subject),
@@ -176,8 +175,8 @@ def _audit(
             },
             status_code=200 if success else 400,
             is_success=success,
+            request_id=str(getattr(request.state, "request_id", "")) or None,
+            defer_until_commit=False,
         )
-        db.commit()
     except Exception:
-        db.rollback()
         logger.warning("Selfcare attendance audit failed", exc_info=True)
