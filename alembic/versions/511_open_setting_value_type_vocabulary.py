@@ -151,8 +151,19 @@ def upgrade() -> None:
         )
 
     # The alignment CHECK named `json`, so a second JSON-stored type could not
-    # be written at all. Replaced with the invariant that holds for every type:
-    # exactly one value column is populated.
+    # be written at all. Replaced with a constraint that names NO type --- which
+    # is the whole point --- while staying true to how Sub actually stores
+    # values today: a row carries a value in at least one column.
+    #
+    # NOT "exactly one". The kernel's equivalent constraint is exactly-one,
+    # because there a type's `ValueTypeSpec.storage` picks its single column.
+    # Sub deliberately writes a BOOLEAN to BOTH (`normalize_for_db`: the seed
+    # wrote both, the retired per-domain handlers wrote both, and `_to_bool` in
+    # `app.main` reads `value_json` first, so leaving it NULL made a boolean
+    # row's shape depend on which writer produced it). Tightening to
+    # exactly-one here would reject rows this codebase writes on purpose ---
+    # that is a change of storage convention, and it belongs to the settings
+    # cutover, where the kernel becomes the writer and picks the column.
     op.execute(
         sa.text(
             f"ALTER TABLE domain_settings DROP CONSTRAINT IF EXISTS "
@@ -161,8 +172,9 @@ def upgrade() -> None:
     )
     # A row may hold the JSON text `null` where it means "no JSON value":
     # SQLAlchemy serialises Python `None` that way unless `none_as_null=True`.
-    # Such a row would fail the new constraint, and it is also wrong on its own
-    # terms --- `value_json IS NULL` never matched it.
+    # Such a row satisfies `value_json IS NOT NULL` while carrying nothing, so
+    # it would slip past the new constraint on a technicality; it is also wrong
+    # on its own terms.
     op.execute(
         sa.text(
             "UPDATE domain_settings SET value_json = NULL "
@@ -172,8 +184,7 @@ def upgrade() -> None:
     op.create_check_constraint(
         ALIGNMENT_CONSTRAINT,
         "domain_settings",
-        "(value_text IS NOT NULL AND value_json IS NULL) "
-        "OR (value_text IS NULL AND value_json IS NOT NULL)",
+        "value_text IS NOT NULL OR value_json IS NOT NULL",
     )
 
     if not _enum_exists():

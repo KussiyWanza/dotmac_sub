@@ -195,15 +195,19 @@ class DomainSetting(Base):
     __tablename__ = "domain_settings"
     __table_args__ = (
         UniqueConstraint("domain", "key", name="uq_domain_settings_domain_key"),
-        # A value lands in exactly one column. The old form named the type
-        # (`value_type = 'json'`), which is the same closed list migration 511
-        # removed from the column itself — a second JSON-stored type such as
-        # `list` or `money` could not satisfy it. Which column a type uses is a
-        # property of the TYPE (the kernel's `ValueTypeSpec.storage`); the
-        # database only needs to know that exactly one is populated.
+        # A row carries a value in at least one column. The old form named the
+        # type (`value_type = 'json'`), which is the same closed list migration
+        # 511 removed from the column itself — a second JSON-stored type such
+        # as `list` or `money` could not satisfy it.
+        #
+        # NOT "exactly one", which is what the kernel's equivalent constraint
+        # says: there a type's `ValueTypeSpec.storage` picks its single column.
+        # Sub writes a BOOLEAN to BOTH on purpose (see `normalize_for_db`), so
+        # exactly-one would reject rows this codebase writes deliberately.
+        # Tightening that is a change of storage convention and belongs to the
+        # settings cutover, where the kernel becomes the writer.
         CheckConstraint(
-            "(value_text IS NOT NULL AND value_json IS NULL) "
-            "OR (value_text IS NULL AND value_json IS NOT NULL)",
+            "value_text IS NOT NULL OR value_json IS NOT NULL",
             name="ck_domain_settings_value_alignment",
         ),
     )

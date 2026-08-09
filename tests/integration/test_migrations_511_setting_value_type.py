@@ -321,15 +321,15 @@ def test_the_enum_becomes_open_text_and_a_second_json_type_becomes_writable(
     assert _stored_type(database_url, "brand_new") == NEW_JSON_TYPE
 
 
-def test_both_columns_populated_is_still_refused(
+def test_a_valueless_row_is_still_refused(
     isolated_migration_database: URL,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The replacement CHECK must still be a constraint, not a formality.
 
-    Dropping a CHECK and replacing it with a weaker one is an easy way to make a
-    migration pass; the invariant that survives is "exactly one value column",
-    and a row with both populated must still be rejected.
+    Replacing a CHECK with a weaker one is an easy way to make a migration
+    pass. What survives is "a row carries a value somewhere", and a row with
+    neither column populated must still be rejected.
     """
 
     database_url = isolated_migration_database
@@ -342,11 +342,44 @@ def test_both_columns_populated_is_still_refused(
             "INSERT INTO domain_settings "
             "(id, domain, key, value_type, value_text, value_json, is_secret, "
             "is_active, created_at, updated_at) "
-            "VALUES (:id, 'audit', 'both_columns', 'string', 'text', "
-            "CAST('{}' AS json), false, true, :now, :now)",
+            "VALUES (:id, 'audit', 'no_value', 'string', NULL, NULL, "
+            "false, true, :now, :now)",
             id=str(uuid4()),
             now=datetime.now(UTC),
         )
+
+
+def test_a_boolean_written_to_both_columns_is_accepted(
+    isolated_migration_database: URL,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sub's actual storage convention, pinned so the cutover changes it on purpose.
+
+    `normalize_for_db` writes a boolean to BOTH `value_text` and `value_json` —
+    the seed did, the retired per-domain handlers did, and `_to_bool` in
+    `app.main` reads `value_json` first, so a NULL there made a row's shape
+    depend on its writer. The kernel's equivalent constraint is exactly-one and
+    would reject this; adopting that is a storage-convention change owned by the
+    settings cutover, not by this migration. Until then, dual-write is legal and
+    this test says so out loud rather than leaving it to a passing CI run.
+    """
+
+    database_url = isolated_migration_database
+    _use_database(monkeypatch, database_url)
+    command.upgrade(_alembic_config(), "head")
+
+    _execute(
+        database_url,
+        "INSERT INTO domain_settings "
+        "(id, domain, key, value_type, value_text, value_json, is_secret, "
+        "is_active, created_at, updated_at) "
+        "VALUES (:id, 'audit', 'dual_written_boolean', 'boolean', 'true', "
+        "CAST('true' AS json), false, true, :now, :now)",
+        id=str(uuid4()),
+        now=datetime.now(UTC),
+    )
+
+    assert _stored_type(database_url, "dual_written_boolean") == "boolean"
 
 
 def test_a_database_built_after_the_model_change_migrates_cleanly(
