@@ -26,6 +26,9 @@
         back_label="Payments",
         status=status_html
     ) %}
+        {% if receipt_available %}
+        {{ action_button("Download receipt", href="/admin/billing/payments/" ~ payment.id ~ "/receipt/pdf", variant="secondary", color="emerald") }}
+        {% endif %}
         {% if edit_capability.allowed %}
         {{ action_button("Edit Payment", href="/admin/billing/payments/" ~ payment.id ~ "/edit", icon=icon_edit("h-4 w-4"), variant="secondary", color="emerald") }}
         {% endif %}
