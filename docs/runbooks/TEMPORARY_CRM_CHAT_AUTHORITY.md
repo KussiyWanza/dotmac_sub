@@ -2,9 +2,9 @@
 
 ## Scope and targets
 
-This runbook applies only to `selfcare.dotmac.io` and `crm.dotmac.io`. It moves
-portal live-chat authority temporarily from Selfcare to CRM and reconciles
-native history without dual writing.
+This runbook applies to `selfcare.dotmac.io`, `crm.dotmac.io`, and the widget
+embedded on `fiber.dotmac.ng`. It moves live-chat authority without dual
+writing and reconciles native history before the final Sub cutover.
 
 ## Preconditions
 
@@ -43,10 +43,14 @@ native history without dual writing.
 1. Stop and investigate any unresolved CRM-to-Selfcare history gap.
 2. Set `comms.chat_session_authority=selfcare`.
 3. Open a controlled portal chat and verify `/widget` plus `/ws/inbox`.
-4. Verify one native message appears once in Selfcare and no new CRM portal
+4. Configure the fiber site with Sub's public base URL, open a controlled
+   fiber-site chat, and verify it appears once as `channel_type=chat_widget`,
+   `surface=fiber_website`; verify an agent reply reaches that browser session.
+5. Verify one native message appears once in Selfcare and no new CRM portal or
+   fiber-site
    session is created.
-5. Observe traffic and delivery health.
-6. Disable `crm.chat_session.v1` after the observation gate passes.
+6. Observe traffic and delivery health.
+7. Disable `crm.chat_session.v1` after the observation gate passes.
 
 Changing the authority setting is the rollback. Do not enable two chat writers
 or add a fallback that writes locally when CRM is unavailable.

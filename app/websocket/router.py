@@ -42,6 +42,13 @@ async def inbox_websocket(websocket: WebSocket):
     auth_result = await authenticate_websocket(websocket)
     if not auth_result:
         return
+    if auth_result.get("surface") == "fiber_website":
+        from app.config import settings
+
+        origin = str(websocket.headers.get("origin") or "").rstrip("/")
+        if origin != settings.fiber_chat_allowed_origin:
+            await websocket.close(code=4003, reason="Origin not allowed")
+            return
 
     user_id = auth_result["subscriber_id"]
     manager = get_connection_manager()

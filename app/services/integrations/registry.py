@@ -317,6 +317,46 @@ def _meta_social_manifest(
 
 _DEFINITIONS: tuple[ConnectorManifest, ...] = (
     ConnectorManifest(
+        key="fiber.inquiry.http",
+        name="Fiber Website Inquiry",
+        version="1.0.0",
+        connector_type="messaging",
+        description="Signed fiber.dotmac.ng inquiry ingress for Team Inbox.",
+        runtime=RuntimeManifest(
+            type=ConnectorRuntimeType.builtin_worker,
+            module="app.services.integrations.connectors.fiber_inquiry_http",
+        ),
+        capabilities=(
+            CapabilityManifest(
+                id="communications.fiber_inquiry.receive.v1",
+                modes=(CapabilityMode.inbound,),
+            ),
+        ),
+        config_schema={
+            "type": "object",
+            "properties": {
+                "signature_header": {"type": "string", "minLength": 1},
+                "delivery_id_header": {"type": "string", "minLength": 1},
+                "signature_prefix": {"type": "string"},
+                "site_id": {"type": "string", "minLength": 1},
+            },
+            "required": [
+                "signature_header",
+                "delivery_id_header",
+                "signature_prefix",
+                "site_id",
+            ],
+            "additionalProperties": False,
+        },
+        secrets=(SecretBindingManifest(name="webhook_signing_secret"),),
+        data_access=DataAccessManifest(
+            emits=("communications.inbound_message_observation",),
+            classifications=("customer_contact", "message_content"),
+        ),
+        egress=EgressManifest(),
+        health=HealthManifest(operation="connection.validate.v1"),
+    ),
+    ConnectorManifest(
         key="lead.capture.http",
         name="Lead Capture Webhook",
         version="1.0.0",

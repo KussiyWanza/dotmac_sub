@@ -41,10 +41,12 @@ At final cutover:
 2. enable and validate native Selfcare channels and staffing;
 3. set `comms.chat_session_authority=selfcare`;
 4. verify new portal sessions return `/widget` and `/ws/inbox`;
-5. verify zero new `surface=customer|reseller_portal` CRM sessions during the
+5. verify the fiber site loads Sub's widget, accepts one exact-origin public
+   session as `surface=fiber_website`, and receives an agent reply;
+6. verify zero new `surface=customer|reseller_portal|fiber_website` CRM sessions during the
    observation window;
-6. disable the `crm.chat_session.v1` binding;
-7. remove this temporary capability and control in a focused follow-up.
+7. disable the `crm.chat_session.v1` binding;
+8. remove this temporary capability and control in a focused follow-up.
 
 Historical CRM rows remain audit evidence and are not copied back as live
 Selfcare messages.

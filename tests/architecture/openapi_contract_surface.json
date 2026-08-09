@@ -18194,6 +18194,16 @@
     "200": "35ca38bd28f3"
    }
   },
+  "POST /api/v1/webhooks/fiber-inquiry/{capability_binding_id}": {
+   "params": [
+    "path:capability_binding_id!"
+   ],
+   "request": null,
+   "responses": {
+    "200": "825108100fd0",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "POST /api/v1/webhooks/lead-capture/{capability_binding_id}": {
    "params": [
     "path:capability_binding_id!"
@@ -18929,6 +18939,7 @@
   "FiberFieldVerificationJobPlanFeatureRead": "42bcf151f2ab",
   "FiberFieldVerificationJobPlanPreviewRead": "b64820005273",
   "FiberFieldVerificationJobPlanRequest": "a50564a58e40",
+  "FiberInquiryReceipt": "a1106cf17b8d",
   "FiberPathRead": "d6a2ee343fdf",
   "FiberPathSegment": "a86366b1a29f",
   "FiberSegmentCreate": "c12fc3c3d8bf",

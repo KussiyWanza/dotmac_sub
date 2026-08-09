@@ -2,7 +2,8 @@
 
 **Status:** Implemented
 **Decision owner:** Customer experience platform
-**Scope:** Native Team Inbox; email, WhatsApp, Meta social, and chat-widget channels
+**Scope:** Native Team Inbox; email, WhatsApp, Meta social, chat-widget, and
+fiber-website inquiry channels
 
 ## Decision
 
@@ -40,7 +41,7 @@ combined Inbox/Support workspace.
 | Outbound communication intent | `communications.team_inbox_outbound_intents` | Stages the intent, notification outbox record, and Inbox attempt together |
 | Provider receipts | `communications.team_inbox_delivery_receipts` | Applies timestamp-monotonic sent/delivered/read/failed projections |
 | Operator mutations | `communications.team_inbox_commands` | Coordinates one typed owner transaction for replies and collaboration actions |
-| Visitor chat mutations | `communications.team_inbox_widget` | Owns authenticated widget session, message, read, and satisfaction commands |
+| Visitor chat mutations | `communications.team_inbox_widget` | Owns authenticated portal and anonymous fiber-site widget session, message, read, and satisfaction commands; anonymous identity is exact-match or Party-backed prospect with ambiguity held for review |
 | List/detail/metrics/actions | `communications.team_inbox_projection` | Normalizes filters, sort and pagination, computes KPIs, unread and action eligibility |
 | Repair jobs | `communications.team_inbox_maintenance` | Rebuilds media worklists, retries failed intents, and applies stale-conversation policy |
 | Realtime | `communications.team_inbox_realtime` | Publishes best-effort projections only after commit; clients refetch on gaps |
@@ -64,6 +65,17 @@ outbound-intent owners.
    contact and routing, then stores the consequence identity on the observation.
 4. A processed observation is a no-op on retry. Existing message and thread
    constraints provide a second idempotency boundary.
+
+The fiber website uses the same boundary through the signed
+`communications.fiber_inquiry.receive.v1` Integration Platform capability.
+The verified delivery receipt is recorded before the normalized
+`fiber_website` provider observation, and the observation processing owner is
+the only caller that may create its Conversation, Message, and optional
+Party-first Lead consequence. Exact email and phone evidence may link one
+existing Subscriber. No match creates a reusable prospect Party and Lead;
+conflicting, ambiguous, or suppressed matches fail closed by creating the
+conversation without a Subscriber or automatic Party/Lead and setting
+`identity_review_required` for operator review.
 
 Missing provider occurrence times use an explicit stable unknown-time sentinel
 for fingerprinting; `recorded_at` still records admission time. Private raw
@@ -132,6 +144,9 @@ The admin CRM-replication controls use these existing owners:
   lowercases and deduplicates each list, then stores both on internal intent
   metadata. SMTP places CC in the MIME header, never emits a BCC header, and
   sends the primary, CC and BCC addresses in the envelope.
+- Fiber-website inquiries are inbound-only. The projection and outbound owner
+  explicitly reject replies until a reviewed reply transport and prospect
+  destination policy are approved.
 
 ## Lifecycle audit evidence
 

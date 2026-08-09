@@ -6,15 +6,18 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from app.models.domain_settings import DomainSetting, SettingDomain
+from app.models.party import Party
+from app.models.sales import Lead
 from app.models.subscriber import Subscriber
 from app.models.team_inbox import (
     InboxChannelType,
     InboxConversation,
+    InboxConversationLeadLink,
     InboxConversationStatus,
     InboxMessage,
     InboxMessageDirection,
 )
-from app.services import team_inbox_operations, team_inbox_widget
+from app.services import team_inbox_operations, team_inbox_outbound, team_inbox_widget
 
 
 @contextmanager
@@ -204,3 +207,154 @@ def test_chat_disabled_returns_503(db_session):
             team_inbox_widget.broker_customer_session(db_session, str(sub.id))
 
     assert exc.value.code == "communications.team_inbox_widget.disabled"
+
+
+def _fiber_chat_command(
+    *,
+    client_session_id=None,
+    email: str = "prospect@example.com",
+    phone: str | None = "08031234567",
+) -> team_inbox_widget.FiberWidgetSessionCommand:
+    import uuid
+
+    return team_inbox_widget.FiberWidgetSessionCommand(
+        client_session_id=client_session_id or uuid.uuid4(),
+        full_name="Fiber Chat Prospect",
+        email=email,
+        phone=phone,
+        message="Can I get fiber at my address?",
+        page_url="https://fiber.dotmac.ng/coverage/",
+        referrer_url="https://www.google.com/",
+        started_at=datetime.now(UTC) - timedelta(seconds=5),
+        actor="transport:test-fiber-widget",
+    )
+
+
+def test_fiber_widget_unmatched_visitor_creates_party_lead_and_chat(db_session):
+    command = _fiber_chat_command()
+
+    with _chat_enabled():
+        outcome = team_inbox_widget.broker_fiber_visitor_session_committed(
+            db_session,
+            command=command,
+        )
+
+    conversation = db_session.get(InboxConversation, outcome.conversation_id)
+    message = db_session.get(InboxMessage, outcome.message_id)
+    assert conversation.channel_type == InboxChannelType.chat_widget.value
+    assert conversation.subscriber_id is None
+    assert conversation.metadata_["surface"] == "fiber_website"
+    assert conversation.metadata_["contact_resolution"]["status"] == "unmatched"
+    assert message.body == "Can I get fiber at my address?"
+    assert db_session.query(Party).count() == 1
+    assert db_session.query(Lead).count() == 1
+    assert db_session.query(InboxConversationLeadLink).count() == 1
+
+
+def test_fiber_widget_exact_subscriber_match_creates_no_prospect(db_session):
+    subscriber = _subscriber(db_session)
+    db_session.commit()
+    command = _fiber_chat_command(
+        email="ADA@example.com",
+        phone="08035550114",
+    )
+
+    with _chat_enabled():
+        outcome = team_inbox_widget.broker_fiber_visitor_session_committed(
+            db_session,
+            command=command,
+        )
+
+    conversation = db_session.get(InboxConversation, outcome.conversation_id)
+    assert outcome.resolution_status == "linked_subscriber"
+    assert conversation.subscriber_id == subscriber.id
+    assert db_session.query(Lead).count() == 0
+    assert db_session.query(Party).count() == 0
+
+
+def test_fiber_widget_conflicting_matches_fail_closed(db_session):
+    _subscriber(db_session)
+    other = Subscriber(
+        first_name="Other",
+        last_name="Customer",
+        display_name="Other Customer",
+        email="other@example.com",
+        phone="0803 000 0002",
+        is_active=True,
+    )
+    db_session.add(other)
+    db_session.commit()
+    command = _fiber_chat_command(
+        email="ada@example.com",
+        phone="08030000002",
+    )
+
+    with _chat_enabled():
+        outcome = team_inbox_widget.broker_fiber_visitor_session_committed(
+            db_session,
+            command=command,
+        )
+
+    conversation = db_session.get(InboxConversation, outcome.conversation_id)
+    assert outcome.resolution_status == "identity_review_required"
+    assert conversation.subscriber_id is None
+    assert conversation.metadata_["identity_review_required"] is True
+    assert db_session.query(Lead).count() == 0
+    assert db_session.query(Party).count() == 0
+
+
+def test_fiber_widget_session_start_replays_by_client_session_id(db_session):
+    command = _fiber_chat_command()
+
+    with _chat_enabled():
+        first = team_inbox_widget.broker_fiber_visitor_session_committed(
+            db_session,
+            command=command,
+        )
+        replay = team_inbox_widget.broker_fiber_visitor_session_committed(
+            db_session,
+            command=command,
+        )
+
+    assert replay.replayed is True
+    assert replay.conversation_id == first.conversation_id
+    assert replay.message_id == first.message_id
+    assert db_session.query(InboxConversation).count() == 1
+    assert db_session.query(InboxMessage).count() == 1
+    assert db_session.query(Lead).count() == 1
+
+
+def test_agent_reply_reaches_fiber_widget_session_history(db_session):
+    command = _fiber_chat_command()
+    with _chat_enabled():
+        session = team_inbox_widget.broker_fiber_visitor_session_committed(
+            db_session,
+            command=command,
+        )
+        conversation = db_session.get(InboxConversation, session.conversation_id)
+        reply = team_inbox_outbound.send_inbox_reply(
+            db_session,
+            conversation=conversation,
+            payload=team_inbox_outbound.InboxReplyPayload(
+                body_html="",
+                body_text="Yes, please send your installation address.",
+                metadata={"author_name": "Fiber Support"},
+            ),
+        )
+        principal = team_inbox_widget.decode_widget_token(
+            db_session,
+            session.visitor_token,
+        )
+        history = team_inbox_widget.list_session_messages(
+            db_session,
+            principal=principal,
+        )
+
+    assert reply.kind == "queued"
+    assert [message["direction"] for message in history["messages"]] == [
+        InboxMessageDirection.inbound.value,
+        InboxMessageDirection.outbound.value,
+    ]
+    assert history["messages"][-1]["body"] == (
+        "Yes, please send your installation address."
+    )

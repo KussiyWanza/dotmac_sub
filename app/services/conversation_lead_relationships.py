@@ -33,6 +33,8 @@ class ConversationLeadLinkSource(StrEnum):
     reviewed_selection = "reviewed_selection"
     inbox_lead_intake = "inbox_lead_intake"
     inbox_lead_authoring = "inbox_lead_authoring"
+    fiber_website_inquiry = "fiber_website_inquiry"
+    fiber_website_chat = "fiber_website_chat"
     reviewed_repair = "reviewed_repair"
 
 

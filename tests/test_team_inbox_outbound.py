@@ -13,6 +13,7 @@ from app.models.service_team import ServiceTeam, ServiceTeamType
 from app.models.subscriber import Subscriber, SubscriberStatus
 from app.models.subscription_engine import SettingValueType
 from app.models.team_inbox import (
+    InboxChannelType,
     InboxConversation,
     InboxConversationStatus,
     InboxConversationTeam,
@@ -601,6 +602,26 @@ def test_send_inbox_reply_requires_whatsapp_recipient(db_session):
 
     assert result.kind == "missing_recipient"
     assert result.reason == "Conversation has no WhatsApp reply recipient"
+
+
+def test_fiber_website_reply_is_explicitly_unsupported(db_session):
+    conversation = InboxConversation(
+        channel_type=InboxChannelType.website_fiber.value,
+        contact_address="prospect@example.com",
+        status=InboxConversationStatus.open.value,
+    )
+    db_session.add(conversation)
+    db_session.commit()
+
+    result = team_inbox_outbound.send_inbox_reply(
+        db_session,
+        conversation=conversation,
+        payload=team_inbox_outbound.InboxReplyPayload(body_html="<p>Hello.</p>"),
+    )
+
+    assert result.kind == "unsupported_channel"
+    assert db_session.query(Notification).count() == 0
+    assert db_session.query(InboxMessage).count() == 0
 
 
 def test_linked_disabled_subscriber_reply_is_suppressed(db_session):

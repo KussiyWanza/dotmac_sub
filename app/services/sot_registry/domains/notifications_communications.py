@@ -1476,7 +1476,7 @@ DOMAIN = DomainSOT(
                         name="verified normalized provider fact",
                         owner="external:communications_provider",
                         kind=AuthorityKind.EXTERNAL_OBSERVATION,
-                        source="Authenticated email, WhatsApp, social, or widget adapter output with bounded message or receipt fields.",
+                        source="Authenticated email, WhatsApp, social, widget, or signed fiber website adapter output with bounded message or receipt fields.",
                     ),
                     AuthorityInput(
                         name="verified webhook admission",
@@ -1534,6 +1534,8 @@ DOMAIN = DomainSOT(
                 "communications.team_inbox_contact_resolution",
                 "communications.team_inbox_routing",
                 "communications.team_inbox_delivery_receipts",
+                "communications.conversation_lead_relationships",
+                "sales.capture",
             ),
             contract=_team_inbox_contract(
                 service_name="communications.team_inbox_processing",
@@ -1579,6 +1581,18 @@ DOMAIN = DomainSOT(
                         owner="ai.intake",
                         kind=AuthorityKind.DERIVED_PROJECTION,
                         source="Bounded destination-team classification or explicit fallback status.",
+                    ),
+                    AuthorityInput(
+                        name="fiber prospect capture result",
+                        owner="sales.capture",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="Party-first Lead capture for a signed unmatched fiber website inquiry; ambiguous identity is excluded.",
+                    ),
+                    AuthorityInput(
+                        name="fiber conversation lead provenance",
+                        owner="communications.conversation_lead_relationships",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="Atomic Conversation-to-Lead-to-Party link created under the processing command.",
                     ),
                 ),
                 transaction_mode=TransactionMode.COORDINATOR_MANAGED,
@@ -2142,23 +2156,31 @@ DOMAIN = DomainSOT(
         SOTService(
             name="communications.team_inbox_widget",
             module="app.services.team_inbox_widget",
-            owns=("authenticated visitor message and read-state commands",),
+            owns=("visitor chat session, message, and read-state commands",),
             depends_on=(
                 "customer.identity_scope",
                 "communications.team_inbox_threads",
+                "communications.team_inbox_contact_resolution",
+                "communications.team_inbox_routing",
+                "communications.conversation_lead_relationships",
+                "sales.capture",
+                "party.registry",
                 "control.settings_spec",
             ),
             notes=(
                 "ADR 0006 temporarily assigns portal live-chat authority to CRM "
                 "when comms.chat_session_authority=crm. This native command owner "
                 "then fails closed for both new and previously issued widget tokens; "
-                "it never mirrors or falls back to a local write."
+                "it never mirrors or falls back to a local write. Anonymous fiber-site "
+                "sessions are exact-origin and rate controlled by the adapter, use "
+                "Party-first prospect capture only for unmatched identity, and retain "
+                "ambiguous identity for human review."
             ),
             contract=_team_inbox_contract(
                 service_name="communications.team_inbox_widget",
                 concerns=(
                     (
-                        "authenticated visitor message and read-state commands",
+                        "visitor chat session, message, and read-state commands",
                         OwnerRole.COMMAND_WRITER,
                     ),
                 ),
@@ -2167,7 +2189,34 @@ DOMAIN = DomainSOT(
                         name="authenticated visitor principal",
                         owner="customer.identity_scope",
                         kind=AuthorityKind.CONTROL_INPUT,
-                        source="Exact Subscriber or reseller principal and bounded signed widget-session identity.",
+                        source=(
+                            "Exact Subscriber or reseller principal and a bounded "
+                            "signed widget-session identity."
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="anonymous fiber visitor command",
+                        owner="communications.team_inbox_widget",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "Exact-origin typed name, email, optional phone, first "
+                            "message, page provenance, client session id, and spam evidence."
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="fiber visitor contact resolution",
+                        owner="communications.team_inbox_contact_resolution",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "Exact active Subscriber matches or fail-closed ambiguous "
+                            "identity requiring human review."
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="fiber visitor prospect capture",
+                        owner="sales.capture",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="Party-backed Lead and immutable website-chat origin for unmatched identity.",
                     ),
                     AuthorityInput(
                         name="widget conversation identity",

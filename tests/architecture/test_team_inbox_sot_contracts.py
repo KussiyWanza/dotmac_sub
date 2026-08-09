@@ -105,7 +105,11 @@ def test_inbox_services_have_no_transport_errors_or_direct_completion() -> None:
 
 
 def test_webhook_adapters_do_not_copy_raw_provider_payloads() -> None:
-    for relative in ("app/api/inbox_webhooks.py", "app/api/meta_inbox_webhooks.py"):
+    for relative in (
+        "app/api/inbox_webhooks.py",
+        "app/api/meta_inbox_webhooks.py",
+        "app/api/fiber_inquiry_webhooks.py",
+    ):
         source = (ROOT / relative).read_text(encoding="utf-8")
         assert '"raw":' not in source
         assert "record_provider_observation" not in source

@@ -27,6 +27,7 @@ from app.db import Base
 class InboxChannelType(enum.Enum):
     email = "email"
     whatsapp = "whatsapp"
+    website_fiber = "website_fiber"
     facebook_messenger = "facebook_messenger"
     instagram_dm = "instagram_dm"
     facebook_comment = "facebook_comment"

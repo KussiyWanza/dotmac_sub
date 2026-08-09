@@ -672,6 +672,7 @@ def get_conversation_projection(
     if timeline is None:
         return None
     is_resolved = timeline.status == InboxConversationStatus.resolved.value
+    outbound_unsupported = timeline.channel_type == InboxChannelType.website_fiber.value
     summary = subscriber_summary.subscriber_summary(db, timeline.subscriber_id)
     lead_eligibility = lead_intake.manual_invitation_eligibility(db, conversation_id)
     return InboxConversationProjection(
@@ -690,16 +691,22 @@ def get_conversation_projection(
         ),
         catalogue_options=plan_family_catalogues.list_catalogue_options(db),
         action_eligibility=InboxActionEligibility(
-            can_reply=not is_resolved,
+            can_reply=not is_resolved and not outbound_unsupported,
             can_resolve=not is_resolved,
             can_reopen=is_resolved,
             can_link_contact=bool(timeline.contact_address),
             can_mark_read=actor_person_id is not None,
             can_issue_lead_form=lead_eligibility.eligible,
             lead_form_reason=lead_eligibility.reason,
-            reason="Resolved conversations must be reopened before replying."
-            if is_resolved
-            else None,
+            reason=(
+                "Resolved conversations must be reopened before replying."
+                if is_resolved
+                else (
+                    "Outbound replies for fiber website inquiries are not configured yet."
+                    if outbound_unsupported
+                    else None
+                )
+            ),
         ),
         is_unread=(
             team_inbox_read_state.conversation_is_unread(
