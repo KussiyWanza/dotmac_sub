@@ -135,6 +135,23 @@ def upgrade() -> None:
         # CHECK the same way; there is nothing to widen and no type to drop.
         return
 
+    # ORDER MATTERS, and getting it wrong fails loudly rather than subtly. The
+    # alignment CHECK compares `value_type` against `'json'::settingvaluetype`,
+    # so PostgreSQL re-validates it while rewriting the column and finds itself
+    # comparing a VARCHAR to an enum:
+    #
+    #     operator does not exist: character varying = settingvaluetype
+    #
+    # The constraint that NAMES the type therefore has to come off before the
+    # column that CARRIES it changes. Kernel migration
+    # `20260808_0015_open_value_types` drops it first for the same reason.
+    op.execute(
+        sa.text(
+            f"ALTER TABLE domain_settings DROP CONSTRAINT IF EXISTS "
+            f"{ALIGNMENT_CONSTRAINT}"
+        )
+    )
+
     # Raw SQL rather than ``op.alter_column`` with an ``sa.Enum``: naming the
     # enum here would register this file as a second creator of
     # ``settingvaluetype`` with the duplicate-enum guard
@@ -150,26 +167,6 @@ def upgrade() -> None:
             )
         )
 
-    # The alignment CHECK named `json`, so a second JSON-stored type could not
-    # be written at all. Replaced with a constraint that names NO type --- which
-    # is the whole point --- while staying true to how Sub actually stores
-    # values today: a row carries a value in at least one column.
-    #
-    # NOT "exactly one". The kernel's equivalent constraint is exactly-one,
-    # because there a type's `ValueTypeSpec.storage` picks its single column.
-    # Sub deliberately writes a BOOLEAN to BOTH (`normalize_for_db`: the seed
-    # wrote both, the retired per-domain handlers wrote both, and `_to_bool` in
-    # `app.main` reads `value_json` first, so leaving it NULL made a boolean
-    # row's shape depend on which writer produced it). Tightening to
-    # exactly-one here would reject rows this codebase writes on purpose ---
-    # that is a change of storage convention, and it belongs to the settings
-    # cutover, where the kernel becomes the writer and picks the column.
-    op.execute(
-        sa.text(
-            f"ALTER TABLE domain_settings DROP CONSTRAINT IF EXISTS "
-            f"{ALIGNMENT_CONSTRAINT}"
-        )
-    )
     # A row may hold the JSON text `null` where it means "no JSON value":
     # SQLAlchemy serialises Python `None` that way unless `none_as_null=True`.
     # Such a row satisfies `value_json IS NOT NULL` while carrying nothing, so
@@ -181,6 +178,20 @@ def upgrade() -> None:
             "WHERE value_json::text = 'null'"
         )
     )
+
+    # The replacement names NO type --- which is the whole point --- while
+    # staying true to how Sub actually stores values today: a row carries a
+    # value in at least one column.
+    #
+    # NOT "exactly one". The kernel's equivalent constraint is exactly-one,
+    # because there a type's `ValueTypeSpec.storage` picks its single column.
+    # Sub deliberately writes a BOOLEAN to BOTH (`normalize_for_db`: the seed
+    # wrote both, the retired per-domain handlers wrote both, and `_to_bool` in
+    # `app.main` reads `value_json` first, so leaving it NULL made a boolean
+    # row's shape depend on which writer produced it). Tightening to
+    # exactly-one here would reject rows this codebase writes on purpose ---
+    # that is a change of storage convention, and it belongs to the settings
+    # cutover, where the kernel becomes the writer and picks the column.
     op.create_check_constraint(
         ALIGNMENT_CONSTRAINT,
         "domain_settings",
@@ -211,17 +222,15 @@ def downgrade() -> None:
     if not _is_postgres():
         return
 
+    # Mirror of the upgrade's ordering, for the same reason: the constraint
+    # that names the type is created only once the column carrying it is the
+    # enum again. Building it against a VARCHAR column first would compare a
+    # VARCHAR to `'json'::settingvaluetype` and fail.
     op.execute(
         sa.text(
             f"ALTER TABLE domain_settings DROP CONSTRAINT IF EXISTS "
             f"{ALIGNMENT_CONSTRAINT}"
         )
-    )
-    op.create_check_constraint(
-        ALIGNMENT_CONSTRAINT,
-        "domain_settings",
-        "(value_type = 'json' AND value_json IS NOT NULL AND value_text IS NULL) "
-        "OR (value_type != 'json' AND value_text IS NOT NULL)",
     )
 
     if not _enum_exists():
@@ -238,3 +247,10 @@ def downgrade() -> None:
                 f"USING {column}::{ENUM_NAME}"
             )
         )
+
+    op.create_check_constraint(
+        ALIGNMENT_CONSTRAINT,
+        "domain_settings",
+        "(value_type = 'json' AND value_json IS NOT NULL AND value_text IS NULL) "
+        "OR (value_type != 'json' AND value_text IS NOT NULL)",
+    )
