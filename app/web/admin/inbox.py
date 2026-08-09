@@ -1683,6 +1683,47 @@ def team_inbox_contact_link(
 
 
 @router.post(
+    "/{conversation_id}/merge-contact",
+    dependencies=[Depends(require_permission("crm:lead:write"))],
+)
+def team_inbox_merge_contact(
+    conversation_id: UUID,
+    request: Request,
+    target_type: str = Form(...),
+    target_query: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
+    _prepare_mutation(db)
+    try:
+        outcome = team_inbox_commands.merge_contact(
+            db,
+            conversation_id=conversation_id,
+            target_type=target_type,
+            target_query=target_query,
+            actor_person_id=_actor_id_from_request(request),
+        )
+    except team_inbox_commands.ConversationNotFoundError:
+        return RedirectResponse(
+            url="/admin/inbox?status=error&message=Conversation%20not%20found",
+            status_code=303,
+        )
+    except (
+        team_inbox_commands.InboxCommandError,
+        team_inbox_contact_links.ContactLinkError,
+    ) as exc:
+        return _detail_redirect(conversation_id, status="error", message=str(exc))
+    return _detail_redirect(
+        conversation_id,
+        status="success",
+        message=(
+            "Contact captured as a lead."
+            if outcome.target_type == "lead"
+            else f"Contact merged to {outcome.target_type.replace('_', ' ')}."
+        ),
+    )
+
+
+@router.post(
     "/{conversation_id}/note",
     dependencies=[Depends(require_permission("support:ticket:update"))],
 )
