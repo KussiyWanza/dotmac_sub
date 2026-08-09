@@ -225,6 +225,25 @@ def _whatsapp_media_content(db: Session, asset: InboxMediaAsset) -> StreamResult
     )
 
 
+def _remote_media_content(asset: InboxMediaAsset) -> StreamResult:
+    source_url = str(asset.source_url or "").strip()
+    if not source_url.startswith(("https://", "http://")):
+        raise MediaContentError("Media content is not available.")
+    try:
+        response = httpx.get(source_url, timeout=20, follow_redirects=True)
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise MediaContentError("Remote media content is not available.") from exc
+    content_type = str(
+        response.headers.get("content-type") or asset.mime_type or ""
+    ).split(";")[0]
+    return StreamResult(
+        chunks=iter([response.content]),
+        content_type=content_type or _content_type(asset),
+        content_length=len(response.content),
+    )
+
+
 def stream_asset_content(
     db: Session, asset_id: str | UUID
 ) -> tuple[InboxMediaAsset, StreamResult]:
@@ -249,6 +268,8 @@ def stream_asset_content(
         and asset.provider_media_id
     ):
         return asset, _whatsapp_media_content(db, asset)
+    if asset.source_url:
+        return asset, _remote_media_content(asset)
     raise MediaContentError("Media content is not available.")
 
 

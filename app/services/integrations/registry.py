@@ -226,6 +226,10 @@ def _meta_social_manifest(
     properties: dict[str, dict[str, object]] = {
         "provider": {"type": "string", "enum": ["meta_social"]},
         "app_id": {"type": "string"},
+        "auth_mode": {
+            "type": "string",
+            "enum": ["oauth", "individual"],
+        },
         "facebook_page_id": {"type": "string"},
         "facebook_auth_mode": {
             "type": "string",
@@ -251,6 +255,7 @@ def _meta_social_manifest(
     required = [
         "provider",
         "app_id",
+        "auth_mode",
         "facebook_page_id",
         "facebook_auth_mode",
         "instagram_account_id",
@@ -268,11 +273,6 @@ def _meta_social_manifest(
         SecretBindingManifest(name="webhook_verify_token"),
     ]
     if include_shared_oauth:
-        properties["auth_mode"] = {
-            "type": "string",
-            "enum": ["oauth", "individual"],
-        }
-        required.insert(1, "auth_mode")
         secrets.insert(
             0, SecretBindingManifest(name="meta_oauth_access_token", required=False)
         )
