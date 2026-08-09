@@ -69,7 +69,9 @@ def seed_scheduler_runtime_settings(db: Session) -> None:
             )
         value_text = str(value)
         value_json: bool | None = None
-        if spec.value_type is SettingValueType.boolean:
+        # `==`, not `is`: SettingValueType is an open `str` subclass and is
+        # deliberately not interned (migration 512).
+        if spec.value_type == SettingValueType.boolean:
             if not isinstance(value, bool):
                 raise RuntimeError(
                     f"Invalid scheduler bootstrap boolean: {domain.value}.{key}"

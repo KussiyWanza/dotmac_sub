@@ -62,7 +62,8 @@ def test_every_scheduler_setting_boolean_is_registered() -> None:
     for domain, key in calls:
         spec = get_spec(domain, key)
         assert spec is not None
-        assert spec.value_type is SettingValueType.boolean
+        # `==`, not `is`: the value-type vocabulary is open and not interned.
+        assert spec.value_type == SettingValueType.boolean
         assert isinstance(spec.default, bool)
 
 
