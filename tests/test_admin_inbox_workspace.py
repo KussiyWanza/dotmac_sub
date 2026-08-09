@@ -128,6 +128,7 @@ def test_workspace_exposes_responsive_realtime_and_accessible_controls():
     triage = Path("templates/components/ui/triage.html").read_text()
     assert 'set priority_label = "Urgent"' in triage
     assert "assignee.initials" in triage
+    assert "title=\"{{ assignee.name or 'Assigned agent' }}\"" in triage
     assert "message.sender" in triage
     assert "outbound_sender.display_name" in triage
     assert "outbound_sender.initials" in triage
