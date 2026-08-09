@@ -297,14 +297,18 @@ CatalogOffer (Service Plan)
 │   ├── with_vat, vat_percent
 │   └── add_ons → OfferAddOn[]
 │
-├── Provisioning
-│   ├── available_for_services
-│   ├── show_on_customer_portal
-│   └── status (active, inactive, archived)
-│
-└── External Integration
-    ├── splynx_tariff_id, splynx_service_name, splynx_tax_id
-    └── [historical import reference fields]
+└── Provisioning
+    ├── available_for_services
+    ├── show_on_customer_portal
+    └── status (active, inactive, archived)
+
+The former "External Integration" block (`splynx_tariff_id`,
+`splynx_service_name`, `splynx_tax_id`) is gone from the model, schema, and
+admin UI. Nothing ever read those three columns — the migration populated them
+and the offer form wrote them back, but no behaviour consulted them, and the
+system they referenced is retired. The columns remain unmapped in the database
+and should be dropped as their own change once they have been observed doing
+nothing across a release.
 
 Subscription (Active Service)
 ├── subscriber_id → Subscriber

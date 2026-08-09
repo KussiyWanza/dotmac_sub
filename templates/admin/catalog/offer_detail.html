@@ -91,14 +91,6 @@
                             <dd class="mt-1 text-sm text-slate-900 dark:text-white">{{ offer.contract_term.value | replace('_', ' ') | title }}</dd>
                         </div>
                         <div>
-                            <dt class="text-sm font-medium text-slate-500 dark:text-slate-400">Tariff ID</dt>
-                            <dd class="mt-1 text-sm text-slate-900 dark:text-white">{{ offer.splynx_tariff_id or '-' }}</dd>
-                        </div>
-                        <div>
-                            <dt class="text-sm font-medium text-slate-500 dark:text-slate-400">Service Name (Queue)</dt>
-                            <dd class="mt-1 text-sm text-slate-900 dark:text-white">{{ offer.splynx_service_name or '-' }}</dd>
-                        </div>
-                        <div>
                             <dt class="text-sm font-medium text-slate-500 dark:text-slate-400">VAT Percent</dt>
                             <dd class="mt-1 text-sm text-slate-900 dark:text-white">{{ offer.vat_percent or '-' }}</dd>
                         </div>
