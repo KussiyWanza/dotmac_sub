@@ -19,6 +19,8 @@ from app.services.integrations.backoffice_contracts import (
     ERP_OUTBOX_CAPABILITY,
     ERP_REGULATORY_CAPABILITY,
     ERP_STATUS_CAPABILITY,
+    WORKFORCE_ATTENDANCE_PUNCH_CAPABILITY,
+    WORKFORCE_ATTENDANCE_READ_CAPABILITY,
 )
 from app.services.integrations.runtime import OperationStatus, OperationTrigger
 from app.services.integrations.runtime_execution import (
@@ -221,6 +223,39 @@ class ErpCapabilityClient:
             {},
             trigger=OperationTrigger.interactive,
             correlation_id="erp-regulatory:ncc-staff",
+        )
+
+    def get_attendance_today(self, subject: str, request_id: str) -> dict:
+        return self._execute(
+            WORKFORCE_ATTENDANCE_READ_CAPABILITY,
+            "attendance_today",
+            {"subject": subject, "request_id": request_id},
+            trigger=OperationTrigger.interactive,
+            correlation_id=request_id,
+        )
+
+    def punch_attendance(
+        self,
+        action: str,
+        subject: str,
+        location: dict[str, Any],
+        *,
+        idempotency_key: str,
+        request_id: str,
+    ) -> dict:
+        if action not in {"check_in", "check_out"}:
+            raise DotMacERPError("Unsupported attendance action")
+        return self._execute(
+            WORKFORCE_ATTENDANCE_PUNCH_CAPABILITY,
+            f"attendance_{action}",
+            {
+                "subject": subject,
+                "location": location,
+                "idempotency_key": idempotency_key,
+                "request_id": request_id,
+            },
+            trigger=OperationTrigger.interactive,
+            correlation_id=request_id,
         )
 
 

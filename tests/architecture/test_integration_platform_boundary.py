@@ -49,6 +49,7 @@ CURRENT_INTEGRATION_SERVICES = (
     "integration.jobs",
     "integration.sync",
     "integration.backoffice_adapter",
+    "integration.workforce_attendance_adapter",
     "integration.dotmac_erp_payables_adapter",
     "integration.dotmac_erp_material_support_adapter",
 )
@@ -253,6 +254,17 @@ def test_integration_sot_names_the_live_cutover_owners() -> None:
         "integration.installations",
         "integration.runtime",
     )
+    assert sot_relationships.dependencies_for(
+        "integration.workforce_attendance_adapter"
+    ) == (
+        "auth.permission_gate",
+        "integration.backoffice_adapter",
+    )
+    attendance = sot_relationships.service_relationship(
+        "integration.workforce_attendance_adapter"
+    )
+    assert attendance.contract is not None
+    assert attendance.contract.transaction.mode.value == "read_only"
     assert sot_relationships.dependencies_for(
         "integration.dotmac_erp_payables_adapter"
     ) == ("integration.backoffice_adapter",)

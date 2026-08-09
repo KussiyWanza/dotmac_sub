@@ -792,6 +792,9 @@ def dashboard(request: Request, db: Session):
         request, db
     )
     current_user = web_admin_service.get_current_user(request)
+    from app.services.auth_dependencies import can
+
+    show_attendance = can(request, "attendance:self:use")
     global_ctx = _get_cached_dashboard_global_context(db)
 
     return templates.TemplateResponse(
@@ -806,6 +809,7 @@ def dashboard(request: Request, db: Session):
             "show_financials": show_financials,
             "show_network": show_network,
             "show_subscribers": show_subscribers,
+            "show_attendance": show_attendance,
             **global_ctx,
         },
     )

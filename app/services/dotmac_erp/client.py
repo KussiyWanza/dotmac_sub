@@ -148,14 +148,6 @@ class DotMacERPClient:
                 response=data if isinstance(data, dict) else None,
             )
 
-        if expected_status_codes and response.status_code not in expected_status_codes:
-            raise DotMacERPError(
-                f"API unexpected status ({response.status_code}), "
-                f"expected {sorted(expected_status_codes)}",
-                status_code=response.status_code,
-                response=data if isinstance(data, dict) else None,
-            )
-
         if response.status_code == 204:
             return None
 
@@ -202,6 +194,14 @@ class DotMacERPClient:
                 response=data if isinstance(data, dict) else None,
             )
 
+        if expected_status_codes and response.status_code not in expected_status_codes:
+            raise DotMacERPError(
+                f"API unexpected status ({response.status_code}), "
+                f"expected {sorted(expected_status_codes)}",
+                status_code=response.status_code,
+                response=data if isinstance(data, dict) else None,
+            )
+
         return data
 
     def _get_transport(self) -> IntegrationHttpClient:
@@ -243,6 +243,7 @@ class DotMacERPClient:
         json_data: dict | list | None = None,
         idempotency_key: str | None = None,
         expected_status_codes: Collection[int] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> dict | list | None:
         """Make an HTTP request with retry logic (delegated to the shared engine)."""
         return self._get_transport().request(
@@ -250,6 +251,7 @@ class DotMacERPClient:
             path,
             params=params,
             json_data=json_data,
+            headers=headers,
             idempotency_key=idempotency_key,
             handler_kwargs={"expected_status_codes": expected_status_codes},
         )
@@ -262,6 +264,7 @@ class DotMacERPClient:
         payload: dict | list | None,
         idempotency_key: str | None = None,
         expected_status_codes: Collection[int] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> dict:
         """POST ``payload`` to ``path`` with an optional idempotency key.
 
@@ -275,6 +278,7 @@ class DotMacERPClient:
             json_data=payload,
             idempotency_key=idempotency_key,
             expected_status_codes=expected_status_codes,
+            headers=headers,
         )
         return result if isinstance(result, dict) else {}
 
@@ -283,15 +287,51 @@ class DotMacERPClient:
         path: str,
         params: dict | None = None,
         expected_status_codes: Collection[int] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> dict:
         """GET ``path``. Returns the parsed JSON body (``{}`` when not a dict)."""
         result = self._request(
             "GET",
             path,
             params=params,
+            headers=headers,
             expected_status_codes=expected_status_codes,
         )
         return result if isinstance(result, dict) else {}
+
+    # ============ Workforce attendance surface ============
+
+    def get_attendance_today(self, subject: str, request_id: str) -> dict:
+        return self.get(
+            "/api/v1/sync/sub/attendance/today",
+            expected_status_codes={200},
+            headers={
+                "X-Selfcare-Subject": subject,
+                "X-Request-ID": request_id,
+            },
+        )
+
+    def punch_attendance(
+        self,
+        action: str,
+        subject: str,
+        location: dict,
+        *,
+        idempotency_key: str,
+        request_id: str,
+    ) -> dict:
+        if action not in {"check-in", "check-out"}:
+            raise DotMacERPError("Unsupported attendance action")
+        return self.post(
+            f"/api/v1/sync/sub/attendance/{action}",
+            location,
+            idempotency_key=idempotency_key,
+            expected_status_codes={200},
+            headers={
+                "X-Selfcare-Subject": subject,
+                "X-Request-ID": request_id,
+            },
+        )
 
     # ============ Expense claim surface ============
     #
