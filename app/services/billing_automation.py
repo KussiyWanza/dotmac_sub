@@ -1160,6 +1160,17 @@ def _mark_invoice_metadata_flag(invoice: Invoice, key: str) -> None:
     invoice.metadata_ = metadata
 
 
+def _billing_notification_flag_enabled(metadata: dict | None) -> bool:
+    raw_value = (metadata or {}).get("send_billing_notifications")
+    if raw_value is None:
+        return True
+    if isinstance(raw_value, bool):
+        return raw_value
+    if isinstance(raw_value, str):
+        return raw_value.strip().lower() not in {"0", "false", "no", "off"}
+    return bool(raw_value)
+
+
 def _emit_invoice_reminders(
     db: Session,
     run_at: datetime,
@@ -1181,11 +1192,19 @@ def _emit_invoice_reminders(
         )
         .all()
     )
+    account_ids = {invoice.account_id for invoice in invoices if invoice.account_id}
+    suppressed_account_ids = {
+        account.id
+        for account in db.query(Subscriber).filter(Subscriber.id.in_(account_ids)).all()
+        if not _billing_notification_flag_enabled(account.metadata_)
+    }
     for invoice in invoices:
         # Don't remind on balances for accounts whose services are all
         # paused or terminal (disabled/canceled/expired/…) — a service that is
         # not being billed should not keep receiving collection reminders.
         if invoice.account_id not in collectible_accounts:
+            continue
+        if invoice.account_id in suppressed_account_ids:
             continue
         if not invoice.due_at or (invoice.balance_due or Decimal("0.00")) <= Decimal(
             "0.00"

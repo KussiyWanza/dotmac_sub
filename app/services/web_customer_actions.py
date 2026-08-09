@@ -2874,6 +2874,26 @@ def convert_person_to_business_customer(
     return before, after
 
 
+def update_billing_notification_preference(
+    db: Session,
+    customer_id: str,
+    *,
+    send_billing_notifications: bool,
+):
+    before = subscriber_service.subscribers.get(db=db, subscriber_id=customer_id)
+    metadata = dict(before.metadata_ or {})
+    metadata["subscriber_category"] = before.category.value
+    metadata["send_billing_notifications"] = send_billing_notifications
+    db.expunge(before)
+    subscriber_service.subscribers.update(
+        db=db,
+        subscriber_id=customer_id,
+        payload=SubscriberUpdate(metadata_=metadata),
+    )
+    after = subscriber_service.subscribers.get(db=db, subscriber_id=customer_id)
+    return before, after
+
+
 def deactivate_person_customer(
     db: Session, customer_id: str, *, actor_id: str | None = None
 ):
