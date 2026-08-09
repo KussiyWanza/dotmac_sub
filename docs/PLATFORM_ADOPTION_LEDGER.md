@@ -3,7 +3,7 @@
 **Status:** Rebaselined 2026-08-02 for slice S1 of the selective kernel-adoption
 plan; amended the same day for slice S2 (dependency pinned — see "S2 acceptance
 claim") and slice S3 (composition declared in `app/composition.py` — see "S3
-acceptance claim"). The pin moved to `dotmac-kernel==0.1.0a23` on 2026-08-09 —
+acceptance claim"). The pin moved to `dotmac-kernel==0.1.0a27` on 2026-08-09 —
 see "Pin history". Supersedes the
 2026-07-19 Phase-0 draft, which was surveyed before the kernel was released and
 against `origin/main` 7807afcd. No code, schema, or dependency change is
@@ -41,6 +41,36 @@ exists to hold.
 
 
 ## Pin history
+
+**2026-08-09 — `0.1.0a23` → `0.1.0a27`.** Taken because the settings cutover
+needs a value type that did not exist at a23.
+
+`json` in the kernel is an OBJECT type — its `to_storage` rejects a non-`dict`,
+and `register_specs` refuses a spec whose default its own type rejects. Four Sub
+settings default to LISTS (`imports.import_history_log`,
+`imports.import_jobs_log`, `audit.methods`, `audit.skip_paths`), so registering
+Sub's specs against a23 fails closed at import. `list` shipped as a kernel
+built-in in a27 (`dotmac_starter_mt` #78).
+
+**It is a kernel built-in and not a Sub registration on purpose.** The
+value-type registry is open, so Sub could have declared its own `list` on a
+manifest; ERP would then have declared an incompatible one, which is the
+vocabulary fork ADR-0008 exists to prevent. Recorded as an ADR-0006 amendment
+in the starter ("build once; an extension point is not a licence"). Sub declares
+no value-type vocabulary of its own, and migration
+`511_open_setting_value_type_vocabulary` removed the database's closed list so
+a kernel-declared type can be stored at all.
+
+**Nothing in `app/` changes by the bump itself.** a24 (`inherits`), a25
+(`stored_at`), a26 (ADR-0013 platform deployment facts, and the BREAKING rename
+`ProductAssemblySpec.settings_overrides` → `setting_defaults`) and a27 (`list`,
+plus a tenant-scoped session boundary) are all in surfaces Sub does not yet
+import. Sub's kernel surface remains the allowlist below. Note a26's rename is
+breaking for anyone constructing a `ProductAssemblySpec` with
+`settings_overrides`; `app/composition.py` does not.
+
+a26 itself was never published — its release run failed — so a27 is the first
+released version carrying either change. Nothing may pin a26.
 
 **2026-08-09 — `0.1.0a13` → `0.1.0a23`.** Taken to make the settings cutover
 testable. a13 PREDATES the settings re-base: at that pin,
