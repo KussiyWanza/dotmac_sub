@@ -3,7 +3,7 @@
 **Status:** Rebaselined 2026-08-02 for slice S1 of the selective kernel-adoption
 plan; amended the same day for slice S2 (dependency pinned — see "S2 acceptance
 claim") and slice S3 (composition declared in `app/composition.py` — see "S3
-acceptance claim"). The pin moved to `dotmac-kernel==0.1.0a13` on 2026-08-07 —
+acceptance claim"). The pin moved to `dotmac-kernel==0.1.0a27` on 2026-08-09 —
 see "Pin history". Supersedes the
 2026-07-19 Phase-0 draft, which was surveyed before the kernel was released and
 against `origin/main` 7807afcd. No code, schema, or dependency change is
@@ -41,6 +41,58 @@ exists to hold.
 
 
 ## Pin history
+
+**2026-08-09 — `0.1.0a23` → `0.1.0a27`.** Taken because the settings cutover
+needs a value type that did not exist at a23.
+
+`json` in the kernel is an OBJECT type — its `to_storage` rejects a non-`dict`,
+and `register_specs` refuses a spec whose default its own type rejects. Four Sub
+settings default to LISTS (`imports.import_history_log`,
+`imports.import_jobs_log`, `audit.methods`, `audit.skip_paths`), so registering
+Sub's specs against a23 fails closed at import. `list` shipped as a kernel
+built-in in a27 (`dotmac_starter_mt` #78).
+
+**It is a kernel built-in and not a Sub registration on purpose.** The
+value-type registry is open, so Sub could have declared its own `list` on a
+manifest; ERP would then have declared an incompatible one, which is the
+vocabulary fork ADR-0008 exists to prevent. Recorded as an ADR-0006 amendment
+in the starter ("build once; an extension point is not a licence"). Sub declares
+no value-type vocabulary of its own, and migration
+`512_open_setting_value_type_vocabulary` removed the database's closed list so
+a kernel-declared type can be stored at all.
+
+**Nothing in `app/` changes by the bump itself.** a24 (`inherits`), a25
+(`stored_at`), a26 (ADR-0013 platform deployment facts, and the BREAKING rename
+`ProductAssemblySpec.settings_overrides` → `setting_defaults`) and a27 (`list`,
+plus a tenant-scoped session boundary) are all in surfaces Sub does not yet
+import. Sub's kernel surface remains the allowlist below. Note a26's rename is
+breaking for anyone constructing a `ProductAssemblySpec` with
+`settings_overrides`; `app/composition.py` does not.
+
+a26 itself was never published — its release run failed — so a27 is the first
+released version carrying either change. Nothing may pin a26.
+
+**2026-08-09 — `0.1.0a13` → `0.1.0a23`.** Taken to make the settings cutover
+testable. a13 PREDATES the settings re-base: at that pin,
+`dotmac_kernel.settings_*` is the original from-scratch module — a five-member
+`SettingDomain` enum behind a CHECK constraint — which is the module that was
+replaced precisely because no product could adopt it. A parity harness built
+against a13 would therefore diff Sub's resolver against a subsystem nobody
+intends to adopt. a14 is the re-base; a15–a23 carry open value types, scope
+depth, bulk reads, per-scope requirements, BYOK, the `KeyProvider` seam, and
+ADR-0011's rule that resolution reads rows and defaults and never the
+environment.
+
+**Nothing in `app/` changed by the bump itself.** Every BREAKING entry across
+a14–a23 is in the settings subsystem — `resolve()`, `Keyring.active`, per-scope
+requirements, BYOK — and Sub imports none of it. Sub's kernel surface remains
+`app/composition.py` (`assembly`, `capabilities`, `features`, `profiles`) plus
+`Tenant`/`TenantDomain` under ADR-0009, all held by
+`tests/architecture/test_kernel_import_boundary.py`.
+
+An earlier version of this section recorded that "a14–a17 never existed as
+artifacts". That was accurate on 2026-08-07 and is not now: a14 and a18 were
+published on 2026-08-08, and a23 is the current release.
 
 **2026-08-07 — `0.1.0a8` → `0.1.0a13`.** The kernel release carrying the
 white-label foundation: the module registry and manifest declarations, D1's
@@ -129,7 +181,7 @@ kernel-private and forbidden outright.
 | `dotmac_kernel.migrations` | defer-db | S7 | Kernel Alembic revisions `0001`–`0012`. Never added to Sub's `alembic.ini` (`script_location = alembic`, no `version_locations`) before the S7 ADR and migration canaries |
 | `dotmac_kernel.audit` | defer-db | deferred | `AuditEvent` model collides with Sub's (`audit_events` table). Sub's writers stay `record_audit_event` + `AuditEvents.stage` (pinned by `tests/architecture/test_audit_writer_surfaces.py`); kernel audit adapts behind them after parity, never as a second writer |
 | `dotmac_kernel.settings_models` / `.settings_resolver` / `.settings_admin` | defer-db | deferred | Kernel `DomainSetting` collides with Sub's (`domain_settings` table and class name). Sub's owner stays `app/services/settings_spec.py`; kernel settings adapt behind `resolve_value` parity, never as a second settings writer |
-| `dotmac_kernel.models` | prohibited | — | Kernel Party/identity family (`tenants`, `tenant_domains`, `parties`, `party_persons`, `party_organizations`, `roles`, `party_roles`, `user_credentials`, `auth_sessions`). Sub identity is not replaced during this program; even post-S7, only `Tenant`/`TenantDomain` could enter via an ADR that amends this ledger |
+| `dotmac_kernel.models` | **partial (S7a)** | ADR-0009 | `Tenant`/`TenantDomain` ONLY, per ADR-0009 — neither table exists in Sub, so neither is one of the six collisions below. Every other name stays prohibited: Kernel Party/identity family (`tenants`, `tenant_domains`, `parties`, `party_persons`, `party_organizations`, `roles`, `party_roles`, `user_credentials`, `auth_sessions`). Sub identity is not replaced during this program; even post-S7, only `Tenant`/`TenantDomain` could enter via an ADR that amends this ledger |
 | `dotmac_kernel.models_platform` | prohibited | — | `PlatformAdmin`/`PlatformSession` — Sub keeps its own staff identity (`app/models/system_user.py`, `app/models/auth.py`) |
 | `dotmac_kernel.config` | prohibited | — | `app/config.py` remains Sub's settings owner; a second `Settings`/`validate_settings` authority is a drift source |
 | `dotmac_kernel.security` | prohibited | — | Sub's credential/session/MFA crypto is owned by its auth stack (`app/services/auth_flow.py` et al.); no second hasher/token issuer |
@@ -147,18 +199,52 @@ kernel-private and forbidden outright.
 
 The executable form of the table above, enforced by
 `tests/architecture/test_kernel_import_boundary.py`. Only these modules may ever
-be imported under `app/`, and only once the dependency lands (S2). Today the
-count of kernel imports in `app/` is zero, and the guard already enforces this
-list. This section and the test's allowlist must stay in exact sync (the test
-parses this section).
+be imported under `app/`, and only once the dependency lands (S2). This section
+and the test's allowlist must stay in exact sync (the test parses this
+section).
+
+The count of kernel imports in `app/` is no longer zero, which an earlier
+version of this paragraph asserted: `app/composition.py` (S3),
+`app/services/kernel_secret_source.py`, `app/services/operator_tenant.py`
+and the settings cutover all import from this list.
 
 - `dotmac_kernel.assembly`
 - `dotmac_kernel.capabilities`
 - `dotmac_kernel.features`
+- `dotmac_kernel.models`
 - `dotmac_kernel.money`
 - `dotmac_kernel.profiles`
 - `dotmac_kernel.providers`
 - `dotmac_kernel.providers.provisioning`
+- `dotmac_kernel.secret_sources`
+- `dotmac_kernel.setting_value_types`
+- `dotmac_kernel.settings_models`
+- `dotmac_kernel.settings_resolver`
+
+`dotmac_kernel.models` is admitted for **two names only** — `Tenant` and
+`TenantDomain` (ADR-0009). Every other name in it, including `Party`,
+`PartyRole`, `Role` and `UserCredential`, stays forbidden, and a bare
+`import dotmac_kernel.models` is refused because it reaches all of them. The
+guard enforces the narrowing through `RESTRICTED_MODULE_NAMES`, not a comment.
+Sub identity is not replaced by this amendment.
+
+`dotmac_kernel.secret_sources` was added 2026-08-09 for the secret
+classification ruled that day. It is a PLACE TO PUT material Sub read itself —
+the kernel declares a one-method protocol and holds the result; it ships no
+OpenBao client and performs no I/O. Sub's implementation is
+`app/services/kernel_secret_source.py`, over the client in
+`app/services/secrets.py`. ADR-0009 (`dotmac_starter_mt`): a secret is held,
+never dereferenced, so nothing on a settings read path reaches OpenBao.
+
+The three settings modules were added 2026-08-10 for the settings cutover:
+`settings_resolver` (resolution, and `register_specs` so Sub's 560 specs are
+declared where the resolver looks), `settings_models` (the `DomainSetting`
+the kernel reads, which is Sub's own table), and `setting_value_types` (the
+declared value types, consulted at Sub's WRITE boundary). This is the pairing
+migration `512` was written for: that migration removed the database's closed
+list of value types, and this admits the registry that replaces it. Sub
+declares no value types of its own — starter ADR-0006, "build once; an
+extension point is not a licence".
 
 Rules the guard enforces beyond the module list:
 

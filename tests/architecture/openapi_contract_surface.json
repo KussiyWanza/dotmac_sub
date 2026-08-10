@@ -18194,6 +18194,16 @@
     "200": "35ca38bd28f3"
    }
   },
+  "POST /api/v1/webhooks/fiber-inquiry/{capability_binding_id}": {
+   "params": [
+    "path:capability_binding_id!"
+   ],
+   "request": null,
+   "responses": {
+    "200": "825108100fd0",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "POST /api/v1/webhooks/lead-capture/{capability_binding_id}": {
    "params": [
     "path:capability_binding_id!"
@@ -18806,9 +18816,9 @@
   "CampaignStepUpdate": "6804fecaf7e3",
   "CampaignUnsubscribeRead": "1d4ff16606cf",
   "CampaignUpdate": "7681c918673f",
-  "CatalogOfferCreate": "e9bbabd65902",
-  "CatalogOfferRead": "93b5cba9818b",
-  "CatalogOfferUpdate": "b2665d2d726b",
+  "CatalogOfferCreate": "48cc4d12ca81",
+  "CatalogOfferRead": "207c31b5e582",
+  "CatalogOfferUpdate": "17ed53516c46",
   "ChannelType": "c29499d2167f",
   "ChatSessionResponse": "a5b572df2349",
   "CollectionAccountCreate": "2027be22d479",
@@ -18901,8 +18911,8 @@
   "DispatchRuleCreate": "22adef00c73e",
   "DispatchRuleRead": "cace5b1f540f",
   "DispatchRuleUpdate": "0179f24569e6",
-  "DomainSettingRead": "6232aac57bae",
-  "DomainSettingUpdate": "8612ead70c8f",
+  "DomainSettingRead": "fdd43a90cd92",
+  "DomainSettingUpdate": "305f2d7ecc35",
   "DueDateCalculationRequest": "0215060c3e1f",
   "DueDateCalculationResponse": "7e29aca78232",
   "DunningAction": "d42e316f102b",
@@ -18929,6 +18939,7 @@
   "FiberFieldVerificationJobPlanFeatureRead": "42bcf151f2ab",
   "FiberFieldVerificationJobPlanPreviewRead": "b64820005273",
   "FiberFieldVerificationJobPlanRequest": "a50564a58e40",
+  "FiberInquiryReceipt": "a1106cf17b8d",
   "FiberPathRead": "d6a2ee343fdf",
   "FiberPathSegment": "a86366b1a29f",
   "FiberSegmentCreate": "c12fc3c3d8bf",
@@ -19805,7 +19816,6 @@
   "SessionRevokeResponse": "6f65989aa4a7",
   "SessionStatus": "da0d2e5253e5",
   "SessionUpdate": "67c007064d12",
-  "SettingValueType": "6e0b30116466",
   "ShiftCreate": "60488314a714",
   "ShiftRead": "360213b8ce8f",
   "ShiftUpdate": "0fc6570f0c71",
@@ -19867,11 +19877,11 @@
   "SubscriptionAddOnRead": "fc2a625323ad",
   "SubscriptionAddOnUpdate": "3eb9493528e7",
   "SubscriptionBillingTreatment": "6f669e9e59a6",
-  "SubscriptionCreate": "dd2fcd35ad82",
+  "SubscriptionCreate": "74d292a7c6ce",
   "SubscriptionDefaultsResponse": "3e153d9f51b0",
-  "SubscriptionRead": "4217aba4c23f",
+  "SubscriptionRead": "fc8ee2012673",
   "SubscriptionStatus": "55da6209c756",
-  "SubscriptionTechnicalUpdate": "9a8baf2ca29b",
+  "SubscriptionTechnicalUpdate": "cf9d7e2a90c6",
   "SuppressionCreate": "875f5ad57243",
   "SuppressionReason": "e3c4e28c7028",
   "SuppressionScope": "8a2a4910b101",

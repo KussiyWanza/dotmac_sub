@@ -192,6 +192,20 @@ _REMOTE_ACCESS_ONLY_FIELDS = frozenset(
         "wan_remote_access_ssh_port",
     }
 )
+_WAN_ONLY_FIELDS = frozenset(
+    {
+        "wan_mode",
+        "wan_pppoe_username",
+        "wan_pppoe_password_ref",
+        "wan_pppoe_wcd_index",
+        "wan_static_ip",
+        "wan_static_subnet",
+        "wan_static_gateway",
+        "wan_static_dns",
+        "wan_static_ip_is_public",
+        "ipv6_enabled",
+    }
+)
 _ACS_ENDPOINT_FIELDS = frozenset({"acs_url", "acs_username", "acs_password_ref"})
 _TR069_PROFILE_ONLY_FIELDS = frozenset({"tr069_profile_id"})
 
@@ -218,6 +232,12 @@ def _is_remote_access_only_change(
         mode == "sync"
         and bool(proposed_fields)
         and proposed_fields <= _REMOTE_ACCESS_ONLY_FIELDS
+    )
+
+
+def _is_wan_only_change(mode: ReconcileMode, proposed_fields: frozenset[str]) -> bool:
+    return (
+        mode == "sync" and bool(proposed_fields) and proposed_fields <= _WAN_ONLY_FIELDS
     )
 
 
@@ -255,6 +275,7 @@ def compute_plan(
     proposed_fields = proposed_fields or frozenset()
     wifi_only_change = _is_wifi_only_change(mode, proposed_fields)
     remote_only_change = _is_remote_access_only_change(mode, proposed_fields)
+    wan_only_change = _is_wan_only_change(mode, proposed_fields)
     tr069_profile_only_change = _is_tr069_profile_only_change(mode, proposed_fields)
 
     if tr069_profile_only_change:
@@ -262,6 +283,10 @@ def compute_plan(
         omci_wan_planned = False
     elif wifi_only_change or remote_only_change:
         omci_wan_planned = False
+    elif wan_only_change:
+        _plan_wan_service_port(desired, observed, actions)
+        omci_wan_planned = _plan_olt_omci_wan(desired, observed, mode, actions, drifts)
+        _append_reset_if_needed(desired, actions)
     else:
         _plan_olt_side(desired, observed, mode, actions, drifts)
         omci_wan_planned = _plan_olt_omci_wan(desired, observed, mode, actions, drifts)
@@ -569,6 +594,18 @@ def _plan_service_ports(
                 slot="mgmt",
             )
         )
+    _plan_wan_service_port(desired, observed, actions)
+
+
+def _plan_wan_service_port(
+    desired: OntDesiredState,
+    observed: OntObservedState,
+    actions: list[Action],
+) -> None:
+    """Create a missing WAN port without treating other ports as disposable."""
+    observed_indices = {
+        sp.get("index") for sp in observed.olt.olt_service_ports if isinstance(sp, dict)
+    }
     if (
         desired.wan_service_port_index is not None
         and desired.wan_service_port_index not in observed_indices
@@ -673,6 +710,7 @@ def _plan_acs_side(
 
     wifi_only_change = _is_wifi_only_change(mode, proposed_fields)
     remote_only_change = _is_remote_access_only_change(mode, proposed_fields)
+    wan_only_change = _is_wan_only_change(mode, proposed_fields)
 
     # TR-069 WAN PPP — skipped when OMCI owns the WAN.
     narrow_feature_change = wifi_only_change or remote_only_change
@@ -681,7 +719,15 @@ def _plan_acs_side(
         and desired.wan_mode == "pppoe"
         and not omci_wan_planned
     ):
-        _plan_acs_wan_ppp(desired, observed, device_id, actions, drifts)
+        _plan_acs_wan_ppp(
+            desired,
+            observed,
+            device_id,
+            actions,
+            drifts,
+            proposed_fields=proposed_fields,
+            force_proposed_writes=force_proposed_writes,
+        )
 
     # Bring-up pushes below key off ``olt_present`` (the authorization), not
     # ``acs_present``: this code only runs for devices the ACS can deliver to.
@@ -697,7 +743,18 @@ def _plan_acs_side(
         and wan_vlan is not None
         and is_deliverable("wan_vlan", wan_vlan)
     ):
-        if fresh_bring_up or _wan_ip_differs(desired, observed):
+        force_wan_ip_write = force_proposed_writes and bool(
+            proposed_fields
+            & {
+                "wan_mode",
+                "wan_pppoe_wcd_index",
+                "wan_static_ip",
+                "wan_static_subnet",
+                "wan_static_gateway",
+                "wan_static_dns",
+            }
+        )
+        if force_wan_ip_write or fresh_bring_up or _wan_ip_differs(desired, observed):
             actions.append(
                 AcsSetWanIp(
                     device_id=device_id,
@@ -730,7 +787,7 @@ def _plan_acs_side(
 
     push_password = False
     wifi_changes = _WifiChanges(None, None, None, None, ())
-    if not remote_only_change:
+    if not (remote_only_change or wan_only_change):
         push_password = _should_push_wifi_password(
             desired,
             mode,
@@ -779,7 +836,7 @@ def _plan_acs_side(
             )
         )
 
-    if not wifi_only_change:
+    if not (wifi_only_change or wan_only_change):
         _plan_remote_access(
             desired,
             observed,
@@ -872,6 +929,9 @@ def _plan_acs_side(
                 )
             )
 
+    if wan_only_change:
+        return identity
+
     # DHCP server — push the whole block when any field differs.
     if _dhcp_differs(desired, observed):
         actions.append(
@@ -947,6 +1007,9 @@ def _plan_acs_wan_ppp(
     device_id: str,
     actions: list[Action],
     drifts: list[Drift],
+    *,
+    proposed_fields: frozenset[str],
+    force_proposed_writes: bool,
 ) -> None:
     """Plan WAN PPP via TR-069 — addObject if missing, then PPPoE params.
 
@@ -992,8 +1055,18 @@ def _plan_acs_wan_ppp(
     # values to diff against, so creation itself is the write trigger. This
     # used to ride on ``_wan_ppp_differs``'s "ACS has nothing yet" shortcut,
     # which only ever fired for devices the ACS could not deliver to at all.
+    force_pppoe_write = force_proposed_writes and bool(
+        proposed_fields
+        & {
+            "wan_mode",
+            "wan_pppoe_username",
+            "wan_pppoe_password_ref",
+            "wan_pppoe_wcd_index",
+        }
+    )
     if (
         created
+        or force_pppoe_write
         or _wan_ppp_needs_heal(desired, observed)
         or _wan_ppp_differs(desired, observed)
     ):

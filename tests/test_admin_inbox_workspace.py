@@ -9,8 +9,9 @@ import pytest
 from jinja2 import Environment, FileSystemLoader
 
 from app.models.party import Party, PartyType
+from app.models.sales import Lead, LeadOriginCapture
 from app.models.service_team import ServiceTeam, ServiceTeamMember, ServiceTeamType
-from app.models.subscriber import Subscriber
+from app.models.subscriber import Subscriber, SubscriberStatus
 from app.models.team_inbox import (
     InboxAgentPresence,
     InboxAgentPresenceStatus,
@@ -63,6 +64,7 @@ def test_inbox_workspace_templates_compile():
         "admin/inbox/_floating_surfaces.html",
         "admin/inbox/_overlays.html",
         "admin/inbox/_ticket_panel.html",
+        "admin/inbox/manager_ai.html",
     ):
         assert environment.get_template(template_name) is not None
 
@@ -128,6 +130,7 @@ def test_workspace_exposes_responsive_realtime_and_accessible_controls():
     triage = Path("templates/components/ui/triage.html").read_text()
     assert 'set priority_label = "Urgent"' in triage
     assert "assignee.initials" in triage
+    assert "title=\"{{ assignee.name or 'Assigned agent' }}\"" in triage
     assert "message.sender" in triage
     assert "outbound_sender.display_name" in triage
     assert "outbound_sender.initials" in triage
@@ -744,3 +747,65 @@ def test_bulk_priority_action_uses_existing_command_owner(db_session):
     assert outcome.message == "Updated priority for 1 conversations."
     assert conversation.priority == 25
     assert conversation.metadata_["priority_history"][0]["to"] == 25
+
+
+def test_create_lead_from_unmatched_conversation_is_idempotent(db_session):
+    conversation_id = _conversation(db_session)
+
+    first = team_inbox_commands.create_lead_from_conversation(
+        db_session,
+        conversation_id=conversation_id,
+        actor_person_id=uuid.uuid4(),
+    )
+    second = team_inbox_commands.create_lead_from_conversation(
+        db_session,
+        conversation_id=conversation_id,
+        actor_person_id=uuid.uuid4(),
+    )
+
+    conversation = db_session.get(InboxConversation, conversation_id)
+    lead = db_session.get(Lead, first.lead_id)
+    origin = db_session.query(LeadOriginCapture).one()
+    assert second.replayed is True
+    assert second.lead_id == first.lead_id
+    assert lead is not None
+    assert lead.party_id is not None
+    assert lead.subscriber_id is None
+    assert origin.source_interaction_id == f"team-inbox:{conversation_id}"
+    assert conversation.metadata_["lead_capture"]["lead_id"] == first.lead_id
+    assert db_session.query(Lead).count() == 1
+
+
+def test_merge_contact_to_customer_captures_and_attaches_lead(db_session):
+    conversation_id = _conversation(db_session)
+    subscriber = Subscriber(
+        first_name="Ada",
+        last_name="Customer",
+        email="ada-merge@example.test",
+        status=SubscriberStatus.active,
+        is_active=True,
+    )
+    db_session.add(subscriber)
+    db_session.flush()
+    subscriber_id = subscriber.id
+    db_session.commit()
+
+    outcome = team_inbox_commands.merge_contact(
+        db_session,
+        conversation_id=conversation_id,
+        target_type="subscriber",
+        target_query="ada-merge@example.test",
+        actor_person_id=uuid.uuid4(),
+    )
+
+    lead = db_session.query(Lead).one()
+    conversation = db_session.get(InboxConversation, conversation_id)
+    subscriber = db_session.get(Subscriber, subscriber_id)
+    assert outcome.target_type == "subscriber"
+    assert outcome.target_id == str(subscriber_id)
+    assert lead.subscriber_id == subscriber_id
+    assert subscriber.party_id == lead.party_id
+    assert conversation.subscriber_id == subscriber_id
+    assert (
+        conversation.metadata_["lead_capture"]["merge"]["target_type"] == "subscriber"
+    )

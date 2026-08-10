@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
+from app.models.billing import Invoice
 from app.models.catalog import Subscription, SubscriptionStatus
 from app.models.party import Party
 from app.models.project import Project, ProjectTask, ProjectTemplate
@@ -123,7 +124,18 @@ def billing_calls(monkeypatch):
 
     def fake_create_installation_invoice(db, **kwargs):
         calls.append(("create_installation_invoice", kwargs))
-        return SimpleNamespace(id=uuid.uuid4())
+        amount = kwargs["amount"]
+        invoice = Invoice(
+            account_id=uuid.UUID(kwargs["subscriber_id"]),
+            currency=kwargs["currency"],
+            subtotal=amount,
+            total=amount,
+            balance_due=amount,
+            crm_external_ref=kwargs["external_ref"],
+        )
+        db.add(invoice)
+        db.flush()
+        return invoice
 
     monkeypatch.setattr(crm_api, "create_subscription", fake_create_subscription)
     monkeypatch.setattr(

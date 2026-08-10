@@ -258,7 +258,7 @@
                     <input id="template_name" name="name" placeholder="Template name" class="w-full rounded-lg border-slate-300 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
                     <select name="channel_type" class="w-full rounded-lg border-slate-300 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
                         <option value="any">Any channel</option>
-                        {% for option in ['email', 'whatsapp', 'facebook_messenger', 'instagram_dm', 'chat_widget'] %}
+                        {% for option in ['email', 'whatsapp', 'facebook_messenger', 'instagram_dm', 'chat_widget', 'website_fiber'] %}
                         <option value="{{ option }}">{{ option | replace('_', ' ') | title }}</option>
                         {% endfor %}
                     </select>
@@ -273,6 +273,7 @@
 
             {% call card("Contact Link", color="cyan") %}
             {% set resolution = timeline.metadata.get('contact_resolution') if timeline.metadata else {} %}
+            {% set lead_capture = timeline.metadata.get('lead_capture') if timeline.metadata else {} %}
             <div class="space-y-4">
                 <dl class="space-y-2 text-xs">
                     <div class="flex justify-between gap-3">
@@ -289,44 +290,24 @@
                     </div>
                 </dl>
 
-                <form method="post" action="/admin/inbox/{{ timeline.id }}/contact-link" class="space-y-3">
-                    {% include "components/forms/csrf_input.html" %}
-                    <div class="grid grid-cols-2 gap-2 text-sm">
-                        <label class="flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-600">
-                            <input type="radio" name="target_type" value="subscriber" checked class="border-slate-300 text-cyan-600">
-                            <span class="font-medium text-slate-700 dark:text-slate-200">Subscriber</span>
-                        </label>
-                        <label class="flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-600">
-                            <input type="radio" name="target_type" value="reseller" class="border-slate-300 text-cyan-600">
-                            <span class="font-medium text-slate-700 dark:text-slate-200">Reseller</span>
-                        </label>
-                    </div>
-
-                    <div>
-                        <label for="subscriber_id" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Suggested subscriber</label>
-                        <select id="subscriber_id" name="subscriber_id" class="mt-1 w-full rounded-lg border-slate-300 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
-                            <option value="">Select subscriber</option>
-                            {% for option in contact_link_candidates.subscribers %}
-                            <option value="{{ option.id }}">{{ option.label }}</option>
-                            {% endfor %}
+                {% if lead_capture and lead_capture.get('merge') %}
+                <p class="rounded-lg bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-200">Lead merged to {{ lead_capture.get('merge').get('target_type') | replace('_',' ') | title }}</p>
+                {% elif not timeline.subscriber_id %}
+                <details class="rounded-lg border border-slate-200 dark:border-slate-700">
+                    <summary class="cursor-pointer px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-800">Merge contact</summary>
+                    <form method="post" action="/admin/inbox/{{ timeline.id }}/merge-contact" class="space-y-3 px-4 pb-4">
+                        {% include "components/forms/csrf_input.html" %}
+                        <select name="target_type" required class="w-full rounded-lg border-slate-300 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+                            <option value="lead">New lead</option>
+                            <option value="subscriber">Customer</option>
+                            <option value="reseller">Reseller</option>
+                            <option value="organization">Business</option>
                         </select>
-                        <input name="subscriber_id_manual" placeholder="Subscriber UUID" class="mt-2 w-full rounded-lg border-slate-300 text-xs font-mono dark:border-slate-600 dark:bg-slate-700 dark:text-white">
-                    </div>
-
-                    <div>
-                        <label for="reseller_id" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Suggested reseller</label>
-                        <select id="reseller_id" name="reseller_id" class="mt-1 w-full rounded-lg border-slate-300 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
-                            <option value="">Select reseller</option>
-                            {% for option in contact_link_candidates.resellers %}
-                            <option value="{{ option.id }}">{{ option.label }}</option>
-                            {% endfor %}
-                        </select>
-                        <input name="reseller_id_manual" placeholder="Reseller UUID" class="mt-2 w-full rounded-lg border-slate-300 text-xs font-mono dark:border-slate-600 dark:bg-slate-700 dark:text-white">
-                    </div>
-
-                    <textarea name="note" rows="2" placeholder="Note" class="w-full rounded-lg border-slate-300 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white"></textarea>
-                    <button type="submit" class="w-full rounded-lg bg-cyan-700 px-4 py-2 text-sm font-semibold text-white hover:bg-cyan-800">Link contact</button>
-                </form>
+                        <input name="target_query" placeholder="Search name, email, phone, account, code, or domain" class="w-full rounded-lg border-slate-300 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+                        <button type="submit" class="w-full rounded-lg bg-cyan-700 px-4 py-2 text-sm font-semibold text-white hover:bg-cyan-800">Merge contact</button>
+                    </form>
+                </details>
+                {% endif %}
             </div>
             {% endcall %}
 

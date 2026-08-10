@@ -11,6 +11,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from cryptography.fernet import Fernet
 
 from app.models.network import (
     OLTDevice,
@@ -23,6 +24,7 @@ from app.models.network import (
 from app.models.ont_observation import OntObservation
 from app.models.tr069 import Tr069AcsServer
 from app.services.control_plane_intent import DesiredValueProvenance
+from app.services.credential_crypto import decrypt_credential
 from app.services.network.reconcile import (
     AcsObservedFields,
     OltObservedFields,
@@ -337,8 +339,13 @@ def test_desired_description_uses_serial_stub_when_no_subscriber_binding(
 # ── apply_proposed_change ───────────────────────────────────────────────────
 
 
-def test_apply_writes_wifi_to_desired_config(db_session, ont):
+def test_apply_writes_wifi_to_desired_config(db_session, ont, monkeypatch):
     """A successful WiFi-change reconcile writes ssid+password to the JSON blob."""
+    encryption_key = Fernet.generate_key()
+    monkeypatch.setattr(
+        "app.services.credential_crypto.get_encryption_key",
+        lambda: encryption_key,
+    )
     initial = desired_from_ont_unit(db_session, ont)
     import dataclasses
 
@@ -351,7 +358,9 @@ def test_apply_writes_wifi_to_desired_config(db_session, ont):
     db_session.refresh(ont)
 
     assert ont.desired_config["wifi"]["ssid"] == "NEW_SSID"
-    assert ont.desired_config["wifi"]["password"] == "new-pass"
+    stored_password = ont.desired_config["wifi"]["password"]
+    assert stored_password.startswith("enc:")
+    assert decrypt_credential(stored_password) == "new-pass"
     assert "ip_protocol" not in ont.desired_config.get("wan", {})
 
 
@@ -385,6 +394,39 @@ def test_apply_writes_pppoe_via_model_accessor(db_session, ont):
 
     assert ont.pppoe_username == "100099999"
     assert ont.pppoe_password == "newpass"
+
+
+def test_apply_scoped_wan_change_preserves_unrelated_desired_sections(db_session, ont):
+    import copy
+    import dataclasses
+
+    ont.desired_config = {
+        "wan": {
+            "pppoe_username": "100000000",
+            "pppoe_password": "existing-ref",
+        },
+        "wifi": {"ssid": "KEEP_WIFI", "password": "keep-wifi-ref"},
+        "lan": {"dhcp_enabled": False, "dhcp_start": "192.168.2.10"},
+        "management": {"subnet": "255.255.255.0", "gateway": "172.16.1.1"},
+    }
+    db_session.commit()
+    before = copy.deepcopy(ont.desired_config)
+    target = dataclasses.replace(
+        desired_from_ont_unit(db_session, ont),
+        wan_pppoe_username="100099999",
+    )
+
+    apply_proposed_change(
+        ont,
+        target,
+        changed_fields=frozenset({"wan_pppoe_username"}),
+    )
+
+    assert ont.pppoe_username == "100099999"
+    assert ont.pppoe_password == "existing-ref"
+    assert ont.desired_config["wifi"] == before["wifi"]
+    assert ont.desired_config["lan"] == before["lan"]
+    assert ont.desired_config["management"] == before["management"]
 
 
 def test_apply_empty_value_clears_section_key(db_session, ont):

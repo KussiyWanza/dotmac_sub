@@ -30,6 +30,13 @@
             </div>
         </div>
         <div class="flex flex-wrap items-center gap-2">
+            {% if infrastructure_snapshot is none %}
+            {{ status_badge("Probe snapshot unavailable", "default", size="sm") }}
+            {% elif infrastructure_snapshot.freshness.value == 'stale' %}
+            {{ status_badge("Probe snapshot stale", "warning", size="sm") }}
+            {% else %}
+            {{ status_badge("Probe snapshot fresh", "success", size="sm") }}
+            {% endif %}
             {% if host_status == 'critical' %}
             {{ status_badge("Host Critical", "error", size="sm") }}
             {% elif host_status == 'warning' %}
@@ -44,6 +51,12 @@
     </div>
 
     <div class="space-y-5 p-5">
+        {% if infrastructure_snapshot is not none %}
+        <p class="text-xs text-slate-500 dark:text-slate-400">
+            Dependency probes observed {{ infrastructure_snapshot.observed_at.strftime('%Y-%m-%d %H:%M:%S UTC') }}.
+            {% if infrastructure_snapshot.freshness.value == 'stale' %}Last-known values are shown while the scheduled probe is delayed.{% endif %}
+        </p>
+        {% endif %}
         {% if worker_action_notice %}
         <div class="rounded-lg border px-4 py-3 text-sm {{ 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900/40 dark:bg-emerald-900/20 dark:text-emerald-200' if worker_action_notice.type == 'success' else 'border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-900/40 dark:bg-rose-900/20 dark:text-rose-200' }}">
             {{ worker_action_notice.message }}

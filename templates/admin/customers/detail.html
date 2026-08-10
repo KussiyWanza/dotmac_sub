@@ -867,6 +867,36 @@
         {% set service_extension_entries = billing_workspace.service_extensions | default([]) %}
         {% set billing_account_id = accounts[0].id if accounts and accounts|length == 1 else customer.id %}
 
+        <div class="flex flex-col gap-4 rounded-2xl border border-slate-200/70 bg-white p-5 shadow-sm dark:border-slate-700/70 dark:bg-slate-800 sm:flex-row sm:items-center sm:justify-between">
+            <div class="flex items-center gap-3">
+                <div class="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-50 text-amber-600 dark:bg-amber-950/40 dark:text-amber-300">
+                    <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.4-1.4A2 2 0 0118 14.2V11a6 6 0 10-12 0v3.2c0 .5-.2 1-.6 1.4L4 17h5m6 0a3 3 0 01-6 0"/></svg>
+                </div>
+                <div>
+                    <p class="text-sm font-semibold text-slate-900 dark:text-white">Invoice reminders</p>
+                    <p class="text-xs text-slate-500 dark:text-slate-400">
+                        {% if billing_config.send_billing_notifications %}
+                        Reminder emails are on.
+                        {% else %}
+                        Reminder emails are paused.
+                        {% endif %}
+                    </p>
+                </div>
+            </div>
+            <form method="post" action="/admin/customers/person/{{ customer.id }}/billing-notifications">
+                {% include "components/forms/csrf_input.html" %}
+                <input type="hidden" name="send_billing_notifications" value="{{ 'false' if billing_config.send_billing_notifications else 'true' }}">
+                <button type="submit"
+                        class="inline-flex w-full items-center justify-center gap-2 rounded-xl border px-3 py-2 text-sm font-semibold shadow-sm transition sm:w-auto {% if billing_config.send_billing_notifications %}border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100 dark:border-rose-900/60 dark:bg-rose-950/30 dark:text-rose-300 dark:hover:bg-rose-950/50{% else %}border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-300 dark:hover:bg-emerald-950/50{% endif %}">
+                    {% if billing_config.send_billing_notifications %}
+                    Stop reminders
+                    {% else %}
+                    Resume reminders
+                    {% endif %}
+                </button>
+            </form>
+        </div>
+
         <div class="grid gap-3 lg:grid-cols-[1fr_auto] lg:items-center">
             <div class="overflow-x-auto rounded-2xl border border-slate-200/70 bg-slate-50 p-1 shadow-sm dark:border-slate-700/70 dark:bg-slate-900/40">
                 <div class="flex min-w-max gap-1">
@@ -1471,9 +1501,11 @@
                                 {% endif %}
                                 {% if show_service_assignments %}
                                 {% set sub_conn = (connection_by_subscription or {}).get(subscription.id|string, {}) %}
+                                {% if sub_conn %}
                                 <div class="w-24 text-center">
                                     {{ status_presentation_badge(sub_conn.status_presentation, size="sm") }}
                                 </div>
+                                {% endif %}
                                 {% endif %}
                             </div>
                         </div>
@@ -1839,7 +1871,21 @@
     </div>
 
     <!-- Tab Content: Network -->
-    <div x-show="activeTab === 'network'" x-cloak class="space-y-6">
+    <div id="customer-network-panel"
+         x-show="activeTab === 'network'" x-cloak class="space-y-6"
+         {% if not network_panel_loaded %}
+         hx-get="{{ detail_config.networkPanelUrl }}"
+         hx-trigger="revealed"
+         hx-select="#customer-network-panel"
+         hx-swap="outerHTML"
+         hx-indicator="#customer-network-panel-loading"
+         {% endif %}>
+                {% if not network_panel_loaded %}
+                <div id="customer-network-panel-loading" class="rounded-2xl border border-slate-200/60 bg-white p-8 text-center shadow-sm dark:border-slate-700/60 dark:bg-slate-800" role="status">
+                    <p class="text-sm font-semibold text-slate-900 dark:text-white">Loading network details…</p>
+                    <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">This bounded panel loads only when opened.</p>
+                </div>
+                {% else %}
                 <!-- Network Access -->
                 {% if network_access_cards %}
                 <div class="rounded-2xl border border-slate-200/60 bg-white shadow-sm dark:border-slate-700/60 dark:bg-slate-800">
@@ -2142,6 +2188,14 @@
                         <p class="text-xs text-slate-500 dark:text-slate-400">Manage all requests in the <a href="/admin/gis?tab=customer-requests&status=pending" class="font-medium text-primary-600 hover:text-primary-700">GIS customer requests</a> tab.</p>
                     </div>
                 </div>
+                {% endif %}
+
+                {% if network_access_is_bounded %}
+                <div class="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100" role="status">
+                    Showing the first {{ network_access_cards | length }} of {{ network_access_total_count }} network services. Use the subscription workspace for the complete list.
+                </div>
+                {% endif %}
+
                 {% endif %}
 
     </div>

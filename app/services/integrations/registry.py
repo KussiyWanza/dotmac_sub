@@ -34,6 +34,105 @@ class ConnectorRegistryEntry:
     file_size_bytes: int
 
 
+def _dotmac_erp_manifest(
+    *, version: str, include_workforce_attendance: bool
+) -> ConnectorManifest:
+    capabilities = [
+        CapabilityManifest(
+            id="erp.outbox.deliver.v1",
+            modes=(CapabilityMode.scheduled, CapabilityMode.event),
+        ),
+        CapabilityManifest(
+            id="erp.status.read.v1",
+            modes=(CapabilityMode.scheduled, CapabilityMode.reconcile),
+        ),
+        CapabilityManifest(
+            id="erp.inventory.read.v1",
+            modes=(CapabilityMode.interactive, CapabilityMode.manual),
+        ),
+        CapabilityManifest(
+            id="erp.operational_context.sync.v1",
+            modes=(CapabilityMode.scheduled,),
+        ),
+        CapabilityManifest(
+            id="erp.regulatory.read.v1",
+            modes=(CapabilityMode.interactive, CapabilityMode.manual),
+        ),
+    ]
+    if include_workforce_attendance:
+        capabilities.extend(
+            (
+                CapabilityManifest(
+                    id="workforce.attendance.read.v1",
+                    modes=(CapabilityMode.interactive,),
+                ),
+                CapabilityManifest(
+                    id="workforce.attendance.punch.v1",
+                    modes=(CapabilityMode.interactive,),
+                ),
+            )
+        )
+    properties: dict[str, object] = {
+        "base_url": {"type": "string"},
+        "timeout_seconds": {"type": "integer"},
+        "max_retries": {"type": "integer"},
+    }
+    if include_workforce_attendance:
+        properties.update(
+            {
+                "interactive_timeout_seconds": {
+                    "type": "integer",
+                    "default": 5,
+                    "minimum": 1,
+                    "maximum": 15,
+                },
+                "interactive_max_retries": {
+                    "type": "integer",
+                    "default": 1,
+                    "minimum": 0,
+                    "maximum": 2,
+                },
+            }
+        )
+    reads = [
+        "field.erp_outbox",
+        "operations.context_projection",
+        "inventory.query",
+        "regulatory.query",
+    ]
+    classifications = ["financial", "operations", "inventory"]
+    if include_workforce_attendance:
+        reads.extend(("workforce.attendance_state", "workforce.browser_location"))
+        classifications.extend(("workforce", "location"))
+    return ConnectorManifest(
+        key="dotmac.erp",
+        name="DotMac ERP",
+        version=version,
+        connector_type="erp",
+        description="First-party ERP transport and observation connector.",
+        catalogue_visible=False,
+        runtime=RuntimeManifest(
+            type=ConnectorRuntimeType.builtin_worker,
+            module="app.services.integrations.connectors.dotmac_erp",
+        ),
+        capabilities=tuple(capabilities),
+        config_schema={
+            "type": "object",
+            "properties": properties,
+            "required": ["base_url"],
+            "additionalProperties": False,
+        },
+        secrets=(SecretBindingManifest(name="service_credentials"),),
+        data_access=DataAccessManifest(
+            reads=tuple(reads),
+            emits=("erp.transport_observation",),
+            classifications=tuple(classifications),
+        ),
+        egress=EgressManifest(hosts=("erp.dotmac.io",)),
+        health=HealthManifest(operation="connection.validate.v1"),
+    )
+
+
 def _paystack_manifest(
     *,
     version: str,
@@ -226,6 +325,10 @@ def _meta_social_manifest(
     properties: dict[str, dict[str, object]] = {
         "provider": {"type": "string", "enum": ["meta_social"]},
         "app_id": {"type": "string"},
+        "auth_mode": {
+            "type": "string",
+            "enum": ["oauth", "individual"],
+        },
         "facebook_page_id": {"type": "string"},
         "facebook_auth_mode": {
             "type": "string",
@@ -251,6 +354,7 @@ def _meta_social_manifest(
     required = [
         "provider",
         "app_id",
+        "auth_mode",
         "facebook_page_id",
         "facebook_auth_mode",
         "instagram_account_id",
@@ -268,11 +372,6 @@ def _meta_social_manifest(
         SecretBindingManifest(name="webhook_verify_token"),
     ]
     if include_shared_oauth:
-        properties["auth_mode"] = {
-            "type": "string",
-            "enum": ["oauth", "individual"],
-        }
-        required.insert(1, "auth_mode")
         secrets.insert(
             0, SecretBindingManifest(name="meta_oauth_access_token", required=False)
         )
@@ -316,6 +415,46 @@ def _meta_social_manifest(
 
 
 _DEFINITIONS: tuple[ConnectorManifest, ...] = (
+    ConnectorManifest(
+        key="fiber.inquiry.http",
+        name="Fiber Website Inquiry",
+        version="1.0.0",
+        connector_type="messaging",
+        description="Signed fiber.dotmac.ng inquiry ingress for Team Inbox.",
+        runtime=RuntimeManifest(
+            type=ConnectorRuntimeType.builtin_worker,
+            module="app.services.integrations.connectors.fiber_inquiry_http",
+        ),
+        capabilities=(
+            CapabilityManifest(
+                id="communications.fiber_inquiry.receive.v1",
+                modes=(CapabilityMode.inbound,),
+            ),
+        ),
+        config_schema={
+            "type": "object",
+            "properties": {
+                "signature_header": {"type": "string", "minLength": 1},
+                "delivery_id_header": {"type": "string", "minLength": 1},
+                "signature_prefix": {"type": "string"},
+                "site_id": {"type": "string", "minLength": 1},
+            },
+            "required": [
+                "signature_header",
+                "delivery_id_header",
+                "signature_prefix",
+                "site_id",
+            ],
+            "additionalProperties": False,
+        },
+        secrets=(SecretBindingManifest(name="webhook_signing_secret"),),
+        data_access=DataAccessManifest(
+            emits=("communications.inbound_message_observation",),
+            classifications=("customer_contact", "message_content"),
+        ),
+        egress=EgressManifest(),
+        health=HealthManifest(operation="connection.validate.v1"),
+    ),
     ConnectorManifest(
         key="lead.capture.http",
         name="Lead Capture Webhook",
@@ -487,63 +626,7 @@ _DEFINITIONS: tuple[ConnectorManifest, ...] = (
         health=HealthManifest(operation="connection.validate.v1"),
     ),
     _meta_social_manifest(version="1.1.0", include_shared_oauth=True),
-    ConnectorManifest(
-        key="dotmac.erp",
-        name="DotMac ERP",
-        version="1.0.0",
-        connector_type="erp",
-        description="First-party ERP transport and observation connector.",
-        catalogue_visible=False,
-        runtime=RuntimeManifest(
-            type=ConnectorRuntimeType.builtin_worker,
-            module="app.services.integrations.connectors.dotmac_erp",
-        ),
-        capabilities=(
-            CapabilityManifest(
-                id="erp.outbox.deliver.v1",
-                modes=(CapabilityMode.scheduled, CapabilityMode.event),
-            ),
-            CapabilityManifest(
-                id="erp.status.read.v1",
-                modes=(CapabilityMode.scheduled, CapabilityMode.reconcile),
-            ),
-            CapabilityManifest(
-                id="erp.inventory.read.v1",
-                modes=(CapabilityMode.interactive, CapabilityMode.manual),
-            ),
-            CapabilityManifest(
-                id="erp.operational_context.sync.v1",
-                modes=(CapabilityMode.scheduled,),
-            ),
-            CapabilityManifest(
-                id="erp.regulatory.read.v1",
-                modes=(CapabilityMode.interactive, CapabilityMode.manual),
-            ),
-        ),
-        config_schema={
-            "type": "object",
-            "properties": {
-                "base_url": {"type": "string"},
-                "timeout_seconds": {"type": "integer"},
-                "max_retries": {"type": "integer"},
-            },
-            "required": ["base_url"],
-            "additionalProperties": False,
-        },
-        secrets=(SecretBindingManifest(name="service_credentials"),),
-        data_access=DataAccessManifest(
-            reads=(
-                "field.erp_outbox",
-                "operations.context_projection",
-                "inventory.query",
-                "regulatory.query",
-            ),
-            emits=("erp.transport_observation",),
-            classifications=("financial", "operations", "inventory"),
-        ),
-        egress=EgressManifest(hosts=("erp.dotmac.io",)),
-        health=HealthManifest(operation="connection.validate.v1"),
-    ),
+    _dotmac_erp_manifest(version="1.1.0", include_workforce_attendance=True),
     _paystack_manifest(
         version="1.0.1",
         include_safe_defaults=True,
@@ -622,6 +705,9 @@ _DEFINITIONS: tuple[ConnectorManifest, ...] = (
 )
 
 _HISTORICAL_DEFINITIONS: tuple[ConnectorManifest, ...] = (
+    # ERP 1.0.0 remains executable while installations explicitly adopt the
+    # workforce attendance capability introduced in 1.1.0.
+    _dotmac_erp_manifest(version="1.0.0", include_workforce_attendance=False),
     # CRM 1.0.0 remains executable while production adopts the explicit
     # temporary chat-session capability in 1.1.0.
     _dotmac_crm_manifest(version="1.0.0", include_chat_session=False),

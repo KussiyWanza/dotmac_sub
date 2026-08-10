@@ -15,9 +15,11 @@ from app.models.team_inbox import (
     InboxObservationStatus,
     InboxProviderObservation,
 )
+from app.schemas.fiber_inquiry import FiberInquiryInterest, FiberInquiryRequest
 from app.services import (
     team_inbox_channel_receive,
     team_inbox_delivery_receipts,
+    team_inbox_fiber_receive,
     team_inbox_media,
     team_inbox_observations,
     team_inbox_receive,
@@ -67,6 +69,43 @@ def _message_payload(
             if isinstance(data.get("authentication"), dict)
             else None
         ),
+        provider_account_id=(
+            str(data["provider_account_id"])
+            if data.get("provider_account_id")
+            else None
+        ),
+        external_account_id=(
+            str(data["external_account_id"])
+            if data.get("external_account_id")
+            else None
+        ),
+        page_id=str(data["page_id"]) if data.get("page_id") else None,
+        instagram_account_id=(
+            str(data["instagram_account_id"])
+            if data.get("instagram_account_id")
+            else None
+        ),
+        contact_profile=(
+            {
+                "display_name": (
+                    str(data["contact_profile"]["display_name"])
+                    if data["contact_profile"].get("display_name")
+                    else None
+                ),
+                "username": (
+                    str(data["contact_profile"]["username"])
+                    if data["contact_profile"].get("username")
+                    else None
+                ),
+                "profile_pic": (
+                    str(data["contact_profile"]["profile_pic"])
+                    if data["contact_profile"].get("profile_pic")
+                    else None
+                ),
+            }
+            if isinstance(data.get("contact_profile"), dict)
+            else None
+        ),
         attachments=tuple(
             team_inbox_observations.InboundAttachmentObservation(
                 asset_type=str(item.get("asset_type") or "file"),
@@ -82,6 +121,11 @@ def _message_payload(
                 file_size=int(item["file_size"])
                 if item.get("file_size") is not None
                 else None,
+                download_status=(
+                    str(item["download_status"])
+                    if item.get("download_status")
+                    else None
+                ),
             )
             for item in attachments
             if isinstance(item, dict)
@@ -132,8 +176,27 @@ def process_provider_observation(
             inbound_result: (
                 team_inbox_receive.InboundEmailReceiveResult
                 | team_inbox_channel_receive.InboundChannelReceiveResult
+                | team_inbox_fiber_receive.FiberInquiryReceiveResult
             )
-            if row.channel_type == InboxChannelType.email.value:
+            if row.channel_type == InboxChannelType.website_fiber.value:
+                data = row.normalized_payload
+                inbound_result = team_inbox_receive.receive_fiber_inquiry(
+                    db,
+                    payload=FiberInquiryRequest(
+                        form_version=str(data.get("form_version") or ""),
+                        full_name=str(data.get("full_name") or ""),
+                        phone=str(data["phone"]) if data.get("phone") else None,
+                        email=str(data.get("email") or ""),
+                        interest=FiberInquiryInterest(str(data.get("interest") or "")),
+                        message=str(data["message"]) if data.get("message") else None,
+                        submitted_at=observed_at,
+                    ),
+                    delivery_id=str(row.external_message_id or ""),
+                    site_id=row.provider_account_scope,
+                    observation_id=row.id,
+                    context=context,
+                )
+            elif row.channel_type == InboxChannelType.email.value:
                 email_result = team_inbox_receive.receive_inbound_email(
                     db,
                     team_inbox_receive.InboundEmailPayload(
@@ -194,7 +257,12 @@ def process_provider_observation(
                         fallback_service_team_id=payload.fallback_service_team_id,
                         metadata={
                             "provider": row.provider,
+                            "provider_account_id": payload.provider_account_id,
                             "provider_account_scope": row.provider_account_scope,
+                            "external_account_id": payload.external_account_id,
+                            "page_id": payload.page_id,
+                            "instagram_account_id": payload.instagram_account_id,
+                            "contact_profile": payload.contact_profile,
                             "observation_id": str(row.id),
                             "campaign_attributed": payload.campaign_attributed,
                             "attachments": [
@@ -204,8 +272,10 @@ def process_provider_observation(
                                     "mime_type": item.mime_type,
                                     "id": item.provider_media_id,
                                     "url": item.source_url,
+                                    "source_url": item.source_url,
                                     "caption": item.caption,
                                     "file_size": item.file_size,
+                                    "download_status": item.download_status,
                                 }
                                 for item in payload.attachments
                             ],

@@ -16,6 +16,18 @@ _ROOT_TRANSACTION_SPAN_KEY = "_root_transaction_span"
 _TRANSACTION_WARN_SECONDS = 30.0
 
 
+def _observe_transaction_span(duration_seconds: float, *, slow: bool) -> None:
+    """Record bounded, process-local transaction telemetry for Prometheus."""
+    from app.metrics import (
+        DATABASE_TRANSACTION_SPANS,
+        DATABASE_TRANSACTION_SPANS_SLOW,
+    )
+
+    DATABASE_TRANSACTION_SPANS.observe(duration_seconds)
+    if slow:
+        DATABASE_TRANSACTION_SPANS_SLOW.inc()
+
+
 def install_session_hooks() -> None:
     """Explicit import-time installation hook used by the session factory."""
     return None
@@ -133,7 +145,9 @@ def _finish_root_transaction_span(
     if not isinstance(started, (int, float)):
         return
     duration = max(0.0, monotonic() - float(started))
-    if duration < _TRANSACTION_WARN_SECONDS:
+    slow = duration >= _TRANSACTION_WARN_SECONDS
+    _observe_transaction_span(duration, slow=slow)
+    if not slow:
         return
     logger.warning(
         "database_transaction_span_slow",

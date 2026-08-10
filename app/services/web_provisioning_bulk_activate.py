@@ -31,7 +31,10 @@ from app.services.account_lifecycle import (
 )
 from app.services.audit_adapter import record_audit_event
 from app.services.auth_flow import hash_service_secret
-from app.services.catalog.subscriptions import apply_offer_radius_profile
+from app.services.catalog.subscriptions import (
+    apply_offer_radius_profile,
+    contracted_amount_for_offer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -462,6 +465,12 @@ def execute_job(db: Session, *, job_id: str) -> dict[str, Any]:
                         offer_id=offer.id,
                         status=SubscriptionStatus.pending,
                         billing_mode=target_billing_mode,
+                        # Snapshot the contracted amount from the same owner
+                        # Subscriptions.create uses. Without it the row is born
+                        # with unit_price NULL, and prepaid enforcement is
+                        # blocked for that account from its first collectible
+                        # cycle with no path back.
+                        unit_price=contracted_amount_for_offer(db, offer.id),
                     )
                     apply_offer_radius_profile(db, target, sync_credentials=False)
                     db.add(target)

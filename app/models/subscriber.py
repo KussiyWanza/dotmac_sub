@@ -35,7 +35,7 @@ from app.db import Base
 from app.models.catalog import BillingMode
 from app.models.organization import Organization  # noqa: F401 (mapper registry)
 from app.models.party import Party
-from app.models.subscription_engine import SettingValueType
+from app.models.subscription_engine import SettingValueType, SettingValueTypeType
 
 
 class Gender(enum.Enum):
@@ -689,7 +689,7 @@ class SubscriberCustomField(Base):
     )
     key: Mapped[str] = mapped_column(String(120), nullable=False)
     value_type: Mapped[SettingValueType] = mapped_column(
-        Enum(SettingValueType), default=SettingValueType.string
+        SettingValueTypeType(40), default=SettingValueType.string
     )
     value_text: Mapped[str | None] = mapped_column(Text)
     value_json: Mapped[dict | None] = mapped_column(JSON)

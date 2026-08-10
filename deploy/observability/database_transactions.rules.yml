@@ -1,0 +1,43 @@
+# Database transaction-span alerts.
+#
+# The application owns span measurement from first SQL statement until the
+# root SQLAlchemy transaction closes. Prometheus owns only threshold evaluation.
+groups:
+  - name: database_transaction_spans
+    rules:
+      - alert: DatabaseSlowTransactionsSustained
+        expr: increase(database_transaction_spans_slow_total[5m]) >= 3
+        for: 5m
+        labels:
+          severity: warning
+          area: database-pressure
+          owner: platform-runtime
+        annotations:
+          summary: "Slow database transactions are holding application workers"
+          description: >
+            At least three root database transactions exceeded 30 seconds in a
+            five-minute window. Correlate database_transaction_span_slow logs by
+            request_id, inspect the responsible route and query plan, and reduce
+            work inside the transaction. Do not increase HTTP or pool timeouts.
+          runbook: "docs/runbooks/DATABASE_TRANSACTION_PRESSURE.md"
+
+      - alert: DatabaseTransactionDurationCritical
+        expr: >
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(database_transaction_span_seconds_bucket[10m]))
+          ) > 60
+          and
+          increase(database_transaction_span_seconds_count[10m]) > 0
+        for: 10m
+        labels:
+          severity: critical
+          area: database-pressure
+          owner: platform-runtime
+        annotations:
+          summary: "Database transaction p95 exceeds 60 seconds"
+          description: >
+            Root transaction p95 has remained above 60 seconds. Check slow-span
+            logs, request concurrency, PostgreSQL activity, and query plans;
+            shed or defer expensive request-time projections before restarting.
+          runbook: "docs/runbooks/DATABASE_TRANSACTION_PRESSURE.md"

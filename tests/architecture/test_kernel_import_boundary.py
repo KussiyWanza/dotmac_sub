@@ -50,10 +50,15 @@ ALLOWED_KERNEL_MODULES = frozenset(
         "dotmac_kernel.assembly",
         "dotmac_kernel.capabilities",
         "dotmac_kernel.features",
+        "dotmac_kernel.models",
         "dotmac_kernel.money",
         "dotmac_kernel.profiles",
         "dotmac_kernel.providers",
         "dotmac_kernel.providers.provisioning",
+        "dotmac_kernel.secret_sources",
+        "dotmac_kernel.setting_value_types",
+        "dotmac_kernel.settings_models",
+        "dotmac_kernel.settings_resolver",
     }
 )
 
@@ -63,6 +68,18 @@ DENIED_NAMES = frozenset(
         ("dotmac_kernel.features", "mount_features"),
     }
 )
+
+#: Modules allowlisted for a NAMED subset only — every other name in them stays
+#: forbidden, and a bare ``import`` of the module is refused because it would
+#: reach all of them.
+#:
+#: ``dotmac_kernel.models`` is the Party/identity family. ADR-0009 admits the
+#: operator-tenant bridge and nothing else: Sub identity is not replaced, and
+#: `Party`, `PartyRole`, `Role` and `UserCredential` each collide with a Sub
+#: model of the same name, so a careless import would shadow one.
+RESTRICTED_MODULE_NAMES: dict[str, frozenset[str]] = {
+    "dotmac_kernel.models": frozenset({"Tenant", "TenantDomain"}),
+}
 
 
 def _kernel_import_violations(root: Path) -> list[str]:
@@ -86,6 +103,12 @@ def _kernel_import_violations(root: Path) -> list[str]:
                         violations.append(
                             f"{rel}:{node.lineno}: import {name} — not on the "
                             "ledger allowlist"
+                        )
+                    elif name in RESTRICTED_MODULE_NAMES:
+                        permitted = ", ".join(sorted(RESTRICTED_MODULE_NAMES[name]))
+                        violations.append(
+                            f"{rel}:{node.lineno}: import {name} — reaches every "
+                            f"name in it; import only {permitted} by name"
                         )
             elif isinstance(node, ast.ImportFrom):
                 module = node.module or ""
@@ -116,6 +139,16 @@ def _kernel_import_violations(root: Path) -> list[str]:
                             f"{rel}:{node.lineno}: from {module} import "
                             f"{alias.name} — name is denied by the ledger"
                         )
+                    elif (
+                        module in RESTRICTED_MODULE_NAMES
+                        and alias.name not in RESTRICTED_MODULE_NAMES[module]
+                    ):
+                        permitted = ", ".join(sorted(RESTRICTED_MODULE_NAMES[module]))
+                        violations.append(
+                            f"{rel}:{node.lineno}: from {module} import "
+                            f"{alias.name} — only {permitted} are admitted "
+                            "(ADR-0009)"
+                        )
     return violations
 
 
@@ -142,14 +175,16 @@ def test_guard_fails_on_forbidden_kernel_imports(tmp_path: Path) -> None:
         "import dotmac_kernel.db\n"
         "from dotmac_kernel import Party\n"
         "from dotmac_kernel.models import UserCredential\n"
+        "import dotmac_kernel.models\n"
         "from dotmac_kernel.features import mount_features\n"
         "from dotmac_kernel._internal import anything\n"
         "from dotmac_kernel.money import Money\n"
-        "from dotmac_kernel.providers import provisioning\n",
+        "from dotmac_kernel.providers import provisioning\n"
+        "from dotmac_kernel.models import Tenant, TenantDomain\n",
         encoding="utf-8",
     )
     violations = _kernel_import_violations(tmp_path)
-    assert len(violations) == 5, violations
+    assert len(violations) == 6, violations
     flagged = "\n".join(violations)
     for needle in (
         "dotmac_kernel.db",
@@ -157,9 +192,21 @@ def test_guard_fails_on_forbidden_kernel_imports(tmp_path: Path) -> None:
         "dotmac_kernel.models",
         "mount_features",
         "dotmac_kernel._internal",
+        # ADR-0009 admits two names from `models`; `UserCredential` is not one,
+        # and a bare `import dotmac_kernel.models` reaches all of them.
+        "UserCredential",
+        "reaches every name",
     ):
         assert needle in flagged, f"checker missed {needle!r}: {violations}"
     assert "dotmac_kernel.money" not in flagged, violations
+    # The admitted import must NOT be flagged — otherwise the narrowing is
+    # indistinguishable from the module still being off the allowlist. Asserted
+    # by LINE rather than by substring: the rejection message for a bare
+    # `import dotmac_kernel.models` legitimately names Tenant and TenantDomain
+    # as the permitted imports, so a substring check matches the guidance and
+    # not the subject.
+    admitted_line = "offender.py:9:"
+    assert not [v for v in violations if v.startswith(admitted_line)], violations
 
 
 def test_allowlist_matches_the_ledger() -> None:

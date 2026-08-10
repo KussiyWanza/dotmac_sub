@@ -1462,6 +1462,24 @@ OLT listing uses the core device listing context — devices filtered to OLT typ
 
 ### Network — ONTs
 
+#### ONT Configuration tab contract
+
+- Audience: authenticated engineers and administrators with
+  `network:ont:read`; mutations additionally require `network:ont:write`.
+- Supported path: routed Huawei ONTs using DHCP, PPPoE, or static WAN, plus
+  management IP, LAN/DHCP, and Wi-Fi configuration. Initial commissioning and
+  bridge / Via ONU mode remain in the provisioning workflow.
+- Actions are section-scoped. The page does not provide or accept an
+  apply-all action, because one section must not silently mutate another.
+- Blank PPPoE and Wi-Fi password inputs mean "keep the current password".
+  Stored secret values are never rendered back into the form.
+- OLT assignment, configuration-pack availability, and ACS registration are
+  disclosed as readiness facts. They do not replace server-side eligibility
+  checks at execution time.
+- Results distinguish applied, pending delivery, and failed states with text
+  as well as color. A saved change waiting for an ACS inform is not presented
+  as applied.
+
 #### ONT Form Dependencies
 
 ```python

@@ -43,9 +43,6 @@ class Settings:
     dashboard_global_max_stale_seconds: float = float(
         os.getenv("DASHBOARD_GLOBAL_MAX_STALE_SECONDS", "900")
     )
-    dashboard_infrastructure_cache_ttl_seconds: float = float(
-        os.getenv("DASHBOARD_INFRASTRUCTURE_CACHE_TTL_SECONDS", "60")
-    )
     infrastructure_health_skip_checks: str = os.getenv(
         "INFRASTRUCTURE_HEALTH_SKIP_CHECKS", ""
     )
@@ -163,6 +160,11 @@ class Settings:
         "yes",
         "on",
     )
+    # The anonymous native widget is deliberately scoped to the fiber site.
+    # This is a public origin, not a credential; keep the exact scheme + host.
+    fiber_chat_allowed_origin: str = os.getenv(
+        "FIBER_CHAT_ALLOWED_ORIGIN", "https://fiber.dotmac.ng"
+    ).rstrip("/")
     # Mono lookup API
     mono_secret_key: str = os.getenv("MONO_SECRET_KEY", "")
     mono_base_url: str = os.getenv("MONO_BASE_URL", "https://api.withmono.com")

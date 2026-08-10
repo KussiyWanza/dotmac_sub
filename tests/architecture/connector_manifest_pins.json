@@ -1,92 +1,104 @@
 [
-  {
-    "current": true,
-    "key": "lead.capture.http",
-    "manifest_digest": "feb50c12ef932cd5fa5d7a71dd4ff3dfed49843a404bd9f26c869d3e94ce90e3",
-    "version": "1.0.0"
-  },
-  {
-    "current": true,
-    "key": "webhook.http",
-    "manifest_digest": "cd12010918d2171928d5ab7ba3b117ccfe90189ec4842f0595bd33545cd20871",
-    "version": "1.0.0"
-  },
-  {
-    "current": true,
-    "key": "dotmac.crm",
-    "manifest_digest": "e1de51fcf0e93869ce8776c6291f8b1ac4b0a35b373adcaa322c46e5c3f48908",
-    "version": "1.1.0"
-  },
-  {
-    "current": true,
-    "key": "whatsapp",
-    "manifest_digest": "4f83cbba8ecb8e986de90c6e3ba424fbac9ec1e966671fb534fd98a9c35d4a32",
-    "version": "1.0.0"
-  },
-  {
-    "current": true,
-    "key": "nextcloud.talk",
-    "manifest_digest": "c6939956ac02d8697c9a0e41ee4d759354d433235acb5bdced9abd30ef272bf2",
-    "version": "1.0.0"
-  },
-  {
-    "current": true,
-    "key": "meta.social",
-    "manifest_digest": "868a139bc00e121e7ffc808fb53730bee1e4190ab04689ac2080f57f484ecacf",
-    "version": "1.1.0"
-  },
-  {
-    "current": true,
-    "key": "dotmac.erp",
-    "manifest_digest": "5c0b5f58d5b9e10b30e2bbb329b32f0e2b0e1eddb3512ab16af5efac6e126454",
-    "version": "1.0.0"
-  },
-  {
-    "current": true,
-    "key": "paystack",
-    "manifest_digest": "d0dabfdf7ce77a65fa5a8259400d249fa27c69bdb695cfdeffd1a357bef0b425",
-    "version": "1.0.1"
-  },
-  {
-    "current": true,
-    "key": "flutterwave",
-    "manifest_digest": "1af579b6daf89dcce898597a217b5d08ea0572604ea3f0056da8878959dc38cb",
-    "version": "1.0.0"
-  },
-  {
-    "current": true,
-    "key": "3cx",
-    "manifest_digest": "cb1d4b283df06567fffee97304c185c6b8e149e6ea80f6c8e46e91a63a9fbc39",
-    "version": "1.0.0"
-  },
-  {
-    "current": true,
-    "key": "freepbx",
-    "manifest_digest": "2009f57dda6aec855f50ddb970505365f979fde9eb2e94c93341b3b6efc6772c",
-    "version": "1.0.0"
-  },
-  {
-    "current": false,
-    "key": "dotmac.crm",
-    "manifest_digest": "9230e15377ffb8b595d27256fa303b77463ba7a73bdb643819fcd5f93cf88adf",
-    "version": "1.0.0"
-  },
-  {
-    "current": false,
-    "key": "meta.social",
-    "manifest_digest": "c2a13ab30bebb90b312ab4bbcf1d2feaa23ea706100b3e5ea35a101ec566cf08",
-    "version": "1.0.0"
-  },
-  {
-    "current": false,
-    "key": "paystack",
-    "manifest_digest": "53791d3e2e06fe1ca128a0e3e8ced86549392af7b6131f61bd21044d71aafc6e",
-    "version": "1.0.0"
-  },
-  {
-    "current": false,
-    "key": "paystack",
-    "manifest_digest": "9f1e314860294696c825d8d49d300df903ced6c319b406f295047d25585e836c",
-    "version": "1.0.0"
-  }
+    {
+        "current": true,
+        "key": "fiber.inquiry.http",
+        "manifest_digest": "ad7d0c65b4796d83484c8d842657824a36b102d575428035caf8405654cd1aef",
+        "version": "1.0.0"
+    },
+    {
+        "current": true,
+        "key": "lead.capture.http",
+        "manifest_digest": "feb50c12ef932cd5fa5d7a71dd4ff3dfed49843a404bd9f26c869d3e94ce90e3",
+        "version": "1.0.0"
+    },
+    {
+        "current": true,
+        "key": "webhook.http",
+        "manifest_digest": "cd12010918d2171928d5ab7ba3b117ccfe90189ec4842f0595bd33545cd20871",
+        "version": "1.0.0"
+    },
+    {
+        "current": true,
+        "key": "dotmac.crm",
+        "manifest_digest": "e1de51fcf0e93869ce8776c6291f8b1ac4b0a35b373adcaa322c46e5c3f48908",
+        "version": "1.1.0"
+    },
+    {
+        "current": true,
+        "key": "whatsapp",
+        "manifest_digest": "4f83cbba8ecb8e986de90c6e3ba424fbac9ec1e966671fb534fd98a9c35d4a32",
+        "version": "1.0.0"
+    },
+    {
+        "current": true,
+        "key": "nextcloud.talk",
+        "manifest_digest": "c6939956ac02d8697c9a0e41ee4d759354d433235acb5bdced9abd30ef272bf2",
+        "version": "1.0.0"
+    },
+    {
+        "current": true,
+        "key": "meta.social",
+        "manifest_digest": "dfa7b8229d870b1524ba8fcab76448c9ba3de2f4922ac6031105398811c993d6",
+        "version": "1.1.0"
+    },
+    {
+        "current": true,
+        "key": "dotmac.erp",
+        "manifest_digest": "185ad7c1152c126445216cc75ae348a1612a746f6926fa8f4755b494a2c16cf3",
+        "version": "1.1.0"
+    },
+    {
+        "current": true,
+        "key": "paystack",
+        "manifest_digest": "d0dabfdf7ce77a65fa5a8259400d249fa27c69bdb695cfdeffd1a357bef0b425",
+        "version": "1.0.1"
+    },
+    {
+        "current": true,
+        "key": "flutterwave",
+        "manifest_digest": "1af579b6daf89dcce898597a217b5d08ea0572604ea3f0056da8878959dc38cb",
+        "version": "1.0.0"
+    },
+    {
+        "current": true,
+        "key": "3cx",
+        "manifest_digest": "cb1d4b283df06567fffee97304c185c6b8e149e6ea80f6c8e46e91a63a9fbc39",
+        "version": "1.0.0"
+    },
+    {
+        "current": true,
+        "key": "freepbx",
+        "manifest_digest": "2009f57dda6aec855f50ddb970505365f979fde9eb2e94c93341b3b6efc6772c",
+        "version": "1.0.0"
+    },
+    {
+        "current": false,
+        "key": "dotmac.erp",
+        "manifest_digest": "5c0b5f58d5b9e10b30e2bbb329b32f0e2b0e1eddb3512ab16af5efac6e126454",
+        "version": "1.0.0"
+    },
+    {
+        "current": false,
+        "key": "dotmac.crm",
+        "manifest_digest": "9230e15377ffb8b595d27256fa303b77463ba7a73bdb643819fcd5f93cf88adf",
+        "version": "1.0.0"
+    },
+    {
+        "current": false,
+        "key": "meta.social",
+        "manifest_digest": "1186a1b861b561480e609363baf2822dbc7091857054ef076fb686e581e4bc5b",
+        "version": "1.0.0"
+    },
+    {
+        "current": false,
+        "key": "paystack",
+        "manifest_digest": "53791d3e2e06fe1ca128a0e3e8ced86549392af7b6131f61bd21044d71aafc6e",
+        "version": "1.0.0"
+    },
+    {
+        "current": false,
+        "key": "paystack",
+        "manifest_digest": "9f1e314860294696c825d8d49d300df903ced6c319b406f295047d25585e836c",
+        "version": "1.0.0"
+    }
 ]

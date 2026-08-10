@@ -16,6 +16,77 @@
     <p role="status" class="rounded-lg border px-3 py-2 text-sm {% if notice_status == 'error' %}border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-800 dark:bg-rose-950/20 dark:text-rose-200{% else %}border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/20 dark:text-emerald-200{% endif %}">{{ notice_message }}</p>
     {% endif %}
 
+    <section class="rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
+        <div class="border-b border-slate-100 px-5 py-4 dark:border-slate-700">
+            <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                    <h2 class="font-semibold text-slate-900 dark:text-white">AI intake policy</h2>
+                    <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Controls the LLM classifier that runs before Team Inbox routing. It remains off until enabled here.</p>
+                </div>
+                <span class="rounded-lg px-2.5 py-1 text-xs font-semibold {% if ai_intake_config and ai_intake_config.is_enabled %}bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200{% else %}bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-200{% endif %}">
+                    {{ "Enabled" if ai_intake_config and ai_intake_config.is_enabled else "Off" }}
+                </span>
+            </div>
+        </div>
+        <form method="post" action="/admin/crm/inbox/ai-intake-policy" class="grid gap-4 p-5 lg:grid-cols-6">
+            {% include "components/forms/csrf_input.html" %}
+            <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 lg:col-span-2">Scope key
+                <input name="scope_key" value="{{ ai_intake_config.scope_key if ai_intake_config else 'global' }}" required maxlength="160" class="mt-1 h-11 w-full rounded-lg border-slate-300 px-3 text-sm dark:border-slate-700 dark:bg-slate-950">
+            </label>
+            <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300">Channel
+                <select name="channel_type" required class="mt-1 h-11 w-full rounded-lg border-slate-300 text-sm dark:border-slate-700 dark:bg-slate-950">
+                    {% for channel in ai_channel_options %}
+                    {% if channel.value in ['any', 'whatsapp', 'facebook_messenger', 'instagram_dm'] %}
+                    <option value="{{ channel.value }}" {% if ai_intake_config and ai_intake_config.channel_type == channel.value %}selected{% endif %}>{{ channel.label }}</option>
+                    {% endif %}
+                    {% endfor %}
+                </select>
+            </label>
+            <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300">Confidence
+                <input name="confidence_threshold" type="number" min="0" max="1" step="0.01" value="{{ ai_intake_config.confidence_threshold if ai_intake_config else 0.75 }}" class="mt-1 h-11 w-full rounded-lg border-slate-300 px-3 text-sm dark:border-slate-700 dark:bg-slate-950">
+            </label>
+            <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300">Clarifications
+                <input name="max_clarification_turns" type="number" min="0" max="1" value="{{ ai_intake_config.max_clarification_turns if ai_intake_config else 1 }}" class="mt-1 h-11 w-full rounded-lg border-slate-300 px-3 text-sm dark:border-slate-700 dark:bg-slate-950">
+            </label>
+            <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300">Escalate after
+                <input name="escalate_after_minutes" type="number" min="1" max="1440" value="{{ ai_intake_config.escalate_after_minutes if ai_intake_config else 5 }}" class="mt-1 h-11 w-full rounded-lg border-slate-300 px-3 text-sm dark:border-slate-700 dark:bg-slate-950">
+            </label>
+            <label class="flex items-center gap-2 text-sm font-semibold text-slate-700 dark:text-slate-200 lg:col-span-2">
+                <input type="checkbox" name="is_enabled" value="true" {% if ai_intake_config and ai_intake_config.is_enabled %}checked{% endif %} class="rounded border-slate-300 text-amber-500 focus:ring-amber-500">
+                Enable customer AI intake
+            </label>
+            <label class="flex items-center gap-2 text-sm font-semibold text-slate-700 dark:text-slate-200 lg:col-span-2">
+                <input type="checkbox" name="allow_followup_questions" value="true" {% if not ai_intake_config or ai_intake_config.allow_followup_questions %}checked{% endif %} class="rounded border-slate-300 text-amber-500 focus:ring-amber-500">
+                Ask one approved clarification question
+            </label>
+            <label class="flex items-center gap-2 text-sm font-semibold text-slate-700 dark:text-slate-200 lg:col-span-2">
+                <input type="checkbox" name="exclude_campaign_attribution" value="true" {% if not ai_intake_config or ai_intake_config.exclude_campaign_attribution %}checked{% endif %} class="rounded border-slate-300 text-amber-500 focus:ring-amber-500">
+                Skip campaign-attributed conversations
+            </label>
+            <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 lg:col-span-3">Fallback team
+                <select name="fallback_team_id" class="mt-1 h-11 w-full rounded-lg border-slate-300 text-sm dark:border-slate-700 dark:bg-slate-950">
+                    <option value="">Use channel default</option>
+                    {% for team in service_team_options %}<option value="{{ team.id }}" {% if ai_intake_config and ai_intake_config.fallback_team_id == team.id %}selected{% endif %}>{{ team.name }}</option>{% endfor %}
+                </select>
+            </label>
+            <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 lg:col-span-3">Profile-completion support team
+                <select name="data_cleaning_support_team_id" class="mt-1 h-11 w-full rounded-lg border-slate-300 text-sm dark:border-slate-700 dark:bg-slate-950">
+                    <option value="">Disabled</option>
+                    {% for team in service_team_options %}<option value="{{ team.id }}" {% if ai_intake_config and ai_intake_config.metadata.data_cleaning_support_team_id == team.id %}selected{% endif %}>{{ team.name }}</option>{% endfor %}
+                </select>
+            </label>
+            <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 lg:col-span-6">Prompt instructions
+                <textarea name="instructions" maxlength="2000" rows="5" class="mt-1 w-full rounded-lg border-slate-300 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950">{{ ai_intake_config.instructions if ai_intake_config and ai_intake_config.instructions else "" }}</textarea>
+            </label>
+            <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 lg:col-span-6">Intent mappings JSON
+                <textarea name="department_mappings_json" rows="7" class="mt-1 w-full rounded-lg border-slate-300 px-3 py-2 font-mono text-xs dark:border-slate-700 dark:bg-slate-950">{{ ai_intake_mapping_json }}</textarea>
+            </label>
+            <div class="lg:col-span-6">
+                <button type="submit" class="min-h-11 rounded-lg bg-amber-500 px-5 text-sm font-semibold text-white hover:bg-amber-600">Save AI intake policy</button>
+            </div>
+        </form>
+    </section>
+
     {% if introduction_preference %}
     <section class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-800">
         <h2 class="font-semibold text-slate-900 dark:text-white">My chat introduction</h2>

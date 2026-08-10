@@ -76,6 +76,7 @@ _CORE_ROUTER_SPECS = [
     ("app.api.crm_webhooks", "router", "api", "none"),
     ("app.api.inbox_webhooks", "router", "api", "none"),
     ("app.api.meta_inbox_webhooks", "router", "api", "none"),
+    ("app.api.fiber_inquiry_webhooks", "router", "api", "none"),
     ("app.api.lead_capture_webhooks", "router", "api", "none"),
     ("app.api.chat_widget", "router", "web", "none"),
     ("app.api.crm", "router", "api", "none"),
@@ -441,6 +442,13 @@ def _seed_startup_settings() -> None:
         )
     db = SessionLocal()
     try:
+        # Before every settings seed: settings are tenant-scoped (ADR-0009), so
+        # the tenant they belong to must exist first. Idempotent — an existing
+        # tenant is returned untouched, never reverted.
+        from app.services.operator_tenant import provision_operator_tenant
+
+        provision_operator_tenant(db)
+
         seed_auth_settings(db)
         seed_auth_policy_settings(db)
         seed_audit_settings(db)
@@ -943,6 +951,42 @@ async def web_auth_refresh_middleware(request: Request, call_next):
                 _set_refresh_cookie(response, db, refresh_token, request)
         finally:
             db.close()
+    return response
+
+
+@app.middleware("http")
+async def fiber_widget_cors_middleware(request: Request, call_next):
+    """Expose only native widget routes to the exact fiber-site browser origin."""
+
+    if not request.url.path.startswith("/widget"):
+        return await call_next(request)
+
+    from app.config import settings
+
+    origin = str(request.headers.get("origin") or "").rstrip("/")
+    allowed_origin = settings.fiber_chat_allowed_origin
+    if request.method.upper() == "OPTIONS":
+        if origin != allowed_origin:
+            return Response(status_code=403)
+        return Response(
+            status_code=204,
+            headers={
+                "Access-Control-Allow-Origin": allowed_origin,
+                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type, X-Visitor-Token",
+                "Access-Control-Max-Age": "600",
+                "Vary": "Origin",
+            },
+        )
+
+    response = await call_next(request)
+    if origin == allowed_origin:
+        response.headers["Access-Control-Allow-Origin"] = allowed_origin
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = (
+            "Content-Type, X-Visitor-Token"
+        )
+        response.headers.append("Vary", "Origin")
     return response
 
 

@@ -13,6 +13,7 @@ import socket
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from enum import Enum
 from typing import TYPE_CHECKING
 
 import httpx
@@ -60,6 +61,17 @@ _HEALTH_CHECK_KEYS = frozenset(
         "nominatim",
     }
 )
+_SNAPSHOT_SCHEMA_VERSION = 1
+_SNAPSHOT_MAX_SERVICES = len(_HEALTH_CHECK_KEYS)
+_SNAPSHOT_TTL_SECONDS = 24 * 60 * 60
+_SNAPSHOT_STALE_AFTER_SECONDS = 10 * 60
+
+
+class InfrastructureHealthFreshness(str, Enum):
+    """Freshness of the scheduled dependency-health projection."""
+
+    fresh = "fresh"
+    stale = "stale"
 
 
 def _skipped_health_checks() -> set[str]:
@@ -96,6 +108,145 @@ class ServiceStatus:
     details: dict[str, object] = field(default_factory=dict)
     checked_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     icon: str = ""  # SVG icon for the template
+
+
+@dataclass(frozen=True)
+class InfrastructureHealthSnapshot:
+    """Bounded scheduled projection consumed by request-time dashboards."""
+
+    services: tuple[ServiceStatus, ...]
+    observed_at: datetime
+    freshness: InfrastructureHealthFreshness
+    age_seconds: float
+
+
+def _snapshot_cache_key() -> str:
+    from app.services.app_cache import cache_key
+
+    return cache_key("runtime", "infrastructure-health", "latest")
+
+
+def _snapshot_datetime(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(UTC)
+
+
+def publish_health_snapshot(
+    services: list[ServiceStatus],
+    *,
+    now: datetime | None = None,
+) -> bool:
+    """Publish one bounded shared projection after scheduled probes complete."""
+
+    if len(services) > _SNAPSHOT_MAX_SERVICES:
+        raise ValueError("Infrastructure health snapshot exceeds service budget")
+    observed_at = (now or datetime.now(UTC)).astimezone(UTC)
+    payload = {
+        "schema_version": _SNAPSHOT_SCHEMA_VERSION,
+        "observed_at": observed_at.isoformat(),
+        "services": [
+            {
+                "name": service.name,
+                "status": service.status,
+                "version": service.version,
+                "response_ms": service.response_ms,
+                "details": service.details,
+                "checked_at": service.checked_at.astimezone(UTC).isoformat(),
+                "icon": service.icon,
+            }
+            for service in services
+        ],
+    }
+    from app.services.app_cache import set_json
+
+    stored = set_json(
+        _snapshot_cache_key(),
+        payload,
+        _SNAPSHOT_TTL_SECONDS,
+    )
+    logger.info(
+        "infrastructure_health_snapshot_published stored=%s services=%s",
+        stored,
+        len(services),
+    )
+    return stored
+
+
+def load_health_snapshot(
+    *,
+    now: datetime | None = None,
+) -> InfrastructureHealthSnapshot | None:
+    """Load the latest scheduled projection without running dependency probes."""
+
+    from app.services.app_cache import get_json
+
+    payload = get_json(_snapshot_cache_key())
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("schema_version") != _SNAPSHOT_SCHEMA_VERSION:
+        return None
+    observed_at = _snapshot_datetime(payload.get("observed_at"))
+    service_rows = payload.get("services")
+    if (
+        observed_at is None
+        or not isinstance(service_rows, list)
+        or len(service_rows) > _SNAPSHOT_MAX_SERVICES
+    ):
+        return None
+
+    services: list[ServiceStatus] = []
+    for row in service_rows:
+        if not isinstance(row, dict):
+            return None
+        name = row.get("name")
+        status = row.get("status")
+        details = row.get("details")
+        checked_at = _snapshot_datetime(row.get("checked_at"))
+        if (
+            not isinstance(name, str)
+            or not name
+            or not isinstance(status, str)
+            or not status
+            or not isinstance(details, dict)
+            or checked_at is None
+        ):
+            return None
+        try:
+            response_ms = float(row.get("response_ms", 0.0))
+        except (TypeError, ValueError):
+            return None
+        services.append(
+            ServiceStatus(
+                name=name,
+                status=status,
+                version=str(row.get("version") or ""),
+                response_ms=response_ms,
+                details={str(key): value for key, value in details.items()},
+                checked_at=checked_at,
+                icon=str(row.get("icon") or ""),
+            )
+        )
+
+    evaluated_at = (now or datetime.now(UTC)).astimezone(UTC)
+    age_seconds = max(0.0, (evaluated_at - observed_at).total_seconds())
+    freshness = (
+        InfrastructureHealthFreshness.fresh
+        if age_seconds <= _SNAPSHOT_STALE_AFTER_SECONDS
+        else InfrastructureHealthFreshness.stale
+    )
+    return InfrastructureHealthSnapshot(
+        services=tuple(services),
+        observed_at=observed_at,
+        freshness=freshness,
+        age_seconds=age_seconds,
+    )
 
 
 def _expected_celery_queues() -> list[str]:

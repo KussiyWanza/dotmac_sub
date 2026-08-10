@@ -45,6 +45,7 @@ class InboxProvider(StrEnum):
     meta_cloud_api = "meta_cloud_api"
     meta_social = "meta_social"
     chat_widget = "chat_widget"
+    fiber_website = "fiber_website"
 
 
 class ObservationProcessingOutcome(StrEnum):
@@ -67,6 +68,7 @@ class InboundAttachmentObservation:
     source_url: str | None = None
     caption: str | None = None
     file_size: int | None = None
+    download_status: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,7 +91,23 @@ class InboundMessageObservation:
     # DKIM result for a message already accepted — so it is carried even though
     # no admission policy reads it yet.
     authentication: dict[str, object] | None = None
+    provider_account_id: str | None = None
+    external_account_id: str | None = None
+    page_id: str | None = None
+    instagram_account_id: str | None = None
+    contact_profile: dict[str, str | None] | None = None
     attachments: tuple[InboundAttachmentObservation, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class FiberWebsiteInquiryObservation:
+    full_name: str
+    email: str
+    phone: str | None
+    interest: str
+    message: str | None
+    integration_inbox_id: UUID
+    form_version: str = "fiber-contact-v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,7 +117,11 @@ class DeliveryReceiptObservation:
     error_codes: tuple[str, ...] = ()
 
 
-NormalizedObservation = InboundMessageObservation | DeliveryReceiptObservation
+NormalizedObservation = (
+    InboundMessageObservation
+    | FiberWebsiteInquiryObservation
+    | DeliveryReceiptObservation
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,17 +196,31 @@ def _validate(command: RecordProviderObservationCommand) -> tuple[str, str, str]
             "invalid_observation", "Provider observed_at must be timezone-aware."
         )
     if command.kind is InboxObservationKind.message:
-        if not isinstance(command.payload, InboundMessageObservation):
+        if not isinstance(
+            command.payload,
+            (InboundMessageObservation, FiberWebsiteInquiryObservation),
+        ):
             raise _error(
                 "invalid_observation", "Message observation payload is invalid."
             )
-        if (
+        if isinstance(command.payload, InboundMessageObservation) and (
             not command.payload.contact_address.strip()
             or not command.payload.body.strip()
         ):
             raise _error(
                 "invalid_observation",
                 "Inbound contact address and message body are required.",
+            )
+        if isinstance(command.payload, FiberWebsiteInquiryObservation) and (
+            command.channel_type is not InboxChannelType.website_fiber
+            or command.provider is not InboxProvider.fiber_website
+            or not command.payload.full_name.strip()
+            or not command.payload.email.strip()
+            or not command.payload.interest.strip()
+        ):
+            raise _error(
+                "invalid_observation",
+                "Fiber inquiry identity and interest are required.",
             )
         if not external_message_id:
             raise _error(

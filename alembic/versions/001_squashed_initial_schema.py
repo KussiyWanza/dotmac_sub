@@ -108,6 +108,42 @@ def _recreate_retired_types(conn) -> None:
     )
 
 
+def _recreate_unmapped_columns(conn) -> None:
+    """Rebuild columns the models no longer declare but the CHAIN still needs.
+
+    Same hazard as `_recreate_retired_types`, one level down. `create_all`
+    emits only what the models declare TODAY, so a column removed from a model
+    simply never exists in a fresh database — and any earlier revision that
+    names it dies. `377_repair_sellable_offer_names` issues
+    ``UPDATE catalog_offers ... WHERE splynx_tariff_id = :tariff_id``, so
+    unmapping these three in the offer model killed a fresh chain run there.
+
+    These columns are unmapped, not dropped: every deployed database still has
+    them and their data, because their downgrade path could not restore the
+    values (the precedent set when the `throttle_rate_mbps` drop was deferred
+    out of 7.135). Recreating them here makes a fresh database match that
+    reality instead of diverging from it, and lets the historical revision
+    replay exactly as written. When the DROP eventually lands as its own
+    reviewed change, it removes them at the correct point in history and this
+    helper goes with it.
+    """
+
+    if conn.dialect.name != "postgresql":
+        return
+
+    for column, ddl_type in (
+        ("splynx_tariff_id", "INTEGER"),
+        ("splynx_service_name", "VARCHAR(160)"),
+        ("splynx_tax_id", "INTEGER"),
+    ):
+        conn.execute(
+            text(
+                "ALTER TABLE catalog_offers "
+                f"ADD COLUMN IF NOT EXISTS {column} {ddl_type}"
+            )
+        )
+
+
 def upgrade() -> None:
     conn = op.get_bind()
 
@@ -125,6 +161,7 @@ def upgrade() -> None:
     Base.metadata.create_all(conn.engine)
 
     _recreate_retired_types(conn)
+    _recreate_unmapped_columns(conn)
 
 
 def downgrade() -> None:

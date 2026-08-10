@@ -1,8 +1,48 @@
 {# Compact ONT service intent form - dense inline layout for NOC efficiency #}
 
 {% if config_result is defined %}
-<div class="mb-3 rounded-lg border px-3 py-2 text-sm {{ 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-800/50 dark:bg-emerald-900/20 dark:text-emerald-300' if config_result.success else 'border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-800/50 dark:bg-rose-900/20 dark:text-rose-300' }}">
-    {{ config_result.message }}
+{% if config_result.waiting %}
+{% set result_style = 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800/50 dark:bg-amber-900/20 dark:text-amber-300' %}
+{% set result_label = 'Pending delivery' %}
+{% elif config_result.success %}
+{% set result_style = 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-800/50 dark:bg-emerald-900/20 dark:text-emerald-300' %}
+{% set result_label = 'Applied' %}
+{% else %}
+{% set result_style = 'border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-800/50 dark:bg-rose-900/20 dark:text-rose-300' %}
+{% set result_label = 'Failed' %}
+{% endif %}
+<div class="mb-3 rounded-lg border px-3 py-2 text-sm {{ result_style }}" role="status">
+    <span class="font-semibold">{{ result_label }}:</span>
+    <span>{{ config_result.message }}</span>
+</div>
+{% endif %}
+
+{% if configure_readiness is defined %}
+<div class="mb-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 dark:border-slate-700 dark:bg-slate-800/60">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+        <p class="text-xs font-semibold text-slate-700 dark:text-slate-200">Supported path: Huawei routed ONTs</p>
+        <p class="text-xs text-slate-500 dark:text-slate-400">Apply one section at a time</p>
+    </div>
+    <dl class="mt-2 grid gap-2 text-xs sm:grid-cols-3">
+        <div>
+            <dt class="text-slate-500 dark:text-slate-400">OLT assignment</dt>
+            <dd class="font-medium {{ 'text-emerald-700 dark:text-emerald-300' if configure_readiness.olt_assigned else 'text-amber-700 dark:text-amber-300' }}">
+                {{ 'Ready' if configure_readiness.olt_assigned else 'Not ready' }}
+            </dd>
+        </div>
+        <div>
+            <dt class="text-slate-500 dark:text-slate-400">Configuration pack</dt>
+            <dd class="font-medium {{ 'text-emerald-700 dark:text-emerald-300' if configure_readiness.config_pack_ready else 'text-amber-700 dark:text-amber-300' }}">
+                {{ 'Ready' if configure_readiness.config_pack_ready else 'Not ready' }}
+            </dd>
+        </div>
+        <div>
+            <dt class="text-slate-500 dark:text-slate-400">ACS registration</dt>
+            <dd class="font-medium {{ 'text-emerald-700 dark:text-emerald-300' if configure_readiness.acs_registered else 'text-amber-700 dark:text-amber-300' }}">
+                {{ 'Ready' if configure_readiness.acs_registered else 'Not ready' }}
+            </dd>
+        </div>
+    </dl>
 </div>
 {% endif %}
 
@@ -57,6 +97,7 @@
 {% endif %}
 
 {% set wan_mode_val = wan_mode or '' %}
+{% set bridge_mode_val = wan_mode_val in ['bridge', 'bridged', 'bridging', 'setup_via_onu'] %}
 {% set ip_protocol_val = ip_protocol or '' %}
 {% set wan_static_ip_val = wan_static_ip or '' %}
 {% set wan_static_subnet_val = wan_static_subnet or '' %}
@@ -71,7 +112,7 @@
       hx-swap="innerHTML"
       class="space-y-3"
       x-data="{
-          wanMode: '{{ wan_mode_val }}',
+          wanMode: '{{ 'setup_via_onu' if bridge_mode_val else wan_mode_val }}',
           mgmtIpMode: '{{ mgmt_ip_mode_val }}',
           lanPreset: '',
           showPppoePassword: false,
@@ -172,12 +213,13 @@
                     <label for="wan_mode" class="mb-1 block text-xs text-slate-600 dark:text-slate-400">Mode</label>
                     <select id="wan_mode" name="wan_mode" x-model="wanMode"
                             class="w-full rounded border border-slate-300 bg-white px-2 py-1.5 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
-                        <option value="">Default</option>
-                        <option value="dhcp">DHCP</option>
-                        <option value="pppoe">PPPoE</option>
-                        <option value="static_ip">Static IP</option>
-                        <option value="setup_via_onu">Via ONU</option>
+                        <option value="" {% if not wan_mode_val %}selected{% endif %}>Default</option>
+                        <option value="dhcp" {% if wan_mode_val == 'dhcp' %}selected{% endif %}>DHCP</option>
+                        <option value="pppoe" {% if wan_mode_val == 'pppoe' %}selected{% endif %}>PPPoE</option>
+                        <option value="static_ip" {% if wan_mode_val == 'static_ip' %}selected{% endif %}>Static IP</option>
+                        <option value="setup_via_onu" disabled{% if bridge_mode_val %} selected{% endif %}>Bridge / Via ONU — provisioning only</option>
                     </select>
+                    <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Bridge / Via ONU is provisioning-only. Select DHCP, PPPoE, or Static IP to apply WAN here.</p>
                 </div>
                 <div class="w-28">
                     <label for="ip_protocol" class="mb-1 block text-xs text-slate-600 dark:text-slate-400">Protocol</label>
@@ -223,6 +265,7 @@
                                     <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
                                 </button>
                             </div>
+                            <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Leave blank to keep the current PPPoE password. Stored passwords are never displayed.</p>
                         </div>
                     </div>
                 </template>
@@ -252,6 +295,7 @@
                 </template>
                 <div class="ml-auto">
                     <button type="submit" name="push_scope" value="wan"
+                            :disabled="wanMode === 'setup_via_onu'"
                             hx-indicator="#config-spinner-wan"
                             hx-disabled-elt="this"
                             class="inline-flex items-center gap-1 rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 shadow-sm hover:bg-slate-50 disabled:opacity-50 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600">
@@ -355,6 +399,7 @@
                             <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
                         </button>
                     </div>
+                    <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Leave blank to keep the current Wi-Fi password. Use 8–63 characters when changing it; stored passwords are never displayed.</p>
                 </div>
                 <div class="w-24">
                     <label for="wifi_channel" class="mb-1 block text-xs text-slate-600 dark:text-slate-400">Channel</label>
@@ -490,18 +535,8 @@
         </div>
     </details>
 
-    {# ═══════════════════════ SUBMIT ALL ═══════════════════════ #}
     <input type="hidden" name="push_to_device" value="true">
-    <div class="mb-4 grid gap-3 border-t border-slate-100 pt-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center dark:border-slate-700">
-        <p class="text-xs text-slate-500 dark:text-slate-400">Save and apply device changes</p>
-        <button type="submit"
-                name="push_scope"
-                value="all"
-                hx-indicator="#config-spinner-all"
-                hx-disabled-elt="this"
-                class="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-cyan-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-cyan-700 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:ring-offset-2 disabled:opacity-50 sm:w-auto dark:focus:ring-offset-slate-900">
-            <svg id="config-spinner-all" x-show="activeConfigScope === 'all'" x-cloak class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
-            Apply All
-        </button>
+    <div class="mb-4 border-t border-slate-100 pt-3 dark:border-slate-700">
+        <p class="text-xs text-slate-500 dark:text-slate-400">Apply one section at a time. Each action saves and delivers only that section.</p>
     </div>
 </form>

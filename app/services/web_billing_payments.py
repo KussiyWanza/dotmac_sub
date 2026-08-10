@@ -253,6 +253,10 @@ def build_payment_detail_data(
     return {
         "payment": payment,
         "payment_status_presentation": payment_status_presentation(payment.status),
+        # The receipt owner serves only successful payments.  Keep that
+        # eligibility in the read model so the template does not invent a
+        # separate financial-state rule.
+        "receipt_available": payment.status == PaymentStatus.succeeded,
         "primary_invoice_id": payment_primary_invoice_id(payment),
         "edit_capability": billing_service.payments.edit_capability(db, payment_id),
         "refund_capability": refund_capability,

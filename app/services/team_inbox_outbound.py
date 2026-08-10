@@ -316,8 +316,8 @@ def _send_field_job_reply(
     """Deliver a job-chat message in the app, over the conversation socket.
 
     There is no external transport and therefore no recipient address, no
-    notification and no delivery receipt to wait for: both parties are
-    authenticated in Sub and subscribed to this conversation's topic. The
+    notification and no delivery receipt to wait for: both parties hold a
+    bounded Sub session and subscribe to this conversation's topic. The
     message is sent the moment it is persisted and published.
     """
     body_text = _plain_text_reply(payload)
@@ -612,6 +612,13 @@ def send_inbox_reply(
             conversation=conversation,
             payload=payload,
             now=now,
+        )
+
+    if conversation.channel_type == InboxChannelType.website_fiber.value:
+        return InboxReplyResult(
+            kind="unsupported_channel",
+            conversation_id=str(conversation.id),
+            reason="Outbound replies for fiber website inquiries are not configured",
         )
 
     to_email = _reply_to_address(conversation, payload.to_email)

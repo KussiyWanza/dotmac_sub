@@ -1128,14 +1128,14 @@ resolved_reference = "4714d9411e7512cc00944fd44583bc38812e9839"
 
 [[package]]
 name = "dotmac-kernel"
-version = "0.1.0a13"
+version = "0.1.0a27"
 description = "DotMac platform kernel — multi-tenant FastAPI foundation (config, RLS db, identity/tenancy models, security, platform auth, middleware, settings, features registry, audit)"
 optional = false
 python-versions = ">=3.11,<3.14"
 groups = ["main", "dev"]
 files = [
-    {file = "dotmac_kernel-0.1.0a13-py3-none-any.whl", hash = "sha256:85572deb4b5deda9749f929879ac2d95ee2c389a4fa8d1c035aa6c7118f4508d"},
-    {file = "dotmac_kernel-0.1.0a13.tar.gz", hash = "sha256:4507673110d01b8a5bdca163c22e4118125c2566534e4317a02aa77ff309f93f"},
+    {file = "dotmac_kernel-0.1.0a27-py3-none-any.whl", hash = "sha256:975e65c92b7142071348f3cc0632b248391c7df252f8713794e026a07f7a8d85"},
+    {file = "dotmac_kernel-0.1.0a27.tar.gz", hash = "sha256:e5b33e420a5b6889f0f01f289e37b323a549f6d68d692bf064b8a67c8c7962b9"},
 ]
 
 [package.dependencies]
@@ -1149,6 +1149,7 @@ sqlalchemy = ">=2.0,<3.0"
 
 [package.extras]
 licensing = ["cryptography (>=42)"]
+settings-crypto = ["cryptography (>=42)"]
 testing = ["httpx (>=0.27,<0.28)"]
 
 [package.source]
@@ -5301,4 +5302,4 @@ test = ["pytest"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.13"
-content-hash = "4a8cec25a7153cf5574b558b0f0bbb18fdc45986564857411263c1d1e7ebbecc"
+content-hash = "d2f9730317f51a05646f5f08e1f566c9b71ed3ee4a5eead459bc80d1808258a7"

@@ -384,9 +384,14 @@ adapter_registry.register(example_adapter)
 ## Critical Architecture Notes
 
 ### Transaction Management
-- Service methods commit their own transactions via `db.commit()`
-- Use `db.flush()` when creating entities that need IDs for related operations
-- Routes MUST NOT call `db.commit()`
+- Adapters create and close sessions. A registered public command owner enters
+  `execute_owner_command` once on a transaction-free session and owns the
+  atomic commit or rollback.
+- Nested service helpers use `db.flush()` when they need generated IDs and do
+  not commit independently.
+- Legacy service methods in this architecture that still call `db.commit()`
+  are migration debt; they are not the contract for new or modified owner
+  boundaries.
 
 ### SSH Pool Efficiency
 - Reuses connections for 5 minutes (configurable TTL)

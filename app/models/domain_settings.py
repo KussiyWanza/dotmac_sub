@@ -34,7 +34,6 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
-    Enum,
     String,
     Text,
     TypeDecorator,
@@ -45,7 +44,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
-from app.models.subscription_engine import SettingValueType
+from app.models.subscription_engine import SettingValueType, SettingValueTypeType
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from pydantic import GetCoreSchemaHandler
@@ -196,9 +195,19 @@ class DomainSetting(Base):
     __tablename__ = "domain_settings"
     __table_args__ = (
         UniqueConstraint("domain", "key", name="uq_domain_settings_domain_key"),
+        # A row carries a value in at least one column. The old form named the
+        # type (`value_type = 'json'`), which is the same closed list migration
+        # 512 removed from the column itself — a second JSON-stored type such
+        # as `list` or `money` could not satisfy it.
+        #
+        # NOT "exactly one", which is what the kernel's equivalent constraint
+        # says: there a type's `ValueTypeSpec.storage` picks its single column.
+        # Sub writes a BOOLEAN to BOTH on purpose (see `normalize_for_db`), so
+        # exactly-one would reject rows this codebase writes deliberately.
+        # Tightening that is a change of storage convention and belongs to the
+        # settings cutover, where the kernel becomes the writer.
         CheckConstraint(
-            "(value_type = 'json' AND value_json IS NOT NULL AND value_text IS NULL) "
-            "OR (value_type != 'json' AND value_text IS NOT NULL)",
+            "value_text IS NOT NULL OR value_json IS NOT NULL",
             name="ck_domain_settings_value_alignment",
         ),
     )
@@ -206,12 +215,28 @@ class DomainSetting(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
+    # Scope columns, declared so metadata matches the migrated schema and so
+    # `dotmac_kernel.settings_models.DomainSetting` can read this table at all.
+    # Sub reads none of them: it is a single-operator deployment, so every row
+    # is platform scope. `scope_kind` defaults to "platform" rather than the
+    # kernel's "tenant" — a Sub row has no tenant, and inheriting that default
+    # would make every row claim a scope its own `tenant_id` contradicts.
+    # See migration 507_domain_settings_scope_columns.
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    scope_kind: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="platform", server_default="platform"
+    )
+    scope_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
     domain: Mapped[SettingDomain] = mapped_column(
         SettingDomainType(120), nullable=False
     )
     key: Mapped[str] = mapped_column(String(120), nullable=False)
     value_type: Mapped[SettingValueType] = mapped_column(
-        Enum(SettingValueType), default=SettingValueType.string
+        SettingValueTypeType(40), default=SettingValueType.string
     )
     value_text: Mapped[str | None] = mapped_column(Text)
     value_json: Mapped[dict | None] = mapped_column(JSON(none_as_null=True))
@@ -245,5 +270,34 @@ def _reject_undeclared_domain(
     require_declared_domain(target.domain)
 
 
+def _reject_undeclared_value_type(
+    mapper: object, connection: object, target: DomainSetting
+) -> None:
+    """Fail a write whose value type no installed module declares.
+
+    The other half of migration ``512``. That migration removed the DATABASE's
+    closed list — the native ``settingvaluetype`` enum and a CHECK naming
+    ``json`` — so a kernel-declared type could be stored at all. Removing a
+    constraint without replacing its guarantee would have made a typo a stored
+    row, so the authority moves rather than disappears: it is now
+    ``dotmac_kernel.setting_value_types``, because how a value is ENCODED is a
+    fleet-wide fact and two products declaring incompatible versions of one
+    type is the fork ADR-0008 exists to prevent (starter ADR-0006, "build once;
+    an extension point is not a licence").
+
+    Enforced at the WRITE boundary, on the model, for the same two reasons as
+    :func:`_reject_undeclared_domain`: the service layer is not the only
+    writer, and a row stored under a since-retired type must still READ.
+    """
+
+    from dotmac_kernel.setting_value_types import active_setting_value_types
+
+    if target.value_type is None:
+        return
+    active_setting_value_types().require(str(target.value_type))
+
+
 event.listen(DomainSetting, "before_insert", _reject_undeclared_domain)
 event.listen(DomainSetting, "before_update", _reject_undeclared_domain)
+event.listen(DomainSetting, "before_insert", _reject_undeclared_value_type)
+event.listen(DomainSetting, "before_update", _reject_undeclared_value_type)

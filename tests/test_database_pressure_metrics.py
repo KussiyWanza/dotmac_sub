@@ -2,9 +2,68 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.services import infrastructure_health, observability
+
+
+def test_root_transaction_span_emits_metric_and_correlated_warning(monkeypatch, caplog):
+    from app.services import session_hooks
+
+    observed: list[tuple[float, bool]] = []
+    session = SimpleNamespace(
+        info={
+            session_hooks._ROOT_TRANSACTION_SPAN_KEY: {
+                "started": 10.0,
+                "request_id": "request-123",
+            }
+        }
+    )
+    transaction = SimpleNamespace(parent=None)
+    monkeypatch.setattr(session_hooks, "monotonic", lambda: 45.5)
+    monkeypatch.setattr(
+        session_hooks,
+        "_observe_transaction_span",
+        lambda duration, *, slow: observed.append((duration, slow)),
+    )
+
+    with caplog.at_level("WARNING"):
+        session_hooks._finish_root_transaction_span(session, transaction)
+
+    assert observed == [(35.5, True)]
+    record = next(
+        item
+        for item in caplog.records
+        if item.message == "database_transaction_span_slow"
+    )
+    assert record.duration_seconds == 35.5
+    assert record.request_id == "request-123"
+
+
+def test_fast_root_transaction_records_histogram_without_warning(monkeypatch, caplog):
+    from app.services import session_hooks
+
+    observed: list[tuple[float, bool]] = []
+    session = SimpleNamespace(
+        info={
+            session_hooks._ROOT_TRANSACTION_SPAN_KEY: {
+                "started": 10.0,
+                "request_id": "request-456",
+            }
+        }
+    )
+    monkeypatch.setattr(session_hooks, "monotonic", lambda: 10.25)
+    monkeypatch.setattr(
+        session_hooks,
+        "_observe_transaction_span",
+        lambda duration, *, slow: observed.append((duration, slow)),
+    )
+
+    session_hooks._finish_root_transaction_span(session, SimpleNamespace(parent=None))
+
+    assert observed == [(0.25, False)]
+    assert "database_transaction_span_slow" not in caplog.messages
 
 
 def test_database_pressure_publisher_emits_bounded_observations(monkeypatch):
@@ -134,11 +193,21 @@ def test_stale_infrastructure_task_publishes_postgres_snapshot():
             "app.services.infrastructure_health.publish_database_pressure_snapshot",
             return_value=True,
         ) as publish,
+        patch(
+            "app.services.infrastructure_health.publish_health_snapshot",
+            return_value=True,
+        ) as publish_health,
     ):
         result = check_stale_infrastructure()
 
-    assert result == {"status": "up", "degraded": [], "checked": 1}
+    assert result == {
+        "status": "up",
+        "degraded": [],
+        "checked": 1,
+        "snapshot_stored": True,
+    }
     publish.assert_called_once_with(postgres)
+    publish_health.assert_called_once_with([postgres])
 
 
 def test_stale_infrastructure_snapshot_producer_has_hard_deadline():

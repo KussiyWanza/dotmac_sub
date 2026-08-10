@@ -135,7 +135,6 @@ party.organization_profile_audit
 party.principal_context_audit
 party.registry
 runtime.db_sessions
-runtime.infrastructure_health
 runtime.infrastructure_polling
 runtime.task_heartbeat
 runtime.task_idempotency

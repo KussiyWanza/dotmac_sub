@@ -321,9 +321,6 @@ class CatalogOfferBase(BaseModel):
     usage_allowance_id: UUID | None = None
     sla_profile_id: UUID | None = None
     policy_set_id: UUID | None = None
-    splynx_tariff_id: int | None = None
-    splynx_service_name: str | None = Field(default=None, max_length=160)
-    splynx_tax_id: int | None = None
     with_vat: bool = False
     vat_percent: Decimal | None = None
     speed_download_mbps: int | None = None
@@ -364,9 +361,6 @@ class CatalogOfferUpdate(BaseModel):
     usage_allowance_id: UUID | None = None
     sla_profile_id: UUID | None = None
     policy_set_id: UUID | None = None
-    splynx_tariff_id: int | None = None
-    splynx_service_name: str | None = Field(default=None, max_length=160)
-    splynx_tax_id: int | None = None
     with_vat: bool | None = None
     vat_percent: Decimal | None = None
     speed_download_mbps: int | None = None
@@ -466,7 +460,6 @@ class SubscriptionBase(BaseModel):
     next_billing_at: datetime | None = None
     canceled_at: datetime | None = None
     cancel_reason: str | None = Field(default=None, max_length=200)
-    splynx_service_id: int | None = None
     router_id: int | None = None
     service_description: str | None = None
     quantity: int | None = None
@@ -506,7 +499,6 @@ class SubscriptionUpdate(BaseModel):
     next_billing_at: datetime | None = None
     canceled_at: datetime | None = None
     cancel_reason: str | None = Field(default=None, max_length=200)
-    splynx_service_id: int | None = None
     router_id: int | None = None
     service_description: str | None = None
     quantity: int | None = None
@@ -548,7 +540,6 @@ class SubscriptionTechnicalUpdate(BaseModel):
     billing_mode: BillingMode | None = None
     contract_term: ContractTerm | None = None
     billing_cycle: BillingCycle | None = None
-    splynx_service_id: int | None = None
     router_id: int | None = None
     service_description: str | None = None
     quantity: int | None = None

@@ -10,6 +10,7 @@ from ipaddress import ip_network
 from sqlalchemy.orm import Session
 
 from app.models.network import OntUnit
+from app.services.credential_crypto import encrypt_credential
 from app.services.network.ont_action_common import (
     ActionResult,
     get_ont_or_error,
@@ -151,7 +152,13 @@ class OntFeatureService:
         if ssid is not None:
             proposed["wifi_ssid"] = ssid
         if password is not None:
-            proposed["wifi_password_ref"] = password
+            protected_password = encrypt_credential(password)
+            if protected_password is None:
+                return ActionResult(
+                    success=False,
+                    message="WiFi password could not be protected for storage.",
+                )
+            proposed["wifi_password_ref"] = protected_password
         if enabled is not None:
             proposed["wifi_enabled"] = enabled
         if channel is not None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from types import SimpleNamespace
 
 from sqlalchemy import select
@@ -24,6 +25,15 @@ from app.services.web_network_ont_actions._common import (
 from app.services.web_network_onts import management_ip_choices_for_ont
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class OntConfigureReadiness:
+    """Read-only prerequisites disclosed by the admin Configuration tab."""
+
+    olt_assigned: bool
+    config_pack_ready: bool
+    acs_registered: bool
 
 
 def _enum_value(value: object) -> str | None:
@@ -407,6 +417,11 @@ def _configure_form_context_from_state(
         "tr069_profile_name": tr069_profile_name,
         "has_tr069": has_tr069,
         "acs_last_inform": acs_last_inform,
+        "configure_readiness": OntConfigureReadiness(
+            olt_assigned=bool(getattr(ont, "olt_device_id", None)),
+            config_pack_ready=config_pack is not None,
+            acs_registered=has_tr069,
+        ),
         "mgmt_ip_pool": mgmt_ip_pool_ctx.get("mgmt_ip_pool"),
         "available_mgmt_ips": mgmt_ip_pool_ctx.get("available_mgmt_ips", []),
         "mgmt_ip_choice_message": mgmt_ip_pool_ctx.get("mgmt_ip_choice_message"),

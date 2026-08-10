@@ -20,6 +20,7 @@ from app.models.billing import Payment
 from app.models.subscriber import Subscriber
 from app.schemas.billing import PaymentSettlementReconciliationRequest
 from app.services import billing as billing_service
+from app.services import billing_payment_receipts as payment_receipts_service
 from app.services import web_billing_customers as web_billing_customers_service
 from app.services import web_billing_payment_forms as web_billing_payment_forms_service
 from app.services import web_billing_payments as web_billing_payments_service
@@ -660,6 +661,28 @@ def payment_detail(
             ),
             "current_user": get_current_user(request),
             "sidebar_stats": get_sidebar_stats(db),
+        },
+    )
+
+
+@router.get(
+    "/payments/{payment_id:uuid}/receipt/pdf",
+    dependencies=[Depends(require_permission("billing:payment:read"))],
+)
+def payment_receipt_pdf(payment_id: UUID, db: Session = Depends(get_db)) -> Response:
+    """Download the authoritative receipt for a successful payment."""
+    detail = payment_receipts_service.get_payment_receipt_context(db, str(payment_id))
+    pdf_bytes = payment_receipts_service.build_receipt_pdf(detail)
+
+    from app.services.file_storage import build_content_disposition
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": build_content_disposition(
+                payment_receipts_service.download_filename(detail["payment"])
+            )
         },
     )
 

@@ -151,6 +151,13 @@ Extracted from the rendered templates + `static/js/admin-inbox.js` (845 lines, o
 `reports/outbox-failures` · `{id}/contact` · `{id}/contact-link` · `{id}/labels` ·
 `{id}/note` · `{id}/reply` · `{id}/status` · `{id}/workflow`.
 
+Reply submission is an HTMX workspace action. The route still delegates the
+write to `team_inbox_commands.reply`, then returns a typed completion event that
+causes the browser adapter to refresh only the authoritative thread and current
+filtered queue. It must not navigate or reload the full workspace. The ordinary
+POST/303 response remains the progressive-enhancement fallback when HTMX is not
+available.
+
 **Backend exists, active workspace never calls it:** `{id}/read` ·
 `{id}/comments` · `comments/{id}/resolve` · `{id}/macros/create` ·
 `{id}/templates/create`.

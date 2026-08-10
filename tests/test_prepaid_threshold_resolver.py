@@ -449,4 +449,19 @@ def test_batch_cost_does_not_scale_with_account_count(db_session):
         f"{c_large.count} for 20 — the derivation is not batched"
     )
     # And the absolute cost stays tiny for a single batch.
-    assert c_large.count < 15
+    # Raised from 15 to 20 by the settings cutover, and deliberately not
+    # quietly. Kernel resolution walks a SCOPE CHAIN — the operator tenant's
+    # row, then the platform row — where Sub's former resolver did one flat
+    # lookup, so each distinct setting read costs one statement more. That is
+    # the price of tenant-scoped settings (ADR-0009: the operator IS a tenant),
+    # not a regression in this code path.
+    #
+    # What guards the bug class is the SLOPE assertion above, and it is
+    # untouched: `c_large <= c_small + 2` still holds. A budget raised whenever it
+    # fails is worthless, so the constant moves only with a named cause and the
+    # proportional check stays exactly as strict.
+    #
+    # It comes back down when settings caching is settled — Redis fronts this
+    # in production but is deliberately dead in the unit suite (conftest points
+    # REDIS_URL at a refusing port), so these numbers are the uncached cost.
+    assert c_large.count < 20

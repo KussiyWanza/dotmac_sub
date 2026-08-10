@@ -152,7 +152,7 @@ def test_rendered_form_carries_a_token_the_middleware_accepts(
     ("template", "action_fragment"),
     [
         # multiline form
-        ("templates/admin/inbox/_contact_drawer.html", "/contact-link"),
+        ("templates/admin/inbox/_contact_drawer.html", "/merge-contact"),
         # one-line, loop-generated form (the status menu emits one per option)
         ("templates/admin/inbox/_conversation.html", "/status"),
         # form reached through an include

@@ -39,6 +39,16 @@ class MetaDirectMessageOutcome(BaseModel):
     error_code: str | None = Field(default=None, max_length=120)
 
 
+class MetaContactProfile(BaseModel):
+    """Best-effort public profile fields used for Inbox display only."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    display_name: str | None = Field(default=None, max_length=255)
+    username: str | None = Field(default=None, max_length=255)
+    profile_pic: str | None = Field(default=None, max_length=1000)
+
+
 class MetaWebhookSecretMaterial(BaseModel):
     """Ephemeral inbound verification material resolved only at request time."""
 

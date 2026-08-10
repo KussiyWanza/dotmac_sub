@@ -61,20 +61,6 @@ _DASHBOARD_GLOBAL_MAX_STALE_SECONDS = max(
     settings.dashboard_global_max_stale_seconds,
 )
 
-_DASHBOARD_INFRASTRUCTURE_TTL_SECONDS = max(
-    5.0, settings.dashboard_infrastructure_cache_ttl_seconds
-)
-_dashboard_infrastructure_lock = Lock()
-_dashboard_infrastructure_cached_at = 0.0
-_dashboard_infrastructure_cache: (
-    tuple[
-        list[infrastructure_health_service.ServiceStatus],
-        dict[str, object],
-        dict[str, int],
-    ]
-    | None
-) = None
-
 
 def _network_monitoring_int_setting(db: Session, key: str, default: int) -> int:
     raw = settings_spec.resolve_value(db, SettingDomain.network_monitoring, key)
@@ -792,6 +778,9 @@ def dashboard(request: Request, db: Session):
         request, db
     )
     current_user = web_admin_service.get_current_user(request)
+    from app.services.auth_dependencies import can
+
+    show_attendance = can(request, "attendance:self:use")
     global_ctx = _get_cached_dashboard_global_context(db)
 
     return templates.TemplateResponse(
@@ -806,6 +795,7 @@ def dashboard(request: Request, db: Session):
             "show_financials": show_financials,
             "show_network": show_network,
             "show_subscribers": show_subscribers,
+            "show_attendance": show_attendance,
             **global_ctx,
         },
     )
@@ -826,6 +816,7 @@ def dashboard_server_health_partial(
             infrastructure_services,
             worker_health,
             service_summary,
+            infrastructure_snapshot,
         ) = _load_dashboard_infrastructure_health(db)
     except Exception:
         logger.exception("Failed to load dashboard infrastructure health")
@@ -838,6 +829,7 @@ def dashboard_server_health_partial(
             "down": 0,
             "unknown": 0,
         }
+        infrastructure_snapshot = None
     return templates.TemplateResponse(
         "admin/dashboard/_server_health.html",
         {
@@ -847,16 +839,10 @@ def dashboard_server_health_partial(
             "infrastructure_services": infrastructure_services,
             "worker_health": worker_health,
             "service_summary": service_summary,
+            "infrastructure_snapshot": infrastructure_snapshot,
             "worker_action_notice": worker_action_notice,
         },
     )
-
-
-def clear_dashboard_infrastructure_cache() -> None:
-    global _dashboard_infrastructure_cached_at, _dashboard_infrastructure_cache
-    with _dashboard_infrastructure_lock:
-        _dashboard_infrastructure_cache = None
-        _dashboard_infrastructure_cached_at = 0.0
 
 
 def _load_dashboard_infrastructure_health(
@@ -865,42 +851,22 @@ def _load_dashboard_infrastructure_health(
     list[infrastructure_health_service.ServiceStatus],
     dict[str, object],
     dict[str, int],
+    infrastructure_health_service.InfrastructureHealthSnapshot | None,
 ]:
-    """Return the infrastructure dashboard snapshot with a short process cache."""
-    global _dashboard_infrastructure_cached_at, _dashboard_infrastructure_cache
-
-    now = monotonic()
-    cached = _dashboard_infrastructure_cache
-    if (
-        cached is not None
-        and now - _dashboard_infrastructure_cached_at
-        < _DASHBOARD_INFRASTRUCTURE_TTL_SECONDS
-    ):
-        return cached
-
-    with _dashboard_infrastructure_lock:
-        now = monotonic()
-        cached = _dashboard_infrastructure_cache
-        if (
-            cached is not None
-            and now - _dashboard_infrastructure_cached_at
-            < _DASHBOARD_INFRASTRUCTURE_TTL_SECONDS
-        ):
-            return cached
-
-        infrastructure_services = infrastructure_health_service.check_all_services(db)
-        worker_health = web_system_health_service._build_worker_health(
-            infrastructure_services
-        )
-        service_summary = _build_infrastructure_service_summary(infrastructure_services)
-        snapshot = (
-            infrastructure_services,
-            worker_health,
-            service_summary,
-        )
-        _dashboard_infrastructure_cache = snapshot
-        _dashboard_infrastructure_cached_at = now
-        return snapshot
+    """Read the shared scheduled snapshot; never run dependency probes here."""
+    del db
+    snapshot = infrastructure_health_service.load_health_snapshot()
+    infrastructure_services = list(snapshot.services) if snapshot is not None else []
+    worker_health = web_system_health_service._build_worker_health(
+        infrastructure_services
+    )
+    service_summary = _build_infrastructure_service_summary(infrastructure_services)
+    return (
+        infrastructure_services,
+        worker_health,
+        service_summary,
+        snapshot,
+    )
 
 
 def _build_infrastructure_service_summary(

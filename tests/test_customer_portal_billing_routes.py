@@ -180,6 +180,29 @@ class TestPaymentReceiptPdf:
         assert bytes(response.body).startswith(b"%PDF-")
         assert "receipt-RCP-TEST.pdf" in response.headers["content-disposition"]
 
+    def test_admin_receipt_pdf_route_returns_pdf_response(self) -> None:
+        from app.web.admin.billing_payments import payment_receipt_pdf
+
+        context = self._receipt_context()
+        with (
+            patch(
+                "app.web.admin.billing_payments.payment_receipts_service.get_payment_receipt_context",
+                return_value=context,
+            ),
+            patch(
+                "app.web.admin.billing_payments.payment_receipts_service.build_receipt_pdf",
+                return_value=b"%PDF-1.4\nreceipt",
+            ),
+        ):
+            response = payment_receipt_pdf(
+                payment_id=context["payment"].id,
+                db=MagicMock(),
+            )
+
+        assert response.media_type == "application/pdf"
+        assert bytes(response.body).startswith(b"%PDF-")
+        assert "receipt-RCP-TEST.pdf" in response.headers["content-disposition"]
+
 
 class TestPaymentSuccessBanner:
     def test_payment_success_only_marks_service_restored_after_post_payment_check(

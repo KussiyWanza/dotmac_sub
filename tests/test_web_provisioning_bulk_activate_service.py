@@ -314,3 +314,87 @@ def test_bulk_activation_never_writes_a_served_ipv4_without_an_assignment(db_ses
         "— this is exactly the assignment_missing cohort"
     )
     assert backing[0].ipv4_address.address == "10.99.0.5"
+
+
+def test_bulk_activation_snapshots_the_contracted_amount(db_session):
+    """A bulk-activated subscription must not be born without its price.
+
+    Bulk activation builds the Subscription directly instead of going through
+    Subscriptions.create, so it used to skip that owner's price snapshot and
+    persist unit_price NULL. Prepaid enforcement then fails closed forever with
+    `contracted_prepaid_renewal_terms_unavailable`: no threshold can be
+    computed, so the account keeps consuming service and never suspends.
+    """
+    from decimal import Decimal
+
+    from app.models.catalog import OfferPrice, PriceType
+
+    reseller = Reseller(name="Partner Price", is_active=True)
+    db_session.add(reseller)
+    db_session.commit()
+    db_session.refresh(reseller)
+
+    subscriber = Subscriber(
+        first_name="Dana",
+        last_name="Priced",
+        email="dana-priced@example.com",
+        status=SubscriberStatus.suspended,
+        reseller_id=reseller.id,
+    )
+    db_session.add(subscriber)
+    db_session.commit()
+    db_session.refresh(subscriber)
+
+    offer = _create_offer(
+        db_session, name="Priced Plan", category=PlanCategory.recurring
+    )
+    db_session.add(
+        OfferPrice(
+            offer_id=offer.id,
+            price_type=PriceType.recurring,
+            amount=Decimal("15000.00"),
+            is_active=True,
+        )
+    )
+    db_session.commit()
+
+    filters = bulk_service.BulkFilters(
+        tab="recurring",
+        reseller_id=str(reseller.id),
+        subscriber_status="suspended",
+        pop_site_id=None,
+        date_from=None,
+        date_to=None,
+        custom_attr_key=None,
+        custom_attr_value=None,
+    )
+    mapping = bulk_service.BulkMapping(
+        offer_id=str(offer.id),
+        activation_date=None,
+        nas_device_id=None,
+        ipv4_assignment="dynamic",
+        static_ipv4=None,
+        mac_address="AA:BB:CC:DD:EE:01",
+        login_prefix="isp-",
+        login_suffix="-p",
+        service_password_mode="manual",
+        service_password_manual="SecretPass123",
+        skip_active_service_check=False,
+        set_subscribers_active=True,
+    )
+
+    job = bulk_service.create_job(
+        db_session, filters=filters, mapping=mapping, actor_id=str(subscriber.id)
+    )
+    bulk_service.execute_job(db_session, job_id=str(job["job_id"]))
+
+    created = (
+        db_session.query(Subscription)
+        .filter(Subscription.subscriber_id == subscriber.id)
+        .all()
+    )
+    assert created
+    assert created[0].unit_price == Decimal("15000.00"), (
+        "bulk activation must snapshot the offer's contracted amount; a NULL "
+        "unit_price blocks prepaid enforcement for this account permanently"
+    )

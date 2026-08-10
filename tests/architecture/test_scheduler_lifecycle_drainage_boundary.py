@@ -79,7 +79,9 @@ def test_scheduler_tuning_uses_only_registered_typed_settings() -> None:
             if _call_name(call) == "resolve_integer"
             else SettingValueType.string
         )
-        assert spec.value_type is expected
+        # `==`, not `is`: the value-type vocabulary is an open `str`
+        # subclass and deliberately not interned (migration 512).
+        assert spec.value_type == expected
 
     source = SCHEDULER_PATH.read_text(encoding="utf-8")
     for retired in (

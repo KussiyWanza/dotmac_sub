@@ -1001,7 +1001,10 @@ DOMAIN = DomainSOT(
                 "device I/O, and never manufactures a hop, an edge, or a "
                 "status. The graph contract is the one vocabulary for the "
                 "Customer 360 network path and the future network "
-                "explorer surface."
+                "explorer surface. The Customer 360 adapter requests this "
+                "projection lazily and caps each panel response at twelve "
+                "services; the initial customer transaction never resolves "
+                "network paths."
             ),
             contract=ServiceContract(
                 concerns=(
@@ -1220,6 +1223,7 @@ DOMAIN = DomainSOT(
                 test_refs=(
                     "tests/test_customer_network_path.py",
                     "tests/test_customer_detail_access_endpoint.py",
+                    "tests/architecture/test_customer_detail_panel_budget.py",
                 ),
             ),
         ),

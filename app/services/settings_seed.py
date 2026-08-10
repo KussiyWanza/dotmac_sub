@@ -69,7 +69,9 @@ def seed_scheduler_runtime_settings(db: Session) -> None:
             )
         value_text = str(value)
         value_json: bool | None = None
-        if spec.value_type is SettingValueType.boolean:
+        # `==`, not `is`: SettingValueType is an open `str` subclass and is
+        # deliberately not interned (migration 512).
+        if spec.value_type == SettingValueType.boolean:
             if not isinstance(value, bool):
                 raise RuntimeError(
                     f"Invalid scheduler bootstrap boolean: {domain.value}.{key}"
@@ -557,8 +559,6 @@ def seed_notification_settings(db: Session) -> None:
             "NOTIFICATION_PER_CHANNEL_RATE_LIMIT",
             "50",
         ),
-        ("sms_api_timeout_seconds", "SMS_API_TIMEOUT_SECONDS", "30"),
-        ("sms_max_length", "SMS_MAX_LENGTH", "160"),
         ("notification_quiet_hours_start", "NOTIFICATION_QUIET_HOURS_START", "22:00"),
         ("notification_quiet_hours_end", "NOTIFICATION_QUIET_HOURS_END", "07:00"),
         (

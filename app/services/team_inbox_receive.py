@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.models.service_team import ServiceTeam
 from app.models.team_inbox import (
+    InboxAutomationTrigger,
     InboxChannelType,
     InboxConversation,
     InboxConversationStatus,
@@ -16,14 +17,20 @@ from app.models.team_inbox import (
     InboxMessageDirection,
     InboxTeamSource,
 )
+from app.schemas.fiber_inquiry import FiberInquiryRequest
 from app.services import (
+    conversation_lead_relationships,
     team_inbox_assignment,
+    team_inbox_automation,
     team_inbox_channel_receive,
+    team_inbox_fiber_receive,
     team_inbox_operations,
     team_inbox_participants,
     team_inbox_realtime,
     team_inbox_routing,
 )
+from app.services.customer_identity_normalization import normalize_email_identifier
+from app.services.owner_commands import CommandContext
 from app.services.realtime_platform import EventType
 
 _MESSAGE_ID_RE = re.compile(r"<[^<>]+>")
@@ -62,6 +69,183 @@ class InboundEmailReceiveResult:
     subscriber_id: str | None = None
     reseller_id: str | None = None
     resolution_status: str = "unmatched"
+
+
+def receive_fiber_inquiry(
+    db: Session,
+    *,
+    payload: FiberInquiryRequest,
+    delivery_id: str,
+    site_id: str,
+    observation_id: UUID,
+    context: CommandContext,
+) -> team_inbox_fiber_receive.FiberInquiryReceiveResult:
+    """Stage one normalized fiber inquiry under the observation processor."""
+
+    channel = team_inbox_fiber_receive.CHANNEL
+    provider = team_inbox_fiber_receive.PROVIDER
+    duplicate = (
+        db.query(InboxMessage)
+        .filter(InboxMessage.channel_type == channel.value)
+        .filter(InboxMessage.external_message_id == delivery_id)
+        .first()
+    )
+    if duplicate is not None:
+        return team_inbox_fiber_receive.FiberInquiryReceiveResult(
+            kind="duplicate",
+            conversation_id=str(duplicate.conversation_id),
+            message_id=str(duplicate.id),
+            duplicate=True,
+            subscriber_id=None,
+        )
+
+    normalized_email = normalize_email_identifier(str(payload.email))
+    assert normalized_email is not None
+    identity = team_inbox_fiber_receive.resolve_fiber_identity(
+        db,
+        email=normalized_email,
+        phone=payload.phone,
+    )
+    lead_result = None
+    if identity.status == "unmatched":
+        lead_result = team_inbox_fiber_receive.capture_fiber_prospect(
+            db,
+            payload=payload,
+            delivery_id=delivery_id,
+            actor=context.actor,
+        )
+
+    routing = team_inbox_routing.resolve_channel_routing_decision(
+        db,
+        channel_type=channel.value,
+        provider=provider.value,
+        account_scope=site_id,
+        fallback_service_team_id=team_inbox_routing.default_service_team_id(db),
+        metadata={"interest": payload.interest.value},
+    )
+    metadata: dict[str, object] = {
+        "contact_resolution": identity.as_metadata(),
+        "fiber_inquiry": {
+            "form_version": payload.form_version,
+            "interest": payload.interest.value,
+            "phone": payload.phone,
+            "site_id": site_id,
+        },
+    }
+    if identity.identity_review_required:
+        metadata["identity_review_required"] = True
+    if lead_result is not None:
+        metadata["lead_id"] = str(lead_result.lead.id)
+        metadata["party_id"] = str(lead_result.party_id)
+
+    conversation = InboxConversation(
+        subscriber_id=identity.subscriber_id,
+        channel_type=channel.value,
+        status=InboxConversationStatus.open.value,
+        subject=f"Fiber inquiry: {payload.interest.label}",
+        contact_address=normalized_email,
+        external_thread_id=f"fiber:{delivery_id}",
+        first_message_at=payload.submitted_at,
+        last_message_at=payload.submitted_at,
+        metadata_=metadata,
+    )
+    db.add(conversation)
+    db.flush()
+    participant_team_ids = [
+        team_id
+        for team_id in (
+            routing.primary_service_team_id,
+            routing.channel_service_team_id,
+        )
+        if team_id
+    ]
+    team_inbox_routing.apply_email_routing_plan(
+        db,
+        conversation=conversation,
+        plan=team_inbox_routing.EmailTeamRoutingPlan(
+            primary_service_team_id=routing.primary_service_team_id,
+            participant_service_team_ids=list(dict.fromkeys(participant_team_ids)),
+            matches=[],
+            unmatched_recipients=[],
+        ),
+    )
+    message = InboxMessage(
+        conversation_id=conversation.id,
+        channel_type=channel.value,
+        direction=InboxMessageDirection.inbound.value,
+        subject=conversation.subject,
+        body=team_inbox_fiber_receive.render_fiber_inquiry_body(payload),
+        external_message_id=delivery_id,
+        external_thread_id=conversation.external_thread_id,
+        from_address=normalized_email,
+        received_at=payload.submitted_at,
+        metadata_={
+            "provider": provider.value,
+            "provider_account_scope": site_id,
+            "observation_id": str(observation_id),
+            "contact_resolution": identity.as_metadata(),
+            "fiber_inquiry": metadata["fiber_inquiry"],
+            "lead_id": str(lead_result.lead.id) if lead_result else None,
+            "party_id": str(lead_result.party_id) if lead_result else None,
+        },
+    )
+    db.add(message)
+    db.flush()
+    team_inbox_participants.record_message_participants(
+        db,
+        conversation=conversation,
+        message=message,
+    )
+    if lead_result is not None:
+        conversation_lead_relationships.link_conversation_lead_participant(
+            db,
+            conversation_lead_relationships.ConversationLeadLinkCommand(
+                context=context,
+                conversation_id=conversation.id,
+                lead_id=lead_result.lead.id,
+                party_id=lead_result.party_id,
+                actor_person_id=None,
+                source=conversation_lead_relationships.ConversationLeadLinkSource.fiber_website_inquiry,
+                reason="Prospect created from signed fiber website inquiry",
+            ),
+        )
+    team_inbox_automation.execute_matching_rules(
+        db,
+        conversation=conversation,
+        trigger=InboxAutomationTrigger.conversation_created,
+    )
+    team_inbox_automation.execute_matching_rules(
+        db,
+        conversation=conversation,
+        trigger=InboxAutomationTrigger.inbound_message_received,
+    )
+    team_inbox_realtime.publish_conversation_event(
+        db,
+        str(conversation.id),
+        event_type=EventType.MESSAGE_NEW,
+        payload=team_inbox_realtime.message_event_payload(
+            conversation_id=str(conversation.id),
+            message_id=str(message.id),
+            body=message.body,
+            direction=message.direction,
+            channel_type=message.channel_type,
+            created_at=message.created_at,
+            extra={"sender_type": "visitor", "from_customer": True},
+        ),
+    )
+    team_inbox_realtime.publish_queue_event(
+        db,
+        conversation_id=str(conversation.id),
+        created=True,
+    )
+    return team_inbox_fiber_receive.FiberInquiryReceiveResult(
+        kind="received",
+        conversation_id=str(conversation.id),
+        message_id=str(message.id),
+        duplicate=False,
+        subscriber_id=str(identity.subscriber_id) if identity.subscriber_id else None,
+        resolution_status=identity.status,
+    )
 
 
 def _coerce_uuid(value: str | UUID | None) -> UUID | None:

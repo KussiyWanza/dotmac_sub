@@ -111,7 +111,9 @@ jobs:
 
       - name: App log on failure
         if: failure() && steps.relevance.outputs.relevant == 'true'
-        run: tail -200 uvicorn.log || true
+        run: |
+          grep -n -B 10 -A 120 -E 'Error loading customer detail|/admin/customers/person/' uvicorn.log || true
+          tail -200 uvicorn.log || true
 
       - name: Cleanup
         if: always() && steps.relevance.outputs.relevant == 'true'

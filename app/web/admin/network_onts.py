@@ -83,12 +83,29 @@ def _configure_push_scope_sections(
     push_scope: str | None,
 ) -> tuple[bool, bool, bool, bool]:
     """Return WAN/LAN/management/WiFi inclusion flags for a configure submit."""
-    push_scope_value = (push_scope or "management").strip().lower()
+    push_scope_value = (push_scope or "").strip().lower()
+    if push_scope_value == "all":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Apply All is not supported. Apply one ONT configuration "
+                "section at a time."
+            ),
+        )
+    if push_scope_value not in {
+        "wan",
+        "lan",
+        "management",
+        "mgmt",
+        "wifi",
+        "advanced",
+    }:
+        raise HTTPException(status_code=400, detail="Invalid ONT configuration scope.")
     return (
-        push_scope_value in {"all", "wan"},
-        push_scope_value in {"all", "lan"},
-        push_scope_value in {"all", "management", "mgmt"},
-        push_scope_value in {"all", "wifi"},
+        push_scope_value == "wan",
+        push_scope_value == "lan",
+        push_scope_value in {"management", "mgmt"},
+        push_scope_value == "wifi",
     )
 
 
@@ -638,11 +655,24 @@ def ont_configure_submit(
     push_wan, push_lan, push_mgmt, push_wifi = _configure_push_scope_sections(
         push_scope
     )
+    if push_wan and wan_mode.strip().lower() in {
+        "bridge",
+        "bridged",
+        "bridging",
+        "setup_via_onu",
+    }:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Bridge / Via ONU is provisioning-only. The admin Configuration "
+                "tab supports routed DHCP, PPPoE, and static WAN modes."
+            ),
+        )
     # ``advanced`` scope persists OLT-binding overrides only — no traditional
     # WAN/LAN/MGMT/WiFi device push runs. Index fields under the WAN or
     # management sections also persist on those scopes so an operator can
     # tweak the WCD slot inline with a "Apply WAN" / "Apply Mgmt" click.
-    push_advanced = (push_scope or "management").strip().lower() in {"all", "advanced"}
+    push_advanced = (push_scope or "").strip().lower() == "advanced"
 
     def _parse_index_override(raw: str) -> int | None:
         """Empty string = no change; '0' or 'inherit' = clear override.
@@ -740,7 +770,11 @@ def ont_configure_submit(
     response.headers.update(
         _toast_headers(
             result.message,
-            "success" if result.success else "error",
+            (
+                "warning"
+                if result.waiting
+                else ("success" if result.success else "error")
+            ),
         )
     )
     return response
