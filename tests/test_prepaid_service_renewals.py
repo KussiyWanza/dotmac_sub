@@ -34,6 +34,7 @@ from app.services.events.handlers.prepaid_renewal import PrepaidRenewalHandler
 from app.services.events.types import Event, EventType
 from app.services.owner_commands import CommandContext
 from app.services.prepaid_service_renewals import (
+    ExecuteReviewedPrepaidServiceRenewalCommand,
     FundingChangeRenewalDisposition,
     PrepaidServiceRenewalError,
     PrepaidSettlementPeriodQuery,
@@ -41,6 +42,7 @@ from app.services.prepaid_service_renewals import (
     apply_due_prepaid_service_after_funding_change,
     confirm_prepaid_service_renewal,
     execute_due_prepaid_service_renewals,
+    execute_reviewed_prepaid_service_renewal,
     preview_prepaid_service_renewal,
     resolve_prepaid_settlement_period,
     run_due_prepaid_service_renewals,
@@ -170,6 +172,38 @@ def test_prepaid_service_renewal_posts_exact_debit_and_entitlement(
     assert subscription.next_billing_at.replace(tzinfo=UTC) == datetime(
         2026, 7, 31, tzinfo=UTC
     )
+
+
+def test_reviewed_missed_renewal_requires_exact_preview_fingerprint(
+    db_session, subscriber, subscription
+):
+    _prepare(db_session, subscriber, subscription)
+    preview = _preview(db_session, subscription)
+    subscription_id = subscription.id
+    db_session.commit()
+
+    with pytest.raises(PrepaidServiceRenewalError) as exc_info:
+        execute_reviewed_prepaid_service_renewal(
+            db_session,
+            ExecuteReviewedPrepaidServiceRenewalCommand(
+                context=CommandContext.system(
+                    actor="operator:pytest",
+                    scope="prepaid-renewal:test",
+                    reason="pytest reviewed missed period",
+                    idempotency_key="reviewed-missed-period",
+                ),
+                subscription_id=subscription_id,
+                starts_at=preview.starts_at,
+                ends_at=preview.ends_at,
+                amount=preview.amount,
+                currency=preview.currency,
+                expected_preview_fingerprint="f" * 64,
+                evidence_ref="finance-review:pytest",
+            ),
+        )
+
+    assert exc_info.value.code.endswith("stale_preview")
+    assert db_session.query(AccountAdjustment).count() == 0
 
 
 def test_prepaid_service_renewal_is_idempotent(db_session, subscriber, subscription):
