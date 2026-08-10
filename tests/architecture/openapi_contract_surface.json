@@ -18194,16 +18194,6 @@
     "200": "35ca38bd28f3"
    }
   },
-  "POST /api/v1/webhooks/fiber-inquiry/{capability_binding_id}": {
-   "params": [
-    "path:capability_binding_id!"
-   ],
-   "request": null,
-   "responses": {
-    "200": "825108100fd0",
-    "422": "a11c9d9b2af8"
-   }
-  },
   "POST /api/v1/webhooks/erp-material/{capability_binding_id}": {
    "params": [
     "path:capability_binding_id!"
@@ -18211,6 +18201,16 @@
    "request": null,
    "responses": {
     "200": "079f059bc605",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "POST /api/v1/webhooks/fiber-inquiry/{capability_binding_id}": {
+   "params": [
+    "path:capability_binding_id!"
+   ],
+   "request": null,
+   "responses": {
+    "200": "825108100fd0",
     "422": "a11c9d9b2af8"
    }
   },
@@ -18927,8 +18927,8 @@
   "DueDateCalculationResponse": "7e29aca78232",
   "DunningAction": "d42e316f102b",
   "ElevationRead": "3ca3d8f2a410",
-  "ErrorDetail": "baaa77850daa",
   "ErpMaterialStatusReceipt": "dea085458884",
+  "ErrorDetail": "baaa77850daa",
   "ErrorResponse": "9a1634f1cfc4",
   "EtaUpdateCreate": "3b90f58a7082",
   "EtaUpdateRead": "daaf62739ccf",
