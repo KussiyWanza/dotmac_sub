@@ -43,6 +43,7 @@ from app.tasks.device_projection import reconcile_device_projections
 from app.tasks.dotmac_erp_outbox import (
     deliver_erp_sync_events,
     refresh_expense_claim_statuses,
+    refresh_material_catalog,
     refresh_material_request_statuses,
     refresh_purchase_invoice_statuses,
     repair_purchase_invoice_sync,
@@ -282,6 +283,7 @@ __all__ = [
     "deliver_erp_sync_events",
     "refresh_expense_claim_statuses",
     "refresh_material_request_statuses",
+    "refresh_material_catalog",
     "refresh_purchase_invoice_statuses",
     "repair_purchase_invoice_sync",
     "sync_erp_operational_domains",

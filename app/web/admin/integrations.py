@@ -1,5 +1,7 @@
 """Admin integrations routes."""
 
+from uuid import UUID, uuid4
+
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -18,10 +20,82 @@ from app.services import web_integrations_webhooks as webhooks_service
 from app.services import web_integrations_whatsapp as web_integrations_whatsapp_service
 from app.services.audit_helpers import recent_activity_for_paths
 from app.services.auth_dependencies import require_permission
+from app.services.db_session_adapter import db_session_adapter
+from app.services.field import material_catalog
 from app.services.integrations import installations
+from app.services.owner_commands import CommandContext
+from app.tasks.dotmac_erp_outbox import refresh_material_catalog
 
 router = APIRouter(prefix="/integrations", tags=["web-admin-integrations"])
 templates = Jinja2Templates(directory="templates")
+
+
+@router.get(
+    "/erp-material-catalog",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("system:settings:read"))],
+)
+def erp_material_catalog(
+    request: Request,
+    notice: str | None = None,
+    db: Session = Depends(get_db),
+):
+    context = _base_context(request, db, active_page="erp-material-catalog")
+    context.update(
+        {
+            "items": material_catalog.list_material_catalog(db, limit=500),
+            "warehouses": material_catalog.list_material_warehouses(db),
+            "notice": notice,
+        }
+    )
+    return templates.TemplateResponse(
+        "admin/integrations/erp_material_catalog.html", context
+    )
+
+
+@router.post(
+    "/erp-material-catalog/import",
+    dependencies=[Depends(require_permission("system:settings:write"))],
+)
+def import_erp_material_catalog():
+    refresh_material_catalog.delay()
+    return RedirectResponse(
+        "/admin/integrations/erp-material-catalog?notice=ERP+catalogue+import+queued",
+        status_code=303,
+    )
+
+
+@router.post("/erp-material-catalog/{item_id}/eligibility")
+def set_erp_material_eligibility(
+    item_id: UUID,
+    eligible: bool = Form(...),
+    reason: str = Form("Field operations catalogue review"),
+    db: Session = Depends(get_db),
+    auth: dict = Depends(require_permission("operations:material_request:write")),
+):
+    command_id = uuid4()
+    actor_id = auth.get("user_id") or auth.get("sub") or "unknown"
+    db_session_adapter.release_read_transaction(db)
+    material_catalog.set_material_eligibility(
+        db,
+        material_catalog.SetMaterialEligibility(
+            context=CommandContext(
+                command_id=command_id,
+                correlation_id=command_id,
+                actor=f"user:{actor_id}",
+                scope="operations:material_request:write",
+                reason="Set field material eligibility",
+                idempotency_key=f"material-eligibility:{item_id}:{eligible}:{command_id}",
+            ),
+            item_id=item_id,
+            eligible=eligible,
+            reason=reason,
+        ),
+    )
+    return RedirectResponse(
+        "/admin/integrations/erp-material-catalog?notice=Eligibility+updated",
+        status_code=303,
+    )
 
 
 def _base_context(

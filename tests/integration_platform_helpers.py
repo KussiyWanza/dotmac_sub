@@ -51,7 +51,10 @@ def enable_erp_capability(db, capability_id: str):
             "timeout_seconds": 5,
             "max_retries": 1,
         },
-        secret_refs={"service_credentials": "env://ERP_TEST_TOKEN"},
+        secret_refs={
+            "service_credentials": "env://ERP_TEST_TOKEN",
+            "webhook_signing_secret": "env://ERP_TEST_WEBHOOK_SECRET",
+        },
     )
 
 

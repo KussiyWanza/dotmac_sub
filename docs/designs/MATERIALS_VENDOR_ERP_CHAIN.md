@@ -1,8 +1,10 @@
 # Materials / Vendor / ERP Owner Chain
 
-**Status:** Implemented (owner-output chain slice, 2026-07-27)
-**System of record:** Sub (operational need, approval, allocation, consumption evidence); Dotmac ERP (inventory and accounting outcomes)
+**Status:** ERP submission redesign in implementation (2026-08-10)
+**System of record:** Sub (contextual need, field eligibility, consumption evidence); Dotmac ERP (items, warehouses, stock, serials, issuance, and refusal)
 **Decision owner:** Michael
+
+ERP-channel requests leave Sub immediately with no separate Sub approval. Requests may originate from a ticket, project, project task, or work order, and work-order linkage is optional. Manual-channel requests are permanently excluded from ERP delivery. ERP outcomes return through a signed idempotent webhook, with scheduled status reconciliation as fallback. The production activation sequence is in `docs/runbooks/MATERIAL_REQUEST_ERP_CUTOVER.md`.
 
 ## Contract
 
