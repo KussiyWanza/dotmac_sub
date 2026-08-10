@@ -25,6 +25,7 @@ from app.models.project import (
 from app.models.sequence import DocumentSequence
 from app.models.support import Ticket
 from app.models.ticket_workflow import SlaClock, SlaClockStatus, WorkflowEntityType
+from app.models.vendor_routes import InstallationProject, InstallationProjectStatus
 from app.models.work_order import WorkOrder
 from app.schemas.project import (
     ProjectCreate,
@@ -87,6 +88,80 @@ def test_project_number_continues_after_imported_series(db_session, subscriber):
         .one()
         .next_value
         == 1109
+    )
+
+
+def test_vendor_scope_template_project_creation_scopes_vendor_assignment(
+    db_session, subscriber
+):
+    template = ProjectTemplate(
+        name="Vendor-scoped rerun",
+        project_type=ProjectType.cable_rerun.value,
+        creates_vendor_assignment_scope=True,
+    )
+    db_session.add(template)
+    db_session.commit()
+    project = projects.create(
+        db_session,
+        ProjectCreate(
+            name="Cable rerun needing vendor",
+            project_type=ProjectType.cable_rerun,
+            subscriber_id=subscriber.id,
+            project_template_id=template.id,
+        ),
+    )
+
+    installation = (
+        db_session.query(InstallationProject)
+        .filter(InstallationProject.project_id == project.id)
+        .one()
+    )
+    assert installation.subscriber_id == subscriber.id
+    assert installation.status == InstallationProjectStatus.draft.value
+
+
+def test_vendor_scope_template_without_subscriber_remains_unscoped(db_session):
+    template = ProjectTemplate(
+        name="Vendor-scoped subscriber work",
+        project_type=ProjectType.cable_rerun.value,
+        creates_vendor_assignment_scope=True,
+    )
+    db_session.add(template)
+    db_session.commit()
+    project = projects.create(
+        db_session,
+        ProjectCreate(
+            name="Cable rerun without customer",
+            project_type=ProjectType.cable_rerun,
+            project_template_id=template.id,
+        ),
+    )
+
+    assert (
+        db_session.query(InstallationProject)
+        .filter(InstallationProject.project_id == project.id)
+        .count()
+        == 0
+    )
+
+
+def test_cable_rerun_without_vendor_scope_template_remains_unscoped(
+    db_session, subscriber
+):
+    project = projects.create(
+        db_session,
+        ProjectCreate(
+            name="Ordinary cable rerun",
+            project_type=ProjectType.cable_rerun,
+            subscriber_id=subscriber.id,
+        ),
+    )
+
+    assert (
+        db_session.query(InstallationProject)
+        .filter(InstallationProject.project_id == project.id)
+        .count()
+        == 0
     )
 
 

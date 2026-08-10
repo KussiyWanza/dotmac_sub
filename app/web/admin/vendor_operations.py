@@ -3,7 +3,7 @@
 from datetime import datetime
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
@@ -134,10 +134,12 @@ def _quote_error(exc: DomainError) -> HTTPException:
 def vendor_operations_queue(
     request: Request,
     message: str | None = None,
+    q: str | None = Query(default=None, max_length=120),
     _auth: dict = Depends(_read),
     db: Session = Depends(get_db),
 ):
     context = _ctx(request, db)
+    search = (q or "").strip()
     show_field_reviews = can(request, "inventory:read")
     show_route_reviews = show_field_reviews and can(request, "network:fiber:read")
     show_financial_reviews = can(request, "inventory:read") or can(
@@ -148,7 +150,7 @@ def vendor_operations_queue(
     context.update(
         {
             "draft_projects": (
-                vendor_portal_operations.list_draft_projects(db)
+                vendor_portal_operations.list_draft_projects(db, search=search)
                 if show_field_reviews
                 else []
             ),
@@ -158,6 +160,7 @@ def vendor_operations_queue(
                 else []
             ),
             "message": message,
+            "queue_search": search,
             "show_field_reviews": show_field_reviews,
             "show_route_reviews": show_route_reviews,
             "show_financial_reviews": show_financial_reviews,
@@ -187,7 +190,7 @@ def vendor_operations_queue(
                 else []
             ),
             "quotes": (
-                vendor_portal_operations.list_reviewable_quotes(db)
+                vendor_portal_operations.list_reviewable_quotes(db, search=search)
                 if show_field_reviews
                 else []
             ),

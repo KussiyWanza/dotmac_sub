@@ -119,6 +119,7 @@ class ProjectTemplateBase(BaseModel):
     name: str = Field(min_length=1, max_length=160)
     project_type: ProjectType | None = None
     description: str | None = None
+    creates_vendor_assignment_scope: bool = False
     is_active: bool = True
 
 
@@ -130,6 +131,7 @@ class ProjectTemplateUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=160)
     project_type: ProjectType | None = None
     description: str | None = None
+    creates_vendor_assignment_scope: bool | None = None
     is_active: bool | None = None
 
 
