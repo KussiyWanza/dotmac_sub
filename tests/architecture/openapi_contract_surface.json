@@ -18204,6 +18204,16 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "POST /api/v1/webhooks/erp-material/{capability_binding_id}": {
+   "params": [
+    "path:capability_binding_id!"
+   ],
+   "request": null,
+   "responses": {
+    "200": "079f059bc605",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "POST /api/v1/webhooks/lead-capture/{capability_binding_id}": {
    "params": [
     "path:capability_binding_id!"
@@ -18918,6 +18928,7 @@
   "DunningAction": "d42e316f102b",
   "ElevationRead": "3ca3d8f2a410",
   "ErrorDetail": "baaa77850daa",
+  "ErpMaterialStatusReceipt": "dea085458884",
   "ErrorResponse": "9a1634f1cfc4",
   "EtaUpdateCreate": "3b90f58a7082",
   "EtaUpdateRead": "daaf62739ccf",

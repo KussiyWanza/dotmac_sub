@@ -48,12 +48,6 @@
         "version": "1.2.0"
     },
     {
-        "current": false,
-        "key": "dotmac.erp",
-        "manifest_digest": "185ad7c1152c126445216cc75ae348a1612a746f6926fa8f4755b494a2c16cf3",
-        "version": "1.1.0"
-    },
-    {
         "current": true,
         "key": "paystack",
         "manifest_digest": "d0dabfdf7ce77a65fa5a8259400d249fa27c69bdb695cfdeffd1a357bef0b425",
@@ -76,6 +70,12 @@
         "key": "freepbx",
         "manifest_digest": "2009f57dda6aec855f50ddb970505365f979fde9eb2e94c93341b3b6efc6772c",
         "version": "1.0.0"
+    },
+    {
+        "current": false,
+        "key": "dotmac.erp",
+        "manifest_digest": "185ad7c1152c126445216cc75ae348a1612a746f6926fa8f4755b494a2c16cf3",
+        "version": "1.1.0"
     },
     {
         "current": false,

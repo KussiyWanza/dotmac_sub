@@ -53,7 +53,10 @@ def _interval(
 def _activate(db, subscription):
     from app.models.catalog import SubscriptionStatus
 
-    evidence_start = NOW - timedelta(days=10)
+    # Keep the synthetic authority start safely after ORM-created timestamps.
+    # Using exactly ten days before NOW crossed wall-clock time on 2026-08-10
+    # and made this fixed-date suite fail after noon UTC.
+    evidence_start = NOW - timedelta(days=9)
     subscription.status = SubscriptionStatus.active
     subscription.billing_mode = BillingMode.prepaid
     subscription.start_at = evidence_start

@@ -616,7 +616,7 @@ SERVICES: tuple[SOTService, ...] = (
                     stale_behavior="Retain the last good catalogue and display its observation time.",
                     drift_signal="The catalogue observation is stale or a complete scan reports suspicious shrinkage.",
                     rebuild_operation="Run a complete ERP item and warehouse catalogue import.",
-                    repair_owner="field operations",
+                    repair_owner="operations.material_catalog",
                 ),
             ),
             migration=MigrationContract(
