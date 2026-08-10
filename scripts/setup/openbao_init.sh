@@ -67,14 +67,21 @@ require_vars() {
     return $missing
 }
 
-put_secret() {
+patch_secret() {
     local path="$1"
     shift
     if [ "$CHECK_ONLY" -eq 1 ]; then
         echo "  [CHECK] secret/${path}"
         return 0
     fi
-    run_bao kv put "secret/${path}" "$@" >/dev/null
+    # Preserve fields managed by a different bootstrap or rotation workflow.
+    # `kv put` replaces the complete payload, while `kv patch` only updates the
+    # fields supplied here.
+    if run_bao kv get "secret/${path}" >/dev/null 2>&1; then
+        run_bao kv patch "secret/${path}" "$@" >/dev/null
+    else
+        run_bao kv put "secret/${path}" "$@" >/dev/null
+    fi
     echo "  [OK] secret/${path}"
 }
 
@@ -101,7 +108,7 @@ seed_group() {
         return 0
     fi
 
-    put_secret "$path" "$@"
+    patch_secret "$path" "$@"
 }
 
 seed_credential_keyring() {
@@ -173,11 +180,18 @@ done
 
 echo "==> Seeding OpenBao KV v2 (real env values only)..."
 
-seed_group auth \
-    "JWT_SECRET" \
+seed_group settings/auth \
+    "JWT_SECRET,TOTP_ENCRYPTION_KEY" \
     "jwt_secret=${JWT_SECRET:-}" \
-    "totp_encryption_key=${TOTP_ENCRYPTION_KEY:-}" \
+    "totp_encryption_key=${TOTP_ENCRYPTION_KEY:-}"
+
+seed_group settings/network \
+    "WIREGUARD_KEY_ENCRYPTION_KEY" \
     "wireguard_key_encryption_key=${WIREGUARD_KEY_ENCRYPTION_KEY:-}"
+
+seed_group settings/radius \
+    "RADIUS_AUTH_SHARED_SECRET" \
+    "auth_shared_secret=${RADIUS_AUTH_SHARED_SECRET:-}"
 
 # One-time bootstrap only. The helper refuses a seed that differs from the
 # active literal and never overwrites an existing managed key or its metadata.
