@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import pytest
+from fastapi import Request
 
 from app.models.catalog import (
     AccessType,
@@ -19,6 +20,7 @@ from app.services.customer_device_commands import (
     update_subscription_wifi,
 )
 from app.services.customer_portal_flow_services import get_service_detail
+from app.web.customer.branding import get_customer_templates
 
 
 def _active_subscription_with_ont(db_session):
@@ -42,7 +44,11 @@ def _active_subscription_with_ont(db_session):
         offer_id=offer.id,
         status=SubscriptionStatus.active,
     )
-    ont = OntUnit(serial_number="PORTAL-ONT-001", is_active=True)
+    ont = OntUnit(
+        serial_number="PORTAL-ONT-001",
+        is_active=True,
+        desired_config={"wifi": {"ssid": "DesiredSSID"}},
+    )
     db_session.add_all([subscription, ont])
     db_session.flush()
     db_session.add(
@@ -51,7 +57,7 @@ def _active_subscription_with_ont(db_session):
             subscriber_id=subscriber.id,
             subscription_id=subscription.id,
             active=True,
-            wifi_ssid="ExistingSSID",
+            wifi_ssid="LegacySSID",
         )
     )
     db_session.commit()
@@ -112,8 +118,48 @@ def test_service_detail_exposes_customer_reboot_when_ont_is_linked(db_session):
     assert detail is not None
     assert detail["can_reboot_ont"] is True
     assert detail["can_update_wifi"] is True
-    assert detail["customer_wifi_ssid"] == "ExistingSSID"
+    assert detail["customer_wifi_ssid"] == "DesiredSSID"
     assert detail["customer_ont"].id == ont.id
+
+
+def test_service_detail_renders_desired_wifi_name(db_session):
+    subscriber, subscription, _ont = _active_subscription_with_ont(db_session)
+    detail = get_service_detail(
+        db_session,
+        {"account_id": str(subscriber.id)},
+        str(subscription.id),
+    )
+    assert detail is not None
+
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": f"/portal/services/{subscription.id}",
+            "query_string": b"",
+            "headers": [],
+            "scheme": "https",
+            "server": ("testserver", 443),
+            "client": ("127.0.0.1", 12345),
+        }
+    )
+    request.state.csrf_token = "test-csrf"
+    html = (
+        get_customer_templates()
+        .env.get_template("customer/services/detail.html")
+        .render(
+            request=request,
+            customer={"read_only": False},
+            active_page="services",
+            portal_name="Dotmac",
+            sidebar_stats={},
+            **detail,
+        )
+    )
+
+    assert 'name="ssid"' in html
+    assert 'value="DesiredSSID"' in html
+    assert "LegacySSID" not in html
 
 
 def test_customer_reboot_delegates_to_tracked_ont_action(db_session, monkeypatch):

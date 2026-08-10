@@ -44,7 +44,6 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select, text
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.models.network import OLTDevice, OntSyncStatus, OntUnit
@@ -109,23 +108,24 @@ def _widen_idle_in_transaction_timeout(db: Session, timeout_sec: int) -> None:
     and surfacing it as an opaque ``OperationalError``. The transaction must be
     allowed to live at least as long as the reconciler's own deadline.
 
-    ``SET LOCAL`` scopes this to the current transaction, so it reverts on
-    commit or rollback and never leaks to the next user of a pooled connection.
-    Postgres-only; other dialects (SQLite in tests) have no such setting.
+    ``set_config(..., true)`` scopes this to the current transaction, so it
+    reverts on commit or rollback and never leaks to the next user of a pooled
+    connection. It is also parameterizable; PostgreSQL does not accept a bound
+    parameter in ``SET LOCAL ... = :value``. A setup error must propagate so the
+    outer transaction handler can roll back immediately instead of continuing
+    with an aborted transaction. Postgres-only; other dialects (SQLite in
+    tests) have no such setting.
     """
     if db.bind is None or db.bind.dialect.name != "postgresql":
         return
     budget_ms = (timeout_sec + _IDLE_TIMEOUT_MARGIN_SEC) * 1000
-    try:
-        db.execute(
-            text("SET LOCAL idle_in_transaction_session_timeout = :ms"),
-            {"ms": budget_ms},
-        )
-    except SQLAlchemyError:  # pragma: no cover - defensive, never fail the pass
-        logger.warning(
-            "Could not widen idle_in_transaction_session_timeout for reconcile",
-            exc_info=True,
-        )
+    db.execute(
+        text(
+            "SELECT set_config("
+            "'idle_in_transaction_session_timeout', :timeout_value, true)"
+        ),
+        {"timeout_value": f"{budget_ms}ms"},
+    )
 
 
 def reconcile_ont(
