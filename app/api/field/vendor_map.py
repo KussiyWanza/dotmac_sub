@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
-from app.schemas.field import FieldMapAssetNearbyResponse
+from app.schemas.field import FieldMapAsset, FieldMapAssetNearbyResponse
 from app.services.field import vendor_capabilities
 from app.services.field.map_assets import field_map_assets
 from app.services.field.vendor_auth import require_field_vendor_token
@@ -72,3 +72,19 @@ def get_vendor_nearby_map_assets(
         "radius_m": radius_m,
         "server_time": datetime.now(UTC),
     }
+
+
+@router.get("/search", response_model=list[FieldMapAsset])
+def search_vendor_map_assets(
+    q: str = Query(..., min_length=2, max_length=120),
+    types: str | None = Query(default="fdh_cabinet,splice_closure"),
+    limit: int = Query(default=20, ge=1, le=50),
+    _vendor: dict = Depends(_require_project_read),
+    db: Session = Depends(get_db),
+):
+    return field_map_assets.search(
+        db,
+        q,
+        asset_types=_parse_types(types),
+        limit=limit,
+    )

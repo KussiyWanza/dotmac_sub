@@ -11,6 +11,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -200,10 +201,22 @@ def _magic_valid(data: bytes, ext: str, content_type: str | None) -> bool:
     return True
 
 
-def build_content_disposition(filename: str) -> str:
+def _build_content_disposition(
+    filename: str,
+    *,
+    disposition: Literal["attachment", "inline"],
+) -> str:
     safe = _sanitize_filename(filename)
     quoted = safe.replace('"', "")
-    return f'attachment; filename="{quoted}"'
+    return f'{disposition}; filename="{quoted}"'
+
+
+def build_content_disposition(filename: str) -> str:
+    return _build_content_disposition(filename, disposition="attachment")
+
+
+def build_inline_content_disposition(filename: str) -> str:
+    return _build_content_disposition(filename, disposition="inline")
 
 
 class UnifiedFileUploadService:

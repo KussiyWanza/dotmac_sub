@@ -66,7 +66,10 @@ from app.services.ai.client import AIClientError
 from app.services.auth_dependencies import can, require_permission
 from app.services.catalog import plan_family_catalogues
 from app.services.domain_errors import DomainError
-from app.services.file_storage import build_content_disposition
+from app.services.file_storage import (
+    build_content_disposition,
+    build_inline_content_disposition,
+)
 from app.services.owner_commands import CommandContext
 from app.services.sales import lead_intake
 
@@ -305,6 +308,7 @@ def team_inbox_queue(
         {
             "rows": projection.rows,
             "queue_metrics": projection.queue_metrics,
+            "social_comment_count": projection.social_comment_count,
             "operator_unread_count": projection.operator_unread_count,
             "count": projection.count,
             "list_query": projection.list_query,
@@ -381,6 +385,62 @@ def team_inbox_queue(
     if is_list_fragment_request:
         return templates.TemplateResponse("admin/inbox/_sidebar.html", context)
     return templates.TemplateResponse("admin/inbox/index.html", context)
+
+
+@router.get(
+    "/comments",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("support:ticket:read"))],
+)
+def team_inbox_social_comments(
+    request: Request,
+    search: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    channel_type: str | None = Query(default=None),
+    conversation_id: str | None = Query(default=None),
+    page: int = Query(default=1),
+    per_page: int = Query(default=25),
+    db: Session = Depends(get_db),
+):
+    actor_id = _actor_id_from_request(request)
+    try:
+        actor_person_id = UUID(actor_id) if actor_id else None
+    except ValueError:
+        actor_person_id = None
+    projection = team_inbox_projection.build_social_comments_projection(
+        db,
+        search=_query_text(search),
+        status=_query_text(status),
+        channel_type=_query_text(channel_type),
+        selected_conversation_id=_query_text(conversation_id),
+        actor_person_id=actor_person_id,
+        page=_query_int(page, default=1) or 1,
+        per_page=_query_int(per_page, default=25) or 25,
+    )
+    if projection.canonical_url is not None:
+        return RedirectResponse(url=projection.canonical_url, status_code=307)
+    context = _ctx(request, db)
+    context.update(
+        {
+            "rows": projection.rows,
+            "selected": (
+                projection.selected.timeline
+                if projection.selected is not None
+                else None
+            ),
+            "selected_id": projection.selected_id or "",
+            "count": projection.count,
+            "list_query": projection.list_query,
+            "page_meta": projection.page_meta,
+            "search": projection.search,
+            "status": projection.status,
+            "channel_type": projection.channel_type,
+            "status_options": projection.status_options,
+            "channel_options": projection.channel_options,
+            "actor_person_id": str(actor_person_id) if actor_person_id else "",
+        }
+    )
+    return templates.TemplateResponse("admin/inbox/comments.html", context)
 
 
 @router.get(
@@ -500,19 +560,28 @@ def team_inbox_media_content(
     db: Session = Depends(get_db),
 ):
     try:
-        asset, stream = team_inbox_media.stream_asset_content(db, asset_id)
+        media_content = team_inbox_projection.get_media_content_projection(
+            db,
+            asset_id=asset_id,
+        )
     except team_inbox_media.MediaContentError as exc:
         raise HTTPException(status_code=404, detail=exc.message) from exc
+    content_disposition = (
+        build_inline_content_disposition(media_content.file_name)
+        if media_content.presentation
+        is team_inbox_projection.InboxMediaBrowserPresentation.inline
+        else build_content_disposition(media_content.file_name)
+    )
     headers = {
-        "Content-Disposition": build_content_disposition(
-            asset.file_name or f"inbox-media-{asset.id}"
-        )
+        "Cache-Control": "private, no-store",
+        "Content-Disposition": content_disposition,
+        "X-Content-Type-Options": "nosniff",
     }
-    if stream.content_length is not None:
-        headers["Content-Length"] = str(stream.content_length)
+    if media_content.content_length is not None:
+        headers["Content-Length"] = str(media_content.content_length)
     return StreamingResponse(
-        stream.chunks,
-        media_type=stream.content_type or asset.mime_type or "application/octet-stream",
+        media_content.chunks,
+        media_type=media_content.content_type,
         headers=headers,
     )
 
