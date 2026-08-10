@@ -385,7 +385,11 @@ manifest-pin ledger at
 configuration schema, secret declarations, runtime, capabilities, data access,
 egress, or health metadata requires a new semantic connector version. The two
 Paystack `1.0.0` digests are a documented, shrink-only historical anomaly from
-the payment control-plane cutover; no new version/digest collision is allowed.
+the payment control-plane cutover. Meta Social also retains both deployed
+`1.0.0` digests after `auth_mode` was added in place; the original production
+pin and the later individual-auth pin remain executable until explicit
+adoption closes their rollback windows. No new version/digest collision is
+allowed.
 
 Upgrade flow is expand, adopt, then contract:
 
