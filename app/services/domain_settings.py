@@ -21,7 +21,6 @@ from app.services.secrets import (
     write_secret,
 )
 from app.services.setting_domain_registry import is_declared
-from app.services.settings_cache import SettingsCache
 
 
 class DomainSettings(ListResponseMixin):
@@ -166,7 +165,6 @@ class DomainSettings(ListResponseMixin):
         db.commit()
         db.refresh(setting)
         # Invalidate cache for this setting
-        SettingsCache.invalidate(setting.domain.value, setting.key)
         return setting
 
     def get(self, db: Session, setting_id: str):
@@ -226,7 +224,6 @@ class DomainSettings(ListResponseMixin):
         db.commit()
         db.refresh(setting)
         # Invalidate cache for this setting
-        SettingsCache.invalidate(setting.domain.value, setting.key)
         return setting
 
     def get_optional_by_key(
@@ -284,7 +281,6 @@ class DomainSettings(ListResponseMixin):
             db.commit()
             db.refresh(setting)
             # Invalidate cache for this setting
-            SettingsCache.invalidate(self.domain.value, key)
             return setting
         create_payload = DomainSettingCreate(
             domain=self.domain,
@@ -354,7 +350,6 @@ class DomainSettings(ListResponseMixin):
             setting = DomainSetting(**data)
             db.add(setting)
         db.flush()
-        SettingsCache.invalidate(self.domain.value, key)
         return setting
 
     def ensure_by_key(
@@ -414,7 +409,6 @@ class DomainSettings(ListResponseMixin):
         setting.is_active = False
         db.commit()
         # Invalidate cache for this setting
-        SettingsCache.invalidate(setting.domain.value, setting.key)
 
 
 settings = DomainSettings()

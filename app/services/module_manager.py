@@ -15,12 +15,9 @@ from app.models.domain_settings import SettingDomain
 from app.models.subscription_engine import SettingValueType
 from app.schemas.settings import DomainSettingUpdate
 from app.services import domain_settings as domain_settings_service
-from app.services.settings_cache import SettingsCache
 
 logger = logging.getLogger(__name__)
 
-_CACHE_DOMAIN = "modules"
-_CACHE_KEY = "states"
 
 MODULE_KEY_MAP: dict[str, str] = {
     "network": "module_network_enabled",
@@ -80,27 +77,32 @@ def _resolve_module_flag(db: Session, setting_key: str, default: bool = True) ->
 
 
 def invalidate_module_cache() -> None:
-    """Invalidate cached module state map."""
-    SettingsCache.invalidate(_CACHE_DOMAIN, _CACHE_KEY)
+    """Kept as a no-op seam: there is no aggregate cache to invalidate.
+
+    The map used to be cached whole under `modules:states` — a key that is not
+    a setting, in an unscoped keyspace, invalidated from two call sites. It is
+    now rebuilt from the per-flag reads below, which is cheap because those go
+    through the settings resolver and its cache.
+
+    The function survives because callers treat it as "module state changed,
+    drop what depends on it". Deleting the name would move that decision to
+    every caller; keeping it means the day this needs a cache again, one place
+    grows one.
+    """
 
 
 def load_module_states(db: Session, *, force_refresh: bool = False) -> dict[str, bool]:
-    """Load all module flags, using Redis cache for fast route checks."""
-    if not force_refresh:
-        cached = SettingsCache.get(_CACHE_DOMAIN, _CACHE_KEY)
-        if isinstance(cached, dict):
-            return {
-                str(k): _coerce_bool(v)
-                for k, v in cached.items()
-                if str(k) in MODULE_KEY_MAP
-            }
+    """Every module flag, rebuilt from the resolver rather than cached whole.
 
-    states: dict[str, bool] = {}
-    for module_name, setting_key in MODULE_KEY_MAP.items():
-        states[module_name] = _resolve_module_flag(db, setting_key, default=True)
+    `force_refresh` is now always true in effect and kept for callers.
+    """
 
-    SettingsCache.set(_CACHE_DOMAIN, _CACHE_KEY, states)
-    return states
+    del force_refresh  # no aggregate cache to bypass
+
+    return {
+        module_name: _resolve_module_flag(db, setting_key, default=True)
+        for module_name, setting_key in MODULE_KEY_MAP.items()
+    }
 
 
 def is_module_enabled(db: Session, module_name: str) -> bool:
@@ -248,7 +250,6 @@ def update_module_flags(db: Session, *, payload: dict[str, bool]) -> None:
             continue
         _upsert_boolean_setting(db, setting_key, bool(enabled))
     invalidate_module_cache()
-    SettingsCache.invalidate(_CACHE_DOMAIN, "feature_states")
 
 
 def require_module_enabled(module_name: str) -> Callable[..., None]:

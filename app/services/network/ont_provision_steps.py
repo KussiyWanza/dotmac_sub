@@ -66,7 +66,7 @@ logger = logging.getLogger(__name__)
 # These module-level variables are kept for backward compatibility with test patching.
 # At runtime, use the getter functions which check DomainSettings first.
 from app.services.network.provisioning_settings import (
-    DEFAULTS as _PROVISIONING_DEFAULTS,
+    default_for as _provisioning_default,
 )
 from app.services.network.provisioning_settings import (
     get_olt_write_mode_enabled,
@@ -74,11 +74,17 @@ from app.services.network.provisioning_settings import (
     get_tr069_bootstrap_timeout,
 )
 
-_BOOTSTRAP_TIMEOUT_SEC = _PROVISIONING_DEFAULTS.tr069_bootstrap_timeout_sec
-_BOOTSTRAP_POLL_INTERVAL_SEC = _PROVISIONING_DEFAULTS.tr069_bootstrap_poll_interval_sec
-_TR069_TASK_READY_TIMEOUT_SEC = _PROVISIONING_DEFAULTS.tr069_task_ready_timeout_sec
-_TR069_TASK_READY_POLL_INTERVAL_SEC = (
-    _PROVISIONING_DEFAULTS.tr069_task_ready_poll_interval_sec
+# From the registered spec, not from a `ProvisioningDefaults` dataclass that
+# held a second copy of the same numbers. Still module-level and still only
+# DEFAULTS — a configured value reaches the getters above, not these — which is
+# the pre-existing shape these constants have always had.
+_BOOTSTRAP_TIMEOUT_SEC = _provisioning_default("tr069_bootstrap_timeout_sec")
+_BOOTSTRAP_POLL_INTERVAL_SEC = _provisioning_default(
+    "tr069_bootstrap_poll_interval_sec"
+)
+_TR069_TASK_READY_TIMEOUT_SEC = _provisioning_default("tr069_task_ready_timeout_sec")
+_TR069_TASK_READY_POLL_INTERVAL_SEC = _provisioning_default(
+    "tr069_task_ready_poll_interval_sec"
 )
 _TR069_BINDING_READBACK_RETRY_DELAY_SEC = 2.0
 

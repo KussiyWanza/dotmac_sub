@@ -218,7 +218,9 @@ and the settings cutover all import from this list.
 - `dotmac_kernel.providers`
 - `dotmac_kernel.providers.provisioning`
 - `dotmac_kernel.secret_sources`
+- `dotmac_kernel.setting_scopes`
 - `dotmac_kernel.setting_value_types`
+- `dotmac_kernel.settings_cache`
 - `dotmac_kernel.settings_crypto`
 - `dotmac_kernel.settings_models`
 - `dotmac_kernel.settings_resolver`
@@ -317,6 +319,15 @@ migration `512` was written for: that migration removed the database's closed
 list of value types, and this admits the registry that replaces it. Sub
 declares no value types of its own — starter ADR-0006, "build once; an
 extension point is not a licence".
+
+`settings_cache` and `setting_scopes` were added 2026-08-10 for the settings
+cache slice. The kernel owns settings caching — key, scope segment, TTL, and
+what a write invalidates — and Sub supplies only a `CacheStore` transport
+(`app/services/kernel_settings_cache_store.py`) plus one invalidation listener
+on `DomainSetting`, which needs `SettingScope` to say whether a write was
+tenant- or platform-scoped. The cache this replaced keyed on
+`settings:{domain}:{key}` with NO scope segment — the cross-tenant leak
+`dotmac_kernel.settings_cache` cites `dotmac_erp` for.
 
 `dotmac_kernel.settings_crypto` was added 2026-08-10, the seam before the
 schema. It encrypts a secret setting's value at rest; the kernel reads the

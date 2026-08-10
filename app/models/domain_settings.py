@@ -25,6 +25,7 @@ set: declaring a new domain must NOT require editing this module. See
 """
 
 import enum
+import logging
 import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -42,9 +43,11 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from app.db import Base
+
+_logger = logging.getLogger(__name__)
 from app.models.subscription_engine import SettingValueType, SettingValueTypeType
 
 #: The scope kind every Sub settings row lives at. ADR-0009: Sub provisions
@@ -430,4 +433,91 @@ event.listen(DomainSetting, "before_insert", _reject_undeclared_domain)
 event.listen(DomainSetting, "before_update", _reject_undeclared_domain)
 event.listen(DomainSetting, "before_insert", _reject_undeclared_value_type)
 event.listen(DomainSetting, "before_update", _reject_undeclared_value_type)
+
+
+def _collect_invalidations(session: object, *_args: object) -> None:
+    """Note which settings this flush touched, to drop AFTER it commits.
+
+    The one invalidation owner. Before this, ten call sites across six modules
+    each remembered to invalidate — `domain_settings.py` five times,
+    `module_manager.py` twice, `settings_secret_cleanup.py`,
+    `credential_key_rotation.py` — which is a cached projection with ten writers
+    and no owner, exactly what the source-of-truth standard names. The eleventh
+    writer is the one that forgets.
+
+    It lives on the MODEL for the third time in this file, for the reason the
+    other two give: the service layer is not the only writer.
+
+    Collected at FLUSH and dropped at COMMIT, in two halves, because timing is
+    the whole difficulty. Invalidating during the flush leaves a window where
+    the row is not visible to other transactions yet: a concurrent reader
+    repopulates the cache with the OLD value, the commit lands, and the stale
+    entry survives until its TTL. Collecting now is necessary because after the
+    commit SQLAlchemy has expired the objects and `session.dirty` is empty.
+
+    A rollback discards the collection with the session state, so nothing is
+    invalidated for a write that never happened.
+
+    An INSERT's `tenant_id` may still be None here: `before_flush` runs before
+    `before_insert`, so `_default_tenant_to_the_operator` has not filled it in
+    yet. That row is therefore invalidated at PLATFORM scope, which the kernel
+    widens to every scope — over-invalidation, never staleness. Reading it after
+    the default would be more precise and would require the collection to happen
+    somewhere `session.dirty` is already empty.
+    """
+
+    touched = getattr(session, "info", None)
+    if touched is None:  # pragma: no cover - a session-like without `info`
+        return
+    pending: set[tuple[str, str, object]] = touched.setdefault(
+        "_settings_invalidate", set()
+    )
+    for instance in (
+        *getattr(session, "new", ()),
+        *getattr(session, "dirty", ()),
+        *getattr(session, "deleted", ()),
+    ):
+        if isinstance(instance, DomainSetting):
+            pending.add((str(instance.domain), instance.key, instance.tenant_id))
+
+
+def _flush_invalidations(session: object) -> None:
+    """Drop what the committed writes invalidated.
+
+    Scope matters and the kernel's asymmetry is preserved rather than
+    reimplemented: a TENANT write drops that tenant's entry, while a PLATFORM
+    write drops EVERY scope's entry for that setting, because every tenant
+    inherits the platform row when it has none of its own. `invalidate` is
+    where that lives; this function only says which scope was written.
+
+    Failure here is logged and swallowed. An invalidation that does not land
+    leaves a stale read until the store's TTL, which is bad; raising from
+    `after_commit` on a write that already succeeded is worse.
+    """
+
+    info = getattr(session, "info", None)
+    if not info:
+        return
+    pending = info.pop("_settings_invalidate", None)
+    if not pending:
+        return
+
+    from dotmac_kernel.setting_scopes import SettingScope
+    from dotmac_kernel.settings_cache import invalidate
+
+    for domain, key, tenant_id in pending:
+        scope = (
+            SettingScope.tenant(tenant_id)
+            if tenant_id is not None
+            else SettingScope.platform()
+        )
+        try:
+            invalidate(domain, key, scope=scope)
+        except Exception:  # noqa: BLE001 - see the docstring
+            _logger.warning("settings cache invalidation failed for %s.%s", domain, key)
+
+
+event.listen(Session, "before_flush", _collect_invalidations)
+event.listen(Session, "after_commit", _flush_invalidations)
+
 event.listen(DomainSetting, "before_insert", _default_tenant_to_the_operator)

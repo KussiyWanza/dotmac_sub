@@ -4,17 +4,9 @@ from app.services import module_manager
 
 
 def test_load_module_states_defaults_true_when_settings_missing(monkeypatch):
-    monkeypatch.setattr(
-        module_manager.SettingsCache,
-        "get",
-        staticmethod(lambda *_args, **_kwargs: None),
-    )
-    monkeypatch.setattr(
-        module_manager.SettingsCache,
-        "set",
-        staticmethod(lambda *_args, **_kwargs: True),
-    )
-
+    # No cache to stub: the aggregate `modules:states` entry is gone. It was a
+    # derived map living in the settings keyspace under an unscoped key, and
+    # the per-flag reads it is rebuilt from are cached by the kernel now.
     def _missing(_db, _key):
         raise HTTPException(status_code=404, detail="missing")
 
@@ -27,32 +19,51 @@ def test_load_module_states_defaults_true_when_settings_missing(monkeypatch):
     assert "billing" not in states
 
 
-def test_load_module_states_prefers_cached_value(monkeypatch):
-    cached = {"billing": False, "catalog": True, "network": False}
-    monkeypatch.setattr(
-        module_manager.SettingsCache,
-        "get",
-        staticmethod(lambda *_args, **_kwargs: cached),
-    )
+def test_load_module_states_always_rebuilds_from_the_resolver(monkeypatch):
+    """Replaces `test_load_module_states_prefers_cached_value`.
+
+    That test asserted the aggregate cache was preferred over a fresh read.
+    There is no aggregate cache, so asserting the OPPOSITE is the honest
+    replacement rather than deleting the coverage: `force_refresh=False` must
+    still reflect what the settings say right now.
+    """
+
+    reads: list[str] = []
+    # The SETTING key, from the map, not a guess at it: modules are named
+    # "network" and their settings "module_network_enabled", and my first
+    # version of this test compared against the wrong one and passed vacuously
+    # on the default.
+    network_key = module_manager.MODULE_KEY_MAP["network"]
+
+    def _flag(_db, key, default=True):
+        reads.append(key)
+        return key != network_key
+
+    monkeypatch.setattr(module_manager, "_resolve_module_flag", _flag)
+
     states = module_manager.load_module_states(db=object(), force_refresh=False)
-    assert states == {"network": False}
+
+    assert network_key in reads, "the flag was not read — a cache crept back in"
+    assert states["network"] is False
+    assert states["gis"] is True
 
 
-def test_update_module_flags_upserts_and_invalidates(monkeypatch):
+def test_update_module_flags_upserts(monkeypatch):
+    """Was `..._upserts_and_invalidates`.
+
+    The invalidation half moved: writing a module flag writes a
+    `DomainSetting`, and invalidation is now one `after_commit` listener on that
+    model rather than a call here. What this function still owns is the upsert,
+    so that is what it still asserts —
+    `tests/test_settings_cache_invalidation.py` covers the listener.
+    """
+
     upserts: list[tuple[str, bool]] = []
-    invalidations: list[tuple[str, str]] = []
 
     def _fake_upsert(_db, key, enabled):
         upserts.append((key, enabled))
 
-    def _fake_invalidate(domain, key):
-        invalidations.append((domain, key))
-        return True
-
     monkeypatch.setattr(module_manager, "_upsert_boolean_setting", _fake_upsert)
-    monkeypatch.setattr(
-        module_manager.SettingsCache, "invalidate", staticmethod(_fake_invalidate)
-    )
 
     module_manager.update_module_flags(
         db=object(),
@@ -61,8 +72,7 @@ def test_update_module_flags_upserts_and_invalidates(monkeypatch):
 
     assert ("module_network_enabled", False) in upserts
     assert ("module_gis_enabled", True) in upserts
-    assert ("modules", "states") in invalidations
-    assert ("modules", "feature_states") in invalidations
+    assert ("module_unknown_enabled", False) not in upserts
 
 
 def test_load_feature_states_projects_permanent_customer_capability(db_session):

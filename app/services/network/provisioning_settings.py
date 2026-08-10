@@ -1,153 +1,117 @@
-"""Centralized provisioning settings with configurable defaults.
+"""Named accessors for the provisioning settings. Not a settings subsystem.
 
-This module provides access to provisioning-related settings via DomainSettings,
-with fallback defaults for cases where settings haven't been configured.
+Every timeout, retry count and interval that affects OLT/ONT provisioning is a
+registered `SettingSpec` in `app/services/settings_spec.py`, resolved through
+`settings_spec.resolve_value` like every other setting. What lives here is the
+naming: `get_tr069_bootstrap_timeout()` instead of a string key at each call
+site, and the two accessors that normalise an enum-ish value.
 
-All timeouts, retry counts, and intervals that affect OLT/ONT provisioning
-behavior should be defined here to allow operator tuning.
+It used to be more than that, and the difference is the point. A frozen
+`ProvisioningDefaults` dataclass held the defaults — a second authority, drifting
+from nothing because nothing else knew them. `_get_setting_from_db` queried
+`DomainSetting` directly with no tenant filter and no spec, so a stored value
+was returned raw: uncoerced, unchecked against bounds, never degraded to a
+default it failed. `_get_setting_from_cache` read the unscoped
+`settings:{domain}:{key}`, the keyspace that served one organization's settings
+to every other in `dotmac_erp`.
+
+Consequences of registering them, beyond closing that: they appear on the admin
+settings screen like any other setting, and an operator can see and change them
+without a deploy.
 """
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy.orm import Session
 
 from app.models.domain_settings import SettingDomain
-from app.services.settings_cache import SettingsCache
 
 logger = logging.getLogger(__name__)
 
 
-# Default values — used when settings are not configured in DB
-@dataclass(frozen=True)
-class ProvisioningDefaults:
-    """Default values for provisioning settings.
+#: The sixteen keys this module owns, for anything that needs to enumerate
+#: them. NOT a source of defaults — those live on the registered `SettingSpec`s
+#: in `app/services/settings_spec.py`, which is what `get_setting` reads.
+#:
+#: `ProvisioningDefaults` used to hold the defaults here, which made this module
+#: a second authority on them: a value changed in one place and not the other
+#: drifted silently, and nothing compared the two. It is gone rather than kept
+#: in sync.
+SETTING_KEYS: tuple[str, ...] = (
+    "tr069_bootstrap_timeout_sec",
+    "tr069_bootstrap_poll_interval_sec",
+    "tr069_task_ready_timeout_sec",
+    "tr069_task_ready_poll_interval_sec",
+    "pppoe_push_max_attempts",
+    "pppoe_push_retry_delay_sec",
+    "stale_runtime_hours",
+    "olt_write_mode_enabled",
+    "pppoe_provisioning_method",
+    "verification_interval_sec",
+    "verification_staleness_minutes",
+    "drift_handling_mode",
+    "circuit_breaker_failure_threshold",
+    "circuit_breaker_backoff_sec",
+    "service_port_pool_min_index",
+    "service_port_pool_max_index",
+)
 
-    These are used when no DomainSetting is configured. Values can be
-    overridden by creating settings in the 'provisioning' domain.
+
+def _spec(key: str) -> Any:
+    """The registered spec for one of this module's keys, or None."""
+
+    from app.services import settings_spec
+
+    return settings_spec.get_spec(SettingDomain.provisioning, key)
+
+
+def default_for(key: str) -> Any:
+    """The registered default for one of this module's keys.
+
+    The replacement for `DEFAULTS.<name>`. That was a frozen dataclass holding a
+    second copy of every default; this reads the one the spec declares, so there
+    is nothing to keep in sync.
     """
 
-    # TR-069 bootstrap polling
-    tr069_bootstrap_timeout_sec: int = 120
-    tr069_bootstrap_poll_interval_sec: int = 10
-    tr069_task_ready_timeout_sec: int = 45
-    tr069_task_ready_poll_interval_sec: int = 5
-
-    # PPPoE push retries
-    pppoe_push_max_attempts: int = 3
-    pppoe_push_retry_delay_sec: int = 10
-
-    # Enforcement
-    stale_runtime_hours: int = 24
-    olt_write_mode_enabled: bool = False
-
-    # PPPoE provisioning method: "auto", "omci", or "tr069"
-    # - auto: Try OMCI first, fall back to TR-069 on failure
-    # - omci: Only use OLT OMCI commands (requires olt_write_mode_enabled)
-    # - tr069: Only use TR-069/GenieACS (skip OMCI entirely)
-    pppoe_provisioning_method: str = "auto"
-
-    # Async verification settings
-    verification_interval_sec: int = 300  # 5 minutes
-    verification_staleness_minutes: int = 15
-    drift_handling_mode: str = "alert_only"  # or "auto_repair"
-
-    # Circuit-breaker settings
-    circuit_breaker_failure_threshold: int = 3
-    circuit_breaker_backoff_sec: int = 30
-
-    # Service-port allocator settings
-    service_port_pool_min_index: int = 0
-    service_port_pool_max_index: int = 65535
-
-
-DEFAULTS = ProvisioningDefaults()
-
-# Setting keys in the 'provisioning' domain
-SETTING_KEYS = {
-    "tr069_bootstrap_timeout_sec": DEFAULTS.tr069_bootstrap_timeout_sec,
-    "tr069_bootstrap_poll_interval_sec": DEFAULTS.tr069_bootstrap_poll_interval_sec,
-    "tr069_task_ready_timeout_sec": DEFAULTS.tr069_task_ready_timeout_sec,
-    "tr069_task_ready_poll_interval_sec": DEFAULTS.tr069_task_ready_poll_interval_sec,
-    "pppoe_push_max_attempts": DEFAULTS.pppoe_push_max_attempts,
-    "pppoe_push_retry_delay_sec": DEFAULTS.pppoe_push_retry_delay_sec,
-    "stale_runtime_hours": DEFAULTS.stale_runtime_hours,
-    "olt_write_mode_enabled": DEFAULTS.olt_write_mode_enabled,
-    "pppoe_provisioning_method": DEFAULTS.pppoe_provisioning_method,
-    # Async verification
-    "verification_interval_sec": DEFAULTS.verification_interval_sec,
-    "verification_staleness_minutes": DEFAULTS.verification_staleness_minutes,
-    "drift_handling_mode": DEFAULTS.drift_handling_mode,
-    # Circuit breaker
-    "circuit_breaker_failure_threshold": DEFAULTS.circuit_breaker_failure_threshold,
-    "circuit_breaker_backoff_sec": DEFAULTS.circuit_breaker_backoff_sec,
-    # Service-port allocator
-    "service_port_pool_min_index": DEFAULTS.service_port_pool_min_index,
-    "service_port_pool_max_index": DEFAULTS.service_port_pool_max_index,
-}
-
-
-def _get_setting_from_cache(key: str) -> Any | None:
-    """Try to get a setting from Redis cache first."""
-    return SettingsCache.get(SettingDomain.provisioning.value, key)
-
-
-def _get_setting_from_db(db: Session, key: str) -> Any | None:
-    """Get a setting from the database and cache it."""
-    from app.models.domain_settings import DomainSetting
-
-    setting = (
-        db.query(DomainSetting)
-        .filter(
-            DomainSetting.domain == SettingDomain.provisioning,
-            DomainSetting.key == key,
-            DomainSetting.is_active.is_(True),
-        )
-        .first()
-    )
-    if not setting:
-        return None
-
-    # Extract value based on type
-    value: Any
-    if setting.value_json is not None:
-        value = setting.value_json
-    else:
-        value = setting.value_text
-
-    # Cache for future lookups
-    SettingsCache.set(SettingDomain.provisioning.value, key, value)
-    return value
+    spec = _spec(key)
+    return spec.default if spec is not None else None
 
 
 def get_setting(db: Session | None, key: str, default: Any = None) -> Any:
-    """Get a provisioning setting with fallback to default.
+    """One provisioning setting, through the one resolver.
 
-    Args:
-        db: Database session. If None, only cache lookup is attempted.
-        key: Setting key name.
-        default: Default value if not found. If None, uses SETTING_KEYS default.
+    This module used to be a parallel settings subsystem: a frozen
+    `ProvisioningDefaults` dataclass as a second source of defaults, its own
+    `DomainSetting` query with NO tenant filter, and its own cache under the
+    unscoped `settings:{domain}:{key}` — the keyspace that served one tenant
+    another's value in `dotmac_erp`.
 
-    Returns:
-        The setting value, or the default if not configured.
+    Its sixteen keys are now registered `SettingSpec`s, with the dataclass's
+    values copied across exactly, so `resolve_value` answers and the kernel's
+    scoped cache fronts it. What that buys beyond the defect: these appear on
+    the admin settings screen like every other setting, and a stored value is
+    coerced and range-checked by its spec rather than returned raw.
+
+    `db is None` is still supported — several callers resolve a value with no
+    session in hand — and now returns the SPEC's default rather than a second
+    copy of it. An explicit `default` argument still wins, for a caller that
+    wants its own.
     """
-    if default is None:
-        default = SETTING_KEYS.get(key)
 
-    # Try cache first
-    cached = _get_setting_from_cache(key)
-    if cached is not None:
-        return cached
+    from app.services import settings_spec
 
-    # Try DB if session provided
-    if db is not None:
-        db_value = _get_setting_from_db(db, key)
-        if db_value is not None:
-            return db_value
+    if db is None:
+        if default is not None:
+            return default
+        spec = settings_spec.get_spec(SettingDomain.provisioning, key)
+        return spec.default if spec is not None else None
 
+    value = settings_spec.resolve_value(db, SettingDomain.provisioning, key)
+    if value is not None:
+        return value
     return default
 
 
@@ -157,8 +121,13 @@ def get_int_setting(db: Session | None, key: str, default: int | None = None) ->
     try:
         return int(value)
     except (TypeError, ValueError):
-        fallback = SETTING_KEYS.get(key, 0)
-        return default if default is not None else int(str(fallback))
+        # The spec's default, not a second copy of it. `SETTING_KEYS` is a
+        # tuple of names now — it stopped being a defaults map when the specs
+        # took that job.
+        if default is not None:
+            return default
+        spec = _spec(key)
+        return int(str(spec.default)) if spec is not None else 0
 
 
 def get_float_setting(
@@ -169,8 +138,10 @@ def get_float_setting(
     try:
         return float(value)
     except (TypeError, ValueError):
-        fallback = SETTING_KEYS.get(key, 0.0)
-        return default if default is not None else float(str(fallback))
+        if default is not None:
+            return default
+        spec = _spec(key)
+        return float(str(spec.default)) if spec is not None else 0.0
 
 
 def get_bool_setting(db: Session | None, key: str, default: bool | None = None) -> bool:
@@ -222,9 +193,7 @@ def get_pppoe_provisioning_method(db: Session | None = None) -> str:
     - "omci": Only use OLT OMCI commands
     - "tr069": Only use TR-069/GenieACS, skip OMCI entirely
     """
-    value = get_setting(
-        db, "pppoe_provisioning_method", DEFAULTS.pppoe_provisioning_method
-    )
+    value = get_setting(db, "pppoe_provisioning_method")
     normalized = str(value).strip().lower()
     if normalized in {"omci", "tr069"}:
         return normalized
@@ -244,7 +213,7 @@ def get_verification_staleness_minutes(db: Session | None = None) -> int:
 
 def get_drift_handling_mode(db: Session | None = None) -> str:
     """Get drift handling mode: 'alert_only' or 'auto_repair'."""
-    value = get_setting(db, "drift_handling_mode", DEFAULTS.drift_handling_mode)
+    value = get_setting(db, "drift_handling_mode")
     normalized = str(value).strip().lower()
     if normalized in {"auto_repair"}:
         return normalized
