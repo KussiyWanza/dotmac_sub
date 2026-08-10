@@ -15,12 +15,21 @@ tagging may add version or `latest` aliases, but it must not create a second
 application image.
 
 The active candidate path uses the contracts through
-`scripts/release_candidate_evidence.py`. The final current green `dev` commit
-is selected manually after the rolling version bump, built once, and recorded
-as a digest-bound artifact. Staging consumes and records that digest. The
+`scripts/release_candidate_evidence.py`. The exact intended green `dev` commit
+is selected manually by full SHA, built once, and recorded as a digest-bound
+artifact. An open rolling version-bump pull request is not deployment authority
+for an already-selected candidate; version metadata and semver aliases are
+separate from digest eligibility. Staging consumes and records that digest. The
 production authorization is recorded separately after the staged tree reaches
 green `main`. The application publisher no longer rebuilds on `dev` or `main`;
 only the independent pinned GenieACS runtime remains in `ghcr.yml`.
+
+The release freeze is merge control, not deployment authority. While a
+candidate, staging deployment, production authorization, or production
+deployment workflow is queued or running, pull requests into `dev` must not
+merge. Branch pushes, pull request creation, and pull request updates remain
+open. The freeze prevents `dev` from moving underneath an in-flight candidate;
+the selected SHA and OCI digest remain the facts that deployment consumes.
 
 ## Ownership and authoritative evidence
 
@@ -112,8 +121,8 @@ not an input to the release-control decision.
 
 ### New owner and paths
 
-- The explicit release-candidate workflow selects the final current `dev`
-  tip after the version bump and build the application image once.
+- The explicit release-candidate workflow selects the exact current `dev`
+  tip intended for release and builds the application image once.
 - A staging deployment record will bind acceptance to the immutable digest.
 - The promotion workflow proves main tree equality, ancestry, main CI, and
   staging acceptance before adding production aliases to the same digest.
