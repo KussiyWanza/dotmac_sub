@@ -201,7 +201,7 @@ def test_payload_mapping_matches_crm_shape(db_session):
 
     assert payload["omni_id"] == str(request.id)
     assert payload["request_type"] == "ISSUE"
-    assert payload["status"] == "issued"
+    assert payload["status"] == "submitted"
     assert payload["requested_by_email"] == request.requested_by_system_user.email
     # ticket id comes off the work-order mirror (sub has no direct FK).
     assert payload["ticket_crm_id"] == "crm-ticket-77"

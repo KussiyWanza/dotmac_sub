@@ -29,6 +29,11 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument(
         "--apply", action="store_true", help="Persist and validate setup"
     )
+    parser.add_argument(
+        "--prepare",
+        action="store_true",
+        help="Create disabled bindings and print the callback before secrets exist",
+    )
     parser.add_argument("--base-url", default="https://erp.dotmac.io")
     parser.add_argument("--service-token-ref", default="env://ERP_SUB_SERVICE_TOKEN")
     parser.add_argument("--webhook-secret-ref", default="env://ERP_SUB_WEBHOOK_SECRET")
@@ -38,16 +43,19 @@ def _arguments() -> argparse.Namespace:
 
 def main() -> int:
     args = _arguments()
-    if not args.apply:
+    if args.apply and args.prepare:
+        raise SystemExit("Choose either --prepare or --apply")
+    if not args.apply and not args.prepare:
         print("DRY RUN: would install dotmac.erp 1.2.0, bind:")
         for capability in CAPABILITIES:
             print(f"  - {capability}")
         print(f"ERP base URL: {args.base_url}")
         print("Run again with --apply after deployment secrets are present.")
         return 0
-    for variable in ("ERP_SUB_SERVICE_TOKEN", "ERP_SUB_WEBHOOK_SECRET"):
-        if not os.getenv(variable):
-            raise SystemExit(f"Required deployment secret is missing: {variable}")
+    if args.apply:
+        for variable in ("ERP_SUB_SERVICE_TOKEN", "ERP_SUB_WEBHOOK_SECRET"):
+            if not os.getenv(variable):
+                raise SystemExit(f"Required deployment secret is missing: {variable}")
     from sqlalchemy import select
 
     from app.db import SessionLocal
@@ -105,22 +113,24 @@ def main() -> int:
         )
         if not static.valid:
             raise SystemExit(f"Static validation failed: {static.error_codes}")
-        runtime = build_execution_context(
-            db, capability_binding_id=bindings[0].id, allow_disabled=True
-        )
-        connection = validate_connection(runtime)
-        if not connection.valid:
-            raise SystemExit(
-                f"ERP connection validation failed: {connection.error_codes}"
+        if args.apply:
+            runtime = build_execution_context(
+                db, capability_binding_id=bindings[0].id, allow_disabled=True
             )
-        installations.enable_after_connection_validation(
-            db,
-            installation_id=installation.id,
-            connection_result=connection,
-            actor=actor,
-        )
+            connection = validate_connection(runtime)
+            if not connection.valid:
+                raise SystemExit(
+                    f"ERP connection validation failed: {connection.error_codes}"
+                )
+            installations.enable_after_connection_validation(
+                db,
+                installation_id=installation.id,
+                connection_result=connection,
+                actor=actor,
+            )
         db.commit()
-        print(f"Enabled installation {installation.id}")
+        state = "Enabled" if args.apply else "Prepared disabled"
+        print(f"{state} installation {installation.id}")
         for binding in bindings:
             print(f"{binding.capability_id}: {binding.id}")
         webhook_binding = next(
@@ -132,7 +142,7 @@ def main() -> int:
             "ERP callback: "
             f"https://selfcare.dotmac.io/webhooks/erp-material/{webhook_binding.id}"
         )
-    if not args.skip_initial_import:
+    if args.apply and not args.skip_initial_import:
         print(f"Initial import: {run_erp_material_catalog_sync()}")
     return 0
 
