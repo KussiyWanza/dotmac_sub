@@ -226,6 +226,7 @@ class InboxAgentOption:
     id: UUID
     name: str
     initials: str
+    presence_status: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -365,6 +366,15 @@ def list_agent_options(db: Session) -> tuple[InboxAgentOption, ...]:
         .order_by(SystemUser.first_name.asc(), SystemUser.last_name.asc())
         .all()
     )
+    user_ids = [row.id for row in rows]
+    presence_rows = (
+        db.query(InboxAgentPresence)
+        .filter(InboxAgentPresence.person_id.in_(user_ids))
+        .all()
+        if user_ids
+        else []
+    )
+    presence_by_person = {row.person_id: row for row in presence_rows}
     return tuple(
         InboxAgentOption(
             id=row.id,
@@ -374,6 +384,15 @@ def list_agent_options(db: Session) -> tuple[InboxAgentOption, ...]:
                 or row.email
             ),
             initials=_initials(row.first_name, row.last_name, row.display_name),
+            presence_status=(
+                (
+                    presence.manual_override_status
+                    or presence.status
+                    or InboxAgentPresenceStatus.offline.value
+                )
+                if (presence := presence_by_person.get(row.id)) is not None
+                else InboxAgentPresenceStatus.offline.value
+            ),
         )
         for row in rows
     )
