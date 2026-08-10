@@ -2946,6 +2946,7 @@ SERVICES: tuple[SOTService, ...] = (
             "canonical prepaid renewed-through outcome",
             "post-credit-application due-service consequence",
             "bounded scheduled renewal catch-up",
+            "fingerprint-approved missed renewal execution",
         ),
         depends_on=(
             "billing.contracts",
@@ -2993,7 +2994,10 @@ SERVICES: tuple[SOTService, ...] = (
             "Africa/Lagos calendar, starts at local midnight, advances by the "
             "typed cadence, and persists the resulting boundaries as UTC "
             "instants. Payment participants consume that typed period; they do "
-            "not derive a UTC calendar date independently."
+            "not derive a UTC calendar date independently. A missed period may "
+            "be executed only from an exact read-only preview fingerprint plus "
+            "a durable review reference; it uses the same debit, entitlement, "
+            "anchor, renewed-outcome, and restoration transaction."
         ),
         contract=ServiceContract(
             concerns=(
@@ -3108,6 +3112,15 @@ SERVICES: tuple[SOTService, ...] = (
                     ),
                     canonical_writer="financial.prepaid_service_renewals",
                 ),
+                ConcernContract(
+                    name="fingerprint-approved missed renewal execution",
+                    role=OwnerRole.COMMAND_WRITER,
+                    input_names=(
+                        "verified customer funding position",
+                        "prepaid subscription and renewal terms",
+                    ),
+                    canonical_writer="financial.prepaid_service_renewals",
+                ),
             ),
             authoritative_inputs=(
                 AuthorityInput(
@@ -3150,7 +3163,8 @@ SERVICES: tuple[SOTService, ...] = (
             transaction=TransactionContract(
                 mode=TransactionMode.OWNER_MANAGED,
                 boundary=(
-                    "Settlement-triggered and scheduled public commands enter "
+                    "Settlement-triggered, scheduled, and reviewed missed-period "
+                    "public commands enter "
                     "execute_owner_command once on a transaction-free session. "
                     "Validation, draft consequence, debit, entitlement, anchor, "
                     "posting group, renewed outcome, and restoration commit or "
@@ -3164,8 +3178,9 @@ SERVICES: tuple[SOTService, ...] = (
                 idempotency=(
                     "The service period deterministically keys its adjustment; "
                     "settlement events and scheduled passes carry typed command "
-                    "keys, and replay must match the exact debit, entitlement, "
-                    "period, and posting effects."
+                    "keys; reviewed execution additionally binds the exact preview "
+                    "fingerprint and evidence reference, and replay must match the "
+                    "exact debit, entitlement, period, and posting effects."
                 ),
                 retries=(
                     "The durable event redriver or scheduled adapter retries the "
@@ -3188,6 +3203,7 @@ SERVICES: tuple[SOTService, ...] = (
                     "financial.prepaid_service_renewals.invalid_currency",
                     "financial.prepaid_service_renewals.invalid_effective_at",
                     "financial.prepaid_service_renewals.invalid_period",
+                    "financial.prepaid_service_renewals.invalid_preview_fingerprint",
                     "financial.prepaid_service_renewals.missing_anchor",
                     "financial.prepaid_service_renewals.missing_evidence_ref",
                     "financial.prepaid_service_renewals.missing_price",
@@ -3280,6 +3296,7 @@ SERVICES: tuple[SOTService, ...] = (
                 "docs/adr/0007-end-to-end-billing-target-architecture.md",
                 "docs/SOT_RELATIONSHIP_MAP.md",
                 "docs/FINANCIAL_ACCESS_ENFORCEMENT.md",
+                "docs/runbooks/REVIEWED_MIGRATED_PREPAID_OPENING_REPAIR.md",
             ),
             test_refs=(
                 "tests/test_prepaid_service_renewals.py",
