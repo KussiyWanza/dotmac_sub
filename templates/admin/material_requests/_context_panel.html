@@ -2,7 +2,7 @@
     <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200/60 px-5 py-4 dark:border-slate-700/60">
         <div>
             <h2 class="font-semibold text-slate-900 dark:text-white">Material Requests ({{ material_requests|length }})</h2>
-            <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Material dependencies from the field work linked to this record.</p>
+            <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Material needs submitted directly from this operational context.</p>
         </div>
         {% if can(request, 'operations:material_request:write') %}
         <a href="{{ material_request_create_url }}" class="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800 hover:bg-amber-100 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-200">Request Materials</a>
@@ -12,13 +12,13 @@
         {% for material_request in material_requests %}
         <a href="/admin/operations/material-requests/{{ material_request.id }}" class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 p-3 hover:border-amber-300 dark:border-slate-600 dark:hover:border-amber-700">
             <span>
-                <span class="block text-sm font-semibold text-amber-800 dark:text-amber-200">{{ material_request.work_order_public_id }}</span>
+                <span class="block text-sm font-semibold text-amber-800 dark:text-amber-200">{{ material_request.context_label }}</span>
                 <span class="mt-1 block text-xs text-slate-500 dark:text-slate-400">{{ material_request.items|length }} item(s) · {{ material_request.created_at | app_datetime('%d %b %Y %H:%M') }}</span>
             </span>
             <span class="rounded-lg bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-700 dark:bg-slate-700 dark:text-slate-200">{{ material_request.status.value|replace('_', ' ')|title }}</span>
         </a>
         {% else %}
-        <p class="text-sm text-slate-500 dark:text-slate-400">No material request has been recorded for linked field work. An assigned work order is required before materials can be requested.</p>
+        <p class="text-sm text-slate-500 dark:text-slate-400">No material request has been submitted from this context.</p>
         {% endfor %}
     </div>
 </section>

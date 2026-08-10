@@ -34,6 +34,18 @@ deliverable. Queue failure rolls back only the optional participant savepoint;
 the transition remains authoritative and the owner records durable
 `customer_status_notification_failed` audit evidence.
 
+When a Project enters `completed`, `operations.project_lifecycle` may also queue
+one internal finance email per resolved recipient. The projects-domain
+`project_completion_finance_email_enabled` setting gates the automation. The
+`project_completion_finance_email_recipients` list may name explicit recipients;
+otherwise the owner resolves active staff through the configured
+`project_completion_finance_permission_key` permission, defaulting to
+`finance:ap:read`. The consequence records `project_completed_finance`
+Notification rows with per-project/per-recipient dedupe keys and never embeds a
+hardcoded email address. It runs inside the same optional completion consequence
+savepoint as customer completion messaging, so failure cannot roll back the
+authoritative Project transition.
+
 When an existing task gains an assignee through the lifecycle update command,
 the owner queues one in-app notification and one email for each newly added
 active staff member whose

@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 from app.models.subscriber import Subscriber
 from app.models.system_user import SystemUser
 from app.services import support as support_service
+from app.services import support_ticket_settings, web_support_tickets
 from app.services import typeahead as typeahead_service
-from app.services import web_support_tickets
+from app.web.admin import support_tickets as admin_support_tickets
+from tests.staff_identity_fixtures import add_bound_staff_user
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -126,6 +129,62 @@ def test_ticket_form_context_uses_staff_options_for_assignments(db_session) -> N
     assert str(staff.id) in staff_ids
     assert str(subscriber.id) not in staff_ids
     assert str(subscriber.id) in subscriber_ids
+
+
+def test_ticket_form_context_includes_authoritative_region_manager_preview(
+    db_session,
+) -> None:
+    manager, _person = add_bound_staff_user(db_session)
+    support_ticket_settings.update_ticket_configuration(
+        db_session,
+        support_ticket_settings.TicketConfigurationUpdate(
+            statuses=("open",),
+            priorities=("normal",),
+            ticket_types=("incident",),
+            regions=("test-region",),
+            routing_rules=(
+                support_ticket_settings.RegionRoutingRuleUpdate(
+                    region="test-region",
+                    ticket_manager_person_id=manager.id,
+                ),
+            ),
+        ),
+    )
+
+    context = web_support_tickets.build_ticket_form_context(db_session)
+
+    assert context["region_manager_routing"] == {"test-region": str(manager.id)}
+
+    request = SimpleNamespace(
+        state=SimpleNamespace(csrf_token="test-csrf-token"),
+        query_params={},
+        headers={},
+        cookies={},
+        url=SimpleNamespace(path="/admin/support/tickets/new"),
+        session={},
+        client=None,
+        scope={},
+        url_for=lambda *_args, **_kwargs: "/",
+    )
+    html = admin_support_tickets.templates.env.get_template(
+        "admin/support/tickets/new.html"
+    ).render(
+        request=request,
+        csrf_token="test-csrf-token",
+        current_user={"name": "Test Admin", "email": "admin@example.com"},
+        sidebar_stats={},
+        active_menu="support",
+        active_page="support-tickets",
+        page_title="New Ticket",
+        form_mode="create",
+        ticket=None,
+        error=None,
+        duplicate_warning=None,
+        **context,
+    )
+    assert f'"test-region": "{manager.id}"' in html
+    assert 'x-model="selectedManager"' in html
+    assert 'x-model="selectedRegion"' in html
 
 
 def test_list_assignment_people_keeps_legacy_subscriber_assignments_visible(

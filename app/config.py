@@ -178,6 +178,15 @@ class Settings:
     s3_region: str = os.getenv("S3_REGION", "us-east-1")
     redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     REDIS_URL: str = redis_url
+    # Ceiling on how stale a cached setting can be when an invalidation does
+    # NOT land — a Redis blip during a write, or a process that dies between
+    # commit and delete. Invalidation is the mechanism (one `after_commit`
+    # listener on `DomainSetting`); this is the bound on being wrong when it
+    # misses. Deployment-specific on purpose: a high-traffic instance can
+    # afford to raise it now that invalidation is explicit, and one that
+    # tolerates no staleness can lower it. 30s is what the retired
+    # `SettingsCache` used, so the default changes nothing.
+    settings_cache_ttl_seconds: int = int(os.getenv("SETTINGS_CACHE_TTL_SECONDS", "30"))
 
     # Router Management
     router_sync_interval_hours: int = int(os.getenv("ROUTER_SYNC_INTERVAL_HOURS", "6"))

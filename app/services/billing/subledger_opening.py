@@ -177,6 +177,7 @@ def _capture(
     if run is None or run.phase not in {
         "phase_3_opening_preview",
         "phase_3_post_cutover_opening_preview",
+        "phase_3_migrated_opening_preview",
     }:
         raise _error(
             "verification_run_not_found",
@@ -199,7 +200,10 @@ def _capture(
     rows = _object_dict_rows(details.get("opening_rows"))
     result_contract = _object_dict(details.get("opening_result_contract"))
     fingerprint_payload: object = result_contract or rows
-    if _digest(fingerprint_payload) != run.result_fingerprint:
+    contract_rows = _object_dict_rows(result_contract.get("opening_rows"))
+    if _digest(fingerprint_payload) != run.result_fingerprint or (
+        result_contract and contract_rows != rows
+    ):
         raise _error(
             "corrupt_reviewed_preview",
             "Stored opening evidence no longer matches its immutable fingerprint.",
@@ -292,6 +296,87 @@ def _capture(
             raise _error(
                 "stale_reviewed_preview",
                 "The selected account's opening evidence changed after approval.",
+                account_id=str(account_id),
+                run_id=str(run.id),
+            )
+    elif run.phase == "phase_3_migrated_opening_preview":
+        if len(rows) != 1:
+            raise _error(
+                "corrupt_reviewed_preview",
+                "A migrated-account preview must contain exactly one opening.",
+                run_id=str(run.id),
+            )
+        payload = rows[0]
+        account_id = UUID(str(payload["account_id"]))
+        if lock_for_update(db, Subscriber, account_id) is None:
+            raise _error(
+                "stale_reviewed_preview",
+                "The reviewed account no longer exists.",
+                account_id=str(account_id),
+            )
+        authority_cutover_id = details.get("authority_cutover_id")
+        if authority_cutover_id is None:
+            raise _error(
+                "corrupt_reviewed_preview",
+                "Migrated opening evidence has no authority identity.",
+                run_id=str(run.id),
+            )
+        try:
+            source_position_at = datetime.fromisoformat(
+                str(payload["opening_target_source_position_at"])
+            )
+            source_evidence_ref = str(payload["source_evidence_ref"])
+            source_evidence_sha256 = str(payload["source_evidence_sha256"])
+            legacy_position = round_money(Decimal(str(payload["legacy_position"])))
+        except (KeyError, ValueError, ArithmeticError) as exc:
+            raise _error(
+                "corrupt_reviewed_preview",
+                "Migrated opening evidence has invalid reviewed source fields.",
+                run_id=str(run.id),
+            ) from exc
+        from app.services.billing.shadow_verification import (
+            BillingShadowVerificationError,
+            ResolvePostCutoverMigratedOpeningEvidenceQuery,
+            ReviewedMigratedOpeningSource,
+            resolve_post_cutover_migrated_opening_evidence,
+        )
+
+        try:
+            current_migrated = resolve_post_cutover_migrated_opening_evidence(
+                db,
+                ResolvePostCutoverMigratedOpeningEvidenceQuery(
+                    account_id=account_id,
+                    currency=currency,
+                    expected_authority_cutover_id=UUID(str(authority_cutover_id)),
+                    source=ReviewedMigratedOpeningSource(
+                        position_at=source_position_at,
+                        legacy_position=legacy_position,
+                        evidence_ref=source_evidence_ref,
+                        evidence_sha256=source_evidence_sha256,
+                    ),
+                ),
+            )
+        except BillingShadowVerificationError as exc:
+            raise _error(
+                "stale_reviewed_preview",
+                "The migrated account no longer matches its reviewed evidence.",
+                account_id=str(account_id),
+                run_id=str(run.id),
+                cause_code=exc.code,
+            ) from exc
+        if (
+            str(payload.get("evidence_fingerprint"))
+            != current_migrated.evidence_fingerprint
+            or legacy_position != current_migrated.legacy_position
+            or round_money(Decimal(str(payload.get("shadow_position_before"))))
+            != current_migrated.shadow_position_before
+            or round_money(Decimal(str(payload.get("opening_delta"))))
+            != current_migrated.opening_delta
+            or _utc(run.cutoff_at) != current_migrated.opening_cutoff_at
+        ):
+            raise _error(
+                "stale_reviewed_preview",
+                "The migrated account's opening evidence changed after approval.",
                 account_id=str(account_id),
                 run_id=str(run.id),
             )

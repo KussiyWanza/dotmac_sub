@@ -41,6 +41,10 @@ from app.services.customer_portal_flow_changes import (
 from app.services.customer_portal_flow_common import (
     _compute_total_pages,
 )
+from app.services.network.ont_desired_config import (
+    desired_config,
+    get_desired_config_value,
+)
 from app.services.portal_account_health import build_portal_account_health
 from app.services.provisioning_lifecycle import latest_readiness
 
@@ -1108,7 +1112,7 @@ def get_service_detail(
         "pppoe_credentials": pppoe_creds,
         "customer_ont": customer_ont,
         "customer_cpe": customer_cpe,
-        "customer_wifi_ssid": getattr(customer_assignment, "wifi_ssid", None),
+        "customer_wifi_ssid": _customer_wifi_ssid(customer_ont),
         "can_reboot_ont": bool(
             customer_ont is not None
             and not customer_ont_is_uisp
@@ -1127,6 +1131,17 @@ def get_service_detail(
         **renewal_context,
         **copy,
     }
+
+
+def _customer_wifi_ssid(ont: OntUnit | None) -> str | None:
+    """Return the customer-visible SSID from canonical ONT desired state."""
+    if ont is None:
+        return None
+    value = get_desired_config_value(desired_config(ont), "wifi", "ssid")
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized or None
 
 
 def _resolve_customer_subscription_ont(

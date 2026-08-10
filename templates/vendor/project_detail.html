@@ -138,6 +138,15 @@
       </div>
       {% else %}
       <p class="mb-3 text-xs text-slate-500 dark:text-slate-400">Tap the map to add route points, or use <strong>Add my location</strong> while walking the proposed route. Purple dashed lines are your saved revisions; green dashed lines are prior as-built context where available.</p>
+      <div class="mb-3 rounded-md border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-950/40">
+        <label for="route-author-search" class="block text-xs font-semibold uppercase text-slate-500 dark:text-slate-400">Search map</label>
+        <div class="mt-2 flex flex-col gap-2 sm:flex-row">
+          <input id="route-author-search" type="search" autocomplete="off" placeholder="Coordinates, cabinet, or closure" class="min-h-10 flex-1 rounded-md border-slate-300 text-sm dark:border-slate-700 dark:bg-slate-900 dark:text-white">
+          <button type="button" id="route-author-search-clear" class="rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 dark:border-slate-700 dark:text-slate-200">Clear</button>
+        </div>
+        <div id="route-author-search-results" class="mt-2 hidden max-h-56 overflow-auto rounded-md border border-slate-200 bg-white text-sm shadow-sm dark:border-slate-700 dark:bg-slate-900"></div>
+        <p id="route-author-search-hint" class="mt-2 text-xs text-slate-500 dark:text-slate-400">Use decimal coordinates like 6.5244, 3.3792 or search cabinet and closure names.</p>
+      </div>
       <div id="route-author-map" class="mb-4 h-80 w-full rounded-md border border-slate-200 dark:border-slate-800" role="region" aria-label="Proposed route authoring map"></div>
       <form method="post" action="/vendor/projects/{{ project.id }}/quotes/{{ quote.id }}/route-revisions" id="route-author-form" class="space-y-3">
         {% include "components/forms/csrf_input.html" %}
@@ -194,12 +203,14 @@
     <section class="rounded-md border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
       <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
         <h2 class="text-lg font-bold">As-built route</h2>
-        {% if action_permitted(request, project.as_built_action) %}
+        {% if action_permitted(request, project.as_built_action) or can_propose_closure %}
         <div class="flex items-center gap-2 text-xs">
-          {% if vendor_work_orders %}<button type="button" id="closure-pin-toggle" class="rounded-md border border-amber-500 px-3 py-1.5 font-semibold text-amber-700 dark:text-amber-300">Pin new closure</button>{% endif %}
+          {% if can_propose_closure %}<button type="button" id="closure-pin-toggle" class="rounded-md border border-amber-500 px-3 py-1.5 font-semibold text-amber-700 dark:text-amber-300">Pin new closure</button>{% endif %}
+          {% if action_permitted(request, project.as_built_action) %}
           <button type="button" id="ab-locate" class="rounded-md bg-teal-600 px-3 py-1.5 font-semibold text-white">Add my location</button>
           <button type="button" id="ab-undo" class="rounded-md border border-slate-300 px-3 py-1.5 font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-600 dark:text-slate-200" disabled>Undo</button>
           <button type="button" id="ab-clear" class="rounded-md border border-slate-300 px-3 py-1.5 font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-600 dark:text-slate-200" disabled>Clear</button>
+          {% endif %}
         </div>
         {% endif %}
       </div>
@@ -223,7 +234,7 @@
       <p class="mb-3 text-xs text-slate-500 dark:text-slate-400">The proposed route is shown for reference. {{ project.as_built_action.reason }}</p>
       {% endif %}
       <div id="asbuilt-map" class="mb-3 h-80 w-full rounded-md border border-slate-200 dark:border-slate-800" role="region" aria-label="As-built route map"></div>
-      {% if action_permitted(request, project.as_built_action) and vendor_work_orders %}
+      {% if can_propose_closure %}
       <form method="post" action="/vendor/projects/{{ project.id }}/closure-proposals" id="closure-proposal-form" class="mb-4 hidden rounded-md border border-amber-200 bg-amber-50 p-4 dark:border-amber-900/60 dark:bg-amber-950/20">
         {% include "components/forms/csrf_input.html" %}
         <input type="hidden" name="latitude" id="closure-latitude">
@@ -326,6 +337,10 @@ window.VendorRouteAuthoring.mount({
   locateId: "route-author-locate",
   undoId: "route-author-undo",
   clearId: "route-author-clear",
+  searchId: "route-author-search",
+  searchResultsId: "route-author-search-results",
+  searchClearId: "route-author-search-clear",
+  searchHintId: "route-author-search-hint",
   quoteId: {{ quote.id | string | tojson | safe }},
   contextGeojson: {{ route_geojson | tojson | safe }}
 });
@@ -335,6 +350,7 @@ window.VendorRouteAuthoring.mount({
 (function () {
   var routeGeojson = {{ route_geojson | tojson | safe }};
   var canCapture = {{ action_permitted(request, project.as_built_action) | tojson }};
+  var canProposeClosure = {{ can_propose_closure | tojson }};
   var map = L.map('asbuilt-map').setView([9.0820, 8.6753], 6);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
@@ -375,7 +391,7 @@ window.VendorRouteAuthoring.mount({
     } catch (e) { /* empty geometry */ }
   }
 
-  if (!canCapture) return;
+  if (!canCapture && !canProposeClosure) return;
 
   var points = [];  // [lat, lng] vertices the vendor traced
   var line = L.polyline([], { color: '#0d9488', weight: 4 }).addTo(map);
@@ -407,6 +423,7 @@ window.VendorRouteAuthoring.mount({
     return t;
   }
   function redraw() {
+    if (!canCapture) return;
     line.setLatLngs(points);
     markers.clearLayers();
     points.forEach(function (p, i) {
@@ -450,26 +467,28 @@ window.VendorRouteAuthoring.mount({
       document.getElementById('closure-pin-hint').textContent = e.latlng.lat.toFixed(6) + ', ' + e.latlng.lng.toFixed(6) + ' — pending staff review';
       return;
     }
-    addPoint(e.latlng.lat, e.latlng.lng);
+    if (canCapture) addPoint(e.latlng.lat, e.latlng.lng);
   });
-  undoEl.addEventListener('click', function () { points.pop(); redraw(); });
-  clearEl.addEventListener('click', function () {
-    points = []; lengthEl.value = ''; redraw();
-  });
-  document.getElementById('ab-locate').addEventListener('click', function () {
-    if (!navigator.geolocation) { window.alert('Location is not available on this device.'); return; }
-    navigator.geolocation.getCurrentPosition(
-      function (pos) {
-        addPoint(pos.coords.latitude, pos.coords.longitude);
-        map.setView([pos.coords.latitude, pos.coords.longitude], 17);
-      },
-      function () { window.alert('Could not get your location. Check the location permission for this site.'); },
-      { enableHighAccuracy: true, timeout: 10000 }
-    );
-  });
-  document.getElementById('ab-form').addEventListener('submit', function (e) {
-    if (points.length < 2) { e.preventDefault(); window.alert('Trace at least 2 points for the as-built route.'); }
-  });
+  if (canCapture) {
+    undoEl.addEventListener('click', function () { points.pop(); redraw(); });
+    clearEl.addEventListener('click', function () {
+      points = []; lengthEl.value = ''; redraw();
+    });
+    document.getElementById('ab-locate').addEventListener('click', function () {
+      if (!navigator.geolocation) { window.alert('Location is not available on this device.'); return; }
+      navigator.geolocation.getCurrentPosition(
+        function (pos) {
+          addPoint(pos.coords.latitude, pos.coords.longitude);
+          map.setView([pos.coords.latitude, pos.coords.longitude], 17);
+        },
+        function () { window.alert('Could not get your location. Check the location permission for this site.'); },
+        { enableHighAccuracy: true, timeout: 10000 }
+      );
+    });
+    document.getElementById('ab-form').addEventListener('submit', function (e) {
+      if (points.length < 2) { e.preventDefault(); window.alert('Trace at least 2 points for the as-built route.'); }
+    });
+  }
   // Leaflet mis-sizes when its container starts hidden/undersized; recalc once laid out.
   setTimeout(function () { map.invalidateSize(); }, 150);
 })();

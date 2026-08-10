@@ -826,7 +826,8 @@ DOMAIN = DomainSOT(
                 transaction=TransactionContract(
                     mode=TransactionMode.OWNER_MANAGED,
                     boundary=(
-                        "update_options enters execute_owner_command once; all settings, "
+                        "update_ticket_configuration enters execute_owner_command once; "
+                        "all settings, "
                         "team, routing, and SLA writes flush in the same root transaction"
                     ),
                     locking=(

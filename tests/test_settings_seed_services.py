@@ -1006,6 +1006,44 @@ class TestSeedProjectsSettings:
         )
         assert setting is not None
 
+    def test_seeds_project_completion_finance_notification_settings(
+        self, db_session, monkeypatch
+    ):
+        """Test project completion finance notification settings are seeded."""
+        monkeypatch.setenv("PROJECTS_COMPLETION_FINANCE_EMAIL_ENABLED", "true")
+        monkeypatch.setenv(
+            "PROJECTS_COMPLETION_FINANCE_EMAIL_RECIPIENTS",
+            "finance@example.com, controller@example.com",
+        )
+        monkeypatch.setenv(
+            "PROJECTS_COMPLETION_FINANCE_PERMISSION_KEY", "finance:ap:read"
+        )
+
+        settings_seed.seed_projects_settings(db_session)
+
+        rows = {
+            row.key: row
+            for row in db_session.query(DomainSetting)
+            .filter(DomainSetting.domain == SettingDomain.projects)
+            .filter(
+                DomainSetting.key.in_(
+                    (
+                        "project_completion_finance_email_enabled",
+                        "project_completion_finance_email_recipients",
+                        "project_completion_finance_permission_key",
+                    )
+                )
+            )
+        }
+        assert rows["project_completion_finance_email_enabled"].value_json is True
+        assert rows["project_completion_finance_email_recipients"].value_json == [
+            "finance@example.com",
+            "controller@example.com",
+        ]
+        assert rows["project_completion_finance_permission_key"].value_text == (
+            "finance:ap:read"
+        )
+
 
 # =============================================================================
 # Network Policy Settings Tests

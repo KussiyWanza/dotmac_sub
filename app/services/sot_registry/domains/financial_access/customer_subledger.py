@@ -204,7 +204,10 @@ SERVICES: tuple[SOTService, ...] = (
             "capture one explicitly selected native-after-handoff account "
             "against the original cutoff without reading or changing unrelated "
             "opening debt. It is forbidden before activation and cannot support "
-            "the initial cutover gate."
+            "the initial cutover gate. A separate migrated-account repair binds "
+            "one content-addressed finance evidence document, its exact original-"
+            "cutoff position, retained migrated identity, and current shadow lanes "
+            "into the same two-approval capture protocol."
         ),
         contract=ServiceContract(
             concerns=(
@@ -239,7 +242,8 @@ SERVICES: tuple[SOTService, ...] = (
                         "result fingerprint plus operator and finance approval, "
                         "or one immutable phase_3_post_cutover_opening_preview "
                         "bound to an explicit account and the active authority "
-                        "record"
+                        "record, or one immutable finance-evidenced migrated-account "
+                        "preview bound to the original cutoff"
                     ),
                 ),
                 AuthorityInput(
@@ -250,7 +254,8 @@ SERVICES: tuple[SOTService, ...] = (
                         "reviewed active baseline/opening plus canonical later "
                         "native facts, or the fingerprinted native-after-"
                         "handoff zero-history target used only by opening "
-                        "verification"
+                        "verification, or a content-addressed migrated-history "
+                        "position approved with one exact post-cutover preview"
                     ),
                 ),
                 AuthorityInput(
@@ -360,6 +365,8 @@ SERVICES: tuple[SOTService, ...] = (
                     "changed or corrupt reviewed fingerprint",
                     "an incomplete source cohort",
                     "a stale or ineligible selected post-cutover account",
+                    "invalid or changed migrated-account evidence, identity, amount, "
+                    "or original cutoff",
                     "an existing account/currency opening",
                 ),
             ),
@@ -407,6 +414,7 @@ SERVICES: tuple[SOTService, ...] = (
             design_refs=(
                 "docs/adr/0007-end-to-end-billing-target-architecture.md",
                 "docs/SOT_RELATIONSHIP_MAP.md",
+                "docs/runbooks/REVIEWED_MIGRATED_PREPAID_OPENING_REPAIR.md",
             ),
             test_refs=(
                 "tests/test_subledger_opening_positions.py",
