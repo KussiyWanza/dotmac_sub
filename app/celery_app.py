@@ -302,9 +302,16 @@ def _hold_boot_secrets(**_kwargs):
     credentials writes them back in the clear.
     """
 
+    from app.services.kernel_key_provider import (
+        install_if_configured as install_settings_keyring,
+    )
     from app.services.kernel_secret_source import install_if_configured
 
     install_if_configured()
+    # The settings-encryption keyring too: a worker writes secret settings (the
+    # rotation task does) and would otherwise fail every one of those writes
+    # with "no active key" while the API succeeded at the same moment.
+    install_settings_keyring()
 
 
 @celeryd_after_setup.connect

@@ -500,6 +500,9 @@ def _startup_preflight() -> None:
     _check_test_environment_leakage()
     from app.config import settings
     from app.services.credential_crypto import require_encryption_key
+    from app.services.kernel_key_provider import (
+        install_if_configured as install_settings_keyring,
+    )
     from app.services.kernel_secret_source import install_if_configured
 
     # BEFORE the encryption check below, which reads one of the secrets this
@@ -511,6 +514,19 @@ def _startup_preflight() -> None:
     logger.info(
         "boot_secrets_held",
         extra={"event": "boot_secrets_held", "names": list(held), "count": len(held)},
+    )
+
+    # The settings-encryption keyring, loaded on the same terms and for the
+    # same reason: the keys are in memory from now on, so a store outage later
+    # cannot reach a settings read. Ids only in the log — never material.
+    key_ids = install_settings_keyring()
+    logger.info(
+        "settings_keyring_held",
+        extra={
+            "event": "settings_keyring_held",
+            "key_ids": list(key_ids),
+            "count": len(key_ids),
+        },
     )
 
     if settings.enforce_credential_encryption:
