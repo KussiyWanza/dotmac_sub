@@ -139,11 +139,11 @@
                     <div class="grid gap-2 rounded-lg border border-slate-200 p-3 dark:border-slate-700 md:grid-cols-3">
                         <select name="routing_regions" x-model="rule.region" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
                             <option value="">Region</option>
-                            <template x-for="region in regionValues" :key="region"><option :value="region" x-text="region"></option></template>
+                            {% for region in routing_region_options %}<option value="{{ region }}">{{ region }}</option>{% endfor %}
                         </select>
                         <select name="routing_service_team_ids" x-model="rule.service_team_id" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
                             <option value="">Service team</option>
-                            <template x-for="team in serviceTeams" :key="team.id"><option :value="team.id" x-text="team.label || team.id"></option></template>
+                            {% for team in routing_service_team_options %}<option value="{{ team.id }}">{{ team.label }}</option>{% endfor %}
                         </select>
                         <input type="text" name="routing_assignee_person_ids" x-model="rule.assignee_person_ids" placeholder="Assignee UUIDs, comma-separated" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
                         <select name="routing_technician_person_ids" x-model="rule.technician_person_id" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
@@ -295,7 +295,6 @@
 
 <script>
 function ticketSettingsPage() {
-    const routingConfig = {{ routing_rules|tojson }};
     const slaPolicy = {{ sla_policy|tojson }};
     const ticketTypeSlaPolicy = {{ ticket_type_sla_policy|tojson }};
     return {
@@ -303,16 +302,9 @@ function ticketSettingsPage() {
         priorityValues: {{ priority_options|tojson }},
         ticketTypeValues: {{ ticket_type_options|tojson }},
         regionValues: {{ region_options|tojson }},
-        serviceTeams: {{ service_team_options|tojson }},
         autoAssignEnabled: {{ auto_assign_enabled|tojson }},
         autoAssignMaxOpenTickets: {{ auto_assign_max_open_tickets|tojson }},
-        routingRules: Object.entries(routingConfig).map(([region, rule]) => ({
-            region,
-            ticket_manager_person_id: rule.ticket_manager_person_id || '',
-            technician_person_id: rule.technician_person_id || '',
-            service_team_id: rule.service_team_id || '',
-            assignee_person_ids: (rule.assignee_person_ids || []).join(', '),
-        })),
+        routingRules: {{ routing_rule_rows|tojson }},
         slaRows: Object.entries(slaPolicy).map(([priority, row]) => ({
             priority,
             response_hours: row.response_hours || 0,
