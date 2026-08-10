@@ -19,6 +19,45 @@ _LAST_REQUEST_LOCK = threading.Lock()
 _LAST_REQUEST_AT: dict[str, float] = {}
 
 
+def _secret_setting_value(db: Session, key: str) -> str | None:
+    """A geocoding provider credential, resolved rather than passed on raw.
+
+    `google_api_key` and `mapbox_api_key` are declared `is_secret=True`, and
+    every write of a secret setting goes through
+    `DomainSettings._write_secret_ref`, which puts the value in OpenBao and
+    stores a `bao://secret/settings/geocoding#<key>` REFERENCE in `value_text`.
+    `_setting_value` returns that column verbatim, so wherever the key was
+    configured through the settings screen the provider received the literal
+    string `bao://…` as its API key and answered 401 — a broken feature whose
+    cause is two layers away from the error.
+
+    The same defect `radius_auth.authenticate` had. Every other reader of a
+    secret setting in this codebase resolves it — `ai/security
+    .resolve_provider_api_key`, `email._resolve_secret_value` — and this one
+    did not.
+
+    A reference is dereferenced here, on a request path, which starter ADR-0009
+    forbids in the long run: these two settings are due to become ciphertext at
+    rest, decrypted by the kernel resolver with no network call. Until that
+    lands, matching the siblings is what makes the feature work at all, and it
+    is removed by that slice rather than left behind.
+    """
+
+    from app.services.secrets import resolve_secret
+
+    raw = _setting_value(db, key)
+    if raw is None:
+        return None
+    try:
+        return resolve_secret(raw)
+    except Exception:
+        # Never let a secret-store failure escape as a provider error, and
+        # never log the reference. The callers below raise "not configured",
+        # which is the truthful outcome: no usable credential.
+        logger.warning("Could not resolve the %s geocoding credential", key)
+        return None
+
+
 def _setting_value(db: Session, key: str) -> str | None:
     setting = db.scalars(
         select(DomainSetting)
@@ -191,7 +230,7 @@ def reverse_geocode(db: Session, latitude: float, longitude: float) -> dict | No
 
 
 def _google_search(db: Session, query: str, limit: int) -> list[dict]:
-    api_key = _setting_value(db, "google_api_key")
+    api_key = _secret_setting_value(db, "google_api_key")
     if not api_key:
         raise HTTPException(
             status_code=400, detail="Google geocoding key is not configured"
@@ -236,7 +275,7 @@ def _google_search(db: Session, query: str, limit: int) -> list[dict]:
 
 
 def _mapbox_search(db: Session, query: str, limit: int) -> list[dict]:
-    token = _setting_value(db, "mapbox_api_key")
+    token = _secret_setting_value(db, "mapbox_api_key")
     if not token:
         raise HTTPException(
             status_code=400, detail="Mapbox geocoding token is not configured"
