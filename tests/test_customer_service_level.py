@@ -54,6 +54,18 @@ def _activate(db, subscription):
     from app.models.catalog import SubscriptionStatus
 
     evidence_start = NOW - timedelta(days=10)
+    # The shared subscription fixture records its initial pending state at the
+    # real wall-clock time. Remove that fixture-only history before installing
+    # this test's fixed authoritative timeline; otherwise the test starts
+    # failing once the wall clock passes ``evidence_start``.
+    existing_events = (
+        db.query(SubscriptionLifecycleEvent)
+        .filter(SubscriptionLifecycleEvent.subscription_id == subscription.id)
+        .all()
+    )
+    for event in existing_events:
+        db.delete(event)
+    db.flush()
     subscription.status = SubscriptionStatus.active
     subscription.billing_mode = BillingMode.prepaid
     subscription.start_at = evidence_start
