@@ -1064,22 +1064,18 @@ def test_save_monitoring_config_uses_typed_settings_for_spec_keys(db_session):
     assert rows["network_health_warn_pct"].value_type == SettingValueType.integer
 
 
-def test_save_monitoring_config_invalidates_spec_setting_cache(db_session, monkeypatch):
-    from app.services import domain_settings as domain_settings_service
+def test_save_monitoring_config_persists_the_spec_setting(db_session):
+    """Was `..._invalidates_spec_setting_cache`; the subject moved, see below."""
+
+    from app.models.domain_settings import SettingDomain
+    from app.services import settings_spec
     from app.services.web_system_config import save_monitoring_config
 
-    invalidated: list[tuple[str, str]] = []
-
-    def fake_invalidate(domain: str, key: str) -> bool:
-        invalidated.append((domain, key))
-        return True
-
-    monkeypatch.setattr(
-        domain_settings_service.SettingsCache,
-        "invalidate",
-        fake_invalidate,
-    )
-
+    # Invalidation moved off this service. Writing a monitoring setting writes a
+    # `DomainSetting`, and the cache entry is dropped by one `after_commit`
+    # listener on that model instead of a call here — see
+    # `tests/test_settings_cache_invalidation.py`. What this function still owns
+    # is the WRITE, so that is what is asserted below.
     save_monitoring_config(
         db_session,
         {
@@ -1087,7 +1083,10 @@ def test_save_monitoring_config_invalidates_spec_setting_cache(db_session, monke
         },
     )
 
-    assert ("network_monitoring", "server_health_mem_warn_pct") in invalidated
+    stored = settings_spec.resolve_value(
+        db_session, SettingDomain.network_monitoring, "server_health_mem_warn_pct"
+    )
+    assert str(stored) == "75"
 
 
 def test_save_monitoring_config_invalid_spec_value_is_rejected(db_session):

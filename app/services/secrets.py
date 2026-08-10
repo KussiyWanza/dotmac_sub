@@ -80,6 +80,22 @@ def _openbao_config() -> tuple[str, str, str | None, str]:
     return addr.rstrip("/"), token, namespace, kv_version
 
 
+def is_openbao_configured() -> bool:
+    """Whether this deployment NAMES an OpenBao to read from. No I/O.
+
+    Deliberately distinct from :func:`is_openbao_available`, which probes the
+    network. The two answer different questions and only this one may gate a
+    fail-closed path: a store that is configured but unreachable must fail
+    LOUDLY, and a reachability probe would report "unavailable" and turn that
+    outage into a silent skip. Reachability is the store's problem to have;
+    whether we expect one at all is this deployment's own configuration.
+    """
+
+    return bool(
+        (os.getenv("OPENBAO_ADDR") or os.getenv("VAULT_ADDR")) and _read_openbao_token()
+    )
+
+
 def is_openbao_available() -> bool:
     """Check if OpenBao is configured and reachable (non-throwing)."""
     try:
@@ -164,6 +180,35 @@ def resolve_openbao_ref(reference: str) -> str:
             detail=f"OpenBao secret field '{field}' not found at {mount}/{path}",
         )
     return str(secret_data[field])
+
+
+def resolve_openbao_ref_optional(reference: str) -> str | None:
+    """Resolve a reference, or None when the secret has not been created yet.
+
+    The distinction `read_secret_fields` destroys and a boot-time loader needs.
+    That helper swallows every failure and returns `{}`, so "the path does not
+    exist" and "the store is unreachable" become the same answer — and a loader
+    reading an unreachable store as "nothing configured" turns an outage into a
+    silent misconfiguration.
+
+    Here a 404 means the secret genuinely is not there, which is a legitimate
+    state for material a deployment has not provisioned yet. Everything else —
+    unreachable, bad token, wrong address, a field missing from a path that does
+    exist — propagates, so the caller fails loudly.
+
+    It lives HERE, with the client, and not in each loader: `HTTPException` is
+    this module's transport coupling to carry (it is on the baseline in
+    `tests/architecture/test_service_transport_error_boundary.py`), and a
+    service module catching a FastAPI type to read a status code would be
+    spreading that coupling to reach a fact the client already knows.
+    """
+
+    try:
+        return resolve_openbao_ref(reference)
+    except HTTPException as exc:
+        if exc.status_code == 404:
+            return None
+        raise
 
 
 def _resolve_env_ref(reference: str) -> str | None:

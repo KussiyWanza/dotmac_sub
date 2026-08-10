@@ -194,8 +194,51 @@ _ALIASES = (
     ("gis.sync", "gis", "sync_enabled", False),
 )
 
-_MATERIALIZE = sa.text(
+# The legacy row's truthiness, as both statements below read it. One text,
+# because two copies of this expression would be two answers to "was the alias
+# on".
+_LEGACY_TRUTH = """
+        CASE
+            WHEN lower(trim(both '"' from coalesce(
+                legacy.value_json::text, legacy.value_text, ''
+            ))) IN ('1', 'true', 'yes', 'on', 'enabled')
+            THEN 'true'
+            ELSE 'false'
+        END
+"""
+
+# UPDATE-then-INSERT rather than `ON CONFLICT (domain, key)`, which named an
+# index that no longer exists at any point in this chain: migration 507 replaced
+# it with `uq_domain_settings_scope_domain_key`, and
+# `001_squashed_initial_schema` builds the baseline from the CURRENT model
+# metadata — so the model IS this chain's history, and dropping a constraint
+# there removes it from every earlier point too. Neither statement names an
+# index, so a later change to the uniqueness shape cannot break this again.
+#
+# `is_active IS NOT TRUE` carries over exactly: an existing canonical row that
+# is already ACTIVE was set through the control plane and must not be
+# overwritten by an alias.
+_MATERIALIZE_UPDATE = sa.text(
+    f"""
+    UPDATE domain_settings AS target
+       SET value_type = 'boolean',
+           value_text = {_LEGACY_TRUTH},
+           value_json = NULL,
+           is_secret = false,
+           is_active = true,
+           updated_at = now()
+      FROM domain_settings AS legacy
+     WHERE target.domain = CAST('modules' AS settingdomain)
+       AND target.key = :canonical_key
+       AND target.is_active IS NOT TRUE
+       AND legacy.domain = CAST(:legacy_domain AS settingdomain)
+       AND legacy.key = :legacy_key
+       AND legacy.is_active IS TRUE
     """
+)
+
+_MATERIALIZE_INSERT = sa.text(
+    f"""
     INSERT INTO domain_settings (
         id, domain, key, value_type, value_text, value_json,
         is_secret, is_active, created_at, updated_at
@@ -203,26 +246,17 @@ _MATERIALIZE = sa.text(
     SELECT
         gen_random_uuid(), CAST('modules' AS settingdomain), :canonical_key,
         'boolean',
-        CASE
-            WHEN lower(trim(both '"' from coalesce(
-                legacy.value_json::text, legacy.value_text, ''
-            ))) IN ('1', 'true', 'yes', 'on', 'enabled')
-            THEN 'true'
-            ELSE 'false'
-        END,
+        {_LEGACY_TRUTH},
         NULL, false, true, now(), now()
     FROM domain_settings AS legacy
     WHERE legacy.domain = CAST(:legacy_domain AS settingdomain)
       AND legacy.key = :legacy_key
       AND legacy.is_active IS TRUE
-    ON CONFLICT (domain, key) DO UPDATE SET
-        value_type = EXCLUDED.value_type,
-        value_text = EXCLUDED.value_text,
-        value_json = NULL,
-        is_secret = false,
-        is_active = true,
-        updated_at = now()
-    WHERE domain_settings.is_active IS NOT TRUE
+      AND NOT EXISTS (
+          SELECT 1 FROM domain_settings AS existing
+           WHERE existing.domain = CAST('modules' AS settingdomain)
+             AND existing.key = :canonical_key
+      )
     """
 )
 
@@ -234,13 +268,16 @@ _DELETE = sa.text(
 
 def upgrade() -> None:
     for canonical, legacy_domain, legacy_key, retain_legacy in _ALIASES:
-        op.execute(
-            _MATERIALIZE.bindparams(
-                canonical_key=canonical.replace(".", "_"),
-                legacy_domain=legacy_domain,
-                legacy_key=legacy_key,
+        # UPDATE first, then INSERT: reversing them would have the INSERT
+        # create the canonical row and the UPDATE immediately rewrite it.
+        for statement in (_MATERIALIZE_UPDATE, _MATERIALIZE_INSERT):
+            op.execute(
+                statement.bindparams(
+                    canonical_key=canonical.replace(".", "_"),
+                    legacy_domain=legacy_domain,
+                    legacy_key=legacy_key,
+                )
             )
-        )
         if not retain_legacy:
             op.execute(_DELETE.bindparams(domain=legacy_domain, key=legacy_key))
 

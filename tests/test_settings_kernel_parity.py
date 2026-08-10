@@ -184,6 +184,12 @@ def test_no_setting_is_declared_twice() -> None:
 
     from collections import Counter
 
+    # Over the REGISTRY, not over one file. Specs are declared in two shapes:
+    # literal `SettingSpec(...)` in `settings_spec.py`, and via a
+    # `build_*_specs(setting_spec)` callable in `app/services/settings_specs/`.
+    # I registered sixteen provisioning keys after sweeping only the first
+    # shape, and duplicated `olt_write_mode_enabled` — which this guard caught
+    # at import, in CI, rather than in review.
     counts = Counter((str(spec.domain), spec.key) for spec in SETTINGS_SPECS)
     duplicated = sorted(pair for pair, n in counts.items() if n > 1)
 

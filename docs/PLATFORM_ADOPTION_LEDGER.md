@@ -175,6 +175,7 @@ kernel-private and forbidden outright.
 | `dotmac_kernel.features` | adapt | S3 | `FeatureManifest`/`NavItem` as declaration metadata only. `mount_features` is app-factory machinery and stays forbidden (no remount) |
 | `dotmac_kernel.providers` / `.providers.provisioning` | adapt | S4 | `ProvisioningProvider` protocol/result types behind a thin adapter over the existing `access.radius_projection` owner. The adapter gets no owner row; vendor/OLT/ONT semantics stay product-owned |
 | `dotmac_kernel.messaging` (+ `.envelope`, `.inbox`, `.models`, `.outbox`, `.platform`, `.platform_relay`, `.platform_worker`, `.relay`, `.worker`) | defer-db | S7+ | Defines `inbox_records`, `outbox_events`, `platform_inbox_records`, `platform_outbox_events` tables and relay workers. Never added beside `events.store` and `integration.*` during pure-contract phases; semantics may be used as conformance criteria only |
+| `dotmac_kernel.idempotency` (+ `.idempotency_models`) | defer-db | S7+ | Kernel `0.1.0a31` (ADR-0014) makes at-most-once execution one owner and renames the ledgers to `idempotency_records` / `platform_idempotency_records`. `idempotency_records.tenant_id` is NOT NULL with an FK to kernel `tenants`, which Sub does not have and does not migrate — so this is gated on S7 exactly like `messaging`. Sub's `IdempotencyKey` (`idempotency_keys`, `(scope, key)`) and `TaskExecution` remain the owners until then; the kernel contract is conformance criteria only |
 | `dotmac_kernel.entitlements` | defer-db | S8 | `tenant_entitlement_grants` table. Only after the operator-tenant bridge (S7) and capability catalogue (S3) are proven. Commercial product/module availability only — never subscriber financial-access, service-readiness, or RBAC |
 | `dotmac_kernel.licensing` | defer-db | S8 | The verifier itself is DB-free, but adoption is gated on entitlements persistence and the S7 ADR; a Sub-owned WS8 receiver comes after both |
 | `dotmac_kernel.db` | defer-db | S7 | Importing constructs the SQLAlchemy engine from `DATABASE_URL`. `app/db.py` remains Sub's session/transaction authority; any kernel engine use requires the S7 ADR |
@@ -217,7 +218,10 @@ and the settings cutover all import from this list.
 - `dotmac_kernel.providers`
 - `dotmac_kernel.providers.provisioning`
 - `dotmac_kernel.secret_sources`
+- `dotmac_kernel.setting_scopes`
 - `dotmac_kernel.setting_value_types`
+- `dotmac_kernel.settings_cache`
+- `dotmac_kernel.settings_crypto`
 - `dotmac_kernel.settings_models`
 - `dotmac_kernel.settings_resolver`
 
@@ -236,6 +240,76 @@ OpenBao client and performs no I/O. Sub's implementation is
 `app/services/secrets.py`. ADR-0009 (`dotmac_starter_mt`): a secret is held,
 never dereferenced, so nothing on a settings read path reaches OpenBao.
 
+**Wired 2026-08-10.** The source had no caller for a day: it was declared,
+tested and installed by nothing, so every reader still went to the database for
+a `bao://` reference and dereferenced it mid-request. Two entry points install
+it — `app.main._startup_preflight` for the API, and `app.celery_app`'s
+`worker_process_init` for each prefork worker child, which runs no lifespan and
+whose tasks decrypt device credentials — and the five readers take the held
+value:
+
+| secret | reader |
+|---|---|
+| `credential_encryption_key` | `app/services/credential_crypto.py::get_encryption_key` |
+| `totp_encryption_key` | `app/services/auth_flow.py::_mfa_key` |
+| `wireguard_key_encryption_key` | `app/services/wireguard_crypto.py::get_encryption_key` |
+| `jwt_secret` | `app/services/auth_flow.py::_jwt_secret` |
+| `radius_auth_shared_secret` | `app/services/radius_auth.py::authenticate` |
+
+Three consequences worth stating, because each is a behaviour change:
+
+- **A configured-but-unreachable OpenBao now fails the boot.** The install is
+  gated on configuration (`is_openbao_configured`, no I/O), never on
+  reachability — a reachability probe would skip the install during an outage
+  and hand every reader a `None` that reads as "not configured", which for
+  `credential_encryption_key` means storing device credentials in the clear
+  behind a warning line. A deployment that configures no OpenBao holds nothing
+  and keeps using its environment variables.
+- **Precedence is environment, then held**, for all five. That preserves what
+  four of them already did; `wireguard_key_encryption_key` had the settings row
+  win over its variable, and both named the same OpenBao field.
+- **Rotation refreshes the held set.** `credential_rotation_schedule` writes the
+  new key into OpenBao, so it now calls `refresh_secrets()` — the kernel reloads
+  on an explicit act and never on a timer.
+
+**Specs retired 2026-08-10.** The five had specs and seeded rows that nothing
+read — a control an operator can set that changes nothing. `radius
+/auth_shared_secret` went with the read-path move; the other four
+(`auth/jwt_secret`, `auth/credential_encryption_key`,
+`auth/totp_encryption_key`, `network/wireguard_key_encryption_key`) went with
+the trust-anchor slice below. They escaped
+`tests/architecture/test_no_orphan_settings.py` only because each key NAME
+still appears in `app/` — as the name its held secret is asked for by.
+
+### The rule these follow
+
+> `is_secret` on a settings spec means **confidential**: encrypt the value at
+> rest, and settings-write may change it. A value whose **authority** matters —
+> a trust anchor, a signing key, or a key that protects this same database — is
+> not a setting at all. It is held material, loaded at boot from a path named in
+> code.
+
+The two are different properties and neither substitutes for the other.
+Encryption at rest answers "a database dump must not yield this"; held material
+answers "the surface this system exposes must not be able to change this".
+ADR-0009 drew the second line for the boot five; this states the reason, so the
+next secret-shaped setting is classified rather than argued about.
+
+**`billing/prepaid_reconstruction_attestation_public_key_ref` moved by that
+rule.** It is a public key, so confidentiality buys nothing; what it needed was
+that only OpenBao access can replace it, since replacing it means forged
+funding manifests verify. Its guard — "must be an OpenBao reference" — looked
+like that protection and was not: it checked the value WAS a reference and
+never WHICH reference, so settings-write could aim it at any key. It is now
+`prepaid_attestation_public_key` in `OPTIONAL_SECRET_REFS`.
+
+`OPTIONAL_SECRET_REFS` exists for exactly that shape: material needed by ONE
+feature, where a deployment not using the feature has nothing to provision and
+must still boot. The strict distinction survives — a missing PATH means not
+provisioned, while an unreachable store, a bad token or a missing field still
+raise (`secrets.resolve_openbao_ref_optional`). The required five stay
+all-or-nothing.
+
 The three settings modules were added 2026-08-10 for the settings cutover:
 `settings_resolver` (resolution, and `register_specs` so Sub's 560 specs are
 declared where the resolver looks), `settings_models` (the `DomainSetting`
@@ -245,6 +319,34 @@ migration `512` was written for: that migration removed the database's closed
 list of value types, and this admits the registry that replaces it. Sub
 declares no value types of its own — starter ADR-0006, "build once; an
 extension point is not a licence".
+
+`settings_cache` and `setting_scopes` were added 2026-08-10 for the settings
+cache slice. The kernel owns settings caching — key, scope segment, TTL, and
+what a write invalidates — and Sub supplies only a `CacheStore` transport
+(`app/services/kernel_settings_cache_store.py`) plus one invalidation listener
+on `DomainSetting`, which needs `SettingScope` to say whether a write was
+tenant- or platform-scoped. The cache this replaced keyed on
+`settings:{domain}:{key}` with NO scope segment — the cross-tenant leak
+`dotmac_kernel.settings_cache` cites `dotmac_erp` for.
+
+`dotmac_kernel.settings_crypto` was added 2026-08-10, the seam before the
+schema. It encrypts a secret setting's value at rest; the kernel reads the
+environment by default and ships no secret-store client, so a product whose
+keys live in a store supplies a `KeyProvider`. Sub's is
+`app/services/kernel_key_provider.py`, the exact sibling of
+`kernel_secret_source`: loaded once at boot, held in memory, rotation an
+explicit `refresh_keys()`.
+
+It is NOT part of `SECRET_REFS`, whose load is all-or-nothing. A deployment
+that has not created a keyring yet must still boot — every secret setting Sub
+holds today is a `bao://` reference, so encryption becomes possible before it
+becomes used. The provider therefore distinguishes a missing path (nothing
+configured; returns nothing) from any other failure (raises, and the boot
+fails), which is the distinction the kernel requires of a provider.
+
+Nothing is encrypted by this alone. The write path, the conversion of existing
+reference rows, and the readers that must move onto the kernel resolver are the
+next slice.
 
 Rules the guard enforces beyond the module list:
 

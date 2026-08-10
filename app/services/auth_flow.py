@@ -12,6 +12,12 @@ from uuid import UUID
 
 import pyotp
 from cryptography.fernet import Fernet, InvalidToken
+
+# Named `held_secret` at the import, not `get_secret`: `app.services.secrets`
+# exports a `get_secret(path, field)` that TALKS TO OpenBao, and at a call site
+# the two would be indistinguishable. This one is a dict lookup over material
+# loaded once at boot — see `app/services/kernel_secret_source.py`.
+from dotmac_kernel.secret_sources import get_secret as held_secret
 from fastapi import HTTPException, Request, Response, status
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -166,8 +172,19 @@ def _setting_value(db: Session | None, key: str) -> str | None:
 
 
 def _jwt_secret(db: Session | None) -> str:
-    secret = _env_value("JWT_SECRET") or _setting_value(db, "jwt_secret")
-    secret = resolve_secret(secret)
+    """The signing secret: the environment, else what was held at boot.
+
+    The `auth/jwt_secret` SETTING is no longer consulted. It never held the
+    secret — it held a `bao://` reference that this call dereferenced, so every
+    token signed and every token verified could reach OpenBao over the network
+    while handling a request. Starter ADR-0009 forbids exactly that: a secret
+    is held, never dereferenced. The row's dereference also had no timeout of
+    its own and no error path — a slow store made signing slow.
+
+    Environment first, preserving the precedence this function already had.
+    """
+
+    secret = resolve_secret(_env_value("JWT_SECRET")) or held_secret("jwt_secret")
     if not secret:
         raise HTTPException(status_code=500, detail="JWT secret not configured")
     return secret
@@ -287,8 +304,16 @@ def _refresh_cookie_path(db: Session | None) -> str:
 
 
 def _mfa_key(db: Session | None) -> bytes:
-    key = _env_value("TOTP_ENCRYPTION_KEY") or _setting_value(db, "totp_encryption_key")
-    key = resolve_secret(key)
+    """The TOTP-secret encryption key — held, not read from the database.
+
+    Same reasoning as `_jwt_secret`: this key protects rows in the very
+    database the reference used to live in, so it must not be stored there,
+    and verifying one TOTP code must not depend on a network hop.
+    """
+
+    key = resolve_secret(_env_value("TOTP_ENCRYPTION_KEY")) or held_secret(
+        "totp_encryption_key"
+    )
     if not key:
         raise HTTPException(
             status_code=500, detail="TOTP encryption key not configured"

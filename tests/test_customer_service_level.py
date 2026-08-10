@@ -54,6 +54,16 @@ def _activate(db, subscription):
     from app.models.catalog import SubscriptionStatus
 
     evidence_start = NOW - timedelta(days=10)
+    # The shared subscription fixture records its initial pending state at the
+    # wall-clock time when the test runs.  These tests build a complete,
+    # synthetic lifecycle history around the fixed NOW instant; retaining the
+    # fixture event makes that history depend on the calendar date and can
+    # close the active window partway through the scoring period.
+    (
+        db.query(SubscriptionLifecycleEvent)
+        .filter(SubscriptionLifecycleEvent.subscription_id == subscription.id)
+        .delete(synchronize_session=False)
+    )
     subscription.status = SubscriptionStatus.active
     subscription.billing_mode = BillingMode.prepaid
     subscription.start_at = evidence_start
@@ -99,7 +109,10 @@ def _activate(db, subscription):
 
 def _attach_policy(db, subscription, *, uptime="99.50", credit="10.00"):
     profile = SlaProfile(
-        name="Contract SLA", uptime_percent=uptime, credit_percent=credit
+        name="Contract SLA",
+        uptime_percent=uptime,
+        credit_percent=credit,
+        created_at=NOW - timedelta(days=10),
     )
     db.add(profile)
     db.flush()

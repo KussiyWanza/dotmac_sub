@@ -319,16 +319,15 @@ def _dotmac_crm_manifest(
 
 
 def _meta_social_manifest(
-    *, version: str, include_shared_oauth: bool
+    *,
+    version: str,
+    include_shared_oauth: bool,
+    include_auth_mode: bool,
 ) -> ConnectorManifest:
     """Build immutable Meta Social manifests for exact version/digest pins."""
     properties: dict[str, dict[str, object]] = {
         "provider": {"type": "string", "enum": ["meta_social"]},
         "app_id": {"type": "string"},
-        "auth_mode": {
-            "type": "string",
-            "enum": ["oauth", "individual"],
-        },
         "facebook_page_id": {"type": "string"},
         "facebook_auth_mode": {
             "type": "string",
@@ -354,7 +353,6 @@ def _meta_social_manifest(
     required = [
         "provider",
         "app_id",
-        "auth_mode",
         "facebook_page_id",
         "facebook_auth_mode",
         "instagram_account_id",
@@ -371,6 +369,12 @@ def _meta_social_manifest(
         SecretBindingManifest(name="webhook_signing_secret"),
         SecretBindingManifest(name="webhook_verify_token"),
     ]
+    if include_auth_mode:
+        properties["auth_mode"] = {
+            "type": "string",
+            "enum": ["oauth", "individual"],
+        }
+        required.insert(2, "auth_mode")
     if include_shared_oauth:
         secrets.insert(
             0, SecretBindingManifest(name="meta_oauth_access_token", required=False)
@@ -625,7 +629,11 @@ _DEFINITIONS: tuple[ConnectorManifest, ...] = (
         egress=EgressManifest(allow_installation_hosts=True),
         health=HealthManifest(operation="connection.validate.v1"),
     ),
-    _meta_social_manifest(version="1.1.0", include_shared_oauth=True),
+    _meta_social_manifest(
+        version="1.1.0",
+        include_shared_oauth=True,
+        include_auth_mode=True,
+    ),
     _dotmac_erp_manifest(version="1.1.0", include_workforce_attendance=True),
     _paystack_manifest(
         version="1.0.1",
@@ -711,9 +719,21 @@ _HISTORICAL_DEFINITIONS: tuple[ConnectorManifest, ...] = (
     # CRM 1.0.0 remains executable while production adopts the explicit
     # temporary chat-session capability in 1.1.0.
     _dotmac_crm_manifest(version="1.0.0", include_chat_session=False),
-    # Meta Social 1.0.0 remains executable for installations pinned before
-    # shared OAuth support introduced the reviewed 1.1.0 manifest.
-    _meta_social_manifest(version="1.0.0", include_shared_oauth=False),
+    # The original Meta Social 1.0.0 pin did not declare the aggregate
+    # auth_mode field. Production installations may retain this exact pin
+    # until explicit adoption, so later manifest changes cannot rewrite it.
+    _meta_social_manifest(
+        version="1.0.0",
+        include_shared_oauth=False,
+        include_auth_mode=False,
+    ),
+    # A later 1.0.0 definition added individual auth_mode in place. Retain its
+    # exact digest too because deployed pins are immutable compatibility facts.
+    _meta_social_manifest(
+        version="1.0.0",
+        include_shared_oauth=False,
+        include_auth_mode=True,
+    ),
     # Pre-#1567 Paystack 1.0.0. Production installations created before the
     # payment control-plane cutover pin this exact digest.
     _paystack_manifest(

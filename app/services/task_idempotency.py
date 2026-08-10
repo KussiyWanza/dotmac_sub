@@ -30,7 +30,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
 
 from celery import current_task
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
 from app.models.task_execution import TaskExecution, TaskExecutionStatus
@@ -108,71 +108,115 @@ def _build_idempotency_key(
     return f"{task_name}:{arg_hash}"
 
 
-def _get_or_create_execution(
+def _attempt_started_at(execution: TaskExecution) -> datetime:
+    """When the CURRENT attempt on this row started.
+
+    `updated_at` moves every time the row is claimed, so a reclaimed row is
+    measured from its latest attempt rather than from when the key was first
+    seen. For a row that has never been reclaimed it equals `created_at`, so
+    staleness behaves exactly as before. SQLite hands back naive datetimes.
+    """
+    stamp = execution.updated_at or execution.created_at
+    return stamp.replace(tzinfo=UTC) if stamp.tzinfo is None else stamp
+
+
+def _claim_execution(
     db,
     idempotency_key: str,
     task_name: str,
     celery_task_id: str | None,
     stale_timeout: timedelta,
 ) -> tuple[TaskExecution | None, bool]:
-    """Get existing execution or create new one.
+    """Claim the right to run `idempotency_key`, reusing its row.
 
-    Returns:
-        Tuple of (execution, is_new). If is_new is True, the caller should
-        proceed with task execution. If is_new is False, check execution.status
-        to determine whether to skip or return cached result.
+    Returns `(execution, claimed)`. `claimed is True` means THIS caller owns the
+    attempt and must run the task; `False` means someone else owns it or it is
+    already finished — inspect `execution.status`.
+
+    A finished-with-failure or stale-running row is RECLAIMED in place, keyed on
+    the same idempotency key. It previously minted a fresh
+    `key + ":retry:<timestamp>"` row instead, which made the retry itself
+    non-idempotent: two concurrent retries of the same failed task generated two
+    distinct keys, both passed the dedup check, and both executed — the guarantee
+    disappeared exactly during a retry storm, which is when it matters most. It
+    also grew `task_executions` by one permanently-unqueryable row per retry.
+
+    The reclaim is a single conditional UPDATE, so concurrent retries resolve in
+    the database: exactly one gets `rowcount == 1` and runs; the losers observe
+    the row already `running` and skip.
     """
-    # First, try to find existing execution
     stmt = select(TaskExecution).where(TaskExecution.idempotency_key == idempotency_key)
     existing = db.scalars(stmt).first()
 
-    if existing is not None:
-        # Check if it's a stale "running" execution
-        if existing.status == TaskExecutionStatus.running:
-            stale_threshold = datetime.now(UTC) - stale_timeout
-            # Handle timezone-naive datetimes from SQLite
-            created_at = existing.created_at
-            if created_at.tzinfo is None:
-                created_at = created_at.replace(tzinfo=UTC)
-            if created_at < stale_threshold:
-                # Mark stale execution as failed and allow retry
-                logger.warning(
-                    "Marking stale task execution as failed: %s (created: %s)",
-                    idempotency_key,
-                    existing.created_at,
-                )
-                existing.status = TaskExecutionStatus.failed
-                existing.error_message = "Marked as failed due to stale timeout"
-                existing.completed_at = datetime.now(UTC)
+    if existing is None:
+        execution = TaskExecution(
+            idempotency_key=idempotency_key,
+            task_name=task_name,
+            status=TaskExecutionStatus.running,
+            celery_task_id=celery_task_id,
+        )
+        # A SAVEPOINT, not a bare rollback: losing the insert race must not
+        # discard everything else this session has done.
+        try:
+            with db.begin_nested():
+                db.add(execution)
                 db.flush()
-                # Fall through to create new execution
-            else:
-                return existing, False
+            return execution, True
+        except IntegrityError:
+            existing = db.scalars(stmt).first()
+            if existing is None:  # pragma: no cover - the row must exist now
+                raise
 
-        # If succeeded or recently failed, return existing
-        if existing.status in (
-            TaskExecutionStatus.succeeded,
-            TaskExecutionStatus.failed,
-        ):
-            return existing, False
-
-    # Create new execution
-    execution = TaskExecution(
-        idempotency_key=idempotency_key,
-        task_name=task_name,
-        status=TaskExecutionStatus.running,
-        celery_task_id=celery_task_id,
-    )
-    db.add(execution)
-
-    try:
-        db.flush()
-        return execution, True
-    except IntegrityError:
-        # Race condition: another process created the execution
-        db.rollback()
-        existing = db.scalars(stmt).first()
+    if existing.status == TaskExecutionStatus.succeeded:
         return existing, False
+
+    if existing.status == TaskExecutionStatus.running:
+        if _attempt_started_at(existing) >= datetime.now(UTC) - stale_timeout:
+            return existing, False
+        logger.warning(
+            "Reclaiming stale task execution: %s (attempt started: %s)",
+            idempotency_key,
+            existing.updated_at,
+        )
+
+    return _reclaim(db, stmt, existing, celery_task_id, stale_timeout)
+
+
+def _reclaim(
+    db,
+    stmt,
+    existing: TaskExecution,
+    celery_task_id: str | None,
+    stale_timeout: timedelta,
+) -> tuple[TaskExecution | None, bool]:
+    """Atomically take over a failed or stale-running row for a fresh attempt."""
+    now = datetime.now(UTC)
+    reclaimable = or_(
+        TaskExecution.status == TaskExecutionStatus.failed,
+        and_(
+            TaskExecution.status == TaskExecutionStatus.running,
+            TaskExecution.updated_at < now - stale_timeout,
+        ),
+    )
+    result = db.execute(
+        update(TaskExecution)
+        .where(TaskExecution.id == existing.id, reclaimable)
+        .values(
+            status=TaskExecutionStatus.running,
+            celery_task_id=celery_task_id,
+            error_message=None,
+            completed_at=None,
+            result=None,
+            updated_at=now,
+        )
+        .execution_options(synchronize_session=False)
+    )
+
+    # The in-session copy is stale after a Core UPDATE either way.
+    db.expire(existing)
+    if result.rowcount == 1:
+        return existing, True
+    return db.scalars(stmt).first(), False
 
 
 def idempotent_task(
@@ -232,7 +276,7 @@ def idempotent_task(
 
             db = SessionLocal()
             try:
-                execution, is_new = _get_or_create_execution(
+                execution, is_new = _claim_execution(
                     db,
                     idempotency_key,
                     task_name,
@@ -267,14 +311,20 @@ def idempotent_task(
                             return execution.result or {"cached": True}
                         raise TaskAlreadySucceeded(idempotency_key, execution.result)
 
-                    # Status is failed - allow retry by creating new execution
-                    execution, is_new = _get_or_create_execution(
-                        db,
-                        idempotency_key + f":retry:{datetime.now(UTC).isoformat()}",
+                    # Status is failed: `_claim_execution` already tried to
+                    # reclaim this row and lost the race to another worker, which
+                    # is now running it. Skip, exactly as for any other in-flight
+                    # attempt — do NOT mint a second key to run beside it.
+                    logger.info(
+                        "Skipping task %s: another worker reclaimed it (key=%s)",
                         task_name,
-                        celery_task_id,
-                        stale_timeout,
+                        idempotency_key,
                     )
+                    return {
+                        "skipped": True,
+                        "reason": "already_running",
+                        "existing_task_id": execution.celery_task_id,
+                    }
 
                 db.commit()
 

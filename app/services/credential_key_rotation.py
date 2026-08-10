@@ -35,7 +35,6 @@ from app.services.network.ont_desired_config import (
     rotate_desired_config_credentials,
 )
 from app.services.secrets import is_secret_ref
-from app.services.settings_cache import SettingsCache
 
 logger = logging.getLogger(__name__)
 
@@ -542,7 +541,6 @@ def _rotate_domain_settings(
         if not changed:
             continue
         row.value_text = rotated
-        SettingsCache.invalidate(row.domain.value, row.key)
         updated_records += 1
         updated_values += 1
     return updated_records, updated_values

@@ -36,10 +36,19 @@ def _extract_bearer_token(request: Request) -> str | None:
 
 
 def _jwt_secret() -> str | None:
-    secret = os.getenv("JWT_SECRET")
-    if secret:
-        return secret
-    return None
+    """The same secret `auth_flow` signs with, reached the same way.
+
+    Environment, then the value held at boot. Reading only the environment
+    meant that a deployment keeping its JWT secret in OpenBao — which is every
+    deployment that configures one — silently failed to decode any token here,
+    so `actor_id` was absent from every log line and metric label while
+    authentication itself worked perfectly. A verification that quietly gives
+    up looks identical to unauthenticated traffic.
+    """
+
+    from dotmac_kernel.secret_sources import get_secret as held_secret
+
+    return os.getenv("JWT_SECRET") or held_secret("jwt_secret")
 
 
 def _jwt_algorithm() -> str:

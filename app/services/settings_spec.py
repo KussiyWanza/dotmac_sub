@@ -5,6 +5,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, cast
 
 from dotmac_kernel.settings_models import SettingDomain as KernelSettingDomain
+from dotmac_kernel.settings_resolver import resolve_many as kernel_resolve_many
 from dotmac_kernel.settings_resolver import resolve_value as kernel_resolve_value
 
 from app.models.domain_settings import SettingDomain
@@ -20,7 +21,6 @@ from app.services.channel_health_contracts import (
 )
 from app.services.operator_tenant import operator_tenant_id
 from app.services.response import ListResponseMixin
-from app.services.settings_cache import SettingsCache
 from app.services.settings_specs.integration import build_integration_specs
 from app.services.settings_specs.provisioning import build_provisioning_specs
 from app.timezone import APP_TIMEZONE_NAME
@@ -191,25 +191,6 @@ SCHEDULER_ENV_BOOTSTRAP_SETTING_KEYS = frozenset(
 SETTINGS_SPECS: list[SettingSpec] = [
     SettingSpec(
         domain=SettingDomain.auth,
-        key="jwt_secret",
-        label=None,
-        env_var="JWT_SECRET",
-        value_type=SettingValueType.string,
-        default=None,
-        required=True,
-        is_secret=True,
-    ),
-    SettingSpec(
-        domain=SettingDomain.auth,
-        key="credential_encryption_key",
-        label=None,
-        env_var="CREDENTIAL_ENCRYPTION_KEY",
-        value_type=SettingValueType.string,
-        default=None,
-        is_secret=True,
-    ),
-    SettingSpec(
-        domain=SettingDomain.auth,
         key="credential_rotation_enabled",
         env_var="CREDENTIAL_ROTATION_ENABLED",
         value_type=SettingValueType.boolean,
@@ -355,15 +336,6 @@ SETTINGS_SPECS: list[SettingSpec] = [
     ),
     SettingSpec(
         domain=SettingDomain.auth,
-        key="totp_encryption_key",
-        env_var="TOTP_ENCRYPTION_KEY",
-        value_type=SettingValueType.string,
-        default=None,
-        required=True,
-        is_secret=True,
-    ),
-    SettingSpec(
-        domain=SettingDomain.auth,
         key="api_key_rate_window_seconds",
         env_var="API_KEY_RATE_WINDOW_SECONDS",
         value_type=SettingValueType.integer,
@@ -443,6 +415,153 @@ SETTINGS_SPECS: list[SettingSpec] = [
         env_var=None,
         value_type=SettingValueType.list,
         default=[],
+    ),
+    # ── Provisioning behaviour (OLT/ONT) ────────────────────────────────────
+    #
+    # Registered here rather than in `app/services/network/provisioning_settings.py`,
+    # which held them as a frozen `ProvisioningDefaults` dataclass beside its own
+    # `DomainSetting` query and its own cache — a parallel settings subsystem with
+    # a second source of defaults, reading without a tenant filter and caching
+    # under an unscoped key.
+    #
+    # Defaults are copied EXACTLY from that dataclass, and no `min_value` or
+    # `max_value` is added. The module enforced no bounds, so inventing one here
+    # would silently degrade any deployment already storing a value outside it —
+    # the failure mode this repository has already paid for once. Bounds are a
+    # separate, evidenced change.
+    #
+    # `env_var` is None throughout: these were never environment-seeded, and
+    # giving them one would make the seed write rows that do not exist today.
+    SettingSpec(
+        domain=SettingDomain.provisioning,
+        key="tr069_bootstrap_timeout_sec",
+        env_var=None,
+        value_type=SettingValueType.integer,
+        default=120,
+        label="TR-069 bootstrap timeout (seconds)",
+    ),
+    SettingSpec(
+        domain=SettingDomain.provisioning,
+        key="tr069_bootstrap_poll_interval_sec",
+        env_var=None,
+        value_type=SettingValueType.integer,
+        default=10,
+        label="TR-069 bootstrap poll interval (seconds)",
+    ),
+    SettingSpec(
+        domain=SettingDomain.provisioning,
+        key="tr069_task_ready_timeout_sec",
+        env_var=None,
+        value_type=SettingValueType.integer,
+        default=45,
+        label="TR-069 task-ready timeout (seconds)",
+    ),
+    SettingSpec(
+        domain=SettingDomain.provisioning,
+        key="tr069_task_ready_poll_interval_sec",
+        env_var=None,
+        value_type=SettingValueType.integer,
+        default=5,
+        label="TR-069 task-ready poll interval (seconds)",
+    ),
+    SettingSpec(
+        domain=SettingDomain.provisioning,
+        key="pppoe_push_max_attempts",
+        env_var=None,
+        value_type=SettingValueType.integer,
+        default=3,
+        label="PPPoE push attempts before giving up",
+    ),
+    SettingSpec(
+        domain=SettingDomain.provisioning,
+        key="pppoe_push_retry_delay_sec",
+        env_var=None,
+        value_type=SettingValueType.integer,
+        default=10,
+        label="PPPoE push retry delay (seconds)",
+    ),
+    SettingSpec(
+        domain=SettingDomain.provisioning,
+        key="stale_runtime_hours",
+        env_var=None,
+        value_type=SettingValueType.integer,
+        default=24,
+        label="Hours after which provisioning runtime state is stale",
+    ),
+    # `olt_write_mode_enabled` is NOT declared here. It already exists in
+    # `app/services/settings_specs/provisioning.py`, with an `env_var` this one
+    # would have dropped. I missed it because that package builds specs through
+    # a `setting_spec` CALLABLE rather than a literal `SettingSpec(...)`, so the
+    # sweep that told me "none of these sixteen is registered" was reading one
+    # file instead of the spec system. Fifteen here, one there.
+    SettingSpec(
+        domain=SettingDomain.provisioning,
+        key="pppoe_provisioning_method",
+        env_var=None,
+        value_type=SettingValueType.string,
+        default="auto",
+        # `get_pppoe_provisioning_method` already normalises and falls back to
+        # "auto" for anything else, so declaring the set changes no outcome —
+        # it moves the knowledge to where the admin screen can render it.
+        allowed={"auto", "omci", "tr069"},
+        label="PPPoE provisioning method (auto | omci | tr069)",
+    ),
+    SettingSpec(
+        domain=SettingDomain.provisioning,
+        key="verification_interval_sec",
+        env_var=None,
+        value_type=SettingValueType.integer,
+        default=300,
+        label="Async provisioning verification interval (seconds)",
+    ),
+    SettingSpec(
+        domain=SettingDomain.provisioning,
+        key="verification_staleness_minutes",
+        env_var=None,
+        value_type=SettingValueType.integer,
+        default=15,
+        label="Minutes before a verification result is stale",
+    ),
+    SettingSpec(
+        domain=SettingDomain.provisioning,
+        key="drift_handling_mode",
+        env_var=None,
+        value_type=SettingValueType.string,
+        default="alert_only",
+        allowed={"alert_only", "auto_repair"},
+        label="Provisioning drift handling (alert_only | auto_repair)",
+    ),
+    SettingSpec(
+        domain=SettingDomain.provisioning,
+        key="circuit_breaker_failure_threshold",
+        env_var=None,
+        value_type=SettingValueType.integer,
+        default=3,
+        label="Provisioning circuit-breaker failure threshold",
+    ),
+    SettingSpec(
+        domain=SettingDomain.provisioning,
+        key="circuit_breaker_backoff_sec",
+        env_var=None,
+        value_type=SettingValueType.integer,
+        default=30,
+        label="Provisioning circuit-breaker backoff (seconds)",
+    ),
+    SettingSpec(
+        domain=SettingDomain.provisioning,
+        key="service_port_pool_min_index",
+        env_var=None,
+        value_type=SettingValueType.integer,
+        default=0,
+        label="Service-port pool minimum index",
+    ),
+    SettingSpec(
+        domain=SettingDomain.provisioning,
+        key="service_port_pool_max_index",
+        env_var=None,
+        value_type=SettingValueType.integer,
+        default=65535,
+        label="Service-port pool maximum index",
     ),
     SettingSpec(
         domain=SettingDomain.gis,
@@ -1485,14 +1604,20 @@ SETTINGS_SPECS: list[SettingSpec] = [
         min_value=16,
         max_value=64,
     ),
-    SettingSpec(
-        domain=SettingDomain.radius,
-        key="auth_shared_secret",
-        env_var="RADIUS_AUTH_SHARED_SECRET",
-        value_type=SettingValueType.string,
-        default=None,
-        is_secret=True,
-    ),
+    # `radius/auth_shared_secret` was RETIRED here: it stopped being a setting.
+    #
+    # Per the secret classification of 2026-08-09 it is one of the five Dotmac
+    # issues and rotates, and it is now held from OpenBao at boot
+    # (`app/services/kernel_secret_source.py`) and read by
+    # `radius_auth.authenticate` from there. The row never held the secret
+    # anyway — being `is_secret=True`, every write stored a `bao://` REFERENCE,
+    # which that call site passed to the RADIUS client verbatim.
+    #
+    # Retired rather than left declared, because a spec with no reader is a
+    # control an operator can set that changes nothing —
+    # `tests/architecture/test_no_orphan_settings.py` names that "dead control"
+    # and refuses it. `RADIUS_AUTH_SHARED_SECRET` remains the bootstrap input
+    # for the OpenBao entry.
     SettingSpec(
         domain=SettingDomain.radius,
         key="auth_dictionary_path",
@@ -1718,16 +1843,6 @@ SETTINGS_SPECS: list[SettingSpec] = [
         env_var="BILLING_DEFAULT_CURRENCY",
         value_type=SettingValueType.string,
         default="NGN",
-    ),
-    SettingSpec(
-        domain=SettingDomain.billing,
-        key="prepaid_reconstruction_attestation_public_key_ref",
-        env_var="PREPAID_RECONSTRUCTION_ATTESTATION_PUBLIC_KEY_REF",
-        value_type=SettingValueType.string,
-        default=None,
-        required=True,
-        is_secret=True,
-        label="Prepaid reconstruction attestation public key reference",
     ),
     SettingSpec(
         domain=SettingDomain.billing,
@@ -3848,16 +3963,6 @@ SETTINGS_SPECS: list[SettingSpec] = [
     ),
     SettingSpec(
         domain=SettingDomain.network,
-        key="wireguard_key_encryption_key",
-        env_var="WIREGUARD_KEY_ENCRYPTION_KEY",
-        value_type=SettingValueType.string,
-        default=None,
-        required=True,
-        is_secret=True,
-        label="WireGuard Key Encryption Key",
-    ),
-    SettingSpec(
-        domain=SettingDomain.network,
         key="wireguard_log_cleanup_enabled",
         env_var="WIREGUARD_LOG_CLEANUP_ENABLED",
         value_type=SettingValueType.boolean,
@@ -5247,56 +5352,30 @@ def resolve_value(db, domain: SettingDomain, key: str) -> Any:
     the kernel's own (starter ADR-0011: settings resolution reads rows and
     defaults, never the environment).
 
-    `SettingsCache` stays IN FRONT, and an earlier draft of this function that
-    dropped it was wrong. Resolution was Redis-cached before the cutover, so
-    removing the cache turned every settings read into a query — two query-
-    budget tests caught it immediately (`test_prepaid_threshold_resolver`
-    issuing 18 statements against a budget of 15, and D12's batch scaling with
-    account count). A settings read sits under per-account loops all over this
-    codebase; it cannot be a database round trip.
+    Caching is the KERNEL's, and no longer Sub's. `dotmac_kernel.settings_cache`
+    owns the key, the scope segment, the TTL policy, what is never cached and
+    what a write invalidates; Sub supplies only the Redis transport
+    (`app/services/kernel_settings_cache_store.py`), installed at import of this
+    module. The resolver consults that cache itself, which is why there is no
+    cache call left in this function.
 
-    This is ONE cache, not two: the kernel's own `settings_cache` is inert
-    until a store is installed, and Sub does not install one. The cache holds
-    the RESOLVED value, so what it fronts is the whole chain — tenant row,
-    platform row, default — and the existing invalidation calls still address
-    the only cache there is.
-
-    A SECRET is never cached, which the pre-cutover code did not honour. The
-    kernel states it as a property of its own cache; the same rule has to hold
-    for a cache placed in front of it, or the guarantee is only true where the
-    kernel enforces it.
-
-    The proper end state is Sub providing a `CacheStore` over this same Redis
-    and letting the kernel own the caching policy — build once, ADR-0006. That
-    is a bigger change than a cutover should carry: it moves invalidation
-    ownership, and the key here is `domain:key` with no tenant segment, which
-    is correct for one tenant and wrong for two.
+    The cache that used to sit here keyed on `settings:{domain}:{key}` with no
+    scope segment — the cross-tenant leak the kernel's own module docstring
+    cites `dotmac_erp` for. Adding a segment would have fixed the instance and
+    kept the shape: a second key model, drifting. There is now one.
     """
 
-    spec = get_spec(domain, key)
-    if spec is None:
+    if get_spec(domain, key) is None:
         return None
-
-    if not spec.is_secret:
-        cached = SettingsCache.get(str(domain), key)
-        if cached is not None:
-            return cast(object, cached)
-
     # The kernel's own member type, not a bare `str`: its signature asks for
     # one and its validation reads `.value`. Same conversion the bridge
     # makes for a spec's domain.
-    value = kernel_resolve_value(
+    return kernel_resolve_value(
         db,
         KernelSettingDomain(str(domain)),
         key,
         tenant_id=operator_tenant_id(),
     )
-
-    # `None` is not cached: it means the key resolved to nothing, and caching
-    # it would be indistinguishable from a cache miss on the next read anyway.
-    if not spec.is_secret and value is not None:
-        SettingsCache.set(str(domain), key, value)
-    return value
 
 
 def resolve_boolean(db, domain: SettingDomain, key: str) -> bool:
@@ -5342,91 +5421,41 @@ def resolve_string(db, domain: SettingDomain, key: str) -> str:
 
 
 def resolve_values_atomic(db, domain: SettingDomain, keys: list[str]) -> dict[str, Any]:
-    """Read multiple database-authoritative settings atomically.
+    """Read multiple database-authoritative settings in one pass.
 
-    This function retrieves multiple settings in a single database query,
-    preventing inconsistent reads that can occur when settings are read
-    one at a time while another process is updating them.
+    Delegates to `dotmac_kernel.settings_resolver.resolve_many`, which is the
+    same thing this function used to do by hand: one query per scope level with
+    `key IN (...)`, precedence applied in memory, then each value coerced and
+    degraded to its default by the SAME `_finish` that `resolve_value` uses.
+
+    What was here was a second copy of the resolution rules — coercion,
+    `allowed`, the integer bounds, degrade-to-default — about fifty lines of
+    them, beside a first copy in `resolve_value`. Two copies of a rule is the
+    defect this whole cutover has been closing; this one was simply the largest.
+
+    Behaviour preserved deliberately: a key with no registered spec, and a key
+    that resolves to None, are OMITTED from the result rather than present with
+    a null. Callers use `key in result` to mean "configured", so returning the
+    key with None would flip that test.
 
     Missing rows resolve to their registered defaults. Environment inputs are
     bootstrap-only and are not consulted here.
-
-    Args:
-        db: Database session
-        domain: The setting domain
-        keys: List of setting keys to retrieve
-
-    Returns:
-        Dict mapping keys to their resolved values (missing keys are omitted)
     """
+
     if not keys:
         return {}
 
-    # 1. Check cache for all keys
-    cached = SettingsCache.get_multi(domain.value, keys)
-    missing_keys = [k for k in keys if k not in cached]
-
-    if not missing_keys:
-        return cached
-
-    # 2. Query database for missing keys in single query
-    service = DOMAIN_SETTINGS_SERVICE.get(domain)
-    if not service:
-        return cached
-
-    from app.models.domain_settings import DomainSetting
-
-    settings = (
-        db.query(DomainSetting)
-        .filter(DomainSetting.domain == domain)
-        .filter(DomainSetting.key.in_(missing_keys))
-        .all()
+    resolved = kernel_resolve_many(
+        db,
+        KernelSettingDomain(str(domain)),
+        keys,
+        tenant_id=operator_tenant_id(),
     )
-
-    settings_by_key = {s.key: s for s in settings}
-    to_cache: dict[str, Any] = {}
-
-    for key in missing_keys:
-        spec = get_spec(domain, key)
-        if not spec:
-            continue
-
-        setting = settings_by_key.get(key)
-        raw = extract_db_value(setting)
-        if raw is None:
-            raw = spec.default
-        value, error = coerce_value(spec, raw)
-        if error:
-            value = spec.default
-        if spec.allowed and value is not None and value not in spec.allowed:
-            value = spec.default
-        if spec.value_type == SettingValueType.integer and value is not None:
-            parsed = _coerce_int_value(value)
-            if parsed is None:
-                parsed = spec.default if isinstance(spec.default, int) else None
-            if (
-                spec.min_value is not None
-                and parsed is not None
-                and parsed < spec.min_value
-            ):
-                parsed = spec.default if isinstance(spec.default, int) else None
-            if (
-                spec.max_value is not None
-                and parsed is not None
-                and parsed > spec.max_value
-            ):
-                parsed = spec.default if isinstance(spec.default, int) else None
-            value = parsed
-
-        if value is not None:
-            cached[key] = value
-            to_cache[key] = value
-
-    # 3. Cache all retrieved values atomically
-    if to_cache:
-        SettingsCache.set_multi(domain.value, to_cache)
-
-    return cached
+    return {
+        key: value
+        for key, value in resolved.items()
+        if value is not None and get_spec(domain, key) is not None
+    }
 
 
 def extract_db_value(setting: "DomainSetting | None") -> object | None:
@@ -5551,3 +5580,14 @@ from app.services.settings_kernel_bridge import (  # noqa: E402
 )
 
 register_with_kernel()
+
+# Install the Redis transport for the KERNEL's settings cache, here and for the
+# same reason as the line above: a resolution must not happen before the thing
+# it depends on exists. An uninstalled store is not an error — the kernel's
+# cache is simply inert — so a missed install shows up as a performance
+# regression rather than a failure, which is how it would survive for months.
+from app.services.kernel_settings_cache_store import (  # noqa: E402
+    install as install_settings_cache_store,
+)
+
+install_settings_cache_store()

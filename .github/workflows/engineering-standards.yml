@@ -1,10 +1,14 @@
 name: Engineering standards
 
 on:
+  # `integration/**` carries multi-PR adoption programmes (kernel migration).
+  # Without it a PR INTO an integration branch runs no tests at all, and the
+  # whole section meets CI for the first time at the integration -> dev merge —
+  # which is exactly the batch this branching model exists to avoid.
   push:
-    branches: [main, dev]
+    branches: [main, dev, 'integration/**']
   pull_request:
-    branches: [main, dev]
+    branches: [main, dev, 'integration/**']
     types: [opened, synchronize, reopened]
 
 permissions:

@@ -14,7 +14,6 @@ from app.services.secrets import (
     read_secret_fields,
     write_secret,
 )
-from app.services.settings_cache import SettingsCache
 
 SECRET_SETTINGS_PATH_PREFIX = "settings"
 
@@ -161,7 +160,6 @@ def migrate_plaintext_secret_settings(
             continue
 
         setting.value_text = openbao_secret_ref(setting)
-        SettingsCache.invalidate(setting.domain.value, setting.key)
         migrated += 1
         migrated_keys.append(key_name)
 

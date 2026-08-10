@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.orm import Session
 
-from app.models.domain_settings import DomainSetting, SettingDomain
+from app.models.domain_settings import SettingDomain
 from app.models.network_monitoring import AlertSeverity
 from app.services.credential_crypto import (
     generate_encryption_key,
@@ -75,23 +75,68 @@ def _parse_datetime(value: object) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
-def _managed_key_source(db: Session) -> tuple[bool, str]:
+def _managed_key_source() -> tuple[bool, str]:
+    """Whether rotation may proceed: is the active key one OpenBao owns?
+
+    Rotation writes a new key into OpenBao, so it is only safe when the key
+    this process is actually using came from there. A key pinned to a literal
+    in the environment must block: rotating the store would leave the process
+    using the pinned value and every credential re-encrypted under a key it
+    cannot read.
+    """
+
     env_value = os.getenv("CREDENTIAL_ENCRYPTION_KEY")
     if env_value:
         if is_openbao_ref(env_value):
             return True, "openbao_env_ref"
         return False, "static_environment_key"
 
-    setting = (
-        db.query(DomainSetting)
-        .filter(DomainSetting.domain == SettingDomain.auth)
-        .filter(DomainSetting.key == "credential_encryption_key")
-        .filter(DomainSetting.is_active.is_(True))
-        .first()
+    # The held set is what `get_encryption_key` now reads, so it is what
+    # decides. The `auth/credential_encryption_key` ROW is deliberately no
+    # longer consulted here: it stopped being a source of the key, and a gate
+    # that answered "managed" from a row nothing reads would let rotation
+    # proceed for a process that holds no key at all — which the
+    # `managed_key_missing` check below would then report as the failure,
+    # naming the wrong cause.
+    from dotmac_kernel.secret_sources import secret_names
+
+    if _CURRENT_FIELD in secret_names():
+        return True, "openbao_held_secret"
+    return False, "credential_key_is_not_held_from_openbao"
+
+
+def _reload_key_material() -> None:
+    """Re-read the key material this process is working from.
+
+    Rotation writes the new key into OpenBao, and until this runs the process
+    is still using the key it loaded at boot — `clear_cache()` alone only
+    drops the OpenBao READ cache, which `get_encryption_key` no longer
+    consults. Rotation is precisely the moment the kernel's held set is meant
+    to be refreshed: `dotmac_kernel.secret_sources` reloads on an explicit act
+    and never on a timer, so that a key changes when an operator says so.
+
+    A deployment with no source installed (secrets configured through the
+    environment, or a developer machine) has nothing to refresh, and that is
+    not a rotation failure — the keyring write already succeeded.
+    """
+
+    clear_cache()
+    from dotmac_kernel.secret_sources import (
+        SecretSourceError,
+        refresh_secrets,
+        secret_source_installed,
     )
-    if setting and is_openbao_ref(str(setting.value_text or "")):
-        return True, "openbao_setting_ref"
-    return False, "credential_key_is_not_an_openbao_reference"
+
+    if not secret_source_installed():
+        return
+    try:
+        refresh_secrets()
+    except SecretSourceError:
+        # The keyring is already written; the process keeps the previous held
+        # set (the kernel's documented behaviour) and the next boot picks the
+        # new key up. Loud, because until then this process signs and decrypts
+        # with a key the store no longer calls current.
+        logger.exception("credential_rotation_secret_refresh_failed")
 
 
 def _keyring_payload() -> dict[str, str]:
@@ -163,7 +208,7 @@ def evaluate_scheduled_rotation(
         True,
     )
 
-    managed, source = _managed_key_source(db)
+    managed, source = _managed_key_source()
     if not managed:
         logger.error("credential_rotation_blocked: source=%s", source)
         return {
@@ -189,7 +234,7 @@ def evaluate_scheduled_rotation(
         }
     active_key_text = active_key.decode("ascii")
     if active_key_text != current_key:
-        clear_cache()
+        _reload_key_material()
         refreshed = get_encryption_key()
         if not refreshed or refreshed.decode("ascii") != current_key:
             return {
@@ -210,7 +255,7 @@ def evaluate_scheduled_rotation(
         retired = bool(retire_after and now >= retire_after)
         if retired and not _retire_previous_key(payload):
             raise RuntimeError("Failed to retire previous credential encryption key")
-        clear_cache()
+        _reload_key_material()
         return {
             "status": "previous_key_retired" if retired else "grace_period",
             "rotated": False,
@@ -255,7 +300,7 @@ def evaluate_scheduled_rotation(
     if not _write_keyring(staged):
         raise RuntimeError("Failed to stage credential encryption keyring")
 
-    clear_cache()
+    _reload_key_material()
     result = rotate_credential_encryption_material(
         db,
         old_key=current_key,
@@ -401,7 +446,7 @@ def run_scheduled_credential_rotation() -> dict[str, object]:
         if not acquired:
             return {"status": "already_running", "rotated": False}
         integrity = scan_credential_encryption_integrity(db)
-        managed, key_source = _managed_key_source(db)
+        managed, key_source = _managed_key_source()
         if integrity.totals["undecryptable"] > 0:
             result: dict[str, object] = {
                 "status": "blocked",

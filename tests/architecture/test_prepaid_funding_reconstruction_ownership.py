@@ -159,8 +159,24 @@ def test_materializer_owner_requires_a_config_trusted_clean_replay_seal() -> Non
     )
     assert "apply_prepaid_funding_reconstruction" in materializer
     assert "Ed25519PublicKey" in attestation
-    assert "is_openbao_ref" in attestation
-    assert "prepaid_reconstruction_attestation_public_key_ref" in settings
+    # The trust anchor must come from somewhere an operator cannot repoint.
+    #
+    # This used to assert `is_openbao_ref` in the attestation module and a
+    # `prepaid_reconstruction_attestation_public_key_ref` SPEC. Both were
+    # proxies for that property and both expired when the anchor became held
+    # material: the spec is retired, and the reference check is gone because
+    # there is no longer a reference to check.
+    #
+    # The proxy was also weaker than the property. `is_openbao_ref` asserted
+    # the stored value WAS a reference and never WHICH reference, so anyone
+    # able to write settings could aim the anchor at a key they controlled.
+    # What replaces it is the stronger statement: the anchor is read from the
+    # held set by name, and the settings resolver is not on that path at all.
+    assert "get_secret(TRUST_KEY_NAME)" in attestation
+    assert "prepaid_attestation_public_key" in _read(
+        "app/services/kernel_secret_source.py"
+    )
+    assert "prepaid_reconstruction_attestation_public_key_ref" not in settings
 
 
 def test_complete_history_reader_and_retired_quarantine_name_have_one_app_home() -> (

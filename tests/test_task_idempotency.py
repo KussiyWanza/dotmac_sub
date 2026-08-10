@@ -218,13 +218,19 @@ class TestIdempotentTaskDecorator:
 
     def test_stale_running_task_retries(self, db_session):
         """Should allow retry if running task is stale."""
-        # Create a stale running execution
+        # Create a stale running execution. BOTH timestamps are old: staleness
+        # is measured from `updated_at` (when the current attempt was last known
+        # alive), and a row whose `updated_at` is fresh means something touched
+        # it a moment ago — which is exactly NOT stale. Leaving `updated_at` to
+        # its `datetime.now` default here would build a row that cannot occur:
+        # nothing writes to a `running` row between claim and completion.
         stale_time = datetime.now(UTC) - timedelta(hours=2)
         execution = TaskExecution(
             idempotency_key="test_task:test:stale",
             task_name="test_task",
             status=TaskExecutionStatus.running,
             created_at=stale_time,
+            updated_at=stale_time,
         )
         db_session.add(execution)
         db_session.commit()
@@ -250,14 +256,28 @@ class TestIdempotentTaskDecorator:
             with patch("app.services.task_idempotency.current_task", mock_task):
                 result = test_task("stale")
 
-        # Stale task should be marked failed and new execution should run
+        # The stale row is RECLAIMED in place — same key, same row — rather than
+        # abandoned as `failed` beside a fresh `key:retry:<timestamp>` row.
         assert call_count == 1
         assert result == {"value": "stale"}
 
-        # Check original execution was marked as failed (re-fetch from db)
-        stale_execution = db_session.get(TaskExecution, execution_id)
-        assert stale_execution is not None
-        assert stale_execution.status == TaskExecutionStatus.failed
+        reclaimed = db_session.get(TaskExecution, execution_id)
+        assert reclaimed is not None
+        assert reclaimed.status == TaskExecutionStatus.succeeded
+        assert reclaimed.idempotency_key == "test_task:test:stale"
+
+        # And it is still the ONLY row for that key: a retry must not leave a
+        # permanently-unqueryable sibling behind.
+        from sqlalchemy import func, select
+
+        assert (
+            db_session.scalar(
+                select(func.count())
+                .select_from(TaskExecution)
+                .where(TaskExecution.idempotency_key == "test_task:test:stale")
+            )
+            == 1
+        )
 
     def test_key_func_can_ignore_extra_positional_args(self, db_session):
         """Key funcs used by retried Celery tasks must tolerate extra args."""
@@ -321,6 +341,94 @@ class TestIdempotentTaskDecorator:
         assert execution is not None
         assert execution.status == TaskExecutionStatus.failed
         assert "Test error" in (execution.error_message or "")
+
+    def test_retry_after_failure_reuses_the_same_key(self, db_session):
+        """A retry must be idempotent too.
+
+        The old implementation retried by minting `key + ":retry:<timestamp>"`,
+        so two concurrent retries of the same failed task produced two distinct
+        keys, both passed the dedup check, and both ran — the guarantee vanished
+        exactly during a retry storm. The retry now reuses the row.
+        """
+        unique_key = f"retry:{uuid.uuid4().hex}"
+        full_key = f"test_task:{unique_key}"
+        calls = []
+
+        @idempotent_task(key_func=lambda x: x)
+        def test_task(x):
+            calls.append(x)
+            if len(calls) == 1:
+                raise ValueError("first attempt fails")
+            return {"ok": True}
+
+        with patch(
+            "app.services.task_idempotency.SessionLocal", return_value=db_session
+        ):
+            mock_task = MagicMock()
+            mock_task.name = "test_task"
+            mock_task.request.id = "celery-retry"
+            with patch("app.services.task_idempotency.current_task", mock_task):
+                with pytest.raises(ValueError):
+                    test_task(unique_key)
+                result = test_task(unique_key)
+
+        assert result == {"ok": True}
+        assert len(calls) == 2
+
+        from sqlalchemy import func, select
+
+        rows = (
+            db_session.scalars(
+                select(TaskExecution).where(TaskExecution.idempotency_key == full_key)
+            )
+            .unique()
+            .all()
+        )
+        assert len(rows) == 1, "the retry must reuse the row, not mint a new key"
+        assert rows[0].status == TaskExecutionStatus.succeeded
+        assert rows[0].error_message is None
+
+        # No `:retry:` sibling keys anywhere.
+        assert (
+            db_session.scalar(
+                select(func.count())
+                .select_from(TaskExecution)
+                .where(TaskExecution.idempotency_key.like(f"{full_key}:retry:%"))
+            )
+            == 0
+        )
+
+    def test_a_reclaimed_row_is_not_claimed_twice(self, db_session):
+        """Only one caller may reclaim a failed row; the loser skips.
+
+        Proven at the layer the race is actually resolved: the conditional
+        UPDATE. The first `_claim_execution` flips `failed` -> `running`; the
+        second sees a fresh `running` row and declines.
+        """
+        from app.services.task_idempotency import _claim_execution
+
+        key = f"test_task:race:{uuid.uuid4().hex}"
+        db_session.add(
+            TaskExecution(
+                idempotency_key=key,
+                task_name="test_task",
+                status=TaskExecutionStatus.failed,
+                error_message="boom",
+            )
+        )
+        db_session.commit()
+
+        first, claimed_first = _claim_execution(
+            db_session, key, "test_task", "celery-a", timedelta(hours=1)
+        )
+        second, claimed_second = _claim_execution(
+            db_session, key, "test_task", "celery-b", timedelta(hours=1)
+        )
+
+        assert claimed_first is True
+        assert claimed_second is False
+        assert first is not None and second is not None
+        assert second.status == TaskExecutionStatus.running
 
 
 class TestCleanupOldExecutions:
