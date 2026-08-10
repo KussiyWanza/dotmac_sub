@@ -30,10 +30,32 @@ class TicketStatus(enum.Enum):
     site_under_construction = "site_under_construction"
     on_hold = "on_hold"
     pending_confirmation = "pending_confirmation"
-    resolved = "resolved"
     closed = "closed"
     canceled = "canceled"
     merged = "merged"
+
+
+LEGACY_TICKET_STATUS_ALIASES: dict[str, str] = {
+    "resolved": TicketStatus.closed.value,
+}
+
+
+def canonical_ticket_status_value(value: TicketStatus | str) -> str:
+    """Return the canonical stored value for a ticket-status input.
+
+    ``resolved`` was historically persisted as a separate status. It is now an
+    admission-only compatibility alias for ``closed`` and must never be
+    returned to a caller or written to a Ticket row.
+    """
+
+    raw = value.value if isinstance(value, TicketStatus) else str(value).strip().lower()
+    return LEGACY_TICKET_STATUS_ALIASES.get(raw, raw)
+
+
+def parse_ticket_status(value: TicketStatus | str) -> TicketStatus:
+    """Parse a canonical or legacy ticket-status input into the closed enum."""
+
+    return TicketStatus(canonical_ticket_status_value(value))
 
 
 class TicketPriority(enum.Enum):

@@ -16,6 +16,8 @@ from app.models.support import (
     AutomationActionType,
     AutomationTrigger,
     TicketAutomationRule,
+    TicketStatus,
+    parse_ticket_status,
 )
 from app.services.audit_adapter import stage_audit_event
 from app.services.domain_errors import DomainError
@@ -43,7 +45,7 @@ class TicketAutomationRuleError(DomainError):
 
 @dataclass(frozen=True)
 class TicketAutomationConditions:
-    status: str | None = None
+    status: TicketStatus | None = None
     priority: str | None = None
     channel: str | None = None
     ticket_type: str | None = None
@@ -54,20 +56,29 @@ class TicketAutomationConditions:
         cls, raw: Mapping[str, object] | None
     ) -> TicketAutomationConditions:
         values = raw or {}
+        status_value = values.get("status")
         return cls(
-            **{
-                field: str(values[field]).strip() or None
-                for field in TICKET_CONDITION_FIELDS
-                if values.get(field) not in (None, "")
-            }
+            status=(
+                parse_ticket_status(str(status_value).strip())
+                if status_value not in (None, "")
+                else None
+            ),
+            priority=_optional_text(values.get("priority")),
+            channel=_optional_text(values.get("channel")),
+            ticket_type=_optional_text(values.get("ticket_type")),
+            region=_optional_text(values.get("region")),
         )
 
     def as_dict(self) -> dict[str, str]:
-        return {
-            field: value
-            for field in TICKET_CONDITION_FIELDS
-            if (value := getattr(self, field)) is not None
-        }
+        result: dict[str, str] = {}
+        for field in TICKET_CONDITION_FIELDS:
+            value = getattr(self, field)
+            if value is None:
+                continue
+            result[field] = (
+                parse_ticket_status(value).value if field == "status" else str(value)
+            )
+        return result
 
 
 @dataclass(frozen=True)
@@ -75,7 +86,7 @@ class TicketAutomationAction:
     service_team_id: UUID | None = None
     technician_person_id: UUID | None = None
     priority: str | None = None
-    status: str | None = None
+    status: TicketStatus | None = None
     hours: int | None = None
     tag: str | None = None
 
@@ -95,7 +106,8 @@ class TicketAutomationAction:
         if action_type is AutomationActionType.set_priority:
             return cls(priority=_optional_text(values.get("priority")))
         if action_type is AutomationActionType.set_status:
-            return cls(status=_optional_text(values.get("status")))
+            status = _optional_text(values.get("status"))
+            return cls(status=parse_ticket_status(status) if status else None)
         if action_type is AutomationActionType.set_due_in_hours:
             return cls(hours=_optional_hours(values.get("hours")))
         if action_type is AutomationActionType.add_tag:
@@ -117,7 +129,10 @@ class TicketAutomationAction:
         ):
             value = getattr(self, field)
             if value is not None:
-                result[field] = str(value) if isinstance(value, UUID) else value
+                if field == "status":
+                    result[field] = parse_ticket_status(value).value
+                else:
+                    result[field] = str(value) if isinstance(value, UUID) else value
         return result
 
 

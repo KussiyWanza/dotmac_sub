@@ -34,6 +34,13 @@ commit lifecycle changes. Every public mutation enters
 terminal-state semantics consumed by both lifecycle and configuration. It is a
 pure value boundary and owns no Ticket or configuration rows.
 
+`closed` is the only Ticket status meaning that the reported issue has been
+resolved. The retired stored value `resolved` is accepted only as a legacy
+admission alias and is canonicalized to `closed` before any write or response.
+Migration 515 repairs matching Ticket rows plus exact status fields in operator
+configuration and automation JSON; it does not rewrite Ticket timestamps,
+timeline records, tags, comments, attachments, metadata, or audit history.
+
 `support.ticket_configuration` owns operator-managed status choices,
 priorities, types, routing inputs, service-team membership configuration, and
 priority/type SLA targets. It may only expose statuses from the ticket
@@ -209,6 +216,10 @@ Repair reruns deterministic list/preview queries, SLA reconciliation, or the
 provenance verifier from canonical records. It never re-enables a legacy writer
 or infers lifecycle authority from CRM, tags, templates, cached UI state, or
 communication delivery.
+
+Migration 515 is also the idempotent drift repair for the retired `resolved`
+status: rerunning it updates only exact legacy status values that reappeared and
+leaves canonical `closed` rows untouched.
 
 ## Staff Talk consequences
 

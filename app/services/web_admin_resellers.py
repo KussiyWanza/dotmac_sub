@@ -36,8 +36,7 @@ from app.services.status_presentation import (
     payment_status_presentation,
 )
 
-RESOLVED_TICKET_STATUSES = {
-    "resolved",
+TERMINAL_TICKET_STATUSES = {
     "closed",
     "canceled",
     "merged",
@@ -613,7 +612,7 @@ def get_reseller_detail_context(
             db.scalar(
                 select(func.count(Ticket.id))
                 .where(ticket_scope)
-                .where(Ticket.status.notin_(list(RESOLVED_TICKET_STATUSES)))
+                .where(Ticket.status.notin_(list(TERMINAL_TICKET_STATUSES)))
             )
             or 0
         )

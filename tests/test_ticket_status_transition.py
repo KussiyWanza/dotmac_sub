@@ -1,8 +1,4 @@
-"""Guarded Ticket.status transitions (SM-gap #41).
-
-Ticket.status is a free-form string column; transition_ticket_status enforces
-enum-validity + terminal-lock + audit at the write boundary (no migration).
-"""
+"""Guarded Ticket.status transitions (SM-gap #41)."""
 
 import pytest
 
@@ -44,8 +40,21 @@ def test_admin_may_reopen_with_allow_reopen():
 
 def test_normal_forward_transition():
     t = Ticket(status="open")
-    assert transition_ticket_status(t, TicketStatus.resolved, source="admin") is True
-    assert t.status == "resolved"
+    assert transition_ticket_status(t, TicketStatus.closed, source="admin") is True
+    assert t.status == "closed"
+
+
+def test_legacy_resolved_input_is_canonicalized_to_closed():
+    t = Ticket(status="open")
+    assert transition_ticket_status(t, "resolved", source="legacy_api") is True
+    assert t.status == "closed"
+
+
+def test_legacy_stored_resolved_is_repaired_and_cannot_be_reopened():
+    t = Ticket(status="resolved")
+
+    assert transition_ticket_status(t, "open", source="crm_pull") is False
+    assert t.status == "closed"
 
 
 def test_same_status_is_noop():

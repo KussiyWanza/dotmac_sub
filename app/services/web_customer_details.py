@@ -128,8 +128,7 @@ class CustomerDetailNetworkQuery:
             raise ValueError("Customer detail network limit must be between 1 and 50")
 
 
-RESOLVED_TICKET_STATUSES = {
-    "resolved",
+TERMINAL_TICKET_STATUSES = {
     "closed",
     "canceled",
     "merged",
@@ -787,7 +786,7 @@ def _build_relationship_data(db: Session, account_ids: list[UUID]) -> dict[str, 
         "open_tickets": sum(
             1
             for ticket in support_tickets
-            if ticket.status not in RESOLVED_TICKET_STATUSES
+            if ticket.status not in TERMINAL_TICKET_STATUSES
         ),
         "recent_communications": len(communication_logs),
         "active_service_orders": sum(

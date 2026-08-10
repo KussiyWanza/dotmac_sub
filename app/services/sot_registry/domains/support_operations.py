@@ -370,7 +370,8 @@ DOMAIN = DomainSOT(
                         owner="support.ticket_vocabulary",
                         kind=AuthorityKind.CONTROL_INPUT,
                         source=(
-                            "closed TicketStatus enum values and terminal-state semantics"
+                            "closed TicketStatus enum values, canonical closed completion "
+                            "status, and terminal-state semantics"
                         ),
                     ),
                 ),

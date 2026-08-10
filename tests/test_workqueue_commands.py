@@ -157,7 +157,7 @@ def test_ticket_complete_is_atomic_and_replays_after_item_leaves_queue(db_sessio
 
     assert first.result == "completed"
     assert second.replayed is True
-    assert db_session.get(Ticket, ticket.id).status == TicketStatus.resolved.value
+    assert db_session.get(Ticket, ticket.id).status == TicketStatus.closed.value
 
 
 def test_conversation_claim_participates_in_workqueue_root_transaction(db_session):

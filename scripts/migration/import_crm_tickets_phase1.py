@@ -50,6 +50,16 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Connection, Engine
 
 CLOSED_STATUSES = {"closed", "resolved", "canceled", "merged"}
+LEGACY_STATUS_ALIASES = {"resolved": "closed"}
+
+
+def canonical_ticket_status(value: object) -> str:
+    """Map legacy CRM status vocabulary to the native Ticket vocabulary."""
+
+    normalized = str(value or "open").strip().lower() or "open"
+    return LEGACY_STATUS_ALIASES.get(normalized, normalized)
+
+
 DEFAULT_EXCLUDE_TITLE_REGEX = (
     r"(?i)\b(codex\b.*\bprobe\b|webhook\b.*\bprobe\b|test\b.*\bticket\b)"
 )
@@ -547,7 +557,7 @@ def _ticket_payload(
         "title": ticket.get("title") or "Untitled CRM ticket",
         "description": ticket.get("description"),
         "region": ticket.get("region"),
-        "status": ticket.get("status") or "open",
+        "status": canonical_ticket_status(ticket.get("status")),
         "priority": ticket.get("priority") or "normal",
         "ticket_type": ticket.get("ticket_type"),
         "erpnext_id": ticket.get("erpnext_id"),

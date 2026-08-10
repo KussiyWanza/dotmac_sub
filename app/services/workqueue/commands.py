@@ -455,7 +455,7 @@ def _apply_action(
             ticket = Tickets.update(
                 db,
                 str(command.item_id),
-                TicketUpdate(status=TicketStatus.resolved.value),
+                TicketUpdate(status=TicketStatus.closed),
                 actor_id=str(command.principal.person_id),
             )
             assigned_id = ticket.assigned_to_person_id

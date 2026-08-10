@@ -5,6 +5,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.models.support import canonical_ticket_status_value
 from app.services import support as support_service
 from app.services.db_session_adapter import db_session_adapter
 
@@ -44,7 +45,7 @@ def get_confirmation_state(token: str, db: Session = Depends(get_db)) -> dict:
         "ticket_id": str(ticket.id),
         "ticket_ref": ticket.number or str(ticket.id),
         "subject": ticket.title,
-        "status": ticket.status,
+        "status": canonical_ticket_status_value(ticket.status),
         "resolved_at": ticket.resolved_at.isoformat() if ticket.resolved_at else None,
     }
 
@@ -58,7 +59,7 @@ def confirm_resolution(token: str, db: Session = Depends(get_db)) -> dict:
         "ok": True,
         "ticket_id": str(ticket.id),
         "ticket_ref": ticket.number or str(ticket.id),
-        "status": ticket.status,
+        "status": canonical_ticket_status_value(ticket.status),
     }
 
 
@@ -77,5 +78,5 @@ def dispute_resolution(
         "ok": True,
         "ticket_id": str(ticket.id),
         "ticket_ref": ticket.number or str(ticket.id),
-        "status": ticket.status,
+        "status": canonical_ticket_status_value(ticket.status),
     }

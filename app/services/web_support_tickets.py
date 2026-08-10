@@ -21,6 +21,7 @@ from app.models.support import (
     TicketChannel,
     TicketCommentAuthorType,
     TicketStatus,
+    canonical_ticket_status_value,
 )
 from app.schemas.support import (
     AttachmentMeta,
@@ -216,7 +217,7 @@ _TICKET_STATUS_FILTERS = frozenset(
 
 
 def _ticket_status_scope(value: str | None) -> support_service.TicketStatusScope:
-    normalized = str(value or "").strip().lower()
+    normalized = canonical_ticket_status_value(str(value or "").strip().lower())
     if not normalized:
         return support_service.TicketStatusScope.all()
     if normalized == NOT_CLOSED_TICKET_STATUS_FILTER:
@@ -275,7 +276,9 @@ def build_ticket_list_query(
 ) -> ListQuery:
     """Normalize the admin support queue through its declared capabilities."""
 
-    normalized_status = str(status or "").strip().lower() or None
+    normalized_status = (
+        canonical_ticket_status_value(str(status or "").strip().lower()) or None
+    )
     if normalized_status and normalized_status not in _TICKET_STATUS_FILTERS:
         raise ValueError(f"Unsupported ticket status: {normalized_status}")
     return SUPPORT_TICKET_LIST_DEFINITION.build_query(
@@ -549,7 +552,7 @@ def build_ticket_form_context(
         "channel": ticket.channel.value
         if ticket
         else str(params.get("channel", TicketChannel.web.value) or ""),
-        "status": ticket.status
+        "status": canonical_ticket_status_value(ticket.status)
         if ticket
         else str(
             params.get("status", support_ticket_settings_service.default_status(db))

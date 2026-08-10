@@ -81,7 +81,7 @@ def test_ticket_lifecycle_pull_native_decisions_merge(db_session, subscriber):
     assert ticket.metadata_["resolution_confirmation"]["requested_at"]
     assert token.purpose == "resolution_confirm"
 
-    transition_ticket_status(ticket, "resolved", source="integration_flow")
+    transition_ticket_status(ticket, "closed", source="integration_flow")
     db_session.commit()
     ticket = Tickets.set_satisfaction(db_session, ticket, rating=5, comment="great")
     assert ticket.metadata_["csat"]["rating"] == 5
@@ -98,9 +98,8 @@ def test_ticket_lifecycle_pull_native_decisions_merge(db_session, subscriber):
     assert ticket.metadata_["resolution_confirmation"]["requested_at"]
     assert ticket.metadata_["crm_updated_at"] == "2026-07-16T12:00:00+00:00"
     assert ticket.priority == "high"
-    # Non-terminal local status yields to the CRM value (resolved → open is
-    # allowed; only terminal statuses are protected).
-    assert ticket.status == "open"
+    # Closed is terminal, so a CRM observation cannot reopen the native ticket.
+    assert ticket.status == "closed"
 
     # 4. Local terminal precedence: a locally-closed ticket cannot be
     # reopened by a CRM pull.
