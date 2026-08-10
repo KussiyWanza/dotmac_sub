@@ -1,10 +1,14 @@
 name: CI
 
 on:
+  # `integration/**` carries multi-PR adoption programmes (kernel migration).
+  # Without it a PR INTO an integration branch runs no tests at all, and the
+  # whole section meets CI for the first time at the integration -> dev merge —
+  # which is exactly the batch this branching model exists to avoid.
   push:
-    branches: [main, dev]
+    branches: [main, dev, 'integration/**']
   pull_request:
-    branches: [main, dev]
+    branches: [main, dev, 'integration/**']
   # A required check that never reports deadlocks the merge queue: GitHub waits
   # forever for a context that no run will ever produce. Every required context
   # in this file must therefore be reachable from `merge_group`.
@@ -304,11 +308,30 @@ jobs:
       # Shadow phase per docs/adr/0008-migration-sequence-ownership.md: report
       # findings without failing the build, so we can measure how many pull
       # requests this would block before making it required.
+      #
+      # ONE exception, and it does not touch that measurement: a pull request
+      # merging an `integration/**` branch is ENFORCED. Such a branch carries a
+      # whole section's migrations and lives for far longer than the days-long
+      # authoring-to-merge gap this gate was written for, so its parents are the
+      # most likely in the repository to be stale by merge time. A stale parent
+      # merges cleanly and fails at deploy, so the report has to be blocking at
+      # exactly the point the batch lands. Regular dev pull requests keep
+      # reporting only, so the shadow-phase numbers stay comparable.
       - name: Check migration chains onto the base head
+        env:
+          HEAD_REF: ${{ github.head_ref }}
         run: |
-          git fetch origin "${{ github.base_ref || 'dev' }}" --depth=0 || true
+          BASE="${{ github.base_ref || 'dev' }}"
+          git fetch origin "$BASE" --depth=0 || true
+          case "$HEAD_REF" in
+            integration/*) MODE="" ;;
+            *)             MODE="--report-only" ;;
+          esac
+          if [ -z "$MODE" ]; then
+            echo "::notice::Enforcing the migration sequence gate: $HEAD_REF is an integration branch merging into $BASE."
+          fi
           python3 scripts/architecture/migration_sequence_gate.py \
-            --base "origin/${{ github.base_ref || 'dev' }}" --report-only
+            --base "origin/$BASE" $MODE
 
   architecture:
     name: Architecture Tests

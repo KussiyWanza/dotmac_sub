@@ -245,7 +245,10 @@ def test_ci_retains_pre_merge_and_promotion_postgresql_gate() -> None:
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
 
     assert "pull_request:" in workflow
-    assert workflow.count("branches: [main, dev]") == 2
+    # Both events must still cover main and dev. `integration/**` was added so a
+    # pull request INTO a long-lived adoption branch runs these same gates
+    # instead of meeting them for the first time at the integration -> dev merge.
+    assert workflow.count("branches: [main, dev, 'integration/**']") == 2
     assert "make test-integration" in workflow
     assert "poetry run alembic upgrade head" not in workflow
     makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
