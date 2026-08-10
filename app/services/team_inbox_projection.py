@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -30,6 +30,7 @@ from app.services import (
     subscriber_summary,
     team_inbox_contact_links,
     team_inbox_filters,
+    team_inbox_media,
     team_inbox_operations,
     team_inbox_read,
     team_inbox_read_state,
@@ -45,6 +46,52 @@ from app.services.list_query import (
 from app.services.sales import lead_intake
 
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+SAFE_INLINE_IMAGE_CONTENT_TYPES: frozenset[str] = frozenset(
+    {
+        "image/avif",
+        "image/gif",
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+    }
+)
+
+
+class InboxMediaBrowserPresentation(StrEnum):
+    inline = "inline"
+    attachment = "attachment"
+
+
+@dataclass(frozen=True, slots=True)
+class InboxMediaContentProjection:
+    asset_id: UUID
+    file_name: str
+    content_type: str
+    content_length: int | None
+    presentation: InboxMediaBrowserPresentation
+    chunks: Iterator[bytes]
+
+
+def get_media_content_projection(
+    db: Session,
+    *,
+    asset_id: UUID,
+) -> InboxMediaContentProjection:
+    media_content = team_inbox_media.stream_asset_content(db, asset_id)
+    presentation = (
+        InboxMediaBrowserPresentation.inline
+        if media_content.content_type in SAFE_INLINE_IMAGE_CONTENT_TYPES
+        else InboxMediaBrowserPresentation.attachment
+    )
+    return InboxMediaContentProjection(
+        asset_id=media_content.asset_id,
+        file_name=media_content.file_name,
+        content_type=media_content.content_type,
+        content_length=media_content.stream.content_length,
+        presentation=presentation,
+        chunks=media_content.stream.chunks,
+    )
 
 
 class InboxListSort(StrEnum):

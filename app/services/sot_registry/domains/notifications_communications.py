@@ -2407,6 +2407,7 @@ DOMAIN = DomainSOT(
             owns=(
                 "Inbox list detail metrics response cohort unread and action projection",
                 "Inbox outbound message sender identity projection",
+                "Inbox media browser presentation projection",
             ),
             depends_on=(
                 "communications.team_inbox_threads",
@@ -2427,6 +2428,10 @@ DOMAIN = DomainSOT(
                     ),
                     (
                         "Inbox outbound message sender identity projection",
+                        OwnerRole.RESOLVER,
+                    ),
+                    (
+                        "Inbox media browser presentation projection",
                         OwnerRole.RESOLVER,
                     ),
                 ),
@@ -2482,6 +2487,15 @@ DOMAIN = DomainSOT(
                             "sent_by_person_id provenance, including inactive staff."
                         ),
                     ),
+                    AuthorityInput(
+                        name="Inbox media content facts",
+                        owner="communications.team_inbox_threads",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "Stored or provider-resolved media bytes, normalized MIME "
+                            "type, and safe filename for one authorized Inbox asset."
+                        ),
+                    ),
                 ),
                 transaction_mode=TransactionMode.READ_ONLY,
                 domain_error_codes=(
@@ -2490,12 +2504,14 @@ DOMAIN = DomainSOT(
                 projections=(
                     "Inbox queue detail metrics response cohorts actions and unread cohorts",
                     "Outbound message sender display name initials and provenance source",
+                    "MIME-allowlisted inline image or download-only attachment presentation",
                 ),
                 test_refs=(
                     "tests/test_team_inbox_sot_completion.py",
                     "tests/test_team_inbox_read.py",
                     "tests/test_team_inbox_needs_attention.py",
                     "tests/test_team_inbox_filters.py",
+                    "tests/test_team_inbox_attachments.py",
                     "tests/architecture/test_team_inbox_boundaries.py",
                     "tests/architecture/test_team_inbox_sot_contracts.py",
                 ),
