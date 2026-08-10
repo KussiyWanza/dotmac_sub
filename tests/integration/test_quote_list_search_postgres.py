@@ -58,7 +58,7 @@ def _party_lead(
 def quote_search_graph(db_session) -> QuoteSearchGraph:
     subscriber = Subscriber(
         display_name="Aurora Subscriber Display",
-        first_name="Ada",
+        first_name="Adaora",
         last_name="Okafor",
         email="aurora.quote@example.com",
         reseller_id=_default_reseller_id(db_session),
@@ -174,7 +174,7 @@ def quote_search_graph(db_session) -> QuoteSearchGraph:
     "search_value",
     (
         "Aurora Subscriber Display",
-        "Ada",
+        "Adaora",
         "Okafor",
         "aurora.quote@example.com",
         "Fiber Expansion Alpha",
