@@ -101,3 +101,35 @@ def install() -> tuple[str, ...]:
     from dotmac_kernel.secret_sources import install_secret_source
 
     return install_secret_source(OpenBaoSecretSource())
+
+
+def install_if_configured() -> tuple[str, ...]:
+    """Install the source when this deployment names an OpenBao. Boot entry point.
+
+    Gated on `is_openbao_configured`, which reads configuration and performs no
+    I/O — NOT on `is_openbao_available`, which probes the store. The difference
+    is the whole contract:
+
+    * **Not configured** — a developer machine, a CI shard, an install that
+      keeps these five in the environment. Nothing is held, `get_secret`
+      answers None, and every reader falls back to its environment variable
+      exactly as before. Returns an empty tuple.
+    * **Configured but unreachable** — an outage, a bad token, a wrong address.
+      This RAISES and the boot fails. That is deliberate and it is the reason
+      the gate cannot be a reachability probe: a probe would answer
+      "unavailable", skip the install, and hand every reader a `None` that
+      reads as "not configured" — a total loss of credential encryption
+      reported as a warning line. A process that cannot get the secrets it was
+      told to hold has not started correctly, and saying so at boot is cheaper
+      than discovering it at the first request that needed one.
+    """
+
+    from app.services.secrets import is_openbao_configured
+
+    if not is_openbao_configured():
+        logger.info(
+            "No OpenBao configured; holding no boot secrets "
+            "(readers fall back to their environment variables)"
+        )
+        return ()
+    return install()

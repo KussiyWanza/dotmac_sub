@@ -169,12 +169,17 @@ def test_upsert_radius_setting_variants(db_session):
     assert timeout.value_type.value == "integer"
     assert timeout.value_text == "5"
 
-    secret = settings_api.upsert_radius_setting(
-        db_session,
-        "auth_shared_secret",
-        DomainSettingUpdate(value_text="radius-secret"),
-    )
-    assert secret.is_secret is True
+    # `auth_shared_secret` is no longer a radius SETTING, so the admin API must
+    # refuse it rather than store a value nothing reads. It is held from
+    # OpenBao at boot and read there by `radius_auth.authenticate`; the spec was
+    # retired for having no reader.
+    with pytest.raises(HTTPException) as exc:
+        settings_api.upsert_radius_setting(
+            db_session,
+            "auth_shared_secret",
+            DomainSettingUpdate(value_text="radius-secret"),
+        )
+    assert exc.value.status_code == 400
 
 
 def test_upsert_gis_setting_variants(db_session):

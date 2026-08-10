@@ -80,6 +80,22 @@ def _openbao_config() -> tuple[str, str, str | None, str]:
     return addr.rstrip("/"), token, namespace, kv_version
 
 
+def is_openbao_configured() -> bool:
+    """Whether this deployment NAMES an OpenBao to read from. No I/O.
+
+    Deliberately distinct from :func:`is_openbao_available`, which probes the
+    network. The two answer different questions and only this one may gate a
+    fail-closed path: a store that is configured but unreachable must fail
+    LOUDLY, and a reachability probe would report "unavailable" and turn that
+    outage into a silent skip. Reachability is the store's problem to have;
+    whether we expect one at all is this deployment's own configuration.
+    """
+
+    return bool(
+        (os.getenv("OPENBAO_ADDR") or os.getenv("VAULT_ADDR")) and _read_openbao_token()
+    )
+
+
 def is_openbao_available() -> bool:
     """Check if OpenBao is configured and reachable (non-throwing)."""
     try:

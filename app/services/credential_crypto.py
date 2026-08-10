@@ -57,6 +57,25 @@ ENCRYPTED_MODEL_FIELDS: dict[str, tuple[str, ...]] = {
 }
 
 
+def _as_key_bytes(value: object) -> bytes | None:
+    """A Fernet key as bytes, or None when the material cannot be one.
+
+    Split out of `_resolve_key_candidate` so a value that is ALREADY secret
+    material — one held in memory since boot — can be encoded without being
+    passed through reference resolution, which would put a network call on the
+    decryption path for a string that only happened to look like a reference.
+    """
+
+    if not value:
+        return None
+    if isinstance(value, bytes):
+        return value
+    try:
+        return str(value).encode("ascii")
+    except UnicodeEncodeError:
+        return None
+
+
 def _resolve_key_candidate(value: str | bytes | None) -> bytes | None:
     if not value:
         return None
@@ -73,62 +92,46 @@ def _resolve_key_candidate(value: str | bytes | None) -> bytes | None:
             "Credential encryption key reference lookup failed", exc_info=True
         )
         return None
-    if not resolved:
-        return None
-    try:
-        return str(resolved).encode("ascii")
-    except UnicodeEncodeError:
-        return None
+    return _as_key_bytes(resolved)
 
 
 def get_encryption_key() -> bytes | None:
-    """Get the Fernet encryption key from settings or environment.
+    """Get the Fernet encryption key from the environment or the held secrets.
 
     Checks in order:
     1. Environment variable CREDENTIAL_ENCRYPTION_KEY
-    2. Database settings (credential_encryption_key in security domain)
-    3. Legacy OpenBao auth/credential_encryption_key fallback
+    2. The secret held at boot (`app/services/kernel_secret_source.py`)
+
+    Two lookups replace three, and neither touches the network. The two that
+    went are the same value reached two other ways: the
+    `auth/credential_encryption_key` SETTING, whose column holds a `bao://`
+    reference this function dereferenced, and a direct OpenBao read of the
+    legacy `auth` path. Both put a network call on the path that decrypts a
+    device credential — under `ont_reconcile`, that is once per device — and
+    both swallowed every failure into a debug line, so an outage looked
+    identical to "not configured" and the fallback was to store credentials in
+    the clear.
+
+    Starter ADR-0009 states the rule this now follows: a secret is held, never
+    dereferenced. `kernel_secret_source` reads
+    `bao://secret/settings/auth#credential_encryption_key` once at boot, which
+    is the same material the removed paths reached.
 
     Returns:
         Fernet key bytes if set, None otherwise
     """
     global _encryption_warning_logged
 
-    # Explicit runtime config should not trigger OpenBao lookups during startup.
+    # Explicit runtime config still wins, and `_resolve_key_candidate` keeps
+    # honouring an `env://`/`bao://` reference given THERE — an operator naming
+    # a reference in a variable is asking for a lookup, which is different from
+    # a stored row silently causing one.
     key = _resolve_key_candidate(os.environ.get(_ENCRYPTION_KEY_ENV))
 
     if not key:
-        try:
-            from app.models.domain_settings import SettingDomain
-            from app.services.db_session_adapter import db_session_adapter
-            from app.services.settings_spec import resolve_value
+        from dotmac_kernel.secret_sources import get_secret as held_secret
 
-            session = db_session_adapter.create_session()
-            try:
-                raw = resolve_value(
-                    session, SettingDomain.auth, "credential_encryption_key"
-                )
-                if isinstance(raw, str):
-                    key = _resolve_key_candidate(raw)
-            finally:
-                session.close()
-        except Exception:
-            _logger.debug(
-                "Database credential encryption key lookup failed",
-                exc_info=True,
-            )
-
-    if not key:
-        try:
-            from app.services.secrets import get_secret
-
-            bao_val = get_secret("auth", "credential_encryption_key")
-            if bao_val:
-                key = _resolve_key_candidate(bao_val)
-        except Exception:
-            _logger.debug(
-                "OpenBao credential encryption key lookup failed", exc_info=True
-            )
+        key = _as_key_bytes(held_secret("credential_encryption_key"))
 
     if not key:
         if not _encryption_warning_logged:

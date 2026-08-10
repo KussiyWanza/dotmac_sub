@@ -1485,14 +1485,20 @@ SETTINGS_SPECS: list[SettingSpec] = [
         min_value=16,
         max_value=64,
     ),
-    SettingSpec(
-        domain=SettingDomain.radius,
-        key="auth_shared_secret",
-        env_var="RADIUS_AUTH_SHARED_SECRET",
-        value_type=SettingValueType.string,
-        default=None,
-        is_secret=True,
-    ),
+    # `radius/auth_shared_secret` was RETIRED here: it stopped being a setting.
+    #
+    # Per the secret classification of 2026-08-09 it is one of the five Dotmac
+    # issues and rotates, and it is now held from OpenBao at boot
+    # (`app/services/kernel_secret_source.py`) and read by
+    # `radius_auth.authenticate` from there. The row never held the secret
+    # anyway — being `is_secret=True`, every write stored a `bao://` REFERENCE,
+    # which that call site passed to the RADIUS client verbatim.
+    #
+    # Retired rather than left declared, because a spec with no reader is a
+    # control an operator can set that changes nothing —
+    # `tests/architecture/test_no_orphan_settings.py` names that "dead control"
+    # and refuses it. `RADIUS_AUTH_SHARED_SECRET` remains the bootstrap input
+    # for the OpenBao entry.
     SettingSpec(
         domain=SettingDomain.radius,
         key="auth_dictionary_path",

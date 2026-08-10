@@ -493,13 +493,25 @@ def _seed_startup_settings() -> None:
 
 
 def _startup_preflight() -> None:
-    """Fast, fail-fast checks that MUST pass before serving traffic: credential
-    encryption enforcement and required schema. The slow, idempotent
-    default-settings seeding is deferred off the serving path — see
+    """Fast, fail-fast checks that MUST pass before serving traffic: the boot
+    secrets, credential encryption enforcement and required schema. The slow,
+    idempotent default-settings seeding is deferred off the serving path — see
     [_run_deferred_startup]."""
     _check_test_environment_leakage()
     from app.config import settings
     from app.services.credential_crypto import require_encryption_key
+    from app.services.kernel_secret_source import install_if_configured
+
+    # BEFORE the encryption check below, which reads one of the secrets this
+    # loads. Held here, once, and never fetched again: nothing on a request
+    # path may reach OpenBao (starter ADR-0009). Fail-fast rather than
+    # deferred, because a process without its keys is not a process that
+    # should be serving — see `install_if_configured`.
+    held = install_if_configured()
+    logger.info(
+        "boot_secrets_held",
+        extra={"event": "boot_secrets_held", "names": list(held), "count": len(held)},
+    )
 
     if settings.enforce_credential_encryption:
         require_encryption_key(enforce=True)

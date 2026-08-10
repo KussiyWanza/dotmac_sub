@@ -15,6 +15,10 @@ from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
+# `held_secret`, not `get_secret`: `app.services.secrets.get_secret` talks to
+# OpenBao, and this one is a dict lookup over material loaded at boot.
+from dotmac_kernel.secret_sources import get_secret as held_secret
+
 # Environment variable for the encryption key (should be set in production)
 _ENCRYPTION_KEY_ENV = "WIREGUARD_KEY_ENCRYPTION_KEY"
 _logger = logging.getLogger(__name__)
@@ -99,43 +103,33 @@ def validate_key(key_b64: str) -> bool:
 
 
 def get_encryption_key() -> bytes | None:
-    """Get the Fernet encryption key from settings or environment.
+    """Get the Fernet encryption key from the environment or the held secrets.
 
     Checks in order:
-    1. Database settings (wireguard_key_encryption_key in network domain)
-    2. Environment variable WIREGUARD_KEY_ENCRYPTION_KEY
+    1. Environment variable WIREGUARD_KEY_ENCRYPTION_KEY
+    2. The secret held at boot (`app/services/kernel_secret_source.py`)
+
+    The `network/wireguard_key_encryption_key` SETTING is no longer read. This
+    key protects private keys stored in the same database the setting lives in,
+    so the row could only ever hold a `bao://` reference — and dereferencing it
+    meant opening a database session and reaching OpenBao every time a peer's
+    key was encrypted or decrypted (starter ADR-0009: a secret is held, never
+    dereferenced). Dropping that also removes the session this function used to
+    open from inside a crypto helper.
+
+    The environment now wins over the store, where the setting used to win over
+    the environment. Both named the same OpenBao field, so this reorders two
+    paths to one value rather than changing which value is found — and it makes
+    the precedence identical for all five held secrets.
 
     Returns:
         Fernet key bytes if set, None otherwise
     """
     global _encryption_warning_logged
 
-    key_str: str | None = None
-
-    # Try to get from settings system first
-    try:
-        from app.models.domain_settings import SettingDomain
-        from app.services.db_session_adapter import db_session_adapter
-        from app.services.settings_spec import resolve_value
-
-        session = db_session_adapter.create_session()
-        try:
-            key_obj = resolve_value(
-                session, SettingDomain.network, "wireguard_key_encryption_key"
-            )
-            if isinstance(key_obj, str):
-                key_str = key_obj
-        finally:
-            session.close()
-    except Exception:
-        _logger.debug(
-            "Database WireGuard encryption key lookup failed",
-            exc_info=True,
-        )  # Fall through to env var
-
-    # Fall back to environment variable
-    if not key_str:
-        key_str = os.environ.get(_ENCRYPTION_KEY_ENV)
+    key_str = os.environ.get(_ENCRYPTION_KEY_ENV) or held_secret(
+        "wireguard_key_encryption_key"
+    )
 
     if not key_str:
         if not _encryption_warning_logged:

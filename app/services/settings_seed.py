@@ -1406,13 +1406,11 @@ def seed_radius_settings(db: Session) -> None:
         value_type=SettingValueType.string,
         value_text=os.getenv("RADIUS_AUTH_SERVER_ID", ""),
     )
-    radius_settings.ensure_by_key(
-        db,
-        key="auth_shared_secret",
-        value_type=SettingValueType.string,
-        value_text=os.getenv("RADIUS_AUTH_SHARED_SECRET", ""),
-        is_secret=True,
-    )
+    # No `auth_shared_secret` row: it is no longer a setting. It is held from
+    # OpenBao at boot (`app/services/kernel_secret_source.py`) and read there by
+    # `radius_auth.authenticate`, so seeding one would recreate the row whose
+    # only content was a `bao://` reference — and whose spec was retired for
+    # having no reader.
     radius_settings.ensure_by_key(
         db,
         key="auth_dictionary_path",

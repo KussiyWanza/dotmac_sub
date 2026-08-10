@@ -236,6 +236,43 @@ OpenBao client and performs no I/O. Sub's implementation is
 `app/services/secrets.py`. ADR-0009 (`dotmac_starter_mt`): a secret is held,
 never dereferenced, so nothing on a settings read path reaches OpenBao.
 
+**Wired 2026-08-10.** The source had no caller for a day: it was declared,
+tested and installed by nothing, so every reader still went to the database for
+a `bao://` reference and dereferenced it mid-request. Two entry points install
+it — `app.main._startup_preflight` for the API, and `app.celery_app`'s
+`worker_process_init` for each prefork worker child, which runs no lifespan and
+whose tasks decrypt device credentials — and the five readers take the held
+value:
+
+| secret | reader |
+|---|---|
+| `credential_encryption_key` | `app/services/credential_crypto.py::get_encryption_key` |
+| `totp_encryption_key` | `app/services/auth_flow.py::_mfa_key` |
+| `wireguard_key_encryption_key` | `app/services/wireguard_crypto.py::get_encryption_key` |
+| `jwt_secret` | `app/services/auth_flow.py::_jwt_secret` |
+| `radius_auth_shared_secret` | `app/services/radius_auth.py::authenticate` |
+
+Three consequences worth stating, because each is a behaviour change:
+
+- **A configured-but-unreachable OpenBao now fails the boot.** The install is
+  gated on configuration (`is_openbao_configured`, no I/O), never on
+  reachability — a reachability probe would skip the install during an outage
+  and hand every reader a `None` that reads as "not configured", which for
+  `credential_encryption_key` means storing device credentials in the clear
+  behind a warning line. A deployment that configures no OpenBao holds nothing
+  and keeps using its environment variables.
+- **Precedence is environment, then held**, for all five. That preserves what
+  four of them already did; `wireguard_key_encryption_key` had the settings row
+  win over its variable, and both named the same OpenBao field.
+- **Rotation refreshes the held set.** `credential_rotation_schedule` writes the
+  new key into OpenBao, so it now calls `refresh_secrets()` — the kernel reloads
+  on an explicit act and never on a timer.
+
+The five SPECS still exist in `app/services/settings_spec.py` and their rows are
+still seeded and editable, while nothing reads them. Retiring them — the specs,
+the seed entries, the admin surface and the rows — is a follow-up slice, not
+part of the read-path move.
+
 The three settings modules were added 2026-08-10 for the settings cutover:
 `settings_resolver` (resolution, and `register_specs` so Sub's 560 specs are
 declared where the resolver looks), `settings_models` (the `DomainSetting`

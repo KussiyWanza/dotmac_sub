@@ -57,7 +57,6 @@ setting 4 app/services/auth.py
 setting 4 app/services/auth_flow.py
 setting 4 app/services/billing_settings.py
 setting 8 app/services/credential_key_rotation.py
-setting 4 app/services/credential_rotation_schedule.py
 setting 4 app/services/customer_location_requests.py
 setting 20 app/services/email.py
 setting 4 app/services/field/config.py

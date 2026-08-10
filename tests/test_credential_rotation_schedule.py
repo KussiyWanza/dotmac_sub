@@ -2,23 +2,37 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from app.models.domain_settings import DomainSetting, SettingDomain
-from app.models.subscription_engine import SettingValueType
+import pytest
+from dotmac_kernel.secret_sources import clear_secret_source, install_secret_source
+
 from app.services import credential_rotation_schedule as rotation
 
 
-def _managed_setting(db_session) -> None:
-    db_session.add(
-        DomainSetting(
-            domain=SettingDomain.auth,
-            key="credential_encryption_key",
-            value_type=SettingValueType.string,
-            value_text=("bao://secret/settings/auth#credential_encryption_key"),
-            is_secret=True,
-            is_active=True,
-        )
-    )
-    db_session.commit()
+@pytest.fixture
+def managed_key():
+    """The active key is one OpenBao owns — said the way the code now reads it.
+
+    This used to INSERT a `bao://secret/settings/auth#credential_encryption_key`
+    row into `domain_settings`. That row was never the key: it was a reference
+    `get_encryption_key` dereferenced on the decryption path, which starter
+    ADR-0009 forbids and which `app/services/kernel_secret_source.py` replaced
+    by holding the material from boot.
+
+    So "managed by OpenBao" is now "held", and `_managed_key_source` asks the
+    held set. The guard it enforces is unchanged and is the one that matters:
+    rotation writes a new key into OpenBao, so it may only proceed when the key
+    this process is actually using came from there — a key pinned to a literal
+    in the environment still blocks, which
+    `test_static_environment_key_blocks_scheduled_rotation` pins.
+    """
+
+    class _Held:
+        def load(self) -> dict[str, str]:
+            return {rotation._CURRENT_FIELD: "current-key"}
+
+    install_secret_source(_Held())
+    yield
+    clear_secret_source()
 
 
 def _patch_settings(monkeypatch, *, auto_apply: bool = True) -> None:
@@ -48,8 +62,9 @@ def test_static_environment_key_blocks_scheduled_rotation(db_session, monkeypatc
     }
 
 
-def test_first_managed_run_initializes_rotation_clock(db_session, monkeypatch):
-    _managed_setting(db_session)
+def test_first_managed_run_initializes_rotation_clock(
+    db_session, monkeypatch, managed_key
+):
     _patch_settings(monkeypatch)
     now = datetime(2026, 7, 12, tzinfo=UTC)
     monkeypatch.delenv("CREDENTIAL_ENCRYPTION_KEY", raising=False)
@@ -73,8 +88,9 @@ def test_first_managed_run_initializes_rotation_clock(db_session, monkeypatch):
     assert writes[0][rotation._ROTATED_AT_FIELD] == now.isoformat()
 
 
-def test_due_rotation_stages_dual_key_before_reencrypting(db_session, monkeypatch):
-    _managed_setting(db_session)
+def test_due_rotation_stages_dual_key_before_reencrypting(
+    db_session, monkeypatch, managed_key
+):
     _patch_settings(monkeypatch)
     now = datetime(2026, 7, 12, tzinfo=UTC)
     monkeypatch.delenv("CREDENTIAL_ENCRYPTION_KEY", raising=False)
@@ -118,8 +134,9 @@ def test_due_rotation_stages_dual_key_before_reencrypting(db_session, monkeypatc
     assert staged[0][rotation._CURRENT_FIELD] == "new-key"
 
 
-def test_grace_period_converges_before_previous_key_retirement(db_session, monkeypatch):
-    _managed_setting(db_session)
+def test_grace_period_converges_before_previous_key_retirement(
+    db_session, monkeypatch, managed_key
+):
     _patch_settings(monkeypatch)
     now = datetime(2026, 7, 12, tzinfo=UTC)
     monkeypatch.delenv("CREDENTIAL_ENCRYPTION_KEY", raising=False)
