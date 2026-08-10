@@ -188,6 +188,12 @@ SCHEDULER_ENV_BOOTSTRAP_SETTING_KEYS = frozenset(
 )
 
 
+#: 6 concatenated GSM-7 segments x 153 characters — the practical ceiling of a
+#: multipart SMS, and the one bound on these settings that is PHYSICAL rather
+#: than policy. It is hardcoded on purpose: it is not deployment-specific, and a
+#: knob for it would exist only to let someone configure an impossibility.
+MAX_CONCATENATED_SMS_CHARS = 918
+
 SETTINGS_SPECS: list[SettingSpec] = [
     SettingSpec(
         domain=SettingDomain.auth,
@@ -773,14 +779,16 @@ SETTINGS_SPECS: list[SettingSpec] = [
         value_type=SettingValueType.integer,
         default=30,
         min_value=1,
-        # The ceiling is recovered from the duplicate declaration this spec
-        # absorbed; the floor is not. A timeout is passed straight to the HTTP
-        # client in `sms.py`, so above a minute it stops being a timeout and
-        # starts being a blocked worker. The duplicate's `min_value=5` is NOT
-        # adopted: 1s is aggressive but legitimate against a fast gateway, and
-        # raising a floor is the change most likely to reject a value some
-        # deployment already stores.
-        max_value=60,
+        # No ceiling. An earlier version carried `max_value=60`, recovered from
+        # a duplicate declaration and justified as "above a minute it stops
+        # being a timeout" — which is a rationale, not a physical limit. A slow
+        # gateway on a bad link can legitimately want ninety seconds, so the
+        # number was an operator's judgement wearing validation's clothes.
+        #
+        # An out-of-range stored value does not clamp; it DEGRADES to the
+        # default. So a policy ceiling here would silently reset a deliberately
+        # tuned timeout, in the SMS path, with no signal. The duplicate's
+        # `min_value=5` is not adopted for the same reason.
         label="SMS provider request timeout (seconds)",
     ),
     SettingSpec(
@@ -796,10 +804,9 @@ SETTINGS_SPECS: list[SettingSpec] = [
         # disable value unstorable — the concrete harm in letting a dead
         # second declaration look authoritative.
         min_value=0,
-        # 918 = 6 concatenated GSM-7 segments x 153 characters, the practical
-        # limit of a multipart SMS. Recovered from that duplicate: it is a
-        # property of the transport rather than a preference.
-        max_value=918,
+        # A named constant, not a bare literal: the number is a property of the
+        # transport, and written as `918` it reads like somebody's preference.
+        max_value=MAX_CONCATENATED_SMS_CHARS,
         label="SMS body truncation length (0 disables truncation)",
     ),
     SettingSpec(
