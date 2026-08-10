@@ -272,6 +272,115 @@ def test_meta_inbox_webhook_creates_instagram_dm_message(db_session, monkeypatch
     assert message.metadata_["provider_account_id"] == "ig-1"
 
 
+def test_meta_inbox_webhook_creates_facebook_post_comment_thread(
+    db_session,
+    monkeypatch,
+):
+    _install_meta_social(db_session)
+    _disable_profile_lookup(monkeypatch)
+    monkeypatch.setattr(
+        meta_inbox_webhooks, "_verify_meta_signature", lambda db, body, sig: None
+    )
+    payload = {
+        "object": "page",
+        "entry": [
+            {
+                "id": "page-1",
+                "changes": [
+                    {
+                        "field": "feed",
+                        "value": {
+                            "item": "comment",
+                            "verb": "add",
+                            "post_id": "page-1_987",
+                            "comment_id": "comment-1",
+                            "parent_id": "page-1_987",
+                            "message": "Please check this area",
+                            "created_time": 1783670600,
+                            "from": {
+                                "id": "fb-user-1",
+                                "name": "Public Customer",
+                            },
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+    body = json.dumps(payload).encode("utf-8")
+    request = _request(body, {"X-Hub-Signature-256": _sign(body)})
+
+    response = _run_async(
+        meta_inbox_webhooks.receive_meta_inbox_webhook(request, db_session)
+    )
+
+    conversation = db_session.query(InboxConversation).one()
+    message = db_session.query(InboxMessage).one()
+    assert response["processed"] == 1
+    assert conversation.channel_type == InboxChannelType.facebook_comment.value
+    assert conversation.contact_address == "fb-user-1"
+    assert conversation.subject == "Facebook Comment post page-1_987"
+    assert conversation.external_thread_id == "facebook_comment:page-1_987"
+    assert message.external_message_id == "comment-1"
+    assert message.body == "Please check this area"
+    assert message.metadata_["provider_comment_id"] == "comment-1"
+    assert message.metadata_["post_id"] == "page-1_987"
+    assert message.metadata_["page_id"] == "page-1"
+    assert message.metadata_["commenter_name"] == "Public Customer"
+    assert message.metadata_["parent_provider_comment_id"] is None
+
+
+def test_meta_inbox_webhook_groups_instagram_comment_reply_by_media(
+    db_session,
+    monkeypatch,
+):
+    _install_meta_social(db_session)
+    _disable_profile_lookup(monkeypatch)
+    monkeypatch.setattr(
+        meta_inbox_webhooks, "_verify_meta_signature", lambda db, body, sig: None
+    )
+    payload = {
+        "object": "instagram",
+        "entry": [
+            {
+                "id": "ig-1",
+                "changes": [
+                    {
+                        "field": "comments",
+                        "value": {
+                            "id": "ig-comment-2",
+                            "text": "Replying under the post",
+                            "parent_id": "ig-comment-1",
+                            "media": {"id": "ig-media-1"},
+                            "created_time": 1783670700,
+                            "from": {
+                                "id": "ig-user-1",
+                                "username": "igcustomer",
+                            },
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+    body = json.dumps(payload).encode("utf-8")
+    request = _request(body, {"X-Hub-Signature-256": _sign(body)})
+
+    response = _run_async(
+        meta_inbox_webhooks.receive_meta_inbox_webhook(request, db_session)
+    )
+
+    conversation = db_session.query(InboxConversation).one()
+    message = db_session.query(InboxMessage).one()
+    assert response["processed"] == 1
+    assert conversation.channel_type == InboxChannelType.instagram_comment.value
+    assert conversation.external_thread_id == "instagram_comment:ig-media-1"
+    assert message.external_message_id == "ig-comment-2"
+    assert message.metadata_["instagram_account_id"] == "ig-1"
+    assert message.metadata_["media_id"] == "ig-media-1"
+    assert message.metadata_["parent_provider_comment_id"] == "ig-comment-1"
+
+
 def test_meta_inbox_webhook_deduplicates_external_message_id(db_session, monkeypatch):
     _install_meta_social(db_session)
     _disable_profile_lookup(monkeypatch)

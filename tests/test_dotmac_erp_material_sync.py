@@ -155,6 +155,8 @@ def _make_approved_request(db, *, crm_work_order_id="wo-mat") -> FieldMaterialRe
         source_warehouse_code="WH-LAGOS",
         items=[{"item_id": str(item.id), "quantity": 5, "notes": "cat6"}],
     )
+    request = db.get(FieldMaterialRequest, created["id"])
+    request.fulfillment_channel = "erp"
     field_material_requests.submit(db, _auth(user), str(created["id"]))
     field_material_requests.approve(db, str(created["id"]))
     return db.get(FieldMaterialRequest, created["id"])
@@ -201,7 +203,7 @@ def test_payload_mapping_matches_crm_shape(db_session):
 
     assert payload["omni_id"] == str(request.id)
     assert payload["request_type"] == "ISSUE"
-    assert payload["status"] == "issued"
+    assert payload["status"] == "submitted"
     assert payload["requested_by_email"] == request.requested_by_system_user.email
     # ticket id comes off the work-order mirror (sub has no direct FK).
     assert payload["ticket_crm_id"] == "crm-ticket-77"
@@ -241,7 +243,7 @@ def test_eligibility_requires_approved_items_and_email(db_session):
     request = _make_approved_request(db_session)
     assert material_sync.material_request_eligibility_error(request) is None
 
-    request.status = "submitted"
+    request.status = "fulfilled"
     assert "cannot be synced" in material_sync.material_request_eligibility_error(
         request
     )
@@ -368,8 +370,8 @@ def test_delivery_accepted_writes_erp_fields_back(db_session):
     assert result.accepted == 1
     assert request.support_reference == "ERP-MR-1"
     assert request.support_status == "issued"
-    assert request.status == "fulfilled"
-    assert request.fulfilled_at is not None
+    assert request.status == "issued"
+    assert request.issued_at is not None
     allocation = db_session.query(FieldWorkOrderMaterial).one()
     assert allocation.allocated_quantity == 5
     assert client.posts[0]["path"] == "/api/v1/sync/sub/material-requests"
@@ -387,8 +389,8 @@ def test_delivery_fulfilled_maps_terminal_status(db_session):
 
     db_session.refresh(request)
     assert request.support_status == "fulfilled"
-    assert request.status == "fulfilled"
-    assert request.fulfilled_at is not None
+    assert request.status == "issued"
+    assert request.issued_at is not None
 
 
 def test_delivery_rejected_records_erp_status(db_session):
@@ -456,7 +458,7 @@ def test_refresh_updates_status_for_in_flight_request(db_session):
     request.support_system = "dotmac_erp"
     request.support_reference = "ERP-MR-9"
     request.support_status = "issued"
-    request.status = "issued"
+    request.status = "accepted_by_erp"
     db_session.commit()
 
     client = _FakeERPClient(
@@ -469,7 +471,7 @@ def test_refresh_updates_status_for_in_flight_request(db_session):
     assert result["updated"] == 1
     assert client.status_calls == [str(request.id)]
     assert request.support_status == "fulfilled"
-    assert request.status == "fulfilled"
+    assert request.status == "issued"
 
 
 def test_refresh_skips_unsynced_and_terminal_requests(db_session):

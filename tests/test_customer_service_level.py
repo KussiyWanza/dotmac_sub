@@ -20,7 +20,7 @@ from app.models.usage import AccountingStatus, RadiusAccountingSession
 from app.services import customer_service_level as sla
 from app.services.service_impact_contracts import SlaVerdict
 
-NOW = datetime(2026, 8, 20, 12, 0, 0, tzinfo=UTC)
+NOW = datetime(2026, 8, 8, 12, 0, 0, tzinfo=UTC)
 
 
 def _interval(
@@ -54,6 +54,16 @@ def _activate(db, subscription):
     from app.models.catalog import SubscriptionStatus
 
     evidence_start = NOW - timedelta(days=10)
+    # The shared subscription fixture records its initial pending state at the
+    # wall-clock time when the test runs.  These tests build a complete,
+    # synthetic lifecycle history around the fixed NOW instant; retaining the
+    # fixture event makes that history depend on the calendar date and can
+    # close the active window partway through the scoring period.
+    (
+        db.query(SubscriptionLifecycleEvent)
+        .filter(SubscriptionLifecycleEvent.subscription_id == subscription.id)
+        .delete(synchronize_session=False)
+    )
     subscription.status = SubscriptionStatus.active
     subscription.billing_mode = BillingMode.prepaid
     subscription.start_at = evidence_start
@@ -99,7 +109,10 @@ def _activate(db, subscription):
 
 def _attach_policy(db, subscription, *, uptime="99.50", credit="10.00"):
     profile = SlaProfile(
-        name="Contract SLA", uptime_percent=uptime, credit_percent=credit
+        name="Contract SLA",
+        uptime_percent=uptime,
+        credit_percent=credit,
+        created_at=NOW - timedelta(days=10),
     )
     db.add(profile)
     db.flush()
@@ -229,7 +242,7 @@ def test_reviewed_exclusions_report_in_their_own_bucket(db_session, subscription
 def test_breach_and_at_risk_only_exist_against_the_policy(db_session, subscription):
     period_start = _activate(db_session, subscription)
     _attach_policy(db_session, subscription, uptime="99.90")
-    # ~19 days elapsed this period; 0.1% budget ≈ 28 minutes. Ten hours of
+    # About 7 days elapsed this period; 0.1% budget is under 11 minutes. Ten hours of
     # confirmed downtime is a clear breach.
     _interval(
         db_session,

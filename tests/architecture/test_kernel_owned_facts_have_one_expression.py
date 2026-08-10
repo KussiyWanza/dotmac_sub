@@ -220,7 +220,22 @@ def test_settings_resolution_does_not_carry_its_own_cache() -> None:
             ("services/settings_cache.py", "kernel_settings_cache_store.py")
         ):
             continue
-        if "SettingsCache" in path.read_text(encoding="utf-8"):
+        # By AST, not substring. The first version matched the NAME anywhere in
+        # the file, so a comment in `app/config.py` explaining that the TTL
+        # default "matches the retired `SettingsCache`" was reported as a
+        # module reaching for it. A guard that cannot tell a reference from a
+        # mention teaches people to stop writing the explanation.
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        uses = any(
+            (isinstance(node, ast.Name) and node.id == "SettingsCache")
+            or (isinstance(node, ast.Attribute) and node.attr == "SettingsCache")
+            or (
+                isinstance(node, ast.ImportFrom)
+                and any(a.name == "SettingsCache" for a in node.names)
+            )
+            for node in ast.walk(tree)
+        )
+        if uses:
             offenders.append(rel)
 
     assert not offenders, (

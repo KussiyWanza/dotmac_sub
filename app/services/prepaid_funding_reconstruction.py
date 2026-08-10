@@ -56,6 +56,7 @@ class PrepaidOpeningTargetOrigin(StrEnum):
 
     reviewed_reconstruction = "reviewed_reconstruction"
     reviewed_subledger_opening = "reviewed_subledger_opening"
+    finance_reviewed_migrated_history = "finance_reviewed_migrated_history"
     native_after_handoff = "native_after_handoff"
 
 

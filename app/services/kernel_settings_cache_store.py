@@ -31,8 +31,9 @@ as a miss and resolves from the database), `set` drops the write, and
 
 `delete_prefix` returning 0 on an error is the one that deserves a second
 look, because a failed INVALIDATION is not a failed read — it leaves a stale
-entry behind. That is what `_TTL_SECONDS` is for: invalidation is the
-mechanism, and the TTL is the bound on how wrong a missed one can leave us.
+entry behind. That is what `SETTINGS_CACHE_TTL_SECONDS` is for: invalidation
+is the mechanism, and the TTL is the bound on how wrong a missed one can leave
+us.
 """
 
 from __future__ import annotations
@@ -47,12 +48,21 @@ from app.services.settings_cache import get_settings_redis
 
 logger = logging.getLogger(__name__)
 
-#: Ceiling on staleness from an invalidation that did not land — a Redis blip
-#: during a write, or a process that died between commit and delete. Kept at
-#: `SettingsCache`'s 30s so this slice does not change how stale a settings
-#: read can be while it changes who decides. It can be raised once explicit
-#: invalidation has been observed to hold; that is a separate, evidenced change.
-_TTL_SECONDS = 30
+
+def _ttl_seconds() -> int:
+    """The staleness ceiling, from configuration.
+
+    It was a module constant, which made an operational, deployment-specific
+    value a code change — against this repository's "everything by config" rule,
+    and past a `ttl_seconds` parameter the kernel's `CacheStore` already
+    accepts. Read per call rather than at import so a test can move it without
+    reloading the module.
+    """
+
+    from app.config import settings
+
+    return int(settings.settings_cache_ttl_seconds)
+
 
 #: Batch size for prefix deletion, so invalidating a platform write does not
 #: issue one round trip per key.
@@ -108,7 +118,7 @@ class RedisSettingsCacheStore:
             logger.debug("settings cache set skipped, not serialisable: %s", exc)
             return
         try:
-            client.setex(key, ttl_seconds or _TTL_SECONDS, payload)
+            client.setex(key, ttl_seconds or _ttl_seconds(), payload)
         except redis.RedisError as exc:
             logger.debug("settings cache set failed: %s", exc)
 

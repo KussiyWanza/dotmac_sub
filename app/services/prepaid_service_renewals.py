@@ -98,6 +98,7 @@ logger = logging.getLogger(__name__)
 _ORIGIN = AccountAdjustmentOrigin.prepaid_service_renewal
 _OWNER = "financial.prepaid_service_renewals"
 _EXECUTION_CONCERN = "prepaid service renewal execution"
+_REVIEWED_RENEWAL_CONCERN = "fingerprint-approved missed renewal execution"
 _EVALUATE_SETTLEMENT_COMMAND = OwnerCommandDefinition(
     owner=_OWNER,
     concern=_EXECUTION_CONCERN,
@@ -107,6 +108,11 @@ _RUN_DUE_COMMAND = OwnerCommandDefinition(
     owner=_OWNER,
     concern=_EXECUTION_CONCERN,
     name="execute_due_prepaid_service_renewals",
+)
+_EXECUTE_REVIEWED_COMMAND = OwnerCommandDefinition(
+    owner=_OWNER,
+    concern=_REVIEWED_RENEWAL_CONCERN,
+    name="execute_reviewed_prepaid_service_renewal",
 )
 PREPAID_SERVICE_RENEWAL_ELIGIBLE_STATUSES = frozenset(
     {
@@ -542,10 +548,34 @@ class PrepaidServiceRenewalResult:
     replayed: bool
 
 
+@dataclass(frozen=True, slots=True)
+class ExecuteReviewedPrepaidServiceRenewalCommand:
+    """Fingerprint-bound execution of one explicitly reviewed missed cycle."""
+
+    context: CommandContext
+    subscription_id: UUID
+    starts_at: datetime
+    ends_at: datetime
+    amount: Decimal
+    currency: str
+    expected_preview_fingerprint: str
+    evidence_ref: str
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewedPrepaidServiceRenewalResult:
+    """Canonical financial and service effects of the reviewed execution."""
+
+    renewal: PrepaidServiceRenewalResult
+    outcome: PrepaidServiceRenewedOutcome | None
+    restored_service_count: int
+
+
 class PrepaidServiceRenewalSource(enum.StrEnum):
     direct_payment = "direct_payment"
     account_credit = "account_credit"
     scheduled = "scheduled"
+    reviewed_repair = "reviewed_repair"
 
 
 @dataclass(frozen=True)
@@ -1117,6 +1147,94 @@ def confirm_prepaid_service_renewal(
         ledger_entry=adjustment_result.ledger_entry,
         entitlement=entitlement,
         replayed=adjustment_result.replayed,
+    )
+
+
+def execute_reviewed_prepaid_service_renewal(
+    db: Session,
+    command: ExecuteReviewedPrepaidServiceRenewalCommand,
+) -> ReviewedPrepaidServiceRenewalResult:
+    """Execute one reviewed missed period through the canonical renewal owner."""
+
+    return execute_owner_command(
+        db,
+        definition=_EXECUTE_REVIEWED_COMMAND,
+        context=command.context,
+        operation=lambda: _execute_reviewed_prepaid_service_renewal(db, command),
+    )
+
+
+def _execute_reviewed_prepaid_service_renewal(
+    db: Session,
+    command: ExecuteReviewedPrepaidServiceRenewalCommand,
+) -> ReviewedPrepaidServiceRenewalResult:
+    if not command.context.idempotency_key:
+        _error(
+            "missing_idempotency_key",
+            "Reviewed prepaid renewal requires an idempotency key.",
+        )
+    expected = command.expected_preview_fingerprint.strip().lower()
+    if len(expected) != 64 or any(
+        character not in "0123456789abcdef" for character in expected
+    ):
+        _error(
+            "invalid_preview_fingerprint",
+            "Reviewed prepaid renewal requires a SHA-256 preview fingerprint.",
+        )
+    preview = preview_prepaid_service_renewal(
+        db,
+        subscription_id=command.subscription_id,
+        starts_at=command.starts_at,
+        ends_at=command.ends_at,
+        amount=command.amount,
+        currency=command.currency,
+    )
+    if preview.fingerprint != expected:
+        _error(
+            "stale_preview",
+            "Prepaid funding or reviewed renewal terms changed after preview.",
+        )
+    if not preview.allowed:
+        _error(
+            "insufficient_funding",
+            "Insufficient prepaid funding for the reviewed service renewal.",
+        )
+    renewal = confirm_prepaid_service_renewal(
+        db,
+        preview,
+        evidence_ref=command.evidence_ref,
+    )
+    outcome = None
+    if not renewal.replayed:
+        outcome = stage_prepaid_service_renewed_outcome(
+            db,
+            account_id=renewal.preview.account_id,
+            subscription_id=renewal.preview.subscription_id,
+            entitlement_id=renewal.entitlement.id,
+            ledger_entry_id=renewal.ledger_entry.id,
+            period_start=renewal.preview.starts_at,
+            renewed_through=renewal.preview.ends_at,
+            amount=renewal.preview.amount,
+            currency=renewal.preview.currency,
+            source=PrepaidServiceRenewalSource.reviewed_repair,
+        )
+    from app.models.collections import FinancialAccessOrigin
+    from app.services.collections._core import restore_account_services
+
+    restored = restore_account_services(
+        db,
+        str(renewal.preview.account_id),
+        origin=FinancialAccessOrigin.prepaid_enforcement,
+        resolved_by=(
+            "reviewed_prepaid_service_renewal:"
+            f"{renewal.preview.subscription_id}:"
+            f"{renewal.preview.starts_at.isoformat()}"
+        ),
+    )
+    return ReviewedPrepaidServiceRenewalResult(
+        renewal=renewal,
+        outcome=outcome,
+        restored_service_count=restored,
     )
 
 
@@ -2394,6 +2512,7 @@ __all__ = [
     "BillingAnchorAuthority",
     "BillingAnchorProjection",
     "EvaluatePrepaidServiceAfterSettlementCommand",
+    "ExecuteReviewedPrepaidServiceRenewalCommand",
     "FundingChangeEvaluation",
     "FundingChangeEvaluationDisposition",
     "FundingChangeRenewalDisposition",
@@ -2409,6 +2528,7 @@ __all__ = [
     "PrepaidServiceRenewalSource",
     "PrepaidServiceRenewedOutcome",
     "RunDuePrepaidServiceRenewalsCommand",
+    "ReviewedPrepaidServiceRenewalResult",
     "StaleBillingAnchorCandidate",
     "StaleBillingAnchorRepairPreview",
     "StaleBillingAnchorRepairResult",
@@ -2417,6 +2537,7 @@ __all__ = [
     "confirm_prepaid_service_renewal",
     "evaluate_prepaid_service_after_settlement",
     "execute_due_prepaid_service_renewals",
+    "execute_reviewed_prepaid_service_renewal",
     "execute_prepaid_service_after_settlement",
     "preview_prepaid_service_renewal",
     "preview_prepaid_recurring_charge",

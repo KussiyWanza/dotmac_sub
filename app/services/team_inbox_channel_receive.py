@@ -59,6 +59,8 @@ _INACTIVE_SUBSCRIBER_STATUSES = {
 _OPAQUE_CONTACT_CHANNELS = {
     InboxChannelType.facebook_messenger.value,
     InboxChannelType.instagram_dm.value,
+    InboxChannelType.facebook_comment.value,
+    InboxChannelType.instagram_comment.value,
     InboxChannelType.chat_widget.value,
 }
 
@@ -1262,6 +1264,47 @@ def receive_inbound_channel_batch_committed(
                         if metadata.get("instagram_account_id")
                         else None
                     ),
+                    provider_comment_id=(
+                        str(metadata["provider_comment_id"])
+                        if metadata.get("provider_comment_id")
+                        else None
+                    ),
+                    comment_id=str(metadata["comment_id"])
+                    if metadata.get("comment_id")
+                    else None,
+                    post_id=str(metadata["post_id"])
+                    if metadata.get("post_id")
+                    else None,
+                    media_id=str(metadata["media_id"])
+                    if metadata.get("media_id")
+                    else None,
+                    parent_provider_comment_id=(
+                        str(metadata["parent_provider_comment_id"])
+                        if metadata.get("parent_provider_comment_id")
+                        else None
+                    ),
+                    commenter_id=str(metadata["commenter_id"])
+                    if metadata.get("commenter_id")
+                    else None,
+                    commenter_name=str(metadata["commenter_name"])
+                    if metadata.get("commenter_name")
+                    else None,
+                    commenter_username=(
+                        str(metadata["commenter_username"])
+                        if metadata.get("commenter_username")
+                        else None
+                    ),
+                    surface=str(metadata["surface"])
+                    if metadata.get("surface")
+                    else None,
+                    permalink_url=(
+                        str(metadata["permalink_url"])
+                        if metadata.get("permalink_url")
+                        else None
+                    ),
+                    media_url=str(metadata["media_url"])
+                    if metadata.get("media_url")
+                    else None,
                     contact_profile=(
                         {
                             "display_name": (

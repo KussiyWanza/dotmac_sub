@@ -17,6 +17,7 @@ from app.models.fiber_change_request import (
     FiberChangeRequest,
     FiberChangeRequestStatus,
 )
+from app.models.project import Project
 from app.models.vendor_routes import (
     AsBuiltRoute,
     AsBuiltRouteStatus,
@@ -73,6 +74,11 @@ _QUOTE_CREATION_STATUSES = {
     InstallationProjectStatus.quoted.value,
 }
 ResultT = TypeVar("ResultT")
+
+
+def _queue_search_pattern(search: str | None) -> str | None:
+    value = (search or "").strip()
+    return f"%{value}%" if value else None
 
 
 class VendorProjectWorkspaceError(DomainError):
@@ -1114,13 +1120,30 @@ class VendorPortalOperations:
 
     @staticmethod
     def list_draft_projects(
-        db: Session, *, limit: int = 100
+        db: Session, *, search: str | None = None, limit: int = 100
     ) -> list[InstallationProject]:
         """Draft installation projects awaiting vendor assignment."""
 
+        query = db.query(InstallationProject).options(
+            joinedload(InstallationProject.project)
+        )
+        pattern = _queue_search_pattern(search)
+        if pattern:
+            query = query.join(Project, InstallationProject.project_id == Project.id)
+            query = query.filter(
+                or_(
+                    Project.name.ilike(pattern),
+                    Project.code.ilike(pattern),
+                    Project.number.ilike(pattern),
+                )
+            )
         return (
-            db.query(InstallationProject)
-            .filter(InstallationProject.status == InstallationProjectStatus.draft.value)
+            query.filter(
+                InstallationProject.status == InstallationProjectStatus.draft.value
+            )
+            .order_by(
+                InstallationProject.created_at.desc(), InstallationProject.id.asc()
+            )
             .limit(max(1, min(limit, 500)))
             .all()
         )
@@ -1194,11 +1217,35 @@ class VendorPortalOperations:
         return projected
 
     @staticmethod
-    def list_reviewable_quotes(db: Session, *, limit: int = 200) -> list[ProjectQuote]:
+    def list_reviewable_quotes(
+        db: Session, *, search: str | None = None, limit: int = 200
+    ) -> list[ProjectQuote]:
+        query = db.query(ProjectQuote).options(
+            selectinload(ProjectQuote.line_items),
+            joinedload(ProjectQuote.vendor),
+            joinedload(ProjectQuote.project).joinedload(InstallationProject.project),
+        )
+        pattern = _queue_search_pattern(search)
+        if pattern:
+            query = (
+                query.join(
+                    InstallationProject,
+                    ProjectQuote.project_id == InstallationProject.id,
+                )
+                .join(Project, InstallationProject.project_id == Project.id)
+                .join(Vendor, ProjectQuote.vendor_id == Vendor.id)
+                .filter(
+                    or_(
+                        Project.name.ilike(pattern),
+                        Project.code.ilike(pattern),
+                        Project.number.ilike(pattern),
+                        Vendor.name.ilike(pattern),
+                        Vendor.code.ilike(pattern),
+                    )
+                )
+            )
         return (
-            db.query(ProjectQuote)
-            .options(selectinload(ProjectQuote.line_items))
-            .filter(
+            query.filter(
                 ProjectQuote.status.in_(
                     (
                         ProjectQuoteStatus.submitted.value,
