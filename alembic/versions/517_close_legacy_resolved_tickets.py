@@ -15,8 +15,8 @@ Every UPDATE is predicate-bounded and therefore safe to rerun. Downgrade is a
 no-op because closed rows cannot be distinguished reliably from rows that were
 always closed; restoring ``resolved`` would invent history.
 
-Revision ID: 515_close_legacy_resolved_tickets
-Revises: 514_domain_settings_scope_invariants
+Revision ID: 517_close_legacy_resolved_tickets
+Revises: 516_material_request_erp_submission
 Create Date: 2026-08-10
 """
 
@@ -28,8 +28,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "515_close_legacy_resolved_tickets"
-down_revision: str | None = "514_domain_settings_scope_invariants"
+revision: str = "517_close_legacy_resolved_tickets"
+down_revision: str | None = "516_material_request_erp_submission"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

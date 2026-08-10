@@ -24,7 +24,7 @@ from app.models.support import (
 from app.services import support_ticket_settings
 
 ROOT = Path(__file__).resolve().parents[2]
-MIGRATION = ROOT / "alembic/versions/515_close_legacy_resolved_tickets.py"
+MIGRATION = ROOT / "alembic/versions/517_close_legacy_resolved_tickets.py"
 
 
 def _load_migration() -> ModuleType:
