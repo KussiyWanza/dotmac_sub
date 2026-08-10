@@ -59,6 +59,8 @@ _INACTIVE_SUBSCRIBER_STATUSES = {
 _OPAQUE_CONTACT_CHANNELS = {
     InboxChannelType.facebook_messenger.value,
     InboxChannelType.instagram_dm.value,
+    InboxChannelType.facebook_comment.value,
+    InboxChannelType.instagram_comment.value,
     InboxChannelType.chat_widget.value,
 }
 
