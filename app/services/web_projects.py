@@ -1747,6 +1747,15 @@ def build_template_form_context(
         "name": _value("name"),
         "project_type": _value("project_type"),
         "description": _value("description"),
+        "creates_vendor_assignment_scope": (
+            bool(values.get("creates_vendor_assignment_scope"))
+            if form is not None
+            else (
+                bool(template.creates_vendor_assignment_scope)
+                if template is not None
+                else False
+            )
+        ),
         "is_active": (
             str(values.get("is_active", "true")).lower() in {"1", "true", "yes", "on"}
             if form is not None
@@ -1769,6 +1778,9 @@ def _template_payload_data(**form) -> dict:
         raise ValueError("Name is required.")
     data: dict[str, object] = {
         "name": name,
+        "creates_vendor_assignment_scope": bool(
+            form.get("creates_vendor_assignment_scope")
+        ),
         "is_active": str(form.get("is_active", "true")).strip().lower()
         in {"1", "true", "yes", "on"},
     }

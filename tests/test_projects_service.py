@@ -23,8 +23,10 @@ from app.models.project import (
     ProjectType,
 )
 from app.models.sequence import DocumentSequence
+from app.models.subscription_engine import SettingValueType
 from app.models.support import Ticket
 from app.models.ticket_workflow import SlaClock, SlaClockStatus, WorkflowEntityType
+from app.models.vendor_routes import InstallationProject, InstallationProjectStatus
 from app.models.work_order import WorkOrder
 from app.schemas.project import (
     ProjectCreate,
@@ -35,6 +37,8 @@ from app.schemas.project import (
     ProjectTaskUpdate,
     ProjectUpdate,
 )
+from app.schemas.settings import DomainSettingCreate
+from app.services.domain_settings import projects_settings
 from app.services.owner_commands import CommandContext
 from app.services.projects import (
     FIBER_INSTALLATION_STAGE_ORDER,
@@ -87,6 +91,80 @@ def test_project_number_continues_after_imported_series(db_session, subscriber):
         .one()
         .next_value
         == 1109
+    )
+
+
+def test_vendor_scope_template_project_creation_scopes_vendor_assignment(
+    db_session, subscriber
+):
+    template = ProjectTemplate(
+        name="Vendor-scoped rerun",
+        project_type=ProjectType.cable_rerun.value,
+        creates_vendor_assignment_scope=True,
+    )
+    db_session.add(template)
+    db_session.commit()
+    project = projects.create(
+        db_session,
+        ProjectCreate(
+            name="Cable rerun needing vendor",
+            project_type=ProjectType.cable_rerun,
+            subscriber_id=subscriber.id,
+            project_template_id=template.id,
+        ),
+    )
+
+    installation = (
+        db_session.query(InstallationProject)
+        .filter(InstallationProject.project_id == project.id)
+        .one()
+    )
+    assert installation.subscriber_id == subscriber.id
+    assert installation.status == InstallationProjectStatus.draft.value
+
+
+def test_vendor_scope_template_without_subscriber_remains_unscoped(db_session):
+    template = ProjectTemplate(
+        name="Vendor-scoped subscriber work",
+        project_type=ProjectType.cable_rerun.value,
+        creates_vendor_assignment_scope=True,
+    )
+    db_session.add(template)
+    db_session.commit()
+    project = projects.create(
+        db_session,
+        ProjectCreate(
+            name="Cable rerun without customer",
+            project_type=ProjectType.cable_rerun,
+            project_template_id=template.id,
+        ),
+    )
+
+    assert (
+        db_session.query(InstallationProject)
+        .filter(InstallationProject.project_id == project.id)
+        .count()
+        == 0
+    )
+
+
+def test_cable_rerun_without_vendor_scope_template_remains_unscoped(
+    db_session, subscriber
+):
+    project = projects.create(
+        db_session,
+        ProjectCreate(
+            name="Ordinary cable rerun",
+            project_type=ProjectType.cable_rerun,
+            subscriber_id=subscriber.id,
+        ),
+    )
+
+    assert (
+        db_session.query(InstallationProject)
+        .filter(InstallationProject.project_id == project.id)
+        .count()
+        == 0
     )
 
 
@@ -214,6 +292,39 @@ def test_completion_uses_specialized_message_without_generic_duplicate(
         .filter(Notification.event_type == "project_status_changed")
         .count()
         == 0
+    )
+
+
+def test_project_completion_queues_configured_finance_email_once(
+    db_session, subscriber
+):
+    projects_settings.create(
+        db_session,
+        DomainSettingCreate(
+            domain="projects",
+            key="project_completion_finance_email_recipients",
+            value_type=SettingValueType.list,
+            value_json=["finance@example.com", "FINANCE@example.com", "not-email"],
+        ),
+    )
+    project = _create_fiber_project(db_session, subscriber)
+
+    projects.update(db_session, str(project.id), ProjectUpdate(status="completed"))
+    projects.update(db_session, str(project.id), ProjectUpdate(status="completed"))
+
+    emails = (
+        db_session.query(Notification)
+        .filter(
+            Notification.event_type == "project_completed_finance",
+            Notification.channel == NotificationChannel.email,
+        )
+        .all()
+    )
+
+    assert len(emails) == 1
+    assert emails[0].recipient == "finance@example.com"
+    assert emails[0].dedupe_key == (
+        f"project-completed-finance:{project.id}:finance@example.com"
     )
 
 

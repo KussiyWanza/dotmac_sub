@@ -13,6 +13,14 @@ from app.models.team_inbox import InboxMediaAsset, InboxMessage
 from app.services.file_storage import ObjectNotFoundError, StreamResult, file_uploads
 
 
+@dataclass(frozen=True, slots=True)
+class InboxMediaContent:
+    asset_id: UUID
+    file_name: str
+    content_type: str
+    stream: StreamResult
+
+
 def _text(value: object, *, max_length: int | None = None) -> str | None:
     text = str(value or "").strip()
     if not text:
@@ -244,9 +252,7 @@ def _remote_media_content(asset: InboxMediaAsset) -> StreamResult:
     )
 
 
-def stream_asset_content(
-    db: Session, asset_id: str | UUID
-) -> tuple[InboxMediaAsset, StreamResult]:
+def stream_asset_content(db: Session, asset_id: str | UUID) -> InboxMediaContent:
     from app.services.common import coerce_uuid
 
     asset_uuid = coerce_uuid(asset_id)
@@ -254,23 +260,38 @@ def stream_asset_content(
     if asset is None:
         raise MediaContentError("Media not found.")
     stored_file_id = _stored_file_id(asset)
+    stream: StreamResult
     if stored_file_id is not None:
         stored_file = db.get(StoredFile, stored_file_id)
         if stored_file is None or stored_file.is_deleted:
             raise MediaContentError("Media content is not available.")
         try:
-            return asset, file_uploads.stream_file(stored_file)
+            stream = file_uploads.stream_file(stored_file)
         except ObjectNotFoundError as exc:
             raise MediaContentError("Media content is not available.") from exc
-    if (
+    elif (
         asset.channel_type == "whatsapp"
         and asset.direction == "inbound"
         and asset.provider_media_id
     ):
-        return asset, _whatsapp_media_content(db, asset)
-    if asset.source_url:
-        return asset, _remote_media_content(asset)
-    raise MediaContentError("Media content is not available.")
+        stream = _whatsapp_media_content(db, asset)
+    elif asset.source_url:
+        stream = _remote_media_content(asset)
+    else:
+        raise MediaContentError("Media content is not available.")
+
+    content_type = (
+        str(stream.content_type or _content_type(asset))
+        .split(";", 1)[0]
+        .strip()
+        .lower()
+    )
+    return InboxMediaContent(
+        asset_id=asset.id,
+        file_name=_filename(asset),
+        content_type=content_type,
+        stream=stream,
+    )
 
 
 def promote_unmaterialized_assets(
@@ -503,13 +524,13 @@ def resolve_delivery_attachments(
     )
     resolved: list[InboxDeliveryAttachment] = []
     for asset in rows:
-        _asset, stream = stream_asset_content(db, asset.id)
+        media_content = stream_asset_content(db, asset.id)
         resolved.append(
             InboxDeliveryAttachment(
                 asset_id=asset.id,
-                filename=_filename(asset),
-                content_type=stream.content_type or _content_type(asset),
-                content=b"".join(stream.chunks),
+                filename=media_content.file_name,
+                content_type=media_content.content_type,
+                content=b"".join(media_content.stream.chunks),
                 asset_type=asset.asset_type
                 or _outbound_asset_type(_content_type(asset)),
             )

@@ -17,6 +17,7 @@ from app.models.event_store import EventStore
 from app.models.network import CPEDevice, DeviceStatus, DeviceType
 from app.models.network_monitoring import NetworkDevice
 from app.models.notification import Notification
+from app.models.service_team import ServiceTeam, ServiceTeamType
 from app.models.support import Ticket, TicketStatus
 from app.services import radio_registration, support, unmatched_radio_queue
 
@@ -145,6 +146,25 @@ class TestQueueSemantics:
         assert event.payload["name"] == "ticket.created"
         assert event.payload["ticket_number"] == ticket.number
         assert event.payload["creation_consequence_mode"] == "silent_internal"
+
+    def test_open_item_assigns_network_support_team_when_present(self, db_session):
+        team = ServiceTeam(
+            name=unmatched_radio_queue.NETWORK_SUPPORT_TEAM_NAME,
+            team_type=ServiceTeamType.support.value,
+            is_active=True,
+        )
+        db_session.add(team)
+        db_session.flush()
+
+        ticket, _ = unmatched_radio_queue.open_item(
+            db_session,
+            mac_compact=MAC_COMPACT,
+            reason=unmatched_radio_queue.REASON_NOT_ADOPTED,
+            title="Registered radio not seen by UISP",
+            description="d",
+        )
+
+        assert ticket.service_team_id == team.id
 
     def test_repeat_observation_repairs_legacy_missing_number(self, db_session):
         legacy = Ticket(

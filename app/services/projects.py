@@ -50,6 +50,11 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from app.models.audit import AuditActorType, AuditEvent
 from app.models.domain_settings import SettingDomain
+from app.models.notification import (
+    Notification,
+    NotificationChannel,
+    NotificationStatus,
+)
 from app.models.project import (
     Project,
     ProjectComment,
@@ -1239,6 +1244,96 @@ def _notify_customer_project_completed(db: Session, project: Project) -> None:
     )
 
 
+def _project_completion_finance_recipients(db: Session) -> tuple[str, ...]:
+    enabled = settings_spec.resolve_boolean(
+        db, SettingDomain.projects, "project_completion_finance_email_enabled"
+    )
+    if not enabled:
+        return ()
+    configured = settings_spec.resolve_value(
+        db, SettingDomain.projects, "project_completion_finance_email_recipients"
+    )
+    emails: list[str] = []
+    if isinstance(configured, list):
+        emails.extend(str(item).strip().lower() for item in configured if item)
+    elif isinstance(configured, str):
+        emails.extend(
+            item.strip().lower() for item in configured.split(",") if item.strip()
+        )
+    if not emails:
+        permission_key = str(
+            settings_spec.resolve_value(
+                db,
+                SettingDomain.projects,
+                "project_completion_finance_permission_key",
+            )
+            or ""
+        ).strip()
+        if permission_key:
+            from app.services.staff_notifications import system_users_with_permission
+
+            emails.extend(
+                str(user.email).strip().lower()
+                for user in system_users_with_permission(db, permission_key)
+                if user.email
+            )
+    return tuple(dict.fromkeys(item for item in emails if "@" in item))
+
+
+def _notify_finance_project_completed(db: Session, project: Project) -> int:
+    recipients = _project_completion_finance_recipients(db)
+    if not recipients:
+        return 0
+    project_ref = project.number or str(project.id)
+    subject = f"Project completed: {project_ref}"
+    customer_name = _subscriber_name(project.subscriber)
+    body_lines = [
+        f"Project {project_ref} has been marked completed.",
+        "",
+        f"Project: {project.name}",
+    ]
+    if customer_name:
+        body_lines.append(f"Customer: {customer_name}")
+    if project.completed_at:
+        body_lines.append(f"Completed at: {project.completed_at.isoformat()}")
+    body = "\n".join(body_lines)
+    queued = 0
+    for recipient in recipients:
+        dedupe_key = f"project-completed-finance:{project.id}:{recipient}"
+        existing = (
+            db.query(Notification.id)
+            .filter(Notification.channel == NotificationChannel.email)
+            .filter(Notification.dedupe_key == dedupe_key)
+            .first()
+        )
+        if existing is not None:
+            continue
+        db.add(
+            Notification(
+                channel=NotificationChannel.email,
+                event_type="project_completed_finance",
+                category="project",
+                recipient=recipient,
+                subject=subject,
+                body=body,
+                status=NotificationStatus.queued,
+                dedupe_key=dedupe_key,
+                audience_type="finance",
+                metadata_={
+                    "project_id": str(project.id),
+                    "project_ref": project_ref,
+                    "project_name": project.name,
+                    "subscriber_id": str(project.subscriber_id)
+                    if project.subscriber_id
+                    else None,
+                },
+            )
+        )
+        queued += 1
+    db.flush()
+    return queued
+
+
 def _queue_customer_status_transition(
     db: Session,
     *,
@@ -1332,6 +1427,7 @@ def _stage_customer_status_transition(
             return project.subscriber_id is not None
         if task is None and new_status == ProjectStatus.completed.value:
             _notify_customer_project_completed(db, project)
+            _notify_finance_project_completed(db, project)
             return project.subscriber_id is not None
         return _queue_customer_status_transition(
             db,
@@ -2503,6 +2599,25 @@ class Projects(ListResponseMixin):
         project = Project(**data)
         db.add(project)
         db.flush()
+        vendor_scope_template = (
+            db.get(ProjectTemplate, project.project_template_id)
+            if project.project_template_id
+            else None
+        )
+        if (
+            vendor_scope_template is not None
+            and vendor_scope_template.creates_vendor_assignment_scope
+            and project.subscriber_id is not None
+        ):
+            from app.services import installation_projects
+
+            installation_projects.ensure_for_project(
+                db,
+                project_id=project.id,
+                subscriber_id=project.subscriber_id,
+                actor_id=context.actor,
+                created_by_person_id=project.created_by_person_id,
+            )
         _sync_project_sla_clock(db, project)
         db.flush()
         db.refresh(project)

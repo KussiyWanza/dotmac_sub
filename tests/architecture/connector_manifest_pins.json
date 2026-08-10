@@ -86,6 +86,12 @@
     {
         "current": false,
         "key": "meta.social",
+        "manifest_digest": "c2a13ab30bebb90b312ab4bbcf1d2feaa23ea706100b3e5ea35a101ec566cf08",
+        "version": "1.0.0"
+    },
+    {
+        "current": false,
+        "key": "meta.social",
         "manifest_digest": "1186a1b861b561480e609363baf2822dbc7091857054ef076fb686e581e4bc5b",
         "version": "1.0.0"
     },

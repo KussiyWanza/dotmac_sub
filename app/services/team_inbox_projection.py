@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -31,6 +31,7 @@ from app.services import (
     subscriber_summary,
     team_inbox_contact_links,
     team_inbox_filters,
+    team_inbox_media,
     team_inbox_operations,
     team_inbox_read,
     team_inbox_read_state,
@@ -46,6 +47,52 @@ from app.services.list_query import (
 from app.services.sales import lead_intake
 
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+SAFE_INLINE_IMAGE_CONTENT_TYPES: frozenset[str] = frozenset(
+    {
+        "image/avif",
+        "image/gif",
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+    }
+)
+
+
+class InboxMediaBrowserPresentation(StrEnum):
+    inline = "inline"
+    attachment = "attachment"
+
+
+@dataclass(frozen=True, slots=True)
+class InboxMediaContentProjection:
+    asset_id: UUID
+    file_name: str
+    content_type: str
+    content_length: int | None
+    presentation: InboxMediaBrowserPresentation
+    chunks: Iterator[bytes]
+
+
+def get_media_content_projection(
+    db: Session,
+    *,
+    asset_id: UUID,
+) -> InboxMediaContentProjection:
+    media_content = team_inbox_media.stream_asset_content(db, asset_id)
+    presentation = (
+        InboxMediaBrowserPresentation.inline
+        if media_content.content_type in SAFE_INLINE_IMAGE_CONTENT_TYPES
+        else InboxMediaBrowserPresentation.attachment
+    )
+    return InboxMediaContentProjection(
+        asset_id=media_content.asset_id,
+        file_name=media_content.file_name,
+        content_type=media_content.content_type,
+        content_length=media_content.stream.content_length,
+        presentation=presentation,
+        chunks=media_content.stream.chunks,
+    )
 
 
 class InboxListSort(StrEnum):
@@ -181,6 +228,25 @@ INBOX_PRIORITY_OPTIONS = (
     InboxPriorityOption(value=0, label="Urgent"),
 )
 
+SOCIAL_COMMENT_CHANNELS = (
+    InboxChannelType.facebook_comment.value,
+    InboxChannelType.instagram_comment.value,
+)
+
+SOCIAL_COMMENT_LIST_DEFINITION = ListDefinition(
+    key="team_inbox_social_comments",
+    fields=(
+        ListFieldDefinition("status", "Status", filterable=True),
+        ListFieldDefinition("channel_type", "Channel", filterable=True),
+        ListFieldDefinition("last_message_at", "Last activity", sortable=True),
+        ListFieldDefinition("created_at", "Created", sortable=True),
+    ),
+    default_sort=InboxListSort.last_message_at.value,
+    default_sort_dir=InboxSortDirection.descending.value,
+    per_page_options=(10, 25, 50, 100),
+    default_per_page=25,
+)
+
 
 @dataclass(frozen=True, slots=True)
 class InboxConversationProjection:
@@ -208,6 +274,7 @@ class InboxAgentOption:
     id: UUID
     name: str
     initials: str
+    presence_status: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -266,6 +333,7 @@ class InboxAssignmentCounts:
 class InboxQueueProjection:
     rows: tuple[team_inbox_read.InboxConversationListRow, ...]
     queue_metrics: team_inbox_operations.InboxQueueMetrics
+    social_comment_count: int
     operator_unread_count: int
     count: int
     list_query: ListQuery
@@ -302,6 +370,22 @@ class InboxQueueProjection:
     canonical_url: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class SocialCommentWorkspaceProjection:
+    rows: tuple[team_inbox_read.InboxConversationListRow, ...]
+    selected: InboxConversationProjection | None
+    selected_id: str | None
+    count: int
+    list_query: ListQuery
+    page_meta: PageMeta
+    search: str
+    status: str
+    channel_type: str
+    status_options: tuple[str, ...]
+    channel_options: tuple[str, ...]
+    canonical_url: str | None
+
+
 def _uuid(value: object) -> UUID | None:
     candidate = str(value or "").strip()
     if not candidate:
@@ -330,6 +414,15 @@ def list_agent_options(db: Session) -> tuple[InboxAgentOption, ...]:
         .order_by(SystemUser.first_name.asc(), SystemUser.last_name.asc())
         .all()
     )
+    user_ids = [row.id for row in rows]
+    presence_rows = (
+        db.query(InboxAgentPresence)
+        .filter(InboxAgentPresence.person_id.in_(user_ids))
+        .all()
+        if user_ids
+        else []
+    )
+    presence_by_person = {row.person_id: row for row in presence_rows}
     return tuple(
         InboxAgentOption(
             id=row.id,
@@ -339,6 +432,15 @@ def list_agent_options(db: Session) -> tuple[InboxAgentOption, ...]:
                 or row.email
             ),
             initials=_initials(row.first_name, row.last_name, row.display_name),
+            presence_status=(
+                (
+                    presence.manual_override_status
+                    or presence.status
+                    or InboxAgentPresenceStatus.offline.value
+                )
+                if (presence := presence_by_person.get(row.id)) is not None
+                else InboxAgentPresenceStatus.offline.value
+            ),
         )
         for row in rows
     )
@@ -944,6 +1046,123 @@ def _filter_params(
     }
 
 
+def social_comment_thread_count(db: Session) -> int:
+    """Count public social comment threads owned by the Team Inbox read model."""
+
+    return int(
+        db.query(func.count(InboxConversation.id))
+        .filter(InboxConversation.is_active.is_(True))
+        .filter(InboxConversation.channel_type.in_(SOCIAL_COMMENT_CHANNELS))
+        .scalar()
+        or 0
+    )
+
+
+def build_social_comments_projection(
+    db: Session,
+    *,
+    search: str | None = None,
+    status: str | None = None,
+    channel_type: str | None = None,
+    selected_conversation_id: str | UUID | None = None,
+    actor_person_id: UUID | None = None,
+    page: int = 1,
+    per_page: int = 25,
+) -> SocialCommentWorkspaceProjection:
+    """Own the public post-comment workspace list, selection, and filters."""
+
+    clean_status = (
+        status if status in {item.value for item in InboxConversationStatus} else None
+    )
+    clean_channel = channel_type if channel_type in SOCIAL_COMMENT_CHANNELS else None
+    safe_per_page = (
+        per_page
+        if per_page in SOCIAL_COMMENT_LIST_DEFINITION.per_page_options
+        else SOCIAL_COMMENT_LIST_DEFINITION.default_per_page
+    )
+    normalized_filters = {
+        "status": clean_status,
+        "channel_type": clean_channel,
+    }
+    requested_query = SOCIAL_COMMENT_LIST_DEFINITION.build_query(
+        search=search,
+        filters=normalized_filters,
+        sort_by=InboxListSort.last_message_at.value,
+        sort_dir=InboxSortDirection.descending.value,
+        page=max(1, page),
+        per_page=safe_per_page,
+    )
+
+    def fetch(query: ListQuery) -> team_inbox_read.InboxConversationListResult:
+        return team_inbox_read.list_conversations(
+            db,
+            search=query.search,
+            status=clean_status,
+            channel_type=clean_channel,
+            channel_types=SOCIAL_COMMENT_CHANNELS if clean_channel is None else None,
+            operator_person_id=actor_person_id,
+            order_by=query.sort_by,
+            order_dir=query.sort_dir,
+            limit=query.per_page,
+            offset=query.offset,
+        )
+
+    result = fetch(requested_query)
+    page_meta = PageMeta.from_query(requested_query, result.count)
+    list_query = requested_query.with_page(page_meta.page)
+    if list_query.page != requested_query.page:
+        result = fetch(list_query)
+
+    selected_id = _uuid(selected_conversation_id)
+    row_ids = {row.id for row in result.items}
+    if selected_id is None and result.items:
+        selected_id = _uuid(result.items[0].id)
+    if selected_id is not None and str(selected_id) not in row_ids:
+        selected_id = None
+    selected = (
+        get_conversation_projection(
+            db,
+            conversation_id=selected_id,
+            actor_person_id=actor_person_id,
+        )
+        if selected_id is not None
+        else None
+    )
+    if (
+        selected is not None
+        and selected.timeline.channel_type not in SOCIAL_COMMENT_CHANNELS
+    ):
+        selected = None
+        selected_id = None
+
+    canonical_url = None
+    if request_needs_canonicalization(
+        list_query,
+        search=search,
+        filters={"status": status, "channel_type": channel_type},
+        page=page,
+        per_page=per_page,
+    ):
+        canonical_url = list_query.url("/admin/inbox/comments")
+        if selected_id is not None:
+            canonical_url = f"{canonical_url}&conversation_id={selected_id}"
+
+    return SocialCommentWorkspaceProjection(
+        rows=tuple(result.items),
+        selected=selected,
+        selected_id=str(selected_id) if selected_id is not None else None,
+        count=result.count,
+        list_query=list_query,
+        page_meta=page_meta,
+        search=list_query.search or "",
+        status=clean_status or "",
+        channel_type=clean_channel or "",
+        status_options=tuple(item.value for item in InboxConversationStatus),
+        channel_options=SOCIAL_COMMENT_CHANNELS,
+        canonical_url=canonical_url,
+    )
+
+
 def build_queue_projection(
     db: Session,
     request: InboxQueueRequest,
@@ -1132,6 +1351,7 @@ def build_queue_projection(
     return InboxQueueProjection(
         rows=tuple(result.items),
         queue_metrics=queue_metrics,
+        social_comment_count=social_comment_thread_count(db),
         operator_unread_count=(
             team_inbox_read_state.unread_conversation_count(
                 db, person_id=request.actor_person_id
@@ -1172,7 +1392,11 @@ def build_queue_projection(
             queue_metrics=queue_metrics,
         ),
         status_options=tuple(item.value for item in InboxConversationStatus),
-        channel_options=tuple(item.value for item in InboxChannelType),
+        channel_options=tuple(
+            item.value
+            for item in InboxChannelType
+            if item.value not in SOCIAL_COMMENT_CHANNELS
+        ),
         priority_options=INBOX_PRIORITY_OPTIONS,
         label_options=tuple(team_inbox_operations.list_labels(db)),
         saved_filters=tuple(
