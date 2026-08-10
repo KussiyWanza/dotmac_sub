@@ -406,6 +406,9 @@ def ticket_create(
                     "customer_account_id": customer_account_id or "",
                     "customer_person_id": customer_person_id or "",
                     "region": region or "",
+                    "technician_person_id": technician_person_id or "",
+                    "ticket_manager_person_id": ticket_manager_person_id or "",
+                    "service_team_id": service_team_id or "",
                     "ticket_type": ticket_type or "",
                     "priority": priority,
                     "channel": channel,
@@ -437,7 +440,26 @@ def ticket_create(
         context = _ctx(request, db)
         context.update(
             support_web_service.build_ticket_form_context(
-                db, query_params=request.query_params
+                db,
+                query_params={
+                    "title": title,
+                    "description": description,
+                    "publish_description": publish_description,
+                    "subscriber_id": subscriber_id or "",
+                    "customer_account_id": customer_account_id or "",
+                    "customer_person_id": customer_person_id or "",
+                    "region": region or "",
+                    "technician_person_id": technician_person_id or "",
+                    "ticket_manager_person_id": ticket_manager_person_id or "",
+                    "service_team_id": service_team_id or "",
+                    "ticket_type": ticket_type or "",
+                    "priority": priority,
+                    "channel": channel,
+                    "status": status,
+                    "due_at": due_at or "",
+                    "tags": tags or "",
+                    "related_outage_ticket_id": related_outage_ticket_id or "",
+                },
             )
         )
         context.update(

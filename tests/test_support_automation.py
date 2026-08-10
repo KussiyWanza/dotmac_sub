@@ -119,11 +119,13 @@ def test_missing_action_value_produces_no_proposal():
 
 
 def test_admin_action_value_validation_rejects_mismatched_payload(db_session):
-    support_ticket_settings_service.update_options(
+    support_ticket_settings_service.update_ticket_configuration(
         db_session,
-        statuses=["open"],
-        priorities=["normal"],
-        ticket_types=["incident"],
+        support_ticket_settings_service.TicketConfigurationUpdate(
+            statuses=("open",),
+            priorities=("normal",),
+            ticket_types=("incident",),
+        ),
     )
 
     with pytest.raises(ValueError, match="priority"):

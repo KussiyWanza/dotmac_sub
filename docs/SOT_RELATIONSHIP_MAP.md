@@ -2501,7 +2501,10 @@ confirmation, tracking, or rating eligibility from raw statuses.
    never allocate numbers. The retired lifecycle-owner alias is not a
    registered service.
 2. `support.ticket_configuration` owns the operator-visible status subset,
-   priority/type choices, routing, and SLA policy. A configured status must be
+   priority/type choices, routing, and SLA policy. Its typed regional routing
+   projection supplies the admin new-ticket preview; the browser displays that
+   decision but does not own assignment. Blank routing rows are ignored, while
+   assignment data without a Region is rejected. A configured status must be
    part of the lifecycle vocabulary.
 3. Status configuration does not own labels, tones, icons, or platform colors;
    those are read-side presentation concerns.

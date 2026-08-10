@@ -42,6 +42,16 @@ current region choices from configured values and canonical Ticket observations.
 This separation prevents lifecycle and configuration from depending on each
 other while preserving the provenance of both inputs.
 
+Regional routing configuration is replaced through the typed
+`TicketConfigurationUpdate` command. Region keys are normalized to lowercase.
+A completely blank routing row is ignored, but assignment data without a Region
+is rejected. The settings page keeps stale saved staff or team selections
+visible and labels them inactive or unavailable so an administrator can repair
+the rule. The new-ticket page receives only the current typed regional Manager
+projection and previews it when the Manager field is empty. That preview never
+overwrites a manual selection and is disabled in edit mode. The lifecycle owner
+re-resolves the rule and remains the only writer of final Ticket assignments.
+
 Assignment is split deliberately:
 
 - `support.ticket_assignment_rule_configuration` owns typed assignment rules;
