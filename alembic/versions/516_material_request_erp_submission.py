@@ -1,7 +1,7 @@
 """Prepare contextual material requests and ERP catalogue projection.
 
-Revision ID: 515_material_request_erp_submission
-Revises: 514_domain_settings_scope_invariants
+Revision ID: 516_material_request_erp_submission
+Revises: 515_project_template_vendor_assignment_scope
 """
 
 from __future__ import annotations
@@ -11,8 +11,8 @@ from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
-revision = "515_material_request_erp_submission"
-down_revision = "514_domain_settings_scope_invariants"
+revision = "516_material_request_erp_submission"
+down_revision = "515_project_template_vendor_assignment_scope"
 branch_labels = None
 depends_on = None
 

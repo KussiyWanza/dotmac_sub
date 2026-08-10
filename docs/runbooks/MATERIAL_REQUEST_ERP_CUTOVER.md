@@ -12,7 +12,7 @@
 
 ## Deployment prerequisites
 
-1. Apply Alembic revision `515_material_request_erp_submission`.
+1. Apply Alembic revision `516_material_request_erp_submission`.
 2. Install DotMac ERP connector 1.2.0 and enable inventory read, outbox delivery, status read, and material-status webhook capabilities.
 3. Create a non-human ERP identity limited to inventory read, material-request submit, and material-request status read. These are service scopes, not human roles.
 4. Store its credential and a separate webhook signing secret in the connector bindings.
