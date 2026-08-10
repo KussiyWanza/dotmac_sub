@@ -10,6 +10,12 @@ on:
   pull_request:
     branches: [main, dev, 'integration/**']
     types: [opened, synchronize, reopened]
+  # `Dotmac engineering standards` is a required context on dev. A required
+  # context that never reports deadlocks the merge queue: GitHub waits forever
+  # for a run that will never exist, and every queued merge stalls. This job
+  # must therefore stay reachable from `merge_group` for as long as it is
+  # required — the same rule ci.yml and mobile.yml already follow.
+  merge_group:
 
 permissions:
   contents: read

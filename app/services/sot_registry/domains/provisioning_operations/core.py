@@ -999,6 +999,7 @@ SERVICES: tuple[SOTService, ...] = (
             "Project and ProjectTask identity and lifecycle",
             "project creation customer email consequence",
             "project and task status-change customer notification consequence",
+            "project completion finance email consequence",
             "project and task allowed status transitions",
             "project-task relationship integrity and completion readiness",
             "project and task assignment and scheduling",
@@ -1050,6 +1051,16 @@ SERVICES: tuple[SOTService, ...] = (
                         "canonical project aggregate",
                         "project transition protocol",
                         "customer communication delivery intent",
+                    ),
+                ),
+                ConcernContract(
+                    name="project completion finance email consequence",
+                    role=OwnerRole.EVENT_POLICY,
+                    input_names=(
+                        "canonical project aggregate",
+                        "project transition protocol",
+                        "project completion finance notification policy",
+                        "staff notification delivery queue",
                     ),
                 ),
                 ConcernContract(
@@ -1179,6 +1190,15 @@ SERVICES: tuple[SOTService, ...] = (
                     source=(
                         "deduplicated customer email intent and durable Notification "
                         "delivery state"
+                    ),
+                ),
+                AuthorityInput(
+                    name="project completion finance notification policy",
+                    owner="operations.project_lifecycle",
+                    kind=AuthorityKind.CONTROL_INPUT,
+                    source=(
+                        "projects-domain enablement, explicit finance recipient list, "
+                        "and permission-key audience fallback"
                     ),
                 ),
             ),

@@ -11,6 +11,7 @@ See docs/designs/TEAM_INBOX_ADMIN_UI_PORT.md §5, slice 4.
 from __future__ import annotations
 
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
@@ -19,7 +20,8 @@ from app.models.team_inbox import (
     InboxConversationStatus,
     InboxMediaAsset,
 )
-from app.services import team_inbox_commands, team_inbox_media
+from app.services import team_inbox_commands, team_inbox_media, team_inbox_projection
+from app.services.object_storage import StreamResult
 
 CONVERSATION = Path("templates/admin/inbox/_conversation.html").read_text()
 JAVASCRIPT = Path("static/js/admin-inbox.js").read_text()
@@ -148,6 +150,128 @@ def test_pending_assets_are_listed_until_a_message_carries_them(db_session):
     pending = team_inbox_media.pending_outbound_assets(db_session, conversation_id)
 
     assert [a.file_name for a in pending] == ["a.png"]
+
+
+@pytest.mark.parametrize(
+    ("asset_content_type", "response_content_type", "expected_presentation"),
+    [
+        (
+            "image/avif",
+            "image/avif",
+            team_inbox_projection.InboxMediaBrowserPresentation.inline,
+        ),
+        (
+            "image/gif",
+            "image/gif",
+            team_inbox_projection.InboxMediaBrowserPresentation.inline,
+        ),
+        (
+            "image/jpeg",
+            "image/jpeg",
+            team_inbox_projection.InboxMediaBrowserPresentation.inline,
+        ),
+        (
+            "image/png",
+            "image/png; charset=binary",
+            team_inbox_projection.InboxMediaBrowserPresentation.inline,
+        ),
+        (
+            "image/svg+xml",
+            "image/svg+xml",
+            team_inbox_projection.InboxMediaBrowserPresentation.attachment,
+        ),
+        (
+            "application/octet-stream",
+            "image/webp",
+            team_inbox_projection.InboxMediaBrowserPresentation.inline,
+        ),
+        (
+            "image/png",
+            "text/html",
+            team_inbox_projection.InboxMediaBrowserPresentation.attachment,
+        ),
+    ],
+)
+def test_media_content_selects_a_safe_browser_presentation(
+    db_session,
+    monkeypatch,
+    asset_content_type,
+    response_content_type,
+    expected_presentation,
+):
+    conversation_id = _conversation_id(db_session)
+    asset = InboxMediaAsset(
+        conversation_id=conversation_id,
+        channel_type="whatsapp",
+        direction="inbound",
+        asset_type="image",
+        file_name="customer-image.png",
+        mime_type=asset_content_type,
+        source_url="https://media.example.test/customer-image",
+        download_status="remote_available",
+    )
+    db_session.add(asset)
+    db_session.flush()
+    monkeypatch.setattr(
+        team_inbox_media,
+        "_remote_media_content",
+        lambda _asset: StreamResult(
+            chunks=iter([PNG]),
+            content_type=response_content_type,
+            content_length=len(PNG),
+        ),
+    )
+
+    content = team_inbox_projection.get_media_content_projection(
+        db_session,
+        asset_id=asset.id,
+    )
+
+    assert isinstance(content, team_inbox_projection.InboxMediaContentProjection)
+    assert content.presentation is expected_presentation
+    assert content.content_type == response_content_type.split(";", 1)[0]
+    assert content.file_name == "customer-image.png"
+
+
+@pytest.mark.parametrize(
+    ("presentation", "expected_prefix"),
+    [
+        (team_inbox_projection.InboxMediaBrowserPresentation.inline, "inline;"),
+        (
+            team_inbox_projection.InboxMediaBrowserPresentation.attachment,
+            "attachment;",
+        ),
+    ],
+)
+def test_media_route_maps_the_typed_presentation_to_safe_headers(
+    monkeypatch,
+    presentation,
+    expected_prefix,
+):
+    from app.web.admin import inbox as admin_inbox
+
+    asset_id = uuid4()
+    monkeypatch.setattr(
+        team_inbox_projection,
+        "get_media_content_projection",
+        lambda _db, *, asset_id: team_inbox_projection.InboxMediaContentProjection(
+            asset_id=asset_id,
+            file_name="../customer image.png",
+            content_type="image/png",
+            content_length=len(PNG),
+            presentation=presentation,
+            chunks=iter([PNG]),
+        ),
+    )
+
+    response = admin_inbox.team_inbox_media_content(asset_id, db=object())
+
+    assert response.headers["content-disposition"].startswith(expected_prefix)
+    assert 'filename="customer image.png"' in response.headers["content-disposition"]
+    assert response.headers["content-type"] == "image/png"
+    assert response.headers["content-length"] == str(len(PNG))
+    assert response.headers["cache-control"] == "private, no-store"
+    assert response.headers["x-content-type-options"] == "nosniff"
 
 
 def test_binding_ignores_assets_from_another_conversation(db_session):

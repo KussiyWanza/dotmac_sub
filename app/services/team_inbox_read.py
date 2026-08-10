@@ -837,6 +837,7 @@ def list_conversations(
     search: str | None = None,
     status: str | None = None,
     channel_type: str | None = None,
+    channel_types: Sequence[str] | None = None,
     subscriber_id: str | UUID | None = None,
     service_team_id: str | UUID | None = None,
     service_team_ids: Sequence[str | UUID] | None = None,
@@ -922,8 +923,13 @@ def list_conversations(
         query = query.filter(InboxConversation.status == status)
     if open_only:
         query = query.filter(InboxConversation.status != "resolved")
+    clean_channel_types = tuple(
+        str(item).strip() for item in (channel_types or ()) if str(item).strip()
+    )
     if channel_type:
         query = query.filter(InboxConversation.channel_type == channel_type)
+    elif clean_channel_types:
+        query = query.filter(InboxConversation.channel_type.in_(clean_channel_types))
     if priority_at_most is not None:
         query = query.filter(InboxConversation.priority <= int(priority_at_most))
     if muted is not None:

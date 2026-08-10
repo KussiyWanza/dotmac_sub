@@ -95,6 +95,17 @@ class InboundMessageObservation:
     external_account_id: str | None = None
     page_id: str | None = None
     instagram_account_id: str | None = None
+    provider_comment_id: str | None = None
+    comment_id: str | None = None
+    post_id: str | None = None
+    media_id: str | None = None
+    parent_provider_comment_id: str | None = None
+    commenter_id: str | None = None
+    commenter_name: str | None = None
+    commenter_username: str | None = None
+    surface: str | None = None
+    permalink_url: str | None = None
+    media_url: str | None = None
     contact_profile: dict[str, str | None] | None = None
     attachments: tuple[InboundAttachmentObservation, ...] = ()
 

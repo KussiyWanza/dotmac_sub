@@ -1011,7 +1011,6 @@ function customersPage(bulkContract) {
             const searchInput = document.getElementById('customers-search');
             if (searchInput) {
                 searchInput.addEventListener('input', () => {
-                    this.clearSelection();
                     this.resetToFirstPage();
                     this.syncFiltersFromForm();
                 });
@@ -1019,7 +1018,6 @@ function customersPage(bulkContract) {
 
             form.querySelectorAll('select[name]').forEach((input) => {
                 input.addEventListener('change', () => {
-                    this.clearSelection();
                     this.resetToFirstPage();
                     this.syncFiltersFromForm();
                 });
@@ -1027,14 +1025,12 @@ function customersPage(bulkContract) {
 
             form.querySelectorAll('input[data-live-filter]').forEach((input) => {
                 input.addEventListener('change', () => {
-                    this.clearSelection();
                     this.resetToFirstPage();
                     this.syncFiltersFromForm();
                 });
             });
 
             form.addEventListener('submit', () => {
-                this.clearSelection();
                 this.syncFiltersFromForm();
             });
         },

@@ -4740,6 +4740,20 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "GET /api/v1/field/vendor/map-assets/search": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "query:limit",
+    "query:q!",
+    "query:types"
+   ],
+   "request": null,
+   "responses": {
+    "200": "b2e8032a0b31",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "GET /api/v1/files/{file_id}/download": {
    "params": [
     "header:authorization",
