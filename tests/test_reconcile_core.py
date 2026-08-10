@@ -16,6 +16,7 @@ from types import SimpleNamespace
 import pytest
 from cryptography.fernet import Fernet
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.models.network import OLTDevice, OntSyncStatus, OntUnit
 from app.models.ont_observation import OntObservation
@@ -29,6 +30,43 @@ from app.services.network.reconcile import (
     ReconcileFailureReason,
     reconcile_ont,
 )
+from app.services.network.reconcile import core as reconcile_core
+
+
+class _PostgresSessionStub:
+    bind = SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+
+    def __init__(self, *, error: SQLAlchemyError | None = None) -> None:
+        self.error = error
+        self.calls: list[tuple[object, dict[str, str]]] = []
+
+    def execute(self, statement: object, params: dict[str, str]) -> None:
+        self.calls.append((statement, params))
+        if self.error is not None:
+            raise self.error
+
+
+def test_reconcile_timeout_uses_parameterizable_transaction_local_setting():
+    session = _PostgresSessionStub()
+
+    reconcile_core._widen_idle_in_transaction_timeout(session, 60)  # type: ignore[arg-type]
+
+    statement, params = session.calls[0]
+    assert str(statement) == (
+        "SELECT set_config('idle_in_transaction_session_timeout', :timeout_value, true)"
+    )
+    assert params == {"timeout_value": "90000ms"}
+
+
+def test_reconcile_timeout_setup_error_is_not_silently_swallowed():
+    error = SQLAlchemyError("timeout setting failed")
+    session = _PostgresSessionStub(error=error)
+
+    with pytest.raises(SQLAlchemyError, match="timeout setting failed"):
+        reconcile_core._widen_idle_in_transaction_timeout(  # type: ignore[arg-type]
+            session, 60
+        )
+
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
