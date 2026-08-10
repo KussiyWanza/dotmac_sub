@@ -21,6 +21,14 @@ from app.celery_app import celery_app
 logger = logging.getLogger(__name__)
 
 
+@celery_app.task(name="app.tasks.dotmac_erp_outbox.refresh_material_catalog")
+def refresh_material_catalog() -> dict:
+    """Refresh ERP item/warehouse facts without changing Sub eligibility."""
+    from app.services.field.material_catalog_sync import run_erp_material_catalog_sync
+
+    return run_erp_material_catalog_sync()
+
+
 @celery_app.task(name="app.tasks.dotmac_erp_outbox.deliver_erp_sync_events")
 def deliver_erp_sync_events() -> dict:
     """Deliver pending field_erp_sync_events rows to ERP."""

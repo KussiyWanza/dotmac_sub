@@ -133,6 +133,7 @@ celery_app.conf.task_routes = {
     "app.tasks.dotmac_erp_outbox.deliver_erp_sync_events": {"queue": "crm"},
     "app.tasks.dotmac_erp_outbox.refresh_expense_claim_statuses": {"queue": "crm"},
     "app.tasks.dotmac_erp_outbox.refresh_material_request_statuses": {"queue": "crm"},
+    "app.tasks.dotmac_erp_outbox.refresh_material_catalog": {"queue": "crm"},
     "app.tasks.dotmac_erp_outbox.repair_purchase_invoice_sync": {"queue": "crm"},
     "app.tasks.dotmac_erp_outbox.refresh_purchase_invoice_statuses": {"queue": "crm"},
     "app.tasks.dotmac_erp_outbox.sync_erp_operational_domains": {"queue": "crm"},

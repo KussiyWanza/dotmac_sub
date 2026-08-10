@@ -58,7 +58,7 @@ _ERP_ISSUE_STATUS = "issued"
 
 # The sub-side statuses a request can still change while ERP owns fulfillment;
 # only these get polled for a status refresh.
-_IN_FLIGHT_STATUSES = ("approved", "issued")
+_IN_FLIGHT_STATUSES = ("submitted", "approved", "accepted_by_erp", "pending_stock")
 
 # ---------------------------------------------------------------------------
 # Mapping + idempotency key (port of CRM's _map_material_request)
@@ -158,7 +158,7 @@ def material_request_eligibility_error(request: FieldMaterialRequest) -> str | N
     it to match the employee). The source-warehouse requirement is relaxed vs CRM
     (sub has no source_location) — see the module docstring gap note.
     """
-    if request.status != "approved":
+    if request.status not in {"submitted", "approved"}:
         return (
             f"Material request {request.id} is in {request.status} status and "
             "cannot be synced"
