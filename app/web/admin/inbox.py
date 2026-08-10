@@ -66,7 +66,10 @@ from app.services.ai.client import AIClientError
 from app.services.auth_dependencies import can, require_permission
 from app.services.catalog import plan_family_catalogues
 from app.services.domain_errors import DomainError
-from app.services.file_storage import build_content_disposition
+from app.services.file_storage import (
+    build_content_disposition,
+    build_inline_content_disposition,
+)
 from app.services.owner_commands import CommandContext
 from app.services.sales import lead_intake
 
@@ -500,19 +503,28 @@ def team_inbox_media_content(
     db: Session = Depends(get_db),
 ):
     try:
-        asset, stream = team_inbox_media.stream_asset_content(db, asset_id)
+        media_content = team_inbox_projection.get_media_content_projection(
+            db,
+            asset_id=asset_id,
+        )
     except team_inbox_media.MediaContentError as exc:
         raise HTTPException(status_code=404, detail=exc.message) from exc
+    content_disposition = (
+        build_inline_content_disposition(media_content.file_name)
+        if media_content.presentation
+        is team_inbox_projection.InboxMediaBrowserPresentation.inline
+        else build_content_disposition(media_content.file_name)
+    )
     headers = {
-        "Content-Disposition": build_content_disposition(
-            asset.file_name or f"inbox-media-{asset.id}"
-        )
+        "Cache-Control": "private, no-store",
+        "Content-Disposition": content_disposition,
+        "X-Content-Type-Options": "nosniff",
     }
-    if stream.content_length is not None:
-        headers["Content-Length"] = str(stream.content_length)
+    if media_content.content_length is not None:
+        headers["Content-Length"] = str(media_content.content_length)
     return StreamingResponse(
-        stream.chunks,
-        media_type=stream.content_type or asset.mime_type or "application/octet-stream",
+        media_content.chunks,
+        media_type=media_content.content_type,
         headers=headers,
     )
 

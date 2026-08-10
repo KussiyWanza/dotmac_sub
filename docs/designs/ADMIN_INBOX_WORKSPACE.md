@@ -53,6 +53,11 @@ Common conversation actions: reply, add private note, assign, change status,
 change priority, snooze, mute, apply labels, retry a failed message, open
 contact context, and start a ticket handoff.
 
+Clicking a safe raster-image attachment opens the authorized media content in
+a new browser tab. The media projection, not the template or filename, decides
+whether the resolved MIME type is safe for inline presentation. SVG, unknown,
+and non-image content remains download-only.
+
 Operator availability action: set my Team Inbox availability to online, away,
 or offline through `communications.team_inbox_commands`. The routing owner uses
 effective availability for automatic conversation assignment; away and offline
