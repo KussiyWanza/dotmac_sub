@@ -120,6 +120,53 @@ def test_an_unassigned_project_is_not_quotable_until_bidding_opens(db_session):
     assert exc.value.code.endswith(".quote_creation_not_allowed")
 
 
+def test_staff_vendor_queue_searches_draft_projects_for_assignment(db_session):
+    installation, _vendor, _user = _chain(db_session)
+    installation.project.name = "Cabinet Alpha Build"
+    installation.project.code = "CAB-114"
+    installation.project.number = "114"
+    other_project = Project(name="Other draft project", code="OTHER-QUEUE")
+    db_session.add(other_project)
+    db_session.flush()
+    db_session.add(InstallationProject(project_id=other_project.id))
+    db_session.commit()
+
+    result = vendor_portal_operations.list_draft_projects(db_session, search="114")
+
+    assert [str(project.id) for project in result] == [str(installation.id)]
+
+
+def test_staff_vendor_queue_searches_reviewable_quotes_by_project_and_vendor(
+    db_session,
+):
+    installation, vendor, _user = _chain(db_session)
+    installation.project.name = "Quote Search Project"
+    installation.project.number = "QSP-114"
+    vendor.name = "Searchable Queue Vendor"
+    quote = ProjectQuote(
+        project_id=installation.id,
+        vendor_id=vendor.id,
+        status=ProjectQuoteStatus.submitted.value,
+    )
+    hidden = ProjectQuote(
+        project_id=installation.id,
+        vendor_id=vendor.id,
+        status=ProjectQuoteStatus.draft.value,
+    )
+    db_session.add_all([quote, hidden])
+    db_session.commit()
+
+    by_project = vendor_portal_operations.list_reviewable_quotes(
+        db_session, search="QSP-114"
+    )
+    by_vendor = vendor_portal_operations.list_reviewable_quotes(
+        db_session, search="Queue Vendor"
+    )
+
+    assert [str(row.id) for row in by_project] == [str(quote.id)]
+    assert [str(row.id) for row in by_vendor] == [str(quote.id)]
+
+
 def test_open_bidding_requires_an_actual_window(db_session):
     """``list_projects(available=True)`` requires both window bounds. The
     command must not accept a project the listing would never have shown."""
