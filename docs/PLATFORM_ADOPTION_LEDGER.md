@@ -58,7 +58,7 @@ manifest; ERP would then have declared an incompatible one, which is the
 vocabulary fork ADR-0008 exists to prevent. Recorded as an ADR-0006 amendment
 in the starter ("build once; an extension point is not a licence"). Sub declares
 no value-type vocabulary of its own, and migration
-`511_open_setting_value_type_vocabulary` removed the database's closed list so
+`512_open_setting_value_type_vocabulary` removed the database's closed list so
 a kernel-declared type can be stored at all.
 
 **Nothing in `app/` changes by the bump itself.** a24 (`inherits`), a25
@@ -199,10 +199,14 @@ kernel-private and forbidden outright.
 
 The executable form of the table above, enforced by
 `tests/architecture/test_kernel_import_boundary.py`. Only these modules may ever
-be imported under `app/`, and only once the dependency lands (S2). Today the
-count of kernel imports in `app/` is zero, and the guard already enforces this
-list. This section and the test's allowlist must stay in exact sync (the test
-parses this section).
+be imported under `app/`, and only once the dependency lands (S2). This section
+and the test's allowlist must stay in exact sync (the test parses this
+section).
+
+The count of kernel imports in `app/` is no longer zero, which an earlier
+version of this paragraph asserted: `app/composition.py` (S3),
+`app/services/kernel_secret_source.py`, `app/services/operator_tenant.py`
+and the settings cutover all import from this list.
 
 - `dotmac_kernel.assembly`
 - `dotmac_kernel.capabilities`
@@ -213,6 +217,9 @@ parses this section).
 - `dotmac_kernel.providers`
 - `dotmac_kernel.providers.provisioning`
 - `dotmac_kernel.secret_sources`
+- `dotmac_kernel.setting_value_types`
+- `dotmac_kernel.settings_models`
+- `dotmac_kernel.settings_resolver`
 
 `dotmac_kernel.models` is admitted for **two names only** — `Tenant` and
 `TenantDomain` (ADR-0009). Every other name in it, including `Party`,
@@ -228,6 +235,16 @@ OpenBao client and performs no I/O. Sub's implementation is
 `app/services/kernel_secret_source.py`, over the client in
 `app/services/secrets.py`. ADR-0009 (`dotmac_starter_mt`): a secret is held,
 never dereferenced, so nothing on a settings read path reaches OpenBao.
+
+The three settings modules were added 2026-08-10 for the settings cutover:
+`settings_resolver` (resolution, and `register_specs` so Sub's 560 specs are
+declared where the resolver looks), `settings_models` (the `DomainSetting`
+the kernel reads, which is Sub's own table), and `setting_value_types` (the
+declared value types, consulted at Sub's WRITE boundary). This is the pairing
+migration `512` was written for: that migration removed the database's closed
+list of value types, and this admits the registry that replaces it. Sub
+declares no value types of its own — starter ADR-0006, "build once; an
+extension point is not a licence".
 
 Rules the guard enforces beyond the module list:
 

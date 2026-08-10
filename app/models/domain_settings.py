@@ -270,5 +270,34 @@ def _reject_undeclared_domain(
     require_declared_domain(target.domain)
 
 
+def _reject_undeclared_value_type(
+    mapper: object, connection: object, target: DomainSetting
+) -> None:
+    """Fail a write whose value type no installed module declares.
+
+    The other half of migration ``512``. That migration removed the DATABASE's
+    closed list — the native ``settingvaluetype`` enum and a CHECK naming
+    ``json`` — so a kernel-declared type could be stored at all. Removing a
+    constraint without replacing its guarantee would have made a typo a stored
+    row, so the authority moves rather than disappears: it is now
+    ``dotmac_kernel.setting_value_types``, because how a value is ENCODED is a
+    fleet-wide fact and two products declaring incompatible versions of one
+    type is the fork ADR-0008 exists to prevent (starter ADR-0006, "build once;
+    an extension point is not a licence").
+
+    Enforced at the WRITE boundary, on the model, for the same two reasons as
+    :func:`_reject_undeclared_domain`: the service layer is not the only
+    writer, and a row stored under a since-retired type must still READ.
+    """
+
+    from dotmac_kernel.setting_value_types import active_setting_value_types
+
+    if target.value_type is None:
+        return
+    active_setting_value_types().require(str(target.value_type))
+
+
 event.listen(DomainSetting, "before_insert", _reject_undeclared_domain)
 event.listen(DomainSetting, "before_update", _reject_undeclared_domain)
+event.listen(DomainSetting, "before_insert", _reject_undeclared_value_type)
+event.listen(DomainSetting, "before_update", _reject_undeclared_value_type)

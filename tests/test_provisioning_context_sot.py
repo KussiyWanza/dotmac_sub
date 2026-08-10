@@ -17,6 +17,14 @@ class _EmptyQuery:
         return None
 
 
+class _EmptyScalars:
+    def first(self):
+        return None
+
+    def all(self):
+        return []
+
+
 class _FakeSession:
     def __init__(self, subscription):
         self.subscription = subscription
@@ -28,6 +36,22 @@ class _FakeSession:
 
     def query(self, *args, **kwargs):
         return _EmptyQuery()
+
+    def scalars(self, *args, **kwargs):
+        """The kernel resolver's session API, which is not `query`.
+
+        Settings resolution moved to `dotmac_kernel.settings_resolver`, which
+        issues `db.scalars(select(...)).first()`. A fake shaped for the old
+        `db.query(...)` chain raises AttributeError here — loudly, which is the
+        good case. A `MagicMock` in the same position does NOT: it returns
+        another mock and the test asserts against it, which is how two
+        scheduler-config tests started comparing a mock to "Africa/Lagos".
+
+        No stored settings rows: every read falls through to its spec default,
+        which is what this test wants.
+        """
+
+        return _EmptyScalars()
 
 
 def test_extend_provisioning_context_merges_canonical_network_context(monkeypatch):

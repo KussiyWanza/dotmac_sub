@@ -67,6 +67,11 @@ class SettingValueType(str):
     integer: ClassVar["SettingValueType"]
     boolean: ClassVar["SettingValueType"]
     json: ClassVar["SettingValueType"]
+    # An ordered JSON array. A KERNEL built-in since 0.1.0a27, not a Sub
+    # declaration — see the note above on where the authority lives. The
+    # annotation shadows the builtin `list` inside this class body only;
+    # nothing in the body calls it.
+    list: ClassVar["SettingValueType"]
 
     @property
     def value(self) -> str:
@@ -94,7 +99,7 @@ class SettingValueType(str):
         )
 
 
-for _name in ("string", "integer", "boolean", "json"):
+for _name in ("string", "integer", "boolean", "json", "list"):
     setattr(SettingValueType, _name, SettingValueType(_name))
 del _name
 

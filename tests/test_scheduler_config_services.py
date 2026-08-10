@@ -363,6 +363,15 @@ class TestGetCeleryConfig:
         mock_session = MagicMock()
         mock_session.query.return_value.filter.return_value.filter.return_value.first.return_value = None
         mock_session.query.return_value.filter.return_value.filter.return_value.filter.return_value.first.return_value = None
+        # Settings resolution moved to `dotmac_kernel.settings_resolver`, which
+        # issues `db.scalars(select(...)).first()` rather than a `query` chain.
+        # Without this the MagicMock happily returns another mock, resolution
+        # yields it instead of the spec default, and an assertion below compares
+        # a mock to "Africa/Lagos". Two of the three tests sharing this fixture
+        # failed that way; the third passed only because it never asserted on a
+        # resolved value — which is the silent half of the same problem.
+        mock_session.scalars.return_value.first.return_value = None
+        mock_session.scalars.return_value.all.return_value = []
 
         with patch.object(scheduler_config, "SessionLocal", return_value=mock_session):
             config = scheduler_config.get_celery_config()
@@ -384,6 +393,15 @@ class TestGetCeleryConfig:
         mock_session = MagicMock()
         mock_session.query.return_value.filter.return_value.filter.return_value.first.return_value = None
         mock_session.query.return_value.filter.return_value.filter.return_value.filter.return_value.first.return_value = None
+        # Settings resolution moved to `dotmac_kernel.settings_resolver`, which
+        # issues `db.scalars(select(...)).first()` rather than a `query` chain.
+        # Without this the MagicMock happily returns another mock, resolution
+        # yields it instead of the spec default, and an assertion below compares
+        # a mock to "Africa/Lagos". Two of the three tests sharing this fixture
+        # failed that way; the third passed only because it never asserted on a
+        # resolved value — which is the silent half of the same problem.
+        mock_session.scalars.return_value.first.return_value = None
+        mock_session.scalars.return_value.all.return_value = []
 
         with patch.object(scheduler_config, "SessionLocal", return_value=mock_session):
             config = scheduler_config.get_celery_config()
@@ -403,6 +421,15 @@ class TestGetCeleryConfig:
         mock_session = MagicMock()
         mock_session.query.return_value.filter.return_value.filter.return_value.first.return_value = None
         mock_session.query.return_value.filter.return_value.filter.return_value.filter.return_value.first.return_value = None
+        # Settings resolution moved to `dotmac_kernel.settings_resolver`, which
+        # issues `db.scalars(select(...)).first()` rather than a `query` chain.
+        # Without this the MagicMock happily returns another mock, resolution
+        # yields it instead of the spec default, and an assertion below compares
+        # a mock to "Africa/Lagos". Two of the three tests sharing this fixture
+        # failed that way; the third passed only because it never asserted on a
+        # resolved value — which is the silent half of the same problem.
+        mock_session.scalars.return_value.first.return_value = None
+        mock_session.scalars.return_value.all.return_value = []
 
         with patch.object(scheduler_config, "SessionLocal", return_value=mock_session):
             config = scheduler_config.get_celery_config()
