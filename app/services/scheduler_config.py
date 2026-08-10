@@ -2083,6 +2083,7 @@ def build_beat_schedule() -> dict:
         # ERP schedules derive from validated capability bindings. Per-flow
         # single-writer ownership remains the independent business cutover gate.
         from app.services.integrations.backoffice_contracts import (
+            ERP_INVENTORY_CAPABILITY,
             ERP_OPERATIONAL_SYNC_CAPABILITY,
             ERP_OUTBOX_CAPABILITY,
             ERP_STATUS_CAPABILITY,
@@ -2090,6 +2091,7 @@ def build_beat_schedule() -> dict:
         from app.services.integrations.erp_capability import capability_enabled
 
         erp_outbox_enabled = capability_enabled(session, ERP_OUTBOX_CAPABILITY)
+        erp_inventory_enabled = capability_enabled(session, ERP_INVENTORY_CAPABILITY)
         erp_status_enabled = capability_enabled(session, ERP_STATUS_CAPABILITY)
         erp_operational_sync_enabled = capability_enabled(
             session, ERP_OPERATIONAL_SYNC_CAPABILITY
@@ -2098,6 +2100,13 @@ def build_beat_schedule() -> dict:
             session, SettingDomain.integration, "dotmac_erp_outbox_interval_seconds"
         )
         dotmac_erp_outbox_interval = max(dotmac_erp_outbox_interval, 30)
+        _sync_scheduled_task(
+            session,
+            name="dotmac_erp_material_catalog_refresh",
+            task_name="app.tasks.dotmac_erp_outbox.refresh_material_catalog",
+            enabled=erp_inventory_enabled,
+            interval_seconds=86400,
+        )
         _sync_scheduled_task(
             session,
             name="dotmac_erp_outbox_delivery",

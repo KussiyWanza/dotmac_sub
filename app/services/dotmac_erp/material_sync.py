@@ -54,11 +54,11 @@ PROVIDER = "dotmac_erp"
 
 # ERP status pushed for an ISSUE material request (verbatim CRM parity: CRM sends
 # ``MaterialRequestStatus.issued.value``).
-_ERP_ISSUE_STATUS = "issued"
+_ERP_SUBMISSION_STATUS = "submitted"
 
 # The sub-side statuses a request can still change while ERP owns fulfillment;
 # only these get polled for a status refresh.
-_IN_FLIGHT_STATUSES = ("approved", "issued")
+_IN_FLIGHT_STATUSES = ("submitted", "approved", "accepted_by_erp", "pending_stock")
 
 # ---------------------------------------------------------------------------
 # Mapping + idempotency key (port of CRM's _map_material_request)
@@ -104,7 +104,7 @@ def build_material_request_payload(request: FieldMaterialRequest) -> dict:
     """Map a ``FieldMaterialRequest`` to ERP's ``CRMMaterialRequestPayload`` shape.
 
     Mirrors CRM's ``_map_material_request``: ``omni_id`` is sub's request UUID,
-    ``request_type='ISSUE'``, ``status='issued'``, each line carries
+    ``request_type='ISSUE'``, ``status='submitted'``, each line carries
     ``item_code`` / ``quantity`` / ``uom`` / ``from_warehouse_code`` (and
     ``serial_numbers`` when known). ``requested_by_email`` lets ERP match the
     employee; ``ticket_crm_id`` comes off the work-order mirror (sub has no direct
@@ -141,7 +141,7 @@ def build_material_request_payload(request: FieldMaterialRequest) -> dict:
     return {
         "omni_id": str(request.id),
         "request_type": "ISSUE",
-        "status": _ERP_ISSUE_STATUS,
+        "status": _ERP_SUBMISSION_STATUS,
         "schedule_date": schedule_date,
         "requested_by_email": _requester_email(request),
         "ticket_crm_id": getattr(mirror, "crm_ticket_id", None),
@@ -158,7 +158,7 @@ def material_request_eligibility_error(request: FieldMaterialRequest) -> str | N
     it to match the employee). The source-warehouse requirement is relaxed vs CRM
     (sub has no source_location) — see the module docstring gap note.
     """
-    if request.status != "approved":
+    if request.status not in {"submitted", "approved"}:
         return (
             f"Material request {request.id} is in {request.status} status and "
             "cannot be synced"

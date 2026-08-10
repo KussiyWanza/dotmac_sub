@@ -371,6 +371,63 @@ def test_facebook_comment_reply_records_provider_id_only_after_meta_accepts(
     assert outbound.metadata_["parent_provider_comment_id"] == "comment-123"
 
 
+def test_social_comment_reply_targets_quoted_comment_not_latest_inbound(
+    db_session, monkeypatch
+):
+    from app.services import meta_pages
+
+    conversation = _social_comment_conversation(
+        db_session,
+        channel="facebook_comment",
+        account_key="page_id",
+        account_id="page-123",
+    )
+    first = (
+        db_session.query(InboxMessage)
+        .filter(InboxMessage.direction == InboxMessageDirection.inbound.value)
+        .one()
+    )
+    db_session.add(
+        InboxMessage(
+            conversation_id=conversation.id,
+            channel_type=conversation.channel_type,
+            direction=InboxMessageDirection.inbound.value,
+            body="Second comment",
+            external_message_id="comment-999",
+            from_address="Bayo",
+            received_at=datetime(2026, 7, 10, 8, 5, tzinfo=UTC),
+        )
+    )
+    db_session.flush()
+    calls: list[dict[str, str]] = []
+    monkeypatch.setattr(
+        meta_pages,
+        "reply_to_comment_sync",
+        lambda _db, **kwargs: calls.append(kwargs) or {"id": "reply-456"},
+    )
+
+    result = team_inbox_outbound.send_inbox_reply(
+        db_session,
+        conversation=conversation,
+        payload=team_inbox_outbound.InboxReplyPayload(
+            body_html="<p>Replying to the first.</p>",
+            body_text="Replying to the first.",
+            sent_by_person_id=uuid4(),
+            metadata={"reply_to": {"message_id": str(first.id)}},
+        ),
+    )
+    notification_tasks._deliver_notification_queue_stats(db_session)
+
+    outbound = (
+        db_session.query(InboxMessage)
+        .filter(InboxMessage.direction == InboxMessageDirection.outbound.value)
+        .one()
+    )
+    assert result.kind == "queued"
+    assert calls[0]["comment_id"] == "comment-123"
+    assert outbound.metadata_["parent_provider_comment_id"] == "comment-123"
+
+
 def test_social_comment_provider_failure_does_not_create_a_false_reply(
     db_session, monkeypatch
 ):

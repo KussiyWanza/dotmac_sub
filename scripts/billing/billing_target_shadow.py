@@ -31,6 +31,7 @@ import argparse
 import json
 import sys
 from datetime import UTC, datetime
+from decimal import Decimal
 from uuid import UUID
 
 from app.db import SessionLocal
@@ -471,6 +472,129 @@ def _cmd_preview_post_cutover_account_opening(db, args) -> int:
     return 0
 
 
+def _cmd_preview_migrated_account_opening(db, args) -> int:
+    from app.services.billing.shadow_verification import (
+        RecordPostCutoverMigratedAccountOpeningPreviewCommand,
+        ReviewedMigratedOpeningSource,
+        record_post_cutover_migrated_account_opening_preview,
+    )
+
+    result = record_post_cutover_migrated_account_opening_preview(
+        db,
+        RecordPostCutoverMigratedAccountOpeningPreviewCommand(
+            account_id=UUID(args.account),
+            source=ReviewedMigratedOpeningSource(
+                position_at=_instant(args.position_at),
+                legacy_position=Decimal(args.legacy_position),
+                evidence_ref=args.source_evidence_ref,
+                evidence_sha256=args.source_evidence_sha256,
+            ),
+            code_version=args.code_version,
+            database_schema_version=args.schema_version,
+            currency=args.currency,
+        ),
+        context=_context(
+            "record one reviewed migrated-account opening proposal",
+            idempotency_key=args.idempotency_key,
+        ),
+    )
+    _emit(
+        {
+            "run_id": result.run_id,
+            "account_id": result.account_id,
+            "currency": result.currency,
+            "legacy_position": result.legacy_position,
+            "shadow_position_before": result.shadow_position_before,
+            "opening_delta": result.opening_delta,
+            "source_evidence_ref": result.source_evidence_ref,
+            "source_evidence_sha256": result.source_evidence_sha256,
+            "source_fingerprint": result.source_fingerprint,
+            "result_fingerprint": result.result_fingerprint,
+            "replayed": result.replayed,
+            "authority_moved": False,
+            "postings_manufactured": False,
+        }
+    )
+    return 0
+
+
+def _cmd_preview_prepaid_service_renewal(db, args) -> int:
+    from app.services.prepaid_service_renewals import (
+        preview_prepaid_service_renewal,
+    )
+
+    result = preview_prepaid_service_renewal(
+        db,
+        subscription_id=UUID(args.subscription),
+        starts_at=_instant(args.starts_at),
+        ends_at=_instant(args.ends_at),
+        amount=Decimal(args.amount),
+        currency=args.currency,
+    )
+    _emit(
+        {
+            "account_id": result.account_id,
+            "subscription_id": result.subscription_id,
+            "starts_at": result.starts_at,
+            "ends_at": result.ends_at,
+            "amount": result.amount,
+            "currency": result.currency,
+            "funding_before": result.funding_before,
+            "funding_after": result.funding_after,
+            "shortfall": result.shortfall,
+            "allowed": result.allowed,
+            "preview_fingerprint": result.fingerprint,
+            "replayed": result.replayed,
+            "financial_state_changed": False,
+        }
+    )
+    return 0
+
+
+def _cmd_execute_reviewed_prepaid_service_renewal(db, args) -> int:
+    from app.services.prepaid_service_renewals import (
+        ExecuteReviewedPrepaidServiceRenewalCommand,
+        execute_reviewed_prepaid_service_renewal,
+    )
+
+    result = execute_reviewed_prepaid_service_renewal(
+        db,
+        ExecuteReviewedPrepaidServiceRenewalCommand(
+            context=_context(
+                "execute one fingerprint-approved missed prepaid service renewal",
+                idempotency_key=args.idempotency_key,
+                actor=args.actor,
+            ),
+            subscription_id=UUID(args.subscription),
+            starts_at=_instant(args.starts_at),
+            ends_at=_instant(args.ends_at),
+            amount=Decimal(args.amount),
+            currency=args.currency,
+            expected_preview_fingerprint=args.preview_fingerprint,
+            evidence_ref=args.evidence_ref,
+        ),
+    )
+    renewal = result.renewal
+    _emit(
+        {
+            "account_id": renewal.preview.account_id,
+            "subscription_id": renewal.preview.subscription_id,
+            "starts_at": renewal.preview.starts_at,
+            "ends_at": renewal.preview.ends_at,
+            "amount": renewal.preview.amount,
+            "currency": renewal.preview.currency,
+            "funding_before": renewal.preview.funding_before,
+            "funding_after": renewal.preview.funding_after,
+            "entitlement_id": renewal.entitlement.id,
+            "ledger_entry_id": renewal.ledger_entry.id,
+            "outcome_event_id": result.outcome.event_id if result.outcome else None,
+            "restored_service_count": result.restored_service_count,
+            "replayed": renewal.replayed,
+        }
+    )
+    return 0
+
+
 def _cmd_approve_verification(db, args) -> int:
     method = (
         BillingShadowVerification.approve_finance
@@ -906,6 +1030,47 @@ def main() -> int:
     p.add_argument("--currency", default="NGN")
     p.add_argument("--idempotency-key", required=True)
     p.set_defaults(func=_cmd_preview_post_cutover_account_opening)
+
+    p = sub.add_parser(
+        "preview-migrated-account-opening",
+        help="record one finance-evidenced migrated account opening proposal",
+    )
+    p.add_argument("--account", required=True)
+    p.add_argument("--position-at", required=True)
+    p.add_argument("--legacy-position", required=True)
+    p.add_argument("--source-evidence-ref", required=True)
+    p.add_argument("--source-evidence-sha256", required=True)
+    p.add_argument("--code-version", required=True)
+    p.add_argument("--schema-version", required=True)
+    p.add_argument("--currency", default="NGN")
+    p.add_argument("--idempotency-key", required=True)
+    p.set_defaults(func=_cmd_preview_migrated_account_opening)
+
+    p = sub.add_parser(
+        "preview-prepaid-service-renewal",
+        help="preview one exact prepaid service period without changing money",
+    )
+    p.add_argument("--subscription", required=True)
+    p.add_argument("--starts-at", required=True)
+    p.add_argument("--ends-at", required=True)
+    p.add_argument("--amount", required=True)
+    p.add_argument("--currency", default="NGN")
+    p.set_defaults(func=_cmd_preview_prepaid_service_renewal)
+
+    p = sub.add_parser(
+        "execute-reviewed-prepaid-service-renewal",
+        help="execute one exact fingerprint-approved missed prepaid period",
+    )
+    p.add_argument("--subscription", required=True)
+    p.add_argument("--starts-at", required=True)
+    p.add_argument("--ends-at", required=True)
+    p.add_argument("--amount", required=True)
+    p.add_argument("--currency", default="NGN")
+    p.add_argument("--preview-fingerprint", required=True)
+    p.add_argument("--evidence-ref", required=True)
+    p.add_argument("--actor", required=True)
+    p.add_argument("--idempotency-key", required=True)
+    p.set_defaults(func=_cmd_execute_reviewed_prepaid_service_renewal)
 
     p = sub.add_parser(
         "approve-verification",

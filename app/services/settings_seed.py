@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.models.domain_settings import SettingDomain
 from app.models.subscription_engine import SettingValueType
+from app.schemas.settings import DomainSettingCreate
 from app.services.channel_health_contracts import DEFAULT_CHANNEL_HEALTH_CONTRACTS
 from app.services.domain_settings import (
     DomainSettings,
@@ -2193,6 +2194,45 @@ def seed_projects_settings(db: Session) -> None:
         key="default_project_priority",
         value_type=SettingValueType.string,
         value_text=os.getenv("PROJECTS_DEFAULT_PROJECT_PRIORITY", "normal"),
+    )
+    projects_settings.ensure_by_key(
+        db,
+        key="project_completion_finance_email_enabled",
+        value_type=SettingValueType.boolean,
+        value_text=os.getenv("PROJECTS_COMPLETION_FINANCE_EMAIL_ENABLED", "true"),
+        value_json=(
+            os.getenv("PROJECTS_COMPLETION_FINANCE_EMAIL_ENABLED", "true")
+            .strip()
+            .lower()
+            in {"1", "true", "yes", "on"}
+        ),
+    )
+    recipients = [
+        item.strip()
+        for item in os.getenv("PROJECTS_COMPLETION_FINANCE_EMAIL_RECIPIENTS", "").split(
+            ","
+        )
+        if item.strip()
+    ]
+    if not projects_settings.get_optional_by_key(
+        db, "project_completion_finance_email_recipients"
+    ):
+        projects_settings.create(
+            db,
+            DomainSettingCreate(
+                domain=SettingDomain.projects,
+                key="project_completion_finance_email_recipients",
+                value_type=SettingValueType.list,
+                value_json=recipients,
+            ),
+        )
+    projects_settings.ensure_by_key(
+        db,
+        key="project_completion_finance_permission_key",
+        value_type=SettingValueType.string,
+        value_text=os.getenv(
+            "PROJECTS_COMPLETION_FINANCE_PERMISSION_KEY", "finance:ap:read"
+        ),
     )
     projects_settings.ensure_by_key(
         db,

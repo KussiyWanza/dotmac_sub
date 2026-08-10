@@ -640,6 +640,21 @@ class TestTasksContext:
 
 
 class TestTemplateEditor:
+    def test_template_form_persists_vendor_assignment_scope_flag(self, db_session):
+        template = web_projects.create_template_from_form(
+            db_session,
+            name="Cable Rerun",
+            project_type="cable_rerun",
+            creates_vendor_assignment_scope="on",
+        )
+
+        context = web_projects.build_template_form_context(
+            db_session, template=template
+        )
+
+        assert template.creates_vendor_assignment_scope is True
+        assert context["prefill"]["creates_vendor_assignment_scope"] is True
+
     def test_editor_save_upserts_and_soft_deletes(self, db_session):
         template = web_projects.create_template_from_form(
             db_session, name="Editor template"

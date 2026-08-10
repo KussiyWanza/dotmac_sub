@@ -72,7 +72,14 @@ def _assigned_work_order(db_session):
         title="Install customer drop",
         status="scheduled",
     )
-    item = FieldInventoryItem(sku="DROP-100", name="Drop cable", unit="m")
+    item = FieldInventoryItem(
+        source_system="dotmac_erp",
+        source_item_id=str(uuid4()),
+        sku="DROP-100",
+        name="Drop cable",
+        unit="m",
+        field_request_eligible=True,
+    )
     db_session.add_all([technician, work_order, item])
     db_session.flush()
     db_session.add(
@@ -117,24 +124,14 @@ def test_staff_material_request_create_review_and_replay(db_session):
     assert db_session.query(FieldMaterialRequest).count() == 1
     db_session.commit()
 
-    approve_id = uuid4()
-    approval = material_requests.ReviewMaterialRequest(
-        context=_context(user.id, approve_id, "Approve installation materials"),
-        request_id=created.id,
-    )
-    approved = material_requests.approve_material_request(db_session, approval)
-    replayed_approval = material_requests.approve_material_request(db_session, approval)
-
-    assert approved.status is material_requests.MaterialRequestStatus.APPROVED
-    assert replayed_approval.status is material_requests.MaterialRequestStatus.APPROVED
     row = db_session.get(FieldMaterialRequest, created.id)
     assert row is not None
-    events = row.metadata_["manager_events"]
-    assert events[-1]["actor"] == f"user:{user.id}"
-    assert events[-1]["command_id"] == str(approve_id)
+    assert row.fulfillment_channel == "erp"
+    assert row.approved_at is None
+    assert row.status == "submitted"
 
 
-def test_staff_material_request_requires_active_assignment(db_session):
+def test_staff_material_request_does_not_require_assignment(db_session):
     user = SystemUser(
         first_name="Unassigned",
         last_name="Operator",
@@ -153,32 +150,37 @@ def test_staff_material_request_requires_active_assignment(db_session):
         title="Unassigned field visit",
         status="scheduled",
     )
-    item = FieldInventoryItem(name="Connector", unit="pcs")
+    item = FieldInventoryItem(
+        source_system="dotmac_erp",
+        source_item_id=str(uuid4()),
+        name="Connector",
+        unit="pcs",
+        field_request_eligible=True,
+    )
     db_session.add_all([work_order, item])
     db_session.commit()
     command_id = uuid4()
 
-    with pytest.raises(material_requests.MaterialRequestError) as exc:
-        material_requests.create_staff_material_request(
-            db_session,
-            material_requests.CreateStaffMaterialRequest(
-                context=_context(user.id, command_id, "Request materials"),
-                work_order_id=work_order.id,
-                request_id=command_id,
-                priority=material_requests.MaterialRequestPriority.MEDIUM,
-                source_warehouse_code="ABJ-STORES",
-                notes=None,
-                items=(
-                    material_requests.MaterialRequestLineInput(
-                        item_id=item.id,
-                        quantity=1,
-                    ),
+    created = material_requests.create_staff_material_request(
+        db_session,
+        material_requests.CreateStaffMaterialRequest(
+            context=_context(user.id, command_id, "Request materials"),
+            work_order_id=work_order.id,
+            request_id=command_id,
+            priority=material_requests.MaterialRequestPriority.MEDIUM,
+            source_warehouse_code="ABJ-STORES",
+            notes=None,
+            items=(
+                material_requests.MaterialRequestLineInput(
+                    item_id=item.id,
+                    quantity=1,
                 ),
             ),
-        )
+        ),
+    )
 
-    assert exc.value.code == "operations.material_dependencies.assignment_required"
-    assert db_session.query(FieldMaterialRequest).count() == 0
+    assert created.work_order_id == work_order.id
+    assert db_session.query(FieldMaterialRequest).count() == 1
 
 
 def test_material_requests_project_through_ticket_project_and_task(db_session):
@@ -312,12 +314,7 @@ def test_material_request_web_routes_templates_and_navigation_are_complete():
             "operations:material_request:read",
         ),
         (
-            "/operations/material-requests/{request_id}/approve",
-            "POST",
-            "operations:material_request:write",
-        ),
-        (
-            "/operations/material-requests/{request_id}/reject",
+            "/operations/material-requests/{request_id}/cancel",
             "POST",
             "operations:material_request:write",
         ),

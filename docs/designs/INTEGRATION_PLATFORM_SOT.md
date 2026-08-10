@@ -391,6 +391,17 @@ pin and the later individual-auth pin remain executable until explicit
 adoption closes their rollback windows. No new version/digest collision is
 allowed.
 
+The ledger records the digests this code produces, not the digests any
+environment has installed, so it cannot by itself detect that a rebuilt
+historical manifest has drifted away from a live pin. A historical manifest is
+reconstructed by its builder rather than stored, and editing that builder
+silently changes every version it rebuilds. Twice now the ledger was updated to
+match a drifted rebuild and stayed green while a production pin went
+unrepresented, which the deployment gate then caught as `unavailable` — after
+the release had already started. When a builder gains a field, gate it behind
+a per-version flag so prior versions rebuild byte-identically, and treat a
+changed historical digest as a break rather than a ledger update.
+
 Upgrade flow is expand, adopt, then contract:
 
 1. Deploy the new version while retaining every still-pinned prior definition

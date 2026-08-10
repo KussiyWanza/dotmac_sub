@@ -248,6 +248,13 @@ def vendor_project_detail(
         db,
         coerce_uuid(project["project_id"]),
     )
+    can_propose_closure = (
+        bool(vendor_work_orders)
+        and str(project.get("assigned_vendor_id") or "") == vendor_id
+        and vendor_capabilities.has_capability(
+            context, vendor_capabilities.AS_BUILT_WRITE
+        )
+    )
     return templates.TemplateResponse(
         "vendor/project_detail.html",
         {
@@ -259,6 +266,7 @@ def vendor_project_detail(
             "route_geojson": route_geojson,
             "supply": supply,
             "vendor_work_orders": vendor_work_orders,
+            "can_propose_closure": can_propose_closure,
             "message": message,
         },
     )
