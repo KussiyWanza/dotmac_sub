@@ -169,6 +169,65 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    raise RuntimeError(
-        "Forward-only migration: material request context and provenance cannot be safely discarded"
+    op.drop_column("field_material_request_items", "unit_snapshot")
+    op.drop_column("field_material_request_items", "name_snapshot")
+    op.drop_column("field_material_request_items", "sku_snapshot")
+    op.drop_column("field_material_request_items", "source_item_id_snapshot")
+
+    op.drop_constraint(
+        "ck_field_material_requests_has_context",
+        "field_material_requests",
+        type_="check",
     )
+    op.drop_constraint(
+        "ck_field_material_requests_fulfillment_channel",
+        "field_material_requests",
+        type_="check",
+    )
+    op.drop_constraint(
+        "ck_field_material_requests_status", "field_material_requests", type_="check"
+    )
+    op.create_check_constraint(
+        "ck_field_material_requests_status",
+        "field_material_requests",
+        "status IN ('draft','submitted','approved','rejected','issued','fulfilled','canceled')",
+    )
+    op.alter_column(
+        "field_material_requests", "requested_by_technician_id", nullable=False
+    )
+    op.alter_column("field_material_requests", "work_order_mirror_id", nullable=False)
+    op.drop_column("field_material_requests", "last_reconciled_at")
+    op.drop_column("field_material_requests", "issued_at")
+    op.drop_column("field_material_requests", "sent_to_erp_at")
+    op.drop_column("field_material_requests", "required_by")
+    op.drop_column("field_material_requests", "fulfillment_channel")
+    for name in ("project_task_id", "project_id", "ticket_id"):
+        op.drop_constraint(
+            f"fk_field_material_requests_{name}",
+            "field_material_requests",
+            type_="foreignkey",
+        )
+        op.drop_column("field_material_requests", name)
+
+    op.drop_index(
+        "ix_field_inventory_warehouses_name",
+        table_name="field_inventory_warehouses",
+    )
+    op.drop_table("field_inventory_warehouses")
+    op.drop_constraint(
+        "uq_field_inventory_source_item", "field_inventory_items", type_="unique"
+    )
+    for name in (
+        "source_payload_hash",
+        "last_synced_at",
+        "source_updated_at",
+        "track_serial_numbers",
+        "field_request_eligible",
+        "source_is_active",
+        "category_name",
+        "category_code",
+        "description",
+        "source_item_id",
+        "source_system",
+    ):
+        op.drop_column("field_inventory_items", name)

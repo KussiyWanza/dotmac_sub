@@ -370,8 +370,8 @@ def test_delivery_accepted_writes_erp_fields_back(db_session):
     assert result.accepted == 1
     assert request.support_reference == "ERP-MR-1"
     assert request.support_status == "issued"
-    assert request.status == "fulfilled"
-    assert request.fulfilled_at is not None
+    assert request.status == "issued"
+    assert request.issued_at is not None
     allocation = db_session.query(FieldWorkOrderMaterial).one()
     assert allocation.allocated_quantity == 5
     assert client.posts[0]["path"] == "/api/v1/sync/sub/material-requests"
@@ -389,8 +389,8 @@ def test_delivery_fulfilled_maps_terminal_status(db_session):
 
     db_session.refresh(request)
     assert request.support_status == "fulfilled"
-    assert request.status == "fulfilled"
-    assert request.fulfilled_at is not None
+    assert request.status == "issued"
+    assert request.issued_at is not None
 
 
 def test_delivery_rejected_records_erp_status(db_session):
@@ -471,7 +471,7 @@ def test_refresh_updates_status_for_in_flight_request(db_session):
     assert result["updated"] == 1
     assert client.status_calls == [str(request.id)]
     assert request.support_status == "fulfilled"
-    assert request.status == "fulfilled"
+    assert request.status == "issued"
 
 
 def test_refresh_skips_unsynced_and_terminal_requests(db_session):

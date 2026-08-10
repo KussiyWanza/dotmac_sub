@@ -551,7 +551,6 @@ SERVICES: tuple[SOTService, ...] = (
             "ERP material catalogue and warehouse projection",
             "field material request eligibility",
         ),
-        depends_on=("integration.dotmac_erp",),
         notes="ERP owns catalogue facts; Sub owns only field-request eligibility.",
         contract=ServiceContract(
             concerns=(
@@ -598,6 +597,28 @@ SERVICES: tuple[SOTService, ...] = (
                 retryable_codes=(),
                 fail_closed_on=("invalid or suspicious ERP observations",),
             ),
+            events=EventContract(
+                event_types=(
+                    "field_material_catalog.projected",
+                    "field_material_catalog.eligibility_updated",
+                ),
+                schema_version=1,
+                delivery_owner="events.dispatcher",
+                compatibility="Version 1 is additive and preserves ERP source identities.",
+                replay="The latest complete ERP observation plus Sub eligibility decisions rebuild the projection.",
+            ),
+            projections=(
+                ProjectionContract(
+                    name="ERP field-material catalogue projection",
+                    input_names=("ERP inventory catalogue observation",),
+                    writer="operations.material_catalog",
+                    freshness="Refreshed every 24 hours or by an explicit operator import.",
+                    stale_behavior="Retain the last good catalogue and display its observation time.",
+                    drift_signal="The catalogue observation is stale or a complete scan reports suspicious shrinkage.",
+                    rebuild_operation="Run a complete ERP item and warehouse catalogue import.",
+                    repair_owner="field operations",
+                ),
+            ),
             migration=MigrationContract(
                 state=AuthorityMigrationState.CUTOVER_READY,
                 old_owner="legacy CRM item projection",
@@ -608,7 +629,7 @@ SERVICES: tuple[SOTService, ...] = (
             ),
             steward="field operations",
             design_refs=("docs/designs/MATERIALS_VENDOR_ERP_CHAIN.md",),
-            test_refs=("tests/test_field_material_catalog.py",),
+            test_refs=("tests/test_admin_material_requests.py",),
         ),
     ),
     SOTService(
