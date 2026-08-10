@@ -44,8 +44,8 @@
     {
         "current": true,
         "key": "dotmac.erp",
-        "manifest_digest": "185ad7c1152c126445216cc75ae348a1612a746f6926fa8f4755b494a2c16cf3",
-        "version": "1.1.0"
+        "manifest_digest": "a4aa608ccd25a1c5b9c7463ccb327ec51724f8b9e464596d3936b86bc0b3f1a0",
+        "version": "1.2.0"
     },
     {
         "current": true,
@@ -70,6 +70,12 @@
         "key": "freepbx",
         "manifest_digest": "2009f57dda6aec855f50ddb970505365f979fde9eb2e94c93341b3b6efc6772c",
         "version": "1.0.0"
+    },
+    {
+        "current": false,
+        "key": "dotmac.erp",
+        "manifest_digest": "185ad7c1152c126445216cc75ae348a1612a746f6926fa8f4755b494a2c16cf3",
+        "version": "1.1.0"
     },
     {
         "current": false,

@@ -25,9 +25,12 @@ from app.services.billing.shadow_verification import (
     RecordPhase3OpeningPreviewCommand,
     RecordPhase3SubledgerParityCommand,
     RecordPostCutoverAccountOpeningPreviewCommand,
+    RecordPostCutoverMigratedAccountOpeningPreviewCommand,
+    ReviewedMigratedOpeningSource,
     record_phase3_opening_preview,
     record_phase3_subledger_parity,
     record_post_cutover_account_opening_preview,
+    record_post_cutover_migrated_account_opening_preview,
 )
 from app.services.billing.subledger_opening import (
     ActivateCustomerSubledgerAuthorityCommand,
@@ -43,6 +46,11 @@ from app.services.prepaid_funding_reconstruction import (
     prepaid_funding_opening_source_incomplete_account_ids,
     verified_prepaid_funding_balance,
     verified_prepaid_funding_balances,
+)
+from app.services.prepaid_service_renewals import (
+    ExecuteReviewedPrepaidServiceRenewalCommand,
+    execute_reviewed_prepaid_service_renewal,
+    preview_prepaid_service_renewal,
 )
 from tests.prepaid_funding_helpers import (
     ensure_test_prepaid_contract,
@@ -103,6 +111,31 @@ def _post_cutover_preview(
             account_id=account_id,
             code_version="pytest-post-cutover-opening",
             database_schema_version="471",
+        ),
+        context=_context("operator:pytest", key),
+    )
+
+
+def _migrated_opening_preview(
+    db,
+    *,
+    account_id: UUID,
+    position_at: datetime,
+    legacy_position: Decimal,
+    key: str,
+):
+    return record_post_cutover_migrated_account_opening_preview(
+        db,
+        RecordPostCutoverMigratedAccountOpeningPreviewCommand(
+            account_id=account_id,
+            source=ReviewedMigratedOpeningSource(
+                position_at=position_at,
+                legacy_position=legacy_position,
+                evidence_ref="finance-review:pytest-migrated-opening",
+                evidence_sha256="a" * 64,
+            ),
+            code_version="pytest-migrated-opening",
+            database_schema_version="pytest-head",
         ),
         context=_context("operator:pytest", key),
     )
@@ -379,6 +412,7 @@ def test_approved_residual_closes_position_without_double_counting_forward_fact(
     )
     db_session.add(blocker_subscription)
     db_session.flush()
+    blocker_subscription_id = blocker_subscription.id
     _candidate(db_session, unrelated_blocker, blocker_subscription)
     assert prepaid_funding_opening_source_incomplete_account_ids(
         db_session,
@@ -488,6 +522,121 @@ def test_approved_residual_closes_position_without_double_counting_forward_fact(
     assert verified_prepaid_funding_balance(db_session, native_account_id) == Decimal(
         "0.00"
     )
+
+    # A carried-in migrated account uses a separate, finance-evidenced path.
+    # The reviewed source amount is the original authority-cutoff position;
+    # later canonical facts remain later facts and are not folded into it.
+    unrelated_blocker.splynx_customer_id = "16382"
+    db_session.add(
+        LedgerEntry(
+            account_id=unrelated_blocker_id,
+            entry_type=LedgerEntryType.credit,
+            source=LedgerSource.other,
+            amount=Decimal("8477.75"),
+            currency="NGN",
+            memo="pytest reviewed post-cutoff credit-note effect",
+            effective_date=cutoff + timedelta(days=1),
+        )
+    )
+    db_session.commit()
+
+    with pytest.raises(BillingShadowVerificationError) as cutoff_exc:
+        _migrated_opening_preview(
+            db_session,
+            account_id=unrelated_blocker_id,
+            position_at=cutoff + timedelta(seconds=1),
+            legacy_position=Decimal("67334.75"),
+            key="opening-preview-migrated-wrong-cutoff",
+        )
+    assert cutoff_exc.value.code.endswith("reviewed_source_cutoff_mismatch")
+
+    migrated = _migrated_opening_preview(
+        db_session,
+        account_id=unrelated_blocker_id,
+        position_at=cutoff,
+        legacy_position=Decimal("67334.75"),
+        key="opening-preview-migrated-account",
+    )
+    assert migrated.legacy_position == Decimal("67334.75")
+    assert migrated.shadow_position_before == Decimal("0.00")
+    assert migrated.opening_delta == Decimal("67334.75")
+    assert migrated.source_evidence_sha256 == "a" * 64
+    db_session.commit()
+
+    migrated_replay = _migrated_opening_preview(
+        db_session,
+        account_id=unrelated_blocker_id,
+        position_at=cutoff,
+        legacy_position=Decimal("67334.75"),
+        key="opening-preview-migrated-account",
+    )
+    assert migrated_replay.replayed is True
+    assert migrated_replay.result_fingerprint == migrated.result_fingerprint
+
+    _approve(
+        db_session,
+        migrated.run_id,
+        at=cutover.cutover_at + timedelta(minutes=3),
+    )
+    unrelated_blocker.splynx_customer_id = "99999"
+    db_session.commit()
+    with pytest.raises(CustomerSubledgerOpeningError) as migrated_stale_exc:
+        _capture(
+            db_session,
+            migrated,
+            key="opening-capture-migrated-account",
+        )
+    assert migrated_stale_exc.value.code.endswith("stale_reviewed_preview")
+    unrelated_blocker.splynx_customer_id = "16382"
+    db_session.commit()
+    migrated_capture = _capture(
+        db_session,
+        migrated,
+        key="opening-capture-migrated-account",
+    )
+    assert migrated_capture.captured_count == 1
+    assert migrated_capture.positive_total == Decimal("67334.75")
+    assert verified_prepaid_funding_balance(
+        db_session, unrelated_blocker_id
+    ) == Decimal("75812.50")
+
+    period_start = cutoff + timedelta(days=7)
+    period_end = cutoff + timedelta(days=38)
+    renewal_preview = preview_prepaid_service_renewal(
+        db_session,
+        subscription_id=blocker_subscription_id,
+        starts_at=period_start,
+        ends_at=period_end,
+        amount=Decimal("18812.50"),
+    )
+    assert renewal_preview.allowed is True
+    assert renewal_preview.funding_before == Decimal("75812.50")
+    db_session.commit()
+    reviewed_renewal = execute_reviewed_prepaid_service_renewal(
+        db_session,
+        ExecuteReviewedPrepaidServiceRenewalCommand(
+            context=_context("operator:pytest", "execute-reviewed-missed-renewal"),
+            subscription_id=blocker_subscription_id,
+            starts_at=period_start,
+            ends_at=period_end,
+            amount=Decimal("18812.50"),
+            currency="NGN",
+            expected_preview_fingerprint=renewal_preview.fingerprint,
+            evidence_ref="finance-review:pytest-migrated-opening",
+        ),
+    )
+    assert reviewed_renewal.renewal.preview.funding_after == Decimal("57000.00")
+    assert reviewed_renewal.outcome is not None
+    refreshed_subscription = db_session.get(Subscription, blocker_subscription_id)
+    assert refreshed_subscription is not None
+    assert refreshed_subscription.next_billing_at is not None
+    stored_next_billing = refreshed_subscription.next_billing_at
+    if stored_next_billing.tzinfo is None:
+        stored_next_billing = stored_next_billing.replace(tzinfo=UTC)
+    assert stored_next_billing == period_end
+    assert verified_prepaid_funding_balance(
+        db_session, unrelated_blocker_id
+    ) == Decimal("57000.00")
 
 
 def test_capture_requires_both_immutable_approvals(

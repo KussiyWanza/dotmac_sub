@@ -24,11 +24,13 @@ from app.models.field_material import (
     FIELD_MATERIAL_REQUEST_PRIORITIES,
     FIELD_MATERIAL_REQUEST_STATUSES,
     FieldInventoryItem,
+    FieldInventoryWarehouse,
     FieldMaterialRequest,
     FieldMaterialRequestItem,
     FieldWorkOrderMaterial,
 )
-from app.models.project import ProjectTask
+from app.models.project import Project, ProjectTask
+from app.models.support import Ticket
 from app.models.work_order import WorkOrder
 from app.services.common import apply_pagination, coerce_uuid
 from app.services.domain_errors import DomainError
@@ -55,6 +57,9 @@ _BACKOFFICE_REFUSED_STATUSES = frozenset(
 class MaterialRequestStatus(StrEnum):
     DRAFT = "draft"
     SUBMITTED = "submitted"
+    ACCEPTED_BY_ERP = "accepted_by_erp"
+    PENDING_STOCK = "pending_stock"
+    SYNC_FAILED = "sync_failed"
     APPROVED = "approved"
     REJECTED = "rejected"
     ISSUED = "issued"
@@ -69,6 +74,11 @@ class MaterialRequestPriority(StrEnum):
     URGENT = "urgent"
 
 
+class MaterialRequestFulfillmentChannel(StrEnum):
+    MANUAL = "manual"
+    ERP = "erp"
+
+
 @dataclass(frozen=True, slots=True)
 class MaterialRequestLineInput:
     item_id: UUID
@@ -80,12 +90,16 @@ class MaterialRequestLineInput:
 @dataclass(frozen=True, slots=True)
 class CreateStaffMaterialRequest:
     context: CommandContext
-    work_order_id: UUID
+    work_order_id: UUID | None
     request_id: UUID
     priority: MaterialRequestPriority
     source_warehouse_code: str
     notes: str | None
     items: tuple[MaterialRequestLineInput, ...]
+    scope: MaterialRequestScope | None = None
+    fulfillment_channel: MaterialRequestFulfillmentChannel = (
+        MaterialRequestFulfillmentChannel.ERP
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +107,16 @@ class ReviewMaterialRequest:
     context: CommandContext
     request_id: UUID
     reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ObserveErpMaterialStatus:
+    context: CommandContext
+    request_id: UUID
+    provider_request_id: str
+    provider_status: str
+    observed_at: datetime
+    serial_numbers_by_sequence: tuple[tuple[int, tuple[str, ...]], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,15 +134,20 @@ class MaterialRequestItemView:
 @dataclass(frozen=True, slots=True)
 class MaterialRequestView:
     id: UUID
-    work_order_id: UUID
-    work_order_public_id: str
-    work_order_title: str
+    ticket_id: UUID | None
+    project_id: UUID | None
+    project_task_id: UUID | None
+    work_order_id: UUID | None
+    work_order_public_id: str | None
+    work_order_title: str | None
+    context_label: str
     requested_by_person_id: UUID
     requested_by_system_user_id: UUID | None
     status: MaterialRequestStatus
     priority: MaterialRequestPriority
     notes: str | None
     source_warehouse_code: str | None
+    fulfillment_channel: MaterialRequestFulfillmentChannel
     support_system: str | None
     support_reference: str | None
     support_status: str | None
@@ -156,9 +185,17 @@ class MaterialRequestInventoryOption:
 
 
 @dataclass(frozen=True, slots=True)
+class MaterialRequestWarehouseOption:
+    code: str
+    label: str
+
+
+@dataclass(frozen=True, slots=True)
 class MaterialRequestFormOptions:
     work_orders: tuple[MaterialRequestWorkOrderOption, ...]
     inventory_items: tuple[MaterialRequestInventoryOption, ...]
+    warehouses: tuple[MaterialRequestWarehouseOption, ...]
+    context_label: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,8 +228,13 @@ _MATERIAL_CANCELLATION_COMMAND = OwnerCommandDefinition(
 )
 _MATERIAL_CREATE_COMMAND = OwnerCommandDefinition(
     owner="operations.material_dependencies",
-    concern="service-work-order material need and operational approval",
+    concern="contextual material need and ERP submission",
     name="create_staff_material_request",
+)
+_MATERIAL_OBSERVATION_COMMAND = OwnerCommandDefinition(
+    owner="operations.material_dependencies",
+    concern="ERP material issuance observation",
+    name="observe_erp_material_status",
 )
 
 
@@ -206,19 +248,48 @@ def _material_error(
     )
 
 
+def _context_label(request: FieldMaterialRequest) -> str:
+    if request.project_task is not None:
+        project = request.project
+        project_label = (
+            (project.number or project.code or project.name) if project else "Project"
+        )
+        return f"{project_label} → {request.project_task.title}"
+    if request.ticket is not None:
+        return f"Ticket {request.ticket.number or request.ticket.title}"
+    if request.project is not None:
+        return str(
+            request.project.number or request.project.code or request.project.name
+        )
+    if request.work_order_mirror is not None:
+        return f"Work order {request.work_order_mirror.public_id}"
+    return "Material request"
+
+
 def _request_view(request: FieldMaterialRequest) -> MaterialRequestView:
     metadata = request.metadata_ if isinstance(request.metadata_, dict) else {}
     return MaterialRequestView(
         id=request.id,
+        ticket_id=request.ticket_id,
+        project_id=request.project_id,
+        project_task_id=request.project_task_id,
         work_order_id=request.work_order_mirror_id,
-        work_order_public_id=request.work_order_mirror.public_id,
-        work_order_title=request.work_order_mirror.title,
+        work_order_public_id=(
+            request.work_order_mirror.public_id if request.work_order_mirror else None
+        ),
+        work_order_title=(
+            request.work_order_mirror.title if request.work_order_mirror else None
+        ),
+        context_label=_context_label(request),
         requested_by_person_id=request.requested_by_person_id,
         requested_by_system_user_id=request.requested_by_system_user_id,
         status=MaterialRequestStatus(request.status),
         priority=MaterialRequestPriority(request.priority),
         notes=request.notes,
         source_warehouse_code=request.source_warehouse_code,
+        fulfillment_channel=MaterialRequestFulfillmentChannel(
+            request.fulfillment_channel
+        ),
         support_system=request.support_system,
         support_reference=request.support_reference,
         support_status=request.support_status,
@@ -237,9 +308,10 @@ def _request_view(request: FieldMaterialRequest) -> MaterialRequestView:
             MaterialRequestItemView(
                 id=line.id,
                 item_id=line.item_id,
-                sku=line.item.sku if line.item else None,
-                name=line.item.name if line.item else "Unavailable item",
-                unit=line.item.unit if line.item else None,
+                sku=line.sku_snapshot or (line.item.sku if line.item else None),
+                name=line.name_snapshot
+                or (line.item.name if line.item else "Unavailable item"),
+                unit=line.unit_snapshot or (line.item.unit if line.item else None),
                 quantity=line.quantity,
                 notes=line.notes,
                 serial_numbers=tuple(
@@ -256,6 +328,12 @@ def _staff_request_query(db: Session):
         db.query(FieldMaterialRequest)
         .options(
             selectinload(FieldMaterialRequest.work_order_mirror),
+            selectinload(FieldMaterialRequest.ticket),
+            selectinload(FieldMaterialRequest.project),
+            selectinload(FieldMaterialRequest.project_task),
+            selectinload(FieldMaterialRequest.ticket),
+            selectinload(FieldMaterialRequest.project),
+            selectinload(FieldMaterialRequest.project_task),
             selectinload(FieldMaterialRequest.items).selectinload(
                 FieldMaterialRequestItem.item
             ),
@@ -285,25 +363,34 @@ def list_staff_material_requests(
     ):
         if scope.ticket_id is not None:
             query = query.filter(
-                FieldMaterialRequest.work_order_mirror.has(
-                    or_(
-                        WorkOrder.origin_ticket_id == scope.ticket_id,
-                        WorkOrder.project_task.has(
-                            ProjectTask.ticket_id == scope.ticket_id
-                        ),
-                    )
+                or_(
+                    FieldMaterialRequest.ticket_id == scope.ticket_id,
+                    FieldMaterialRequest.work_order_mirror.has(
+                        or_(
+                            WorkOrder.origin_ticket_id == scope.ticket_id,
+                            WorkOrder.project_task.has(
+                                ProjectTask.ticket_id == scope.ticket_id
+                            ),
+                        )
+                    ),
                 )
             )
         if scope.project_id is not None:
             query = query.filter(
-                FieldMaterialRequest.work_order_mirror.has(
-                    WorkOrder.project_id == scope.project_id
+                or_(
+                    FieldMaterialRequest.project_id == scope.project_id,
+                    FieldMaterialRequest.work_order_mirror.has(
+                        WorkOrder.project_id == scope.project_id
+                    ),
                 )
             )
         if scope.project_task_id is not None:
             query = query.filter(
-                FieldMaterialRequest.work_order_mirror.has(
-                    WorkOrder.project_task_id == scope.project_task_id
+                or_(
+                    FieldMaterialRequest.project_task_id == scope.project_task_id,
+                    FieldMaterialRequest.work_order_mirror.has(
+                        WorkOrder.project_task_id == scope.project_task_id
+                    ),
                 )
             )
     total = int(query.with_entities(func.count(FieldMaterialRequest.id)).scalar() or 0)
@@ -363,61 +450,45 @@ def staff_material_request_form_options(
         if scope is not None and scope.ticket_id is not None
         else set()
     )
-    assignments = (
-        db.query(WorkOrderAssignmentQueue)
-        .options(
-            selectinload(WorkOrderAssignmentQueue.work_order),
-            selectinload(WorkOrderAssignmentQueue.assigned_technician).selectinload(
-                TechnicianProfile.system_user
-            ),
+    work_order_query = db.query(WorkOrder).filter(WorkOrder.is_active.is_(True))
+    if scope is not None and scope.ticket_id is not None:
+        work_order_query = work_order_query.filter(
+            or_(
+                WorkOrder.origin_ticket_id == scope.ticket_id,
+                WorkOrder.project_task_id.in_(ticket_task_ids),
+            )
         )
-        .filter(WorkOrderAssignmentQueue.status == DispatchQueueStatus.assigned)
-        .filter(WorkOrderAssignmentQueue.assigned_technician_id.isnot(None))
-        .order_by(WorkOrderAssignmentQueue.updated_at.desc())
-        .all()
-    )
+    if scope is not None and scope.project_id is not None:
+        work_order_query = work_order_query.filter(
+            WorkOrder.project_id == scope.project_id
+        )
+    if scope is not None and scope.project_task_id is not None:
+        work_order_query = work_order_query.filter(
+            WorkOrder.project_task_id == scope.project_task_id
+        )
+    available_work_orders = work_order_query.order_by(WorkOrder.created_at.desc()).all()
     work_orders: list[MaterialRequestWorkOrderOption] = []
     seen: set[UUID] = set()
-    for assignment in assignments:
-        work_order = assignment.work_order
-        technician = assignment.assigned_technician
-        if (
-            work_order is None
-            or technician is None
-            or work_order.id in seen
-            or not work_order.is_active
-        ):
+    for work_order in available_work_orders:
+        if work_order.id in seen:
             continue
-        if scope is not None:
-            if (
-                scope.ticket_id is not None
-                and work_order.origin_ticket_id != scope.ticket_id
-                and work_order.project_task_id not in ticket_task_ids
-            ):
-                continue
-            if (
-                scope.project_id is not None
-                and work_order.project_id != scope.project_id
-            ):
-                continue
-            if (
-                scope.project_task_id is not None
-                and work_order.project_task_id != scope.project_task_id
-            ):
-                continue
         seen.add(work_order.id)
         work_orders.append(
             MaterialRequestWorkOrderOption(
                 id=work_order.id,
                 public_id=work_order.public_id,
                 title=work_order.title,
-                technician_id=technician.id,
-                technician_label=_technician_label(technician),
+                technician_id=work_order.id,
+                technician_label="Optional context",
             )
         )
     inventory_rows = (
         db.query(FieldInventoryItem)
-        .filter(FieldInventoryItem.is_active.is_(True))
+        .filter(
+            FieldInventoryItem.is_active.is_(True),
+            FieldInventoryItem.source_is_active.is_(True),
+            FieldInventoryItem.field_request_eligible.is_(True),
+        )
         .order_by(FieldInventoryItem.name.asc())
         .all()
     )
@@ -430,12 +501,52 @@ def staff_material_request_form_options(
             )
             for row in inventory_rows
         ),
+        warehouses=tuple(
+            MaterialRequestWarehouseOption(
+                code=row.code,
+                label=f"{row.name} ({row.code})" if row.name != row.code else row.code,
+            )
+            for row in db.query(FieldInventoryWarehouse)
+            .filter(
+                FieldInventoryWarehouse.is_active.is_(True),
+                FieldInventoryWarehouse.source_is_active.is_(True),
+            )
+            .order_by(FieldInventoryWarehouse.name.asc())
+            .all()
+        ),
+        context_label=_scope_label(db, scope),
     )
 
 
+def _scope_label(db: Session, scope: MaterialRequestScope | None) -> str:
+    if scope is None:
+        return "Choose a ticket, project, project task, or optional work order context."
+    if scope.project_task_id:
+        task = db.get(ProjectTask, scope.project_task_id)
+        if task:
+            project = db.get(Project, task.project_id)
+            return f"{(project.number or project.code or project.name) if project else 'Project'} → {task.title}"
+    if scope.ticket_id:
+        ticket = db.get(Ticket, scope.ticket_id)
+        if ticket:
+            return f"Ticket {ticket.number or ticket.title}"
+    if scope.project_id:
+        project = db.get(Project, scope.project_id)
+        if project:
+            return str(project.number or project.code or project.name)
+    return "Material request context"
+
+
 def _command_fingerprint(command: CreateStaffMaterialRequest) -> str:
+    scope = command.scope or MaterialRequestScope()
     payload = {
-        "work_order_id": str(command.work_order_id),
+        "work_order_id": str(command.work_order_id) if command.work_order_id else None,
+        "ticket_id": str(scope.ticket_id) if scope.ticket_id else None,
+        "project_id": str(scope.project_id) if scope.project_id else None,
+        "project_task_id": str(scope.project_task_id)
+        if scope.project_task_id
+        else None,
+        "fulfillment_channel": command.fulfillment_channel.value,
         "priority": command.priority.value,
         "source_warehouse_code": command.source_warehouse_code.strip(),
         "notes": (command.notes or "").strip(),
@@ -500,6 +611,42 @@ def _system_user_id_for_actor(db: Session, context: CommandContext) -> UUID | No
     return actor_id if db.get(SystemUser, actor_id) is not None else None
 
 
+def _resolved_context(
+    db: Session, command: CreateStaffMaterialRequest
+) -> tuple[UUID | None, UUID | None, UUID | None, WorkOrder | None]:
+    scope = command.scope or MaterialRequestScope()
+    ticket_id = scope.ticket_id
+    project_id = scope.project_id
+    task_id = scope.project_task_id
+    task = db.get(ProjectTask, task_id) if task_id else None
+    if task_id and (task is None or not task.is_active):
+        raise _material_error("context_not_found", "Project task was not found.")
+    if task is not None:
+        project_id = task.project_id
+        ticket_id = ticket_id or task.ticket_id
+    project = db.get(Project, project_id) if project_id else None
+    if project_id and (project is None or not project.is_active):
+        raise _material_error("context_not_found", "Project was not found.")
+    ticket = db.get(Ticket, ticket_id) if ticket_id else None
+    if ticket_id and (ticket is None or not ticket.is_active):
+        raise _material_error("context_not_found", "Ticket was not found.")
+    work_order = (
+        db.get(WorkOrder, command.work_order_id) if command.work_order_id else None
+    )
+    if command.work_order_id and (work_order is None or not work_order.is_active):
+        raise _material_error("work_order_not_found", "Work order was not found.")
+    if work_order is not None:
+        project_id = project_id or work_order.project_id
+        task_id = task_id or work_order.project_task_id
+        ticket_id = ticket_id or work_order.origin_ticket_id
+    if not any((ticket_id, project_id, task_id, work_order)):
+        raise _material_error(
+            "context_required",
+            "Start the material request from a ticket, project, project task, or work order.",
+        )
+    return ticket_id, project_id, task_id, work_order
+
+
 def create_staff_material_request(
     db: Session, command: CreateStaffMaterialRequest
 ) -> MaterialRequestView:
@@ -526,7 +673,19 @@ def create_staff_material_request(
             raise _material_error(
                 "invalid_request", "Source warehouse code is required."
             )
-        work_order, technician = _locked_assigned_technician(db, command.work_order_id)
+        ticket_id, project_id, task_id, work_order = _resolved_context(db, command)
+        system_user_id = _system_user_id_for_actor(db, command.context)
+        if system_user_id is None:
+            raise _material_error(
+                "requester_required", "A local staff user is required."
+            )
+        from app.models.system_user import SystemUser
+
+        system_user = db.get(SystemUser, system_user_id)
+        if system_user is None:
+            raise _material_error(
+                "requester_required", "The requesting staff user no longer exists."
+            )
         seen_items: set[UUID] = set()
         planned: list[tuple[FieldInventoryItem, MaterialRequestLineInput]] = []
         for line in command.items:
@@ -540,7 +699,12 @@ def create_staff_material_request(
                 )
             seen_items.add(line.item_id)
             item = db.get(FieldInventoryItem, line.item_id)
-            if item is None or not item.is_active:
+            if (
+                item is None
+                or not item.is_active
+                or not item.source_is_active
+                or not item.field_request_eligible
+            ):
                 raise _material_error(
                     "material_item_not_found",
                     "A selected material item is unavailable.",
@@ -556,14 +720,18 @@ def create_staff_material_request(
             planned.append((item, line))
         now = datetime.now(UTC)
         request = FieldMaterialRequest(
-            work_order_mirror_id=work_order.id,
-            requested_by_technician_id=technician.id,
-            requested_by_person_id=technician.person_id,
-            requested_by_system_user_id=_system_user_id_for_actor(db, command.context),
+            work_order_mirror_id=work_order.id if work_order else None,
+            ticket_id=ticket_id,
+            project_id=project_id,
+            project_task_id=task_id,
+            requested_by_technician_id=None,
+            requested_by_person_id=(system_user.person_party_id or system_user.id),
+            requested_by_system_user_id=system_user_id,
             status=MaterialRequestStatus.SUBMITTED.value,
             priority=command.priority.value,
             notes=(command.notes or "").strip() or None,
             source_warehouse_code=warehouse[:100],
+            fulfillment_channel=command.fulfillment_channel.value,
             client_ref=command.request_id,
             submitted_at=now,
             metadata_={
@@ -584,6 +752,10 @@ def create_staff_material_request(
             request.items.append(
                 FieldMaterialRequestItem(
                     item=item_row,
+                    source_item_id_snapshot=item_row.source_item_id,
+                    sku_snapshot=item_row.sku,
+                    name_snapshot=item_row.name,
+                    unit_snapshot=item_row.unit,
                     quantity=line.quantity,
                     notes=(line.notes or "").strip() or None,
                     serial_numbers=[
@@ -591,7 +763,26 @@ def create_staff_material_request(
                     ],
                 )
             )
-        _mark_sub_authoritative(work_order)
+        if work_order is not None:
+            _mark_sub_authoritative(work_order)
+        if command.fulfillment_channel == MaterialRequestFulfillmentChannel.ERP:
+            from app.services.events import EventType, emit_event
+
+            emit_event(
+                db,
+                EventType.field_material_request_approved,
+                {
+                    "material_request_id": str(request.id),
+                    "work_order_mirror_id": str(request.work_order_mirror_id)
+                    if request.work_order_mirror_id
+                    else None,
+                    "client_ref": str(request.client_ref),
+                    "source_warehouse_code": request.source_warehouse_code,
+                    "submitted_at": now.isoformat(),
+                    "submission_mode": "immediate_erp",
+                },
+                actor=command.context.actor,
+            )
         db.flush()
         return _request_view(request)
 
@@ -783,10 +974,45 @@ def cancel_material_request(
     )
 
 
+def observe_erp_material_status(
+    db: Session, command: ObserveErpMaterialStatus
+) -> MaterialRequestView:
+    def operation() -> MaterialRequestView:
+        request = _locked_request(db, command.request_id)
+        if request.fulfillment_channel != MaterialRequestFulfillmentChannel.ERP.value:
+            raise _material_error(
+                "manual_delivery_conflict",
+                "A manual material request cannot accept an ERP issuance outcome.",
+            )
+        serials = dict(command.serial_numbers_by_sequence)
+        for sequence, line in enumerate(request.items, start=1):
+            if sequence in serials:
+                line.serial_numbers = list(serials[sequence])
+        field_material_requests.apply_backoffice_outcome(
+            db,
+            request,
+            support_system="dotmac_erp",
+            support_reference=command.provider_request_id,
+            support_status=command.provider_status,
+        )
+        request.last_reconciled_at = command.observed_at
+        db.flush()
+        return _request_view(request)
+
+    return execute_owner_command(
+        db,
+        definition=_MATERIAL_OBSERVATION_COMMAND,
+        context=command.context,
+        operation=operation,
+    )
+
+
 def serialize_material_request(request: FieldMaterialRequest) -> dict:
     return {
         "id": request.id,
-        "crm_work_order_id": request.work_order_mirror.public_id,
+        "crm_work_order_id": (
+            request.work_order_mirror.public_id if request.work_order_mirror else None
+        ),
         "crm_material_request_id": request.crm_material_request_id,
         "requested_by_person_id": request.requested_by_person_id,
         "requested_by_system_user_id": request.requested_by_system_user_id,
@@ -1097,11 +1323,31 @@ class FieldMaterialRequests:
             request.support_status = normalized_status
             changed = True
 
+        if (
+            normalized_status in {"draft", "submitted", "accepted"}
+            and request.status == "submitted"
+        ):
+            request.status = "accepted_by_erp"
+            changed = True
+        elif normalized_status in {
+            "pending_stock",
+            "partially_ordered",
+            "ordered",
+        } and request.status in {"submitted", "accepted_by_erp"}:
+            request.status = "pending_stock"
+            changed = True
+
         if normalized_status in _BACKOFFICE_ISSUED_STATUSES:
             _sync_work_order_materials(db, request, status="reserved")
-            if request.status in {"approved", "issued"}:
-                request.status = "fulfilled"
-                request.fulfilled_at = request.fulfilled_at or datetime.now(UTC)
+            if request.status in {
+                "submitted",
+                "approved",
+                "accepted_by_erp",
+                "pending_stock",
+                "issued",
+            }:
+                request.status = "issued"
+                request.issued_at = request.issued_at or datetime.now(UTC)
                 _note_request_event(request, "backoffice_material_issued")
                 from app.services.events import EventType, emit_event
 
@@ -1110,7 +1356,9 @@ class FieldMaterialRequests:
                     EventType.field_material_request_fulfilled,
                     {
                         "material_request_id": str(request.id),
-                        "work_order_mirror_id": str(request.work_order_mirror_id),
+                        "work_order_mirror_id": str(request.work_order_mirror_id)
+                        if request.work_order_mirror_id
+                        else None,
                         "support_system": request.support_system,
                         "support_reference": request.support_reference,
                         "support_status": request.support_status,
@@ -1119,7 +1367,12 @@ class FieldMaterialRequests:
                 )
                 changed = True
         elif normalized_status in _BACKOFFICE_REFUSED_STATUSES:
-            if request.status in {"approved", "issued"}:
+            if request.status in {
+                "submitted",
+                "approved",
+                "accepted_by_erp",
+                "pending_stock",
+            }:
                 request.status = "canceled"
                 _note_request_event(
                     request,
@@ -1129,7 +1382,9 @@ class FieldMaterialRequests:
                 changed = True
 
         if changed:
-            _mark_sub_authoritative(request.work_order_mirror)
+            request.last_reconciled_at = datetime.now(UTC)
+            if request.work_order_mirror is not None:
+                _mark_sub_authoritative(request.work_order_mirror)
         return changed
 
 
@@ -1204,6 +1459,8 @@ def _note_request_event(
 def _sync_work_order_materials(
     db: Session, request: FieldMaterialRequest, *, status: str
 ) -> None:
+    if request.work_order_mirror_id is None:
+        return
     existing = {
         row.item_id: row
         for row in db.query(FieldWorkOrderMaterial)
@@ -1323,7 +1580,9 @@ def _require_legacy_material_fulfilment(db: Session) -> None:
         )
 
 
-def _mark_sub_authoritative(row: WorkOrder) -> None:
+def _mark_sub_authoritative(row: WorkOrder | None) -> None:
+    if row is None:
+        return
     _mark_source_authoritative(row, "material_requests")
 
 
@@ -1362,9 +1621,11 @@ def consume_material_request_approved(
         request = db.get(FieldMaterialRequest, coerce_uuid(material_request_id))
         if request is None:
             return "skipped_missing"
-        if request.status != "approved":
+        if request.status not in {"submitted", "approved"}:
             # Stale replay after refusal, fulfilment, or cancellation.
             return "skipped_state"
+        if request.fulfillment_channel != MaterialRequestFulfillmentChannel.ERP.value:
+            return "skipped_manual"
         event = enqueue_material_request_outbox(db, request)
         return "enqueued" if event is not None else "skipped_not_owned"
 
