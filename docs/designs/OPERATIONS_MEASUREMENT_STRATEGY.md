@@ -84,6 +84,10 @@ The app already has the core building blocks:
   drift.
 - Topology coverage metrics in `app/services/topology/coverage_metrics.py`.
 - Dependency health checks in `app/services/infrastructure_health.py`.
+- Root database transaction duration in `app/services/session_hooks.py`, with
+  bounded Prometheus histogram/counter series, correlated structured slow-span
+  logs, and reviewed warning/critical rules in
+  `deploy/observability/database_transactions.rules.yml`.
 
 ## Strategic Opportunities
 
@@ -230,8 +234,22 @@ Add:
 
 ### Infrastructure Dependency SLO
 
-`infrastructure_health.py` is currently page-oriented. Export key outputs as
-metrics:
+`runtime.infrastructure_health` owns the dependency probes and their status
+interpretation. The enabled `check_stale_infrastructure` scheduled task runs the
+bounded probe cohort on its configured cadence (300 seconds by default) and
+publishes one shared latest-state snapshot. Admin dashboard requests read only
+that snapshot; they never run dependency probes. The projection records its
+observation time, is fresh for ten minutes, renders older last-known values as
+stale, and renders a missing or malformed snapshot as unavailable. Re-running
+the scheduled task is the idempotent rebuild path; snapshot age, publication
+failure, malformed schema, and the task heartbeat are its drift signals.
+
+Redis transports this bounded projection but is not authoritative for the
+underlying dependency state. The full system-health diagnostic page may retain
+explicit on-demand probes for deliberate operator investigation; high-frequency
+dashboard polling may not.
+
+Export key outputs as metrics:
 
 - `dependency_up{name}`
 - `dependency_response_ms{name}`

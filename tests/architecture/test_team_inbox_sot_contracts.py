@@ -94,6 +94,25 @@ def test_projection_owns_response_cohorts_from_authoritative_inputs() -> None:
     assert "def response_cohort" in projection
 
 
+def test_operator_unread_projection_is_set_based_and_indexed() -> None:
+    owner = (ROOT / "app/services/team_inbox_read_state.py").read_text(encoding="utf-8")
+    model = (ROOT / "app/models/team_inbox.py").read_text(encoding="utf-8")
+    migration = (
+        ROOT / "alembic/versions/513_team_inbox_unread_query_indexes.py"
+    ).read_text(encoding="utf-8")
+
+    assert "def unread_conversation_clause" not in owner
+    assert ".correlate(InboxConversation)" not in owner
+    assert "def unread_conversation_ids_select" in owner
+    assert "ix_inbox_messages_unread" in model
+    assert "ix_inbox_read_states_person_conversation" in model
+    assert "CREATE INDEX CONCURRENTLY" in migration
+    assert (
+        'down_revision: str | None = "512_open_setting_value_type_vocabulary"'
+        in migration
+    )
+
+
 def test_inbox_services_have_no_transport_errors_or_direct_completion() -> None:
     offenders: list[str] = []
     for path in (ROOT / "app/services").glob("team_inbox_*.py"):

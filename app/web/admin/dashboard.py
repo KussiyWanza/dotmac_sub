@@ -156,7 +156,6 @@ def dashboard_worker_restart(
         db.commit()
     except Exception:
         db.rollback()
-    web_admin_dashboard_service.clear_dashboard_infrastructure_cache()
     notice = {
         "type": "success" if result.ok else "error",
         "message": result.message,

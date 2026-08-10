@@ -43,9 +43,6 @@ class Settings:
     dashboard_global_max_stale_seconds: float = float(
         os.getenv("DASHBOARD_GLOBAL_MAX_STALE_SECONDS", "900")
     )
-    dashboard_infrastructure_cache_ttl_seconds: float = float(
-        os.getenv("DASHBOARD_INFRASTRUCTURE_CACHE_TTL_SECONDS", "60")
-    )
     infrastructure_health_skip_checks: str = os.getenv(
         "INFRASTRUCTURE_HEALTH_SKIP_CHECKS", ""
     )

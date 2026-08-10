@@ -179,7 +179,7 @@ queue interval, or assignment ending timestamp. See
 | Projection | Inputs | Canonical writer | Repair |
 | --- | --- | --- | --- |
 | Contact link | Conversation route plus reviewed Party/customer facts | contact-resolution owner | Revalidate/reapply the reviewed link; ambiguity remains explicit |
-| Operator unread | Message chronology plus per-person read cursor | operator-state owner | `rebuild_operator_read_state` removes impossible cross-conversation cursors |
+| Operator unread | Message chronology plus per-person read cursor | operator-state owner | Set-based grouped queries recompute the projection; `rebuild_operator_read_state` removes impossible cross-conversation cursors |
 | Queue metrics and response cohorts | Conversation lifecycle, ordered message chronology, agent reply provenance/delivery, ticket handoff, assignment, and read state | projection query owner | Recompute on every query; no independent flag or counter is authoritative |
 | Customer context drawer | Exact Party/Subscriber/Lead links plus permission-scoped owner queries | contact-context query owner | Recompute on drawer load; per-section failures remain explicit and retryable |
 | Realtime envelope | Current committed Inbox projection | realtime transport | `rebuild_conversation_projection` republishes a snapshot; clients refetch |
@@ -250,6 +250,12 @@ stale. Realtime has no replay authority.
   operator's authoritative read cursor. With no cursor, every timestamped
   inbound message in the conversation is unread; outbound and internal
   messages never contribute.
+- Unread page totals, filters, and per-row message counts use grouped set-based
+  queries with a fixed query budget. They must not restore correlated
+  per-conversation `MAX(received_at)` or read-cursor subqueries. Migration
+  `507_team_inbox_unread_query_indexes` adds the partial message chronology
+  index `(conversation_id, received_at)` for timestamped inbound rows and the
+  operator cursor index `(person_id, conversation_id, last_read_at)`.
 - Sort: the typed allow-list in `InboxListSort`; unknown values fall back to
   newest activity first (`last_message_at` descending). Priority remains an
   explicit sort and filter, not the default queue ordering. Page size is
@@ -286,6 +292,12 @@ label in place is less safe than leaving an unused additive value.
 Migration 445 is based on main migration 444. If main advances before this
 slice is published, rebase it and update the down revision; production must
 never receive parallel unreviewed heads.
+
+Migration `507_team_inbox_unread_query_indexes` expands the read path with two
+concurrently built PostgreSQL indexes. The set-based readers are correct before
+and during index creation, so deployment does not require a flag or dual-read
+fallback. Deployment schema verification must require both indexes to be ready
+and valid before the release is accepted.
 
 ## Retired paths
 

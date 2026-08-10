@@ -1047,11 +1047,14 @@ def list_conversations(
             == contact_resolution_status
         )
     if unread_only:
-        # The unread rule stays with its owner; this only asks for it in SQL.
+        # The unread rule stays with its owner; this only asks for its grouped
+        # set selector. No correlated per-conversation probe is admitted here.
         # Without an operator nothing can be unread, and an empty page is the
         # honest answer rather than the whole queue.
         query = query.filter(
-            team_inbox_read_state.unread_conversation_clause(operator_person_id)
+            InboxConversation.id.in_(
+                team_inbox_read_state.unread_conversation_ids_select(operator_person_id)
+            )
             if operator_person_id is not None
             else false()
         )

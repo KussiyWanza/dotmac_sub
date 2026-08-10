@@ -10,6 +10,7 @@ from app.services.sot_manifest import (
     ErrorContract,
     MigrationContract,
     OwnerRole,
+    ProjectionContract,
     ServiceContract,
     SOTService,
     TransactionContract,
@@ -215,8 +216,175 @@ DOMAIN = DomainSOT(
             owns=(
                 "dependency health checks",
                 "Postgres/Redis/VM/Celery infrastructure status",
+                "scheduled bounded dependency health snapshot",
             ),
-            depends_on=("runtime.db_sessions",),
+            depends_on=("runtime.db_sessions", "control.settings_spec"),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name="dependency health checks",
+                        role=OwnerRole.RESOLVER,
+                        input_names=(
+                            "dependency probe observations",
+                            "health probe configuration",
+                        ),
+                    ),
+                    ConcernContract(
+                        name="Postgres/Redis/VM/Celery infrastructure status",
+                        role=OwnerRole.RESOLVER,
+                        input_names=("dependency probe observations",),
+                    ),
+                    ConcernContract(
+                        name="scheduled bounded dependency health snapshot",
+                        role=OwnerRole.TRANSPORT,
+                        input_names=(
+                            "resolved dependency health status",
+                            "scheduled probe cadence",
+                            "Redis projection availability",
+                        ),
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="dependency probe observations",
+                        owner="external:runtime_dependencies",
+                        kind=AuthorityKind.EXTERNAL_OBSERVATION,
+                        source=(
+                            "Bounded PostgreSQL, Redis, VictoriaMetrics, GenieACS, "
+                            "RADIUS, MinIO, Celery, and Nominatim probe responses."
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="health probe configuration",
+                        owner="runtime.infrastructure_health",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "Checked-in probe set, timeouts, queue expectations, "
+                            "and validated disabled-check configuration."
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="resolved dependency health status",
+                        owner="runtime.infrastructure_health",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source=(
+                            "Typed ServiceStatus results produced by the complete "
+                            "bounded scheduled probe run."
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="scheduled probe cadence",
+                        owner="control.settings_spec",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "stale_infrastructure_check_enabled and the validated "
+                            "stale_infrastructure_check_interval_seconds setting."
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="Redis projection availability",
+                        owner="external:redis",
+                        kind=AuthorityKind.EXTERNAL_OBSERVATION,
+                        source=(
+                            "Shared application-cache write/read outcome; Redis is a "
+                            "projection transport and never health authority."
+                        ),
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.READ_ONLY,
+                    boundary=(
+                        "The task adapter owns a bounded read session for the "
+                        "PostgreSQL probe and closes it before publishing the shared "
+                        "cache projection; dashboard requests only read the snapshot."
+                    ),
+                    locking=(
+                        "No business rows are mutated or locked; the latest cache key "
+                        "is atomically replaced by one complete scheduled result."
+                    ),
+                    idempotency=(
+                        "Repeating a probe run replaces the latest projection with the "
+                        "same typed service cohort and a new observed timestamp."
+                    ),
+                    retries=(
+                        "The scheduler retries on its next bounded cadence; individual "
+                        "dependency failures become status facts and never trigger an "
+                        "unbounded in-task retry."
+                    ),
+                ),
+                errors=ErrorContract(
+                    domain_codes=(),
+                    mapping_owner=(
+                        "monitoring task and admin dashboard transport adapters"
+                    ),
+                    fail_closed_on=(
+                        "missing snapshot",
+                        "malformed snapshot",
+                        "unsupported snapshot schema",
+                    ),
+                ),
+                projections=(
+                    ProjectionContract(
+                        name="scheduled bounded dependency health snapshot",
+                        input_names=(
+                            "resolved dependency health status",
+                            "scheduled probe cadence",
+                            "Redis projection availability",
+                        ),
+                        writer="runtime.infrastructure_health",
+                        freshness=(
+                            "Observed at completion of the scheduled probe; fresh for "
+                            "ten minutes against the default five-minute cadence."
+                        ),
+                        stale_behavior=(
+                            "Dashboard labels last-known values stale after ten minutes; "
+                            "missing or malformed data renders unavailable and never "
+                            "runs probes in the request."
+                        ),
+                        drift_signal=(
+                            "Snapshot age, cache publication failure, malformed schema, "
+                            "or a missing scheduled-task heartbeat."
+                        ),
+                        rebuild_operation=(
+                            "Run check_stale_infrastructure to execute the bounded probe "
+                            "cohort and atomically republish the latest snapshot."
+                        ),
+                        repair_owner="runtime.infrastructure_health",
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.COMPLETE,
+                    old_owner=(
+                        "dashboard request-time check_all_services calls and each "
+                        "web worker's short-lived process cache"
+                    ),
+                    new_owner="runtime.infrastructure_health",
+                    verification=(
+                        "Snapshot contract, task publication, dashboard no-probe, "
+                        "freshness UI, and architecture manifest tests."
+                    ),
+                    cutover_gate=(
+                        "Dashboard infrastructure routes load only the scheduled "
+                        "shared snapshot."
+                    ),
+                    fallback_retirement=(
+                        "Request-time dependency probes and the per-process dashboard "
+                        "infrastructure cache are removed."
+                    ),
+                ),
+                steward="platform runtime",
+                design_refs=(
+                    "docs/designs/OPERATIONS_MEASUREMENT_STRATEGY.md",
+                    "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                ),
+                test_refs=(
+                    "tests/test_infrastructure_health.py",
+                    "tests/test_database_pressure_metrics.py",
+                    "tests/test_web_admin_dashboard_infrastructure.py",
+                    "tests/architecture/test_dashboard_infrastructure_snapshot_boundary.py",
+                ),
+            ),
         ),
     ),
     entrypoints=(

@@ -174,6 +174,14 @@ Retired in this slice:
 adapter that shares an already-resolved path with the owner and returns its
 typed `SubscriptionNetworkPath`.
 
+The Customer 360 adapter does not resolve these paths in the initial customer
+request. The Network tab is a lazy, read-only panel capped at 12 services per
+request. This keeps the initial transaction independent of subscription-card
+cardinality and gives the projection an explicit bound. Customers above the
+bound use the subscription workspace for the complete list. Financial balance
+facts use the cohort owner `prepaid_available_balances`; relationship
+collections remain set-based account-cohort reads.
+
 ## Verification
 
 - `tests/test_customer_network_path.py` — graph view identity/order/state

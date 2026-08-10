@@ -2004,7 +2004,7 @@ DOMAIN = DomainSOT(
                 ),
                 transaction_mode=TransactionMode.OWNER_MANAGED,
                 event_types=("team_inbox.operator_read_state_changed.v1",),
-                projections=("per-operator unread conversation projection",),
+                projections=("set-based per-operator unread conversation projection",),
             ),
         ),
         SOTService(

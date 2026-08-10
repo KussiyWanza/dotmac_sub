@@ -28,6 +28,15 @@ API_SYNC_PRESSURE_LIMITED = Counter(
     "API sync requests rejected before they could acquire DB resources",
     ["bucket", "scope"],
 )
+DATABASE_TRANSACTION_SPANS = Histogram(
+    "database_transaction_span_seconds",
+    "Root SQLAlchemy transaction duration from first statement to completion",
+    buckets=(0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 30, 45, 60, 90, 120),
+)
+DATABASE_TRANSACTION_SPANS_SLOW = Counter(
+    "database_transaction_spans_slow_total",
+    "Root SQLAlchemy transactions lasting at least the slow-span threshold",
+)
 
 JOB_DURATION = Histogram(
     "job_duration_seconds",

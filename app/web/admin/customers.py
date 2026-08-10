@@ -815,6 +815,7 @@ def customer_create(
 def person_detail(
     request: Request,
     customer_id: str,
+    panel: str | None = Query(None, pattern="^network$"),
     usage_period: str = Query("current"),
     usage_page: int = Query(1, ge=1),
     usage_per_page: int = Query(25, ge=10, le=100),
@@ -835,6 +836,9 @@ def person_detail(
             db=db,
             customer_id=customer_id,
             include_conversations=show_conversations,
+            network_query=web_customer_details_service.CustomerDetailNetworkQuery(
+                include=panel == "network",
+            ),
         )
     except HTTPException:
         return templates.TemplateResponse(
@@ -886,6 +890,7 @@ def person_detail(
         "customerType": customer_type,
         "notificationChannels": notification_channels,
         "notificationTemplates": notification_templates,
+        "networkPanelUrl": (f"/admin/customers/person/{customer.id}?panel=network"),
     }
 
     return templates.TemplateResponse(
