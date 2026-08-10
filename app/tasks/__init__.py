@@ -42,8 +42,8 @@ from app.tasks.customer_impact_metrics import export_customer_impact_metrics
 from app.tasks.device_projection import reconcile_device_projections
 from app.tasks.dotmac_erp_outbox import (
     deliver_erp_sync_events,
-    refresh_material_catalog,
     refresh_expense_claim_statuses,
+    refresh_material_catalog,
     refresh_material_request_statuses,
     refresh_purchase_invoice_statuses,
     repair_purchase_invoice_sync,

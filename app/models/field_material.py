@@ -60,7 +60,9 @@ class FieldInventoryItem(Base):
     unit: Mapped[str | None] = mapped_column(String(40))
     category_code: Mapped[str | None] = mapped_column(String(120))
     category_name: Mapped[str | None] = mapped_column(String(160))
-    source_is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    source_is_active: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )
     field_request_eligible: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False
     )
@@ -104,9 +106,13 @@ class FieldInventoryWarehouse(Base):
     source_warehouse_id: Mapped[str] = mapped_column(String(80), nullable=False)
     code: Mapped[str] = mapped_column(String(100), nullable=False)
     name: Mapped[str] = mapped_column(String(160), nullable=False)
-    source_is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    source_is_active: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    last_synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_synced_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
     source_payload_hash: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False

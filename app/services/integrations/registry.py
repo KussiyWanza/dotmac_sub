@@ -35,7 +35,10 @@ class ConnectorRegistryEntry:
 
 
 def _dotmac_erp_manifest(
-    *, version: str, include_workforce_attendance: bool, include_material_webhook: bool = False
+    *,
+    version: str,
+    include_workforce_attendance: bool,
+    include_material_webhook: bool = False,
 ) -> ConnectorManifest:
     capabilities = [
         CapabilityManifest(
@@ -640,7 +643,11 @@ _DEFINITIONS: tuple[ConnectorManifest, ...] = (
         health=HealthManifest(operation="connection.validate.v1"),
     ),
     _meta_social_manifest(version="1.1.0", include_shared_oauth=True),
-    _dotmac_erp_manifest(version="1.2.0", include_workforce_attendance=True, include_material_webhook=True),
+    _dotmac_erp_manifest(
+        version="1.2.0",
+        include_workforce_attendance=True,
+        include_material_webhook=True,
+    ),
     _paystack_manifest(
         version="1.0.1",
         include_safe_defaults=True,

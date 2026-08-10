@@ -596,7 +596,7 @@ SERVICES: tuple[SOTService, ...] = (
                 ),
                 mapping_owner="material catalogue web and scheduler adapters",
                 retryable_codes=(),
-                fail_closed_on="invalid or suspicious ERP observations",
+                fail_closed_on=("invalid or suspicious ERP observations",),
             ),
             migration=MigrationContract(
                 state=AuthorityMigrationState.CUTOVER_READY,

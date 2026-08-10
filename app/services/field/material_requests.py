@@ -682,6 +682,10 @@ def create_staff_material_request(
         from app.models.system_user import SystemUser
 
         system_user = db.get(SystemUser, system_user_id)
+        if system_user is None:
+            raise _material_error(
+                "requester_required", "The requesting staff user no longer exists."
+            )
         seen_items: set[UUID] = set()
         planned: list[tuple[FieldInventoryItem, MaterialRequestLineInput]] = []
         for line in command.items:
@@ -774,7 +778,7 @@ def create_staff_material_request(
                     else None,
                     "client_ref": str(request.client_ref),
                     "source_warehouse_code": request.source_warehouse_code,
-                    "submitted_at": request.submitted_at.isoformat(),
+                    "submitted_at": now.isoformat(),
                     "submission_mode": "immediate_erp",
                 },
                 actor=command.context.actor,

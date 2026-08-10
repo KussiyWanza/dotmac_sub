@@ -219,31 +219,31 @@ def apply_material_catalog_projection(
         seen_warehouses: set[str] = set()
         for warehouse in command.warehouses:
             seen_warehouses.add(warehouse.source_warehouse_id)
-            row = existing_warehouses.get(warehouse.source_warehouse_id)
-            if row is None:
-                row = FieldInventoryWarehouse(
+            warehouse_row = existing_warehouses.get(warehouse.source_warehouse_id)
+            if warehouse_row is None:
+                warehouse_row = FieldInventoryWarehouse(
                     source_system=SOURCE_SYSTEM,
                     source_warehouse_id=warehouse.source_warehouse_id,
                     code=warehouse.code.strip(),
                     name=warehouse.name.strip(),
                     last_synced_at=command.observed_at,
                 )
-                db.add(row)
+                db.add(warehouse_row)
                 wh_created += 1
             else:
                 wh_updated += 1
-            row.code = warehouse.code.strip()
-            row.name = warehouse.name.strip()
-            row.source_is_active = warehouse.source_is_active
-            row.is_active = warehouse.source_is_active
-            row.last_synced_at = command.observed_at
-            row.source_payload_hash = _digest(warehouse)
+            warehouse_row.code = warehouse.code.strip()
+            warehouse_row.name = warehouse.name.strip()
+            warehouse_row.source_is_active = warehouse.source_is_active
+            warehouse_row.is_active = warehouse.source_is_active
+            warehouse_row.last_synced_at = command.observed_at
+            warehouse_row.source_payload_hash = _digest(warehouse)
         if command.complete_scan:
-            for source_id, row in existing_warehouses.items():
-                if source_id not in seen_warehouses and row.source_is_active:
-                    row.source_is_active = False
-                    row.is_active = False
-                    row.last_synced_at = command.observed_at
+            for source_id, warehouse_row in existing_warehouses.items():
+                if source_id not in seen_warehouses and warehouse_row.source_is_active:
+                    warehouse_row.source_is_active = False
+                    warehouse_row.is_active = False
+                    warehouse_row.last_synced_at = command.observed_at
                     wh_deactivated += 1
         db.flush()
         return MaterialCatalogProjectionOutcome(
