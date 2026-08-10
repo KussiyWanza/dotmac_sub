@@ -85,6 +85,31 @@ def _message_payload(
             if data.get("instagram_account_id")
             else None
         ),
+        provider_comment_id=(
+            str(data["provider_comment_id"])
+            if data.get("provider_comment_id")
+            else None
+        ),
+        comment_id=str(data["comment_id"]) if data.get("comment_id") else None,
+        post_id=str(data["post_id"]) if data.get("post_id") else None,
+        media_id=str(data["media_id"]) if data.get("media_id") else None,
+        parent_provider_comment_id=(
+            str(data["parent_provider_comment_id"])
+            if data.get("parent_provider_comment_id")
+            else None
+        ),
+        commenter_id=str(data["commenter_id"]) if data.get("commenter_id") else None,
+        commenter_name=(
+            str(data["commenter_name"]) if data.get("commenter_name") else None
+        ),
+        commenter_username=(
+            str(data["commenter_username"]) if data.get("commenter_username") else None
+        ),
+        surface=str(data["surface"]) if data.get("surface") else None,
+        permalink_url=(
+            str(data["permalink_url"]) if data.get("permalink_url") else None
+        ),
+        media_url=str(data["media_url"]) if data.get("media_url") else None,
         contact_profile=(
             {
                 "display_name": (
@@ -262,6 +287,17 @@ def process_provider_observation(
                             "external_account_id": payload.external_account_id,
                             "page_id": payload.page_id,
                             "instagram_account_id": payload.instagram_account_id,
+                            "provider_comment_id": payload.provider_comment_id,
+                            "comment_id": payload.comment_id,
+                            "post_id": payload.post_id,
+                            "media_id": payload.media_id,
+                            "parent_provider_comment_id": payload.parent_provider_comment_id,
+                            "commenter_id": payload.commenter_id,
+                            "commenter_name": payload.commenter_name,
+                            "commenter_username": payload.commenter_username,
+                            "surface": payload.surface,
+                            "permalink_url": payload.permalink_url,
+                            "media_url": payload.media_url,
                             "contact_profile": payload.contact_profile,
                             "observation_id": str(row.id),
                             "campaign_attributed": payload.campaign_attributed,

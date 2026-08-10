@@ -23,6 +23,7 @@ AUTHORITATIVE_CONTEXT = Path(
 ).read_text()
 FLOATING_SURFACES = Path("templates/admin/inbox/_floating_surfaces.html").read_text()
 INDEX = Path("templates/admin/inbox/index.html").read_text()
+COMMENTS = Path("templates/admin/inbox/comments.html").read_text()
 LAYOUT = Path("templates/layouts/admin.html").read_text()
 OVERLAYS = Path("templates/admin/inbox/_overlays.html").read_text()
 QUEUE = Path("templates/admin/inbox/_queue_macros.html").read_text()
@@ -87,6 +88,25 @@ def test_crm_replication_surfaces_exclude_customer_placeholder_data():
         "z-index: 200",
     ):
         assert contract in REPLICA_CSS
+
+
+def test_social_comments_have_dedicated_workspace_and_filter_entry_point():
+    main_channel_options = tuple(
+        item.value
+        for item in team_inbox_projection.InboxChannelType
+        if item.value not in team_inbox_projection.SOCIAL_COMMENT_CHANNELS
+    )
+
+    assert 'href="/admin/inbox/comments"' in SIDEBAR
+    assert "social_comment_count" in SIDEBAR
+    assert "facebook_comment" not in main_channel_options
+    assert "instagram_comment" not in main_channel_options
+    assert 'name="channel_type"' in COMMENTS
+    assert 'action="/admin/inbox/{{ selected.id }}/reply"' in COMMENTS
+    assert 'name="reply_to_message_id" value="{{ message.id }}"' in COMMENTS
+    assert "parent_provider_comment_id" in COMMENTS
+    assert "post media" in COMMENTS.lower()
+    assert '"/comments"' in ROUTES
 
 
 # --- Slice 1: read state -------------------------------------------------
