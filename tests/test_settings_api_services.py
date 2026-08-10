@@ -42,12 +42,16 @@ def test_upsert_auth_setting_variants(db_session):
     assert secure.value_text == "true"
     assert secure.value_json is True
 
-    secret = settings_api.upsert_auth_setting(
-        db_session,
-        "jwt_secret",
-        DomainSettingUpdate(value_text="super-secret"),
-    )
-    assert secret.is_secret is True
+    # `jwt_secret` is no longer an auth SETTING — it is held from OpenBao at
+    # boot and read from there, so the admin API must refuse it rather than
+    # store a value nothing reads.
+    with pytest.raises(HTTPException) as exc:
+        settings_api.upsert_auth_setting(
+            db_session,
+            "jwt_secret",
+            DomainSettingUpdate(value_text="super-secret"),
+        )
+    assert exc.value.status_code == 400
 
     samesite = settings_api.upsert_auth_setting(
         db_session,

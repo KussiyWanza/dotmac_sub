@@ -35,17 +35,85 @@ def test_the_five_ruled_secrets_are_the_ones_declared() -> None:
     }
 
 
+def test_the_optional_set_holds_only_the_trust_anchor() -> None:
+    """Optional is a narrow exception, not a second general-purpose set.
+
+    A name lands here only when its material belongs to ONE feature, so a
+    deployment not using that feature has nothing to provision. Anything the
+    whole process needs belongs in the required set above, where a missing
+    value stops the boot.
+    """
+
+    assert set(kss.OPTIONAL_SECRET_REFS) == {"prepaid_attestation_public_key"}
+
+
 def test_every_reference_points_at_openbao() -> None:
-    for name, reference in kss.SECRET_REFS.items():
+    for name, reference in {**kss.SECRET_REFS, **kss.OPTIONAL_SECRET_REFS}.items():
         assert reference.startswith("bao://"), f"{name} is not an OpenBao ref"
         assert "#" in reference, f"{name} names no field"
 
 
-def test_load_returns_every_declared_secret(monkeypatch) -> None:
-    monkeypatch.setattr(kss, "resolve_openbao_ref", lambda ref: f"value-for::{ref}")
+def test_no_name_is_both_required_and_optional() -> None:
+    """Two entries for one name would make its absence mean two things."""
+
+    assert not set(kss.SECRET_REFS) & set(kss.OPTIONAL_SECRET_REFS)
+
+
+@pytest.fixture
+def stub_openbao(monkeypatch):
+    """Both readers stubbed. The optional set uses `_optional`, which returns
+    None for a path that does not exist rather than raising, so a test that
+    stubbed only the required reader would reach the real client."""
+
+    def _stub(optional=lambda ref: f"value-for::{ref}"):
+        monkeypatch.setattr(kss, "resolve_openbao_ref", lambda ref: f"value-for::{ref}")
+        monkeypatch.setattr(kss, "resolve_openbao_ref_optional", optional)
+
+    return _stub
+
+
+def test_load_returns_every_declared_secret(stub_openbao) -> None:
+    stub_openbao()
     loaded = kss.OpenBaoSecretSource().load()
-    assert set(loaded) == set(kss.SECRET_REFS)
+    assert set(loaded) == set(kss.SECRET_REFS) | set(kss.OPTIONAL_SECRET_REFS)
     assert all(v.startswith("value-for::") for v in loaded.values())
+
+
+def test_an_unprovisioned_optional_secret_is_skipped_not_fatal(stub_openbao) -> None:
+    """The narrow exception to all-or-nothing.
+
+    `OPTIONAL_SECRET_REFS` holds material needed by ONE feature. A deployment
+    not using that feature has nothing to provision, and failing every boot
+    over it would be a worse answer than the feature reporting itself
+    unconfigured when asked.
+    """
+
+    stub_openbao(optional=lambda _ref: None)
+    loaded = kss.OpenBaoSecretSource().load()
+
+    assert set(loaded) == set(kss.SECRET_REFS)
+    assert not set(loaded) & set(kss.OPTIONAL_SECRET_REFS)
+
+
+def test_an_optional_secret_still_fails_the_load_when_the_store_errors(
+    monkeypatch,
+) -> None:
+    """Optional means "the path may be absent", never "errors are tolerated".
+
+    `resolve_openbao_ref_optional` returns None ONLY for a 404; unreachable, a
+    bad token, or a missing field on a path that does exist all propagate. If
+    that were relaxed here, an outage would read as "not provisioned" for the
+    one secret whose absence is silent.
+    """
+
+    monkeypatch.setattr(kss, "resolve_openbao_ref", lambda ref: "ok")
+
+    def _unreachable(_ref: str) -> str:
+        raise _Boom("openbao unreachable")
+
+    monkeypatch.setattr(kss, "resolve_openbao_ref_optional", _unreachable)
+    with pytest.raises(_Boom):
+        kss.OpenBaoSecretSource().load()
 
 
 def test_an_unreachable_store_RAISES_rather_than_returning_empty(monkeypatch) -> None:
@@ -57,6 +125,7 @@ def test_an_unreachable_store_RAISES_rather_than_returning_empty(monkeypatch) ->
         raise _Boom("openbao unreachable")
 
     monkeypatch.setattr(kss, "resolve_openbao_ref", _unreachable)
+    monkeypatch.setattr(kss, "resolve_openbao_ref_optional", lambda _ref: None)
     with pytest.raises(_Boom):
         kss.OpenBaoSecretSource().load()
 
@@ -71,6 +140,7 @@ def test_one_missing_secret_fails_the_whole_load(monkeypatch) -> None:
         return "ok"
 
     monkeypatch.setattr(kss, "resolve_openbao_ref", _one_missing)
+    monkeypatch.setattr(kss, "resolve_openbao_ref_optional", lambda _ref: None)
     with pytest.raises(_Boom):
         kss.OpenBaoSecretSource().load()
 
@@ -96,6 +166,7 @@ def test_load_never_logs_a_secret_value(monkeypatch, caplog) -> None:
 
     secret = "AAAA-actual-secret-material-AAAA"
     monkeypatch.setattr(kss, "resolve_openbao_ref", lambda ref: secret)
+    monkeypatch.setattr(kss, "resolve_openbao_ref_optional", lambda _ref: secret)
     with caplog.at_level(logging.DEBUG, logger=kss.__name__):
         kss.OpenBaoSecretSource().load()
     assert secret not in caplog.text

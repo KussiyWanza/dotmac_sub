@@ -270,10 +270,43 @@ Three consequences worth stating, because each is a behaviour change:
   new key into OpenBao, so it now calls `refresh_secrets()` — the kernel reloads
   on an explicit act and never on a timer.
 
-The five SPECS still exist in `app/services/settings_spec.py` and their rows are
-still seeded and editable, while nothing reads them. Retiring them — the specs,
-the seed entries, the admin surface and the rows — is a follow-up slice, not
-part of the read-path move.
+**Specs retired 2026-08-10.** The five had specs and seeded rows that nothing
+read — a control an operator can set that changes nothing. `radius
+/auth_shared_secret` went with the read-path move; the other four
+(`auth/jwt_secret`, `auth/credential_encryption_key`,
+`auth/totp_encryption_key`, `network/wireguard_key_encryption_key`) went with
+the trust-anchor slice below. They escaped
+`tests/architecture/test_no_orphan_settings.py` only because each key NAME
+still appears in `app/` — as the name its held secret is asked for by.
+
+### The rule these follow
+
+> `is_secret` on a settings spec means **confidential**: encrypt the value at
+> rest, and settings-write may change it. A value whose **authority** matters —
+> a trust anchor, a signing key, or a key that protects this same database — is
+> not a setting at all. It is held material, loaded at boot from a path named in
+> code.
+
+The two are different properties and neither substitutes for the other.
+Encryption at rest answers "a database dump must not yield this"; held material
+answers "the surface this system exposes must not be able to change this".
+ADR-0009 drew the second line for the boot five; this states the reason, so the
+next secret-shaped setting is classified rather than argued about.
+
+**`billing/prepaid_reconstruction_attestation_public_key_ref` moved by that
+rule.** It is a public key, so confidentiality buys nothing; what it needed was
+that only OpenBao access can replace it, since replacing it means forged
+funding manifests verify. Its guard — "must be an OpenBao reference" — looked
+like that protection and was not: it checked the value WAS a reference and
+never WHICH reference, so settings-write could aim it at any key. It is now
+`prepaid_attestation_public_key` in `OPTIONAL_SECRET_REFS`.
+
+`OPTIONAL_SECRET_REFS` exists for exactly that shape: material needed by ONE
+feature, where a deployment not using the feature has nothing to provision and
+must still boot. The strict distinction survives — a missing PATH means not
+provisioned, while an unreachable store, a bad token or a missing field still
+raise (`secrets.resolve_openbao_ref_optional`). The required five stay
+all-or-nothing.
 
 The three settings modules were added 2026-08-10 for the settings cutover:
 `settings_resolver` (resolution, and `register_specs` so Sub's 560 specs are

@@ -28,7 +28,6 @@ from app.services.domain_settings import (
     tr069_settings,
     usage_settings,
 )
-from app.services.secrets import is_openbao_ref
 from app.services.settings_spec import (
     DOMAIN_SETTINGS_SERVICE,
     SCHEDULER_BOOLEAN_SETTING_KEYS,
@@ -197,24 +196,10 @@ def seed_auth_settings(db: Session) -> None:
         value_type=SettingValueType.integer,
         value_text=os.getenv("API_KEY_MAX_PER_OWNER", "0"),
     )
-    jwt_secret = os.getenv("JWT_SECRET")
-    if jwt_secret and is_openbao_ref(jwt_secret):
-        auth_settings.ensure_by_key(
-            db,
-            key="jwt_secret",
-            value_type=SettingValueType.string,
-            value_text=jwt_secret,
-            is_secret=True,
-        )
-    totp_key = os.getenv("TOTP_ENCRYPTION_KEY")
-    if totp_key and is_openbao_ref(totp_key):
-        auth_settings.ensure_by_key(
-            db,
-            key="totp_encryption_key",
-            value_type=SettingValueType.string,
-            value_text=totp_key,
-            is_secret=True,
-        )
+    # No `jwt_secret` or `totp_encryption_key` rows: both are held from OpenBao
+    # at boot (`app/services/kernel_secret_source.py`) and read from there, so
+    # a row would be a reference nothing follows and a control an operator can
+    # edit to no effect. Their specs are retired for the same reason.
 
 
 def seed_audit_settings(db: Session) -> None:
@@ -1563,13 +1548,9 @@ def seed_billing_settings(db: Session) -> None:
         value_type=SettingValueType.string,
         value_text=os.getenv("BILLING_DEFAULT_CURRENCY", "NGN"),
     )
-    billing_settings.ensure_by_key(
-        db,
-        key="prepaid_reconstruction_attestation_public_key_ref",
-        value_type=SettingValueType.string,
-        value_text=os.getenv("PREPAID_RECONSTRUCTION_ATTESTATION_PUBLIC_KEY_REF", ""),
-        is_secret=True,
-    )
+    # No `prepaid_reconstruction_attestation_public_key_ref` row: the trust
+    # anchor is held from a path named in code, so the settings surface cannot
+    # repoint it — see `prepaid_funding_attestation.resolve_trusted_public_key_pem`.
     billing_settings.ensure_by_key(
         db,
         key="default_invoice_status",
@@ -2511,16 +2492,10 @@ def seed_comms_settings(db: Session) -> None:
 
 def seed_wireguard_settings(db: Session) -> None:
     """Seed WireGuard VPN settings from environment variables."""
-    # Encryption key for storing WireGuard private keys at rest
-    wg_key = os.getenv("WIREGUARD_KEY_ENCRYPTION_KEY")
-    if wg_key and is_openbao_ref(wg_key):
-        network_settings.ensure_by_key(
-            db,
-            key="wireguard_key_encryption_key",
-            value_type=SettingValueType.string,
-            value_text=wg_key,
-            is_secret=True,
-        )
+    # No `wireguard_key_encryption_key` row: the key that encrypts WireGuard
+    # private keys at rest is held from OpenBao at boot
+    # (`app/services/kernel_secret_source.py`) and read from there. A row would
+    # be a reference nothing follows, in the same database the key protects.
     # Log retention
     network_settings.ensure_by_key(
         db,
