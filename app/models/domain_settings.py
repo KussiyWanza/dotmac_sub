@@ -34,17 +34,46 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    Index,
     String,
     Text,
     TypeDecorator,
-    UniqueConstraint,
     event,
+    text,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
 from app.models.subscription_engine import SettingValueType, SettingValueTypeType
+
+#: The scope kind every Sub settings row lives at. ADR-0009: Sub provisions
+#: exactly one tenant, the ISP operator, and its settings belong to it —
+#: `platform` is the deployment-wide level BENEATH tenant in the kernel's
+#: model, not a synonym for "this deployment". Migration 509 moved every row
+#: here; this is what keeps new rows arriving in the same place.
+TENANT_SCOPE = "tenant"
+PLATFORM_SCOPE = "platform"
+
+#: The sentinel standing in for NULL inside the uniqueness index, matching
+#: migration 507. A real UUID so the COALESCE is type-correct, and one no
+#: generator produces.
+_NIL_UUID = "00000000-0000-0000-0000-000000000000"
+
+
+def _operator_tenant_id() -> uuid.UUID:
+    """The tenant a new settings row belongs to.
+
+    Imported inside the callable to keep `app.models` free of a service-layer
+    dependency at import time, exactly as `_reject_undeclared_domain` does.
+    `OPERATOR_TENANT_ID` is a module constant, so this reads nothing and
+    touches no session.
+    """
+
+    from app.services.operator_tenant import OPERATOR_TENANT_ID
+
+    return OPERATOR_TENANT_ID
+
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from pydantic import GetCoreSchemaHandler
@@ -194,7 +223,39 @@ class SettingDomainType(TypeDecorator):
 class DomainSetting(Base):
     __tablename__ = "domain_settings"
     __table_args__ = (
-        UniqueConstraint("domain", "key", name="uq_domain_settings_domain_key"),
+        # Mirrors migration 507 — name, columns and order. `(domain, key)`
+        # alone was DROPPED there and this declaration outlived it: once a row
+        # can exist at more than one scope that pair is not unique, so the
+        # metadata-built lanes were constructing a schema the migration chain
+        # does not have, and constraining writes Postgres allows.
+        #
+        # `COALESCE` removes the NULL rather than tolerating it. Postgres
+        # treats every NULL inside a unique index as distinct from every other,
+        # so a nullable scope column in a plain composite admits exactly the
+        # duplicate rows the index exists to prevent.
+        Index(
+            "uq_domain_settings_scope_domain_key",
+            "domain",
+            "key",
+            text(f"COALESCE(tenant_id, '{_NIL_UUID}')"),
+            "scope_kind",
+            text(f"COALESCE(scope_id, '{_NIL_UUID}')"),
+            unique=True,
+        ),
+        # A scope kind and a tenant say the same thing and must not disagree.
+        # `platform` is the deployment-wide level and has no tenant; every
+        # finer kind names one. Without this the two columns drift into shapes
+        # no reader can match — a row marked `tenant` with a NULL tenant is
+        # invisible to the resolver's own lookup, which filters on both.
+        #
+        # This is `dotmac_kernel.setting_scopes.SettingScope.__post_init__`,
+        # enforced where every writer passes rather than only where a caller
+        # remembered to build a `SettingScope`.
+        CheckConstraint(
+            "(scope_kind = 'platform' AND tenant_id IS NULL) "
+            "OR (scope_kind <> 'platform' AND tenant_id IS NOT NULL)",
+            name="ck_domain_settings_scope_alignment",
+        ),
         # A row carries a value in at least one column. The old form named the
         # type (`value_type = 'json'`), which is the same closed list migration
         # 512 removed from the column itself — a second JSON-stored type such
@@ -215,18 +276,49 @@ class DomainSetting(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    # Scope columns, declared so metadata matches the migrated schema and so
-    # `dotmac_kernel.settings_models.DomainSetting` can read this table at all.
-    # Sub reads none of them: it is a single-operator deployment, so every row
-    # is platform scope. `scope_kind` defaults to "platform" rather than the
-    # kernel's "tenant" — a Sub row has no tenant, and inheriting that default
-    # would make every row claim a scope its own `tenant_id` contradicts.
-    # See migration 507_domain_settings_scope_columns.
+    # Scope columns. Sub reads them through the kernel resolver, which since
+    # the settings cutover asks for the OPERATOR TENANT's rows and falls back
+    # to platform ones — so which scope a row lands at is not cosmetic.
+    #
+    # These defaulted to `platform`/NULL, which was true when migration 507
+    # added them and stopped being true when 509 moved every existing row to
+    # the operator tenant (ADR-0009: the ISP operator IS the one tenant, and
+    # `platform` is the level beneath it, not a synonym for this deployment).
+    # The defaults outlived that migration, so every setting created AFTER it
+    # arrived at a different scope from every setting created before — a split
+    # estate that resolution papers over, because a platform row is exactly
+    # what a tenant read falls back to. It surfaces later and worse: as two
+    # rows for one key that the uniqueness index permits and
+    # `get_optional_by_key`, which filters on neither scope column, picks
+    # between arbitrarily.
+    #
+    # The tenant is filled by `_default_tenant_to_the_operator` below rather
+    # than by a column `default=`. A column default fires whenever the attribute
+    # is `None` at flush and cannot see `scope_kind`, so it filled the operator
+    # tenant into an explicitly PLATFORM row and produced the one shape the
+    # CHECK forbids — turning "I asked for a platform row" into an opaque
+    # constraint violation. Deriving one column from the other is the same move
+    # the kernel makes in the opposite direction (`_default_scope_kind` reads
+    # `tenant_id`), and it makes the pair coherent by construction.
     tenant_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), nullable=True
     )
+    # The ORM default and the SERVER default deliberately differ, and the CHECK
+    # above is what keeps both honest.
+    #
+    # An application write means "the operator's setting", so the ORM default is
+    # the tenant. A raw `INSERT` naming no scope is almost always a MIGRATION,
+    # running at a point in the chain where the operator tenant does not exist
+    # yet — `tenants` arrives in 508 and the row in 509 — so those rows must
+    # land at `platform`, which references no tenant and which 509 and 514 then
+    # move. A `tenant` server default would make every such insert produce a
+    # `tenant` row with a NULL tenant: a CHECK violation, and before that a row
+    # the resolver can never match, since it filters on both columns.
     scope_kind: Mapped[str] = mapped_column(
-        String(20), nullable=False, default="platform", server_default="platform"
+        String(20),
+        nullable=False,
+        default=TENANT_SCOPE,
+        server_default=PLATFORM_SCOPE,
     )
     scope_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), nullable=True
@@ -297,7 +389,45 @@ def _reject_undeclared_value_type(
     active_setting_value_types().require(str(target.value_type))
 
 
+def _default_tenant_to_the_operator(
+    mapper: object, connection: object, target: DomainSetting
+) -> None:
+    """Give a tenant-scoped row the operator tenant when it names none.
+
+    ADR-0009: Sub provisions exactly one tenant and its settings belong to it,
+    so an application write with no scope stated is the operator's setting.
+
+    A LISTENER rather than a column `default=`, because the default cannot see
+    the other column. It fires whenever `tenant_id` is `None` at flush —
+    including when a caller explicitly asked for a PLATFORM row, which has no
+    tenant by definition — and so produced `platform` + a tenant, the one shape
+    `ck_domain_settings_scope_alignment` forbids. Asking for a platform row
+    would have failed with an opaque constraint violation.
+
+    Reading `scope_kind` makes the pair coherent by construction instead. It is
+    the same derivation the kernel does in the opposite direction:
+    `dotmac_kernel.settings_models._default_scope_kind` picks the KIND from the
+    tenant, because there a row's tenancy is what the caller states first.
+
+    INSERT only. On an insert this is choosing a default the caller did not
+    state; on an update the caller has named both columns and the CHECK is the
+    right arbiter — silently rewriting a stated `tenant_id` there would be the
+    model overruling a writer rather than defaulting for one.
+    """
+
+    # `scope_kind` is still `None` here when the caller did not set it: column
+    # defaults are applied while the INSERT is compiled, which is AFTER this
+    # event. Unset therefore falls through and gets the tenant, which is what
+    # the column default (`TENANT_SCOPE`) is about to say anyway. Only an
+    # EXPLICIT platform row returns early.
+    if target.scope_kind == PLATFORM_SCOPE:
+        return
+    if target.tenant_id is None:
+        target.tenant_id = _operator_tenant_id()
+
+
 event.listen(DomainSetting, "before_insert", _reject_undeclared_domain)
 event.listen(DomainSetting, "before_update", _reject_undeclared_domain)
 event.listen(DomainSetting, "before_insert", _reject_undeclared_value_type)
 event.listen(DomainSetting, "before_update", _reject_undeclared_value_type)
+event.listen(DomainSetting, "before_insert", _default_tenant_to_the_operator)

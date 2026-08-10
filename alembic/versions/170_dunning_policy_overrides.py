@@ -142,6 +142,28 @@ def upgrade() -> None:
         ("default_prepaid_policy_set_id", PREPAID_POLICY_ID),
         ("default_postpaid_policy_set_id", POSTPAID_POLICY_ID),
     ):
+        # UPDATE-then-INSERT rather than `ON CONFLICT (domain, key)`.
+        #
+        # A conflict TARGET has to match a unique index that exists when this
+        # runs, and `(domain, key)` no longer does: migration 507 replaced it
+        # with `uq_domain_settings_scope_domain_key`, which includes the scope
+        # columns. That matters here because `001_squashed_initial_schema`
+        # builds the baseline from the CURRENT model metadata — so the model is
+        # this chain's history, and a constraint dropped from the model is
+        # absent at every earlier point too, including this one.
+        #
+        # The same two statements the `policy_dunning_steps` insert above
+        # already uses, and they name no index at all, so no future change to
+        # the uniqueness shape can reach back and break this migration again.
+        op.execute(
+            sa.text(
+                """
+                UPDATE domain_settings
+                   SET value_text = :val, is_active = true
+                 WHERE domain = 'collections' AND key = :key
+                """
+            ).bindparams(key=key, val=value)
+        )
         op.execute(
             sa.text(
                 """
@@ -149,12 +171,13 @@ def upgrade() -> None:
                     id, domain, key, value_type, value_text,
                     is_secret, is_active, created_at, updated_at
                 )
-                VALUES (
+                SELECT
                     gen_random_uuid(), 'collections', :key, 'string', :val,
                     false, true, now(), now()
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM domain_settings
+                     WHERE domain = 'collections' AND key = :key
                 )
-                ON CONFLICT (domain, key)
-                DO UPDATE SET value_text = EXCLUDED.value_text, is_active = true
                 """
             ).bindparams(key=key, val=value)
         )
