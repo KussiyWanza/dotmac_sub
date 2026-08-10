@@ -54,6 +54,12 @@ def _activate(db, subscription):
     from app.models.catalog import SubscriptionStatus
 
     evidence_start = NOW - timedelta(days=10)
+    # The shared subscription fixture records lifecycle evidence at wall-clock
+    # time. These fixed-clock scorer tests own their lifecycle history, so
+    # discard that unrelated seed before installing the deterministic baseline.
+    db.query(SubscriptionLifecycleEvent).filter(
+        SubscriptionLifecycleEvent.subscription_id == subscription.id
+    ).delete(synchronize_session=False)
     subscription.status = SubscriptionStatus.active
     subscription.billing_mode = BillingMode.prepaid
     subscription.start_at = evidence_start
