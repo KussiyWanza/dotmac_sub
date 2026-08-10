@@ -23,6 +23,7 @@ from app.models.project import (
     ProjectType,
 )
 from app.models.sequence import DocumentSequence
+from app.models.subscription_engine import SettingValueType
 from app.models.support import Ticket
 from app.models.ticket_workflow import SlaClock, SlaClockStatus, WorkflowEntityType
 from app.models.vendor_routes import InstallationProject, InstallationProjectStatus
@@ -36,6 +37,8 @@ from app.schemas.project import (
     ProjectTaskUpdate,
     ProjectUpdate,
 )
+from app.schemas.settings import DomainSettingCreate
+from app.services.domain_settings import projects_settings
 from app.services.owner_commands import CommandContext
 from app.services.projects import (
     FIBER_INSTALLATION_STAGE_ORDER,
@@ -289,6 +292,39 @@ def test_completion_uses_specialized_message_without_generic_duplicate(
         .filter(Notification.event_type == "project_status_changed")
         .count()
         == 0
+    )
+
+
+def test_project_completion_queues_configured_finance_email_once(
+    db_session, subscriber
+):
+    projects_settings.create(
+        db_session,
+        DomainSettingCreate(
+            domain="projects",
+            key="project_completion_finance_email_recipients",
+            value_type=SettingValueType.list,
+            value_json=["finance@example.com", "FINANCE@example.com", "not-email"],
+        ),
+    )
+    project = _create_fiber_project(db_session, subscriber)
+
+    projects.update(db_session, str(project.id), ProjectUpdate(status="completed"))
+    projects.update(db_session, str(project.id), ProjectUpdate(status="completed"))
+
+    emails = (
+        db_session.query(Notification)
+        .filter(
+            Notification.event_type == "project_completed_finance",
+            Notification.channel == NotificationChannel.email,
+        )
+        .all()
+    )
+
+    assert len(emails) == 1
+    assert emails[0].recipient == "finance@example.com"
+    assert emails[0].dedupe_key == (
+        f"project-completed-finance:{project.id}:finance@example.com"
     )
 
 

@@ -46,6 +46,17 @@ def test_projects_owners_have_complete_typed_contracts() -> None:
         "project transition protocol",
         "customer communication delivery intent",
     )
+    finance_completion = next(
+        concern
+        for concern in lifecycle.contract.concerns
+        if concern.name == "project completion finance email consequence"
+    )
+    assert finance_completion.input_names == (
+        "canonical project aggregate",
+        "project transition protocol",
+        "project completion finance notification policy",
+        "staff notification delivery queue",
+    )
     reassignment = next(
         concern
         for concern in lifecycle.contract.concerns
@@ -142,6 +153,19 @@ def test_customer_status_notifications_are_owned_by_project_lifecycle() -> None:
     assert "request_update(" not in adapters
 
 
+def test_project_completion_finance_notification_is_configured_not_hardcoded() -> None:
+    service = (ROOT / "app/services/projects.py").read_text()
+    settings = (ROOT / "app/services/settings_spec.py").read_text()
+
+    assert "def _notify_finance_project_completed(" in service
+    assert '"project_completed_finance"' in service
+    assert '"project_completion_finance_email_recipients"' in service
+    assert '"project_completion_finance_permission_key"' in service
+    assert "finance@test.local" not in service
+    assert "finance@dotmac" not in service
+    assert 'key="project_completion_finance_email_recipients"' in settings
+
+
 def test_project_ui_does_not_write_or_join_work_order_bindings() -> None:
     route = (ROOT / "app/web/admin/projects.py").read_text()
     projection = (ROOT / "app/services/web_projects.py").read_text()
@@ -160,6 +184,9 @@ def test_project_ui_does_not_write_or_join_work_order_bindings() -> None:
     assert "crm_project_id" not in projection
     assert "crm_work_order_id" not in templates
     assert "list_task_work_order_summaries_bulk" in projection
+    project_detail = (ROOT / "templates/admin/projects/project_detail.html").read_text()
+    assert "/admin/projects/tasks/{{ task.id }}" in project_detail
+    assert "/admin/projects/tasks/{{ task.number or task.id }}" not in project_detail
 
 
 def test_project_vendor_delivery_projection_is_read_only_and_permission_scoped() -> (
