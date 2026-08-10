@@ -20,7 +20,7 @@ from app.models.usage import AccountingStatus, RadiusAccountingSession
 from app.services import customer_service_level as sla
 from app.services.service_impact_contracts import SlaVerdict
 
-NOW = datetime(2026, 8, 20, 12, 0, 0, tzinfo=UTC)
+NOW = datetime(2026, 8, 8, 12, 0, 0, tzinfo=UTC)
 
 
 def _interval(
@@ -229,7 +229,7 @@ def test_reviewed_exclusions_report_in_their_own_bucket(db_session, subscription
 def test_breach_and_at_risk_only_exist_against_the_policy(db_session, subscription):
     period_start = _activate(db_session, subscription)
     _attach_policy(db_session, subscription, uptime="99.90")
-    # ~19 days elapsed this period; 0.1% budget ≈ 28 minutes. Ten hours of
+    # About 7 days elapsed this period; 0.1% budget is under 11 minutes. Ten hours of
     # confirmed downtime is a clear breach.
     _interval(
         db_session,
