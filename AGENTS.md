@@ -100,11 +100,18 @@ authoritative documents in the same change that updates the contract.
 - Do not merge a feature branch directly into `main`. Merge it into `dev`,
   update `origin/dev`, and require the repository-prescribed tests and CI to
   pass on that exact `origin/dev` commit before merging `dev` into `main`.
-- After all source and rolling version pull requests have merged, explicitly
-  build the final validated `origin/dev` image once. Deploy that exact OCI
-  digest to the explicitly named staging host and complete staging acceptance
-  before promoting `dev` to `main`. A dev image is staging-only and must never
-  receive the `latest` tag.
+- After the intended source pull requests for a release have merged, explicitly
+  select the exact validated `origin/dev` SHA and build that image once. Deploy
+  that exact OCI digest to the explicitly named staging host and complete
+  staging acceptance before promoting the same tree to `main`. An open rolling
+  version-bump pull request does not block digest-bound deployment of an already
+  selected candidate; version bumps govern semver metadata and aliases. A dev
+  image is staging-only and must never receive the `latest` tag.
+- During an active release deployment, freeze merges into `dev` until the
+  candidate is deployed to production or explicitly abandoned. The freeze does
+  not block feature branch pushes, pull request creation, or pull request
+  updates; it blocks only merges that would move the release base while the
+  digest-bound candidate is in flight.
 - The one-time bootstrap promotion that first places the candidate workflow on
   the default branch uses the previously active dev-image staging path. GitHub
   cannot dispatch a new workflow until its file exists on the default branch;

@@ -21,9 +21,13 @@ Overridden work reaches production without staging having run it, so reconcile
    Do not edit `VERSION` in the source pull request; the version-bump workflow
    owns the separate rolling bump pull request after merge.
 2. Require CI, Mobile CI, and Version Impact to pass before merging.
-3. Merge into `dev` and let the rolling version-bump pull request be created.
-4. Merge the rolling version-bump PR for `dev`, when one exists, and require CI
-   and Mobile CI to pass on that final exact `origin/dev` commit.
+3. Merge into `dev` and let the rolling version-bump pull request be created
+   when the version-impact automation requires one.
+4. Select the exact `origin/dev` SHA intended for deployment and require CI and
+   Mobile CI to pass on that exact commit.
+   An open rolling version-bump pull request does not block
+   a digest-bound candidate for an already-selected source SHA; it governs
+   semver metadata and aliases, not deployment authority.
 5. Dispatch `Build release candidate once` on `dev`, supplying that full dev
    SHA as `candidate_sha`. The workflow refuses a stale SHA or non-green source,
    builds the application once on GitHub, and records its immutable OCI digest.
@@ -47,9 +51,29 @@ Overridden work reaches production without staging having run it, so reconcile
     `dotmac-sub-prod`, supplies the authorization run ID, and the protected
     production environment approves it. The default path takes a backup.
 
-Invoke the candidate workflow only after the final rolling version bump. Do not
-build and stage every intermediate feature merge. The isolated GHCR workflow
-publishes only the pinned GenieACS runtime; it never builds an application image.
+Invoke the candidate workflow only for the exact source SHA intended for this
+release. Do not build and stage every intermediate feature merge. The isolated
+GHCR workflow publishes only the pinned GenieACS runtime; it never builds an
+application image. If the rolling version-bump pull request remains open, the
+production promotion still authorizes and deploys the immutable digest; the
+existing semver tag is not moved when it already points at an older digest, and
+only `latest` is advanced to the authorized production digest.
+
+## Release Freeze
+
+Once release deployment is in flight, `dev` is frozen for merges until the
+candidate is deployed to production or the release is explicitly abandoned. The
+freeze is intentionally narrow: feature branch pushes, pull request creation,
+and pull request updates continue, but no pull request should merge into `dev`
+while `Build release candidate once`, `Deploy dev to staging`,
+`Promote staged digest for production`, or `Deploy authorized digest to
+production` is queued or running.
+
+The `Release Freeze Gate` workflow is the required pull-request check that
+enforces this boundary on `dev`. It reads active GitHub Actions runs and fails
+only when one of those release-control workflows is queued or in progress. It
+does not inspect open pull requests and does not reinterpret the selected
+candidate; the candidate SHA and OCI digest remain the deployment authority.
 
 ### One-time workflow bootstrap
 
@@ -297,6 +321,8 @@ CI, refuses to overwrite an existing `candidate-<full-sha>` bootstrap tag,
 builds only on a GitHub-hosted runner, and uploads
 `release-candidate-evidence`. That typed document binds the source commit, Git
 tree, OCI digest, source-CI conclusion, and build run ID.
+Open pull requests, including rolling version-bump pull requests,
+are not candidate authority once that immutable evidence exists.
 
 The staging workflow downloads evidence only from its triggering run,
 independently recomputes the candidate tree, waits for the exact source checks,

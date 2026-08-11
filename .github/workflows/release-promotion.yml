@@ -191,20 +191,25 @@ jobs:
           printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
           source_ref="${REGISTRY}/${IMAGE_NAME}@${IMAGE_DIGEST}"
           version_ref="${REGISTRY}/${IMAGE_NAME}:${version}"
+          latest_ref="${REGISTRY}/${IMAGE_NAME}:latest"
           existing="$(docker buildx imagetools inspect "$version_ref" --format '{{json .Manifest}}' 2>/dev/null || true)"
+          alias_args=(--tag "$latest_ref")
           if [ -n "$existing" ]; then
             existing_digest="$(jq -r '.digest' <<<"$existing")"
-            test "$existing_digest" = "$IMAGE_DIGEST" || {
-              echo "Version alias $version_ref already points to $existing_digest." >&2
-              exit 1
-            }
+            if [ "$existing_digest" = "$IMAGE_DIGEST" ]; then
+              alias_args+=(--tag "$version_ref")
+            else
+              echo "::warning title=Version alias not moved::$version_ref already points to $existing_digest; production authorization remains bound to $IMAGE_DIGEST."
+            fi
+          else
+            alias_args+=(--tag "$version_ref")
           fi
           docker buildx imagetools create \
             --prefer-index=false \
-            --tag "$version_ref" \
-            --tag "${REGISTRY}/${IMAGE_NAME}:latest" \
+            "${alias_args[@]}" \
             "$source_ref"
-          for alias in "$version_ref" "${REGISTRY}/${IMAGE_NAME}:latest"; do
+          for alias in "${alias_args[@]}"; do
+            [ "$alias" = "--tag" ] && continue
             alias_digest="$(docker buildx imagetools inspect "$alias" --format '{{json .Manifest}}' | jq -r '.digest')"
             test "$alias_digest" = "$IMAGE_DIGEST" || {
               echo "Alias $alias resolved to $alias_digest, expected $IMAGE_DIGEST." >&2
