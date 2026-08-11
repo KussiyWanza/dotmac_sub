@@ -38,9 +38,8 @@ SERVICES: tuple[SOTService, ...] = (
         name="network.fiber_cost_items",
         module="app.services.fiber_cost_items",
         owns=(
-            "which components a fiber drop installation is priced from",
-            "each component's price and how it is applied",
-            "whether a drop estimate can be produced at all",
+            "fiber drop-cost components and their prices",
+            "whether a drop estimate can be produced, and what it totals",
         ),
         notes=(
             "Currency is the deployment's own `billing/default_currency`, read "
@@ -60,18 +59,17 @@ SERVICES: tuple[SOTService, ...] = (
         contract=ServiceContract(
             concerns=(
                 ConcernContract(
-                    name="fiber drop-cost component catalogue and pricing",
+                    name="fiber drop-cost components and their prices",
                     role=OwnerRole.COMMAND_WRITER,
                     input_names=("operator-priced fiber cost components",),
                     canonical_writer="network.fiber_cost_items",
                 ),
                 ConcernContract(
-                    name="priced estimate for one fiber drop route",
-                    role=OwnerRole.RESOLVER,
-                    input_names=(
-                        "operator-priced fiber cost components",
-                        "deployment display currency",
+                    name=(
+                        "whether a drop estimate can be produced, and what it totals"
                     ),
+                    role=OwnerRole.RESOLVER,
+                    input_names=("operator-priced fiber cost components",),
                 ),
             ),
             authoritative_inputs=(
@@ -83,12 +81,6 @@ SERVICES: tuple[SOTService, ...] = (
                         "FiberCostItem rows: the component, how its amount is "
                         "applied, and whether it has been priced at all"
                     ),
-                ),
-                AuthorityInput(
-                    name="deployment display currency",
-                    owner="settings.domain_settings",
-                    kind=AuthorityKind.CONTROL_INPUT,
-                    source="the billing/default_currency setting",
                 ),
             ),
             transaction=TransactionContract(
@@ -113,6 +105,7 @@ SERVICES: tuple[SOTService, ...] = (
             ),
             errors=ErrorContract(
                 domain_codes=(
+                    *owner_command_boundary_error_codes("network.fiber_cost_items"),
                     "network.fiber_cost_items.code_required",
                     "network.fiber_cost_items.label_required",
                     "network.fiber_cost_items.duplicate_code",
@@ -125,10 +118,10 @@ SERVICES: tuple[SOTService, ...] = (
             migration=MigrationContract(
                 state=AuthorityMigrationState.NATIVE,
                 new_owner="network.fiber_cost_items",
-                old_owner=(
-                    "four network SettingSpecs read by web_network_fiber and "
-                    "priced in the map template's JavaScript"
-                ),
+                # No `old_owner`: native authority has none by definition, and
+                # the four settings this replaced were never an OWNER — they
+                # were the same fact restated in three layers, which is why
+                # nothing could be pointed at when the estimate went wrong.
                 verification=(
                     "Per-metre and flat components sum correctly; an unpriced "
                     "active component makes the estimate incomplete rather "
@@ -138,6 +131,23 @@ SERVICES: tuple[SOTService, ...] = (
                 fallback_retirement=(
                     "The four settings and their seed entries are removed in "
                     "the same change, so no parallel price source survives."
+                ),
+            ),
+            events=EventContract(
+                event_types=("fiber.cost_item_changed",),
+                schema_version=1,
+                delivery_owner="events.dispatcher",
+                compatibility=(
+                    "The AMOUNT is deliberately absent from the payload. A "
+                    "subscriber that needs it asks for an estimate, which "
+                    "keeps one reader of the price and stops what an install "
+                    "costs travelling through a delivery pipeline with its own "
+                    "retention and logging."
+                ),
+                replay=(
+                    "Safe to replay: the event names what changed, not what it "
+                    "became, and an estimate is recomputed from committed rows "
+                    "on every request."
                 ),
             ),
             steward="network operations",

@@ -184,6 +184,31 @@ class FiberCostItemError(ValueError):
     """A cost item could not be created or changed as asked."""
 
 
+def _announce(db: Session, item: FiberCostItem, change: str) -> None:
+    """Say that a component's pricing changed.
+
+    The AMOUNT is not in the payload. A subscriber that needs it asks for an
+    estimate, which keeps one reader of the price and means a change to what an
+    install costs does not travel through a delivery pipeline with its own
+    retention and logging. Same rule the kernel applies to settings changes.
+    """
+
+    from app.services.events import emit_event
+    from app.services.events.types import EventType
+
+    emit_event(
+        db,
+        EventType.fiber_cost_item_changed,
+        {
+            "code": item.code,
+            "change": change,
+            "unit": item.unit.value,
+            "is_active": item.is_active,
+            "is_priced": item.is_priced,
+        },
+    )
+
+
 def _parse_amount(raw: str | None) -> Decimal | None:
     """A price, or None for "not priced yet".
 
@@ -241,6 +266,7 @@ def create_item(
     db.add(item)
     db.commit()
     db.refresh(item)
+    _announce(db, item, "created")
     return item
 
 
@@ -281,6 +307,7 @@ def update_item(
         item.description = description.strip() or None
     db.commit()
     db.refresh(item)
+    _announce(db, item, "updated")
     return item
 
 
