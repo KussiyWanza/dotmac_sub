@@ -1,0 +1,64 @@
+name: Release Freeze Gate
+
+# Required PR check for `dev`: while a release candidate, staging deployment,
+# production authorization, or production deployment is queued or running, do not
+# merge new work into dev. Branch pushes and PR updates remain allowed.
+on:
+  pull_request:
+    branches: [dev]
+    types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: release-freeze-gate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: Release Freeze Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Refuse dev merges while release deployment is active
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const guarded = new Set([
+              "Build release candidate once",
+              "Deploy dev to staging",
+              "Promote staged digest for production",
+              "Deploy authorized digest to production",
+            ]);
+            const activeStatuses = new Set(["queued", "in_progress", "waiting", "requested", "pending"]);
+            const response = await github.rest.actions.listWorkflowRunsForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              status: "in_progress",
+              per_page: 100,
+            });
+            const queued = await github.rest.actions.listWorkflowRunsForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              status: "queued",
+              per_page: 100,
+            });
+            const active = [...response.data.workflow_runs, ...queued.data.workflow_runs]
+              .filter((run) => guarded.has(run.name) && activeStatuses.has(run.status))
+              .filter((run) => run.id !== context.runId)
+              .sort((left, right) => right.id - left.id);
+            if (active.length === 0) {
+              core.info("No active release deployment workflow is running.");
+              return;
+            }
+            const summary = active
+              .slice(0, 10)
+              .map((run) => `${run.name}#${run.run_number} ${run.status} ${run.html_url}`)
+              .join("\n");
+            core.setFailed(
+              `Release freeze is active; do not merge into dev while deployment is in flight.\n${summary}`
+            );
