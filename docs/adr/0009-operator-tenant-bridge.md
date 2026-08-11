@@ -10,14 +10,67 @@ Affected systems and domains: `docs/PLATFORM_ADOPTION_LEDGER.md` kernel import
 allowlist, `app/models/domain_settings.py` scope columns, request context,
 `alembic` chain, and every later kernel stateful-module adoption.
 
+## Amendment, 2026-08-11: the state this ADR describes no longer exists
+
+Measured read-only on production (`selfcare.dotmac.io`), two days after this
+document was written:
+
+```
+tenants                              1 row
+  8c7ae830-51fc-52ae-9818-d84b2a35e568  slug='operator'  name='Operator'
+
+domain_settings                    577 rows
+  scope_kind='tenant'              577   (100%)
+  scope_kind='platform'              0
+  tenant_id IS NULL                  0
+  distinct tenant_id                 1 → the operator tenant
+```
+
+Two corrections follow, and both matter to anyone ratifying this.
+
+**The migration this ADR criticises was reasoned, not careless.** The Context
+below says the platform default "was chosen without a decision". Migration 507's
+own docstring decides it explicitly and at length: Sub had no tenant at that
+moment, so labelling rows `tenant` while `tenant_id` stayed NULL would have been
+a scope claim the row's own data contradicted. 507 was correct when written. It
+was migration 508 creating `tenants`, and the operator tenant being provisioned
+at boot, that made it obsolete — not an oversight in 507.
+
+**The correction this ADR calls for has already happened.** Every settings row
+is tenant-scoped to the operator, stamped on write by
+`app/models/domain_settings.py`. Ratifying therefore authorises no data
+migration and costs nothing; what remains is schema convergence.
+
+**How that convergence happens changed on 2026-08-11, and in Sub's favour.**
+The original plan was `518_domain_settings_converge_on_kernel_shape`: move Sub
+down to the kernel's shape, dropping the CHECK that migration 514 already
+carries. Kernel `0.1.0a40` makes that unnecessary. Its migration
+`0021_setting_scope_alignment` treats adoption as first-class — it detects an
+existing `ck_domain_settings_scope_alignment`, verifies the constraint and the
+platform default actually match, and **adopts** them, recording
+`dotmac-kernel:0021:adopted-existing` as a constraint comment so a later
+downgrade restores Sub's own predecessor rather than deleting it. It refuses to
+adopt an unverified or incoherent constraint rather than assuming.
+
+So Sub keeps the stronger invariant it already shipped, and 518 is retired
+unmerged. This is the pattern the remaining collision dispositions should try
+first: **make the kernel adopt the product's stronger invariant, rather than
+levelling the product down to the kernel.**
+
+The decision below stands unchanged. Only its premise has moved: it now records
+what Sub already does rather than what Sub should start doing.
+
 ## Context
+
+*(as written 2026-08-09, superseded in part by the amendment above)*
 
 Sub has no tenant. The only `tenant_id` in its entire model layer arrived on
 2026-08-09 in migration `507_domain_settings_scope_columns`, which added the
 kernel's scope columns to `domain_settings` and defaulted every row to
 **platform** scope.
 
-That default is wrong, and it was chosen without a decision. `dotmac_starter_mt`
+That default is wrong for the world after 508 — see the amendment; it was the
+right call for the world 507 shipped into. `dotmac_starter_mt`
 ADR-0003 states:
 
 > A single-tenant deployment provisions exactly one tenant and retains
