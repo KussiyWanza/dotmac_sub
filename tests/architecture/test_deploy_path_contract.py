@@ -131,7 +131,9 @@ def test_openbao_initializer_seeds_optional_material_without_requiring_it() -> N
 
     initializer = (ROOT / "scripts/setup/openbao_init.sh").read_text(encoding="utf-8")
     source = (ROOT / "app/services/kernel_secret_source.py").read_text(encoding="utf-8")
-    provider = (ROOT / "app/services/kernel_key_provider.py").read_text(encoding="utf-8")
+    provider = (ROOT / "app/services/kernel_key_provider.py").read_text(
+        encoding="utf-8"
+    )
 
     optional_source = source[source.index("OPTIONAL_SECRET_REFS:") :]
     bindings = set(re.findall(r"bao://secret/([^#]+)#([a-z_]+)", optional_source))
