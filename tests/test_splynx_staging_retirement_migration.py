@@ -1,4 +1,4 @@
-"""Migration 517 drops splynx_staging only when nothing outside it depends on it."""
+"""Migration 518 drops splynx_staging only when nothing outside it depends on it."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ _MIGRATION_PATH = (
     Path(__file__).resolve().parents[1]
     / "alembic"
     / "versions"
-    / "517_retire_splynx_staging_schema.py"
+    / "518_retire_splynx_staging_schema.py"
 )
 _SPEC = importlib.util.spec_from_file_location(
     "splynx_staging_retirement_migration", _MIGRATION_PATH
@@ -39,8 +39,8 @@ def _bind(*, dialect: str = "postgresql", present: bool = True, dependents=()):
 
 
 def test_chains_onto_the_current_head() -> None:
-    assert retirement.revision == "517_retire_splynx_staging_schema"
-    assert retirement.down_revision == "516_material_request_erp_submission"
+    assert retirement.revision == "518_retire_splynx_staging_schema"
+    assert retirement.down_revision == "517_close_legacy_resolved_tickets"
 
 
 def test_drops_the_schema_when_nothing_external_depends_on_it(monkeypatch) -> None:
