@@ -885,10 +885,18 @@ def _record_unallocated_payment_credit(
 ) -> LedgerEntry | None:
     """Record the unallocated payment surplus.
 
-    For an account-scoped payment, this writes a ledger entry against the
-    payer's subscriber account. For a consolidated (billing-account-scoped)
-    payment, the surplus increments ``BillingAccount.balance`` instead.
+    For an account-scoped payment, this hands the surplus to the account-credit
+    owner, which mints the ledger evidence and offers the credit to the
+    account's open receivables in the same transaction. Doing it here instead
+    would strand the surplus: an overpaid account then holds credit while an
+    issued invoice stays payable, which is what
+    ``eligible_invoice_with_unused_credit`` counts and what overstates AR.
+
+    For a consolidated (billing-account-scoped) payment, the surplus increments
+    ``BillingAccount.balance`` instead and is refused here.
     """
+    from app.services.billing.account_credit import AccountCreditApplications
+
     remaining = round_money(to_decimal(remaining))
     if remaining <= 0:
         return None
@@ -900,13 +908,21 @@ def _record_unallocated_payment_credit(
                 "settlement owner with exact billing-account ledger evidence"
             ),
         )
-    entry = _create_payment_ledger_entry(db, payment, None, remaining)
-    if entry is None:
+    result = AccountCreditApplications.record_credit(
+        db,
+        str(payment.account_id),
+        amount=remaining,
+        currency=payment.currency or "NGN",
+        source=LedgerSource.payment,
+        memo=f"Payment {payment.id}",
+        payment_id=payment.id,
+    )
+    if result.ledger_entry is None:
         raise HTTPException(
             status_code=409,
             detail="Unallocated payment ledger evidence could not be created",
         )
-    return entry
+    return result.ledger_entry
 
 
 def _latest_successful_invoice_payment(db: Session, invoice: Invoice) -> Payment | None:

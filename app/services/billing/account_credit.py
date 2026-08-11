@@ -40,6 +40,7 @@ from app.models.integration_platform import (
 )
 from app.models.prepaid_funding import PrepaidOpeningFundingConsumption
 from app.schemas.billing import (
+    LedgerEntryCreate,
     PaymentAllocationConfirm,
     PaymentAllocationPreviewRequest,
 )
@@ -76,6 +77,34 @@ class AccountCreditApplicationResult:
     @property
     def changed(self) -> bool:
         return self.applied > 0
+
+
+@dataclass(frozen=True, slots=True)
+class AccountCreditRecordResult:
+    """Account credit came into existence, and what the owner did about it.
+
+    ``offered`` is the load-bearing field. Credit that is minted without being
+    offered to the account's open receivables is exactly the state
+    ``eligible_invoice_with_unused_credit`` reports as a violation, so the
+    creation path names whether the offer happened rather than leaving it to be
+    inferred from a later scan.
+    """
+
+    account_id: str
+    amount: Decimal
+    currency: str
+    source: LedgerSource
+    ledger_entry: LedgerEntry | None
+    offered: bool
+    application: AccountCreditApplicationResult | None = None
+
+    @property
+    def applied(self) -> Decimal:
+        return (
+            self.application.applied
+            if self.application is not None
+            else Decimal("0.00")
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -923,6 +952,100 @@ class AccountCreditApplications:
                 },
             )
         return result
+
+    @staticmethod
+    def record_credit(
+        db: Session,
+        account_id: str,
+        *,
+        amount: Decimal,
+        currency: str,
+        source: LedgerSource,
+        memo: str | None = None,
+        payment_id: UUID | None = None,
+    ) -> AccountCreditRecordResult:
+        """Bring unallocated account credit into existence, and offer it.
+
+        The owner had a consume half (:meth:`apply` and the per-invoice
+        variants) and a read half (the previews and invariant summaries), but no
+        creation half — so every caller that needed to mint credit reached past
+        this owner to the generic ledger writer and handed it an
+        ``entry_type=credit, invoice_id=NULL`` row. The owner never learned the
+        credit existed, which left "newly created credit is offered to the
+        account's open receivables" with nowhere to live except replicated at
+        each call site. Replicating it is how the rule gets missed: the next
+        caller simply does not know about it.
+
+        Minting and offering therefore happen here, in one transaction. A
+        caller cannot create credit and forget the consequence, because there is
+        no step between the two for it to be forgotten in.
+
+        Accounting reads the same way. Unallocated credit sitting against an
+        account that carries a payable invoice overstates the receivable — the
+        obligation has already been reduced, and offsetting a debit and credit
+        on one counterparty account is the standard treatment. Leaving it
+        unoffered means ageing and dunning a balance that is not owed.
+
+        Staged, never committed: the caller owns the transaction boundary so the
+        money and its consequence land or roll back together.
+
+        Returns a result whose ``offered`` says whether the offer ran.
+        """
+        account_id = str(account_id)
+        amount = round_money(to_decimal(amount))
+        currency = (currency or "NGN").upper()
+        if amount <= Decimal("0.00"):
+            return AccountCreditRecordResult(
+                account_id=account_id,
+                amount=Decimal("0.00"),
+                currency=currency,
+                source=source,
+                ledger_entry=None,
+                offered=False,
+            )
+
+        entry = LedgerEntries.create(
+            db,
+            LedgerEntryCreate(
+                account_id=coerce_uuid(account_id),
+                invoice_id=None,
+                payment_id=payment_id,
+                entry_type=LedgerEntryType.credit,
+                source=source,
+                amount=amount,
+                currency=currency,
+                memo=memo,
+            ),
+            commit=False,
+        )
+
+        # Only payment-backed credit is offerable here. `apply` settles by
+        # composing PaymentAllocations against succeeded payments, so credit
+        # from a credit note or an adjustment has no payment to allocate from —
+        # it is a different funding instrument with a different application
+        # record (CreditNoteApplication), owned elsewhere. Offering it from
+        # here would either produce allocations with no backing payment or
+        # silently do nothing; both are worse than reporting `offered=False`.
+        if source is not LedgerSource.payment:
+            return AccountCreditRecordResult(
+                account_id=account_id,
+                amount=amount,
+                currency=currency,
+                source=source,
+                ledger_entry=entry,
+                offered=False,
+            )
+
+        application = AccountCreditApplications.apply(db, account_id)
+        return AccountCreditRecordResult(
+            account_id=account_id,
+            amount=amount,
+            currency=currency,
+            source=source,
+            ledger_entry=entry,
+            offered=True,
+            application=application,
+        )
 
     @staticmethod
     def preview_invoice_void_release(
