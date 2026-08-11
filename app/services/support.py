@@ -1083,38 +1083,26 @@ class Tickets:
 
     @staticmethod
     def _apply_region_auto_assignment(ticket: Ticket, db: Session) -> dict[str, Any]:
-        rules = support_ticket_settings_service.region_assignment_rules(db)
         if not ticket.region:
             return {"matched": False, "reason": "region_missing"}
-        region_key = support_ticket_settings_service.normalize_system_value(
-            ticket.region
+        region_rule = support_ticket_settings_service.resolve_region_assignment_rule(
+            db, ticket.region
         )
-        region_rule = rules.get(region_key) if isinstance(rules, dict) else None
-        if not isinstance(region_rule, dict):
+        if region_rule is None:
             return {"matched": False, "reason": "no_rule"}
 
         changed: dict[str, Any] = {}
-        if not ticket.ticket_manager_person_id and region_rule.get(
-            "ticket_manager_person_id"
-        ):
-            ticket.ticket_manager_person_id = _coerce_uuid(
-                region_rule.get("ticket_manager_person_id")
-            )
+        if not ticket.ticket_manager_person_id and region_rule.ticket_manager_person_id:
+            ticket.ticket_manager_person_id = region_rule.ticket_manager_person_id
             changed["ticket_manager_person_id"] = str(ticket.ticket_manager_person_id)
-        if not ticket.technician_person_id and region_rule.get("technician_person_id"):
-            ticket.technician_person_id = _coerce_uuid(
-                region_rule.get("technician_person_id")
-            )
+        if not ticket.technician_person_id and region_rule.technician_person_id:
+            ticket.technician_person_id = region_rule.technician_person_id
             changed["technician_person_id"] = str(ticket.technician_person_id)
-        if not ticket.service_team_id and region_rule.get("service_team_id"):
-            ticket.service_team_id = _coerce_uuid(region_rule.get("service_team_id"))
+        if not ticket.service_team_id and region_rule.service_team_id:
+            ticket.service_team_id = region_rule.service_team_id
             changed["service_team_id"] = str(ticket.service_team_id)
 
-        assignee_ids = (
-            region_rule.get("assignee_person_ids")
-            if isinstance(region_rule.get("assignee_person_ids"), list)
-            else []
-        )
+        assignee_ids = [str(value) for value in region_rule.assignee_person_ids]
         if ticket.service_team_id:
             from app.services.ticket_assignment.selectors import (
                 list_team_candidate_person_ids,

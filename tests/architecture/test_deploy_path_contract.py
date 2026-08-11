@@ -17,6 +17,7 @@ These tests pin the two properties that kept regressing:
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import yaml
@@ -91,3 +92,28 @@ def test_deploy_accepts_and_reverifies_an_exact_oci_digest() -> None:
     assert 'grep -Fxq "${image}" <<<"${repo_digests}"' in deploy
     assert 'docker manifest inspect "${IMAGE}"' in deploy
     assert 'docker pull "${IMAGE}"' in deploy
+
+
+def test_deploy_checks_openbao_boot_secrets_before_migrations() -> None:
+    deploy = (ROOT / "scripts/deploy.sh").read_text(encoding="utf-8")
+
+    preflight = "python -m scripts.setup.verify_openbao_boot_secrets"
+    migration = 'log "Applying migrations (alembic upgrade heads)"'
+    assert preflight in deploy
+    assert deploy.index(preflight) < deploy.index(migration)
+
+
+def test_openbao_initializer_seeds_kernel_secret_source_paths() -> None:
+    initializer = (ROOT / "scripts/setup/openbao_init.sh").read_text(encoding="utf-8")
+    source = (ROOT / "app/services/kernel_secret_source.py").read_text(encoding="utf-8")
+    required_source = source[
+        source.index("SECRET_REFS:") : source.index("OPTIONAL_SECRET_REFS:")
+    ]
+    required_bindings = set(
+        re.findall(r"bao://secret/([^#]+)#([a-z_]+)", required_source)
+    )
+
+    for path, field in required_bindings:
+        assert path in initializer
+        assert field in initializer
+    assert 'kv patch "secret/${path}"' in initializer

@@ -174,7 +174,6 @@ def test_ticket_create_defaults_to_open_and_generates_number(db_session, subscri
 
 def test_ticket_create_uses_configured_routing_and_sla_policy(db_session, subscriber):
     team_id = uuid4()
-    technician_id = uuid4()
     member_id = uuid4()
     team = ServiceTeam(
         id=team_id,
@@ -197,19 +196,30 @@ def test_ticket_create_uses_configured_routing_and_sla_policy(db_session, subscr
     )
     db_session.commit()
     assert member.id == member_id
-    support_ticket_settings_service.update_options(
+    support_ticket_settings_service.update_ticket_configuration(
         db_session,
-        statuses=["open", "closed", "merged"],
-        priorities=["normal"],
-        ticket_types=["incident"],
-        regions=["north"],
-        routing_regions=["north"],
-        routing_technician_person_ids=[str(technician_id)],
-        routing_service_team_ids=[str(team_id)],
-        sla_priorities=["normal"],
-        sla_response_hours=["1"],
-        sla_resolution_hours=["8"],
-        sla_aging_hours=["4"],
+        support_ticket_settings_service.TicketConfigurationUpdate(
+            statuses=("open", "closed", "merged"),
+            priorities=("normal",),
+            ticket_types=("incident",),
+            regions=("north",),
+            routing_rules=(
+                support_ticket_settings_service.RegionRoutingRuleUpdate(
+                    region="north",
+                    ticket_manager_person_id=member.id,
+                    technician_person_id=member.id,
+                    service_team_id=team.id,
+                ),
+            ),
+            sla_policy=(
+                support_ticket_settings_service.TicketSlaPolicyUpdate(
+                    priority="normal",
+                    response_hours=1,
+                    resolution_hours=8,
+                    aging_hours=4,
+                ),
+            ),
+        ),
     )
 
     ticket = support_service.tickets.create(
@@ -225,7 +235,8 @@ def test_ticket_create_uses_configured_routing_and_sla_policy(db_session, subscr
         actor_id=str(subscriber.id),
     )
 
-    assert ticket.technician_person_id == technician_id
+    assert ticket.ticket_manager_person_id == member.id
+    assert ticket.technician_person_id == member.id
     assert ticket.service_team_id == team_id
     assert ticket.due_at is not None
     assert (
@@ -357,13 +368,16 @@ def test_ticket_auto_assignment_respects_configured_open_limit(db_session, subsc
         ]
     )
     db_session.commit()
-    support_ticket_settings_service.update_options(
+    support_ticket_settings_service.update_ticket_configuration(
         db_session,
-        statuses=["open", "closed", "merged"],
-        priorities=["normal"],
-        ticket_types=["incident"],
-        auto_assign=True,
-        auto_assign_max_open_tickets=0,
+        support_ticket_settings_service.TicketConfigurationUpdate(
+            statuses=("open", "closed", "merged"),
+            priorities=("normal",),
+            ticket_types=("incident",),
+            auto_assign=True,
+            auto_assign_max_open_tickets=0,
+            replace_auto_assign_max_open_tickets=True,
+        ),
     )
     db_session.commit()
 

@@ -174,7 +174,7 @@
 
             <div>
                 <label class="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-200">Region</label>
-                <select name="region" class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+                <select name="region" x-model="selectedRegion" @change="applyRegionRoutingPreview()" class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
                     <option value="">Select region</option>
                     {% for region in region_options %}
                     <option value="{{ region }}" {% if prefill.region == region %}selected{% endif %}>{{ region|title }}</option>
@@ -231,7 +231,15 @@
                 </div>
             </div>
 
-            {{ people_select('ticket_manager_person_id', staff_options, prefill.ticket_manager_person_id, 'Project Manager') }}
+            <div>
+                <label class="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Project Manager</label>
+                <select name="ticket_manager_person_id" x-model="selectedManager" @change="recordManagerSelection()" class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 focus:border-amber-500 focus:outline-none focus:ring-2 focus:ring-amber-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+                    <option value="">Unassigned</option>
+                    {% for person in staff_options %}
+                    <option value="{{ person.id }}" {% if prefill.ticket_manager_person_id == person.id %}selected{% endif %}>{{ person.label }}</option>
+                    {% endfor %}
+                </select>
+            </div>
             {{ people_select('technician_person_id', staff_options, prefill.technician_person_id, 'Primary Technician') }}
 
             <div>
@@ -275,6 +283,7 @@
     </form>
 </div>
 
+<script src="/static/js/ticket_routing_preview.js"></script>
 <script>
 function ticketFormPage() {
     return {
@@ -292,6 +301,11 @@ function ticketFormPage() {
         },
         selectedAssignees: {{ prefill.assignee_person_ids|tojson }},
         selectedTeam: {{ (prefill.service_team_id or '')|tojson }},
+        selectedRegion: {{ (prefill.region or '')|tojson }},
+        selectedManager: {{ (prefill.ticket_manager_person_id or '')|tojson }},
+        autoFilledManager: '',
+        routingManagers: {{ region_manager_routing|tojson }},
+        routingPreviewEnabled: {{ (form_mode != 'edit')|tojson }},
         assigneeSearch: '',
         attachmentNames: [],
         currentPerson: {},
@@ -304,6 +318,7 @@ function ticketFormPage() {
             });
             this.bindTypeahead(this.$refs.customerTypeahead, 'customer_person_id');
             this.bindTypeahead(this.$refs.subscriberTypeahead, 'subscriber_id');
+            this.$nextTick(() => this.applyRegionRoutingPreview());
         },
         get shouldShowAssigneeResults() {
             return this.assigneeSearch.trim().length >= 2;
@@ -322,6 +337,25 @@ function ticketFormPage() {
         teamLabel(id) {
             const team = this.teams.find((t) => t.id === id);
             return team ? team.label : id;
+        },
+        applyRegionRoutingPreview() {
+            const result = window.ticketRoutingPreview.applyRegionChange({
+                enabled: this.routingPreviewEnabled,
+                region: this.selectedRegion,
+                currentManager: this.selectedManager,
+                autoFilledManager: this.autoFilledManager,
+                routingManagers: this.routingManagers,
+            });
+            this.selectedManager = result.manager;
+            this.autoFilledManager = result.autoFilledManager;
+        },
+        recordManagerSelection() {
+            const result = window.ticketRoutingPreview.recordManualSelection(
+                this.selectedManager,
+                this.autoFilledManager,
+            );
+            this.selectedManager = result.manager;
+            this.autoFilledManager = result.autoFilledManager;
         },
         bindTypeahead(container, field) {
             if (!container) return;

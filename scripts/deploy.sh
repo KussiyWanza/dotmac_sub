@@ -660,6 +660,11 @@ trap 'restore_prev; echo "Deploy FAILED — APP_IMAGE/GIT_SHA restored to the pr
 # revisions must stay backward-compatible with the previous release.)
 trap 'cleanup_children; restore_prev; echo "Deploy interrupted — previous release restored" >&2; exit 130' INT TERM HUP
 
+log "Verifying mandatory OpenBao boot secrets"
+APP_IMAGE="${IMAGE}" GIT_SHA="${FULL_SHA}" \
+  "${COMPOSE[@]}" run --rm --no-deps app \
+  python -m scripts.setup.verify_openbao_boot_secrets
+
 log "Verifying pre-migration service-extension identity state"
 APP_IMAGE="${IMAGE}" GIT_SHA="${FULL_SHA}" \
   "${COMPOSE[@]}" run --rm --no-deps app \

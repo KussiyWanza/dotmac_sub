@@ -4671,27 +4671,107 @@ def control_plane(request: Request, db: Session = Depends(get_db)):
     )
 
 
-@router.get(
-    "/ticket-settings",
-    response_class=HTMLResponse,
-    dependencies=[Depends(require_permission("system:settings:read"))],
-)
-def ticket_settings_page(request: Request, db: Session = Depends(get_db)):
-    staff_options = support_service.list_assignment_people(db)
-    ticket_settings = {
+def _ticket_settings_page_values(
+    db: Session,
+    *,
+    saved: bool = False,
+    rule_saved: bool = False,
+    rule_deleted: bool = False,
+    errors: list[str] | None = None,
+    submitted_routing_rules: tuple[
+        support_ticket_settings_service.RegionRoutingRuleUpdate, ...
+    ]
+    | None = None,
+) -> dict[str, object]:
+    routing_rules = support_ticket_settings_service.region_assignment_rules(db)
+    visible_routing_rules = (
+        submitted_routing_rules
+        if submitted_routing_rules is not None
+        else tuple(routing_rules.values())
+    )
+    saved_person_ids = tuple(
+        person_id
+        for rule in visible_routing_rules
+        for person_id in (
+            rule.ticket_manager_person_id,
+            rule.technician_person_id,
+            *rule.assignee_person_ids,
+        )
+        if person_id is not None
+    )
+    active_staff_ids = {
+        str(person_id)
+        for person_id in support_ticket_settings_service.active_routing_staff_ids(db)
+    }
+    staff_options = support_service.list_assignment_people(
+        db, include_ids=saved_person_ids
+    )
+    visible_staff_ids = {option["id"] for option in staff_options}
+    for option in staff_options:
+        if option["id"] not in active_staff_ids:
+            option["label"] = f"{option['label']} (Inactive)"
+    for person_id in saved_person_ids:
+        if str(person_id) not in visible_staff_ids:
+            staff_options.append(
+                {
+                    "id": str(person_id),
+                    "label": f"Unavailable staff ({person_id})",
+                }
+            )
+    routing_service_team_options = [
+        option.as_template_value()
+        for option in support_ticket_settings_service.list_routing_service_team_options(
+            db,
+            include_ids=tuple(
+                rule.service_team_id
+                for rule in visible_routing_rules
+                if rule.service_team_id is not None
+            ),
+        )
+    ]
+    region_options = support_ticket_settings_service.list_region_options(db)
+    return {
         "active_page": "ticket-settings",
         "status_options": support_ticket_settings_service.list_status_options(db),
         "priority_options": support_ticket_settings_service.list_priority_options(db),
         "ticket_type_options": support_ticket_settings_service.list_ticket_type_options(
             db
         ),
-        "region_options": support_ticket_settings_service.list_region_options(db),
+        "region_options": region_options,
+        "routing_region_options": list(
+            dict.fromkeys(
+                [
+                    *region_options,
+                    *(
+                        support_ticket_settings_service.normalize_region_key(
+                            rule.region
+                        )
+                        for rule in visible_routing_rules
+                        if rule.region
+                    ),
+                ]
+            )
+        ),
         "service_team_options": support_ticket_settings_service.list_service_teams(db),
+        "routing_service_team_options": routing_service_team_options,
         "auto_assign_enabled": support_ticket_settings_service.auto_assign_enabled(db),
         "auto_assign_max_open_tickets": support_ticket_settings_service.auto_assign_max_open_tickets(
             db
         ),
-        "routing_rules": support_ticket_settings_service.region_assignment_rules(db),
+        "routing_rule_rows": [
+            {
+                "region": support_ticket_settings_service.normalize_region_key(
+                    rule.region
+                ),
+                "ticket_manager_person_id": str(rule.ticket_manager_person_id or ""),
+                "technician_person_id": str(rule.technician_person_id or ""),
+                "service_team_id": str(rule.service_team_id or ""),
+                "assignee_person_ids": ", ".join(
+                    str(person_id) for person_id in rule.assignee_person_ids
+                ),
+            }
+            for rule in visible_routing_rules
+        ],
         "sla_policy": support_ticket_settings_service.sla_policy(db),
         "ticket_type_sla_policy": support_ticket_settings_service.ticket_type_sla_policy(
             db
@@ -4704,11 +4784,49 @@ def ticket_settings_page(request: Request, db: Session = Depends(get_db)):
             "technical_supervisor",
             "site_coordinator",
         ],
-        "saved": request.query_params.get("saved") == "1",
-        "rule_saved": request.query_params.get("rule_saved") == "1",
-        "rule_deleted": request.query_params.get("rule_deleted") == "1",
-        "errors": [],
+        "saved": saved,
+        "rule_saved": rule_saved,
+        "rule_deleted": rule_deleted,
+        "errors": errors or [],
     }
+
+
+def _ticket_configuration_uuid(value: object | None) -> UUID | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return UUID(text)
+    except ValueError as exc:
+        raise ValueError(f"{text!r} is not a valid UUID") from exc
+
+
+def _ticket_configuration_int(value: object | None) -> int:
+    text = str(value or "").strip()
+    if not text:
+        return 0
+    try:
+        return max(int(text), 0)
+    except ValueError as exc:
+        raise ValueError(f"{text!r} must be a whole number") from exc
+
+
+def _indexed(values: list[str], index: int) -> str | None:
+    return values[index] if index < len(values) else None
+
+
+@router.get(
+    "/ticket-settings",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("system:settings:read"))],
+)
+def ticket_settings_page(request: Request, db: Session = Depends(get_db)):
+    ticket_settings = _ticket_settings_page_values(
+        db,
+        saved=request.query_params.get("saved") == "1",
+        rule_saved=request.query_params.get("rule_saved") == "1",
+        rule_deleted=request.query_params.get("rule_deleted") == "1",
+    )
     return templates.TemplateResponse(
         "admin/system/ticket_settings.html",
         _config_context(request, db, ticket_settings),
@@ -4746,29 +4864,78 @@ def ticket_settings_update(
     sla_ticket_types = form.getlist("sla_ticket_types")
     sla_ticket_type_resolution_hours = form.getlist("sla_ticket_type_resolution_hours")
     errors: list[str] = []
+    routing_rules: tuple[
+        support_ticket_settings_service.RegionRoutingRuleUpdate, ...
+    ] = ()
     try:
-        db_session_adapter.release_read_transaction(db)
-        support_ticket_settings_service.update_options(
-            db,
-            statuses=statuses,
-            priorities=priorities,
-            ticket_types=ticket_types,
-            regions=regions,
-            auto_assign=form.get("auto_assign_enabled") == "1",
-            auto_assign_max_open_tickets=form.get("auto_assign_max_open_tickets"),
-            routing_regions=routing_regions,
-            routing_ticket_manager_person_ids=routing_ticket_manager_person_ids,
-            routing_site_coordinator_person_ids=routing_site_coordinator_person_ids,
-            routing_technician_person_ids=routing_technician_person_ids,
-            routing_service_team_ids=routing_service_team_ids,
-            routing_assignee_person_ids=routing_assignee_person_ids,
-            sla_priorities=sla_priorities,
-            sla_response_hours=sla_response_hours,
-            sla_resolution_hours=sla_resolution_hours,
-            sla_aging_hours=sla_aging_hours,
-            sla_ticket_types=sla_ticket_types,
-            sla_ticket_type_resolution_hours=sla_ticket_type_resolution_hours,
+        routing_rules = tuple(
+            support_ticket_settings_service.RegionRoutingRuleUpdate(
+                region=str(region or "").strip() or None,
+                ticket_manager_person_id=_ticket_configuration_uuid(
+                    _indexed(routing_ticket_manager_person_ids, index)
+                ),
+                site_coordinator_person_id=_ticket_configuration_uuid(
+                    _indexed(routing_site_coordinator_person_ids, index)
+                ),
+                technician_person_id=_ticket_configuration_uuid(
+                    _indexed(routing_technician_person_ids, index)
+                ),
+                service_team_id=_ticket_configuration_uuid(
+                    _indexed(routing_service_team_ids, index)
+                ),
+                assignee_person_ids=tuple(
+                    person_id
+                    for person_id in (
+                        _ticket_configuration_uuid(item)
+                        for item in str(
+                            _indexed(routing_assignee_person_ids, index) or ""
+                        ).split(",")
+                        if item.strip()
+                    )
+                    if person_id is not None
+                ),
+            )
+            for index, region in enumerate(routing_regions)
         )
+        sla_policy = tuple(
+            support_ticket_settings_service.TicketSlaPolicyUpdate(
+                priority=priority,
+                response_hours=_ticket_configuration_int(
+                    _indexed(sla_response_hours, index)
+                ),
+                resolution_hours=_ticket_configuration_int(
+                    _indexed(sla_resolution_hours, index)
+                ),
+                aging_hours=_ticket_configuration_int(_indexed(sla_aging_hours, index)),
+            )
+            for index, priority in enumerate(sla_priorities)
+        )
+        ticket_type_sla_policy = tuple(
+            support_ticket_settings_service.TicketTypeSlaPolicyUpdate(
+                ticket_type=ticket_type,
+                resolution_hours=_ticket_configuration_int(
+                    _indexed(sla_ticket_type_resolution_hours, index)
+                ),
+            )
+            for index, ticket_type in enumerate(sla_ticket_types)
+        )
+        max_open_raw = str(form.get("auto_assign_max_open_tickets") or "").strip()
+        command = support_ticket_settings_service.TicketConfigurationUpdate(
+            statuses=tuple(statuses),
+            priorities=tuple(priorities),
+            ticket_types=tuple(ticket_types),
+            regions=tuple(regions),
+            auto_assign=form.get("auto_assign_enabled") == "1",
+            auto_assign_max_open_tickets=(
+                _ticket_configuration_int(max_open_raw) if max_open_raw else None
+            ),
+            replace_auto_assign_max_open_tickets=True,
+            routing_rules=routing_rules,
+            sla_policy=sla_policy,
+            ticket_type_sla_policy=ticket_type_sla_policy,
+        )
+        db_session_adapter.release_read_transaction(db)
+        support_ticket_settings_service.update_ticket_configuration(db, command)
         return RedirectResponse(
             url="/admin/system/ticket-settings?saved=1", status_code=303
         )
@@ -4779,51 +4946,11 @@ def ticket_settings_update(
         _config_context(
             request,
             db,
-            {
-                "active_page": "ticket-settings",
-                "status_options": support_ticket_settings_service.list_status_options(
-                    db
-                ),
-                "priority_options": support_ticket_settings_service.list_priority_options(
-                    db
-                ),
-                "ticket_type_options": support_ticket_settings_service.list_ticket_type_options(
-                    db
-                ),
-                "region_options": support_ticket_settings_service.list_region_options(
-                    db
-                ),
-                "service_team_options": support_ticket_settings_service.list_service_teams(
-                    db
-                ),
-                "auto_assign_enabled": support_ticket_settings_service.auto_assign_enabled(
-                    db
-                ),
-                "auto_assign_max_open_tickets": support_ticket_settings_service.auto_assign_max_open_tickets(
-                    db
-                ),
-                "routing_rules": support_ticket_settings_service.region_assignment_rules(
-                    db
-                ),
-                "sla_policy": support_ticket_settings_service.sla_policy(db),
-                "ticket_type_sla_policy": support_ticket_settings_service.ticket_type_sla_policy(
-                    db
-                ),
-                "staff_options": support_service.list_assignment_people(db),
-                "assignment_rules": support_ticket_settings_service.list_assignment_rules(
-                    db
-                ),
-                "assignment_strategies": ["round_robin", "least_loaded"],
-                "assignment_targets": [
-                    "technician",
-                    "technical_supervisor",
-                    "site_coordinator",
-                ],
-                "saved": False,
-                "rule_saved": False,
-                "rule_deleted": False,
-                "errors": errors,
-            },
+            _ticket_settings_page_values(
+                db,
+                errors=errors,
+                submitted_routing_rules=routing_rules,
+            ),
         ),
         status_code=400,
     )
