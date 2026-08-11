@@ -41,7 +41,7 @@ def test_upgrade_is_exact_preserving_and_idempotent(
     db_session, subscriber, monkeypatch
 ) -> None:
     migration = _load_migration()
-    assert migration.down_revision == "514_domain_settings_scope_invariants"
+    assert migration.down_revision == "516_material_request_erp_submission"
 
     opened_at = datetime.now(UTC) - timedelta(days=3)
     updated_at = datetime.now(UTC) - timedelta(days=1)
