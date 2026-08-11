@@ -121,14 +121,33 @@ void main() {
       final data = (options.data as Map).cast<String, dynamic>();
       expect(data['priority'], 'high');
       expect(data['work_order_id'], 'wo-1');
-      expect(data['source_location_id'], 'warehouse-1');
-      expect(data['destination_location_id'], 'van-2');
-      expect(data['submit'], isTrue);
+      expect(data['source_warehouse_code'], 'WH-MAIN');
       expect(data['items'], [
         {'item_id': 'item-1', 'quantity': 2},
       ]);
       return (
         201,
+        {
+          'id': 'mr-1',
+          'number': 'MR-0001',
+          'status': 'submitted',
+          'priority': 'high',
+          'items': [
+            {
+              'id': 'line-1',
+              'item_id': 'item-1',
+              'quantity': 2,
+              'item_name': 'Drop cable',
+            },
+          ],
+        },
+      );
+    });
+    adapter.on('POST', '/api/v1/field/material-requests/mr-1/submit', (
+      options,
+    ) {
+      return (
+        200,
         {
           'id': 'mr-1',
           'number': 'MR-0001',
@@ -152,6 +171,7 @@ void main() {
           priority: 'high',
           workOrderId: 'wo-1',
           sourceLocationId: 'warehouse-1',
+          sourceWarehouseCode: 'WH-MAIN',
           destinationLocationId: 'van-2',
           items: [
             const MaterialRequestItemDraft(

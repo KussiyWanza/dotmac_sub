@@ -129,7 +129,7 @@ class FieldAttachmentRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    crm_work_order_id: str
+    work_order_id: str
     note_id: UUID | None = None
     kind: str
     file_name: str
@@ -368,7 +368,7 @@ class FieldMaterialRequestItemCreate(BaseModel):
 
 
 class FieldMaterialRequestCreate(BaseModel):
-    crm_work_order_id: str = Field(min_length=1, max_length=64)
+    work_order_id: str = Field(min_length=1, max_length=64)
     priority: Literal["low", "medium", "high", "urgent"] = "medium"
     notes: str | None = Field(default=None, max_length=2000)
     source_warehouse_code: str = Field(min_length=1, max_length=100)
@@ -388,7 +388,7 @@ class FieldMaterialRequestItemRead(BaseModel):
 
 class FieldMaterialRequestRead(BaseModel):
     id: UUID
-    crm_work_order_id: str
+    work_order_id: str
     crm_material_request_id: str | None = None
     requested_by_person_id: UUID
     requested_by_system_user_id: UUID | None = None
@@ -444,8 +444,15 @@ class FieldExpenseRequestItemCreate(BaseModel):
     notes: str | None = Field(default=None, max_length=2000)
 
 
+class FieldExpenseCategoryRead(BaseModel):
+    category_code: str
+    category_name: str
+    requires_receipt: bool = False
+    max_amount_per_claim: Decimal | None = None
+
+
 class FieldExpenseRequestCreate(BaseModel):
-    crm_work_order_id: str = Field(min_length=1, max_length=64)
+    work_order_id: str = Field(min_length=1, max_length=64)
     purpose: str = Field(min_length=1, max_length=500)
     expense_date: date | None = None
     currency: str = Field(default="NGN", min_length=3, max_length=3)
@@ -469,7 +476,7 @@ class FieldExpenseRequestItemRead(BaseModel):
 
 class FieldExpenseRequestRead(BaseModel):
     id: UUID
-    crm_work_order_id: str
+    work_order_id: str
     crm_expense_request_id: str | None = None
     requested_by_person_id: UUID
     requested_by_system_user_id: UUID | None = None

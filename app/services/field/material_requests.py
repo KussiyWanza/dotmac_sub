@@ -999,7 +999,7 @@ def observe_erp_material_status(
 def serialize_material_request(request: FieldMaterialRequest) -> dict:
     return {
         "id": request.id,
-        "crm_work_order_id": (
+        "work_order_id": (
             request.work_order_mirror.public_id if request.work_order_mirror else None
         ),
         "crm_material_request_id": request.crm_material_request_id,

@@ -44,8 +44,9 @@ class ExpensesRepository {
     String? workOrderId,
     String? projectId,
     String? ticketId,
+    bool submit = true,
   }) async {
-    final response = await _ref
+    var response = await _ref
         .read(apiClientProvider)
         .dio
         .post(
@@ -62,6 +63,13 @@ class ExpensesRepository {
             ticketId: ticketId,
           ),
         );
+    if (submit) {
+      final created = (response.data as Map).cast<String, dynamic>();
+      response = await _ref
+          .read(apiClientProvider)
+          .dio
+          .post('/api/v1/field/expense-requests/${created['id']}/submit');
+    }
     return ExpenseRequest.fromJson(
       (response.data as Map).cast<String, dynamic>(),
     );

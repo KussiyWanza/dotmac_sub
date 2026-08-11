@@ -257,13 +257,14 @@ def test_material_request_api(db_session):
     created = client.post(
         "/api/v1/field/material-requests",
         json={
-            "crm_work_order_id": "wo-material-request-api",
+            "work_order_id": "wo-material-request-api",
             "priority": "high",
             "source_warehouse_code": "WH-LAGOS",
             "items": [{"item_id": str(item.id), "quantity": 3}],
         },
     )
     assert created.status_code == 201
+    assert created.json()["work_order_id"] == "wo-material-request-api"
     request_id = created.json()["id"]
 
     listed = client.get("/api/v1/field/material-requests?status=draft")

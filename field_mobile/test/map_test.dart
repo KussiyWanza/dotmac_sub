@@ -137,6 +137,44 @@ void main() {
     expect(find.byKey(const Key('edit-pins-button')), findsOneWidget);
   });
 
+  testWidgets('map opened for a job centers and zooms on that job', (
+    tester,
+  ) async {
+    final pins = [
+      const JobPin(
+        id: 'first',
+        title: 'First job',
+        status: 'dispatched',
+        latitude: 6.5,
+        longitude: 3.4,
+      ),
+      const JobPin(
+        id: 'focused',
+        title: 'Focused job',
+        status: 'dispatched',
+        latitude: 9.043599,
+        longitude: 7.4963296,
+      ),
+    ];
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          mapPinsProvider.overrideWith((ref) async => pins),
+          mapAssetsProvider.overrideWith((ref) async => []),
+        ],
+        child: const MaterialApp(
+          home: MapScreen(showTiles: false, focusJobId: 'focused'),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final map = tester.widget<FlutterMap>(find.byType(FlutterMap));
+    expect(map.options.initialCenter.latitude, 9.043599);
+    expect(map.options.initialCenter.longitude, 7.4963296);
+    expect(map.options.initialZoom, 16);
+  });
+
   testWidgets('tapping a pin opens the job sheet', (tester) async {
     final pins = [
       const JobPin(

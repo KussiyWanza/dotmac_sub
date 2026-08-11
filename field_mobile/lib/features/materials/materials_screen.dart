@@ -543,7 +543,7 @@ class _NewMaterialRequestScreenState
     ).showSnackBar(const SnackBar(content: Text('Draft saved')));
   }
 
-  Future<void> _submit() async {
+  Future<void> _submit(List<InventoryLocation> locations) async {
     if (_items.isEmpty || _saving) return;
     if (_workOrderId.text.trim().isEmpty &&
         _projectId.text.trim().isEmpty &&
@@ -554,6 +554,14 @@ class _NewMaterialRequestScreenState
       });
       return;
     }
+    final sourceLocation = locations
+        .where((location) => location.id == _sourceLocationId)
+        .firstOrNull;
+    final sourceWarehouseCode = sourceLocation?.code?.trim();
+    if (sourceWarehouseCode == null || sourceWarehouseCode.isEmpty) {
+      setState(() => _submitError = 'Select a source warehouse with a code.');
+      return;
+    }
     final clientRef = const Uuid().v4();
     final payload = buildMaterialRequestPayload(
       priority: _priority,
@@ -562,6 +570,7 @@ class _NewMaterialRequestScreenState
       projectId: _projectId.text,
       ticketId: _ticketId.text,
       sourceLocationId: _sourceLocationId,
+      sourceWarehouseCode: sourceWarehouseCode,
       destinationLocationId: _destinationLocationId,
       items: _items,
     );
@@ -576,6 +585,7 @@ class _NewMaterialRequestScreenState
             projectId: _projectId.text,
             ticketId: _ticketId.text,
             sourceLocationId: _sourceLocationId,
+            sourceWarehouseCode: sourceWarehouseCode,
             destinationLocationId: _destinationLocationId,
             items: _items,
           );
@@ -787,7 +797,9 @@ class _NewMaterialRequestScreenState
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               FilledButton(
-                onPressed: _items.isEmpty || _saving ? null : _submit,
+                onPressed: _items.isEmpty || _saving
+                    ? null
+                    : () => _submit(locations.valueOrNull ?? const []),
                 child: Text(_saving ? 'Submitting...' : 'Submit request'),
               ),
               const SizedBox(height: 8),

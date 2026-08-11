@@ -219,6 +219,35 @@ class SyncService {
             ..orderBy([(row) => OrderingTerm.asc(row.seq)]))
           .get();
 
+  Future<OutboxEntry?> outboxEntry(String clientRef) => (db.select(
+    db.outboxEntries,
+  )..where((row) => row.clientRef.equals(clientRef))).getSingleOrNull();
+
+  Future<List<PendingPhoto>> pendingPhotosForJob(String workOrderId) =>
+      (db.select(
+        db.pendingPhotos,
+      )..where((row) => row.workOrderId.equals(workOrderId))).get();
+
+  Future<void> removePendingPhoto(String clientRef) async {
+    final row = await (db.select(
+      db.pendingPhotos,
+    )..where((photo) => photo.clientRef.equals(clientRef))).getSingleOrNull();
+    if (row == null || row.uploaded) return;
+    final file = File(row.localPath);
+    if (file.existsSync()) {
+      try {
+        file.deleteSync();
+      } on FileSystemException {
+        // Cache-file cleanup is best effort.
+      }
+    }
+    await (db.delete(
+      db.pendingPhotos,
+    )..where((photo) => photo.clientRef.equals(clientRef))).go();
+  }
+
+  Future<bool> get isOnline => connectivity.isOnline;
+
   /// Flush pending entries FIFO. One failure stops the flush (order matters:
   /// a note may reference a transition); conflicts are parked, not dropped.
   Future<int> flushOutbox() async {
@@ -387,6 +416,10 @@ class SyncService {
   String _detail(DioException error) {
     final data = error.response?.data;
     if (data is Map && data['detail'] != null) return data['detail'].toString();
+    if (data is String && data.trim().isNotEmpty) return data.trim();
+    if (data != null) return data.toString();
+    final status = error.response?.statusCode;
+    if (status != null) return 'Request rejected with HTTP $status';
     return error.message ?? 'request failed';
   }
 

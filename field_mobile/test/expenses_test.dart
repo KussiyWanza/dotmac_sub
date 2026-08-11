@@ -76,7 +76,6 @@ void main() {
         },
       );
     });
-
     final requests = await container
         .read(expensesRepositoryProvider)
         .fetchRequests();
@@ -185,6 +184,27 @@ void main() {
       ]);
       return (
         201,
+        {
+          'id': 'exp-9',
+          'number': 'EXP-0009',
+          'status': 'submitted',
+          'purpose': 'Site logistics',
+          'total_amount': '2500.00',
+          'items': [
+            {
+              'id': 'line-1',
+              'category_code': 'TRANSPORT',
+              'category_name': 'Transport',
+              'description': 'Taxi from depot',
+              'amount': '2500.00',
+            },
+          ],
+        },
+      );
+    });
+    adapter.on('POST', '/api/v1/field/expense-requests/exp-9/submit', (_) {
+      return (
+        200,
         {
           'id': 'exp-9',
           'number': 'EXP-0009',
@@ -485,6 +505,18 @@ void main() {
       posted = (options.data as Map).cast<String, dynamic>();
       return (
         201,
+        {
+          'id': 'exp-9',
+          'number': 'EXP-0009',
+          'status': 'draft',
+          'purpose': 'Site logistics',
+          'total_amount': '2500.00',
+        },
+      );
+    });
+    adapter.on('POST', '/api/v1/field/expense-requests/exp-9/submit', (_) {
+      return (
+        200,
         {
           'id': 'exp-9',
           'number': 'EXP-0009',

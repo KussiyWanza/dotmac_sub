@@ -27,7 +27,7 @@ def upload_field_attachment(
     file: UploadFile = File(...),
     kind: str = Form(default="photo"),
     client_ref: UUID | None = Form(default=None),
-    crm_work_order_id: str | None = Form(default=None),
+    work_order_id: str | None = Form(default=None),
     note_id: UUID | None = Form(default=None),
     latitude: float | None = Form(default=None),
     longitude: float | None = Form(default=None),
@@ -46,7 +46,7 @@ def upload_field_attachment(
         mime_type=file.content_type,
         content=file.file.read(),
         client_ref=client_ref,
-        crm_work_order_id=crm_work_order_id,
+        crm_work_order_id=work_order_id,
         note_id=note_id,
         latitude=latitude,
         longitude=longitude,
@@ -59,7 +59,7 @@ def upload_field_attachment(
 
 @router.get("/attachments", response_model=ListResponse[FieldAttachmentRead])
 def list_field_attachments(
-    crm_work_order_id: str | None = None,
+    work_order_id: str | None = None,
     note_id: UUID | None = None,
     kind: str | None = None,
     limit: int = Query(default=50, ge=1, le=200),
@@ -70,7 +70,7 @@ def list_field_attachments(
     items = field_attachments.list(
         db,
         auth,
-        crm_work_order_id=crm_work_order_id,
+        crm_work_order_id=work_order_id,
         note_id=note_id,
         kind=kind,
         limit=limit,

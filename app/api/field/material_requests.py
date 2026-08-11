@@ -12,7 +12,7 @@ router = APIRouter(prefix="/material-requests", tags=["field-material-requests"]
 
 @router.get("", response_model=ListResponse[FieldMaterialRequestRead])
 def list_field_material_requests(
-    crm_work_order_id: str | None = None,
+    work_order_id: str | None = None,
     status_filter: str | None = Query(default=None, alias="status"),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
@@ -22,7 +22,7 @@ def list_field_material_requests(
     items = field_material_requests.list_mine(
         db,
         auth,
-        crm_work_order_id=crm_work_order_id,
+        crm_work_order_id=work_order_id,
         status=status_filter,
         limit=limit,
         offset=offset,
@@ -43,7 +43,7 @@ def create_field_material_request(
     return field_material_requests.create(
         db,
         auth,
-        crm_work_order_id=payload.crm_work_order_id,
+        crm_work_order_id=payload.work_order_id,
         priority=payload.priority,
         notes=payload.notes,
         source_warehouse_code=payload.source_warehouse_code,

@@ -67,10 +67,11 @@ class MaterialsRepository {
     String? projectId,
     String? ticketId,
     String? sourceLocationId,
+    String? sourceWarehouseCode,
     String? destinationLocationId,
     bool submit = true,
   }) async {
-    final response = await _ref
+    var response = await _ref
         .read(apiClientProvider)
         .dio
         .post(
@@ -82,11 +83,19 @@ class MaterialsRepository {
             projectId: projectId,
             ticketId: ticketId,
             sourceLocationId: sourceLocationId,
+            sourceWarehouseCode: sourceWarehouseCode,
             destinationLocationId: destinationLocationId,
             items: items,
             submit: submit,
           ),
         );
+    if (submit) {
+      final created = (response.data as Map).cast<String, dynamic>();
+      response = await _ref
+          .read(apiClientProvider)
+          .dio
+          .post('/api/v1/field/material-requests/${created['id']}/submit');
+    }
     return MaterialRequest.fromJson(
       (response.data as Map).cast<String, dynamic>(),
     );
@@ -111,6 +120,7 @@ Map<String, dynamic> buildMaterialRequestPayload({
   String? projectId,
   String? ticketId,
   String? sourceLocationId,
+  String? sourceWarehouseCode,
   String? destinationLocationId,
   bool submit = true,
 }) => {
@@ -122,10 +132,9 @@ Map<String, dynamic> buildMaterialRequestPayload({
     'project_id': projectId.trim(),
   if (ticketId != null && ticketId.trim().isNotEmpty)
     'ticket_id': ticketId.trim(),
-  'source_location_id': ?sourceLocationId,
-  'destination_location_id': ?destinationLocationId,
+  if (sourceWarehouseCode != null && sourceWarehouseCode.trim().isNotEmpty)
+    'source_warehouse_code': sourceWarehouseCode.trim(),
   'items': items.map((item) => item.toJson()).toList(),
-  'submit': submit,
 };
 
 List<Map<String, dynamic>> _items(Object? data) {

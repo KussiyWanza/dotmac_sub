@@ -78,6 +78,8 @@ class BackofficeGateway(Protocol):
 
     def list_inventory_categories(self) -> list[dict]: ...
 
+    def get_expense_categories(self) -> list[dict]: ...
+
     def list_available_serials(
         self,
         *,
