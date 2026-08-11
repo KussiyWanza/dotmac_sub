@@ -84,7 +84,17 @@ class FiberCostItem(Base):
     code: Mapped[str] = mapped_column(String(60), nullable=False)
     label: Mapped[str] = mapped_column(String(120), nullable=False)
     unit: Mapped[FiberCostUnit] = mapped_column(
-        Enum(FiberCostUnit, name="fibercostunit", native_enum=False),
+        # `values_callable` because SQLAlchemy otherwise persists a Python enum
+        # by its NAME (`PER_METER`) while migration 517 seeds — and this file
+        # documents — the VALUE (`per_meter`). The mismatch is invisible on
+        # write and fatal on read: every seeded row fails to map back, so the
+        # whole fiber map page 500s rather than one field being wrong.
+        Enum(
+            FiberCostUnit,
+            name="fibercostunit",
+            native_enum=False,
+            values_callable=lambda members: [member.value for member in members],
+        ),
         nullable=False,
     )
     #: NULL means "not priced yet", which is distinct from a price of zero — a

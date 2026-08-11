@@ -2,7 +2,7 @@
 
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, Form, Query, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
@@ -860,101 +860,6 @@ def find_nearest_cabinet(
         lng=lng,
     )
     return JSONResponse(payload, status_code=status_code)
-
-
-@router.get(
-    "/fiber-cost-items",
-    response_class=HTMLResponse,
-    dependencies=[Depends(require_permission("network:fiber:read"))],
-)
-def fiber_cost_items_page(request: Request, db: Session = Depends(get_db)):
-    """The components a drop estimate is built from, and their prices."""
-
-    context = _base_context(request, db, active_page="fiber-cost-items")
-    context.update(fiber_cost_items_service.list_data(db))
-    return templates.TemplateResponse("admin/network/fiber/cost_items.html", context)
-
-
-@router.post(
-    "/fiber-cost-items",
-    dependencies=[Depends(require_permission("network:fiber:write"))],
-)
-def fiber_cost_item_create(
-    request: Request,
-    code: str = Form(...),
-    label: str = Form(...),
-    unit: str = Form(...),
-    amount: str | None = Form(None),
-    sort_order: int = Form(100),
-    description: str | None = Form(None),
-    db: Session = Depends(get_db),
-):
-    try:
-        item = fiber_cost_items_service.create_item(
-            db,
-            code=code,
-            label=label,
-            unit=unit,
-            amount=amount,
-            sort_order=sort_order,
-            description=description,
-        )
-    except fiber_cost_items_service.FiberCostItemError as exc:
-        return RedirectResponse(
-            f"/admin/network/fiber-cost-items?error={quote(str(exc))}",
-            status_code=303,
-        )
-    log_audit_event(
-        db=db,
-        request=request,
-        action="create",
-        entity_type="fiber_cost_item",
-        entity_id=str(item.id),
-    )
-    return RedirectResponse("/admin/network/fiber-cost-items", status_code=303)
-
-
-@router.post(
-    "/fiber-cost-items/{item_id}",
-    dependencies=[Depends(require_permission("network:fiber:write"))],
-)
-def fiber_cost_item_update(
-    request: Request,
-    item_id: str,
-    label: str | None = Form(None),
-    unit: str | None = Form(None),
-    amount: str | None = Form(None),
-    is_active: str | None = Form(None),
-    sort_order: int | None = Form(None),
-    description: str | None = Form(None),
-    db: Session = Depends(get_db),
-):
-    try:
-        item = fiber_cost_items_service.update_item(
-            db,
-            item_id,
-            label=label,
-            unit=unit,
-            amount=amount,
-            # An unchecked checkbox sends nothing, so absence means False here
-            # rather than "unchanged" — the form always submits every field.
-            is_active=is_active is not None,
-            sort_order=sort_order,
-            description=description,
-        )
-    except fiber_cost_items_service.FiberCostItemError as exc:
-        return RedirectResponse(
-            f"/admin/network/fiber-cost-items?error={quote(str(exc))}",
-            status_code=303,
-        )
-    log_audit_event(
-        db=db,
-        request=request,
-        action="update",
-        entity_type="fiber_cost_item",
-        entity_id=str(item.id),
-    )
-    return RedirectResponse("/admin/network/fiber-cost-items", status_code=303)
 
 
 @router.get(

@@ -57,6 +57,93 @@ SERVICES: tuple[SOTService, ...] = (
             "only the priced components would be a number nobody chose, which "
             "is how the retired defaults came to quote NGN 85 for an ONT."
         ),
+        contract=ServiceContract(
+            concerns=(
+                ConcernContract(
+                    name="fiber drop-cost component catalogue and pricing",
+                    role=OwnerRole.COMMAND_WRITER,
+                    input_names=("operator-priced fiber cost components",),
+                    canonical_writer="network.fiber_cost_items",
+                ),
+                ConcernContract(
+                    name="priced estimate for one fiber drop route",
+                    role=OwnerRole.RESOLVER,
+                    input_names=(
+                        "operator-priced fiber cost components",
+                        "deployment display currency",
+                    ),
+                ),
+            ),
+            authoritative_inputs=(
+                AuthorityInput(
+                    name="operator-priced fiber cost components",
+                    owner="network.fiber_cost_items",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source=(
+                        "FiberCostItem rows: the component, how its amount is "
+                        "applied, and whether it has been priced at all"
+                    ),
+                ),
+                AuthorityInput(
+                    name="deployment display currency",
+                    owner="settings.domain_settings",
+                    kind=AuthorityKind.CONTROL_INPUT,
+                    source="the billing/default_currency setting",
+                ),
+            ),
+            transaction=TransactionContract(
+                mode=TransactionMode.OWNER_MANAGED,
+                boundary=(
+                    "Each create or update owns its own commit — one operator "
+                    "act, one row. Estimation is a pure read over committed "
+                    "state and writes nothing."
+                ),
+                locking="None; a cost item is edited by one operator at a time.",
+                idempotency=(
+                    "An estimate is deterministic for identical committed "
+                    "inputs. A create is refused on a duplicate code rather "
+                    "than silently updating, so a repeated submission cannot "
+                    "quietly reprice a component."
+                ),
+                retries=(
+                    "None. Every write is one operator act on one row; a "
+                    "failed submission is retried by the operator, and the "
+                    "duplicate-code refusal is what makes that safe."
+                ),
+            ),
+            errors=ErrorContract(
+                domain_codes=(
+                    "network.fiber_cost_items.code_required",
+                    "network.fiber_cost_items.label_required",
+                    "network.fiber_cost_items.duplicate_code",
+                    "network.fiber_cost_items.unknown_unit",
+                    "network.fiber_cost_items.negative_amount",
+                    "network.fiber_cost_items.not_found",
+                ),
+                mapping_owner="app.web.admin.network_fiber_costs",
+            ),
+            migration=MigrationContract(
+                state=AuthorityMigrationState.NATIVE,
+                new_owner="network.fiber_cost_items",
+                old_owner=(
+                    "four network SettingSpecs read by web_network_fiber and "
+                    "priced in the map template's JavaScript"
+                ),
+                verification=(
+                    "Per-metre and flat components sum correctly; an unpriced "
+                    "active component makes the estimate incomplete rather "
+                    "than contributing zero; an inactive unpriced component "
+                    "does not; zero is a price and empty is not."
+                ),
+                fallback_retirement=(
+                    "The four settings and their seed entries are removed in "
+                    "the same change, so no parallel price source survives."
+                ),
+            ),
+            steward="network operations",
+            design_refs=("docs/SOT_RELATIONSHIP_MAP.md",),
+            test_refs=("tests/test_fiber_cost_items.py",),
+        ),
     ),
     SOTService(
         name="network.fiber_topology",
