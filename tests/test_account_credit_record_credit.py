@@ -30,6 +30,7 @@ from app.models.billing import (
 )
 from app.services.billing._common import get_account_credit_balance
 from app.services.billing.account_credit import AccountCreditApplications
+from app.services.billing.payments import _offer_settled_account_credit
 
 
 def _payment(db_session, subscriber, amount: str) -> Payment:
@@ -239,6 +240,31 @@ def test_minting_does_not_commit(db_session, subscriber):
     """The caller owns the boundary so money and consequence land together."""
     payment = _payment(db_session, subscriber, "1000.00")
     _mint(db_session, subscriber, payment, "1000.00")
-    db_session.rollback()
 
-    assert _unallocated_credit_entries(db_session, subscriber) == []
+    # Staged, not committed: the entry is visible in this transaction and the
+    # transaction is still open for the caller to commit or roll back.
+    assert len(_unallocated_credit_entries(db_session, subscriber)) == 1
+    assert db_session.in_transaction()
+
+
+def test_an_explicit_hold_is_respected(db_session, subscriber):
+    """`auto_allocate_on_settlement=False` means hold it, not forgot to apply it.
+
+    Verifying a payment proof with auto_allocate=False, and the provider
+    settlement path that runs its own application afterwards, both set this.
+    Offering anyway would override a decision somebody made on purpose.
+    """
+    invoice = _invoice(db_session, subscriber, "3000.00")
+    payment = _payment(db_session, subscriber, "5000.00")
+    payment.auto_allocate_on_settlement = False
+    db_session.flush()
+    record = _mint(db_session, subscriber, payment, "5000.00")
+    settlement = _settle(db_session, payment, record.ledger_entry)
+
+    _offer_settled_account_credit(db_session, payment, settlement)
+
+    db_session.refresh(invoice)
+    assert invoice.status == InvoiceStatus.issued
+    assert get_account_credit_balance(
+        db_session, str(subscriber.id), currency="NGN"
+    ) == Decimal("5000.00")

@@ -939,9 +939,19 @@ def _offer_settled_account_credit(
     finds nothing backed and silently applies nothing. Without this call the
     surplus simply sits, and the account is dunned on an invoice it has already
     funded.
+
+    Not called from the evidence reconciler. That path reconstructs settlement
+    rows for payments that already carry their own allocation decisions, so
+    allocating there collides with the evidence it was asked to attach.
     """
     from app.services.billing.account_credit import AccountCreditApplications
 
+    if not payment.auto_allocate_on_settlement:
+        # An explicit operator decision, not an oversight. Verifying a payment
+        # proof with auto_allocate=False, and the provider-settlement path that
+        # runs its own application afterwards, both mean "hold this as credit".
+        # The column exists precisely to record that.
+        return
     if payment.billing_account_id is not None:
         return
     if payment.account_id is None:
@@ -2794,7 +2804,6 @@ class Payments(ListResponseMixin):
         )
         db.add(settlement)
         db.flush()
-        _offer_settled_account_credit(db, payment, settlement)
         AuditEvents.stage(
             db,
             AuditEventCreate(
