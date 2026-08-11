@@ -48,6 +48,14 @@ DECLARED_RAW_SETTING_OWNERS = {
     # it must read and deactivate the raw rows rather than use typed resolution.
     "app/services/service_team_source_retirement.py",
     "app/services/web_control_plane.py",
+    # The history recorder OBSERVES that model rather than reading settings
+    # through it. Its listeners are attached to `DomainSetting` precisely
+    # because the service layer is not the only writer — the seed, the generic
+    # settings API and several domain services persist rows directly, and a
+    # history that covered only the typed resolver would read as a complete
+    # record while missing most changes. It resolves no setting and decides
+    # nothing; it records what a write did.
+    "app/models/domain_setting_history.py",
 }
 
 
