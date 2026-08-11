@@ -40,13 +40,13 @@ and the screen already labels the whole estimate with one — so it comes from
 
 from __future__ import annotations
 
-import enum
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     Enum,
     Integer,
@@ -59,22 +59,21 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
-
-
-class FiberCostUnit(str, enum.Enum):
-    """How the estimator applies an amount. Closed — see the module docstring."""
-
-    #: Multiplied by the routed distance in metres.
-    PER_METER = "per_meter"
-    #: Added once per installation.
-    FLAT = "flat"
+from app.schemas.fiber_cost_calculation import FiberCostUnit
 
 
 class FiberCostItem(Base):
     """One priced component of a fiber drop installation."""
 
     __tablename__ = "fiber_cost_items"
-    __table_args__ = (UniqueConstraint("code", name="uq_fiber_cost_items_code"),)
+    __table_args__ = (
+        UniqueConstraint("code", name="uq_fiber_cost_items_code"),
+        CheckConstraint(
+            "amount IS NULL OR amount >= 0",
+            name="ck_fiber_cost_items_amount_nonnegative",
+        ),
+        CheckConstraint("version >= 1", name="ck_fiber_cost_items_version_positive"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
@@ -84,11 +83,12 @@ class FiberCostItem(Base):
     code: Mapped[str] = mapped_column(String(60), nullable=False)
     label: Mapped[str] = mapped_column(String(120), nullable=False)
     unit: Mapped[FiberCostUnit] = mapped_column(
-        # `values_callable` because SQLAlchemy otherwise persists a Python enum
-        # by its NAME (`PER_METER`) while migration 518 seeds — and this file
-        # documents — the VALUE (`per_meter`). The mismatch is invisible on
-        # write and fatal on read: every seeded row fails to map back, so the
-        # whole fiber map page 500s rather than one field being wrong.
+        # Components are composable rows; this enum is only the closed set of
+        # arithmetic operators the estimator can execute. `PER_METER` is the
+        # Python symbol for the stable contract value `per_meter`, not a
+        # component identifier. `values_callable` ensures SQLAlchemy persists
+        # that stable value rather than the implementation symbol. Otherwise
+        # migration 519's seeded rows fail to map back and the map page 500s.
         Enum(
             FiberCostUnit,
             name="fibercostunit",
@@ -105,6 +105,10 @@ class FiberCostItem(Base):
     #: installer thinks about it rather than by insertion time.
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
     description: Mapped[str | None] = mapped_column(Text)
+    #: Optimistic concurrency token. Every owner-command update increments it;
+    #: a form based on an older value fails closed instead of restoring stale
+    #: prices or activation state over a newer operator decision.
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)

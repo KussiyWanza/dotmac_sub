@@ -7,6 +7,7 @@ import json
 import logging
 import math
 from datetime import datetime
+from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy import func
@@ -28,10 +29,44 @@ from app.models.network import (
     Splitter,
 )
 from app.models.subscriber import Address, Subscriber
+from app.schemas.fiber_cost_items import FiberCostEstimate, FiberPricingState
 from app.services import fiber_change_requests as change_request_service
 from app.services import fiber_cost_items, settings_spec
 
 logger = logging.getLogger(__name__)
+
+
+def serialize_cost_estimate(estimate: FiberCostEstimate) -> dict[str, object]:
+    """Serialize the typed owner outcome at the web/JSON boundary."""
+
+    return {
+        "currency": estimate.currency,
+        "is_complete": estimate.is_complete,
+        "unpriced": [code.value for code in estimate.unpriced],
+        "total": str(estimate.total),
+        "lines": [
+            {
+                "code": line.code.value,
+                "label": line.label,
+                "unit": line.unit.value,
+                "amount": str(line.amount),
+                "quantity": str(line.quantity),
+                "total": str(line.total),
+            }
+            for line in estimate.lines
+        ],
+    }
+
+
+def serialize_pricing_state(state: FiberPricingState) -> dict[str, object]:
+    """Serialize pricing readiness for the map template."""
+
+    return {
+        "currency": state.currency,
+        "item_count": state.item_count,
+        "unpriced": [code.value for code in state.unpriced],
+        "is_complete": state.is_complete,
+    }
 
 
 def _coerce_float(value: object, default: float) -> float:
@@ -358,7 +393,7 @@ def get_fiber_plant_map_data(db: Session) -> dict[str, object]:
     # The components an estimate is built from, priced or not. The page needs
     # them to render the pricing state; it no longer needs the numbers, because
     # it no longer does the arithmetic.
-    cost_state = fiber_cost_items.pricing_state(db)
+    cost_state = serialize_pricing_state(fiber_cost_items.pricing_state(db))
 
     return {
         "geojson_data": {"type": "FeatureCollection", "features": features},
@@ -661,7 +696,9 @@ def find_nearest_cabinet_data(
         # reads in the layer least able to explain it and made it untestable
         # without a browser. Routing already costs a request, so the estimate
         # rides along with the distance it prices.
-        "cost_estimate": fiber_cost_items.estimate_as_dict(db, min_distance),
+        "cost_estimate": serialize_cost_estimate(
+            fiber_cost_items.estimate_for_distance(db, Decimal(str(min_distance)))
+        ),
     }, 200
 
 
@@ -745,6 +782,9 @@ def get_plan_route_data(
         "distance_display": _distance_display(distance),
         "path_coords": [[node[1], node[0]] for node in path],
         "path_type": "fiber",
+        "cost_estimate": serialize_cost_estimate(
+            fiber_cost_items.estimate_for_distance(db, Decimal(str(distance)))
+        ),
     }, 200
 
 

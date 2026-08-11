@@ -2330,7 +2330,7 @@ def seed_network_policy_settings(db: Session) -> None:
     # now — a component is data, so adding a splice closure or a permit fee no
     # longer means editing a spec, a service and a template. Their defaults
     # (2.50/m, 1.50/m, 85.00, 50.00) were USD-shaped values rendered as naira,
-    # which is why the seeded rows arrive unpriced: see migration 518.
+    # which is why the seeded rows arrive unpriced: see migration 519.
 
 
 def seed_network_settings(db: Session) -> None:

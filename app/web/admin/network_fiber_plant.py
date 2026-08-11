@@ -1,5 +1,6 @@
 """Admin network fiber plant web routes."""
 
+from decimal import Decimal
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -867,7 +868,9 @@ def find_nearest_cabinet(
     dependencies=[Depends(require_permission("network:fiber:read"))],
 )
 def fiber_cost_estimate(
-    request: Request, distance_m: float, db: Session = Depends(get_db)
+    request: Request,
+    distance_m: Decimal = Query(ge=0, le=1_000_000, allow_inf_nan=False),
+    db: Session = Depends(get_db),
 ):
     """Price one drop of `distance_m`.
 
@@ -878,7 +881,8 @@ def fiber_cost_estimate(
     when a trace completes is cheaper than that.
     """
 
-    return JSONResponse(fiber_cost_items_service.estimate_as_dict(db, distance_m))
+    estimate = fiber_cost_items_service.estimate_for_distance(db, distance_m)
+    return JSONResponse(web_network_fiber_service.serialize_cost_estimate(estimate))
 
 
 @router.get(

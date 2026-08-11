@@ -72,6 +72,7 @@ def upgrade() -> None:
         sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.true()),
         sa.Column("sort_order", sa.Integer(), nullable=False, server_default="100"),
         sa.Column("description", sa.Text(), nullable=True),
+        sa.Column("version", sa.Integer(), nullable=False, server_default="1"),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -85,6 +86,14 @@ def upgrade() -> None:
             server_default=sa.func.now(),
         ),
         sa.UniqueConstraint("code", name="uq_fiber_cost_items_code"),
+        sa.CheckConstraint(
+            "amount IS NULL OR amount >= 0",
+            name="ck_fiber_cost_items_amount_nonnegative",
+        ),
+        sa.CheckConstraint(
+            "version >= 1",
+            name="ck_fiber_cost_items_version_positive",
+        ),
     )
 
     bind = op.get_bind()

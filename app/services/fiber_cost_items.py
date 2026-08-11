@@ -1,63 +1,221 @@
-"""The owner of what a fiber drop installation costs.
+"""Authoritative owner for fiber drop-cost components and estimates.
 
-One place decides which components exist, what they cost, and whether the
-estimate can be produced at all. Before this, that was split across a settings
-module, a service reader and a template's JavaScript, and none of them owned it
-— which is how the estimate came to quote ₦85 for an ONT with nothing to say so.
-
-The estimate itself is deliberately computed HERE rather than in the browser.
-The old page shipped four numbers to JavaScript and did the arithmetic there, so
-the breakdown a user saw was assembled by the layer least able to explain it and
-could not be tested without a browser.
+The write commands in this module own one complete transaction: the current
+component row, immutable audit evidence, and the durable domain event are
+staged together and committed once by ``execute_owner_command``. Read models
+remain typed until a web adapter serializes them for HTML or JSON.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import re
 from decimal import Decimal
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.domain_settings import SettingDomain
-from app.models.fiber_cost_item import FiberCostItem, FiberCostUnit
+from app.models.fiber_cost_item import FiberCostItem
+from app.schemas.fiber_cost_items import (
+    CreateFiberCostItemCommand,
+    EstimateLine,
+    FiberCostEstimate,
+    FiberCostItemCode,
+    FiberCostItemListState,
+    FiberCostItemOutcome,
+    FiberCostUnit,
+    FiberCostUnitOption,
+    FiberPricingState,
+    UpdateFiberCostItemCommand,
+)
 from app.services import settings_spec
+from app.services.audit_adapter import stage_audit_event
+from app.services.domain_errors import DomainError
+from app.services.events import emit_event
+from app.services.events.types import EventType
+from app.services.owner_commands import OwnerCommandDefinition, execute_owner_command
+
+OWNER = "network.fiber_cost_items"
+WRITE_SCOPE = "network:fiber:write"
+WRITE_CONCERN = "fiber drop-cost components and their prices"
+
+_CREATE = OwnerCommandDefinition(
+    owner=OWNER,
+    concern=WRITE_CONCERN,
+    name="create_fiber_cost_item",
+)
+_UPDATE = OwnerCommandDefinition(
+    owner=OWNER,
+    concern=WRITE_CONCERN,
+    name="update_fiber_cost_item",
+)
+
+_CODE_PATTERN = re.compile(r"[a-z][a-z0-9_]*\Z")
+_MAX_AMOUNT = Decimal("999999999999.99")
+_MAX_DESCRIPTION_LENGTH = 2000
+_MIN_SORT_ORDER = 0
+_MAX_SORT_ORDER = 10000
 
 
-@dataclass(frozen=True, slots=True)
-class EstimateLine:
-    """One priced component applied to one route."""
-
-    code: str
-    label: str
-    unit: FiberCostUnit
-    amount: Decimal
-    #: What the unit multiplied by — metres for `per_meter`, 1 for `flat`. Kept
-    #: so the screen can show the working rather than only the answer.
-    quantity: Decimal
-    total: Decimal
+class FiberCostItemError(DomainError):
+    """Stable transport-neutral refusal from the fiber-cost owner."""
 
 
-@dataclass(frozen=True, slots=True)
-class FiberCostEstimate:
-    """A complete estimate, or an explicit statement that there cannot be one."""
-
-    currency: str
-    lines: tuple[EstimateLine, ...]
-    total: Decimal
-    #: Active components with no price. Non-empty means the estimate is
-    #: incomplete and the screen must say so rather than quietly omit them.
-    unpriced: tuple[str, ...]
-
-    @property
-    def is_complete(self) -> bool:
-        return not self.unpriced and bool(self.lines)
+def _error(code: str, message: str, **details: object) -> FiberCostItemError:
+    return FiberCostItemError(
+        code=f"{OWNER}.{code}",
+        message=message,
+        details=details,
+    )
 
 
-def active_items(db: Session) -> list[FiberCostItem]:
-    """Every component the estimator applies, in display order."""
+def parse_code(raw: str) -> FiberCostItemCode:
+    """Normalize and validate an untrusted component code at the adapter edge."""
 
-    return list(
+    normalized = re.sub(r"\s+", "_", raw.strip().lower())
+    if not normalized:
+        raise _error("code_required", "A code is required.", field="code")
+    if len(normalized) > 60 or _CODE_PATTERN.fullmatch(normalized) is None:
+        raise _error(
+            "invalid_code",
+            "Use at most 60 lowercase letters, numbers, and underscores for the code.",
+            field="code",
+        )
+    return FiberCostItemCode(normalized)
+
+
+def parse_unit(raw: str) -> FiberCostUnit:
+    """Validate the closed arithmetic vocabulary at the adapter edge."""
+
+    try:
+        return FiberCostUnit(raw)
+    except ValueError as exc:
+        raise _error(
+            "unknown_unit",
+            f"{raw!r} is not a unit this estimator can apply.",
+            field="unit",
+        ) from exc
+
+
+def parse_amount(raw: str | None) -> Decimal | None:
+    """Return a finite non-negative price, or ``None`` for not priced."""
+
+    text = (raw or "").strip()
+    if not text:
+        return None
+    try:
+        amount = Decimal(text)
+        if not amount.is_finite():
+            raise ArithmeticError
+        amount = amount.quantize(Decimal("0.01"))
+    except (ArithmeticError, ValueError) as exc:
+        raise _error(
+            "invalid_amount",
+            f"{text!r} is not a valid monetary amount.",
+            field="amount",
+        ) from exc
+    if amount < 0:
+        raise _error(
+            "negative_amount",
+            "A cost cannot be negative.",
+            field="amount",
+        )
+    if amount > _MAX_AMOUNT:
+        raise _error(
+            "amount_too_large",
+            "The cost exceeds the supported monetary range.",
+            field="amount",
+        )
+    return amount
+
+
+def _validated_amount(value: Decimal | None) -> Decimal | None:
+    """Defend the owner boundary even when a non-web caller builds a command."""
+
+    if value is None:
+        return None
+    if not isinstance(value, Decimal) or not value.is_finite():
+        raise _error(
+            "invalid_amount",
+            "The cost must be a finite decimal monetary amount.",
+            field="amount",
+        )
+    try:
+        amount = value.quantize(Decimal("0.01"))
+    except ArithmeticError as exc:
+        raise _error(
+            "invalid_amount",
+            "The cost must be a finite decimal monetary amount.",
+            field="amount",
+        ) from exc
+    if amount < 0:
+        raise _error(
+            "negative_amount",
+            "A cost cannot be negative.",
+            field="amount",
+        )
+    if amount > _MAX_AMOUNT:
+        raise _error(
+            "amount_too_large",
+            "The cost exceeds the supported monetary range.",
+            field="amount",
+        )
+    return amount
+
+
+def _validated_label(value: str) -> str:
+    label = value.strip()
+    if not label:
+        raise _error("label_required", "A label is required.", field="label")
+    if len(label) > 120:
+        raise _error(
+            "label_too_long",
+            "The label cannot exceed 120 characters.",
+            field="label",
+        )
+    return label
+
+
+def _validated_description(value: str | None) -> str | None:
+    description = (value or "").strip() or None
+    if description is not None and len(description) > _MAX_DESCRIPTION_LENGTH:
+        raise _error(
+            "description_too_long",
+            f"The description cannot exceed {_MAX_DESCRIPTION_LENGTH} characters.",
+            field="description",
+        )
+    return description
+
+
+def _validated_sort_order(value: int) -> int:
+    if isinstance(value, bool) or not _MIN_SORT_ORDER <= value <= _MAX_SORT_ORDER:
+        raise _error(
+            "invalid_sort_order",
+            f"Sort order must be between {_MIN_SORT_ORDER} and {_MAX_SORT_ORDER}.",
+            field="sort_order",
+        )
+    return value
+
+
+def _validate_command_actor(
+    command: CreateFiberCostItemCommand | UpdateFiberCostItemCommand,
+) -> None:
+    if command.context.scope != WRITE_SCOPE:
+        raise _error(
+            "invalid_scope",
+            "The fiber-cost command has an invalid authorization scope.",
+        )
+    expected_actor = f"{command.actor_type.value}:{command.actor_id}"
+    if command.context.actor != expected_actor:
+        raise _error(
+            "invalid_actor",
+            "The command actor does not match its audit provenance.",
+        )
+
+
+def _active_items(db: Session) -> tuple[FiberCostItem, ...]:
+    return tuple(
         db.scalars(
             select(FiberCostItem)
             .where(FiberCostItem.is_active.is_(True))
@@ -66,10 +224,8 @@ def active_items(db: Session) -> list[FiberCostItem]:
     )
 
 
-def all_items(db: Session) -> list[FiberCostItem]:
-    """Every component, active or not — the CRUD screen's list."""
-
-    return list(
+def _all_items(db: Session) -> tuple[FiberCostItem, ...]:
+    return tuple(
         db.scalars(
             select(FiberCostItem).order_by(
                 FiberCostItem.sort_order, FiberCostItem.label
@@ -78,34 +234,42 @@ def all_items(db: Session) -> list[FiberCostItem]:
     )
 
 
-def estimate_for_distance(db: Session, distance_meters: float) -> FiberCostEstimate:
-    """Price one drop of `distance_meters`.
-
-    An active component with no amount does NOT contribute and is named in
-    `unpriced`. Treating it as zero would produce a total that looks like an
-    answer, which is the failure this whole change exists to remove: a number
-    nobody chose, presented as a price.
-    """
-
-    currency = (
+def _currency(db: Session) -> str:
+    return (
         str(
             settings_spec.resolve_value(db, SettingDomain.billing, "default_currency")
             or ""
         ).strip()
         or "NGN"
     )
-    metres = Decimal(str(max(distance_meters, 0)))
+
+
+def estimate_for_distance(
+    db: Session,
+    distance_meters: Decimal,
+) -> FiberCostEstimate:
+    """Price one non-negative finite drop distance from committed components."""
+
+    if not distance_meters.is_finite() or distance_meters < 0:
+        raise _error(
+            "invalid_distance",
+            "Distance must be a finite non-negative number of metres.",
+            field="distance_meters",
+        )
 
     lines: list[EstimateLine] = []
-    unpriced: list[str] = []
-    for item in active_items(db):
+    unpriced: list[FiberCostItemCode] = []
+    for item in _active_items(db):
+        code = FiberCostItemCode(item.code)
         if item.amount is None:
-            unpriced.append(item.code)
+            unpriced.append(code)
             continue
-        quantity = metres if item.unit is FiberCostUnit.PER_METER else Decimal(1)
+        quantity = (
+            distance_meters if item.unit is FiberCostUnit.PER_METER else Decimal(1)
+        )
         lines.append(
             EstimateLine(
-                code=item.code,
+                code=code,
                 label=item.label,
                 unit=item.unit,
                 amount=item.amount,
@@ -115,214 +279,265 @@ def estimate_for_distance(db: Session, distance_meters: float) -> FiberCostEstim
         )
 
     return FiberCostEstimate(
-        currency=currency,
+        currency=_currency(db),
         lines=tuple(lines),
         total=sum((line.total for line in lines), Decimal("0.00")),
         unpriced=tuple(unpriced),
     )
 
 
-def estimate_as_dict(db: Session, distance_meters: float) -> dict[str, object]:
-    """The estimate as the map screen consumes it.
+def pricing_state(db: Session) -> FiberPricingState:
+    """Describe whether the current committed configuration can estimate."""
 
-    A dict rather than the dataclass because this crosses into a template, and
-    the shape it crosses with is the thing a screen must not invent for itself.
-    """
-
-    estimate = estimate_for_distance(db, distance_meters)
-    return {
-        "currency": estimate.currency,
-        "is_complete": estimate.is_complete,
-        "unpriced": list(estimate.unpriced),
-        "total": str(estimate.total),
-        "lines": [
-            {
-                "code": line.code,
-                "label": line.label,
-                "unit": line.unit.value,
-                "amount": str(line.amount),
-                "quantity": str(line.quantity),
-                "total": str(line.total),
-            }
-            for line in estimate.lines
-        ],
-    }
-
-
-def pricing_state(db: Session) -> dict[str, object]:
-    """What the map page needs to describe its own pricing, without prices.
-
-    The page renders whether an estimate is possible and which components are
-    missing a price; the amounts themselves reach it only inside an estimate it
-    asked for, alongside the distance they price. That keeps the arithmetic in
-    one place and stops a screen from quietly acquiring its own copy of the
-    rule — which is how the four hardcoded components ended up living in a
-    template in the first place.
-    """
-
-    items = active_items(db)
-    unpriced = [item.code for item in items if item.amount is None]
-    currency = (
-        str(
-            settings_spec.resolve_value(db, SettingDomain.billing, "default_currency")
-            or ""
-        ).strip()
-        or "NGN"
+    items = _active_items(db)
+    return FiberPricingState(
+        currency=_currency(db),
+        item_count=len(items),
+        unpriced=tuple(
+            FiberCostItemCode(item.code) for item in items if item.amount is None
+        ),
     )
+
+
+def _outcome(item: FiberCostItem) -> FiberCostItemOutcome:
+    return FiberCostItemOutcome(
+        item_id=item.id,
+        code=FiberCostItemCode(item.code),
+        label=item.label,
+        unit=item.unit,
+        amount=item.amount,
+        is_active=item.is_active,
+        sort_order=item.sort_order,
+        description=item.description,
+        version=item.version,
+        created_at=item.created_at,
+        updated_at=item.updated_at,
+    )
+
+
+def list_state(db: Session) -> FiberCostItemListState:
+    """Typed state for the CRUD screen."""
+
+    return FiberCostItemListState(
+        items=tuple(_outcome(item) for item in _all_items(db)),
+        units=tuple(
+            FiberCostUnitOption(
+                value=member,
+                label=member.name.replace("_", " ").title(),
+            )
+            for member in FiberCostUnit
+        ),
+        pricing=pricing_state(db),
+    )
+
+
+def _audit_values(outcome: FiberCostItemOutcome) -> dict[str, object]:
     return {
-        "currency": currency,
-        "item_count": len(items),
-        "unpriced": unpriced,
-        # False when a component is active but unpriced, or when there are no
-        # components at all. Either way the screen must say so rather than show
-        # a total assembled from the components that happen to have a price.
-        "is_complete": bool(items) and not unpriced,
+        "code": outcome.code.value,
+        "label": outcome.label,
+        "unit": outcome.unit.value,
+        "amount": str(outcome.amount) if outcome.amount is not None else None,
+        "is_active": outcome.is_active,
+        "sort_order": outcome.sort_order,
+        "description": outcome.description,
+        "version": outcome.version,
     }
 
 
-class FiberCostItemError(ValueError):
-    """A cost item could not be created or changed as asked."""
+def _stage_audit(
+    db: Session,
+    *,
+    command: CreateFiberCostItemCommand | UpdateFiberCostItemCommand,
+    action: str,
+    outcome: FiberCostItemOutcome,
+    before: FiberCostItemOutcome | None,
+) -> None:
+    metadata: dict[str, object] = {
+        "owner": OWNER,
+        "before": _audit_values(before) if before is not None else None,
+        "after": _audit_values(outcome),
+        "command_id": str(command.context.command_id),
+        "command_scope": command.context.scope,
+        "command_reason": command.context.reason,
+    }
+    stage_audit_event(
+        db,
+        action=action,
+        entity_type="fiber_cost_item",
+        entity_id=str(outcome.item_id),
+        actor_type=command.actor_type,
+        actor_id=str(command.actor_id),
+        request_id=str(command.context.correlation_id),
+        metadata=metadata,
+    )
 
 
-def _announce(db: Session, item: FiberCostItem, change: str) -> None:
-    """Say that a component's pricing changed.
-
-    The AMOUNT is not in the payload. A subscriber that needs it asks for an
-    estimate, which keeps one reader of the price and means a change to what an
-    install costs does not travel through a delivery pipeline with its own
-    retention and logging. Same rule the kernel applies to settings changes.
-    """
-
-    from app.services.events import emit_event
-    from app.services.events.types import EventType
+def _announce(
+    db: Session,
+    *,
+    context_actor: str,
+    outcome: FiberCostItemOutcome,
+    change: str,
+) -> None:
+    """Stage a non-price-bearing change signal in the owner transaction."""
 
     emit_event(
         db,
         EventType.fiber_cost_item_changed,
         {
-            "code": item.code,
+            "code": outcome.code.value,
             "change": change,
-            "unit": item.unit.value,
-            "is_active": item.is_active,
-            "is_priced": item.is_priced,
+            "unit": outcome.unit.value,
+            "is_active": outcome.is_active,
+            "is_priced": outcome.amount is not None,
+            "version": outcome.version,
         },
+        actor=context_actor,
     )
 
 
-def _parse_amount(raw: str | None) -> Decimal | None:
-    """A price, or None for "not priced yet".
-
-    An empty field means unpriced, and that is NOT zero: a free component is a
-    real answer an operator may give, and only one of the two should leave the
-    estimate incomplete.
-    """
-
-    text = (raw or "").strip()
-    if not text:
-        return None
-    try:
-        amount = Decimal(text)
-    except (ArithmeticError, ValueError) as exc:
-        raise FiberCostItemError(f"{text!r} is not a number") from exc
-    if amount < 0:
-        raise FiberCostItemError("a cost cannot be negative")
-    return amount.quantize(Decimal("0.01"))
+def _is_duplicate_code_error(exc: IntegrityError) -> bool:
+    text = str(getattr(exc, "orig", exc)).lower()
+    return "uq_fiber_cost_items_code" in text or (
+        "fiber_cost_items" in text and "code" in text and "unique" in text
+    )
 
 
 def create_item(
     db: Session,
-    *,
-    code: str,
-    label: str,
-    unit: str,
-    amount: str | None = None,
-    sort_order: int = 100,
-    description: str | None = None,
-) -> FiberCostItem:
-    """Add a component. The code is its stable identity and cannot repeat."""
+    command: CreateFiberCostItemCommand,
+) -> FiberCostItemOutcome:
+    """Create one component and its event/audit evidence atomically."""
 
-    normalised = code.strip().lower().replace(" ", "_")
-    if not normalised:
-        raise FiberCostItemError("a code is required")
-    if not label.strip():
-        raise FiberCostItemError("a label is required")
     try:
-        parsed_unit = FiberCostUnit(unit)
-    except ValueError as exc:
-        raise FiberCostItemError(
-            f"{unit!r} is not a unit this estimator can apply"
-        ) from exc
-    if db.scalar(select(FiberCostItem).where(FiberCostItem.code == normalised)):
-        raise FiberCostItemError(f"a cost item with code {normalised!r} already exists")
+        return execute_owner_command(
+            db,
+            definition=_CREATE,
+            context=command.context,
+            operation=lambda: _create_item(db, command),
+        )
+    except IntegrityError as exc:
+        if _is_duplicate_code_error(exc):
+            raise _error(
+                "duplicate_code",
+                f"A cost item with code {command.code.value!r} already exists.",
+                field="code",
+            ) from exc
+        raise
+
+
+def _create_item(
+    db: Session,
+    command: CreateFiberCostItemCommand,
+) -> FiberCostItemOutcome:
+    _validate_command_actor(command)
+    code = parse_code(command.code.value)
+    label = _validated_label(command.label)
+    amount = _validated_amount(command.amount)
+    description = _validated_description(command.description)
+    sort_order = _validated_sort_order(command.sort_order)
+
+    existing = db.scalar(
+        select(FiberCostItem.id).where(FiberCostItem.code == code.value)
+    )
+    if existing is not None:
+        raise _error(
+            "duplicate_code",
+            f"A cost item with code {code.value!r} already exists.",
+            field="code",
+        )
 
     item = FiberCostItem(
-        code=normalised,
-        label=label.strip(),
-        unit=parsed_unit,
-        amount=_parse_amount(amount),
+        code=code.value,
+        label=label,
+        unit=command.unit,
+        amount=amount,
         sort_order=sort_order,
-        description=(description or "").strip() or None,
+        description=description,
+        version=1,
     )
     db.add(item)
-    db.commit()
-    db.refresh(item)
-    _announce(db, item, "created")
-    return item
+    db.flush()
+    outcome = _outcome(item)
+    _stage_audit(
+        db,
+        command=command,
+        action="fiber_cost_item.created",
+        outcome=outcome,
+        before=None,
+    )
+    _announce(
+        db,
+        context_actor=command.context.actor,
+        outcome=outcome,
+        change="created",
+    )
+    return outcome
 
 
 def update_item(
     db: Session,
-    item_id: str,
-    *,
-    label: str | None = None,
-    unit: str | None = None,
-    amount: str | None = None,
-    is_active: bool | None = None,
-    sort_order: int | None = None,
-    description: str | None = None,
-) -> FiberCostItem:
-    """Change a component. `code` is deliberately not editable — see the model."""
+    command: UpdateFiberCostItemCommand,
+) -> FiberCostItemOutcome:
+    """Replace one reviewed item version, rejecting stale forms."""
 
-    item = db.get(FiberCostItem, item_id)
+    return execute_owner_command(
+        db,
+        definition=_UPDATE,
+        context=command.context,
+        operation=lambda: _update_item(db, command),
+    )
+
+
+def _update_item(
+    db: Session,
+    command: UpdateFiberCostItemCommand,
+) -> FiberCostItemOutcome:
+    _validate_command_actor(command)
+    if command.expected_version < 1:
+        raise _error(
+            "invalid_version",
+            "The expected item version must be positive.",
+            field="expected_version",
+        )
+
+    item = db.scalar(
+        select(FiberCostItem)
+        .where(FiberCostItem.id == command.item_id)
+        .with_for_update()
+    )
     if item is None:
-        raise FiberCostItemError("cost item not found")
-    if label is not None:
-        if not label.strip():
-            raise FiberCostItemError("a label is required")
-        item.label = label.strip()
-    if unit is not None:
-        try:
-            item.unit = FiberCostUnit(unit)
-        except ValueError as exc:
-            raise FiberCostItemError(
-                f"{unit!r} is not a unit this estimator can apply"
-            ) from exc
-    if amount is not None:
-        item.amount = _parse_amount(amount)
-    if is_active is not None:
-        item.is_active = is_active
-    if sort_order is not None:
-        item.sort_order = sort_order
-    if description is not None:
-        item.description = description.strip() or None
-    db.commit()
-    db.refresh(item)
-    _announce(db, item, "updated")
-    return item
+        raise _error("not_found", "Cost item not found.")
+    if item.version != command.expected_version:
+        raise _error(
+            "stale_version",
+            "This cost item changed after the form was opened; review the new values.",
+            expected_version=command.expected_version,
+            current_version=item.version,
+        )
 
+    before = _outcome(item)
+    item.label = _validated_label(command.label)
+    item.unit = command.unit
+    item.amount = _validated_amount(command.amount)
+    item.is_active = command.is_active
+    item.sort_order = _validated_sort_order(command.sort_order)
+    item.description = _validated_description(command.description)
+    item.version += 1
+    db.flush()
 
-def list_data(db: Session) -> dict[str, object]:
-    """The CRUD screen's state, including why an estimate may be impossible."""
-
-    items = all_items(db)
-    state = pricing_state(db)
-    return {
-        "items": items,
-        "units": [
-            (member.value, member.name.replace("_", " ").title())
-            for member in FiberCostUnit
-        ],
-        "currency": state["currency"],
-        "is_complete": state["is_complete"],
-        "unpriced": state["unpriced"],
-    }
+    outcome = _outcome(item)
+    _stage_audit(
+        db,
+        command=command,
+        action="fiber_cost_item.updated",
+        outcome=outcome,
+        before=before,
+    )
+    _announce(
+        db,
+        context_actor=command.context.actor,
+        outcome=outcome,
+        change="updated",
+    )
+    return outcome

@@ -86,31 +86,48 @@ SERVICES: tuple[SOTService, ...] = (
             transaction=TransactionContract(
                 mode=TransactionMode.OWNER_MANAGED,
                 boundary=(
-                    "Each create or update owns its own commit — one operator "
-                    "act, one row. Estimation is a pure read over committed "
-                    "state and writes nothing."
+                    "create_item and update_item each enter execute_owner_command "
+                    "once on a transaction-free session. The row, immutable "
+                    "before/after audit evidence and durable change event stage "
+                    "inside that transaction and commit together. Estimation is "
+                    "a pure read over committed state and writes nothing."
                 ),
-                locking="None; a cost item is edited by one operator at a time.",
+                locking=(
+                    "Updates lock the exact FiberCostItem row and compare the "
+                    "submitted version before replacing any values. The unique "
+                    "code constraint arbitrates concurrent creates."
+                ),
                 idempotency=(
-                    "An estimate is deterministic for identical committed "
-                    "inputs. A create is refused on a duplicate code rather "
-                    "than silently updating, so a repeated submission cannot "
-                    "quietly reprice a component."
+                    "A create is refused on its stable unique code. An update is "
+                    "bound to one expected row version, so a replay or stale form "
+                    "cannot quietly reprice a component. An estimate is "
+                    "deterministic for identical committed inputs."
                 ),
                 retries=(
-                    "None. Every write is one operator act on one row; a "
-                    "failed submission is retried by the operator, and the "
-                    "duplicate-code refusal is what makes that safe."
+                    "A duplicate create and a stale update fail with stable domain "
+                    "codes. The operator must reload current evidence before "
+                    "submitting a replacement decision."
                 ),
             ),
             errors=ErrorContract(
                 domain_codes=(
                     *owner_command_boundary_error_codes("network.fiber_cost_items"),
                     "network.fiber_cost_items.code_required",
+                    "network.fiber_cost_items.invalid_code",
                     "network.fiber_cost_items.label_required",
+                    "network.fiber_cost_items.label_too_long",
                     "network.fiber_cost_items.duplicate_code",
                     "network.fiber_cost_items.unknown_unit",
+                    "network.fiber_cost_items.invalid_amount",
                     "network.fiber_cost_items.negative_amount",
+                    "network.fiber_cost_items.amount_too_large",
+                    "network.fiber_cost_items.description_too_long",
+                    "network.fiber_cost_items.invalid_sort_order",
+                    "network.fiber_cost_items.invalid_distance",
+                    "network.fiber_cost_items.invalid_scope",
+                    "network.fiber_cost_items.invalid_actor",
+                    "network.fiber_cost_items.invalid_version",
+                    "network.fiber_cost_items.stale_version",
                     "network.fiber_cost_items.not_found",
                 ),
                 mapping_owner="app.web.admin.network_fiber_costs",
@@ -152,7 +169,10 @@ SERVICES: tuple[SOTService, ...] = (
             ),
             steward="network operations",
             design_refs=("docs/SOT_RELATIONSHIP_MAP.md",),
-            test_refs=("tests/test_fiber_cost_items.py",),
+            test_refs=(
+                "tests/test_fiber_cost_items.py",
+                "tests/architecture/test_fiber_cost_items_boundary.py",
+            ),
         ),
     ),
     SOTService(
