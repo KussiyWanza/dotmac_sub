@@ -343,12 +343,22 @@ SERVICES: tuple[SOTService, ...] = (
             "invoice-void release of exact account-credit allocations",
             "account-credit application invariant monitoring",
             "bounded account-credit invariant summary",
+            "unallocated account-credit creation",
+            "offer of settled account credit to open receivables",
         ),
-        depends_on=("financial.payments", "financial.invoices"),
+        depends_on=("financial.payments", "financial.invoices", "financial.ledger"),
         notes=(
             "Account credit is derived from exact unconsumed settlement "
             "evidence, never a wallet counter. This owner composes the "
-            "payment-allocation owner and does not write money directly."
+            "payment-allocation owner for application. It gained the creation "
+            "half in record_credit, so credit can no longer be minted without "
+            "this owner knowing it exists — which is how it got stranded while "
+            "the invoice it should have settled was dunned. The ledger row is "
+            "still written through financial.ledger; this owner supplies the "
+            "decision, not its own persistence. Minting and offering are "
+            "separate commands because credit is spendable only once its "
+            "settlement evidence exists; the settlement path calls "
+            "offer_available_credit once it does."
         ),
     ),
 )
