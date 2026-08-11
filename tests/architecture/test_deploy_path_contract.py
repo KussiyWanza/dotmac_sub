@@ -117,3 +117,31 @@ def test_openbao_initializer_seeds_kernel_secret_source_paths() -> None:
         assert path in initializer
         assert field in initializer
     assert 'kv patch "secret/${path}"' in initializer
+
+
+def test_openbao_initializer_seeds_optional_material_without_requiring_it() -> None:
+    """Optional material is provisioned by the bootstrap and gates nothing.
+
+    Two separate failures this closes. An unseeded path means the feature
+    reports itself unconfigured far from the cause — prepaid manifest
+    verification refuses everything, and a secret setting cannot be written at
+    all. And a `seed_group` here would fail `--strict` for every deployment
+    that does not use the feature, which is most of them.
+    """
+
+    initializer = (ROOT / "scripts/setup/openbao_init.sh").read_text(encoding="utf-8")
+    source = (ROOT / "app/services/kernel_secret_source.py").read_text(encoding="utf-8")
+    provider = (ROOT / "app/services/kernel_key_provider.py").read_text(
+        encoding="utf-8"
+    )
+
+    optional_source = source[source.index("OPTIONAL_SECRET_REFS:") :]
+    bindings = set(re.findall(r"bao://secret/([^#]+)#([a-z_]+)", optional_source))
+    bindings |= set(re.findall(r"bao://secret/([^#]+)#([a-z_]+)", provider))
+    assert bindings, "no optional bindings found to check"
+
+    for path, field in bindings:
+        assert path in initializer, f"{path} is never seeded"
+        assert field in initializer, f"{field} is never seeded"
+        # Seeded by the helper that skips under `--strict`, not by `seed_group`.
+        assert f"seed_optional_group {path}" in initializer
