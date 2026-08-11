@@ -7,12 +7,16 @@ import json
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
+import pytest
+from fastapi import HTTPException
 from sqlalchemy import text
 
 from app.api import erp_material_webhooks
+from app.services.field.material_requests import _MATERIAL_OBSERVATION_COMMAND
 from app.services.integrations.backoffice_contracts import (
     ERP_MATERIAL_STATUS_WEBHOOK_CAPABILITY,
 )
+from app.services.owner_commands import _validate_manifest
 
 
 class _Request:
@@ -40,6 +44,159 @@ def _payload(request_id: UUID) -> bytes:
             "items": [{"sequence": 1, "serial_numbers": []}],
         }
     ).encode()
+
+
+def test_material_status_observation_command_matches_typed_manifest() -> None:
+    _validate_manifest(_MATERIAL_OBSERVATION_COMMAND)
+
+
+def test_webhook_rejects_invalid_signature_before_claim(db_session, monkeypatch):
+    binding_id = uuid4()
+    monkeypatch.setattr(
+        erp_material_webhooks,
+        "build_execution_context",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            binding=SimpleNamespace(
+                capability_id=ERP_MATERIAL_STATUS_WEBHOOK_CAPABILITY,
+                installation_id=uuid4(),
+            ),
+            secret_material={"webhook_signing_secret": "expected-secret"},
+        ),
+    )
+    monkeypatch.setattr(
+        erp_material_webhooks.integration_inbox,
+        "receive_and_claim_verified",
+        lambda *_args, **_kwargs: pytest.fail("invalid delivery was claimed"),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            erp_material_webhooks.receive_erp_material_status(
+                binding_id,
+                _Request(
+                    _payload(uuid4()),
+                    secret="wrong-secret",
+                    delivery_id="invalid-signature",
+                ),
+                db_session,
+            )
+        )
+
+    assert exc_info.value.status_code == 401
+
+
+def test_webhook_rejects_wrong_capability_binding(db_session, monkeypatch):
+    monkeypatch.setattr(
+        erp_material_webhooks,
+        "build_execution_context",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            binding=SimpleNamespace(
+                capability_id="some.other.capability",
+                installation_id=uuid4(),
+            ),
+            secret_material={"webhook_signing_secret": "secret"},
+        ),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            erp_material_webhooks.receive_erp_material_status(
+                uuid4(),
+                _Request(
+                    _payload(uuid4()),
+                    secret="secret",
+                    delivery_id="wrong-binding",
+                ),
+                db_session,
+            )
+        )
+
+    assert exc_info.value.status_code == 404
+
+
+def test_webhook_rejects_oversized_body_before_claim(db_session, monkeypatch):
+    secret = "test-webhook-secret"
+    binding_id = uuid4()
+    body = b"x" * (erp_material_webhooks.MAX_BODY_BYTES + 1)
+    monkeypatch.setattr(
+        erp_material_webhooks,
+        "build_execution_context",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            binding=SimpleNamespace(
+                capability_id=ERP_MATERIAL_STATUS_WEBHOOK_CAPABILITY,
+                installation_id=uuid4(),
+            ),
+            secret_material={"webhook_signing_secret": secret},
+        ),
+    )
+    monkeypatch.setattr(
+        erp_material_webhooks.integration_inbox,
+        "receive_and_claim_verified",
+        lambda *_args, **_kwargs: pytest.fail("oversized delivery was claimed"),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            erp_material_webhooks.receive_erp_material_status(
+                binding_id,
+                _Request(body, secret=secret, delivery_id="oversized"),
+                db_session,
+            )
+        )
+
+    assert exc_info.value.status_code == 413
+
+
+def test_processed_delivery_replays_without_second_owner_command(
+    db_session, monkeypatch
+) -> None:
+    secret = "test-webhook-secret"
+    material_request_id = uuid4()
+    monkeypatch.setattr(
+        erp_material_webhooks,
+        "build_execution_context",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            binding=SimpleNamespace(
+                capability_id=ERP_MATERIAL_STATUS_WEBHOOK_CAPABILITY,
+                installation_id=uuid4(),
+            ),
+            secret_material={"webhook_signing_secret": secret},
+        ),
+    )
+    monkeypatch.setattr(
+        erp_material_webhooks.integration_inbox,
+        "receive_and_claim_verified",
+        lambda *_args, **_kwargs: (
+            SimpleNamespace(
+                consequence_json={
+                    "material_request_id": str(material_request_id),
+                    "status": "issued",
+                }
+            ),
+            False,
+        ),
+    )
+    monkeypatch.setattr(
+        erp_material_webhooks.material_requests,
+        "observe_erp_material_status",
+        lambda *_args, **_kwargs: pytest.fail("replay ran a second owner command"),
+    )
+
+    receipt = asyncio.run(
+        erp_material_webhooks.receive_erp_material_status(
+            uuid4(),
+            _Request(
+                _payload(material_request_id),
+                secret=secret,
+                delivery_id="already-processed",
+            ),
+            db_session,
+        )
+    )
+
+    assert receipt.material_request_id == material_request_id
+    assert receipt.status == "issued"
+    assert receipt.replayed is True
 
 
 def test_webhook_enters_owner_command_without_adapter_transaction(

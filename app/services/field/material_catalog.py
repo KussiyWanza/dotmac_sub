@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.models.field_material import FieldInventoryItem, FieldInventoryWarehouse
@@ -82,6 +82,22 @@ class MaterialWarehouseView:
     name: str
     source_is_active: bool
     last_synced_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class SearchEligibleMaterialItems:
+    query: str
+    limit: int = 20
+
+
+@dataclass(frozen=True, slots=True)
+class EligibleMaterialItemMatch:
+    id: UUID
+    label: str
+    sku: str | None
+    name: str
+    category_name: str | None
+    unit: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -330,6 +346,45 @@ def list_material_warehouses(db: Session) -> tuple[MaterialWarehouseView, ...]:
             name=row.name,
             source_is_active=row.source_is_active,
             last_synced_at=row.last_synced_at,
+        )
+        for row in rows
+    )
+
+
+def search_eligible_material_items(
+    db: Session, query: SearchEligibleMaterialItems
+) -> tuple[EligibleMaterialItemMatch, ...]:
+    """Search the active Sub-approved ERP item projection for form selection."""
+
+    term = query.query.strip()
+    if len(term) < 2:
+        return ()
+    limit = max(1, min(query.limit, 50))
+    pattern = f"%{term}%"
+    rows = db.scalars(
+        select(FieldInventoryItem)
+        .where(
+            FieldInventoryItem.source_system == SOURCE_SYSTEM,
+            FieldInventoryItem.is_active.is_(True),
+            FieldInventoryItem.source_is_active.is_(True),
+            FieldInventoryItem.field_request_eligible.is_(True),
+            or_(
+                FieldInventoryItem.name.ilike(pattern),
+                FieldInventoryItem.sku.ilike(pattern),
+                FieldInventoryItem.category_name.ilike(pattern),
+            ),
+        )
+        .order_by(FieldInventoryItem.name.asc(), FieldInventoryItem.id.asc())
+        .limit(limit)
+    ).all()
+    return tuple(
+        EligibleMaterialItemMatch(
+            id=row.id,
+            label=f"{row.name} ({row.sku})" if row.sku else row.name,
+            sku=row.sku,
+            name=row.name,
+            category_name=row.category_name,
+            unit=row.unit,
         )
         for row in rows
     )

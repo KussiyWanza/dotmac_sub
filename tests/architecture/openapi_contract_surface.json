@@ -9036,6 +9036,19 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "GET /api/v1/search/material-items": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "query:limit",
+    "query:q!"
+   ],
+   "request": null,
+   "responses": {
+    "200": "79dcaa8692e2",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "GET /api/v1/search/nas-devices": {
    "params": [
     "header:authorization",
