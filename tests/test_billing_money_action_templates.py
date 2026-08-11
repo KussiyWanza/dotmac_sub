@@ -28,6 +28,11 @@ def test_manual_payment_and_credit_forms_confirm_and_bound_amounts():
     assert 'action="{{ action_url }}"' in credit_form
     assert "Confirm and issue" in credit_confirmation
     assert "Exact ledger result" in credit_confirmation
+    assert "Application disposition" in credit_confirmation
+    assert "Named invoice result" in credit_confirmation
+    assert "preview.application_amount" in credit_confirmation
+    assert "preview.residual_credit" in credit_confirmation
+    assert "restoration is not inferred from this credit" in credit_confirmation
     assert 'name="preview_fingerprint"' in credit_confirmation
     assert 'name="idempotency_key"' in credit_confirmation
     assert 'min="0.01"' in credit_form

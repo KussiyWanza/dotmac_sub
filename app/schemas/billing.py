@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
@@ -310,6 +311,23 @@ class CreditNoteApplicationPreviewRequest(BaseModel):
     amount: Decimal | None = Field(default=None, gt=0)
 
 
+class CreditNoteIssueApplicationDisposition(StrEnum):
+    """What issue will do with the credit after funding it."""
+
+    apply_to_invoice = "apply_to_invoice"
+    retain_account_credit = "retain_account_credit"
+
+
+class CreditNoteIssueApplicationReason(StrEnum):
+    """Why the owner selected the issue-time application disposition."""
+
+    invoice_receivable_open = "invoice_receivable_open"
+    invoice_already_paid = "invoice_already_paid"
+    invoice_receivable_exhausted = "invoice_receivable_exhausted"
+    no_invoice_named = "no_invoice_named"
+    reversible_workflow_hold = "reversible_workflow_hold"
+
+
 class CreditNoteIssuePreviewRequest(BaseModel):
     account_id: UUID
     invoice_id: UUID | None = None
@@ -335,6 +353,11 @@ class CreditNoteIssuePreviewRead(BaseModel):
     prepaid_funding_after: Decimal
     invoice_receivable_before: Decimal | None = None
     invoice_receivable_after: Decimal | None = None
+    application_amount: Decimal
+    residual_credit: Decimal
+    settles_invoice: bool
+    application_disposition: CreditNoteIssueApplicationDisposition
+    application_reason: CreditNoteIssueApplicationReason
     ledger_entry_type: LedgerEntryType
     ledger_source: LedgerSource
     ledger_amount: Decimal

@@ -7,7 +7,7 @@ import pytest
 from starlette.datastructures import FormData
 
 from app.models.service_team import ServiceTeam, ServiceTeamType
-from app.models.support import Ticket, TicketChannel
+from app.models.support import Ticket, TicketChannel, TicketStatus
 from app.models.ticket_workflow import TicketAssignmentRule
 from app.services import support_ticket_settings as support_ticket_settings_service
 from app.services import web_support_tickets as web_support_tickets_service
@@ -80,6 +80,94 @@ def test_ticket_settings_reject_statuses_outside_lifecycle_vocabulary(db_session
             db_session,
             _configuration_command(statuses=("open", "needs_vendor")),
         )
+
+
+def test_ticket_form_context_preserves_unconfigured_current_status(db_session):
+    support_ticket_settings_service.update_ticket_configuration(
+        db_session,
+        _configuration_command(statuses=("open", "closed")),
+    )
+    ticket = Ticket(
+        title="Pending ticket",
+        status=TicketStatus.pending.value,
+        priority="normal",
+        channel=TicketChannel.web,
+        is_active=True,
+    )
+    db_session.add(ticket)
+    db_session.commit()
+
+    context = web_support_tickets_service.build_ticket_form_context(
+        db_session, ticket=ticket
+    )
+
+    assert TicketStatus.pending.value not in context["all_statuses"]
+    assert context["prefill"]["status"] == TicketStatus.pending.value
+    assert context["unavailable_status_presentation"].value == "pending"
+    assert context["unavailable_status_presentation"].label == "Pending"
+
+
+def test_new_ticket_form_canonicalizes_legacy_resolved_prefill(db_session):
+    context = web_support_tickets_service.build_ticket_form_context(
+        db_session, query_params={"status": "resolved"}
+    )
+
+    assert "resolved" not in context["all_statuses"]
+    assert context["prefill"]["status"] == TicketStatus.closed.value
+    assert context["unavailable_status_presentation"] is None
+
+
+def test_admin_status_mutations_reject_unconfigured_status_but_preserve_current(
+    db_session,
+):
+    support_ticket_settings_service.update_ticket_configuration(
+        db_session,
+        _configuration_command(statuses=("open", "closed")),
+    )
+    with pytest.raises(
+        web_support_tickets_service.WebSupportTicketInputError,
+        match="Select an available ticket status",
+    ):
+        web_support_tickets_service._admin_status_value(
+            db_session,
+            TicketStatus.pending.value,
+            surface=(support_ticket_settings_service.OperatorTicketStatusSurface.edit),
+        )
+
+    assert (
+        web_support_tickets_service._admin_status_value(
+            db_session,
+            TicketStatus.pending.value,
+            surface=(support_ticket_settings_service.OperatorTicketStatusSurface.edit),
+            current_status=TicketStatus.pending.value,
+        )
+        == TicketStatus.pending.value
+    )
+
+
+def test_admin_status_mutations_canonicalize_legacy_resolved_to_closed(db_session):
+    assert (
+        web_support_tickets_service._admin_status_value(
+            db_session,
+            "resolved",
+            surface=(support_ticket_settings_service.OperatorTicketStatusSurface.edit),
+        )
+        == TicketStatus.closed.value
+    )
+
+
+def test_configuration_owner_resolves_typed_operator_status_selection(db_session):
+    outcome = support_ticket_settings_service.resolve_operator_ticket_status_selection(
+        db_session,
+        support_ticket_settings_service.OperatorTicketStatusSelection(
+            requested_status=TicketStatus.pending,
+            current_status=TicketStatus.pending,
+            surface=support_ticket_settings_service.OperatorTicketStatusSurface.edit,
+        ),
+    )
+
+    assert outcome.status is TicketStatus.pending
+    assert outcome.preserved_current is True
 
 
 def test_ticket_settings_canonicalize_legacy_resolved_to_closed(db_session):

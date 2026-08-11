@@ -522,6 +522,10 @@ Edit the owning domain shard and regenerate; do not hand-edit these rows.
 | `network.fiber_test_acceptance` | expected downstream link budget derivation | `policy` | declared acceptance thresholds ← `network.fiber_test_acceptance`<br>canonical customer trace evidence ← `network.fiber_topology` | `read_only` | `native` | network operations | `docs/FIBER_TECH_JOURNEY_GAP_LIST.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_fiber_test_acceptance.py` |
 | `network.fiber_splice_plans` | planned splice work (cut sheet) lifecycle | `authoritative_record` | operator cut-sheet command evidence ← `network.fiber_splice_plans`<br>native work-order identity ← `operations.work_order_commands`<br>passive plant closure, tray, and exact strand identity ← `network.fiber_plant_integrity` | `owner_managed` | `native` | network operations | `docs/FIBER_TECH_JOURNEY_GAP_LIST.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_fiber_splice_plans.py` |
 | `network.fiber_splice_plans` | planned splice execution linkage | `authoritative_record` | operator cut-sheet command evidence ← `network.fiber_splice_plans`<br>reviewed splice change-request state ← `network.fiber_asset_changes` | `owner_managed` | `native` | network operations | `docs/FIBER_TECH_JOURNEY_GAP_LIST.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_fiber_splice_plans.py` |
+| `network.ont_assignment_commands` | normal explicit ONT-to-subscription assignments | `command_writer` | canonical ONT inventory identity ← `network.identity`<br>active subscriber account ← `customer.accounts`<br>active subscription lifecycle ← `access.subscription_lifecycle`<br>active ONT service assignment ← `network.ont_assignment_commands` | `owner_managed` | `native` | network operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`tests/test_ont_assignment_commands.py`<br>`tests/architecture/test_ont_reassignment_boundary.py` |
+| `network.ont_assignment_commands` | normal assignment release transitions | `command_writer` | canonical ONT inventory identity ← `network.identity`<br>active ONT service assignment ← `network.ont_assignment_commands` | `owner_managed` | `native` | network operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`tests/test_ont_assignment_commands.py`<br>`tests/architecture/test_ont_reassignment_boundary.py` |
+| `network.ont_assignment_commands` | verified physical PON move projections | `projection_writer` | canonical ONT inventory identity ← `network.identity`<br>modeled PON and OLT identity ← `network.ont_topology_observations`<br>active ONT service assignment ← `network.ont_assignment_commands` | `owner_managed` | `native` | network operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`tests/test_ont_assignment_commands.py`<br>`tests/architecture/test_ont_reassignment_boundary.py` |
+| `network.ont_assignment_commands` | exact normal assignment audit results | `projection_writer` | canonical ONT inventory identity ← `network.identity`<br>active ONT service assignment ← `network.ont_assignment_commands` | `owner_managed` | `native` | network operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`tests/test_ont_assignment_commands.py`<br>`tests/architecture/test_ont_reassignment_boundary.py` |
 | `network.radio_signal` | wireless radio RF signal freshness projection | `resolver` | stored radio RF observation ← `external:uisp`<br>radio signal freshness policy ← `network.radio_signal` | `read_only` | `complete` | network operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_radio_signal.py`<br>`tests/test_access_path_endpoint_projection.py`<br>`tests/services/topology/test_last_mile.py` |
 | `network.radius_sessions` | online-now session state | `resolver` | canonical live RADIUS observations ← `sessions.radius_reconciliation`<br>canonical subscription cohort ← `access.subscription_lifecycle` | `read_only` | `complete` | network operations | `docs/designs/PORTAL_ACCOUNT_SERVICE_HEALTH.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_network_sot_services.py`<br>`tests/test_portal_account_health.py` |
 | `network.radius_sessions` | active-session NAS observation evidence | `resolver` | canonical live RADIUS observations ← `sessions.radius_reconciliation`<br>canonical network identities ← `network.identity` | `read_only` | `complete` | network operations | `docs/designs/PORTAL_ACCOUNT_SERVICE_HEALTH.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_network_sot_services.py`<br>`tests/test_portal_account_health.py` |
@@ -1632,6 +1636,25 @@ Credit-note issuance and voiding are the next migrated financial-action contract
   historical account-credit pool drift cannot block or fund the application.
   Historical notes without reviewed funding evidence retain their legacy
   application behavior.
+- Application-on-issue boundary: direct and draft issuance use one typed owner
+  decision and the same flush-only participant as manual application. An issued
+  note naming an open receivable applies up to that receivable in the issue
+  transaction. A named invoice with nothing left to reduce retains the value as
+  account credit rather than failing: `invoice_already_paid` by lifecycle state,
+  and `invoice_receivable_exhausted` for an invoice still open but already
+  covered or issued at zero. Refusing the latter would deny a cancellation its
+  credit for a bookkeeping state the customer did not cause, and the value is
+  still funded onto the account. An owner workflow whose rollback contract must
+  void the exact note may explicitly retain an open-invoice credit; the preview
+  and fingerprint record `reversible_workflow_hold`. Unlinked notes also retain
+  account credit. Proforma, inactive, void, and written-off invoice evidence
+  fails closed, as does a paid invoice carrying a non-zero receivable.
+- Replay and concurrency boundary: the application idempotency key is derived
+  from the issue key. A retry that waited for the account lock reloads the
+  completed note and its exact application evidence before testing the now-stale
+  preview, while a distinct confirmation against the consumed receivable is
+  rejected. Funding, application, consumption, invoice recalculation, audit,
+  and access-reconciliation request commit or roll back together.
 - Verification phase: direct writers have migrated to the owner and architecture
   tests reject new document, line, or status writers outside the owner package.
 - Cutover gate: issue/void preview fingerprints, idempotent replay, actor audit,
@@ -2514,7 +2537,13 @@ confirmation, tracking, or rating eligibility from raw statuses.
    projection supplies the admin new-ticket preview; the browser displays that
    decision but does not own assignment. Blank routing rows are ignored, while
    assignment data without a Region is rejected. A configured status must be
-   part of the lifecycle vocabulary.
+   part of the lifecycle vocabulary; legacy `resolved` input is canonicalized
+   to `closed`. Admin selection crosses the configuration owner's typed
+   `OperatorTicketStatusSelection` resolver, including admin forms, quick and
+   bulk changes, automation configuration, and basic/advanced filters.
+   A Ticket whose canonical current status is later removed from the configured
+   subset retains its value and presentation while operators repair or move it.
+   The `not_closed` read scope continues to exclude only canonical `closed`.
 3. Status configuration does not own labels, tones, icons, or platform colors;
    those are read-side presentation concerns.
 4. `support.ticket_bulk_commands` owns exact selected membership, normalized

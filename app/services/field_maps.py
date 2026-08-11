@@ -307,7 +307,7 @@ def list_movement_points(
     until: datetime | None = None,
     limit: int = 1000,
 ) -> dict:
-    """Ordered travel points for a work order / technician movement playback.
+    """Ordered travel points for a public work-order id and/or technician UUID.
 
     Each leg contributes its start point (at ``started_at``) and, once the
     technician has arrived, its arrival point (at ``arrived_at``). Points are

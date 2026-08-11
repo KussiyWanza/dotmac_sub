@@ -37,7 +37,7 @@ pure value boundary and owns no Ticket or configuration rows.
 `closed` is the only Ticket status meaning that the reported issue has been
 resolved. The retired stored value `resolved` is accepted only as a legacy
 admission alias and is canonicalized to `closed` before any write or response.
-Migration 515 repairs matching Ticket rows plus exact status fields in operator
+Migration 517 repairs matching Ticket rows plus exact status fields in operator
 configuration and automation JSON; it does not rewrite Ticket timestamps,
 timeline records, tags, comments, attachments, metadata, or audit history.
 
@@ -48,6 +48,18 @@ vocabulary owner. `support.ticket_region_projection` separately resolves the
 current region choices from configured values and canonical Ticket observations.
 This separation prevents lifecycle and configuration from depending on each
 other while preserving the provenance of both inputs.
+
+The operator-selectable subset contains only canonical typed `TicketStatus`
+values. The configuration owner and admin adapters canonicalize legacy
+`resolved` input to `closed` before storage or response. Admin selection crosses
+the typed `OperatorTicketStatusSelection` /
+`OperatorTicketStatusSelectionOutcome` resolver owned by ticket configuration.
+Admin create, edit, quick-status, bulk-update, automation, list-filter, and
+advanced-filter controls consume that one subset. A Ticket whose canonical
+current status is later removed from the configured subset remains displayable
+and may preserve that unchanged value while another field is edited; the UI
+presents it as a non-selectable current value. The `not_closed` list scope
+remains a separate read contract that excludes canonical `closed`.
 
 Regional routing configuration is replaced through the typed
 `TicketConfigurationUpdate` command. Region keys are normalized to lowercase.
@@ -227,7 +239,7 @@ provenance verifier from canonical records. It never re-enables a legacy writer
 or infers lifecycle authority from CRM, tags, templates, cached UI state, or
 communication delivery.
 
-Migration 515 is also the idempotent drift repair for the retired `resolved`
+Migration 517 is also the idempotent drift repair for the retired `resolved`
 status: rerunning it updates only exact legacy status values that reappeared and
 leaves canonical `closed` rows untouched.
 

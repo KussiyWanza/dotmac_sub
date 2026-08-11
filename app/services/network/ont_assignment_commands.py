@@ -20,6 +20,42 @@ from app.models.audit import AuditActorType
 from app.models.network import OLTDevice, OntAssignment, OntUnit, PonPort
 from app.services.audit_adapter import stage_audit_event
 from app.services.network._common import SubscriberValidator
+from app.services.owner_commands import (
+    CommandContext,
+    OwnerCommandDefinition,
+    execute_owner_command,
+)
+
+_REASSIGN_DEFINITION = OwnerCommandDefinition(
+    owner="network.ont_assignment_commands",
+    concern="normal explicit ONT-to-subscription assignments",
+    name="reassign_active_ont",
+)
+
+_CONFIG_FIELDS = (
+    "wan_mode",
+    "ip_mode",
+    "static_ip",
+    "static_gateway",
+    "static_subnet",
+    "static_dns",
+    "pppoe_username",
+    "pppoe_password",
+    "wifi_ssid",
+    "wifi_password",
+    "mgmt_ip_mode",
+    "mgmt_ip_address",
+    "mgmt_subnet",
+    "mgmt_gateway",
+    "lan_ip",
+    "lan_subnet",
+    "lan_dhcp_enabled",
+    "lan_dhcp_start",
+    "lan_dhcp_end",
+    "wifi_enabled",
+    "wifi_security_mode",
+    "wifi_channel",
+)
 
 
 class OntAssignmentCommandError(ValueError):
@@ -48,6 +84,31 @@ class OntAssignmentReleaseResult:
     ont_unit_id: uuid.UUID
     assignment_id: uuid.UUID
     released_at: datetime
+    replayed: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ReassignActiveOntCommand:
+    context: CommandContext
+    subscriber_id: uuid.UUID
+    subscription_id: uuid.UUID
+    current_assignment_id: uuid.UUID
+    target_ont_unit_id: uuid.UUID
+
+
+@dataclass(frozen=True, slots=True)
+class ReassignActiveOntResult:
+    old_assignment_id: uuid.UUID
+    old_ont_unit_id: uuid.UUID
+    old_serial_number: str
+    new_assignment_id: uuid.UUID
+    new_ont_unit_id: uuid.UUID
+    new_serial_number: str
+    subscription_id: uuid.UUID
+    subscriber_id: uuid.UUID
+    olt_id: uuid.UUID
+    olt_name: str
+    pon_port_id: uuid.UUID
     replayed: bool = False
 
 
@@ -206,6 +267,273 @@ class OntAssignmentCommands:
                 status_code=409,
             )
         return ont, pon, olt
+
+    @staticmethod
+    def _active_subscription_assignment(
+        db: Session,
+        *,
+        subscription_id: uuid.UUID,
+    ) -> OntAssignment | None:
+        return db.scalars(
+            select(OntAssignment)
+            .where(
+                OntAssignment.subscription_id == subscription_id,
+                OntAssignment.active.is_(True),
+            )
+            .order_by(OntAssignment.id)
+            .with_for_update()
+        ).first()
+
+    @staticmethod
+    def _validate_active_customer_service(
+        db: Session,
+        *,
+        subscriber_id: uuid.UUID,
+        subscription_id: uuid.UUID,
+        validator: SubscriberValidator | None,
+    ) -> None:
+        if validator is None:
+            raise OntAssignmentCommandError(
+                "Subscription validation is unavailable",
+                status_code=503,
+            )
+        try:
+            resolved_subscription, resolved_subscriber = (
+                validator.validate_active_assignment_subscription(
+                    db,
+                    subscription_id=subscription_id,
+                    subscriber_id=subscriber_id,
+                )
+            )
+        except HTTPException as exc:
+            raise OntAssignmentCommandError(
+                str(exc.detail), status_code=exc.status_code
+            ) from exc
+        if (
+            _uuid(resolved_subscription, "subscription_id") != subscription_id
+            or _uuid(resolved_subscriber, "subscriber_id") != subscriber_id
+        ):
+            raise OntAssignmentCommandError(
+                "Subscription does not belong to the selected subscriber",
+                status_code=409,
+            )
+
+    def reassign_active_ont(
+        self,
+        db: Session,
+        *,
+        command: ReassignActiveOntCommand,
+    ) -> ReassignActiveOntResult:
+        """Atomically release the current ONT and assign another inventory ONT."""
+
+        def operation() -> ReassignActiveOntResult:
+            return self._reassign_active_ont_locked(db, command=command)
+
+        return execute_owner_command(
+            db,
+            definition=_REASSIGN_DEFINITION,
+            context=command.context,
+            operation=operation,
+        )
+
+    def _reassign_active_ont_locked(
+        self,
+        db: Session,
+        *,
+        command: ReassignActiveOntCommand,
+    ) -> ReassignActiveOntResult:
+        self._validate_active_customer_service(
+            db,
+            subscriber_id=command.subscriber_id,
+            subscription_id=command.subscription_id,
+            validator=self._subscriber_validator,
+        )
+        current = db.scalar(
+            select(OntAssignment)
+            .where(OntAssignment.id == command.current_assignment_id)
+            .with_for_update()
+        )
+        if current is None:
+            raise OntAssignmentCommandError(
+                "Current ONT assignment was not found", status_code=404
+            )
+        current_ont = db.scalar(
+            select(OntUnit).where(OntUnit.id == current.ont_unit_id).with_for_update()
+        )
+        if current_ont is None:
+            raise OntAssignmentCommandError(
+                "Current ONT was not found", status_code=404
+            )
+
+        target_ont = db.scalar(
+            select(OntUnit)
+            .where(OntUnit.id == command.target_ont_unit_id)
+            .with_for_update()
+        )
+        if target_ont is None:
+            raise OntAssignmentCommandError(
+                "Selected ONT is not eligible for reassignment", status_code=404
+            )
+        if target_ont.pon_port_id is None or target_ont.olt_device_id is None:
+            raise OntAssignmentCommandError(
+                "Selected ONT does not have an exact OLT/PON identity",
+                status_code=409,
+            )
+        if target_ont.id == current_ont.id and current.active:
+            pon = db.get(PonPort, current.pon_port_id)
+            olt = db.get(OLTDevice, target_ont.olt_device_id)
+            if pon is None or olt is None:
+                raise OntAssignmentCommandError(
+                    "Current ONT assignment no longer resolves its OLT/PON",
+                    status_code=409,
+                )
+            return ReassignActiveOntResult(
+                old_assignment_id=current.id,
+                old_ont_unit_id=current_ont.id,
+                old_serial_number=current_ont.serial_number,
+                new_assignment_id=current.id,
+                new_ont_unit_id=target_ont.id,
+                new_serial_number=target_ont.serial_number,
+                subscription_id=command.subscription_id,
+                subscriber_id=command.subscriber_id,
+                olt_id=olt.id,
+                olt_name=olt.name,
+                pon_port_id=pon.id,
+                replayed=True,
+            )
+        target_active = db.scalars(
+            select(OntAssignment)
+            .where(
+                OntAssignment.ont_unit_id == target_ont.id,
+                OntAssignment.active.is_(True),
+            )
+            .order_by(OntAssignment.id)
+            .with_for_update()
+        ).all()
+        if len(target_active) > 1:
+            raise OntAssignmentCommandError(
+                "Selected ONT has ambiguous active assignment state",
+                status_code=409,
+            )
+        if target_active:
+            existing = target_active[0]
+            if (
+                existing.subscription_id == command.subscription_id
+                and existing.subscriber_id == command.subscriber_id
+                and not current.active
+            ):
+                pon = db.get(PonPort, existing.pon_port_id)
+                olt = db.get(OLTDevice, target_ont.olt_device_id)
+                if pon is None or olt is None:
+                    raise OntAssignmentCommandError(
+                        "Replayed ONT assignment no longer resolves its OLT/PON",
+                        status_code=409,
+                    )
+                return ReassignActiveOntResult(
+                    old_assignment_id=current.id,
+                    old_ont_unit_id=current_ont.id,
+                    old_serial_number=current_ont.serial_number,
+                    new_assignment_id=existing.id,
+                    new_ont_unit_id=target_ont.id,
+                    new_serial_number=target_ont.serial_number,
+                    subscription_id=command.subscription_id,
+                    subscriber_id=command.subscriber_id,
+                    olt_id=olt.id,
+                    olt_name=olt.name,
+                    pon_port_id=pon.id,
+                    replayed=True,
+                )
+            raise OntAssignmentCommandError(
+                "Selected ONT is already actively assigned", status_code=409
+            )
+
+        active_for_subscription = self._active_subscription_assignment(
+            db,
+            subscription_id=command.subscription_id,
+        )
+        if active_for_subscription is None or active_for_subscription.id != current.id:
+            raise OntAssignmentCommandError(
+                "Current ONT assignment is stale; refresh and try again",
+                status_code=409,
+            )
+        if (
+            current.subscriber_id != command.subscriber_id
+            or current.subscription_id != command.subscription_id
+        ):
+            raise OntAssignmentCommandError(
+                "Current ONT assignment does not match this subscriber and subscription",
+                status_code=409,
+            )
+
+        old_config = {field: getattr(current, field) for field in _CONFIG_FIELDS}
+        old_notes = current.notes
+        self.release(
+            db,
+            assignment_id=current.id,
+            reason="ont_reassignment",
+            actor_id=command.context.actor,
+            source="admin_subscription_change_ont",
+            commit=False,
+        )
+        created = self.assign(
+            db,
+            ont_unit_id=target_ont.id,
+            subscription_id=command.subscription_id,
+            subscriber_id=command.subscriber_id,
+            service_address_id=current.service_address_id,
+            pon_port_id=target_ont.pon_port_id,
+            work_order_mirror_id=current.work_order_mirror_id,
+            notes=old_notes,
+            actor_id=command.context.actor,
+            source="admin_subscription_change_ont",
+            commit=False,
+        )
+        new_assignment = created.assignment
+        for field, value in old_config.items():
+            setattr(new_assignment, field, value)
+        db.flush()
+        target_pon = db.get(PonPort, created.pon_port_id)
+        target_olt = db.get(OLTDevice, created.olt_id)
+        if target_pon is None or target_olt is None:
+            raise OntAssignmentCommandError(
+                "New ONT assignment does not resolve its OLT/PON", status_code=409
+            )
+        stage_audit_event(
+            db,
+            action="network.ont_assignment.reassign",
+            entity_type="ont_assignment",
+            entity_id=str(new_assignment.id),
+            actor_type=_actor_type(command.context.actor),
+            actor_id=command.context.actor,
+            metadata={
+                "source": "admin_subscription_change_ont",
+                "exact_result": {
+                    "old_assignment_id": str(current.id),
+                    "old_ont_unit_id": str(current_ont.id),
+                    "new_assignment_id": str(new_assignment.id),
+                    "new_ont_unit_id": str(target_ont.id),
+                    "subscription_id": str(command.subscription_id),
+                    "subscriber_id": str(command.subscriber_id),
+                    "olt_id": str(target_olt.id),
+                    "pon_port_id": str(target_pon.id),
+                    "replayed": False,
+                },
+            },
+        )
+        return ReassignActiveOntResult(
+            old_assignment_id=current.id,
+            old_ont_unit_id=current_ont.id,
+            old_serial_number=current_ont.serial_number,
+            new_assignment_id=new_assignment.id,
+            new_ont_unit_id=target_ont.id,
+            new_serial_number=target_ont.serial_number,
+            subscription_id=command.subscription_id,
+            subscriber_id=command.subscriber_id,
+            olt_id=target_olt.id,
+            olt_name=target_olt.name,
+            pon_port_id=target_pon.id,
+            replayed=False,
+        )
 
     @staticmethod
     def _check_capacity(db: Session, pon: PonPort, *, creating: bool) -> None:

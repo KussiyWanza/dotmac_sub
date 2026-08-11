@@ -138,7 +138,7 @@
         if (item.last_location_at) {
             html += '<div style="font-size:11px;opacity:0.6;margin-top:4px">' + new Date(item.last_location_at).toLocaleString() + '</div>';
         }
-        html += '<a href="/admin/dispatch/movement-playback" style="display:inline-block;margin-top:6px;font-size:12px;color:#f97316;font-weight:500">Movement playback &rarr;</a>';
+        html += '<a href="/admin/dispatch/movement-playback?technician_id=' + encodeURIComponent(item.technician_id) + '" style="display:inline-block;margin-top:6px;font-size:12px;color:#f97316;font-weight:500">Movement playback &rarr;</a>';
         return html;
     }
 
@@ -214,6 +214,7 @@
         if (item.detail) popup += '<div style="font-size:12px;opacity:0.75">' + escapeHtml(item.detail) + '</div>';
         if (item.status) popup += '<div style="font-size:11px;margin-top:3px;text-transform:capitalize">' + escapeHtml(item.status.replace(/_/g, ' ')) + '</div>';
         if (item.href) popup += '<a href="' + escapeHtml(item.href) + '" style="display:inline-block;margin-top:6px;font-size:12px;color:#f97316;font-weight:500">Open work order &rarr;</a>';
+        if (item.kind === 'work_order') popup += '<a href="/admin/dispatch/movement-playback?work_order=' + encodeURIComponent(item.id) + '" style="display:inline-block;margin:6px 0 0 10px;font-size:12px;color:#f97316;font-weight:500">Movement playback &rarr;</a>';
         searchMarker = L.marker(latlng).addTo(map).bindPopup(popup).openPopup();
     }
 

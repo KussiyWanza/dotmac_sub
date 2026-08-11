@@ -105,6 +105,7 @@ def field_live_map_search(
 def field_movement_playback(
     request: Request,
     work_order: str | None = Query(default=None),
+    technician_id: str | None = Query(default=None),
     db: Session = Depends(get_db),
 ):
     context = _ctx(request, db, "field-movement-playback")
@@ -112,6 +113,7 @@ def field_movement_playback(
         {
             "work_orders": field_maps_service.list_movement_work_orders(db),
             "selected_work_order": work_order,
+            "selected_technician_id": technician_id,
         }
     )
     return templates.TemplateResponse("admin/dispatch/movement_playback.html", context)

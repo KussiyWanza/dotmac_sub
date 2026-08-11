@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import HTTPException
 from sqlalchemy import case, select
@@ -13,12 +13,25 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from app.models.catalog import Subscription, SubscriptionStatus
-from app.models.network import PonPort
+from app.models.network import OntAssignment, PonPort
 from app.models.ont_autofind import OltAutofindCandidate
 from app.services import network as network_service
 from app.services import subscriber as subscriber_service
 from app.services.common import coerce_uuid
 from app.services.network.olt_autofind import parse_fsp_parts
+from app.services.network.ont_assignment_commands import (
+    OntAssignmentCommandError,
+    ReassignActiveOntCommand,
+)
+from app.services.network.ont_reassignment_read import (
+    active_assignment_for_reassignment,
+    eligible_reassignment_targets,
+)
+from app.services.network_subscriber_bridge import (
+    AssignmentSubscriptionSnapshot,
+    assignment_subscription_snapshot,
+)
+from app.services.owner_commands import CommandContext
 from app.services.web_network_ont_autofind import (
     _normalize_serial,
     _normalized_serial_expr,
@@ -58,6 +71,19 @@ class AssignmentSubscriptionOption:
         return f"Inactive ({status_name})"
 
 
+@dataclass(frozen=True, slots=True)
+class ChangeOntFormContext:
+    subscription: AssignmentSubscriptionSnapshot | None
+    current_assignment: OntAssignment | None
+    eligible_onts: tuple[Any, ...]
+    selected_ont_id: str | None = None
+    error: str | None = None
+
+    @property
+    def not_found(self) -> bool:
+        return self.subscription is None
+
+
 def assignment_subscription_options(
     db: Session, *, subscriber_id: UUID
 ) -> tuple[AssignmentSubscriptionOption, ...]:
@@ -88,6 +114,119 @@ def assignment_subscription_options(
             status=subscription.status,
         )
         for subscription in subscriptions
+    )
+
+
+def change_ont_form_context(
+    db: Session,
+    *,
+    subscription_id: str,
+    selected_ont_id: str | None = None,
+    error: str | None = None,
+) -> ChangeOntFormContext:
+    subscription_uuid = coerce_uuid(subscription_id)
+    if subscription_uuid is None:
+        return ChangeOntFormContext(
+            subscription=None,
+            current_assignment=None,
+            eligible_onts=(),
+            error="Subscription not found",
+        )
+    subscription = assignment_subscription_snapshot(db, subscription_uuid)
+    if subscription is None:
+        return ChangeOntFormContext(
+            subscription=None,
+            current_assignment=None,
+            eligible_onts=(),
+            error="Subscription not found",
+        )
+    assignment_choice = active_assignment_for_reassignment(
+        db,
+        subscription_id=subscription.id,
+    )
+    assignment = assignment_choice.assignment
+    resolved_error = error or assignment_choice.error
+    eligible_onts = eligible_reassignment_targets(
+        db,
+        exclude_ont_unit_id=assignment.ont_unit_id if assignment else None,
+    )
+    return ChangeOntFormContext(
+        subscription=subscription,
+        current_assignment=assignment,
+        eligible_onts=eligible_onts,
+        selected_ont_id=selected_ont_id,
+        error=resolved_error,
+    )
+
+
+def reassign_subscription_ont_from_form(
+    db: Session,
+    *,
+    subscription_id: str,
+    form,
+    actor_id: str | None,
+) -> tuple[bool, str]:
+    context = change_ont_form_context(
+        db,
+        subscription_id=subscription_id,
+        selected_ont_id=str(form.get("target_ont_unit_id", "") or ""),
+    )
+    if context.subscription is None:
+        return False, "Subscription not found"
+    if context.current_assignment is None:
+        return False, context.error or "No single active ONT assignment is available."
+    if not actor_id:
+        return False, "Authenticated actor required"
+    target_raw = str(form.get("target_ont_unit_id", "") or "").strip()
+    if not target_raw:
+        return False, "Select the replacement ONT from inventory."
+    if str(form.get("confirm_change", "") or "").strip() != "change_ont":
+        return False, "Confirm the ONT access-path change before continuing."
+    target_id = coerce_uuid(target_raw)
+    if target_id is None:
+        return False, "Select a valid replacement ONT from inventory."
+    current_assignment_id = coerce_uuid(
+        str(form.get("current_assignment_id", "") or "").strip()
+    )
+    if current_assignment_id is None:
+        return (
+            False,
+            "Current ONT assignment evidence is missing. Refresh and try again.",
+        )
+    eligible_ids = {choice.ont_unit_id for choice in context.eligible_onts}
+    if target_id not in eligible_ids:
+        return False, "Selected ONT is no longer eligible. Refresh and try again."
+    subscription_uuid = context.subscription.id
+    subscriber_uuid = context.subscription.subscriber_id
+    confirmed_assignment_uuid = current_assignment_id
+    command_id = uuid4()
+    db.rollback()
+    try:
+        network_service.ont_assignment_commands.reassign_active_ont(
+            db,
+            command=ReassignActiveOntCommand(
+                context=CommandContext(
+                    command_id=command_id,
+                    correlation_id=command_id,
+                    actor=actor_id,
+                    scope=f"subscription:{subscription_uuid}",
+                    reason="admin_subscription_change_ont",
+                    idempotency_key=(
+                        "admin_subscription_change_ont:"
+                        f"{confirmed_assignment_uuid}:{target_id}"
+                    ),
+                ),
+                subscriber_id=subscriber_uuid,
+                subscription_id=subscription_uuid,
+                current_assignment_id=confirmed_assignment_uuid,
+                target_ont_unit_id=target_id,
+            ),
+        )
+    except OntAssignmentCommandError as exc:
+        return False, str(exc)
+    return (
+        True,
+        "ONT assignment changed. The access path now resolves through the selected ONT.",
     )
 
 
