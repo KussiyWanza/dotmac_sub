@@ -102,12 +102,12 @@ def upgrade() -> None:
             sa.text(
                 f"""
                 INSERT INTO {TABLE}
-                    (id, code, label, unit, amount, is_active, sort_order,
+                    (id, code, label, unit, amount, is_active, sort_order, version,
                      created_at, updated_at)
                 SELECT CAST(:id AS uuid), CAST(:code AS varchar),
                        CAST(:label AS varchar), CAST(:unit AS varchar),
                        CAST(NULL AS numeric), true,
-                       CAST(:sort_order AS integer), NOW(), NOW()
+                       CAST(:sort_order AS integer), 1, NOW(), NOW()
                 WHERE NOT EXISTS (
                     SELECT 1 FROM {TABLE} WHERE code = CAST(:code AS varchar)
                 )
@@ -117,9 +117,9 @@ def upgrade() -> None:
             else sa.text(
                 f"""
                 INSERT INTO {TABLE}
-                    (id, code, label, unit, amount, is_active, sort_order,
+                    (id, code, label, unit, amount, is_active, sort_order, version,
                      created_at, updated_at)
-                SELECT :id, :code, :label, :unit, NULL, 1, :sort_order,
+                SELECT :id, :code, :label, :unit, NULL, 1, :sort_order, 1,
                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
                 WHERE NOT EXISTS (
                     SELECT 1 FROM {TABLE} WHERE code = :code

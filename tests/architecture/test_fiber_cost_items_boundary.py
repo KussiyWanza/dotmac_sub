@@ -23,6 +23,7 @@ CALCULATION_CONTRACT = ROOT / "app/schemas/fiber_cost_calculation.py"
 COST_TEMPLATE = ROOT / "templates/admin/network/fiber/cost_items.html"
 MAP_TEMPLATE = ROOT / "templates/admin/network/fiber/map.html"
 WEB_READ_SERVICE = ROOT / "app/services/web_network_fiber.py"
+MIGRATION = ROOT / "alembic/versions/519_fiber_cost_items.py"
 
 
 def test_fiber_cost_writes_are_one_atomic_owner_command() -> None:
@@ -37,6 +38,14 @@ def test_fiber_cost_writes_are_one_atomic_owner_command() -> None:
     assert "command.expected_version" in source
     assert '"before": _audit_values(before)' in source
     assert '"after": _audit_values(outcome)' in source
+
+
+def test_fiber_cost_migration_seeds_the_required_version_explicitly() -> None:
+    source = MIGRATION.read_text(encoding="utf-8")
+
+    assert source.count("sort_order, version,") == 2
+    assert "CAST(:sort_order AS integer), 1, NOW(), NOW()" in source
+    assert ":sort_order, 1,\n                       CURRENT_TIMESTAMP" in source
 
 
 def test_fiber_cost_manifest_declares_the_runtime_owner_boundary() -> None:
