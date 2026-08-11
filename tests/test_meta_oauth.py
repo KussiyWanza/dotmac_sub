@@ -194,7 +194,7 @@ def test_candidate_query_excludes_page_and_instagram_token_classes(db_session):
 
 
 def test_a_plaintext_client_secret_is_now_usable_and_never_echoed(
-    db_session, monkeypatch, command, token
+    db_session, monkeypatch
 ):
     """The reference requirement is gone, because encryption replaced it.
 
@@ -213,6 +213,9 @@ def test_a_plaintext_client_secret_is_now_usable_and_never_echoed(
     secret is, it never reaches a stored error or a log line.
     """
 
+    observed_at = datetime(2026, 8, 3, 12, 0, tzinfo=UTC)
+    token = _token(db_session, expires_at=observed_at + timedelta(days=1))
+    command = _command(db_session, token, observed_at=observed_at)
     transport = _SuccessfulTransport()
     _configure_meta(monkeypatch, secret_setting="plaintext-client-secret")
     monkeypatch.setattr(meta_oauth, "meta_oauth_refresh_transport", transport)
