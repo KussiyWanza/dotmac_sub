@@ -28,6 +28,7 @@ from app.models.team_inbox import (
 )
 from app.services import (
     conversation_ticket_handoff,
+    service_team_lifecycle,
     subscriber_summary,
     team_inbox_contact_links,
     team_inbox_filters,
@@ -443,6 +444,32 @@ def list_agent_options(db: Session) -> tuple[InboxAgentOption, ...]:
             ),
         )
         for row in rows
+    )
+
+
+def list_service_team_options(db: Session) -> tuple[InboxServiceTeamOption, ...]:
+    """Return the active service-team selector owned by service-team lifecycle."""
+
+    return tuple(
+        InboxServiceTeamOption(id=team_id, name=name)
+        for team_id, name in service_team_lifecycle.list_active_team_options(db)
+    )
+
+
+def list_actor_service_team_options(
+    db: Session,
+    actor_person_id: UUID | None,
+) -> tuple[InboxServiceTeamOption, ...]:
+    """Return active teams the current staff principal may claim work into."""
+
+    if actor_person_id is None:
+        return ()
+    resolution = service_team_lifecycle.resolve_staff_service_teams(db, actor_person_id)
+    if resolution.kind is not service_team_lifecycle.ServiceTeamResolutionKind.resolved:
+        return ()
+    team_ids = set(resolution.team_ids)
+    return tuple(
+        option for option in list_service_team_options(db) if option.id in team_ids
     )
 
 

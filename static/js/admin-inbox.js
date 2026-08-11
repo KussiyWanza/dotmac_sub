@@ -188,6 +188,8 @@
       shortcutHelpOpen: false,
       commandQuery: "",
       presenceText: "",
+      typingAgents: {},
+      typingPruneTimer: null,
       newMessagesAvailable: false,
       newListActivityAvailable: false,
       toastMessage: "",
@@ -455,6 +457,7 @@
             const thread = target.querySelector("[data-conversation-thread]");
             if (thread) {
               this.selectedId = thread.dataset.conversationThread || "";
+              this.clearTypingPresence();
               this.subscribeVisibleTopics();
               this.updateSelectedHighlight();
               this.scrollThread();
@@ -505,6 +508,7 @@
           const selected =
             url.searchParams.get("conversation_id") || url.searchParams.get("c");
           this.selectedId = selected || "";
+          this.clearTypingPresence();
           this.requestInboxList(url, {
             intent: "history",
             historyMode: "none",
@@ -567,6 +571,7 @@
 
       showList() {
         this.mode = "list";
+        this.clearTypingPresence();
         document
           .querySelector("[data-triage-shell]")
           ?.setAttribute("data-triage-mode", "list");
@@ -588,6 +593,7 @@
         this.selectedId = id;
         this.mode = "detail";
         this.newMessagesAvailable = false;
+        this.clearTypingPresence();
         document
           .querySelector("[data-triage-shell]")
           ?.setAttribute("data-triage-mode", "detail");
@@ -1234,10 +1240,12 @@
         });
         this.socket.addEventListener("close", () => {
           this.realtimeConnected = false;
+          this.clearTypingPresence();
           this.scheduleReconnect();
         });
         this.socket.addEventListener("error", () => {
           this.realtimeConnected = false;
+          this.clearTypingPresence();
         });
       },
 
@@ -1274,13 +1282,66 @@
         );
       },
 
+      clearTypingPresence() {
+        this.typingAgents = {};
+        this.presenceText = "";
+        window.clearTimeout(this.typingPruneTimer);
+        this.typingPruneTimer = null;
+      },
+
+      updateTypingPresenceText(now = Date.now()) {
+        Object.entries(this.typingAgents).forEach(([userId, agent]) => {
+          if (!agent || agent.expiresAt <= now) delete this.typingAgents[userId];
+        });
+        const names = Object.values(this.typingAgents).map((agent) => agent.name);
+        if (!names.length) {
+          this.presenceText = "";
+        } else if (names.length === 1) {
+          this.presenceText = `${names[0]} is replying`;
+        } else if (names.length === 2) {
+          this.presenceText = `${names[0]} and ${names[1]} are replying`;
+        } else {
+          this.presenceText = `${names[0]} and ${names.length - 1} others are replying`;
+        }
+      },
+
+      scheduleTypingPrune() {
+        window.clearTimeout(this.typingPruneTimer);
+        const expiries = Object.values(this.typingAgents)
+          .map((agent) => agent.expiresAt)
+          .filter(Boolean);
+        if (!expiries.length) {
+          this.typingPruneTimer = null;
+          return;
+        }
+        const delay = Math.max(50, Math.min(...expiries) - Date.now());
+        this.typingPruneTimer = window.setTimeout(() => {
+          this.updateTypingPresenceText();
+          this.scheduleTypingPrune();
+        }, delay);
+      },
+
       handleRealtimeEvent(envelope) {
         const eventType = envelope.event || envelope.type;
         const data = envelope.data || {};
         if (eventType === "heartbeat" || eventType === "connection_ack") return;
         if (eventType === "user_typing") {
-          if (data.conversation_id === this.selectedId && data.user_id !== this.actorId) {
-            this.presenceText = data.is_typing ? "Another agent is replying" : "";
+          if (
+            data.conversation_id === this.selectedId &&
+            data.user_id !== this.actorId
+          ) {
+            const agentName = String(data.agent_name || "").trim();
+            const userId = String(data.user_id || agentName || "unknown");
+            if (data.is_typing) {
+              this.typingAgents[userId] = {
+                name: agentName || "Another agent",
+                expiresAt: Date.now() + 3500,
+              };
+            } else {
+              delete this.typingAgents[userId];
+            }
+            this.updateTypingPresenceText();
+            this.scheduleTypingPrune();
           }
           return;
         }

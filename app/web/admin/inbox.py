@@ -337,6 +337,11 @@ def team_inbox_queue(
             "activity_from": projection.activity_from,
             "activity_to": projection.activity_to,
             "service_team_options": projection.service_team_options,
+            "actor_service_team_options": (
+                team_inbox_projection.list_actor_service_team_options(
+                    db, actor_person_id
+                )
+            ),
             "agent_options": projection.agent_options,
             "agent_presence": projection.agent_presence,
             "assignment_counts": projection.assignment_counts,
@@ -681,6 +686,12 @@ def team_inbox_detail(
             ),
             "priority_options": projection.priority_options,
             "agent_options": team_inbox_projection.list_agent_options(db),
+            "service_team_options": team_inbox_projection.list_service_team_options(db),
+            "actor_service_team_options": (
+                team_inbox_projection.list_actor_service_team_options(
+                    db, actor_person_id
+                )
+            ),
             "can_manage_leads": can(request, "crm:lead:write"),
         }
         if projection is not None

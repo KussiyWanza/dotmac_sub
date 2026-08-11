@@ -106,6 +106,7 @@ async def _handle_client_message(
                     event=EventType.USER_TYPING,
                     data={
                         "user_id": user_id,
+                        "agent_name": auth.get("display_name"),
                         "conversation_id": conversation_id,
                         "is_typing": message.data.get("is_typing", True)
                         if message.data
