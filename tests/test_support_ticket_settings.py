@@ -83,11 +83,13 @@ def test_ticket_settings_reject_statuses_outside_lifecycle_vocabulary(db_session
 
 
 def test_ticket_settings_canonicalize_legacy_resolved_to_closed(db_session):
-    support_ticket_settings_service.update_options(
+    support_ticket_settings_service.update_ticket_configuration(
         db_session,
-        statuses=["open", "resolved", "closed"],
-        priorities=["normal"],
-        ticket_types=["incident"],
+        _configuration_command(
+            statuses=("open", "resolved", "closed"),
+            priorities=("normal",),
+            ticket_types=("incident",),
+        ),
     )
 
     assert support_ticket_settings_service.list_status_options(db_session) == [
