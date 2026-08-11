@@ -1,0 +1,28 @@
+# Modules that can construct an unallocated (invoice_id NULL) account-credit
+# ledger entry. Shrink-only: adding a line needs a reason, removing one is free.
+#
+# Account credit is minted by app/services/billing/account_credit.py —
+# AccountCreditApplications.record_credit — which offers it to the account's
+# open receivables in the same transaction. Anything else on this list is a
+# standing exception, and each one is here for a stated reason.
+
+# The account-credit owner. The one intended writer.
+app/services/billing/account_credit.py
+
+# The persistence writer itself: LedgerEntries.create constructs the row from a
+# validated payload. Every entry above passes through here by design.
+app/services/billing/ledger.py
+
+# A different funding instrument. Credit-note credit is applied through
+# CreditNoteApplication, not PaymentAllocation, so the account-credit owner has
+# nothing to allocate it from. Its offer-on-issue consequence belongs to the
+# credit-note owner and is not yet wired — see the PR that added this file.
+app/services/billing/credit_notes.py
+
+# Invoice-linked payment credit (_create_payment_ledger_entry). Caught only
+# because its invoice link is a conditional expression the scanner cannot prove
+# non-NULL; the unallocated surplus path here already delegates to the owner.
+app/services/billing/payments.py
+
+# Migration-era balance reconstruction, not a live billing path.
+app/services/cutover_balance_audit.py
