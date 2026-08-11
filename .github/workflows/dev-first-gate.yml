@@ -25,10 +25,18 @@ jobs:
       - name: Validate the head branch
         env:
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
         run: |
           set -euo pipefail
+
+          # This gate protects production. Pull requests into dev are the
+          # expected first step of the promotion flow and must not be blocked.
+          if [[ "$BASE_REF" != "main" ]]; then
+            echo "Allowed: PR #${PR_NUMBER} targets '${BASE_REF}'; the Dev-first gate applies only to main."
+            exit 0
+          fi
 
           # An override exists so a production incident is never blocked by this
           # gate. It is deliberately visible: the label is on the PR, and the
