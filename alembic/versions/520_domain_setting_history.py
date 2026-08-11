@@ -13,8 +13,8 @@ No backfill here either, and none is possible: the transitions that already
 happened were never recorded anywhere. The table starts empty and fills from the
 next change onward.
 
-Revision ID: 519_domain_setting_history
-Revises: 518_retire_splynx_staging_schema
+Revision ID: 520_domain_setting_history
+Revises: 519_fiber_cost_items
 Create Date: 2026-08-11
 """
 
@@ -26,8 +26,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "519_domain_setting_history"
-down_revision: str | None = "518_retire_splynx_staging_schema"
+revision: str = "520_domain_setting_history"
+down_revision: str | None = "519_fiber_cost_items"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
