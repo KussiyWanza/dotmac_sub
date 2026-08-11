@@ -244,6 +244,10 @@ from app.models.dispatch import (  # noqa: F401
     TechnicianSkill,
     WorkOrderAssignmentQueue,
 )
+from app.models.domain_setting_history import (  # noqa: F401
+    DomainSettingHistory,
+    SettingChangeAction,
+)
 from app.models.domain_settings import (  # noqa: F401
     DomainSetting,
     SettingDomain,
