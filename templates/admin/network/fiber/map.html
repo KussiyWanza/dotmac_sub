@@ -597,8 +597,12 @@
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script>
 (function() {
-    // Cost settings from server
-    const costSettings = {{ cost_settings | tojson | safe }};
+    // Whether an estimate is possible, and in what currency. The AMOUNTS are
+    // deliberately absent: the server prices a route and returns the breakdown
+    // with it, so the arithmetic has one home. This page used to receive four
+    // numbers and multiply them itself, which is how a cost model came to live
+    // in a template.
+    const costState = {{ cost_state | tojson | safe }};
 
     function escapeHtml(value) {
         return String(value ?? '')
@@ -628,6 +632,7 @@
     let planCustomerLatLng = null;
     let planEstimate = null;
     let planMessage = null;
+    let planRequestRevision = 0;
     const allMarkers = [];
     const allFeatures = [];  // For search functionality
 
@@ -899,6 +904,7 @@
     }
 
     function clearPlanMarkers() {
+        planRequestRevision += 1;
         if (planMarker) { map.removeLayer(planMarker); planMarker = null; }
         if (planLine) { map.removeLayer(planLine); planLine = null; }
         if (planCabinetMarker) { map.removeLayer(planCabinetMarker); planCabinetMarker = null; }
@@ -920,44 +926,81 @@
             '<p class="text-sm text-slate-500 dark:text-slate-400">Click anywhere on the map to list nearby FDH cabinets. Select a cabinet to auto-route or trace a custom path.</p>';
     }
 
-    function buildEstimateHtml(distanceM, distanceLabel, routeLabel) {
-        if (!distanceM) return '';
-        const dropCablePerMeter = costSettings.drop_cable_per_meter;
-        const laborPerMeter = costSettings.labor_per_meter;
-        const ontCost = costSettings.ont_device;
-        const installationBase = costSettings.installation_base;
-        const currency = costSettings.currency;
-        const currencySymbol = currency === 'USD' ? '$' : (currency === 'EUR' ? '€' : (currency === 'GBP' ? '£' : (currency === 'NGN' ? '₦' : currency + ' ')));
+    function currencySymbolFor(currency) {
+        if (currency === 'USD') return '$';
+        if (currency === 'EUR') return '\u20ac';
+        if (currency === 'GBP') return '\u00a3';
+        if (currency === 'NGN') return '\u20a6';
+        return currency + ' ';
+    }
 
-        const materialCost = distanceM * dropCablePerMeter;
-        const laborCost = distanceM * laborPerMeter;
-        const totalEstimate = materialCost + laborCost + ontCost + installationBase;
+    function buildEstimateHtml(distanceLabel, routeLabel, estimate, costStatus) {
+        const header = `
+            <div class="planning-distance">${escapeHtml(distanceLabel)}</div>
+            <div class="text-center text-sm text-slate-500 dark:text-slate-400 mb-4">${escapeHtml(routeLabel)}</div>
+        `;
+
+        if (costStatus === 'loading') {
+            return `
+                ${header}
+                <div class="planning-cost">
+                    <div class="text-sm text-slate-500 dark:text-slate-400">Calculating cost estimate...</div>
+                </div>
+            `;
+        }
+
+        if (costStatus === 'failed') {
+            return `
+                ${header}
+                <div class="planning-cost">
+                    <div class="text-sm text-amber-600 dark:text-amber-400">
+                        Cost estimate service unavailable. Try the route again.
+                    </div>
+                </div>
+            `;
+        }
+
+        // No prices, no estimate. Showing a total built only from the
+        // components that happen to be priced would be a number nobody chose,
+        // which is exactly the defect this replaced.
+        if (!estimate || !estimate.is_complete) {
+            const missing = (estimate && estimate.unpriced) || costState.unpriced || [];
+            const detail = missing.length
+                ? `Unpriced: ${escapeHtml(missing.join(', '))}.`
+                : 'No cost components are configured.';
+            return `
+                ${header}
+                <div class="planning-cost">
+                    <div class="text-sm text-amber-600 dark:text-amber-400">
+                        Cost estimate unavailable. ${detail}
+                        Set prices under Network &rsaquo; Fiber cost items.
+                    </div>
+                </div>
+            `;
+        }
+
+        const symbol = escapeHtml(currencySymbolFor(estimate.currency));
+        const lines = estimate.lines.map(function (line) {
+            const qty = line.unit === 'per_meter'
+                ? ` (${Number(line.quantity).toFixed(0)}m @ ${symbol}${Number(line.amount).toFixed(2)}/m)`
+                : '';
+            return `
+                <div class="planning-detail">
+                    <span class="planning-detail-label">${escapeHtml(line.label)}${qty}</span>
+                    <span class="planning-detail-value">${symbol}${Number(line.total).toFixed(2)}</span>
+                </div>
+            `;
+        }).join('');
 
         return `
-            <div class="planning-distance">${distanceLabel}</div>
-            <div class="text-center text-sm text-slate-500 dark:text-slate-400 mb-4">${routeLabel}</div>
+            ${header}
             <div class="planning-cost">
-                <div class="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-2">Cost Estimate (${currency})</div>
-                <div class="planning-detail">
-                    <span class="planning-detail-label">Drop Cable (${distanceM.toFixed(0)}m @ ${currencySymbol}${dropCablePerMeter.toFixed(2)}/m)</span>
-                    <span class="planning-detail-value">${currencySymbol}${materialCost.toFixed(2)}</span>
-                </div>
-                <div class="planning-detail">
-                    <span class="planning-detail-label">Labor (@ ${currencySymbol}${laborPerMeter.toFixed(2)}/m)</span>
-                    <span class="planning-detail-value">${currencySymbol}${laborCost.toFixed(2)}</span>
-                </div>
-                <div class="planning-detail">
-                    <span class="planning-detail-label">ONT Device</span>
-                    <span class="planning-detail-value">${currencySymbol}${ontCost.toFixed(2)}</span>
-                </div>
-                <div class="planning-detail">
-                    <span class="planning-detail-label">Installation</span>
-                    <span class="planning-detail-value">${currencySymbol}${installationBase.toFixed(2)}</span>
-                </div>
+                <div class="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-2">Cost Estimate (${escapeHtml(estimate.currency)})</div>
+                ${lines}
                 <hr class="my-2 border-slate-200 dark:border-slate-600">
                 <div class="planning-detail">
                     <span class="planning-detail-label font-semibold">Total Estimate</span>
-                    <span class="planning-detail-value text-violet-600 dark:text-violet-400 font-bold">${currencySymbol}${totalEstimate.toFixed(2)}</span>
+                    <span class="planning-detail-value text-violet-600 dark:text-violet-400 font-bold">${symbol}${Number(estimate.total).toFixed(2)}</span>
                 </div>
             </div>
         `;
@@ -1005,7 +1048,12 @@
 
         const messageHtml = planMessage ? `<div class="mt-3 text-xs text-amber-600 dark:text-amber-400">${escapeHtml(planMessage)}</div>` : '';
         const estimateHtml = planEstimate
-            ? buildEstimateHtml(planEstimate.distance_m, planEstimate.distance_display, planEstimate.route_label)
+            ? buildEstimateHtml(
+                planEstimate.distance_display,
+                planEstimate.route_label,
+                planEstimate.cost_estimate,
+                planEstimate.cost_status
+            )
             : '';
 
         content.innerHTML = `
@@ -1032,6 +1080,7 @@
     }
 
     function selectCabinet(cabinet) {
+        planRequestRevision += 1;
         selectedCabinet = cabinet;
         planEstimate = null;
         planMessage = null;
@@ -1058,6 +1107,8 @@
         planTraceMode = !planTraceMode;
         planMessage = planTraceMode ? 'Click to trace the route, double-click to finish.' : null;
         if (planTraceMode) {
+            planRequestRevision += 1;
+            planEstimate = null;
             if (planLine) { map.removeLayer(planLine); planLine = null; }
             tracePoints = [L.latLng(planCustomerLatLng[0], planCustomerLatLng[1])];
             traceMarkers.forEach(marker => map.removeLayer(marker));
@@ -1067,7 +1118,7 @@
         renderPlanPanel();
     }
 
-    function finishTrace() {
+    async function finishTrace() {
         if (!planTraceMode) return;
         planTraceMode = false;
         if (selectedCabinet) {
@@ -1079,11 +1130,29 @@
         }
         drawTraceLine();
         const distance = calculateLineDistance(tracePoints.map(p => [p.lat, p.lng]));
-        planEstimate = {
+        const requestRevision = ++planRequestRevision;
+        const targetEstimate = {
             distance_m: distance,
             distance_display: formatDistance(distance),
-            route_label: 'manual trace to cabinet'
+            route_label: 'manual trace to cabinet',
+            cost_estimate: null,
+            cost_status: 'loading'
         };
+        planEstimate = targetEstimate;
+        renderPlanPanel();
+        // Priced by the server, like the auto route. Pricing it here would be a
+        // second copy of the cost rule in the layer that got it wrong before.
+        try {
+            const response = await fetch(`/admin/network/fiber-map/cost-estimate?distance_m=${encodeURIComponent(distance)}`);
+            if (!response.ok) throw new Error('Cost estimate request failed');
+            const estimate = await response.json();
+            if (requestRevision !== planRequestRevision || planEstimate !== targetEstimate) return;
+            targetEstimate.cost_estimate = estimate;
+            targetEstimate.cost_status = 'ready';
+        } catch (error) {
+            if (requestRevision !== planRequestRevision || planEstimate !== targetEstimate) return;
+            targetEstimate.cost_status = 'failed';
+        }
         renderPlanPanel();
     }
 
@@ -1113,16 +1182,19 @@
 
     async function autoRouteSelected() {
         if (!selectedCabinet || !planCustomerLatLng) return;
+        const requestRevision = ++planRequestRevision;
+        const cabinetId = selectedCabinet.id;
         planMessage = 'Calculating fiber route...';
         renderPlanPanel();
         const [lat, lng] = planCustomerLatLng;
         try {
-            const response = await fetch(`/admin/network/fiber-map/route?lat=${lat}&lng=${lng}&cabinet_id=${selectedCabinet.id}`);
+            const response = await fetch(`/admin/network/fiber-map/route?lat=${lat}&lng=${lng}&cabinet_id=${cabinetId}`);
             if (!response.ok) {
                 const err = await response.json();
                 throw new Error(err.error || 'No fiber route found');
             }
             const data = await response.json();
+            if (requestRevision !== planRequestRevision) return;
             if (planLine) map.removeLayer(planLine);
             planLine = L.polyline(data.path_coords, {
                 color: '#8b5cf6',
@@ -1133,17 +1205,20 @@
             planEstimate = {
                 distance_m: data.distance_m,
                 distance_display: data.distance_display,
-                route_label: 'via fiber route to cabinet'
+                route_label: 'via fiber route to cabinet',
+                cost_estimate: data.cost_estimate,
+                cost_status: 'ready'
             };
             planMessage = null;
         } catch (e) {
+            if (requestRevision !== planRequestRevision) return;
             planEstimate = null;
             planMessage = e.message || 'Auto route failed. Trace manually instead.';
         }
         renderPlanPanel();
     }
 
-    async function loadPlanOptions(lat, lng) {
+    async function loadPlanOptions(lat, lng, requestRevision) {
         try {
             const response = await fetch(`/admin/network/fiber-map/plan-options?lat=${lat}&lng=${lng}`);
             if (!response.ok) {
@@ -1151,6 +1226,7 @@
                 throw new Error(err.error || 'Failed to find cabinets');
             }
             const data = await response.json();
+            if (requestRevision !== planRequestRevision) return;
             planOptions = data.options || [];
             if (planOptions.length > 0) {
                 selectCabinet(planOptions[0]);
@@ -1158,6 +1234,7 @@
                 renderPlanPanel();
             }
         } catch (e) {
+            if (requestRevision !== planRequestRevision) return;
             planOptions = [];
             planMessage = e.message || 'Failed to load cabinets.';
             renderPlanPanel();
@@ -1179,7 +1256,8 @@
 
         planMessage = 'Finding nearby cabinets...';
         renderPlanPanel();
-        await loadPlanOptions(lat, lng);
+        const requestRevision = ++planRequestRevision;
+        await loadPlanOptions(lat, lng, requestRevision);
     }
 
     // Map click handler

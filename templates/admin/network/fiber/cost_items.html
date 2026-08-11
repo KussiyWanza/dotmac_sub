@@ -1,0 +1,150 @@
+{% extends "layouts/admin.html" %}
+{% from "components/ui/macros.html" import ambient_background, page_header, icon_archive %}
+
+{% block title %}Fiber Cost Items - Admin{% endblock %}
+
+{% block content %}
+{{ ambient_background("violet", "indigo") }}
+<div class="space-y-6">
+    {% call page_header("Fiber Cost Items", subtitle="What a drop installation is priced from. The map estimate sums every active item.", icon=icon_archive(), color="violet", color2="indigo", breadcrumbs=[{"href": "/admin/network", "label": "Network"}, {"href": "/admin/network/fiber-map", "label": "Fiber Map"}, {"href": "", "label": "Cost Items"}]) %}
+    {% endcall %}
+
+    {% if request.query_params.get('error') %}
+    <div class="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-200">
+        {{ request.query_params.get('error') }}
+    </div>
+    {% endif %}
+
+    {% if not is_complete %}
+    <div class="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-900/40 dark:bg-amber-900/20 dark:text-amber-200">
+        {% if unpriced %}
+        The map cannot produce a cost estimate: {{ unpriced | join(', ') }}
+        {{ 'is' if unpriced | length == 1 else 'are' }} active but unpriced.
+        An unpriced item is deliberately not treated as free — a total built from
+        only the priced items would be a number nobody chose.
+        {% else %}
+        The map cannot produce a cost estimate: no cost items are active.
+        {% endif %}
+    </div>
+    {% endif %}
+
+    <div class="grid gap-6 {% if can_write %}lg:grid-cols-3{% endif %}">
+        {% if can_write %}
+        <div class="rounded-xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-800">
+            <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Add Cost Item</h2>
+            <form method="post" action="/admin/network/fiber-cost-items" class="mt-4 space-y-4">
+                {% include "components/forms/csrf_input.html" %}
+                <div>
+                    <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5">Code</label>
+                    <input type="text" name="code" required maxlength="60" pattern="[a-zA-Z][a-zA-Z0-9_ ]*" placeholder="splice_closure"
+                           class="block w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm shadow-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+                    <p class="mt-2 text-xs text-slate-500 dark:text-slate-400">Stable identity. It cannot be changed once set.</p>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5">Label</label>
+                    <input type="text" name="label" required maxlength="120" placeholder="Splice closure"
+                           class="block w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm shadow-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5">Unit</label>
+                    <select name="unit" required
+                            class="block w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm shadow-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+                        {% for option in units %}
+                        <option value="{{ option.value.value }}">{{ option.label }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5">Amount ({{ currency }})</label>
+                    <input type="text" name="amount" inputmode="decimal" placeholder="leave empty if not priced yet"
+                           class="block w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm shadow-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+                    <p class="mt-2 text-xs text-slate-500 dark:text-slate-400">Empty means not priced yet, which is different from a price of 0.</p>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5">Sort Order</label>
+                    <input type="number" name="sort_order" value="100" min="0" max="10000"
+                           class="block w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm shadow-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5">Description</label>
+                    <textarea name="description" rows="3" maxlength="2000"
+                              class="block w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm shadow-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white"></textarea>
+                </div>
+                <button type="submit"
+                        class="inline-flex w-full items-center justify-center rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white hover:bg-primary-700">
+                    Add Cost Item
+                </button>
+            </form>
+        </div>
+        {% endif %}
+
+        <div class="{% if can_write %}lg:col-span-2{% endif %} rounded-xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-800">
+            <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Cost Items</h2>
+            {% if not items %}
+            <p class="mt-4 text-sm text-slate-500 dark:text-slate-400">No cost items yet.</p>
+            {% else %}
+            <div class="mt-4 space-y-4">
+                {% for item in items %}
+                {% if can_write %}
+                <form method="post" action="/admin/network/fiber-cost-items/{{ item.item_id }}"
+                      class="rounded-lg border border-slate-200 p-4 dark:border-slate-700">
+                    {% include "components/forms/csrf_input.html" %}
+                    <input type="hidden" name="expected_version" value="{{ item.version }}">
+                {% else %}
+                <div class="rounded-lg border border-slate-200 p-4 dark:border-slate-700">
+                {% endif %}
+                    <div class="flex items-center justify-between gap-4">
+                        <div>
+                            <div class="text-sm font-medium text-slate-900 dark:text-white">{{ item.label }}</div>
+                            <div class="text-xs text-slate-500 dark:text-slate-400">{{ item.code.value }}</div>
+                        </div>
+                        {% if item.amount is none %}
+                        <span class="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-medium text-amber-800 dark:bg-amber-900/30 dark:text-amber-200">Not priced</span>
+                        {% endif %}
+                    </div>
+                    {% if can_write %}
+                    <div class="mt-3 grid gap-3 sm:grid-cols-4">
+                        <input type="text" name="label" value="{{ item.label }}" maxlength="120" required aria-label="Label"
+                               class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+                        <select name="unit" aria-label="Unit"
+                                class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+                            {% for option in units %}
+                            <option value="{{ option.value.value }}" {% if item.unit == option.value %}selected{% endif %}>{{ option.label }}</option>
+                            {% endfor %}
+                        </select>
+                        <input type="text" name="amount" inputmode="decimal" value="{{ item.amount if item.amount is not none else '' }}"
+                               placeholder="not priced" aria-label="Amount in {{ currency }}"
+                               class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+                        <input type="number" name="sort_order" value="{{ item.sort_order }}" min="0" max="10000" aria-label="Sort order"
+                               class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+                    </div>
+                    <textarea name="description" rows="2" maxlength="2000" aria-label="Description"
+                              class="mt-3 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">{{ item.description or '' }}</textarea>
+                    <div class="mt-3 flex items-center justify-between">
+                        <label class="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
+                            <input type="checkbox" name="is_active" {% if item.is_active %}checked{% endif %}
+                                   class="rounded border-slate-300 text-primary-600 focus:ring-primary-500">
+                            Active
+                        </label>
+                        <button type="submit"
+                                class="inline-flex items-center rounded-lg bg-primary-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-primary-700">
+                            Save
+                        </button>
+                    </div>
+                    {% else %}
+                    <dl class="mt-3 grid gap-3 text-sm sm:grid-cols-4">
+                        <div><dt class="text-xs text-slate-500">Unit</dt><dd>{{ item.unit.value | replace('_', ' ') | title }}</dd></div>
+                        <div><dt class="text-xs text-slate-500">Amount</dt><dd>{{ item.amount if item.amount is not none else 'Not priced' }} {{ currency }}</dd></div>
+                        <div><dt class="text-xs text-slate-500">Status</dt><dd>{{ 'Active' if item.is_active else 'Inactive' }}</dd></div>
+                        <div><dt class="text-xs text-slate-500">Sort order</dt><dd>{{ item.sort_order }}</dd></div>
+                    </dl>
+                    {% if item.description %}<p class="mt-3 text-sm text-slate-600 dark:text-slate-300">{{ item.description }}</p>{% endif %}
+                    {% endif %}
+                {% if can_write %}</form>{% else %}</div>{% endif %}
+                {% endfor %}
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}

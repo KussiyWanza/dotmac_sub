@@ -269,6 +269,7 @@ class EventType(enum.Enum):
     ont_commissioning_state_changed = "ont.commissioning_state_changed"
 
     # Fiber splice plans (cut sheets)
+    fiber_cost_item_changed = "fiber.cost_item_changed"
     fiber_splice_plan_issued = "fiber.splice_plan_issued"
     fiber_splice_plan_cancelled = "fiber.splice_plan_cancelled"
     fiber_splice_plan_item_executed = "fiber.splice_plan_item_executed"

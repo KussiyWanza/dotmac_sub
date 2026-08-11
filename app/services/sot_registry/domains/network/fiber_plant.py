@@ -35,6 +35,147 @@ SERVICES: tuple[SOTService, ...] = (
         ),
     ),
     SOTService(
+        name="network.fiber_cost_items",
+        module="app.services.fiber_cost_items",
+        owns=(
+            "fiber drop-cost components and their prices",
+            "whether a drop estimate can be produced, and what it totals",
+        ),
+        notes=(
+            "Currency is the deployment's own `billing/default_currency`, read "
+            "as a setting rather than declared as a dependency: one estimate "
+            "mixing currencies is meaningless, and the screen already labels "
+            "the whole estimate with one. "
+            "The components were four hardcoded settings, each restated in a "
+            "spec, a service reader and the map template's JavaScript — so a "
+            "new one meant editing three layers, and no layer owned the cost "
+            "model. They are rows now. The estimate is computed here rather "
+            "than in the browser, so the breakdown a user reads has one "
+            "implementation. An active component with no price does not "
+            "contribute and makes the estimate incomplete: a total built from "
+            "only the priced components would be a number nobody chose, which "
+            "is how the retired defaults came to quote NGN 85 for an ONT."
+        ),
+        contract=ServiceContract(
+            concerns=(
+                ConcernContract(
+                    name="fiber drop-cost components and their prices",
+                    role=OwnerRole.COMMAND_WRITER,
+                    input_names=("operator-priced fiber cost components",),
+                    canonical_writer="network.fiber_cost_items",
+                ),
+                ConcernContract(
+                    name=(
+                        "whether a drop estimate can be produced, and what it totals"
+                    ),
+                    role=OwnerRole.RESOLVER,
+                    input_names=("operator-priced fiber cost components",),
+                ),
+            ),
+            authoritative_inputs=(
+                AuthorityInput(
+                    name="operator-priced fiber cost components",
+                    owner="network.fiber_cost_items",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source=(
+                        "FiberCostItem rows: the component, how its amount is "
+                        "applied, and whether it has been priced at all"
+                    ),
+                ),
+            ),
+            transaction=TransactionContract(
+                mode=TransactionMode.OWNER_MANAGED,
+                boundary=(
+                    "create_item and update_item each enter execute_owner_command "
+                    "once on a transaction-free session. The row, immutable "
+                    "before/after audit evidence and durable change event stage "
+                    "inside that transaction and commit together. Estimation is "
+                    "a pure read over committed state and writes nothing."
+                ),
+                locking=(
+                    "Updates lock the exact FiberCostItem row and compare the "
+                    "submitted version before replacing any values. The unique "
+                    "code constraint arbitrates concurrent creates."
+                ),
+                idempotency=(
+                    "A create is refused on its stable unique code. An update is "
+                    "bound to one expected row version, so a replay or stale form "
+                    "cannot quietly reprice a component. An estimate is "
+                    "deterministic for identical committed inputs."
+                ),
+                retries=(
+                    "A duplicate create and a stale update fail with stable domain "
+                    "codes. The operator must reload current evidence before "
+                    "submitting a replacement decision."
+                ),
+            ),
+            errors=ErrorContract(
+                domain_codes=(
+                    *owner_command_boundary_error_codes("network.fiber_cost_items"),
+                    "network.fiber_cost_items.code_required",
+                    "network.fiber_cost_items.invalid_code",
+                    "network.fiber_cost_items.label_required",
+                    "network.fiber_cost_items.label_too_long",
+                    "network.fiber_cost_items.duplicate_code",
+                    "network.fiber_cost_items.unknown_unit",
+                    "network.fiber_cost_items.invalid_amount",
+                    "network.fiber_cost_items.negative_amount",
+                    "network.fiber_cost_items.amount_too_large",
+                    "network.fiber_cost_items.description_too_long",
+                    "network.fiber_cost_items.invalid_sort_order",
+                    "network.fiber_cost_items.invalid_distance",
+                    "network.fiber_cost_items.invalid_scope",
+                    "network.fiber_cost_items.invalid_actor",
+                    "network.fiber_cost_items.invalid_version",
+                    "network.fiber_cost_items.stale_version",
+                    "network.fiber_cost_items.not_found",
+                ),
+                mapping_owner="app.web.admin.network_fiber_costs",
+            ),
+            migration=MigrationContract(
+                state=AuthorityMigrationState.NATIVE,
+                new_owner="network.fiber_cost_items",
+                # No `old_owner`: native authority has none by definition, and
+                # the four settings this replaced were never an OWNER — they
+                # were the same fact restated in three layers, which is why
+                # nothing could be pointed at when the estimate went wrong.
+                verification=(
+                    "Per-metre and flat components sum correctly; an unpriced "
+                    "active component makes the estimate incomplete rather "
+                    "than contributing zero; an inactive unpriced component "
+                    "does not; zero is a price and empty is not."
+                ),
+                fallback_retirement=(
+                    "The four settings and their seed entries are removed in "
+                    "the same change, so no parallel price source survives."
+                ),
+            ),
+            events=EventContract(
+                event_types=("fiber.cost_item_changed",),
+                schema_version=1,
+                delivery_owner="events.dispatcher",
+                compatibility=(
+                    "The AMOUNT is deliberately absent from the payload. A "
+                    "subscriber that needs it asks for an estimate, which "
+                    "keeps one reader of the price and stops what an install "
+                    "costs travelling through a delivery pipeline with its own "
+                    "retention and logging."
+                ),
+                replay=(
+                    "Safe to replay: the event names what changed, not what it "
+                    "became, and an estimate is recomputed from committed rows "
+                    "on every request."
+                ),
+            ),
+            steward="network operations",
+            design_refs=("docs/SOT_RELATIONSHIP_MAP.md",),
+            test_refs=(
+                "tests/test_fiber_cost_items.py",
+                "tests/architecture/test_fiber_cost_items_boundary.py",
+            ),
+        ),
+    ),
+    SOTService(
         name="network.fiber_topology",
         module="app.services.fiber_topology",
         owns=(

@@ -2326,31 +2326,11 @@ def seed_network_policy_settings(db: Session) -> None:
         value_type=SettingValueType.string,
         value_text=os.getenv("NETWORK_DEFAULT_FIBER_STRAND_STATUS", "available"),
     )
-    # Fiber installation planning cost rates
-    network_settings.ensure_by_key(
-        db,
-        key="fiber_drop_cable_cost_per_meter",
-        value_type=SettingValueType.string,
-        value_text=os.getenv("NETWORK_FIBER_DROP_CABLE_COST_PER_METER", "2.50"),
-    )
-    network_settings.ensure_by_key(
-        db,
-        key="fiber_labor_cost_per_meter",
-        value_type=SettingValueType.string,
-        value_text=os.getenv("NETWORK_FIBER_LABOR_COST_PER_METER", "1.50"),
-    )
-    network_settings.ensure_by_key(
-        db,
-        key="fiber_ont_device_cost",
-        value_type=SettingValueType.string,
-        value_text=os.getenv("NETWORK_FIBER_ONT_DEVICE_COST", "85.00"),
-    )
-    network_settings.ensure_by_key(
-        db,
-        key="fiber_installation_base_fee",
-        value_type=SettingValueType.string,
-        value_text=os.getenv("NETWORK_FIBER_INSTALLATION_BASE_FEE", "50.00"),
-    )
+    # No fiber installation cost rates here. They are `fiber_cost_items` rows
+    # now — a component is data, so adding a splice closure or a permit fee no
+    # longer means editing a spec, a service and a template. Their defaults
+    # (2.50/m, 1.50/m, 85.00, 50.00) were USD-shaped values rendered as naira,
+    # which is why the seeded rows arrive unpriced: see migration 519.
 
 
 def seed_network_settings(db: Session) -> None:

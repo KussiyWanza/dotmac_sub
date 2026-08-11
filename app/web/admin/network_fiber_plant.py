@@ -1,5 +1,6 @@
 """Admin network fiber plant web routes."""
 
+from decimal import Decimal
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -8,6 +9,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.services import fiber_cost_items as fiber_cost_items_service
 from app.services import fiber_topology as fiber_topology_service
 from app.services import web_network_fdh as web_network_fdh_service
 from app.services import web_network_fiber as web_network_fiber_service
@@ -859,6 +861,28 @@ def find_nearest_cabinet(
         lng=lng,
     )
     return JSONResponse(payload, status_code=status_code)
+
+
+@router.get(
+    "/fiber-map/cost-estimate",
+    dependencies=[Depends(require_permission("network:fiber:read"))],
+)
+def fiber_cost_estimate(
+    request: Request,
+    distance_m: Decimal = Query(ge=0, le=1_000_000, allow_inf_nan=False),
+    db: Session = Depends(get_db),
+):
+    """Price one drop of `distance_m`.
+
+    The auto-route response already carries its estimate, because it is already
+    a server round trip. A MANUAL trace computes its distance in the browser and
+    would otherwise have to price it there too — a second copy of the cost rule,
+    in the layer that had it before this change and got it wrong. One request
+    when a trace completes is cheaper than that.
+    """
+
+    estimate = fiber_cost_items_service.estimate_for_distance(db, distance_m)
+    return JSONResponse(web_network_fiber_service.serialize_cost_estimate(estimate))
 
 
 @router.get(
