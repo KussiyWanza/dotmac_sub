@@ -85,7 +85,7 @@ class FiberCostItem(Base):
     label: Mapped[str] = mapped_column(String(120), nullable=False)
     unit: Mapped[FiberCostUnit] = mapped_column(
         # `values_callable` because SQLAlchemy otherwise persists a Python enum
-        # by its NAME (`PER_METER`) while migration 517 seeds — and this file
+        # by its NAME (`PER_METER`) while migration 518 seeds — and this file
         # documents — the VALUE (`per_meter`). The mismatch is invisible on
         # write and fatal on read: every seeded row fails to map back, so the
         # whole fiber map page 500s rather than one field being wrong.
