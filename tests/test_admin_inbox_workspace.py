@@ -142,7 +142,8 @@ def test_workspace_exposes_responsive_realtime_and_accessible_controls():
     assert "dotmac.inbox.draft." in javascript
     assert "newMessagesAvailable" in javascript
     assert "data.agent_name" in javascript
-    assert '${agentName || "Another agent"} is replying' in javascript
+    assert 'name: agentName || "Another agent"' in javascript
+    assert "${names[0]} is replying" in javascript
     assert "expiresAt: Date.now() + 3500" in javascript
     assert "clearTypingPresence()" in javascript
     assert "scheduleTypingPrune()" in javascript
