@@ -213,6 +213,8 @@ class TestQueueSemantics:
             description="d",
         )
         unmatched_radio_queue.close_item(db_session, ticket, "done")
+        assert ticket.status == TicketStatus.closed.value
+        assert ticket.closed_at is not None
 
         _, created = unmatched_radio_queue.open_item(
             db_session,

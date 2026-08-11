@@ -15,7 +15,7 @@ from app.models.audit import AuditActorType
 from app.models.domain_settings import SettingDomain
 from app.models.service_team import ServiceTeam
 from app.models.subscription_engine import SettingValueType
-from app.models.support import TicketStatus
+from app.models.support import TicketStatus, parse_ticket_status
 from app.models.ticket_workflow import TicketAssignmentRule, TicketAssignmentStrategy
 from app.schemas.settings import DomainSettingUpdate
 from app.services import domain_settings as domain_settings_service
@@ -41,7 +41,6 @@ TYPE_SLA_POLICY_KEY = "support_ticket_type_sla_policy"
 SETTINGS_DOMAIN = SettingDomain.workflow
 
 DEFAULT_STATUS_OPTIONS = [status.value for status in TicketStatus]
-VALID_STATUS_OPTIONS = frozenset(DEFAULT_STATUS_OPTIONS)
 DEFAULT_PRIORITY_OPTIONS = [
     "lower",
     "low",
@@ -66,7 +65,7 @@ DEFAULT_SLA_POLICY = {
     "low": {"response_hours": 24, "resolution_hours": 120, "aging_hours": 48},
     "lower": {"response_hours": 24, "resolution_hours": 168, "aging_hours": 72},
 }
-TERMINAL_STATUSES = {"resolved", "closed", "canceled", "merged"}
+TERMINAL_STATUSES = {"closed", "canceled", "merged"}
 
 _NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
 _CONFIGURATION_OWNER = "support.ticket_configuration"
@@ -266,10 +265,17 @@ def normalize_region_key(value: str | None) -> str:
     return support_ticket_region_projection.normalize_region_value(value)
 
 
-def normalize_ticket_status(value: str) -> str:
+def normalize_ticket_status(value: TicketStatus | str) -> str:
     """Keep configured choices inside the lifecycle owner's vocabulary."""
-    normalized = normalize_system_value(value)
-    return normalized if normalized in VALID_STATUS_OPTIONS else ""
+    normalized = (
+        value.value
+        if isinstance(value, TicketStatus)
+        else normalize_system_value(value)
+    )
+    try:
+        return parse_ticket_status(normalized).value
+    except ValueError:
+        return ""
 
 
 def _normalize_list(
@@ -821,12 +827,14 @@ def update_ticket_configuration(
         normalizer=normalize_system_value,
     )
     invalid_statuses = [
-        status for status in requested_statuses if status not in VALID_STATUS_OPTIONS
+        status for status in requested_statuses if not normalize_ticket_status(status)
     ]
     if invalid_statuses:
         unsupported = ", ".join(invalid_statuses)
         raise ValueError(f"Unsupported ticket status: {unsupported}")
-    normalized_statuses = requested_statuses
+    normalized_statuses = list(
+        dict.fromkeys(normalize_ticket_status(status) for status in requested_statuses)
+    )
     normalized_priorities = _normalize_list(
         command.priorities,
         defaults=DEFAULT_PRIORITY_OPTIONS,

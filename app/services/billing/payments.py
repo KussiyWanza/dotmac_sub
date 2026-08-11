@@ -885,10 +885,19 @@ def _record_unallocated_payment_credit(
 ) -> LedgerEntry | None:
     """Record the unallocated payment surplus.
 
-    For an account-scoped payment, this writes a ledger entry against the
-    payer's subscriber account. For a consolidated (billing-account-scoped)
-    payment, the surplus increments ``BillingAccount.balance`` instead.
+    For an account-scoped payment, this hands the surplus to the account-credit
+    owner, which mints the ledger evidence. The offer to the account's open
+    receivables follows in ``_offer_settled_account_credit`` once the settlement
+    row exists, because credit is not spendable before then. Minting outside the
+    owner is what stranded the surplus: an overpaid account holds credit while
+    an issued invoice stays payable, which is what
+    ``eligible_invoice_with_unused_credit`` counts and what overstates AR.
+
+    For a consolidated (billing-account-scoped) payment, the surplus increments
+    ``BillingAccount.balance`` instead and is refused here.
     """
+    from app.services.billing.account_credit import AccountCreditApplications
+
     remaining = round_money(to_decimal(remaining))
     if remaining <= 0:
         return None
@@ -900,13 +909,60 @@ def _record_unallocated_payment_credit(
                 "settlement owner with exact billing-account ledger evidence"
             ),
         )
-    entry = _create_payment_ledger_entry(db, payment, None, remaining)
-    if entry is None:
+    result = AccountCreditApplications.record_credit(
+        db,
+        str(payment.account_id),
+        amount=remaining,
+        currency=payment.currency or "NGN",
+        source=LedgerSource.payment,
+        memo=f"Payment {payment.id}",
+        payment_id=payment.id,
+    )
+    if result.ledger_entry is None:
         raise HTTPException(
             status_code=409,
             detail="Unallocated payment ledger evidence could not be created",
         )
-    return entry
+    return result.ledger_entry
+
+
+def _offer_settled_account_credit(
+    db: Session,
+    payment: Payment,
+    settlement: PaymentSettlement,
+) -> None:
+    """Offer this payment's surplus now that its settlement evidence exists.
+
+    Deliberately here and not where the credit is minted. Credit is spendable
+    only once the settlement row exists — ``PaymentAllocations.available_amount``
+    returns zero while ``payment.settlement`` is None — so an offer at mint time
+    finds nothing backed and silently applies nothing. Without this call the
+    surplus simply sits, and the account is dunned on an invoice it has already
+    funded.
+
+    Not called from the evidence reconciler. That path reconstructs settlement
+    rows for payments that already carry their own allocation decisions, so
+    allocating there collides with the evidence it was asked to attach.
+    """
+    from app.services.billing.account_credit import AccountCreditApplications
+
+    if not payment.auto_allocate_on_settlement:
+        # An explicit operator decision, not an oversight. Verifying a payment
+        # proof with auto_allocate=False, and the provider-settlement path that
+        # runs its own application afterwards, both mean "hold this as credit".
+        # The column exists precisely to record that.
+        return
+    if payment.billing_account_id is not None:
+        return
+    if payment.account_id is None:
+        return
+    if round_money(to_decimal(settlement.unallocated_amount)) <= 0:
+        return
+    AccountCreditApplications.offer_available_credit(
+        db,
+        str(payment.account_id),
+        payments=(payment,),
+    )
 
 
 def _latest_successful_invoice_payment(db: Session, invoice: Invoice) -> Payment | None:
@@ -1641,6 +1697,7 @@ def _create_account_payment_from_preview(
     )
     db.add(settlement)
     db.flush()
+    _offer_settled_account_credit(db, payment, settlement)
     AuditEvents.stage(
         db,
         AuditEventCreate(
@@ -1807,6 +1864,7 @@ def _settle_existing_account_payment(
     )
     db.add(settlement)
     db.flush()
+    _offer_settled_account_credit(db, payment, settlement)
     AuditEvents.stage(
         db,
         AuditEventCreate(
@@ -2065,6 +2123,7 @@ class Payments(ListResponseMixin):
         )
         db.add(settlement)
         db.flush()
+        _offer_settled_account_credit(db, payment, settlement)
         AuditEvents.stage(
             db,
             AuditEventCreate(

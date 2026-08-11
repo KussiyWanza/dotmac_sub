@@ -14,26 +14,16 @@ from app.services.common import (
     coerce_uuid,
 )
 from app.services.response import ListResponseMixin
-from app.services.secrets import (
-    is_openbao_available,
-    is_openbao_ref,
-    read_secret_fields,
-    write_secret,
-)
+
+# `is_openbao_ref` only: this module no longer WRITES to OpenBao. A secret
+# setting is stored as ciphertext and the encryption key is what lives there.
+from app.services.secrets import is_openbao_ref
 from app.services.setting_domain_registry import is_declared
 
 
 class DomainSettings(ListResponseMixin):
     def __init__(self, domain: SettingDomain | None = None) -> None:
         self.domain = domain
-
-    def _openbao_secret_path(self) -> str:
-        if not self.domain:
-            raise HTTPException(status_code=400, detail="Setting domain is required")
-        return f"settings/{self.domain.value}"
-
-    def _openbao_secret_ref(self, key: str) -> str:
-        return f"bao://secret/{self._openbao_secret_path()}#{key}"
 
     def _write_secret_ref(
         self,
@@ -43,29 +33,65 @@ class DomainSettings(ListResponseMixin):
         is_secret: bool,
         allow_plain_fallback: bool = False,
     ) -> str | None:
+        """Encrypt a secret setting's value for storage.
+
+        This used to write the value into OpenBao and store a
+        `bao://secret/settings/<domain>#<key>` REFERENCE in the column, which
+        made every read of a secret setting a network call — starter ADR-0009's
+        forbidden shape — and, at three call sites that never dereferenced,
+        handed a provider the literal string `bao://…` as its credential
+        (RADIUS, Google, Mapbox).
+
+        The value is now stored as `enc:<key_id>:<token>` and decrypted by the
+        kernel resolver on read, with no network on that path at all. Where the
+        material lives is unchanged in spirit — the encryption KEY is held from
+        OpenBao at boot (`app/services/kernel_key_provider.py`), so the database
+        never carries anything readable without it.
+
+        Fails closed. `encrypt_value` raises `SettingsEncryptionError` when no
+        active key is configured, and that is deliberate: the alternative is a
+        plaintext credential in a column plus a log line nobody reads. The
+        SQLite-only plain fallback stays for the metadata test lanes, which
+        have no keyring and are not storing anything real.
+
+        A value that is ALREADY ciphertext passes through — `encrypt_value` is
+        idempotent for the active key and re-encrypts one written under a
+        retired key, which is what makes rotation a rewrite rather than a
+        no-op. A legacy `bao://` reference also passes through untouched: those
+        are converted by `scripts/one_off/encrypt_secret_settings.py`, and
+        re-encrypting the reference TEXT here would store the pointer rather
+        than the secret.
+        """
+
+        from dotmac_kernel.settings_crypto import (
+            SettingsEncryptionError,
+            encrypt_value,
+        )
+
         if not is_secret or value_text is None:
             return value_text
         normalized = value_text.strip()
         if not normalized:
             return value_text
         if is_openbao_ref(normalized):
+            # A reference the operator supplied verbatim, or one the conversion
+            # script has not reached. Storing it is what the old path did;
+            # converting it is that script's job, and encrypting the pointer
+            # would store the pointer instead of the secret.
             return normalized
-        if not is_openbao_available():
+        try:
+            return encrypt_value(normalized)
+        except SettingsEncryptionError:
             if allow_plain_fallback:
                 return normalized
             raise HTTPException(
                 status_code=500,
-                detail="OpenBao is not configured or reachable for secret settings",
-            )
-        path = self._openbao_secret_path()
-        payload = dict(read_secret_fields(path))
-        payload[key] = normalized
-        if not write_secret(path, payload):
-            raise HTTPException(
-                status_code=500,
-                detail="Failed to persist secret setting to OpenBao",
-            )
-        return self._openbao_secret_ref(key)
+                detail=(
+                    "No settings encryption key is configured, so a secret "
+                    "setting cannot be stored. Provision "
+                    "secret/settings/crypto#settings_encryption_keyring."
+                ),
+            ) from None
 
     def _allow_plain_secret_fallback(self, db: Session) -> bool:
         bind = db.get_bind()

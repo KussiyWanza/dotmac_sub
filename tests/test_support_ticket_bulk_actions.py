@@ -106,6 +106,23 @@ def test_support_ticket_bulk_preview_is_side_effect_free_and_reports_eligibility
     assert reasons["not-a-uuid"] == "Ticket not found"
 
 
+def test_support_ticket_bulk_canonicalizes_legacy_resolved_status(db_session):
+    ticket = _ticket()
+    db_session.add(ticket)
+    db_session.commit()
+
+    preview = web_support_ticket_bulk.preview_support_ticket_bulk_update(
+        db_session,
+        {
+            "selection": _selection(str(ticket.id)),
+            "updates": {"status": "resolved"},
+        },
+    )
+
+    assert preview.changes.status == "closed"
+    assert "resolved" not in preview.changes.as_dict().values()
+
+
 def test_support_ticket_bulk_confirmation_binds_changes_and_eligibility(db_session):
     ticket = _ticket(priority="normal")
     db_session.add(ticket)

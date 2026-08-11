@@ -17,7 +17,7 @@ from app.models.integration import (
     IntegrationRunStatus,
     IntegrationScheduleType,
 )
-from app.models.support import Ticket, TicketComment
+from app.models.support import Ticket, TicketComment, canonical_ticket_status_value
 from app.schemas.status_presentation import StatusTone
 from app.services.common import coerce_uuid
 from app.services.integrations.connectors.dotmac_crm import (
@@ -357,7 +357,7 @@ def backfill_crm_ticket_import_history(db: Session, job_id: str) -> IntegrationR
                 payload_snapshot={
                     "number": ticket.number,
                     "title": ticket.title,
-                    "status": ticket.status,
+                    "status": canonical_ticket_status_value(ticket.status),
                     "priority": ticket.priority,
                     "subscriber_id": (
                         str(ticket.subscriber_id) if ticket.subscriber_id else None

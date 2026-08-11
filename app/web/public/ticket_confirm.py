@@ -7,6 +7,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.models.support import canonical_ticket_status_value
 from app.services import support as support_service
 from app.services.db_session_adapter import db_session_adapter
 from app.services.domain_errors import DomainError
@@ -24,7 +25,7 @@ def _ticket_summary(token_row) -> dict[str, object]:
         "ticket_id": str(ticket.id),
         "ticket_ref": ticket.number or str(ticket.id),
         "subject": ticket.title,
-        "status": ticket.status,
+        "status": canonical_ticket_status_value(ticket.status),
         "resolved_at": ticket.resolved_at,
     }
 

@@ -15,6 +15,8 @@ from app.models.support import (
     AutomationTrigger,
     Ticket,
     TicketAutomationRule,
+    TicketStatus,
+    parse_ticket_status,
 )
 from app.services.customer_identity_resolution import (
     AUTOMATION_SUPPRESSION_REASON_IDENTITY_REVIEW,
@@ -34,7 +36,7 @@ class TicketAutomationProposal:
     service_team_id: UUID | None = None
     technician_person_id: UUID | None = None
     priority: str | None = None
-    status: str | None = None
+    status: TicketStatus | None = None
     due_in_hours: int | None = None
     tag: str | None = None
 
@@ -150,7 +152,7 @@ def _proposal_for_rule(
                 rule_id=rule.id,
                 rule_name=rule.name,
                 action_type=action,
-                status=str(value).strip(),
+                status=parse_ticket_status(str(value).strip()),
             )
     elif action == AutomationActionType.set_due_in_hours:
         hours_raw = payload.get("hours")

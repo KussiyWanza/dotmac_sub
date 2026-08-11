@@ -10,8 +10,10 @@ from app.services import support as support_service
 from app.services.crm_ticket_pull import pull_tickets
 
 
-def test_pull_pushes_customer_when_ticket_resolved(db_session, subscriber):
-    """A ticket transitioning to resolved during a pull notifies the customer."""
+def test_pull_maps_legacy_resolved_to_closed_and_notifies_customer(
+    db_session, subscriber
+):
+    """A legacy CRM resolved observation becomes one closed Ticket status."""
     subscriber.splynx_customer_id = 24296
     db_session.commit()
     tid = str(uuid4())
@@ -27,7 +29,7 @@ def test_pull_pushes_customer_when_ticket_resolved(db_session, subscriber):
         db_session.commit()
     push.assert_not_called()
 
-    # Second pull: same ticket now resolved (bumped updated_at) → one push.
+    # Second pull: same ticket now closed via the legacy alias → one push.
     resolved_client = FakeCrmClient(
         tickets=[_crm_ticket(tid, "40001", "2026-06-10T10:00:00Z", status="resolved")],
         subscribers={},
@@ -37,6 +39,10 @@ def test_pull_pushes_customer_when_ticket_resolved(db_session, subscriber):
         pull_tickets(db_session, client=resolved_client)
         db_session.commit()
     push.assert_called_once()
+    ticket = db_session.query(Ticket).filter(Ticket.number == "40001").one()
+    assert ticket.status == "closed"
+    assert push.call_args.kwargs["title"] == "Support ticket closed"
+    assert "resolved" not in push.call_args.kwargs["body"].lower()
 
 
 class FakeCrmClient:

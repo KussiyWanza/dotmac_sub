@@ -46,10 +46,12 @@ def _store(db_session, key: str, value: str) -> None:
 
 @pytest.mark.parametrize("key", ["google_api_key", "mapbox_api_key"])
 def test_a_stored_reference_is_resolved_not_forwarded(db_session, monkeypatch, key):
+    import app.services.settings_spec as settings_spec
+
     monkeypatch.setattr(
-        geocoding,
-        "_setting_value",
-        lambda _db, _key: REFERENCE if _key == key else None,
+        settings_spec,
+        "resolve_value",
+        lambda _db, _domain, _key: REFERENCE if _key == key else None,
     )
     monkeypatch.setattr(
         "app.services.secrets.resolve_secret",
@@ -77,7 +79,11 @@ def test_an_unresolvable_reference_reads_as_not_configured(db_session, monkeypat
     error reaches the response or the log.
     """
 
-    monkeypatch.setattr(geocoding, "_setting_value", lambda _db, _key: REFERENCE)
+    import app.services.settings_spec as settings_spec
+
+    monkeypatch.setattr(
+        settings_spec, "resolve_value", lambda _db, _domain, _key: REFERENCE
+    )
 
     def _unreachable(_value: str) -> str:
         raise RuntimeError("openbao unreachable: bao://secret/settings/geocoding")
@@ -90,7 +96,11 @@ def test_an_unresolvable_reference_reads_as_not_configured(db_session, monkeypat
 def test_the_reference_is_never_logged(db_session, monkeypatch, caplog):
     import logging
 
-    monkeypatch.setattr(geocoding, "_setting_value", lambda _db, _key: REFERENCE)
+    import app.services.settings_spec as settings_spec
+
+    monkeypatch.setattr(
+        settings_spec, "resolve_value", lambda _db, _domain, _key: REFERENCE
+    )
     monkeypatch.setattr(
         "app.services.secrets.resolve_secret",
         lambda _value: (_ for _ in ()).throw(RuntimeError("boom")),

@@ -23,6 +23,33 @@ def test_dev_pull_requests_run_required_ci_gates() -> None:
     assert "branches: [main, dev]" in version_impact
 
 
+def test_release_freeze_gate_blocks_dev_merges_during_deployment() -> None:
+    workflow = _read(".github/workflows/release-freeze-gate.yml")
+    runbook = _read("docs/runbooks/STAGING_PROMOTION.md")
+    guidance = " ".join(_read("AGENTS.md").split())
+
+    assert yaml.safe_load(workflow)
+    assert "name: Release Freeze Gate" in workflow
+    assert "pull_request:\n    branches: [dev]" in workflow
+    assert "merge_group:" in workflow
+    assert "actions: read" in workflow
+    for guarded in (
+        "Build release candidate once",
+        "Deploy dev to staging",
+        "Promote staged digest for production",
+        "Deploy authorized digest to production",
+    ):
+        assert guarded in workflow
+        assert guarded in runbook
+    assert "Release freeze is active" in workflow
+    assert "gh pr" not in workflow
+    assert "pulls" not in workflow
+    assert "Open pull requests" not in workflow
+    assert "dev` is frozen for merges" in runbook
+    assert "does not inspect open pull requests" in runbook
+    assert "does not block feature branch pushes" in guidance
+
+
 def test_ghcr_isolated_to_the_pinned_genieacs_runtime() -> None:
     workflow = _read(".github/workflows/ghcr.yml")
 
@@ -141,7 +168,8 @@ def test_agents_guidance_requires_staging_before_main() -> None:
 
     assert "explicit one-time candidate build" in guidance
     assert "immutable candidate digest -> staging deployment and acceptance" in guidance
-    assert "After all source and rolling version pull requests have merged" in guidance
+    assert "select the exact validated `origin/dev` SHA" in guidance
+    assert "open rolling version-bump pull request does not block" in guidance
     assert "Deploy that exact OCI" in guidance
     assert "A dev image is staging-only" in guidance
     assert "must never receive the `latest` tag" in guidance
@@ -175,6 +203,8 @@ def test_staging_promotion_runbook_records_activation_and_failure_contracts() ->
     assert "Production requires a backup by default" in runbook
     assert "ten-minute health budget" in runbook
     assert "Do not edit `VERSION` in the source pull request" in runbook
+    assert "An open rolling version-bump pull request does not block" in runbook
+    assert "Open pull requests, including rolling version-bump pull requests" in runbook
     assert (
         "A failed staging deployment never authorizes promotion to `main`." in runbook
     )
@@ -198,6 +228,8 @@ def test_production_promotion_reuses_the_staged_digest_without_a_build() -> None
     assert "run.head_repository.full_name !== context.repo.repo" not in workflow
     assert "docker buildx imagetools create" in workflow
     assert "--prefer-index=false" in workflow
+    assert "Version alias not moved" in workflow
+    assert "production authorization remains bound to $IMAGE_DIGEST" in workflow
     assert "production-authorization-${{ steps.release.outputs.sha }}" in workflow
     assert "docker/build-push-action" not in workflow
     assert "docker build " not in workflow

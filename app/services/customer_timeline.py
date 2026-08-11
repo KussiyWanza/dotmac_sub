@@ -19,7 +19,7 @@ from app.models.collections import DunningCase
 from app.models.communication_log import CommunicationLog
 from app.models.provisioning import ServiceOrder
 from app.models.subscriber import Subscriber
-from app.models.support import Ticket
+from app.models.support import Ticket, canonical_ticket_status_value
 from app.models.system_user import SystemUser
 from app.services.audit_helpers import (
     extract_changes,
@@ -491,7 +491,7 @@ def build_customer_timeline(
                 description=" · ".join(
                     part
                     for part in (
-                        _enum_label(ticket.status),
+                        _enum_label(canonical_ticket_status_value(ticket.status)),
                         _enum_label(ticket.priority),
                     )
                     if part

@@ -2956,34 +2956,6 @@ SETTINGS_SPECS: list[SettingSpec] = [
     # Fiber installation planning cost rates
     SettingSpec(
         domain=SettingDomain.network,
-        key="fiber_drop_cable_cost_per_meter",
-        env_var="NETWORK_FIBER_DROP_CABLE_COST_PER_METER",
-        value_type=SettingValueType.string,
-        default="2.50",
-    ),
-    SettingSpec(
-        domain=SettingDomain.network,
-        key="fiber_labor_cost_per_meter",
-        env_var="NETWORK_FIBER_LABOR_COST_PER_METER",
-        value_type=SettingValueType.string,
-        default="1.50",
-    ),
-    SettingSpec(
-        domain=SettingDomain.network,
-        key="fiber_ont_device_cost",
-        env_var="NETWORK_FIBER_ONT_DEVICE_COST",
-        value_type=SettingValueType.string,
-        default="85.00",
-    ),
-    SettingSpec(
-        domain=SettingDomain.network,
-        key="fiber_installation_base_fee",
-        env_var="NETWORK_FIBER_INSTALLATION_BASE_FEE",
-        value_type=SettingValueType.string,
-        default="50.00",
-    ),
-    SettingSpec(
-        domain=SettingDomain.network,
         key="olt_profile_sync_worker_enabled",
         env_var="OLT_PROFILE_SYNC_WORKER_ENABLED",
         value_type=SettingValueType.boolean,

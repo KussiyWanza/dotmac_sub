@@ -24,7 +24,7 @@ from app.models.provisioning import (
 )
 from app.models.sales import QuoteStatus, SalesOrderStatus
 from app.models.subscriber import SubscriberStatus
-from app.models.support import TicketStatus
+from app.models.support import TicketStatus, canonical_ticket_status_value
 from app.models.vendor_routes import (
     AsBuiltRouteStatus,
     InstallationProjectStatus,
@@ -176,11 +176,6 @@ _TICKET_PRESENTATIONS: dict[str, tuple[str, StatusTone, StatusIcon]] = {
         "Pending confirmation",
         StatusTone.info,
         StatusIcon.clock,
-    ),
-    TicketStatus.resolved.value: (
-        "Resolved",
-        StatusTone.positive,
-        StatusIcon.check,
     ),
     TicketStatus.closed.value: (
         "Closed",
@@ -703,7 +698,10 @@ def ticket_status_presentation(
     status: TicketStatus | str | None,
 ) -> StatusPresentation:
     """Project support-ticket status without changing lifecycle state."""
-    return _presentation(_status_value(status), _TICKET_PRESENTATIONS)
+    value = _status_value(status)
+    if value:
+        value = canonical_ticket_status_value(value)
+    return _presentation(value, _TICKET_PRESENTATIONS)
 
 
 def invoice_status_presentation(

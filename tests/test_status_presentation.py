@@ -406,6 +406,13 @@ def test_ticket_status_presentation_covers_authoritative_enum(
     )
 
 
+def test_legacy_resolved_ticket_presents_only_as_closed() -> None:
+    presentation = ticket_status_presentation("resolved")
+
+    assert presentation.value == "closed"
+    assert presentation.label == "Closed"
+
+
 def test_ticket_read_serializes_status_presentation_for_api_clients() -> None:
     now = datetime.now(UTC)
     ticket = Ticket(
@@ -429,6 +436,27 @@ def test_ticket_read_serializes_status_presentation_for_api_clients() -> None:
         "tone": "warning",
         "icon": "clock",
     }
+
+
+def test_ticket_read_never_returns_legacy_resolved_status() -> None:
+    now = datetime.now(UTC)
+    ticket = Ticket(
+        id=uuid4(),
+        title="Legacy closed ticket",
+        description_is_internal=True,
+        status="resolved",
+        priority="normal",
+        channel="web",
+        metadata_={},
+        is_active=True,
+        created_at=now,
+        updated_at=now,
+    )
+
+    payload = TicketRead.model_validate(ticket).model_dump(mode="json")
+
+    assert payload["status"] == "closed"
+    assert payload["status_presentation"]["label"] == "Closed"
 
 
 @pytest.mark.parametrize("status", list(InvoiceStatus))

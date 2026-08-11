@@ -13,10 +13,9 @@ we could not honestly source:
    correct it and the correction is what gets filed. A ticket with no stored
    category reports blank — visible as ``[FAIL]`` at export — rather than
    being silently re-guessed.
-2. **Status: Resolved = resolved OR closed.** CRM mapped ``closed`` only, so a
-   sub ticket sitting in ``resolved`` would have filed as *Pending* —
-   understating our resolution rate. ``canceled``/``merged`` are excluded
-   entirely: they are not complaints.
+2. **Status: Closed tickets file as Resolved.** ``Resolved`` is the NCC return's
+   external vocabulary, not a native Ticket status. ``canceled``/``merged`` are
+   excluded entirely: they are not complaints.
 3. **SLA: unknown is blank, not a breach.** CRM returned ``"No"`` when
    ``due_at`` was NULL, reporting an SLA breach that may never have happened.
    A missing due date means we do not know, and the return says so.
@@ -64,9 +63,9 @@ from app.services.ncc_workbook import (
 OPERATOR_PREFIX = "DOTMAC"
 
 # NCC files complaints as Resolved or Pending. Michael's call (2026-07-17):
-# resolved and closed are both genuinely resolved — CRM's closed-only mapping
-# filed a resolved ticket as Pending.
-_RESOLVED_STATUSES = frozenset({"resolved", "closed"})
+# Closed is the one native status for a resolved complaint. The filing label
+# remains "Resolved" because that is the NCC workbook's external vocabulary.
+_RESOLVED_STATUSES = frozenset({"closed"})
 # Not complaints: a canceled ticket was withdrawn, a merged one is counted
 # under the ticket it merged into. Filing either would double-count or invent.
 _EXCLUDED_STATUSES = frozenset({"canceled", "merged"})

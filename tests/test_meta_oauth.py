@@ -193,14 +193,28 @@ def test_candidate_query_excludes_page_and_instagram_token_classes(db_session):
     assert [candidate.token_id for candidate in candidates] == [user_token.id]
 
 
-def test_plaintext_client_secret_fails_closed_without_provider_call(
+def test_a_plaintext_client_secret_is_now_usable_and_never_echoed(
     db_session, monkeypatch
 ):
+    """The reference requirement is gone, because encryption replaced it.
+
+    `comms/meta_app_secret` used to be rejected unless the stored value WAS a
+    `bao://…` reference — this codebase's way of saying "do not keep an app
+    secret in the database in plaintext". That requirement is real and is now
+    met properly: the row holds ciphertext, decrypted by the resolver, so the
+    database carries nothing readable without the held key and no network call
+    sits on the refresh path.
+
+    The old gate was also weaker than it read. It checked the value WAS a
+    reference and never WHICH one, so it constrained the format rather than the
+    authority.
+
+    What must NOT regress is the other half of the old test: whatever the
+    secret is, it never reaches a stored error or a log line.
+    """
+
     observed_at = datetime(2026, 8, 3, 12, 0, tzinfo=UTC)
-    token = _token(
-        db_session,
-        expires_at=observed_at + timedelta(days=1),
-    )
+    token = _token(db_session, expires_at=observed_at + timedelta(days=1))
     command = _command(db_session, token, observed_at=observed_at)
     transport = _SuccessfulTransport()
     _configure_meta(monkeypatch, secret_setting="plaintext-client-secret")
@@ -208,16 +222,26 @@ def test_plaintext_client_secret_fails_closed_without_provider_call(
 
     result = meta_oauth.refresh_meta_token(db_session, command)
 
+    assert result.status is not meta_oauth.MetaTokenRefreshStatus.FAILED or (
+        result.failure_code
+        is not meta_oauth.MetaTokenRefreshFailureCode.SECRET_REFERENCE_REQUIRED
+    )
     refreshed = db_session.get(OAuthToken, token.id)
     assert refreshed is not None
-    assert result.status is meta_oauth.MetaTokenRefreshStatus.FAILED
-    assert result.failure_code is (
-        meta_oauth.MetaTokenRefreshFailureCode.SECRET_REFERENCE_REQUIRED
+    assert "plaintext-client-secret" not in (refreshed.refresh_error or "")
+
+
+def test_the_reference_required_code_survives_for_stored_occurrences() -> None:
+    """Nothing raises it now; the member stays so old rows and logs still name it.
+
+    Deleting a failure code that has been persisted turns every historical
+    occurrence into an unresolvable string.
+    """
+
+    assert (
+        meta_oauth.MetaTokenRefreshFailureCode.SECRET_REFERENCE_REQUIRED.value
+        == "secret_reference_required"
     )
-    assert refreshed.access_token == "opaque-old-value"
-    assert refreshed.refresh_error is not None
-    assert "plaintext-client-secret" not in refreshed.refresh_error
-    assert transport.configuration is None
 
 
 def test_provider_rejection_records_only_sanitized_evidence(

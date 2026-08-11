@@ -12,7 +12,13 @@ from pydantic import (
     field_validator,
 )
 
-from app.models.support import TicketChannel, TicketCommentAuthorType, TicketPriority
+from app.models.support import (
+    TicketChannel,
+    TicketCommentAuthorType,
+    TicketPriority,
+    TicketStatus,
+    canonical_ticket_status_value,
+)
 from app.schemas.portal import CustomerSelfCareAction
 from app.schemas.status_presentation import StatusPresentation
 
@@ -44,7 +50,7 @@ class TicketBase(BaseModel):
     description: str | None = None
     description_is_internal: bool = True
     region: str | None = Field(default=None, max_length=80)
-    status: str | None = None
+    status: TicketStatus | None = None
     priority: str = TicketPriority.normal.value
     ticket_type: str | None = Field(default=None, max_length=80)
     channel: TicketChannel = TicketChannel.web
@@ -67,7 +73,14 @@ class TicketCreate(TicketBase):
     # Retained on TicketBase for historical response compatibility only.
     site_coordinator_person_id: None = None
 
-    @field_validator("status", "priority", "ticket_type", mode="before")
+    @field_validator("status", mode="before")
+    @classmethod
+    def _normalize_status(cls, value):
+        if value is None:
+            return value
+        return canonical_ticket_status_value(value)
+
+    @field_validator("priority", "ticket_type", mode="before")
     @classmethod
     def _normalize_text_fields(cls, value):
         if value is None:
@@ -96,7 +109,7 @@ class TicketUpdate(BaseModel):
     description: str | None = None
     description_is_internal: bool | None = None
     region: str | None = Field(default=None, max_length=80)
-    status: str | None = None
+    status: TicketStatus | None = None
     priority: str | None = None
     ticket_type: str | None = Field(default=None, max_length=80)
     # NCC complaints-return correction: setting either marks it agent-owned,
@@ -117,7 +130,14 @@ class TicketUpdate(BaseModel):
 
     assignee_person_ids: list[UUID] | None = None
 
-    @field_validator("status", "priority", "ticket_type", mode="before")
+    @field_validator("status", mode="before")
+    @classmethod
+    def _normalize_status(cls, value):
+        if value is None:
+            return value
+        return canonical_ticket_status_value(value)
+
+    @field_validator("priority", "ticket_type", mode="before")
     @classmethod
     def _normalize_update_text_fields(cls, value):
         if value is None:
@@ -174,10 +194,15 @@ class TicketRead(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    # Support-satisfaction rating (1-5) if the customer has rated this resolved
+    # Support-satisfaction rating (1-5) if the customer has rated this closed
     # ticket. Read from the ORM's `Ticket.csat_rating` property (backed by
     # metadata.csat) so the apps can show the score / hide the rate prompt.
     csat_rating: int | None = None
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def _canonicalize_legacy_status(cls, value):
+        return canonical_ticket_status_value(value)
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -197,7 +222,7 @@ class TicketRead(BaseModel):
 
 
 class TicketSatisfactionRequest(BaseModel):
-    """Customer CSAT on a resolved/closed support ticket."""
+    """Customer CSAT on a closed support ticket."""
 
     rating: int = Field(ge=1, le=5)
     comment: str | None = Field(default=None, max_length=2000)
@@ -209,11 +234,18 @@ class TicketResolutionDisputeRequest(BaseModel):
 
 class TicketBulkUpdateItem(BaseModel):
     ticket_id: UUID
-    status: str | None = None
+    status: TicketStatus | None = None
     priority: str | None = None
     assigned_to_person_id: UUID | None = None
 
-    @field_validator("status", "priority", mode="before")
+    @field_validator("status", mode="before")
+    @classmethod
+    def _normalize_status(cls, value):
+        if value is None:
+            return value
+        return canonical_ticket_status_value(value)
+
+    @field_validator("priority", mode="before")
     @classmethod
     def _normalize_bulk_text_fields(cls, value):
         if value is None:

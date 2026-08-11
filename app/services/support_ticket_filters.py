@@ -11,7 +11,12 @@ from __future__ import annotations
 from sqlalchemy import String, cast, exists, or_, select
 from sqlalchemy.sql.elements import ClauseElement, ColumnElement
 
-from app.models.support import Ticket, TicketAssignee, TicketChannel
+from app.models.support import (
+    Ticket,
+    TicketAssignee,
+    TicketChannel,
+    canonical_ticket_status_value,
+)
 from app.services.customer_support_links import (
     ticket_customer_link_filter,
     ticket_unlinked_customer_filter,
@@ -121,13 +126,42 @@ def _tags_expression(operator: str, value: object) -> ClauseElement:
     raise FilterValidationError(f"Operator '{operator}' is not allowed for tags")
 
 
+def _status_expression(operator: str, value: object) -> ClauseElement:
+    """Keep saved legacy filters aligned with the canonical closed status."""
+    if operator in {"is", "is not"}:
+        token = str(value).strip().lower() if value is not None else None
+        if token not in NULL_TOKENS:
+            raise FilterValidationError(
+                "status supports only NULL checks for 'is'/'is not'"
+            )
+        expression = Ticket.status.is_(None)
+        return expression if operator == "is" else ~expression
+
+    if operator in {"in", "not in"}:
+        statuses = list(
+            dict.fromkeys(
+                canonical_ticket_status_value(str(item))
+                for item in _coerce_list(value, "select")
+            )
+        )
+        expression = Ticket.status.in_(statuses)
+        return expression if operator == "in" else ~expression
+
+    status = canonical_ticket_status_value(str(_coerce_scalar(value, "select")))
+    if operator == "=":
+        return Ticket.status == status
+    if operator == "!=":
+        return Ticket.status != status
+    raise FilterValidationError(f"Operator '{operator}' is not allowed for status")
+
+
 TICKET_FILTER_SPECS: dict[str, FilterFieldSpec] = {
     "number": FilterFieldSpec(
         field="number", expression=Ticket.number, field_type="text"
     ),
     "title": FilterFieldSpec(field="title", expression=Ticket.title, field_type="text"),
     "status": FilterFieldSpec(
-        field="status", expression=Ticket.status, field_type="select"
+        field="status", field_type="select", builder=_status_expression
     ),
     "priority": FilterFieldSpec(
         field="priority", expression=Ticket.priority, field_type="select"

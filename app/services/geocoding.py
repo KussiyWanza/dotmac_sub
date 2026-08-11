@@ -20,36 +20,29 @@ _LAST_REQUEST_AT: dict[str, float] = {}
 
 
 def _secret_setting_value(db: Session, key: str) -> str | None:
-    """A geocoding provider credential, resolved rather than passed on raw.
+    """A geocoding provider credential, read through the resolver that decrypts it.
 
-    `google_api_key` and `mapbox_api_key` are declared `is_secret=True`, and
-    every write of a secret setting goes through
-    `DomainSettings._write_secret_ref`, which puts the value in OpenBao and
-    stores a `bao://secret/settings/geocoding#<key>` REFERENCE in `value_text`.
-    `_setting_value` returns that column verbatim, so wherever the key was
-    configured through the settings screen the provider received the literal
-    string `bao://…` as its API key and answered 401 — a broken feature whose
-    cause is two layers away from the error.
+    `_setting_value` reads `DomainSetting.value_text` straight off the row, and
+    a secret setting's column now holds `enc:<key_id>:<token>`. Only the kernel
+    resolver decrypts, so a direct row read would send the provider a
+    ciphertext string and collect a 401 — which is exactly the failure this
+    helper was added to fix, one storage format later.
 
-    The same defect `radius_auth.authenticate` had. Every other reader of a
-    secret setting in this codebase resolves it — `ai/security
-    .resolve_provider_api_key`, `email._resolve_secret_value` — and this one
-    did not.
-
-    A reference is dereferenced here, on a request path, which starter ADR-0009
-    forbids in the long run: these two settings are due to become ciphertext at
-    rest, decrypted by the kernel resolver with no network call. Until that
-    lands, matching the siblings is what makes the feature work at all, and it
-    is removed by that slice rather than left behind.
+    It was added in #2244 to dereference a `bao://` reference on this path,
+    with a note saying the encrypt-at-rest slice would delete it. This is that
+    slice, and the dereference is gone: `resolve_secret` remains only as
+    transition tolerance for a row the conversion script has not reached, and
+    passes plaintext through untouched.
     """
 
     from app.services.secrets import resolve_secret
+    from app.services.settings_spec import resolve_value
 
-    raw = _setting_value(db, key)
-    if raw is None:
+    resolved = resolve_value(db, SettingDomain.geocoding, key)
+    if not isinstance(resolved, str) or not resolved.strip():
         return None
     try:
-        return resolve_secret(raw)
+        return resolve_secret(resolved)
     except Exception:
         # Never let a secret-store failure escape as a provider error, and
         # never log the reference. The callers below raise "not configured",

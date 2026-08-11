@@ -187,7 +187,7 @@ def test_handoff_rejects_non_member_and_terminal_ticket(db_session):
     assert forbidden.value.code == "assigned_team_membership_required"
     assert db_session.query(WorkOrder).count() == 0
 
-    ticket.status = "resolved"
+    ticket.status = "closed"
     db_session.commit()
     with pytest.raises(
         ticket_work_order_handoff.TicketWorkOrderHandoffError

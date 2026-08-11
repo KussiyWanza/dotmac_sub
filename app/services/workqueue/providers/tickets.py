@@ -29,7 +29,6 @@ from app.services.workqueue.types import ActionKind, ItemKind, WorkqueueItem
 CLOSED_TICKET_STATUSES = (
     TicketStatus.closed.value,
     TicketStatus.canceled.value,
-    TicketStatus.resolved.value,
     TicketStatus.merged.value,
 )
 

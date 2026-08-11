@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 from datetime import UTC, datetime
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import ValidationError
@@ -48,6 +48,7 @@ async def receive_erp_material_status(
         raise HTTPException(
             status_code=404, detail="ERP material webhook binding not found"
         )
+    installation_id = execution.binding.installation_id
     raw = await request.body()
     if len(raw) > MAX_BODY_BYTES:
         raise HTTPException(
@@ -83,28 +84,40 @@ async def receive_erp_material_status(
             replayed=True,
         )
     receipt_id = receipt.id
-    command_id = uuid4()
-    db_session_adapter.release_read_transaction(db)
-    outcome = material_requests.observe_erp_material_status(
-        db,
-        material_requests.ObserveErpMaterialStatus(
-            context=CommandContext(
-                command_id=command_id,
-                correlation_id=command_id,
-                actor=f"integration:{execution.binding.installation_id}",
-                scope=ERP_MATERIAL_STATUS_WEBHOOK_CAPABILITY,
-                reason="Observe ERP material request status",
-                idempotency_key=delivery_id,
-            ),
-            request_id=payload.omni_id,
-            provider_request_id=payload.request_number or payload.request_id,
-            provider_status=payload.new_status,
-            observed_at=payload.updated_at or datetime.now(UTC),
-            serial_numbers_by_sequence=tuple(
-                (line.sequence, line.serial_numbers) for line in payload.items
-            ),
-        ),
+    command_id = uuid5(
+        NAMESPACE_URL,
+        f"erp-material-status:{capability_binding_id}:{delivery_id}",
     )
+    db_session_adapter.release_read_transaction(db)
+    try:
+        outcome = material_requests.observe_erp_material_status(
+            db,
+            material_requests.ObserveErpMaterialStatus(
+                context=CommandContext(
+                    command_id=command_id,
+                    correlation_id=command_id,
+                    actor=f"integration:{installation_id}",
+                    scope=ERP_MATERIAL_STATUS_WEBHOOK_CAPABILITY,
+                    reason="Observe ERP material request status",
+                    idempotency_key=delivery_id,
+                ),
+                request_id=payload.omni_id,
+                provider_request_id=payload.request_number or payload.request_id,
+                provider_status=payload.new_status,
+                observed_at=payload.updated_at or datetime.now(UTC),
+                serial_numbers_by_sequence=tuple(
+                    (line.sequence, line.serial_numbers) for line in payload.items
+                ),
+            ),
+        )
+    except Exception as exc:
+        integration_inbox.fail_claimed_consequence(
+            db,
+            receipt_id=receipt_id,
+            error_code="erp_material_status_consequence_failed",
+            error_detail=type(exc).__name__,
+        )
+        raise
     current = integration_inbox.get_receipt(db, receipt_id=receipt_id)
     integration_inbox.complete_consequence(
         db,
