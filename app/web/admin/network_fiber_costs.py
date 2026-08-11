@@ -39,6 +39,22 @@ def _redirect_with_error(message: str) -> RedirectResponse:
     return RedirectResponse(f"{_LIST_URL}?error={quote(message)}", status_code=303)
 
 
+def _actor_id(request: Request) -> str | None:
+    """Who is making the change, for the audit record.
+
+    Same shape as the billing adapters: an audit row that cannot name an actor
+    records None honestly rather than inventing one.
+    """
+
+    from app.web.admin import get_current_user
+
+    current_user = get_current_user(request)
+    if not current_user:
+        return None
+    value = current_user.get("actor_id") or current_user.get("subscriber_id")
+    return str(value) if value else None
+
+
 def _base_context(request: Request, db: Session, active_page: str) -> dict:
     from app.web.admin import get_current_user, get_sidebar_stats
 
@@ -96,6 +112,7 @@ def fiber_cost_item_create(
         action="create",
         entity_type="fiber_cost_item",
         entity_id=str(item.id),
+        actor_id=_actor_id(request),
     )
     return RedirectResponse(_LIST_URL, status_code=303)
 
@@ -136,5 +153,6 @@ def fiber_cost_item_update(
         action="update",
         entity_type="fiber_cost_item",
         entity_id=str(item.id),
+        actor_id=_actor_id(request),
     )
     return RedirectResponse(_LIST_URL, status_code=303)
