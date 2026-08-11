@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import WebSocket
 
+from app.models.system_user import SystemUser
 from app.services.auth_dependencies import claims_for_principal
 from app.services.auth_flow import decode_access_token
 from app.services.db_session_adapter import db_session_adapter
@@ -96,10 +97,20 @@ async def authenticate_websocket(websocket: WebSocket) -> dict | None:
         roles, scopes = claims_for_principal(
             db, str(subscriber_id), principal_type, payload
         )
+        display_name = None
+        if principal_type == "system_user":
+            user = db.get(SystemUser, subscriber_id)
+            if user is not None:
+                display_name = (
+                    user.display_name
+                    or f"{user.first_name} {user.last_name}".strip()
+                    or user.email
+                )
         return {
             "subscriber_id": str(subscriber_id),
             "principal_id": str(subscriber_id),
             "principal_type": principal_type,
+            "display_name": display_name,
             "session_id": session_id,
             "roles": roles,
             "scopes": scopes,
