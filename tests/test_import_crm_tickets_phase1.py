@@ -16,11 +16,17 @@ from scripts.migration.import_crm_tickets_phase1 import (
     _state_since,
     _state_watermark,
     _write_state,
+    canonical_ticket_status,
     decide_unmapped_ticket,
     derive_comment_author,
     plan_comment_sweep,
     resolve_sweep_since,
 )
+
+
+def test_legacy_resolved_import_status_is_canonical_closed() -> None:
+    assert canonical_ticket_status("resolved") == "closed"
+    assert canonical_ticket_status("open") == "open"
 
 
 def test_unmapped_override_map_wins() -> None:

@@ -38,6 +38,16 @@ def test_support_status_color_configuration_is_retired() -> None:
     assert "status_color_statuses" not in combined
 
 
+def test_support_status_surfaces_do_not_advertise_legacy_resolved_status() -> None:
+    settings_template = _read("templates/admin/system/ticket_settings.html")
+    confirmation_template = _read("templates/public/ticket_confirm.html")
+    mobile_ticket = _read("mobile/lib/src/models/ticket.dart")
+
+    assert "<code>resolved</code>" not in settings_template
+    assert ">Resolved {{ ticket.resolved_at" not in confirmation_template
+    assert "status != 'resolved'" not in mobile_ticket
+
+
 def test_customer_mobile_ticket_surfaces_render_server_presentation() -> None:
     status_chip = _read("mobile/lib/src/widgets/status_chip.dart")
     tickets = _read("mobile/lib/src/features/support/tickets_screen.dart")

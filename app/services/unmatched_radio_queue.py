@@ -67,7 +67,6 @@ REASON_AP_UNRESOLVED = "ap_unresolved"
 DEFAULT_GRACE_HOURS = 6
 
 _CLOSED_STATUSES = {
-    TicketStatus.resolved.value,
     TicketStatus.closed.value,
     TicketStatus.canceled.value,
     TicketStatus.merged.value,
@@ -192,8 +191,13 @@ def open_item(
 
 def close_item(db: Session, ticket: Ticket, resolution: str) -> None:
     now = _now()
-    ticket.status = TicketStatus.resolved.value
+    support_service.transition_ticket_status(
+        ticket,
+        TicketStatus.closed,
+        source="unmatched_radio_queue",
+    )
     ticket.resolved_at = now
+    ticket.closed_at = now
     meta = dict(ticket.metadata_ or {})
     meta["resolution"] = resolution
     meta["resolved_by"] = "unmatched_radio_queue"

@@ -419,25 +419,31 @@ def test_link_and_merge_form_reject_invalid_target_uuid(db_session):
         )
 
 
-def test_ticket_resolved_and_closed_set_timestamps(db_session, subscriber):
+def test_ticket_legacy_resolved_create_and_update_are_stored_as_closed(
+    db_session, subscriber
+):
+    created = support_service.tickets.create(
+        db_session,
+        TicketCreate(
+            title="Legacy create",
+            subscriber_id=subscriber.id,
+            status="resolved",
+        ),
+        actor_id=str(subscriber.id),
+    )
+    assert created.status == "closed"
+
     ticket = support_service.tickets.create(
         db_session, _ticket_payload(subscriber.id), actor_id=str(subscriber.id)
     )
 
-    resolved = support_service.tickets.update(
+    closed = support_service.tickets.update(
         db_session,
         str(ticket.id),
         TicketUpdate(status="resolved"),
         actor_id=str(subscriber.id),
     )
-    assert resolved.resolved_at is not None
-
-    closed = support_service.tickets.update(
-        db_session,
-        str(ticket.id),
-        TicketUpdate(status="closed"),
-        actor_id=str(subscriber.id),
-    )
+    assert closed.status == "closed"
     assert closed.closed_at is not None
 
 
@@ -1378,7 +1384,7 @@ def test_ticket_automation_is_suppressed_for_low_confidence_identity(
         trigger=AutomationTrigger.ticket_created,
         action_type=AutomationActionType.set_status,
         action_value=support_automation_rules.TicketAutomationAction(
-            status="pending_customer"
+            status=TicketStatus.pending
         ),
     )
     db_session.commit()

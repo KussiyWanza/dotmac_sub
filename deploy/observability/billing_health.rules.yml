@@ -90,8 +90,13 @@ groups:
             legitimate hold — issue it, void it, or hold it deliberately — but
             the backlog should not accumulate unattended.
 
+      # `scope` is load-bearing here. The signal carries several series: `all`
+      # is the live violation total, `opening_balance` is the balance carried
+      # in at the Splynx handoff — 13,312 rows that no reconciler can allocate
+      # and which the snapshot deliberately never raises as an anomaly. Without
+      # the selector this rule sums both and fires on migration carry-in.
       - alert: SubAccountCreditInvariantViolationsGrowing
-        expr: delta(observability_state{domain="billing_health",signal="account_credit_invariant_violations"}[6h]) > 0
+        expr: delta(observability_state{domain="billing_health",signal="account_credit_invariant_violations",scope="all"}[6h]) > 0
         for: 1h
         labels:
           severity: warning
@@ -100,9 +105,10 @@ groups:
         annotations:
           summary: "Account credit invariant violations are increasing"
           description: >
-            Violations grew by {{ $value }} in 6h. Customer credit no longer
-            reconciles to its allocations, and the count rising means something
-            is still writing them rather than only historical drift remaining.
+            Live violations grew by {{ $value }} in 6h, so something is still
+            writing them rather than only historical drift remaining. Break the
+            total down by scope to see which invariant:
+            observability_state{domain="billing_health",signal="account_credit_invariant_violations"}
 
       # --- Exposure that cannot be measured is not the same as zero exposure.
       - alert: SubNegativePrepaidExposureUnmeasurable

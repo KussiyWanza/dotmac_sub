@@ -10,7 +10,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from app.models.support import Ticket
+from app.models.support import Ticket, TicketStatus
 from app.schemas.support import TicketBulkUpdateItem, TicketBulkUpdateRequest
 from app.services import support as support_service
 from app.services import support_ticket_settings
@@ -104,10 +104,11 @@ def _normalize_changes(db: Session, raw_updates: object) -> SupportTicketBulkCha
         raise ValueError("updates must be an object")
 
     status: str | None = None
-    if raw_updates.get("status") not in (None, ""):
-        status = support_ticket_settings.normalize_ticket_status(
-            str(raw_updates.get("status"))
-        )
+    raw_status = raw_updates.get("status")
+    if raw_status not in (None, ""):
+        if not isinstance(raw_status, (TicketStatus, str)):
+            raise ValueError("Select a configured ticket status")
+        status = support_ticket_settings.normalize_ticket_status(raw_status)
         configured_statuses = set(support_ticket_settings.list_status_options(db))
         if not status or status not in configured_statuses:
             raise ValueError("Select a configured ticket status")
@@ -254,7 +255,9 @@ def execute_support_ticket_bulk_update(
     items = [
         TicketBulkUpdateItem(
             ticket_id=UUID(ticket_id),
-            status=preview.changes.status,
+            status=(
+                TicketStatus(preview.changes.status) if preview.changes.status else None
+            ),
             priority=preview.changes.priority,
             assigned_to_person_id=(
                 UUID(preview.changes.assigned_to_person_id)

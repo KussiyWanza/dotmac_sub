@@ -633,7 +633,7 @@ def customer_support_rate(
     comment: str = Form(""),
     db: Session = Depends(get_db),
 ) -> Response:
-    """Submit a support-satisfaction (CSAT) rating on a resolved/closed ticket,
+    """Submit a support-satisfaction (CSAT) rating on a closed ticket,
     then redirect back to the ticket with a toast flag."""
     customer = get_current_customer_from_request(request, db)
     if not customer:

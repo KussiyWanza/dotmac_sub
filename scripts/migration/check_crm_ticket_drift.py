@@ -85,8 +85,8 @@ from scripts.migration.import_crm_tickets_phase1 import (  # noqa: E402
 
 DEFAULT_UPDATED_WITHIN_MINUTES = 30
 
-# The merged vocabulary maps 1:1 (spec §1.3): nothing in CRM maps to sub's
-# ``resolved``; unknown values pass through verbatim (preflight gates them).
+# CRM ``resolved`` is a legacy transport value for native ``closed``. Unknown
+# values pass through verbatim so preflight can gate them explicitly.
 CRM_TO_SUB_STATUS = {
     "new": "new",
     "open": "open",
@@ -96,6 +96,7 @@ CRM_TO_SUB_STATUS = {
     "site_under_construction": "site_under_construction",
     "on_hold": "on_hold",
     "pending_confirmation": "pending_confirmation",
+    "resolved": "closed",
     "closed": "closed",
     "canceled": "canceled",
     "merged": "merged",

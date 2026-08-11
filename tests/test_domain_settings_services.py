@@ -85,16 +85,21 @@ def test_ensure_by_key_returns_concurrent_insert(db_session, monkeypatch):
 
 
 def test_secret_update_preserves_existing_classification(db_session, monkeypatch):
+    """A secret stays secret across an update, and is stored unreadable.
+
+    This used to assert the value became a `bao://` REFERENCE and that OpenBao
+    received a write. Both were the old storage — and the reference is exactly
+    what three call sites then forwarded to a provider as if it were the
+    secret. What the test is FOR, that an update must not silently declassify a
+    secret, holds either way and is asserted against the new storage.
+    """
+
+    from cryptography.fernet import Fernet
+    from dotmac_kernel.settings_crypto import is_encrypted
+
+    monkeypatch.setenv("SETTINGS_ENCRYPTION_KEY", Fernet.generate_key().decode())
     settings = domain_settings_service.DomainSettings(domain=SettingDomain.auth)
     monkeypatch.setattr(settings, "_allow_plain_secret_fallback", lambda _db: False)
-    monkeypatch.setattr(domain_settings_service, "is_openbao_available", lambda: True)
-    monkeypatch.setattr(domain_settings_service, "read_secret_fields", lambda _path: {})
-    writes: list[tuple[str, dict[str, str]]] = []
-    monkeypatch.setattr(
-        domain_settings_service,
-        "write_secret",
-        lambda path, data: writes.append((path, data)) or True,
-    )
 
     created = settings.create(
         db_session,
@@ -113,5 +118,5 @@ def test_secret_update_preserves_existing_classification(db_session, monkeypatch
     )
 
     assert updated.is_secret is True
-    assert updated.value_text == "bao://secret/settings/auth#jwt_secret"
-    assert writes[-1] == ("settings/auth", {"jwt_secret": "second-secret"})
+    assert is_encrypted(updated.value_text)
+    assert "second-secret" not in updated.value_text

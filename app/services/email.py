@@ -256,6 +256,32 @@ def _setting_value(db: Session | None, key: str) -> str | None:
     return _setting_value_for_domain(db, SettingDomain.notification, key)
 
 
+def _secret_setting_value(db: Session | None, key: str) -> str | None:
+    """A secret notification setting, read through the resolver that decrypts it.
+
+    `_setting_value` reads `DomainSetting.value_text` straight off the row, and
+    a secret setting's column now holds `enc:<key_id>:<token>`. Only the kernel
+    resolver decrypts — it is the one reader that knows the row is secret and
+    holds the key — so a direct row read would hand SMTP a ciphertext string
+    and authentication would fail with a password-shaped error.
+
+    `resolve_secret` afterwards is the transition tolerance, not the mechanism:
+    a row the conversion script has not reached still holds a `bao://` reference,
+    which resolves as it always did. It passes plaintext through untouched, so
+    it becomes a no-op once no references remain and comes out with them.
+    """
+
+    from app.models.domain_settings import SettingDomain as _Domain
+    from app.services.settings_spec import resolve_value
+
+    if db is None:
+        return None
+    resolved = resolve_value(db, _Domain.notification, key)
+    if not isinstance(resolved, str) or not resolved.strip():
+        return None
+    return _resolve_secret_value(resolved)
+
+
 def _setting_value_for_domain(
     db: Session | None,
     domain: SettingDomain,
@@ -301,9 +327,8 @@ def _legacy_smtp_config(db: Session | None) -> dict:
         or "localhost",
         "port": _env_int("SMTP_PORT", 587),
         "username": username,
-        "password": _resolve_secret_value(
-            _env_value("SMTP_PASSWORD") or _setting_value(db, "smtp_password")
-        )
+        "password": _env_value("SMTP_PASSWORD")
+        or _secret_setting_value(db, "smtp_password")
         or _bao_secret("notifications", "smtp_password"),
         "use_tls": use_tls,
         "use_ssl": use_ssl,

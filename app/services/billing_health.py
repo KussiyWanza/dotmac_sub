@@ -20,7 +20,8 @@ Signals:
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -185,6 +186,13 @@ class BillingHealthSnapshot:
     billing_profile_mismatch_count: int = 0
     billing_profile_mixed_count: int = 0
     account_credit_invariant_count: int = 0
+    # The seven invariants behind that total, kept apart because they are not
+    # the same defect: unapplied credit while an invoice is payable is a
+    # customer-visible billing error, an over-allocated payment or a duplicate
+    # provider reference is money correctness, and an unresolved deposit
+    # webhook is an integration gap. Summed into one integer the count says
+    # something is wrong and nothing about what, so no one can act on it.
+    account_credit_invariant_breakdown: Mapping[str, int] = field(default_factory=dict)
     # Drafts nobody has come back to. Reported, never acted on.
     aged_draft_count: int = 0
     aged_draft_total: Decimal = Decimal("0.00")
@@ -312,6 +320,15 @@ def billing_health_observations(snapshot: BillingHealthSnapshot):  # noqa: ANN20
             "account_credit_invariant_violations",
             "opening_balance",
             snapshot.account_credit_invariant_opening_balance_count,
+        ),
+        # Per-invariant scopes. Without these the `all` total names a number and
+        # not a defect, so the first question an operator asks — which invariant
+        # is failing — cannot be answered from the metric at all.
+        *(
+            ("account_credit_invariant_violations", scope, count)
+            for scope, count in sorted(
+                snapshot.account_credit_invariant_breakdown.items()
+            )
         ),
         (
             "unbilled_active_subscriptions",
@@ -826,9 +843,8 @@ def billing_health_snapshot(
     profile_mismatch_count, profile_mixed_count = billing_profile_integrity(db)
     from app.services.billing.account_credit import AccountCreditApplications
 
-    account_credit_invariant_count = AccountCreditApplications.summarize_invariants(
-        db
-    ).total
+    account_credit_invariants = AccountCreditApplications.summarize_invariants(db)
+    account_credit_invariant_count = account_credit_invariants.total
     account_credit_invariant_opening_balance_count = (
         AccountCreditApplications.count_opening_balance_underfunded_invoices(db)
     )
@@ -861,6 +877,27 @@ def billing_health_snapshot(
         billing_profile_mismatch_count=profile_mismatch_count,
         billing_profile_mixed_count=profile_mixed_count,
         account_credit_invariant_count=account_credit_invariant_count,
+        account_credit_invariant_breakdown={
+            "eligible_invoice_with_unused_credit": (
+                account_credit_invariants.eligible_invoice_with_unused_credit
+            ),
+            "payment_overallocated": account_credit_invariants.payment_overallocated,
+            "negative_payment_credit_source_availability": (
+                account_credit_invariants.negative_payment_credit_source_availability
+            ),
+            "paid_invoice_underfunded": (
+                account_credit_invariants.paid_invoice_underfunded
+            ),
+            "settled_deposit_without_exact_payment": (
+                account_credit_invariants.settled_deposit_without_exact_payment
+            ),
+            "duplicate_provider_reference": (
+                account_credit_invariants.duplicate_provider_reference
+            ),
+            "deposit_webhook_unresolved": (
+                account_credit_invariants.deposit_webhook_unresolved
+            ),
+        },
         account_credit_invariant_opening_balance_count=(
             account_credit_invariant_opening_balance_count
         ),

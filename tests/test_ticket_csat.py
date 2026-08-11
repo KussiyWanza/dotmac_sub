@@ -1,11 +1,11 @@
-"""Support-satisfaction (CSAT) rating on resolved/closed tickets."""
+"""Support-satisfaction (CSAT) rating on closed tickets."""
 
 import pytest
 
 from app.services.domain_errors import DomainError
 
 
-def _ticket(db_session, subscriber, status="resolved"):
+def _ticket(db_session, subscriber, status="closed"):
     from app.models.support import Ticket
 
     ticket = Ticket(subscriber_id=subscriber.id, title="Slow speeds", status=status)
@@ -18,7 +18,7 @@ class TestTicketCsat:
     def test_set_satisfaction_stores_rating(self, db_session, subscriber):
         from app.services import support as support_service
 
-        ticket = _ticket(db_session, subscriber, status="resolved")
+        ticket = _ticket(db_session, subscriber, status="closed")
         out = support_service.Tickets.set_satisfaction(
             db_session, ticket, rating=5, comment="Great help"
         )
@@ -47,5 +47,5 @@ class TestTicketCsat:
         assert ticket.csat_rating is None
 
     def test_unrated_ticket_property_is_none(self, db_session, subscriber):
-        ticket = _ticket(db_session, subscriber, status="resolved")
+        ticket = _ticket(db_session, subscriber, status="closed")
         assert ticket.csat_rating is None

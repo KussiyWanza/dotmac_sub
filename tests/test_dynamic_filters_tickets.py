@@ -129,6 +129,34 @@ def test_list_applies_and_or_filter_groups(db_session):
     assert closed_high.id not in ids
 
 
+def test_legacy_resolved_filters_select_canonical_closed_tickets(db_session):
+    closed = _ticket(status="closed")
+    open_ticket = _ticket(status="open")
+    db_session.add_all([closed, open_ticket])
+    db_session.commit()
+
+    simple_rows = support_service.tickets.list(db_session, status="resolved", limit=50)
+    advanced_rows = support_service.tickets.list(
+        db_session,
+        filters=json.dumps([["Ticket", "status", "=", "resolved"]]),
+        limit=50,
+    )
+
+    assert {ticket.id for ticket in simple_rows} == {closed.id}
+    assert {ticket.id for ticket in advanced_rows} == {closed.id}
+    assert open_ticket.id not in {ticket.id for ticket in simple_rows}
+
+
+def test_status_totals_never_return_legacy_resolved_key(db_session):
+    db_session.add_all([_ticket(status="closed"), _ticket(status="resolved")])
+    db_session.commit()
+
+    totals = support_service.status_totals(db_session)
+
+    assert "resolved" not in totals
+    assert totals["closed"] >= 2
+
+
 def test_list_applies_crm_shape_inline_or_group(db_session):
     abuja_high = _ticket(priority="high", region="abuja")
     abuja_urgent = _ticket(priority="urgent", region="abuja")

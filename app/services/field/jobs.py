@@ -23,6 +23,7 @@ from app.models.dispatch import (
 )
 from app.models.field_vendor import FieldVendor, FieldVendorUser
 from app.models.subscriber import Subscriber
+from app.models.support import canonical_ticket_status_value
 from app.models.system_user import SystemUser
 from app.models.work_order import WorkOrder
 from app.schemas.field import (
@@ -335,7 +336,7 @@ def _customer_experience(row: WorkOrder) -> FieldCustomerExperienceContext:
             id=origin_ticket.id,
             number=origin_ticket.number,
             title=origin_ticket.title,
-            status=origin_ticket.status,
+            status=canonical_ticket_status_value(origin_ticket.status),
             status_presentation=ticket_status_presentation(origin_ticket.status),
         )
         if origin_ticket is not None
@@ -344,7 +345,7 @@ def _customer_experience(row: WorkOrder) -> FieldCustomerExperienceContext:
             id=task_ticket.id,
             number=task_ticket.number,
             title=task_ticket.title,
-            status=task_ticket.status,
+            status=canonical_ticket_status_value(task_ticket.status),
             status_presentation=ticket_status_presentation(task_ticket.status),
         )
         if task_ticket is not None

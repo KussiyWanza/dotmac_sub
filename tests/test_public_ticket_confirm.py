@@ -89,6 +89,30 @@ def test_ticket_confirm_page_marks_token_accessed(db_session, subscriber, monkey
     assert token_row.accessed_at is not None
 
 
+def test_ticket_confirm_page_never_projects_legacy_resolved_status(
+    db_session, subscriber, monkeypatch
+):
+    captured = _capture_template(monkeypatch)
+    ticket = support_service.tickets.create(
+        db_session,
+        _ticket_payload(subscriber.id),
+        actor_id=str(subscriber.id),
+    )
+    ticket.status = "resolved"
+    token_row = support_service.ticket_access_tokens.mint(db_session, ticket)
+    raw_token = token_row.raw_token
+    assert raw_token
+    db_session.commit()
+
+    ticket_confirm_routes.confirmation_page(
+        SimpleNamespace(),
+        raw_token,
+        db_session,
+    )
+
+    assert captured["context"]["ticket"]["status"] == "closed"
+
+
 def test_ticket_confirm_page_confirm_action_closes_ticket(
     db_session, subscriber, monkeypatch
 ):

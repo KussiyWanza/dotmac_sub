@@ -110,7 +110,7 @@ class TestNativeAgentWorkqueue:
         ticket = e2e_db.get(Ticket, workqueue_ticket["ticket_id"])
         assert ticket is not None
         assert ticket.assigned_to_person_id == workqueue_ticket["system_user_id"]
-        assert ticket.status == TicketStatus.resolved.value
+        assert ticket.status == TicketStatus.closed.value
 
     def test_narrow_view_keeps_filters_and_primary_action_usable(
         self,

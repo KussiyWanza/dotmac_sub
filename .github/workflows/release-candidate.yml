@@ -1,9 +1,10 @@
 name: Build release candidate once
 
-# Explicitly build the final current dev commit after its source and rolling
-# version pull requests have landed. The output is one immutable OCI digest and
-# a typed evidence artifact; staging consumes the digest, never the bootstrap
-# tag. Ordinary pushes do not invoke this workflow.
+# Explicitly build the current intended dev commit by full SHA. The output is
+# one immutable OCI digest and a typed evidence artifact; staging consumes the
+# digest, never a mutable branch or bootstrap tag. Ordinary pushes do not invoke
+# this workflow, and an open rolling version-bump pull request is not deployment
+# authority for the already-selected candidate.
 on:
   workflow_dispatch:
     inputs:

@@ -1974,7 +1974,7 @@ def _unmatched_radio_queue_metric(db: Session) -> CoverageMetric:
     from app.models.support import Ticket
     from app.services.status_presentation import coverage_metric_presentation
 
-    resolved = ("resolved", "closed", "canceled", "merged")
+    resolved = ("closed", "canceled", "merged")
     open_query = db.query(Ticket).filter(
         Ticket.ticket_type == "unmatched_radio",
         ~Ticket.status.in_(resolved),

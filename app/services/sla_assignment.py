@@ -29,7 +29,6 @@ DEFAULT_TICKET_SLA_POLICY_NAME = "Ticket Resolution SLA"
 
 SLA_COMPLETE_STATUSES = frozenset(
     {
-        TicketStatus.resolved.value,
         TicketStatus.pending_confirmation.value,
         TicketStatus.closed.value,
         TicketStatus.canceled.value,

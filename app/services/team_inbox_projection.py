@@ -15,6 +15,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.service_team import ServiceTeamMember
+from app.models.support import canonical_ticket_status_value
 from app.models.system_user import SystemUser
 from app.models.team_inbox import (
     InboxAgentPresence,
@@ -955,7 +956,7 @@ def build_ai_reply_projection(
             {
                 "number": ticket.number,
                 "title": ticket.title,
-                "status": ticket.status,
+                "status": canonical_ticket_status_value(ticket.status),
                 "type": ticket.ticket_type,
                 "priority": ticket.priority,
             }
