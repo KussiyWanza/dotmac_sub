@@ -46,6 +46,7 @@ SessionLocal = db_session_adapter.create_session
 
 # Make the white-label `brand` value available to every Jinja2 template. Must run
 # before the (lazily imported) web routers create their Jinja2Templates instances.
+from app.ui import UI_ASSET_DIRECTORY, UI_ASSET_MOUNT  # noqa: E402
 from app.web.brand_globals import install_brand_jinja_global  # noqa: E402
 
 install_brand_jinja_global()
@@ -1527,6 +1528,14 @@ def _include_api_router(router, dependencies=None):
     app.include_router(router, prefix="/api/v1", dependencies=dependencies)
 
 
+# The namespaced package mount MUST precede Sub's catch-all /static mount.
+# Serving the installed artifact directly keeps dotmac-ui the one writer of its
+# own compiled CSS; no copy of it is checked into this repository.
+app.mount(
+    UI_ASSET_MOUNT,
+    StaticFiles(directory=UI_ASSET_DIRECTORY),
+    name="dotmac_ui_static",
+)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 

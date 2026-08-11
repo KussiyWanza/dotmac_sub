@@ -23,14 +23,21 @@ Staging is NOT a strict subset of what was kept, which is why this landed as
 its own reviewed change rather than riding along with the earlier retirements.
 Roughly 10,631 churned Splynx customers, 36 tickets, and the raw per-session
 telemetry (13.3M statistics rows, 3.1M traffic counters) exist nowhere else.
-Those were archived before this revision was written:
+Those were archived before this revision was written, as
+`splynx_staging_2026-08-11.dump` (601 MiB, pg_dump custom format):
 
-    dotmac-private/db-archives/splynx_staging_2026-08-11.dump
     sha256 20b2e815e0da4006d3b501a7fea4c36b0645fdae1fb0e3c81fd7e18c0980e2fd
 
 The archive was verified table-by-table against the live schema -- same 42
 tables, every row count identical, 22,896,640 rows total -- and its checksum
 was confirmed after round-tripping back out of object storage.
+
+It has since been handed to Michael and deleted from Dotmac infrastructure at
+his instruction, so **there is no copy on any Dotmac host or bucket**. The
+checksum is kept here so a returned copy can be proven to be that archive
+before anyone restores from it. Do not write a path here: a recovery pointer
+that has quietly stopped resolving is worse than none, which is the failure
+mode that produced the predecessor to this very revision.
 
 CASCADE rather than 42 ordered DROP TABLEs: the tables carry foreign keys
 among themselves, so a hand-maintained order is error-prone bulk for DDL that
@@ -125,7 +132,8 @@ def downgrade() -> None:
     through it during chain tests and rehearsals, and a hard failure here would
     block unwinding migrations that have nothing to do with this schema.
 
-    So this does nothing, and the data is recovered out of band:
+    So this does nothing. Recovery is out of band and requires the archive
+    described in the module docstring, which is held off Dotmac infrastructure:
 
-        pg_restore -n splynx_staging <the archive named in the module docstring>
+        pg_restore -n splynx_staging <that archive>
     """

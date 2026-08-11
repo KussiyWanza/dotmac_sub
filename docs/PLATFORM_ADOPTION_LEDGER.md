@@ -42,6 +42,19 @@ exists to hold.
 
 ## Pin history
 
+**2026-08-11 — `dotmac-ui` `0.1.0a3` pinned (new distribution).** A SECOND
+platform distribution enters this ledger. Nothing in this document's kernel
+allowlist, module classification or collision inventory applies to it:
+`dotmac-ui` has zero runtime dependencies, no models, no migrations and no
+runtime behaviour — it publishes design tokens and a compiled stylesheet. Sub
+is its second consumer (Academy was first).
+
+Rationale, boundaries, and the two findings the adoption measured — Sub's
+`src/css/` tree is dead code, and Sub's live token file shares the package's
+role NAMES but not its values — are in
+[`docs/adr/0010-adopt-shared-ui-contract.md`](adr/0010-adopt-shared-ui-contract.md).
+Guarded by `tests/architecture/test_dotmac_ui_adoption.py`.
+
 **2026-08-09 — `0.1.0a23` → `0.1.0a27`.** Taken because the settings cutover
 needs a value type that did not exist at a23.
 

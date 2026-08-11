@@ -48,6 +48,7 @@ dependencies = [
     "dotmac-integration-client",
     "defusedxml==0.7.1",
     "dotmac-kernel==0.1.0a27",
+    "dotmac-ui==0.1.0a3",
 ]
 
 [tool.poetry]
@@ -62,6 +63,13 @@ package-mode = false
 [tool.poetry.dependencies]
 dotmac-integration-client = { git = "https://github.com/michaelayoade/dotmac-integration-client.git", tag = "v0.1.1" }
 dotmac-kernel = { version = "0.1.0a27", source = "forgejo" }
+
+# The shared presentation contract. Pinned exactly for the same reason as the
+# kernel: a token vocabulary change is reviewed deliberately, never pulled in
+# by an unrelated lock refresh. Sub is its second consumer — the package's role
+# names were derived from Sub's own design-system.css, so this adoption is Sub
+# reclaiming its vocabulary from a shared owner, not learning a new one.
+dotmac-ui = { version = "0.1.0a3", source = "forgejo" }
 
 # Same-source enrichment for the dev-group `dotmac-kernel[testing]` entry in
 # [dependency-groups] below.
