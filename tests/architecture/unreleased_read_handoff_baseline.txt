@@ -12,7 +12,6 @@ resolve_boolean 3 app/tasks/gis.py
 resolve_value 1 app/services/web_billing_invoice_forms.py
 resolve_value 1 app/services/web_catalog_offers.py
 resolve_value 4 app/services/web_catalog_subscriptions.py
-resolve_value 1 app/services/web_network_fiber.py
 resolve_value 1 app/services/web_subscriber_forms.py
 resolve_value 1 app/services/web_system_export_tool.py
 resolve_value 6 app/services/web_system_health.py

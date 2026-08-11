@@ -281,6 +281,10 @@ from app.models.fiber_change_request import (  # noqa: F401
     FiberChangeRequestOperation,
     FiberChangeRequestStatus,
 )
+from app.models.fiber_cost_item import (  # noqa: F401
+    FiberCostItem,
+    FiberCostUnit,
+)
 from app.models.fiber_physical import (  # noqa: F401
     FiberConnectorPort,
     FiberCoreSplice,
