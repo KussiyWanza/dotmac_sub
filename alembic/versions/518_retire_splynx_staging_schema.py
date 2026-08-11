@@ -1,7 +1,7 @@
 """Retire the splynx_staging import landing schema.
 
-Revision ID: 517_retire_splynx_staging_schema
-Revises: 516_material_request_erp_submission
+Revision ID: 518_retire_splynx_staging_schema
+Revises: 517_close_legacy_resolved_tickets
 Create Date: 2026-08-11
 
 `splynx_staging` is the raw landing area the original Splynx import tooling
@@ -55,8 +55,8 @@ from sqlalchemy import text
 
 from alembic import op
 
-revision = "517_retire_splynx_staging_schema"
-down_revision = "516_material_request_erp_submission"
+revision = "518_retire_splynx_staging_schema"
+down_revision = "517_close_legacy_resolved_tickets"
 branch_labels = None
 depends_on = None
 
