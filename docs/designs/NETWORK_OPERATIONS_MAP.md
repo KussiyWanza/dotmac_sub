@@ -26,6 +26,20 @@ once through `to_template_context()`. The template does not query models,
 inspect accounting rows, derive connectivity, map raw state to semantic colors,
 or generate customer relationship URLs from imported identifiers.
 
+## Dispatch plant subset
+
+`ui.network_map_projection` also owns `NetworkMapPlantProjection`, the
+read-only GeoJSON subset served by `GET /admin/network/map/plant-data` for the
+dispatch live map. It reads only plant identity, geometry, and cached device
+state: PoP/BTS sites, network devices, OLTs positioned through their matched
+network-device and PoP relation, FDHs, closures, access points, service
+buildings, and feeder/distribution/drop routes. Customers, ONTs, subscriptions,
+and session resolution are explicitly outside this query. Active OLTs without a
+matched, mapped network device are omitted and reported as `unmatched_olts`.
+The endpoint requires `network:map:read`; the dispatch route retains only
+`operations:dispatch:read` and omits plant controls for viewers without the
+additional permission.
+
 ## Page contract
 
 - Screen: `admin.network.operations_map`; incident/NOC investigation page.

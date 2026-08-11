@@ -724,6 +724,7 @@ DOMAIN = DomainSOT(
             module="app.services.network_map",
             owns=(
                 "comprehensive network map typed projection",
+                "dispatch plant-subset map projection",
                 "customer access-session map presentation",
                 "network map customer drill-down projection",
             ),
@@ -760,6 +761,15 @@ DOMAIN = DomainSOT(
                             "binary device operation verdict",
                             "canonical mapped customer addresses",
                             "map projection limit",
+                        ),
+                    ),
+                    ConcernContract(
+                        name="dispatch plant-subset map projection",
+                        role=OwnerRole.RESOLVER,
+                        input_names=(
+                            "canonical network inventory and geometry",
+                            "validated fiber route geometry",
+                            "binary device operation verdict",
                         ),
                     ),
                     ConcernContract(

@@ -7,7 +7,10 @@ from pathlib import Path
 from typing import get_type_hints
 
 from app.services import network_map
-from app.services.network_map_contracts import NetworkMapProjection
+from app.services.network_map_contracts import (
+    NetworkMapPlantProjection,
+    NetworkMapProjection,
+)
 from app.services.sot_registry.registry import service_relationship
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -52,3 +55,15 @@ def test_network_map_template_does_not_derive_customer_session_semantics():
     assert "p.is_online" not in template
     assert "Customer (Online)" not in template
     assert "Customer (Offline)" not in template
+
+
+def test_plant_projection_is_typed_and_does_not_enter_customer_session_paths():
+    source = inspect.getsource(network_map.build_network_map_plant_projection)
+
+    assert (
+        get_type_hints(network_map.build_network_map_plant_projection)["return"]
+        is NetworkMapPlantProjection
+    )
+    assert "subscription_session_snapshots" not in source
+    assert "OntUnit" not in source
+    assert "build_network_map_projection" not in source
