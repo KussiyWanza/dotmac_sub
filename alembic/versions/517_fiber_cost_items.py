@@ -95,10 +95,12 @@ def upgrade() -> None:
                 INSERT INTO {TABLE}
                     (id, code, label, unit, amount, is_active, sort_order,
                      created_at, updated_at)
-                SELECT :id, :code, :label, :unit, NULL, true, :sort_order,
-                       NOW(), NOW()
+                SELECT CAST(:id AS uuid), CAST(:code AS varchar),
+                       CAST(:label AS varchar), CAST(:unit AS varchar),
+                       CAST(NULL AS numeric), true,
+                       CAST(:sort_order AS integer), NOW(), NOW()
                 WHERE NOT EXISTS (
-                    SELECT 1 FROM {TABLE} WHERE code = :code
+                    SELECT 1 FROM {TABLE} WHERE code = CAST(:code AS varchar)
                 )
                 """
             )
