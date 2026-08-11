@@ -26,8 +26,8 @@ true, loud, and fixable from a screen.
 `amount` is nullable rather than defaulted to zero because "not priced yet" and
 "free" are different answers, and only one of them should suppress a warning.
 
-Revision ID: 518_fiber_cost_items
-Revises: 517_close_legacy_resolved_tickets
+Revision ID: 519_fiber_cost_items
+Revises: 518_retire_splynx_staging_schema
 Create Date: 2026-08-11
 """
 
@@ -39,8 +39,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "518_fiber_cost_items"
-down_revision: str | None = "517_close_legacy_resolved_tickets"
+revision: str = "519_fiber_cost_items"
+down_revision: str | None = "518_retire_splynx_staging_schema"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
