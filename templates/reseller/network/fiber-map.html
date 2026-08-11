@@ -243,7 +243,6 @@
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script>
 (function() {
-    const costSettings = {{ cost_settings | tojson | safe }};
     const readOnly = {{ read_only | tojson | safe }};
 
     function escapeHtml(value) {

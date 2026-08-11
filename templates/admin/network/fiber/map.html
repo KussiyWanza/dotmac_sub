@@ -597,8 +597,12 @@
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script>
 (function() {
-    // Cost settings from server
-    const costSettings = {{ cost_settings | tojson | safe }};
+    // Whether an estimate is possible, and in what currency. The AMOUNTS are
+    // deliberately absent: the server prices a route and returns the breakdown
+    // with it, so the arithmetic has one home. This page used to receive four
+    // numbers and multiply them itself, which is how a cost model came to live
+    // in a template.
+    const costState = {{ cost_state | tojson | safe }};
 
     function escapeHtml(value) {
         return String(value ?? '')
@@ -920,44 +924,61 @@
             '<p class="text-sm text-slate-500 dark:text-slate-400">Click anywhere on the map to list nearby FDH cabinets. Select a cabinet to auto-route or trace a custom path.</p>';
     }
 
-    function buildEstimateHtml(distanceM, distanceLabel, routeLabel) {
-        if (!distanceM) return '';
-        const dropCablePerMeter = costSettings.drop_cable_per_meter;
-        const laborPerMeter = costSettings.labor_per_meter;
-        const ontCost = costSettings.ont_device;
-        const installationBase = costSettings.installation_base;
-        const currency = costSettings.currency;
-        const currencySymbol = currency === 'USD' ? '$' : (currency === 'EUR' ? '€' : (currency === 'GBP' ? '£' : (currency === 'NGN' ? '₦' : currency + ' ')));
+    function currencySymbolFor(currency) {
+        if (currency === 'USD') return '$';
+        if (currency === 'EUR') return '\u20ac';
+        if (currency === 'GBP') return '\u00a3';
+        if (currency === 'NGN') return '\u20a6';
+        return currency + ' ';
+    }
 
-        const materialCost = distanceM * dropCablePerMeter;
-        const laborCost = distanceM * laborPerMeter;
-        const totalEstimate = materialCost + laborCost + ontCost + installationBase;
-
-        return `
+    function buildEstimateHtml(distanceLabel, routeLabel, estimate) {
+        const header = `
             <div class="planning-distance">${distanceLabel}</div>
             <div class="text-center text-sm text-slate-500 dark:text-slate-400 mb-4">${routeLabel}</div>
+        `;
+
+        // No prices, no estimate. Showing a total built only from the
+        // components that happen to be priced would be a number nobody chose,
+        // which is exactly the defect this replaced.
+        if (!estimate || !estimate.is_complete) {
+            const missing = (estimate && estimate.unpriced) || costState.unpriced || [];
+            const detail = missing.length
+                ? `Unpriced: ${escapeHtml(missing.join(', '))}.`
+                : 'No cost components are configured.';
+            return `
+                ${header}
+                <div class="planning-cost">
+                    <div class="text-sm text-amber-600 dark:text-amber-400">
+                        Cost estimate unavailable. ${detail}
+                        Set prices under Network &rsaquo; Fiber cost items.
+                    </div>
+                </div>
+            `;
+        }
+
+        const symbol = currencySymbolFor(estimate.currency);
+        const lines = estimate.lines.map(function (line) {
+            const qty = line.unit === 'per_meter'
+                ? ` (${Number(line.quantity).toFixed(0)}m @ ${symbol}${Number(line.amount).toFixed(2)}/m)`
+                : '';
+            return `
+                <div class="planning-detail">
+                    <span class="planning-detail-label">${escapeHtml(line.label)}${qty}</span>
+                    <span class="planning-detail-value">${symbol}${Number(line.total).toFixed(2)}</span>
+                </div>
+            `;
+        }).join('');
+
+        return `
+            ${header}
             <div class="planning-cost">
-                <div class="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-2">Cost Estimate (${currency})</div>
-                <div class="planning-detail">
-                    <span class="planning-detail-label">Drop Cable (${distanceM.toFixed(0)}m @ ${currencySymbol}${dropCablePerMeter.toFixed(2)}/m)</span>
-                    <span class="planning-detail-value">${currencySymbol}${materialCost.toFixed(2)}</span>
-                </div>
-                <div class="planning-detail">
-                    <span class="planning-detail-label">Labor (@ ${currencySymbol}${laborPerMeter.toFixed(2)}/m)</span>
-                    <span class="planning-detail-value">${currencySymbol}${laborCost.toFixed(2)}</span>
-                </div>
-                <div class="planning-detail">
-                    <span class="planning-detail-label">ONT Device</span>
-                    <span class="planning-detail-value">${currencySymbol}${ontCost.toFixed(2)}</span>
-                </div>
-                <div class="planning-detail">
-                    <span class="planning-detail-label">Installation</span>
-                    <span class="planning-detail-value">${currencySymbol}${installationBase.toFixed(2)}</span>
-                </div>
+                <div class="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-2">Cost Estimate (${escapeHtml(estimate.currency)})</div>
+                ${lines}
                 <hr class="my-2 border-slate-200 dark:border-slate-600">
                 <div class="planning-detail">
                     <span class="planning-detail-label font-semibold">Total Estimate</span>
-                    <span class="planning-detail-value text-violet-600 dark:text-violet-400 font-bold">${currencySymbol}${totalEstimate.toFixed(2)}</span>
+                    <span class="planning-detail-value text-violet-600 dark:text-violet-400 font-bold">${symbol}${Number(estimate.total).toFixed(2)}</span>
                 </div>
             </div>
         `;
@@ -1005,7 +1026,7 @@
 
         const messageHtml = planMessage ? `<div class="mt-3 text-xs text-amber-600 dark:text-amber-400">${escapeHtml(planMessage)}</div>` : '';
         const estimateHtml = planEstimate
-            ? buildEstimateHtml(planEstimate.distance_m, planEstimate.distance_display, planEstimate.route_label)
+            ? buildEstimateHtml(planEstimate.distance_display, planEstimate.route_label, planEstimate.cost_estimate)
             : '';
 
         content.innerHTML = `
@@ -1082,9 +1103,20 @@
         planEstimate = {
             distance_m: distance,
             distance_display: formatDistance(distance),
-            route_label: 'manual trace to cabinet'
+            route_label: 'manual trace to cabinet',
+            cost_estimate: null
         };
         renderPlanPanel();
+        // Priced by the server, like the auto route. Pricing it here would be a
+        // second copy of the cost rule in the layer that got it wrong before.
+        fetch(`/admin/network/fiber-map/cost-estimate?distance_m=${encodeURIComponent(distance)}`)
+            .then(r => (r.ok ? r.json() : null))
+            .then(estimate => {
+                if (!planEstimate) return;
+                planEstimate.cost_estimate = estimate;
+                renderPlanPanel();
+            })
+            .catch(() => { /* the panel already says the estimate is unavailable */ });
     }
 
     function drawTraceLine() {

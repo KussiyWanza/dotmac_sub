@@ -35,6 +35,30 @@ SERVICES: tuple[SOTService, ...] = (
         ),
     ),
     SOTService(
+        name="network.fiber_cost_items",
+        module="app.services.fiber_cost_items",
+        owns=(
+            "which components a fiber drop installation is priced from",
+            "each component's price and how it is applied",
+            "whether a drop estimate can be produced at all",
+        ),
+        notes=(
+            "Currency is the deployment's own `billing/default_currency`, read "
+            "as a setting rather than declared as a dependency: one estimate "
+            "mixing currencies is meaningless, and the screen already labels "
+            "the whole estimate with one. "
+            "The components were four hardcoded settings, each restated in a "
+            "spec, a service reader and the map template's JavaScript — so a "
+            "new one meant editing three layers, and no layer owned the cost "
+            "model. They are rows now. The estimate is computed here rather "
+            "than in the browser, so the breakdown a user reads has one "
+            "implementation. An active component with no price does not "
+            "contribute and makes the estimate incomplete: a total built from "
+            "only the priced components would be a number nobody chose, which "
+            "is how the retired defaults came to quote NGN 85 for an ONT."
+        ),
+    ),
+    SOTService(
         name="network.fiber_topology",
         module="app.services.fiber_topology",
         owns=(
