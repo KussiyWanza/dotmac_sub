@@ -40,7 +40,7 @@ class SupportRepository {
   }
 
   /// POST /me/support/tickets/{id}/rate — CSAT on the support experience for a
-  /// resolved/closed ticket (1-5 + optional comment). Returns the updated ticket.
+  /// closed ticket (1-5 + optional comment). Returns the updated ticket.
   Future<Ticket> rateTicket(
     String id, {
     required int rating,

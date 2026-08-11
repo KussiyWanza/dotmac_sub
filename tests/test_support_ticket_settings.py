@@ -38,7 +38,9 @@ def _native_team(db_session, *, name: str, team_id=None) -> ServiceTeam:
 
 
 def test_ticket_settings_defaults_loaded_without_db_rows(db_session):
-    assert support_ticket_settings_service.list_status_options(db_session)
+    statuses = support_ticket_settings_service.list_status_options(db_session)
+    assert "closed" in statuses
+    assert "resolved" not in statuses
     assert support_ticket_settings_service.list_priority_options(db_session)
     assert support_ticket_settings_service.list_ticket_type_options(db_session)
     assert (
@@ -78,6 +80,22 @@ def test_ticket_settings_reject_statuses_outside_lifecycle_vocabulary(db_session
             db_session,
             _configuration_command(statuses=("open", "needs_vendor")),
         )
+
+
+def test_ticket_settings_canonicalize_legacy_resolved_to_closed(db_session):
+    support_ticket_settings_service.update_ticket_configuration(
+        db_session,
+        _configuration_command(
+            statuses=("open", "resolved", "closed"),
+            priorities=("normal",),
+            ticket_types=("incident",),
+        ),
+    )
+
+    assert support_ticket_settings_service.list_status_options(db_session) == [
+        "open",
+        "closed",
+    ]
 
 
 def test_ticket_settings_persist_routing_and_sla(db_session):

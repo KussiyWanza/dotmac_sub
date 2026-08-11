@@ -59,7 +59,7 @@ void main() {
     final withAction = Ticket.fromJson({
       'id': 'ticket-2',
       'title': 'Connectivity incident',
-      'status': 'resolved',
+      'status': 'closed',
       'priority': 'normal',
       'resolution_actions': [
         {'key': 'rate_support', 'allowed': true},

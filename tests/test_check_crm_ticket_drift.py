@@ -76,9 +76,11 @@ def _sub_row(**overrides: Any) -> dict[str, Any]:
 # ---- status map ------------------------------------------------------------
 
 
-def test_status_map_is_identity_for_merged_vocabulary() -> None:
+def test_status_map_is_identity_except_for_legacy_resolved() -> None:
     for crm_status, sub_status in CRM_TO_SUB_STATUS.items():
-        assert expected_sub_status(crm_status) == sub_status == crm_status
+        assert expected_sub_status(crm_status) == sub_status
+        if crm_status != "resolved":
+            assert sub_status == crm_status
 
 
 def test_expected_status_defaults_to_open_for_missing() -> None:
@@ -91,8 +93,8 @@ def test_expected_status_passes_unknown_values_through() -> None:
     assert expected_sub_status("escalated_weird") == "escalated_weird"
 
 
-def test_resolved_is_sub_only_not_a_crm_mapping_target() -> None:
-    assert "resolved" not in CRM_TO_SUB_STATUS
+def test_legacy_resolved_maps_to_native_closed() -> None:
+    assert CRM_TO_SUB_STATUS["resolved"] == "closed"
     assert "resolved" not in TERMINAL_STATUSES
 
 
@@ -137,7 +139,7 @@ def test_terminal_precedence_never_applies_to_non_terminal_sub_status() -> None:
     )
     assert not status_diff_terminal_precedence(
         crm_status="pending_confirmation",
-        sub_status="resolved",
+        sub_status="pending_confirmation",
         crm_updated_at=None,
         sub_updated_at=None,
     )

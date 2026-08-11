@@ -60,12 +60,12 @@
     {% set customer_action_keys = ticket.get('resolution_actions', []) | map(attribute='key') | list %}
     {% if 'confirm_resolution' in customer_action_keys or 'dispute_resolution' in customer_action_keys %}
     <section class="rounded-2xl border border-sky-200 bg-sky-50 p-6 shadow-premium dark:border-sky-800 dark:bg-sky-900/20">
-        <h2 class="text-base font-bold text-sky-900 dark:text-sky-100">Has this issue been resolved?</h2>
+        <h2 class="text-base font-bold text-sky-900 dark:text-sky-100">Is this issue fixed?</h2>
         <p class="mt-1 text-sm text-sky-800 dark:text-sky-200">Support has proposed a resolution. Confirm it or tell us what still needs attention.</p>
         <div class="mt-4 grid gap-3 sm:grid-cols-2">
             {% if 'confirm_resolution' in customer_action_keys %}<form method="post" action="/portal/support/{{ ticket.get('id') }}/confirm-resolution">
                 {% include "components/forms/csrf_input.html" %}
-                <button class="w-full rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white">Yes, it is resolved</button>
+                <button class="w-full rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white">Yes, it is fixed</button>
             </form>{% endif %}
             {% if 'dispute_resolution' in customer_action_keys %}<form method="post" action="/portal/support/{{ ticket.get('id') }}/dispute-resolution" class="space-y-2">
                 {% include "components/forms/csrf_input.html" %}
@@ -97,7 +97,7 @@
 
     <!-- Add Comment -->
     {% set t_status = ticket.get('status', 'open') %}
-    {% if t_status not in ('closed', 'resolved') %}
+    {% if t_status != 'closed' %}
     <section class="rounded-2xl border border-stone-200/60 bg-white p-6 shadow-premium dark:border-stone-700/60 dark:bg-stone-800">
         <h2 class="mb-4 text-sm font-bold uppercase tracking-wider text-stone-500 dark:text-stone-400">Add a Comment</h2>
         <form action="/portal/support/{{ ticket.get('id') }}/comment" method="POST" enctype="multipart/form-data" class="space-y-4">
@@ -124,7 +124,7 @@
         </form>
     </section>
     {% else %}
-    {# CSAT — rate the support experience once the ticket is resolved/closed #}
+    {# CSAT — rate the support experience once the ticket is closed #}
     <section class="rounded-2xl border border-stone-200/60 bg-white p-6 shadow-premium dark:border-stone-700/60 dark:bg-stone-800">
         {% if ticket.get('csat_rating') %}
         <p class="text-xs font-semibold uppercase tracking-wide text-stone-400 dark:text-stone-500">Your support rating</p>

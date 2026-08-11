@@ -38,6 +38,21 @@ def test_clean_conditions_drops_unknown_keys_and_empty_values():
     assert cleaned == {"status": "open", "ticket_type": "incident"}
 
 
+def test_automation_configuration_canonicalizes_legacy_resolved_status():
+    conditions = support_automation_rules.TicketAutomationConditions.from_mapping(
+        {"status": "resolved"}
+    )
+    action = support_automation_rules.TicketAutomationAction.from_mapping(
+        AutomationActionType.set_status,
+        {"status": "resolved"},
+    )
+
+    assert conditions.status is TicketStatus.closed
+    assert conditions.as_dict() == {"status": "closed"}
+    assert action.status is TicketStatus.closed
+    assert action.as_dict() == {"status": "closed"}
+
+
 def test_conditions_match_empty_dict_matches_anything():
     ticket = SimpleNamespace(status="open", priority="high")
     assert support_automation._conditions_match({}, ticket) is True
@@ -90,7 +105,7 @@ def test_proposal_sets_priority_without_a_ticket_write():
 def test_status_proposal_strips_whitespace():
     rule = _fake_rule(AutomationActionType.set_status, {"status": "  resolved  "})
     proposal = support_automation._proposal_for_rule(rule)
-    assert proposal is not None and proposal.status == "resolved"
+    assert proposal is not None and proposal.status is TicketStatus.closed
 
 
 def test_tag_proposal_carries_only_the_requested_tag():
