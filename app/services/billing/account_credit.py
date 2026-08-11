@@ -4,7 +4,14 @@ Account credit is not a wallet counter. It is the unconsumed portion of exact,
 succeeded payment settlements. This owner serializes one account, chooses
 eligible invoices and source payments deterministically, and composes the
 existing payment-allocation preview/confirmation owner for every transfer.
-It never creates payments or ledger entries directly and never commits.
+It never creates payments and never commits.
+
+It does create one thing: the unallocated credit ledger row itself, through
+``financial.ledger``, in ``record_credit``. That is deliberate. Before it, every
+caller that needed to mint credit went straight to the ledger writer and this
+owner never learned the credit existed, so "offer new credit to the account's
+open receivables" had nowhere to live except replicated at each call site — and
+was missed at all but one of them.
 """
 
 from __future__ import annotations
@@ -12,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -81,13 +89,15 @@ class AccountCreditApplicationResult:
 
 @dataclass(frozen=True, slots=True)
 class AccountCreditRecordResult:
-    """Account credit came into existence, and what the owner did about it.
+    """Account credit came into existence, and whether an offer is still owed.
 
-    ``offered`` is the load-bearing field. Credit that is minted without being
-    offered to the account's open receivables is exactly the state
+    ``offer_pending`` is the load-bearing field. Credit minted and never offered
+    to the account's open receivables is exactly the state
     ``eligible_invoice_with_unused_credit`` reports as a violation, so the
-    creation path names whether the offer happened rather than leaving it to be
-    inferred from a later scan.
+    creation path says outright that the debt is outstanding rather than leaving
+    it to be discovered by a later scan. Payment-backed credit sets it; a credit
+    note or adjustment does not, because this owner has no instrument to offer
+    those with.
     """
 
     account_id: str
@@ -95,16 +105,7 @@ class AccountCreditRecordResult:
     currency: str
     source: LedgerSource
     ledger_entry: LedgerEntry | None
-    offered: bool
-    application: AccountCreditApplicationResult | None = None
-
-    @property
-    def applied(self) -> Decimal:
-        return (
-            self.application.applied
-            if self.application is not None
-            else Decimal("0.00")
-        )
+    offer_pending: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -976,9 +977,26 @@ class AccountCreditApplications:
         each call site. Replicating it is how the rule gets missed: the next
         caller simply does not know about it.
 
-        Minting and offering therefore happen here, in one transaction. A
-        caller cannot create credit and forget the consequence, because there is
-        no step between the two for it to be forgotten in.
+        Minting happens here so there is one door. The offer does NOT, and the
+        reason is a real domain rule rather than a layering preference: credit
+        is spendable only once its settlement evidence exists.
+        ``PaymentAllocations.available_amount`` returns zero while
+        ``payment.settlement`` is None, so a payment's surplus is not yet
+        allocatable at the moment its ledger row is written — the settlement is
+        recorded a few statements later. Offering here would find nothing
+        backed and quietly apply nothing, which looks exactly like success.
+
+        Worse, it would look at ``payment.settlement`` before the row exists and
+        leave SQLAlchemy caching that ``None`` on the instance, so a later,
+        correctly-timed offer in the same transaction reads the stale value and
+        also applies nothing. That is not hypothetical; it broke the deposit
+        settlement path.
+
+        The offer is therefore :meth:`offer_available_credit`, called by the
+        settlement path once the evidence is in place. Minting still cannot
+        happen anywhere else — see
+        ``tests/architecture/test_account_credit_single_writer.py`` — so the
+        pairing is enforced at the one door rather than remembered at each.
 
         Accounting reads the same way. Unallocated credit sitting against an
         account that carries a payable invoice overstates the receivable — the
@@ -988,8 +1006,6 @@ class AccountCreditApplications:
 
         Staged, never committed: the caller owns the transaction boundary so the
         money and its consequence land or roll back together.
-
-        Returns a result whose ``offered`` says whether the offer ran.
         """
         account_id = str(account_id)
         amount = round_money(to_decimal(amount))
@@ -1001,7 +1017,7 @@ class AccountCreditApplications:
                 currency=currency,
                 source=source,
                 ledger_entry=None,
-                offered=False,
+                offer_pending=False,
             )
 
         entry = LedgerEntries.create(
@@ -1019,33 +1035,43 @@ class AccountCreditApplications:
             commit=False,
         )
 
-        # Only payment-backed credit is offerable here. `apply` settles by
-        # composing PaymentAllocations against succeeded payments, so credit
-        # from a credit note or an adjustment has no payment to allocate from —
-        # it is a different funding instrument with a different application
-        # record (CreditNoteApplication), owned elsewhere. Offering it from
-        # here would either produce allocations with no backing payment or
-        # silently do nothing; both are worse than reporting `offered=False`.
-        if source is not LedgerSource.payment:
-            return AccountCreditRecordResult(
-                account_id=account_id,
-                amount=amount,
-                currency=currency,
-                source=source,
-                ledger_entry=entry,
-                offered=False,
-            )
-
-        application = AccountCreditApplications.apply(db, account_id)
         return AccountCreditRecordResult(
             account_id=account_id,
             amount=amount,
             currency=currency,
             source=source,
             ledger_entry=entry,
-            offered=True,
-            application=application,
+            # Only payment-backed credit is ever offerable. `apply` settles by
+            # composing PaymentAllocations against succeeded payments, so credit
+            # from a credit note or an adjustment has no payment to allocate
+            # from — it is a different funding instrument with its own
+            # application record (CreditNoteApplication), owned elsewhere.
+            offer_pending=source is LedgerSource.payment,
         )
+
+    @staticmethod
+    def offer_available_credit(
+        db: Session,
+        account_id: str,
+        *,
+        payments: Sequence[Payment] = (),
+    ) -> AccountCreditApplicationResult:
+        """Offer an account's now-spendable credit to its open receivables.
+
+        The other half of :meth:`record_credit`, split from it because credit
+        becomes spendable when its settlement evidence is written, not when its
+        ledger row is. Call this once that evidence exists.
+
+        ``payments`` names the payments whose settlement was just created in
+        this transaction. Their ``settlement`` relationship is expired first: if
+        anything read it while the row was still absent, SQLAlchemy is holding a
+        cached ``None`` and ``available_amount`` will report the credit unbacked
+        and silently apply nothing.
+        """
+        for payment in payments:
+            if payment in db:
+                db.expire(payment, ["settlement"])
+        return AccountCreditApplications.apply(db, str(account_id))
 
     @staticmethod
     def preview_invoice_void_release(

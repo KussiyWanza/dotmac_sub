@@ -886,10 +886,11 @@ def _record_unallocated_payment_credit(
     """Record the unallocated payment surplus.
 
     For an account-scoped payment, this hands the surplus to the account-credit
-    owner, which mints the ledger evidence and offers the credit to the
-    account's open receivables in the same transaction. Doing it here instead
-    would strand the surplus: an overpaid account then holds credit while an
-    issued invoice stays payable, which is what
+    owner, which mints the ledger evidence. The offer to the account's open
+    receivables follows in ``_offer_settled_account_credit`` once the settlement
+    row exists, because credit is not spendable before then. Minting outside the
+    owner is what stranded the surplus: an overpaid account holds credit while
+    an issued invoice stays payable, which is what
     ``eligible_invoice_with_unused_credit`` counts and what overstates AR.
 
     For a consolidated (billing-account-scoped) payment, the surplus increments
@@ -923,6 +924,35 @@ def _record_unallocated_payment_credit(
             detail="Unallocated payment ledger evidence could not be created",
         )
     return result.ledger_entry
+
+
+def _offer_settled_account_credit(
+    db: Session,
+    payment: Payment,
+    settlement: PaymentSettlement,
+) -> None:
+    """Offer this payment's surplus now that its settlement evidence exists.
+
+    Deliberately here and not where the credit is minted. Credit is spendable
+    only once the settlement row exists — ``PaymentAllocations.available_amount``
+    returns zero while ``payment.settlement`` is None — so an offer at mint time
+    finds nothing backed and silently applies nothing. Without this call the
+    surplus simply sits, and the account is dunned on an invoice it has already
+    funded.
+    """
+    from app.services.billing.account_credit import AccountCreditApplications
+
+    if payment.billing_account_id is not None:
+        return
+    if payment.account_id is None:
+        return
+    if round_money(to_decimal(settlement.unallocated_amount)) <= 0:
+        return
+    AccountCreditApplications.offer_available_credit(
+        db,
+        str(payment.account_id),
+        payments=(payment,),
+    )
 
 
 def _latest_successful_invoice_payment(db: Session, invoice: Invoice) -> Payment | None:
@@ -1657,6 +1687,7 @@ def _create_account_payment_from_preview(
     )
     db.add(settlement)
     db.flush()
+    _offer_settled_account_credit(db, payment, settlement)
     AuditEvents.stage(
         db,
         AuditEventCreate(
@@ -1823,6 +1854,7 @@ def _settle_existing_account_payment(
     )
     db.add(settlement)
     db.flush()
+    _offer_settled_account_credit(db, payment, settlement)
     AuditEvents.stage(
         db,
         AuditEventCreate(
@@ -2081,6 +2113,7 @@ class Payments(ListResponseMixin):
         )
         db.add(settlement)
         db.flush()
+        _offer_settled_account_credit(db, payment, settlement)
         AuditEvents.stage(
             db,
             AuditEventCreate(
@@ -2761,6 +2794,7 @@ class Payments(ListResponseMixin):
         )
         db.add(settlement)
         db.flush()
+        _offer_settled_account_credit(db, payment, settlement)
         AuditEvents.stage(
             db,
             AuditEventCreate(
