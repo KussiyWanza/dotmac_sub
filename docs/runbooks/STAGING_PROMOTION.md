@@ -24,9 +24,10 @@ Overridden work reaches production without staging having run it, so reconcile
 3. Merge into `dev` and let the rolling version-bump pull request be created
    when the version-impact automation requires one.
 4. Select the exact `origin/dev` SHA intended for deployment and require CI and
-   Mobile CI to pass on that exact commit. An open rolling version-bump pull
-   request does not block a digest-bound candidate for an already-selected
-   source SHA; it governs semver metadata and aliases, not deployment authority.
+   Mobile CI to pass on that exact commit.
+   An open rolling version-bump pull request does not block
+   a digest-bound candidate for an already-selected source SHA; it governs
+   semver metadata and aliases, not deployment authority.
 5. Dispatch `Build release candidate once` on `dev`, supplying that full dev
    SHA as `candidate_sha`. The workflow refuses a stale SHA or non-green source,
    builds the application once on GitHub, and records its immutable OCI digest.
@@ -319,9 +320,9 @@ The candidate workflow requires the exact dev SHA to have green CI and Mobile
 CI, refuses to overwrite an existing `candidate-<full-sha>` bootstrap tag,
 builds only on a GitHub-hosted runner, and uploads
 `release-candidate-evidence`. That typed document binds the source commit, Git
-tree, OCI digest, source-CI conclusion, and build run ID. Open pull requests,
-including rolling version-bump pull requests, are not candidate authority once
-that immutable evidence exists.
+tree, OCI digest, source-CI conclusion, and build run ID.
+Open pull requests, including rolling version-bump pull requests,
+are not candidate authority once that immutable evidence exists.
 
 The staging workflow downloads evidence only from its triggering run,
 independently recomputes the candidate tree, waits for the exact source checks,
