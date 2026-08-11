@@ -62,11 +62,6 @@ depends_on = None
 
 SCHEMA = "splynx_staging"
 
-ARCHIVE = (
-    "dotmac-private/db-archives/splynx_staging_2026-08-11.dump "
-    "(sha256 20b2e815e0da4006d3b501a7fea4c36b0645fdae1fb0e3c81fd7e18c0980e2fd)"
-)
-
 
 def upgrade() -> None:
     conn = op.get_bind()
@@ -118,14 +113,19 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Deliberately not reversible.
+    """Deliberately a no-op, matching the earlier Splynx retirements.
 
-    Recreating an empty schema would be a lie -- it would restore the name
-    without the 22,896,640 rows, and a later upgrade would then drop an empty
-    schema and report success. Restore from the archive instead.
+    Recreating the schema is not possible here and pretending otherwise would
+    be worse than doing nothing. An empty `splynx_staging` would restore the
+    name without any of the 22,896,640 rows, and the next upgrade would drop
+    that empty shell and report success -- a chain that looks reversible while
+    silently having lost everything.
+
+    Raising instead is also wrong: revisions above this one are downgraded
+    through it during chain tests and rehearsals, and a hard failure here would
+    block unwinding migrations that have nothing to do with this schema.
+
+    So this does nothing, and the data is recovered out of band:
+
+        pg_restore -n splynx_staging <the archive named in the module docstring>
     """
-
-    raise RuntimeError(
-        f"{SCHEMA} cannot be recreated by a downgrade. "
-        f"Restore it from {ARCHIVE} with `pg_restore -n {SCHEMA}`."
-    )

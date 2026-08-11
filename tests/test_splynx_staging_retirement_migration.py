@@ -104,10 +104,25 @@ def test_there_is_no_row_count_gate() -> None:
     assert "reltuples" not in source
 
 
-def test_downgrade_refuses_and_points_at_the_archive() -> None:
-    with pytest.raises(RuntimeError) as exc:
-        retirement.downgrade()
+def test_downgrade_is_a_no_op_so_the_chain_stays_unwindable(monkeypatch) -> None:
+    """Revisions above this one are downgraded through it in chain tests.
 
-    message = str(exc.value)
-    assert "db-archives/splynx_staging_2026-08-11.dump" in message
-    assert "pg_restore" in message
+    Raising would block unwinding migrations unrelated to this schema, and
+    recreating an empty `splynx_staging` would be worse -- the next upgrade
+    would drop the empty shell and report success, so the chain would look
+    reversible while the rows were long gone.
+    """
+
+    executed: list[str] = []
+    monkeypatch.setattr(retirement.op, "execute", executed.append)
+
+    retirement.downgrade()
+
+    assert executed == []
+
+
+def test_the_archive_location_is_recorded_for_recovery() -> None:
+    source = _MIGRATION_PATH.read_text(encoding="utf-8")
+    assert "db-archives/splynx_staging_2026-08-11.dump" in source
+    assert "20b2e815e0da4006d3b501a7fea4c36b0645fdae1fb0e3c81fd7e18c0980e2fd" in source
+    assert "pg_restore -n splynx_staging" in source
