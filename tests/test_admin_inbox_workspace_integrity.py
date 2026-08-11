@@ -620,7 +620,7 @@ def test_empty_state_and_inbox_pagination_are_scoped_to_the_queue():
     ):
         assert contract in SIDEBAR
     for contract in (
-        '@click.prevent="navigatePage(',
+        "@click.prevent='navigatePage(",
         "border border-slate-200 bg-white",
         "hover:bg-slate-50",
         "Page {{ page_meta.page }}",
@@ -628,6 +628,7 @@ def test_empty_state_and_inbox_pagination_are_scoped_to_the_queue():
         ">Next</a>",
     ):
         assert contract in QUEUE
+    assert '@click.prevent="navigatePage(' not in QUEUE
     assert "Rows per page" not in QUEUE
 
 
