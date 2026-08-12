@@ -125,7 +125,18 @@ def test_invoice_detail_issue_delegates_to_lifecycle_owner(
 
     captured: list[dict[str, object]] = []
 
-    def _fake_issue(db, invoice_id, *, issued_at, due_at, reason, announce, commit):
+    def _fake_issue(
+        db,
+        invoice_id,
+        *,
+        issued_at,
+        due_at,
+        reason,
+        announce,
+        apply_available_credit,
+        require_full_available_credit,
+        commit,
+    ):
         captured.append(
             {
                 "invoice_id": invoice_id,
@@ -133,6 +144,8 @@ def test_invoice_detail_issue_delegates_to_lifecycle_owner(
                 "due_at": due_at,
                 "reason": reason,
                 "announce": announce,
+                "apply_available_credit": apply_available_credit,
+                "require_full_available_credit": require_full_available_credit,
                 "commit": commit,
             }
         )
@@ -150,6 +163,8 @@ def test_invoice_detail_issue_delegates_to_lifecycle_owner(
     assert captured[0]["due_at"].date() == due_at.date()
     assert captured[0]["reason"] == "admin_invoice_detail_issue"
     assert captured[0]["announce"] is False
+    assert captured[0]["apply_available_credit"] is True
+    assert captured[0]["require_full_available_credit"] is True
     assert captured[0]["commit"] is True
 
 

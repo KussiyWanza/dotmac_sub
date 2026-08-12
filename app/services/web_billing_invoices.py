@@ -286,6 +286,8 @@ def issue_invoice_from_detail(db: Session, *, invoice_id: UUID) -> Invoice:
         due_at=invoice.due_at,
         reason="admin_invoice_detail_issue",
         announce=False,
+        apply_available_credit=True,
+        require_full_available_credit=True,
         commit=True,
     )
     return transition.invoice
