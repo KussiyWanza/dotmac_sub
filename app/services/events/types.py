@@ -239,6 +239,9 @@ class EventType(enum.Enum):
     device_projection_reconciled = "device_projection.reconciled"
     session_started = "session.started"
     session_ended = "session.ended"
+    network_map_asset_change_proposed = "network_map_asset_change.proposed"
+    network_map_asset_change_applied = "network_map_asset_change.applied"
+    network_map_asset_change_rejected = "network_map_asset_change.rejected"
 
     # OLT events (3)
     olt_created = "olt.created"
