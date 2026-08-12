@@ -7,8 +7,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.deps import get_db
-from app.api.field import router
 from app.api.field import expense_requests as expense_api
+from app.api.field import router
 from app.services.auth_dependencies import require_user_auth
 from app.services.backoffice import ExpenseCategoryView
 from app.services.field.expense_categories import ExpenseCategoryQueryError

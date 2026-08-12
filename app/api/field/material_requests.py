@@ -12,13 +12,13 @@ from app.schemas.field import (
     FieldMaterialRequestSubmit,
 )
 from app.services.auth_dependencies import require_user_auth
-from app.services.field.material_requests import field_material_requests
 from app.services.field.material_requests import (
     CreateStaffMaterialRequest,
     MaterialRequestError,
     MaterialRequestLineInput,
     MaterialRequestPriority,
     create_staff_material_request,
+    field_material_requests,
 )
 from app.services.owner_commands import CommandContext
 

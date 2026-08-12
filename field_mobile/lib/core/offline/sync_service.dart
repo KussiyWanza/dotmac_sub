@@ -259,7 +259,8 @@ class SyncService {
       for (final entry in await pending()) {
         final payload = (jsonDecode(entry.payloadJson) as Map)
             .cast<String, dynamic>();
-        if (entry.kind == 'material_request' || entry.kind == 'expense_request') {
+        if (entry.kind == 'material_request' ||
+            entry.kind == 'expense_request') {
           payload['client_ref'] = entry.clientRef;
         }
         final (method, path) = OutboxRouting.route(entry.kind, payload);
