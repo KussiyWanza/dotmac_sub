@@ -388,10 +388,10 @@ void main() {
     };
     final (method, path) = OutboxRouting.route('expense_request', payload);
     expect(method, 'POST');
-    expect(path, '/api/v1/field/expense-requests');
+    expect(path, '/api/v1/field/expense-requests/submit');
 
     Map? sent;
-    adapter.on('POST', '/api/v1/field/expense-requests', (options) {
+    adapter.on('POST', '/api/v1/field/expense-requests/submit', (options) {
       sent = options.data is String ? null : options.data as Map;
       return (201, {'id': 'exp-1', 'status': 'submitted'});
     });
@@ -418,10 +418,10 @@ void main() {
       };
       final (method, path) = OutboxRouting.route('material_request', payload);
       expect(method, 'POST');
-      expect(path, '/api/v1/field/material-requests');
+      expect(path, '/api/v1/field/material-requests/submit');
 
       Map? sent;
-      adapter.on('POST', '/api/v1/field/material-requests', (options) {
+      adapter.on('POST', '/api/v1/field/material-requests/submit', (options) {
         sent = options.data is String ? null : options.data as Map;
         return (201, {'id': 'mr-1', 'status': 'submitted'});
       });
@@ -431,6 +431,7 @@ void main() {
         payload: payload,
       );
       expect(await sync.flushOutbox(), 1);
+      expect(sent?['client_ref'], 'material-client-ref-1');
       expect(sent?['work_order_id'], 'wo-1');
       expect(sent?['items'], payload['items']);
     },

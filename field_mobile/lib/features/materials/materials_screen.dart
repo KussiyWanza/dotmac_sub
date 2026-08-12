@@ -565,6 +565,7 @@ class _NewMaterialRequestScreenState
     final clientRef = const Uuid().v4();
     final payload = buildMaterialRequestPayload(
       priority: _priority,
+      clientRef: clientRef,
       notes: _notes.text,
       workOrderId: _workOrderId.text,
       projectId: _projectId.text,
@@ -580,6 +581,7 @@ class _NewMaterialRequestScreenState
           .read(materialsRepositoryProvider)
           .createRequest(
             priority: _priority,
+            clientRef: clientRef,
             notes: _notes.text,
             workOrderId: _workOrderId.text,
             projectId: _projectId.text,

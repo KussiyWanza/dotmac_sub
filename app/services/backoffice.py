@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -52,6 +53,16 @@ class BackofficeDeliveryView:
     sent_at: datetime | None
 
 
+@dataclass(frozen=True, slots=True)
+class ExpenseCategoryView:
+    """Provider-neutral ERP expense category exposed to field workflows."""
+
+    category_code: str
+    category_name: str
+    requires_receipt: bool
+    max_amount_per_claim: Decimal | None
+
+
 class BackofficeGateway(Protocol):
     """Read-only capabilities currently consumed outside connector code."""
 
@@ -78,7 +89,7 @@ class BackofficeGateway(Protocol):
 
     def list_inventory_categories(self) -> list[dict]: ...
 
-    def get_expense_categories(self) -> list[dict]: ...
+    def get_expense_categories(self) -> tuple[ExpenseCategoryView, ...]: ...
 
     def list_available_serials(
         self,

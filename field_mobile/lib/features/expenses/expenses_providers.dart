@@ -46,11 +46,18 @@ class ExpensesRepository {
     String? ticketId,
     bool submit = true,
   }) async {
-    var response = await _ref
+    if (submit && (clientRef == null || clientRef.trim().isEmpty)) {
+      throw ArgumentError(
+        'clientRef is required when submitting an expense request',
+      );
+    }
+    final response = await _ref
         .read(apiClientProvider)
         .dio
         .post(
-          '/api/v1/field/expense-requests',
+          submit
+              ? '/api/v1/field/expense-requests/submit'
+              : '/api/v1/field/expense-requests',
           data: buildExpenseRequestPayload(
             purpose: purpose,
             items: items,
@@ -63,13 +70,6 @@ class ExpensesRepository {
             ticketId: ticketId,
           ),
         );
-    if (submit) {
-      final created = (response.data as Map).cast<String, dynamic>();
-      response = await _ref
-          .read(apiClientProvider)
-          .dio
-          .post('/api/v1/field/expense-requests/${created['id']}/submit');
-    }
     return ExpenseRequest.fromJson(
       (response.data as Map).cast<String, dynamic>(),
     );

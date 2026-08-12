@@ -117,9 +117,10 @@ void main() {
   });
 
   test('createRequest posts request payload with items', () async {
-    adapter.on('POST', '/api/v1/field/material-requests', (options) {
+    adapter.on('POST', '/api/v1/field/material-requests/submit', (options) {
       final data = (options.data as Map).cast<String, dynamic>();
       expect(data['priority'], 'high');
+      expect(data['client_ref'], 'material-client-ref-1');
       expect(data['work_order_id'], 'wo-1');
       expect(data['source_warehouse_code'], 'WH-MAIN');
       expect(data['items'], [
@@ -143,32 +144,12 @@ void main() {
         },
       );
     });
-    adapter.on('POST', '/api/v1/field/material-requests/mr-1/submit', (
-      options,
-    ) {
-      return (
-        200,
-        {
-          'id': 'mr-1',
-          'number': 'MR-0001',
-          'status': 'submitted',
-          'priority': 'high',
-          'items': [
-            {
-              'id': 'line-1',
-              'item_id': 'item-1',
-              'quantity': 2,
-              'item_name': 'Drop cable',
-            },
-          ],
-        },
-      );
-    });
 
     final request = await container
         .read(materialsRepositoryProvider)
         .createRequest(
           priority: 'high',
+          clientRef: 'material-client-ref-1',
           workOrderId: 'wo-1',
           sourceLocationId: 'warehouse-1',
           sourceWarehouseCode: 'WH-MAIN',

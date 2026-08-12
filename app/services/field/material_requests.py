@@ -100,6 +100,7 @@ class CreateStaffMaterialRequest:
     fulfillment_channel: MaterialRequestFulfillmentChannel = (
         MaterialRequestFulfillmentChannel.ERP
     )
+    work_order_public_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -530,6 +531,7 @@ def _command_fingerprint(command: CreateStaffMaterialRequest) -> str:
     scope = command.scope or MaterialRequestScope()
     payload = {
         "work_order_id": str(command.work_order_id) if command.work_order_id else None,
+        "work_order_public_id": command.work_order_public_id,
         "ticket_id": str(scope.ticket_id) if scope.ticket_id else None,
         "project_id": str(scope.project_id) if scope.project_id else None,
         "project_task_id": str(scope.project_task_id)
@@ -619,10 +621,19 @@ def _resolved_context(
     ticket = db.get(Ticket, ticket_id) if ticket_id else None
     if ticket_id and (ticket is None or not ticket.is_active):
         raise _material_error("context_not_found", "Ticket was not found.")
-    work_order = (
-        db.get(WorkOrder, command.work_order_id) if command.work_order_id else None
-    )
-    if command.work_order_id and (work_order is None or not work_order.is_active):
+    work_order = db.get(WorkOrder, command.work_order_id) if command.work_order_id else None
+    if work_order is None and command.work_order_public_id:
+        work_order = db.execute(
+            select(WorkOrder)
+            .where(
+                WorkOrder.public_id == command.work_order_public_id,
+                WorkOrder.is_active.is_(True),
+            )
+            .with_for_update()
+        ).scalar_one_or_none()
+    if (command.work_order_id or command.work_order_public_id) and (
+        work_order is None or not work_order.is_active
+    ):
         raise _material_error("work_order_not_found", "Work order was not found.")
     if work_order is not None:
         project_id = project_id or work_order.project_id

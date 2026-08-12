@@ -310,3 +310,45 @@ def test_expense_request_api(db_session, fake_uploads):
     assert submitted.status_code == 200
     assert submitted.json()["status"] == "submitted"
     assert db_session.query(FieldExpenseRequest).count() == 1
+
+
+def test_atomic_expense_submission_replays_and_rejects_changed_payload(db_session):
+    user = _user(db_session)
+    _profile(db_session, user)
+    subscriber = _subscriber(db_session)
+    _work_order(db_session, subscriber, crm_work_order_id="wo-expense-atomic")
+    db_session.commit()
+
+    app = FastAPI()
+    app.include_router(router, prefix="/api/v1")
+    app.dependency_overrides[get_db] = lambda: db_session
+    app.dependency_overrides[require_user_auth] = lambda: _auth(user)
+    client = TestClient(app)
+    client_ref = str(uuid4())
+    payload = {
+        "client_ref": client_ref,
+        "work_order_id": "wo-expense-atomic",
+        "purpose": "Transport",
+        "currency": "NGN",
+        "items": [
+            {
+                "category_code": "transport",
+                "description": "Bike delivery",
+                "amount": "1800.00",
+            }
+        ],
+    }
+
+    created = client.post("/api/v1/field/expense-requests/submit", json=payload)
+    replayed = client.post("/api/v1/field/expense-requests/submit", json=payload)
+    changed = client.post(
+        "/api/v1/field/expense-requests/submit",
+        json={**payload, "purpose": "Different purpose"},
+    )
+
+    assert created.status_code == 201
+    assert created.json()["status"] == "submitted"
+    assert replayed.status_code == 201
+    assert replayed.json()["id"] == created.json()["id"]
+    assert changed.status_code == 409
+    assert db_session.query(FieldExpenseRequest).count() == 1

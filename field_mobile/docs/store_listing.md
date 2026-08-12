@@ -13,9 +13,9 @@ are pushed to App Store Connect via the ASC API once the app record exists
 |---|---|
 | Name | Dotmac Field |
 | Subtitle (≤30) | Field jobs, routes & evidence |
-| Support URL | https://crm.dotmac.io |
+| Support URL | https://selfcare.dotmac.io |
 | Marketing URL | https://dotmac.io |
-| Privacy Policy URL | https://crm.dotmac.io/legal/privacy |
+| Privacy Policy URL | https://selfcare.dotmac.io/legal/privacy |
 | Keywords (≤100) | field service,technician,dispatch,work order,fiber,installation,ISP,job,route,FSM |
 
 **Promotional text (≤170):**

@@ -62,6 +62,7 @@ class MaterialsRepository {
   Future<MaterialRequest> createRequest({
     required String priority,
     required List<MaterialRequestItemDraft> items,
+    String? clientRef,
     String? notes,
     String? workOrderId,
     String? projectId,
@@ -71,13 +72,21 @@ class MaterialsRepository {
     String? destinationLocationId,
     bool submit = true,
   }) async {
-    var response = await _ref
+    if (submit && (clientRef == null || clientRef.trim().isEmpty)) {
+      throw ArgumentError(
+        'clientRef is required when submitting a material request',
+      );
+    }
+    final response = await _ref
         .read(apiClientProvider)
         .dio
         .post(
-          '/api/v1/field/material-requests',
+          submit
+              ? '/api/v1/field/material-requests/submit'
+              : '/api/v1/field/material-requests',
           data: buildMaterialRequestPayload(
             priority: priority,
+            clientRef: clientRef,
             notes: notes,
             workOrderId: workOrderId,
             projectId: projectId,
@@ -89,13 +98,6 @@ class MaterialsRepository {
             submit: submit,
           ),
         );
-    if (submit) {
-      final created = (response.data as Map).cast<String, dynamic>();
-      response = await _ref
-          .read(apiClientProvider)
-          .dio
-          .post('/api/v1/field/material-requests/${created['id']}/submit');
-    }
     return MaterialRequest.fromJson(
       (response.data as Map).cast<String, dynamic>(),
     );
@@ -115,6 +117,7 @@ class MaterialsRepository {
 Map<String, dynamic> buildMaterialRequestPayload({
   required String priority,
   required List<MaterialRequestItemDraft> items,
+  String? clientRef,
   String? notes,
   String? workOrderId,
   String? projectId,
@@ -125,6 +128,8 @@ Map<String, dynamic> buildMaterialRequestPayload({
   bool submit = true,
 }) => {
   'priority': priority,
+  if (clientRef != null && clientRef.trim().isNotEmpty)
+    'client_ref': clientRef.trim(),
   if (notes != null && notes.trim().isNotEmpty) 'notes': notes.trim(),
   if (workOrderId != null && workOrderId.trim().isNotEmpty)
     'work_order_id': workOrderId.trim(),

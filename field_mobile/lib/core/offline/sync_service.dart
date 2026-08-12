@@ -39,8 +39,8 @@ class OutboxRouting {
         'POST',
         '/api/v1/field/jobs/${payload['work_order_id']}/equipment',
       ),
-      'material_request' => ('POST', '/api/v1/field/material-requests'),
-      'expense_request' => ('POST', '/api/v1/field/expense-requests'),
+      'material_request' => ('POST', '/api/v1/field/material-requests/submit'),
+      'expense_request' => ('POST', '/api/v1/field/expense-requests/submit'),
       _ => throw ArgumentError('Unknown outbox kind: $kind'),
     };
   }
@@ -259,6 +259,9 @@ class SyncService {
       for (final entry in await pending()) {
         final payload = (jsonDecode(entry.payloadJson) as Map)
             .cast<String, dynamic>();
+        if (entry.kind == 'material_request' || entry.kind == 'expense_request') {
+          payload['client_ref'] = entry.clientRef;
+        }
         final (method, path) = OutboxRouting.route(entry.kind, payload);
         try {
           await api.dio.request(

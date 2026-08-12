@@ -165,7 +165,7 @@ void main() {
   });
 
   test('createRequest posts payload with items and work order', () async {
-    adapter.on('POST', '/api/v1/field/expense-requests', (options) {
+    adapter.on('POST', '/api/v1/field/expense-requests/submit', (options) {
       final data = (options.data as Map).cast<String, dynamic>();
       expect(data['purpose'], 'Site logistics');
       expect(data['work_order_id'], 'wo-1');
@@ -184,27 +184,6 @@ void main() {
       ]);
       return (
         201,
-        {
-          'id': 'exp-9',
-          'number': 'EXP-0009',
-          'status': 'submitted',
-          'purpose': 'Site logistics',
-          'total_amount': '2500.00',
-          'items': [
-            {
-              'id': 'line-1',
-              'category_code': 'TRANSPORT',
-              'category_name': 'Transport',
-              'description': 'Taxi from depot',
-              'amount': '2500.00',
-            },
-          ],
-        },
-      );
-    });
-    adapter.on('POST', '/api/v1/field/expense-requests/exp-9/submit', (_) {
-      return (
-        200,
         {
           'id': 'exp-9',
           'number': 'EXP-0009',
@@ -501,22 +480,10 @@ void main() {
     addTearDown(() => tester.binding.setSurfaceSize(null));
 
     Map<String, dynamic>? posted;
-    adapter.on('POST', '/api/v1/field/expense-requests', (options) {
+    adapter.on('POST', '/api/v1/field/expense-requests/submit', (options) {
       posted = (options.data as Map).cast<String, dynamic>();
       return (
         201,
-        {
-          'id': 'exp-9',
-          'number': 'EXP-0009',
-          'status': 'draft',
-          'purpose': 'Site logistics',
-          'total_amount': '2500.00',
-        },
-      );
-    });
-    adapter.on('POST', '/api/v1/field/expense-requests/exp-9/submit', (_) {
-      return (
-        200,
         {
           'id': 'exp-9',
           'number': 'EXP-0009',
