@@ -91,6 +91,37 @@
     {% endcall %}
     </div>
 
+    <div class="animate-fade-in-up" style="animation-delay: 125ms;">
+    {% call card("Managed connector installations", color="violet") %}
+        {% if managed_connectors %}
+        {% call data_table() %}
+            {{ table_head(["Connector", "Type", "Version", "Environment", "Status", ""]) }}
+            <tbody class="divide-y divide-slate-200 bg-white dark:divide-slate-700 dark:bg-slate-800">
+                {% for row in managed_connectors %}
+                {% set installation = row.installation %}
+                {% set definition = row.definition %}
+                {% call table_row(installation.id) %}
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <a href="{{ row.manage_url }}" class="text-sm font-medium text-violet-600 hover:text-violet-700 dark:text-violet-400">{{ definition.name }}</a>
+                        <p class="text-xs text-slate-500 dark:text-slate-400">{{ installation.name }}</p>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap">{{ status_badge(definition.connector_type|title, "neutral", size="sm") }}</td>
+                    <td class="px-6 py-4 whitespace-nowrap font-mono text-xs">{{ installation.connector_version }}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm">{{ installation.environment|title }}</td>
+                    <td class="px-6 py-4 whitespace-nowrap">{{ status_badge(installation.state|replace('_', ' ')|title, "active" if installation.state == 'enabled' else "neutral", size="sm") }}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-right">
+                        {% call row_actions() %}{{ row_action(row.manage_url, icon_view(), "Manage") }}{% endcall %}
+                    </td>
+                {% endcall %}
+                {% endfor %}
+            </tbody>
+        {% endcall %}
+        {% else %}
+        {{ empty_state("No managed connectors", "No versioned connector installations are configured.") }}
+        {% endif %}
+    {% endcall %}
+    </div>
+
     {% set activity_title = "Integrations Activity" %}
     {% set activity_link = "/admin/system/audit" %}
     {% include "components/data/recent_activity_panel.html" %}
