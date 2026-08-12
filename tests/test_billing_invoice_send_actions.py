@@ -23,7 +23,10 @@ from app.services.web_billing_invoice_bulk import (
     bulk_send,
     list_invoices_by_ids,
 )
-from app.services.web_billing_invoices import maybe_send_invoice_notification
+from app.services.web_billing_invoices import (
+    issue_invoice_from_detail,
+    maybe_send_invoice_notification,
+)
 from app.web.admin import billing_invoice_bulk as bulk_routes
 
 
@@ -95,6 +98,59 @@ def test_invoice_notification_delegates_once_to_canonical_event_owner(
             "commit": True,
         }
     ]
+
+
+def test_invoice_detail_issue_delegates_to_lifecycle_owner(
+    db_session, subscriber, monkeypatch
+):
+    due_at = datetime(2026, 6, 24, tzinfo=UTC)
+    invoice = Invoice(
+        account_id=subscriber.id,
+        invoice_number="INV-DETAIL-ISSUE",
+        status=InvoiceStatus.draft,
+        currency="NGN",
+        subtotal=Decimal("15000.00"),
+        tax_total=Decimal("0.00"),
+        total=Decimal("15000.00"),
+        balance_due=Decimal("15000.00"),
+        due_at=due_at,
+    )
+    db_session.add(invoice)
+    db_session.commit()
+    db_session.refresh(invoice)
+
+    class _Transition:
+        def __init__(self, invoice):
+            self.invoice = invoice
+
+    captured: list[dict[str, object]] = []
+
+    def _fake_issue(db, invoice_id, *, issued_at, due_at, reason, announce, commit):
+        captured.append(
+            {
+                "invoice_id": invoice_id,
+                "issued_at": issued_at,
+                "due_at": due_at,
+                "reason": reason,
+                "announce": announce,
+                "commit": commit,
+            }
+        )
+        return _Transition(invoice)
+
+    monkeypatch.setattr(
+        "app.services.web_billing_invoices.billing_service.invoices.issue_draft_system",
+        _fake_issue,
+    )
+
+    issued = issue_invoice_from_detail(db_session, invoice_id=invoice.id)
+
+    assert issued is invoice
+    assert captured[0]["invoice_id"] == str(invoice.id)
+    assert captured[0]["due_at"].date() == due_at.date()
+    assert captured[0]["reason"] == "admin_invoice_detail_issue"
+    assert captured[0]["announce"] is False
+    assert captured[0]["commit"] is True
 
 
 def test_invoice_pdf_attachment_reference_is_durable_on_email_delivery(
