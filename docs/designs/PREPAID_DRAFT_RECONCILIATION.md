@@ -143,11 +143,10 @@ renewal:
 - exact native payment-backed funding equal to or above the full balance:
   issue and fully settle the draft atomically;
 - exact payment-backed funding plus enough unused reviewed opening funding:
-  require operator confirmation, allocate Payments first, consume only the
-  remaining opening amount, and settle the invoice atomically;
-- an automatic funding event that reaches the mixed-source case: create or
-  refresh one durable reconciliation exception and one operator alert without
-  spending either source;
+  allocate Payments first, consume only the remaining approved opening amount,
+  and settle the invoice atomically. A funding-change event may perform this
+  automatically because the opening baseline already carries reviewed approval
+  evidence;
 - any shortfall, including NGN 0.50: keep the draft unchanged and do not create
   entitlement;
 - unbacked credit whose economic timestamp or Sub creation time crosses the
@@ -169,7 +168,7 @@ No path rounds a shortfall, invents a payment, represents opening funding as a
 Payment, marks an underfunded invoice paid, double-spends an opening baseline,
 or creates a second entitlement.
 
-## Atomic mixed-source confirmation
+## Atomic mixed-source settlement
 
 The owner locks the customer account, invoice, eligible payment/settlement
 records, and opening baseline in that order. Inside one owner transaction it:
