@@ -1045,6 +1045,7 @@ def list_conversations(
     order_dir: str = "desc",
     limit: int = 50,
     offset: int = 0,
+    include_total_count: bool = True,
 ) -> InboxConversationListResult:
     query = (
         db.query(InboxConversation, ServiceTeam)
@@ -1284,18 +1285,26 @@ def list_conversations(
             InboxConversation.created_at.desc(),
             InboxConversation.id.asc(),
         )
-    total = query.count()
+    total = query.count() if include_total_count else 0
     # `needs_response` and `contact_resolution_status` are already SQL filters
     # above, so listing them here too would load the whole filtered set before a
     # The Python-only attention classifier now runs on a selective candidate
     # set in fixed-size batches before this query. Pagination remains in SQL;
     # the row-level checks below stay as a safety net.
     needs_python_filter = False
+    row_limit = limit if include_total_count else limit + 1
     rows = (
         ordered_query.all()
         if needs_python_filter
-        else ordered_query.limit(limit).offset(offset).all()
+        else ordered_query.limit(row_limit).offset(offset).all()
     )
+    has_next_page = not include_total_count and len(rows) > limit
+    if has_next_page:
+        rows = rows[:limit]
+    if not include_total_count:
+        total = offset + len(rows) + (1 if has_next_page else 0)
+        if not rows and offset > 0:
+            total = query.count()
     conversations = [conversation for conversation, _team in rows]
     conversation_ids = [conversation.id for conversation in conversations]
     messages_by_conversation = _messages_by_conversation(db, conversation_ids)
