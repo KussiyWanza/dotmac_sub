@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -10,7 +11,12 @@ from fastapi import HTTPException
 from fastapi.responses import HTMLResponse
 from starlette.requests import Request
 
-from app.services.network.ont_actions import ActionResult
+from app.models.ont_service_configuration import OntServiceConfigurationPhase
+from app.services.network.ont_service_configuration import (
+    ConfigureOntServiceOutcome,
+    LanConfigurationChange,
+    OntConfigurationSection,
+)
 from app.services.web_network_operations import ProvisionOperationProgress
 from app.web.admin import network_onts
 from app.web.templates import templates
@@ -30,6 +36,15 @@ def _request() -> Request:
         }
     )
     request.state.csrf_token = "test-csrf-token"
+    return request
+
+
+def _request_with_auth() -> Request:
+    request = _request()
+    request.state.auth = {
+        "principal_type": "user",
+        "principal_id": "test-operator",
+    }
     return request
 
 
@@ -74,28 +89,29 @@ def test_configure_form_exposes_only_section_scoped_routed_actions() -> None:
     assert 'value="setup_via_onu" disabled selected' in html
     assert "Bridge / Via ONU is provisioning-only" in html
     assert ":disabled=\"wanMode === 'setup_via_onu'\"" in html
-    assert "Leave blank to keep the current PPPoE password" in html
+    assert 'name="pppoe_password"' not in html
+    assert "This form cannot change or reveal them" in html
     assert "Leave blank to keep the current Wi-Fi password" in html
     assert "Supported path: Huawei routed ONTs" in html
     assert "ACS registration" in html
     assert "Not ready" in html
 
 
-def test_configure_form_distinguishes_pending_delivery_from_success() -> None:
+def test_configure_form_reports_queued_operation_without_claiming_delivery() -> None:
+    operation_id = uuid.uuid4()
     html = templates.env.get_template("admin/network/onts/_configure_form.html").render(
         request=_request(),
         ont_id="ont-1",
-        config_result=ActionResult(
-            success=True,
-            waiting=True,
-            message="Saved; waiting for device inform.",
+        config_result=SimpleNamespace(
+            message="Configuration queued.",
+            operation_id=operation_id,
         ),
     )
 
-    assert "Pending delivery" in html
-    assert "Saved; waiting for device inform." in html
-    assert "border-amber-200" in html
-    assert "border-emerald-200" not in html
+    assert "Configuration queued" in html
+    assert str(operation_id) in html
+    assert "border-emerald-200" in html
+    assert "Applied" not in html
 
 
 def _submit_values(push_scope: str) -> dict[str, object]:
@@ -106,8 +122,6 @@ def _submit_values(push_scope: str) -> dict[str, object]:
         "wan_static_subnet": "",
         "wan_static_gateway": "",
         "wan_static_dns": "",
-        "pppoe_username": "",
-        "pppoe_password": "",
         "mgmt_ip_mode": "inactive",
         "mgmt_ip_address": "",
         "mgmt_remote_access": False,
@@ -126,20 +140,14 @@ def _submit_values(push_scope: str) -> dict[str, object]:
         "voip_wcd_index": "",
         "mgmt_service_port_index": "",
         "wan_service_port_index": "",
-        "push_to_device": False,
         "push_scope": push_scope,
+        "idempotency_key": "ui-contract-idempotency",
     }
 
 
 def test_configure_submit_rejects_bridge_before_service_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    service_call = MagicMock()
-    monkeypatch.setattr(
-        network_onts.web_network_ont_actions_service,
-        "update_ont_config",
-        service_call,
-    )
     values = _submit_values("wan")
     values["wan_mode"] = "setup_via_onu"
 
@@ -153,25 +161,38 @@ def test_configure_submit_rejects_bridge_before_service_call(
 
     assert exc_info.value.status_code == 400
     assert "provisioning" in str(exc_info.value.detail).lower()
-    service_call.assert_not_called()
 
 
-def test_configure_submit_uses_warning_toast_for_pending_delivery(
+def test_configure_submit_queues_typed_section_and_returns_operation_toast(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    captured: dict[str, object] = {}
+    ont_id = uuid.uuid4()
+    operation_id = uuid.uuid4()
+
+    def fake_configure(_db: object, command: object) -> ConfigureOntServiceOutcome:
+        captured["command"] = command
+        return ConfigureOntServiceOutcome(
+            ont_unit_id=ont_id,
+            assignment_id=uuid.uuid4(),
+            configuration_head_id=uuid.uuid4(),
+            revision=1,
+            operation_id=operation_id,
+            phase=OntServiceConfigurationPhase.queued,
+            replayed=False,
+            message="Configuration queued.",
+        )
+
     monkeypatch.setattr(
-        network_onts.web_network_ont_actions_service,
-        "update_ont_config",
-        lambda *_args, **_kwargs: ActionResult(
-            success=True,
-            waiting=True,
-            message="Saved; waiting for device inform.",
-        ),
+        network_onts,
+        "configure_ont_service",
+        fake_configure,
     )
+    monkeypatch.setattr(network_onts, "has_permission", lambda *_args: True)
+    monkeypatch.setattr(network_onts, "finish_read_transaction", lambda *_args: None)
+    monkeypatch.setattr(network_onts, "_base_context", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(
-        network_onts.web_network_ont_actions_service,
-        "configure_form_context",
-        lambda *_args, **_kwargs: {},
+        network_onts, "_ont_configuration_form_context", lambda *_args: {}
     )
     monkeypatch.setattr(
         network_onts.templates,
@@ -181,98 +202,17 @@ def test_configure_submit_uses_warning_toast_for_pending_delivery(
     monkeypatch.setattr(network_onts, "_log_ont_action_result", lambda **_kwargs: None)
 
     response = network_onts.ont_configure_submit(
-        request=_request(),
-        ont_id="ont-1",
+        request=_request_with_auth(),
+        ont_id=str(ont_id),
         db=MagicMock(),
         **_submit_values("lan"),
     )
 
     toast = json.loads(response.headers["HX-Trigger"])["showToast"]
-    assert toast["type"] == "warning"
-
-
-@pytest.mark.parametrize(
-    ("push_scope", "cleared_fields", "untouched_field"),
-    (
-        ("wan", ("wan_mode", "ip_protocol"), "lan_subnet_mask"),
-        ("lan", ("lan_subnet_mask",), "wifi_channel"),
-        ("wifi", ("wifi_channel", "wifi_security_mode"), "wan_mode"),
-    ),
-)
-def test_configure_default_choices_clear_only_the_submitted_section(
-    monkeypatch: pytest.MonkeyPatch,
-    push_scope: str,
-    cleared_fields: tuple[str, ...],
-    untouched_field: str,
-) -> None:
-    captured: dict[str, object] = {}
-
-    def fake_update(_db: object, _ont_id: str, **kwargs: object) -> ActionResult:
-        captured.update(kwargs)
-        return ActionResult(success=True, message="Saved")
-
-    monkeypatch.setattr(
-        network_onts.web_network_ont_actions_service,
-        "update_ont_config",
-        fake_update,
-    )
-    monkeypatch.setattr(
-        network_onts.web_network_ont_actions_service,
-        "configure_form_context",
-        lambda *_args, **_kwargs: {},
-    )
-    monkeypatch.setattr(
-        network_onts.templates,
-        "TemplateResponse",
-        lambda *_args, **_kwargs: HTMLResponse("updated"),
-    )
-    monkeypatch.setattr(network_onts, "_log_ont_action_result", lambda **_kwargs: None)
-
-    response = network_onts.ont_configure_submit(
-        request=_request(),
-        ont_id="ont-1",
-        db=MagicMock(),
-        **_submit_values(push_scope),
-    )
-
-    assert response.status_code == 200
-    for field in cleared_fields:
-        assert captured[field] == ""
-    assert captured[untouched_field] is None
-
-
-def test_empty_default_values_remove_existing_ont_overrides(db_session) -> None:
-    from app.models.network import OntUnit
-    from app.services.web_network_ont_actions.db_config import update_ont_config
-
-    ont = OntUnit(
-        serial_number="UI-CLEAR-DEFAULTS-001",
-        desired_config={
-            "wan": {"mode": "pppoe", "ip_protocol": "dual_stack"},
-            "lan": {"subnet": "255.255.255.0"},
-            "wifi": {"channel": "6", "security_mode": "WPA2-Personal"},
-        },
-    )
-    db_session.add(ont)
-    db_session.commit()
-
-    result = update_ont_config(
-        db_session,
-        str(ont.id),
-        wan_mode="",
-        ip_protocol="",
-        lan_subnet_mask="",
-        wifi_channel="",
-        wifi_security_mode="",
-        push_to_device=False,
-        push_wan=True,
-        push_lan=True,
-        push_mgmt=False,
-        push_wifi=True,
-    )
-
-    assert result.success is True
-    assert ont.desired_config == {}
+    command = captured["command"]
+    assert command.section is OntConfigurationSection.lan
+    assert isinstance(command.change, LanConfigurationChange)
+    assert toast == {"message": "Configuration queued.", "type": "success"}
 
 
 def _provision_template_context() -> dict[str, object]:

@@ -106,9 +106,29 @@ def test_message_metadata_attachments_promote_to_timeline_assets(db_session):
     assert len(assets) == 1
     assert db_session.query(InboxMediaAsset).count() == 1
     assert timeline is not None
-    assert timeline.messages[0].attachments[0]["provider_media_id"] == "media-1"
-    assert timeline.messages[0].attachments[0]["download_status"] == "metadata_only"
-    assert timeline.messages[0].attachments[0]["url"].startswith("/admin/inbox/media/")
+    assert timeline.messages[0].attachments[0].provider_media_id == "media-1"
+    assert timeline.messages[0].attachments[0].download_status == "metadata_only"
+    assert timeline.messages[0].attachments[0].url is not None
+    assert timeline.messages[0].attachments[0].url.startswith("/admin/inbox/media/")
+
+
+def test_location_without_coordinates_never_uses_media_content_route(db_session):
+    conversation = _conversation(db_session)
+    message = _message(
+        db_session,
+        conversation,
+        metadata={"attachments": [{"type": "location"}]},
+    )
+
+    team_inbox_media.promote_message_attachments(db_session, message=message)
+    timeline = team_inbox_read.get_conversation_timeline(db_session, conversation.id)
+
+    assert timeline is not None
+    attachment = timeline.messages[0].attachments[0]
+    assert attachment.type == "location"
+    assert attachment.location is None
+    assert attachment.url is None
+    assert attachment.content_available is False
 
 
 def test_outbound_attachment_upload_does_not_use_staff_id_as_subscriber(

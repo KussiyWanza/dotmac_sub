@@ -39,6 +39,8 @@ def test_credit_issue_adapter_requires_owner_preview_and_confirmation() -> None:
     route = _source("app/web/admin/billing_credits.py")
     form = _source("templates/admin/billing/credit_form.html")
     confirmation = _source("templates/admin/billing/credit_issue_confirm.html")
+    schema = _source("app/schemas/billing.py")
+    owner = _source("app/services/billing/credit_notes.py")
 
     assert '"/credits/preview"' in route
     assert "preview_fingerprint: str = Form(...)" in route
@@ -48,6 +50,19 @@ def test_credit_issue_adapter_requires_owner_preview_and_confirmation() -> None:
     assert 'name="idempotency_key"' in confirmation
     assert "Exact ledger result" in confirmation
     assert "no direct change" in confirmation
+    assert "class CreditNoteIssueApplicationDisposition(StrEnum)" in schema
+    assert "application_disposition: CreditNoteIssueApplicationDisposition" in schema
+    assert "application_reason: CreditNoteIssueApplicationReason" in schema
+    assert owner.count("application = CreditNotes._stage_issue_application(") == 2
+    assert "def _decide_issue_application(" in owner
+    assert "def _stage_application_with_evidence(" in owner
+    assert "def apply_with_evidence(" in owner
+    assert (
+        "commit: bool"
+        not in owner.split("def apply_with_evidence(", 1)[1].split(
+            ") -> CreditApplicationResult:", 1
+        )[0]
+    )
 
 
 def test_account_adjustments_and_addons_require_owner_confirmation_evidence() -> None:

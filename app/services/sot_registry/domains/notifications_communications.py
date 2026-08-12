@@ -1476,7 +1476,11 @@ DOMAIN = DomainSOT(
                         name="verified normalized provider fact",
                         owner="external:communications_provider",
                         kind=AuthorityKind.EXTERNAL_OBSERVATION,
-                        source="Authenticated email, WhatsApp, social, widget, or signed fiber website adapter output with bounded message or receipt fields.",
+                        source=(
+                            "Authenticated email, WhatsApp, social, widget, or signed "
+                            "fiber website adapter output with bounded message, typed "
+                            "latitude/longitude location, or receipt fields."
+                        ),
                     ),
                     AuthorityInput(
                         name="verified webhook admission",
@@ -1486,6 +1490,9 @@ DOMAIN = DomainSOT(
                     ),
                 ),
                 transaction_mode=TransactionMode.OWNER_MANAGED,
+                domain_error_codes=(
+                    "communications.team_inbox_observations.invalid_location",
+                ),
                 event_types=("team_inbox.provider_observation_recorded.v1",),
             ),
         ),
@@ -2408,6 +2415,7 @@ DOMAIN = DomainSOT(
                 "Inbox list detail metrics response cohort unread and action projection",
                 "Inbox outbound message sender identity projection",
                 "Inbox media browser presentation projection",
+                "Inbox structured location browser presentation projection",
             ),
             depends_on=(
                 "communications.team_inbox_threads",
@@ -2432,6 +2440,10 @@ DOMAIN = DomainSOT(
                     ),
                     (
                         "Inbox media browser presentation projection",
+                        OwnerRole.RESOLVER,
+                    ),
+                    (
+                        "Inbox structured location browser presentation projection",
                         OwnerRole.RESOLVER,
                     ),
                 ),
@@ -2496,6 +2508,15 @@ DOMAIN = DomainSOT(
                             "type, and safe filename for one authorized Inbox asset."
                         ),
                     ),
+                    AuthorityInput(
+                        name="Inbox structured location facts",
+                        owner="communications.team_inbox_threads",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "Validated latitude, longitude, optional place name, and "
+                            "address preserved on one Inbox message attachment."
+                        ),
+                    ),
                 ),
                 transaction_mode=TransactionMode.READ_ONLY,
                 domain_error_codes=(
@@ -2505,6 +2526,7 @@ DOMAIN = DomainSOT(
                     "Inbox queue detail metrics response cohorts actions and unread cohorts",
                     "Outbound message sender display name initials and provenance source",
                     "MIME-allowlisted inline image or download-only attachment presentation",
+                    "Google Maps link presentation for a validated structured location attachment",
                 ),
                 test_refs=(
                     "tests/test_team_inbox_sot_completion.py",
@@ -2527,6 +2549,7 @@ DOMAIN = DomainSOT(
                 "communications.team_inbox_outbound_intents",
                 "communications.team_inbox_projection",
                 "communications.team_inbox_routing",
+                "integration.inbox",
             ),
             contract=_team_inbox_contract(
                 service_name="communications.team_inbox_maintenance",
@@ -2561,10 +2584,26 @@ DOMAIN = DomainSOT(
                         kind=AuthorityKind.DERIVED_PROJECTION,
                         source="Bounded classifying or awaiting-follow-up state and configured fallback deadline.",
                     ),
+                    AuthorityInput(
+                        name="verified WhatsApp webhook repair evidence",
+                        owner="integration.inbox",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "Exact processed receipt, consequence message identity, and "
+                            "original structured location payload for explicitly scoped "
+                            "historical repair."
+                        ),
+                    ),
                 ),
                 transaction_mode=TransactionMode.OWNER_MANAGED,
+                domain_error_codes=(
+                    "communications.team_inbox_maintenance.invalid_location_repair_scope",
+                ),
                 event_types=("team_inbox.projection_repaired.v1",),
-                projections=("repairable Inbox worklists and media projection",),
+                projections=(
+                    "repairable Inbox worklists and media projection",
+                    "verified historical WhatsApp location attachment repair",
+                ),
             ),
         ),
         SOTService(

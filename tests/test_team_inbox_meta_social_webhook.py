@@ -469,5 +469,6 @@ def test_meta_inbox_webhook_preserves_attachment_messages(db_session, monkeypatc
     assert asset.asset_type == "image"
     assert asset.source_url == "https://example.test/i.jpg"
     assert asset.download_status == "remote_available"
-    assert timeline.messages[0].attachments[0]["url"].startswith("/admin/inbox/media/")
+    assert timeline.messages[0].attachments[0].url is not None
+    assert timeline.messages[0].attachments[0].url.startswith("/admin/inbox/media/")
     assert "raw" not in message.metadata_

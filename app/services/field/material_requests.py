@@ -179,12 +179,6 @@ class MaterialRequestWorkOrderOption:
 
 
 @dataclass(frozen=True, slots=True)
-class MaterialRequestInventoryOption:
-    id: UUID
-    label: str
-
-
-@dataclass(frozen=True, slots=True)
 class MaterialRequestWarehouseOption:
     code: str
     label: str
@@ -193,7 +187,7 @@ class MaterialRequestWarehouseOption:
 @dataclass(frozen=True, slots=True)
 class MaterialRequestFormOptions:
     work_orders: tuple[MaterialRequestWorkOrderOption, ...]
-    inventory_items: tuple[MaterialRequestInventoryOption, ...]
+    has_eligible_inventory_items: bool
     warehouses: tuple[MaterialRequestWarehouseOption, ...]
     context_label: str
 
@@ -233,7 +227,7 @@ _MATERIAL_CREATE_COMMAND = OwnerCommandDefinition(
 )
 _MATERIAL_OBSERVATION_COMMAND = OwnerCommandDefinition(
     owner="operations.material_dependencies",
-    concern="ERP material issuance observation",
+    concern="ERP material status observation",
     name="observe_erp_material_status",
 )
 
@@ -482,25 +476,20 @@ def staff_material_request_form_options(
                 technician_label="Optional context",
             )
         )
-    inventory_rows = (
-        db.query(FieldInventoryItem)
+    has_eligible_inventory_items = (
+        db.query(FieldInventoryItem.id)
         .filter(
             FieldInventoryItem.is_active.is_(True),
             FieldInventoryItem.source_is_active.is_(True),
             FieldInventoryItem.field_request_eligible.is_(True),
         )
-        .order_by(FieldInventoryItem.name.asc())
-        .all()
+        .limit(1)
+        .first()
+        is not None
     )
     return MaterialRequestFormOptions(
         work_orders=tuple(work_orders),
-        inventory_items=tuple(
-            MaterialRequestInventoryOption(
-                id=row.id,
-                label=f"{row.name} ({row.sku})" if row.sku else row.name,
-            )
-            for row in inventory_rows
-        ),
+        has_eligible_inventory_items=has_eligible_inventory_items,
         warehouses=tuple(
             MaterialRequestWarehouseOption(
                 code=row.code,
@@ -1344,7 +1333,6 @@ class FieldMaterialRequests:
                 "approved",
                 "accepted_by_erp",
                 "pending_stock",
-                "issued",
             }:
                 request.status = "issued"
                 request.issued_at = request.issued_at or datetime.now(UTC)

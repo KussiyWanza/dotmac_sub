@@ -3,7 +3,7 @@
 **Status:** Rebaselined 2026-08-02 for slice S1 of the selective kernel-adoption
 plan; amended the same day for slice S2 (dependency pinned — see "S2 acceptance
 claim") and slice S3 (composition declared in `app/composition.py` — see "S3
-acceptance claim"). The pin moved to `dotmac-kernel==0.1.0a27` on 2026-08-09 —
+acceptance claim"). The pin moved to `dotmac-kernel==0.1.0a40` on 2026-08-11 —
 see "Pin history". Supersedes the
 2026-07-19 Phase-0 draft, which was surveyed before the kernel was released and
 against `origin/main` 7807afcd. No code, schema, or dependency change is
@@ -54,6 +54,36 @@ Rationale, boundaries, and the two findings the adoption measured — Sub's
 role NAMES but not its values — are in
 [`docs/adr/0010-adopt-shared-ui-contract.md`](adr/0010-adopt-shared-ui-contract.md).
 Guarded by `tests/architecture/test_dotmac_ui_adoption.py`.
+
+**2026-08-11 — `0.1.0a27` → `0.1.0a40`.** The pin the lineage gate needs. Sub
+cannot run a migration lineage it does not have, so this precedes every
+per-table disposition.
+
+Thirteen releases, and **none of the three breaking changes in them touch the
+surface Sub imports**, which is why this is a pin bump rather than a migration:
+
+- a37 requires `OutboundMessage(dispatch_id=..., category=...)`. Sub does not
+  import `dotmac_kernel.delivery`.
+- a33 renamed `InboxRecord` → `IdempotencyRecord` and moved it to
+  `dotmac_kernel.idempotency_models`, with the tables and columns renamed to
+  match. Its changelog is explicit that consumers of `messaging.process_once`
+  need no source change and only consumers of the RECORD MODELS do; Sub imports
+  neither.
+- a31 widened the `fastapi` range upward. Sub pins 0.111.0, which is the floor
+  and unchanged.
+
+What Sub does gain is a40's `0021_setting_scope_alignment`, which exists because
+of Sub's own S7 rehearsal: it repairs the `scope_kind='tenant'` /
+`tenant_id IS NULL` shape, and where a product already carries the exact CHECK
+and platform default — Sub's migration 514 — it **verifies and adopts** them,
+recording `dotmac-kernel:0021:adopted-existing` so downgrade restores Sub's
+predecessor rather than deleting it. Sub keeps the stronger invariant it already
+shipped.
+
+The collision baseline was remeasured against this release rather than the
+historical a27 figures: ten name collisions, of which four need no design, one
+is a two-column reconciliation, and five need a union. See
+`dotmac_starter_mt/docs/inventories/sub-lineage-dispositions.md`.
 
 **2026-08-09 — `0.1.0a23` → `0.1.0a27`.** Taken because the settings cutover
 needs a value type that did not exist at a23.

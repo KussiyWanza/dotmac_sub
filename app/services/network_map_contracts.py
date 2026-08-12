@@ -28,6 +28,8 @@ class NetworkMapFeatureType(StrEnum):
     fiber_segment = "fiber_segment"
     ont = "ont"
     customer = "customer"
+    olt_device = "olt_device"
+    service_building = "service_building"
 
 
 class NetworkMapCustomerRouteKind(StrEnum):
@@ -171,8 +173,12 @@ class NetworkMapFeatureProperties:
     name: str
     code: str | None = None
     city: str | None = None
+    street: str | None = None
+    notes: str | None = None
     device_count: int | None = None
     splitter_count: int | None = None
+    splice_count: int | None = None
+    tray_count: int | None = None
     access_point_type: str | None = None
     placement: str | None = None
     support_type: NetworkMapSupportType | None = None
@@ -209,8 +215,12 @@ class NetworkMapFeatureProperties:
             "name": self.name,
             "code": self.code,
             "city": self.city,
+            "street": self.street,
+            "notes": self.notes,
             "device_count": self.device_count,
             "splitter_count": self.splitter_count,
+            "splice_count": self.splice_count,
+            "tray_count": self.tray_count,
             "ap_type": self.access_point_type,
             "placement": self.placement,
             "support_type": self.support_type.value if self.support_type else None,
@@ -334,4 +344,30 @@ class NetworkMapProjection:
             "stats": self.stats.to_transport(),
             "customer_count": self.customer_count,
             "customer_map_count": self.customer_map_count,
+        }
+
+
+class NetworkMapPlantLayer(StrEnum):
+    osp = "osp"
+    backbone = "backbone"
+    customer_edge = "customer_edge"
+    sites = "sites"
+
+
+@dataclass(frozen=True, slots=True)
+class NetworkMapPlantProjection:
+    """Read-only dispatch plant subset; it deliberately has no customer state."""
+
+    features: tuple[NetworkMapFeature, ...]
+    layer_counts: dict[NetworkMapPlantLayer, int]
+    unmatched_olt_count: int
+
+    def to_transport(self) -> dict[str, object]:
+        return {
+            "type": "FeatureCollection",
+            "features": [feature.to_transport() for feature in self.features],
+            "counts": {
+                **{layer.value: count for layer, count in self.layer_counts.items()},
+                "unmatched_olts": self.unmatched_olt_count,
+            },
         }

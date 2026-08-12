@@ -271,3 +271,14 @@ def comprehensive_network_map(request: Request, db: Session = Depends(get_db)):
     projection = network_map_service.build_network_map_projection(db=db)
     context.update(projection.to_template_context())
     return templates.TemplateResponse("admin/network/map.html", context)
+
+
+@router.get(
+    "/map/plant-data",
+    dependencies=[Depends(require_permission("network:map:read"))],
+)
+def network_map_plant_data(db: Session = Depends(get_db)) -> dict[str, object]:
+    """Read-only GeoJSON plant subset for the dispatch live map."""
+    from app.services import network_map as network_map_service
+
+    return network_map_service.build_network_map_plant_projection(db=db).to_transport()

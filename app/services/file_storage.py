@@ -43,6 +43,21 @@ class FileDomainConfig:
     compute_checksum: bool = False
 
 
+@dataclass(frozen=True)
+class PreparedFileUpload:
+    """An object uploaded before its caller stages database metadata."""
+
+    owner_subscriber_id: uuid.UUID | None
+    entity_type: str
+    entity_id: str
+    original_filename: str
+    storage_key: str
+    file_size: int
+    content_type: str
+    checksum: str | None
+    uploaded_by: str | None
+
+
 DOMAIN_CONFIGS: dict[str, FileDomainConfig] = {
     "branding": FileDomainConfig(
         prefix="branding",
@@ -372,6 +387,31 @@ class UnifiedFileUploadService:
         storage reconciler concern and this participant never completes the
         database transaction.
         """
+        prepared = self.prepare_upload(
+            domain=domain,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            original_filename=original_filename,
+            content_type=content_type,
+            data=data,
+            uploaded_by=uploaded_by,
+            owner_subscriber_id=owner_subscriber_id,
+        )
+        return self.stage_prepared_upload(db=db, prepared=prepared)
+
+    def prepare_upload(
+        self,
+        *,
+        domain: str,
+        entity_type: str,
+        entity_id: str,
+        original_filename: str,
+        content_type: str | None,
+        data: bytes,
+        uploaded_by: str | None,
+        owner_subscriber_id: uuid.UUID | None = None,
+    ) -> PreparedFileUpload:
+        """Validate and upload an object before any database lock is acquired."""
         config = self.get_domain_config(domain)
         safe_name, final_content_type = self.validate(
             config=config,
@@ -390,27 +430,43 @@ class UnifiedFileUploadService:
         )
         self._storage_client().upload(storage_key, data, final_content_type)
         checksum = hashlib.sha256(data).hexdigest() if config.compute_checksum else None
-        record = StoredFile(
+        return PreparedFileUpload(
             owner_subscriber_id=owner_subscriber_id,
             entity_type=entity_type,
             entity_id=entity_id,
             original_filename=safe_name,
-            storage_key_or_relative_path=storage_key,
+            storage_key=storage_key,
             file_size=len(data),
             content_type=final_content_type,
             checksum=checksum,
-            storage_provider="s3",
             uploaded_by=uploaded_by,
+        )
+
+    def stage_prepared_upload(
+        self, *, db: Session, prepared: PreparedFileUpload
+    ) -> StoredFile:
+        """Stage a previously uploaded object's metadata in the caller transaction."""
+        record = StoredFile(
+            owner_subscriber_id=prepared.owner_subscriber_id,
+            entity_type=prepared.entity_type,
+            entity_id=prepared.entity_id,
+            original_filename=prepared.original_filename,
+            storage_key_or_relative_path=prepared.storage_key,
+            file_size=prepared.file_size,
+            content_type=prepared.content_type,
+            checksum=prepared.checksum,
+            storage_provider="s3",
+            uploaded_by=prepared.uploaded_by,
             uploaded_at=datetime.now(UTC),
         )
         db.add(record)
         db.flush()
         logger.info(
             "file_upload_staged entity=%s entity_id=%s file_id=%s key=%s",
-            entity_type,
-            entity_id,
+            prepared.entity_type,
+            prepared.entity_id,
             record.id,
-            storage_key,
+            prepared.storage_key,
         )
         return record
 

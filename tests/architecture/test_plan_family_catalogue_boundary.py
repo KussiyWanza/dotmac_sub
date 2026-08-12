@@ -18,7 +18,8 @@ def test_plan_family_catalogue_has_one_contracted_command_owner():
     assert owner.module == "app.services.catalog.plan_family_catalogues"
     assert owner.contract is not None
     assert "execute_owner_command(" in service
-    assert "file_uploads.stage_upload(" in service
+    assert "file_uploads.prepare_upload(" in service
+    assert "file_uploads.stage_prepared_upload(" in service
     assert "db.commit(" not in service
     assert "db.rollback(" not in service
     assert "PlanFamilyCatalogue(" not in settings_route

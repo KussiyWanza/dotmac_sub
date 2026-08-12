@@ -2798,6 +2798,10 @@ class TestCancellationCreditCycle:
             invoice_number="INV-CC-1",
             status=InvoiceStatus.issued,
             currency="NGN",
+            subtotal=Decimal("70.00"),
+            tax_total=Decimal("5.25"),
+            total=Decimal("75.25"),
+            balance_due=Decimal("75.25"),
         )
         db_session.add(invoice)
         db_session.flush()

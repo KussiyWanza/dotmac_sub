@@ -50,10 +50,12 @@ optimizations; the version selected by this owner remains the decision.
 | `superseded` | Former approved version retained for sent links | Allowed |
 | `withdrawn` | Explicitly removed from circulation | Denied |
 
-Publication locks the plan-family versions and the database permits only one
-`published` row per family. The PDF is validated by extension, MIME allow-list,
-magic bytes, and a 20 MB limit. Its SHA-256 checksum provides safe retry
-recognition and its object key is content-addressed.
+The PDF is validated by extension, MIME allow-list, magic bytes, and a 20 MB
+limit, then uploaded to private object storage before publication acquires its
+plan-family database lock. Publication locks the plan-family versions and the
+database permits only one `published` row per family. This keeps slow object
+storage from holding a PostgreSQL transaction open. Its SHA-256 checksum
+provides safe retry recognition and its object key is content-addressed.
 
 ## Page contracts
 

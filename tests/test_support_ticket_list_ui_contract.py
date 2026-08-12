@@ -12,7 +12,7 @@ from starlette.requests import Request
 
 from app.models.support import Ticket, TicketChannel, TicketStatus
 from app.services import support as support_service
-from app.services import web_support_tickets
+from app.services import support_ticket_settings, web_support_tickets
 from app.services.list_query import PageMeta
 from app.web.admin import support_tickets as admin_support_tickets
 
@@ -180,6 +180,48 @@ def test_not_closed_status_scope_excludes_only_closed_and_aligns_paging(
         visible_columns_cookie="status",
     )
     assert set(csv_output.splitlines()[1:]) == expected_statuses
+
+
+def test_unconfigured_status_remains_visible_in_admin_list_filter(db_session):
+    support_ticket_settings.update_ticket_configuration(
+        db_session,
+        support_ticket_settings.TicketConfigurationUpdate(
+            statuses=("open", "closed"),
+            priorities=("normal",),
+            ticket_types=("incident",),
+        ),
+    )
+    ticket = _ticket(title="Pending ticket", status="pending")
+    db_session.add(ticket)
+    db_session.commit()
+
+    context = web_support_tickets.build_tickets_list_context(
+        db_session,
+        list_query=_query(status="pending"),
+        actor_id=None,
+        visible_columns_cookie=None,
+    )
+
+    assert [row.id for row in context["tickets"]] == [ticket.id]
+    assert "pending" not in context["all_statuses"]
+    status_filter = next(
+        field for field in context["ticket_filter_schema"] if field["field"] == "status"
+    )
+    assert "pending" not in {option["value"] for option in status_filter["options"]}
+    assert context["unavailable_status_filter"].value == "pending"
+    assert context["status_presentations"]["pending"].label == "Pending"
+
+    templates = Jinja2Templates(directory=str(PROJECT_ROOT / "templates"))
+    html = templates.env.get_template("admin/support/tickets/_list.html").render(
+        current_user=None,
+        support_ticket_bulk_action_contract={"selection_enabled": False},
+        **context,
+    )
+    assert (
+        '<option value="pending" selected hidden>Pending (not selectable)</option>'
+        in html
+    )
+    assert "Pending ticket" in html
 
 
 def test_ticket_context_uses_exact_count_clamps_page_and_aligns_status_links(

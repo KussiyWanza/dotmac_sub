@@ -1,13 +1,18 @@
 """ACS-side reader — GenieACS NBI query into ``AcsObservedFields``.
 
-One ``list_devices`` query per ONT with a focused projection. The reader
-trusts the GenieACS CWMP cache — staleness is bounded by the device's
-PeriodicInformInterval, and post-write ``VERIFICATION_MISMATCH`` catches the
-rare stale-cache case. No ``refreshObject`` round-trip on every read.
+The normal path issues one ``list_devices`` query for the exact persisted
+GenieACS device id with a focused projection. The reader trusts the GenieACS
+CWMP cache — staleness is bounded by the device's PeriodicInformInterval, and
+post-write ``VERIFICATION_MISMATCH`` catches the rare stale-cache case. No
+``refreshObject`` round-trip runs on every read.
 
-The device-id format is ``{OUI}-{ProductClass}-{SerialNumber}``. ``OntUnit``
-does not carry OUI/ProductClass, so the *query* uses a trailing-serial regex
-match — the same pattern ``GenieACSClient.get_device`` falls back to.
+The device-id format is ``{OUI}-{ProductClass}-{SerialNumber}``. The TR-069
+Inform owner persists that exact value on ``Tr069CpeDevice`` and the desired
+state carries it as ``acs_device_id``. Querying it directly is essential for
+Huawei ONTs whose OLT serial is rendered as ``HWTC...`` while their CWMP
+document uses the equivalent hexadecimal serial ``48575443...``. A
+trailing-serial query is retained only when no persisted id exists, or as a
+fail-closed stale-identity check after the recorded id no longer exists.
 
 The matched document's ``_id`` is then **observed** into
 ``AcsObservedFields.acs_observed_device_id`` verbatim, together with the number
@@ -21,9 +26,10 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, TypeAlias, runtime_checkable
 
 from app.services.genieacs_client import GenieACSError
+from app.services.network.serial_utils import search_candidates
 
 from ..state import AcsObservedFields, OntDesiredState
 from ..wifi_paths import wifi_paths_for_instance
@@ -33,6 +39,34 @@ if TYPE_CHECKING:
     from datetime import datetime
 
 logger = logging.getLogger(__name__)
+
+JsonValue: TypeAlias = (
+    None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
+)
+AcsDeviceDocument: TypeAlias = dict[str, JsonValue]
+
+
+class AcsDeviceReader(Protocol):
+    """Typed read boundary used by the reconciler's GenieACS adapter."""
+
+    def list_devices(
+        self,
+        query: dict[str, object] | None = None,
+        projection: dict[str, object] | str | None = None,
+    ) -> list[AcsDeviceDocument]: ...
+
+
+@runtime_checkable
+class AcsRefreshReader(AcsDeviceReader, Protocol):
+    """Optional narrow refresh capability used for ghost-WAN recovery."""
+
+    def refresh_object(
+        self,
+        device_id: str,
+        object_path: str,
+        *,
+        allow_when_pending: bool = False,
+    ) -> dict[str, JsonValue]: ...
 
 
 # Projection paths read from the device document. Kept here (rather than
@@ -89,7 +123,7 @@ _PROJECTION_PATHS: tuple[str, ...] = (
 
 
 def read_acs_state(
-    client: Any,
+    client: AcsDeviceReader,
     desired: OntDesiredState,
     *,
     deadline: datetime | None = None,
@@ -112,7 +146,8 @@ def read_acs_state(
         marks the plan ``acs_wait_reason=ont_not_informing`` so the OLT-side
         mgmt config is still pushed and the ACS half waits for the next Inform.
     """
-    query = _query_for_serial(desired.serial_number)
+    queries = _queries_for_identity(desired)
+    query = queries[-1]
     projection_paths = list(_PROJECTION_PATHS)
     if desired.tr181_wan_paths is not None:
         projection_paths.extend(vars(desired.tr181_wan_paths).values())
@@ -130,7 +165,12 @@ def read_acs_state(
     projection = ",".join(dict.fromkeys(projection_paths))
 
     try:
-        devices = client.list_devices(query=query, projection=projection)
+        devices: list[AcsDeviceDocument] = []
+        for candidate_query in queries:
+            query = candidate_query
+            devices = client.list_devices(query=query, projection=projection)
+            if devices:
+                break
     except GenieACSError as exc:
         # The client raises GenieACSError for any non-2xx; treat as
         # unreachable so the precondition layer fast-fails before writes.
@@ -185,7 +225,9 @@ def read_acs_state(
     # and skip the addObject, so PPP never dials. Tell-tale: instance index
     # resolved but ``ConnectionStatus`` has no reported ``_value``. Force a
     # narrow ``refreshObject`` on the affected WCD and re-parse once.
-    if _looks_like_ghost_wan_instance(observed) and hasattr(client, "refresh_object"):
+    if _looks_like_ghost_wan_instance(observed) and isinstance(
+        client, AcsRefreshReader
+    ):
         observed = _refresh_and_reparse(
             client, device, observed, query, projection, desired
         )
@@ -211,7 +253,7 @@ def _looks_like_ghost_wan_instance(observed: AcsObservedFields) -> bool:
 
 
 def _refresh_and_reparse(
-    client: Any,
+    client: AcsRefreshReader,
     device: dict[str, Any],
     observed: AcsObservedFields,
     query: dict[str, Any],
@@ -252,12 +294,30 @@ def _refresh_and_reparse(
 # ── Query / parse helpers ───────────────────────────────────────────────────
 
 
-def _query_for_serial(serial_number: str) -> dict[str, Any]:
-    """Build the GenieACS query that matches any device whose ``_id`` ends in
-    the given serial. Mirrors ``GenieACSClient.get_device``'s fallback path.
+def _query_for_serial(serial_number: str) -> dict[str, object]:
+    """Match equivalent ACS suffixes without selecting an invented identity."""
+
+    suffixes = tuple(dict.fromkeys(search_candidates(serial_number)))
+    escaped = tuple(re.escape(value) for value in suffixes if value)
+    if not escaped:
+        return {"_id": {"$regex": r"(?!)"}}
+    suffix_pattern = escaped[0] if len(escaped) == 1 else f"(?:{'|'.join(escaped)})"
+    return {"_id": {"$regex": f".*-{suffix_pattern}$"}}
+
+
+def _queries_for_identity(desired: OntDesiredState) -> tuple[dict[str, object], ...]:
+    """Return authoritative-first ACS lookups for one exact ONT.
+
+    The Inform-owned device id is the primary lookup. If that record is stale,
+    one serial query observes a replacement document so the planner can report
+    a recorded-versus-observed identity conflict instead of writing to either.
     """
-    escaped = re.escape(serial_number)
-    return {"_id": {"$regex": f".*-{escaped}$"}}
+
+    serial_query = _query_for_serial(desired.serial_number)
+    recorded = (desired.acs_device_id or "").strip()
+    if not recorded:
+        return (serial_query,)
+    return ({"_id": recorded}, serial_query)
 
 
 def _parse_device(

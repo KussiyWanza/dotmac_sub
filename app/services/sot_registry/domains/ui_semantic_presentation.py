@@ -724,6 +724,7 @@ DOMAIN = DomainSOT(
             module="app.services.network_map",
             owns=(
                 "comprehensive network map typed projection",
+                "dispatch plant-subset map projection",
                 "customer access-session map presentation",
                 "network map customer drill-down projection",
             ),
@@ -763,6 +764,15 @@ DOMAIN = DomainSOT(
                         ),
                     ),
                     ConcernContract(
+                        name="dispatch plant-subset map projection",
+                        role=OwnerRole.RESOLVER,
+                        input_names=(
+                            "canonical network inventory and geometry",
+                            "validated fiber route geometry",
+                            "binary device operation verdict",
+                        ),
+                    ),
+                    ConcernContract(
                         name="customer access-session map presentation",
                         role=OwnerRole.RESOLVER,
                         input_names=(
@@ -787,9 +797,11 @@ DOMAIN = DomainSOT(
                         owner="network.identity",
                         kind=AuthorityKind.AUTHORITATIVE_RECORD,
                         source=(
-                            "typed POP, network-device, ONT, FDH, splice, access-"
-                            "point, support-structure, and fiber-segment identities "
-                            "with persisted coordinates or validated route geometry"
+                            "typed POP, network-device, matched OLT, ONT, FDH, "
+                            "splice, access-point, service-building, support-"
+                            "structure, and fiber-segment identities with persisted "
+                            "coordinates, equipment metadata, grouped child counts, "
+                            "or validated route geometry"
                         ),
                     ),
                     AuthorityInput(
@@ -969,6 +981,8 @@ DOMAIN = DomainSOT(
                 ),
                 test_refs=(
                     "tests/test_customer_network_operations_map.py",
+                    "tests/test_network_map_plant_projection.py",
+                    "tests/integration/test_network_map_plant_projection.py",
                     "tests/test_network_map_support_structures.py",
                     "tests/architecture/test_network_map_projection_boundary.py",
                 ),

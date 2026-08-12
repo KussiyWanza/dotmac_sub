@@ -139,6 +139,9 @@ def test_workspace_exposes_responsive_realtime_and_accessible_controls():
     assert "outbound_sender.initials" in triage
     assert 'aria-label="Sent by {{ outbound_sender_name }}"' in triage
     assert ">AG</div>" not in triage
+    assert "att.location.map_url" in triage
+    assert "Open in Google Maps" in triage
+    assert 'rel="noopener noreferrer"' in triage
     assert "dotmac.inbox.draft." in javascript
     assert "newMessagesAvailable" in javascript
     assert "data.agent_name" in javascript

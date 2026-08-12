@@ -12,7 +12,8 @@ is one service-access transition consisting of all of these facts:
 - the exact active subscription currently being served;
 - its current provisioning NAS and exact active primary IPv4 assignment;
 - one active target NAS;
-- one active IPv4 pool explicitly linked to that target NAS; and
+- one active IPv4 pool explicitly linked to that target NAS through either
+  the legacy direct pool FK or the NAS RADIUS-pool configuration; and
 - one safe, materialized, currently available IPv4 address in that pool.
 
 The public owner command is
@@ -76,12 +77,18 @@ The preview or command refuses the move when:
 
 - the subscription or target NAS is missing or inactive;
 - the target NAS is unchanged;
-- the pool is inactive, non-IPv4, or not linked to the target NAS;
+- the pool is inactive, non-IPv4, or not linked to the target NAS through the
+  direct legacy FK or its many-to-many RADIUS-pool configuration;
 - the requested address is invalid, outside the pool, absent from inventory,
   reserved, management-owned, routed, device-owned, or already assigned;
 - the current exact-service IPv4 assignment is missing or ambiguous;
 - current served-IP, RADIUS, or session evidence is not aligned; or
 - any fingerprinted evidence changed between preview and confirmation.
+
+NAS `radius_pool:` tags are the authoritative many-to-many configuration for
+shared pools. Migration `521_backfill_nas_radius_pool_links` adds links proven
+by active subscription/IP-assignment evidence and deliberately excludes the
+`Demo` pool. The legacy `IpPool.nas_device_id` remains a supported fallback.
 
 Operators reconcile the current IPv4 evidence first when the move is blocked;
 they do not bypass the decision through generic edit or bulk migration.

@@ -24,6 +24,9 @@ from app.services import (
 )
 from app.services import web_catalog_subscriptions as web_catalog_subscriptions_service
 from app.services import web_fup as web_fup_service
+from app.services import (
+    web_network_ont_assignments as web_network_ont_assignments_service,
+)
 from app.services.auth_dependencies import (
     has_permission,
     require_any_permission,
@@ -883,6 +886,9 @@ def catalog_subscription_detail(
     context["can_correct_subscription"] = bool(
         auth and has_permission(auth, db, "catalog:write")
     )
+    context["can_change_ont"] = bool(
+        auth and has_permission(auth, db, "network:ont:write")
+    )
     context["notice"] = notice
     context["warning"] = warning
     context["error"] = error
@@ -905,6 +911,62 @@ def catalog_subscription_detail(
         else []
     )
     return templates.TemplateResponse("admin/catalog/subscription_detail.html", context)
+
+
+@router.get(
+    "/subscriptions/{subscription_id}/change-ont",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("network:ont:write"))],
+)
+def catalog_subscription_change_ont_form(
+    request: Request,
+    subscription_id: str,
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    form_context = web_network_ont_assignments_service.change_ont_form_context(
+        db,
+        subscription_id=subscription_id,
+    )
+    if form_context.not_found:
+        context = _base_context(request, db, active_page="catalog-subscriptions")
+        context.update({"message": "Subscription not found"})
+        return templates.TemplateResponse(
+            "admin/errors/404.html",
+            context,
+            status_code=404,
+        )
+    context = _base_context(request, db, active_page="catalog-subscriptions")
+    context.update({"change_ont": form_context})
+    return templates.TemplateResponse(
+        "admin/catalog/subscription_change_ont.html",
+        context,
+    )
+
+
+@router.post(
+    "/subscriptions/{subscription_id}/change-ont",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("network:ont:write"))],
+)
+def catalog_subscription_change_ont_submit(
+    request: Request,
+    subscription_id: str,
+    db: Session = Depends(get_db),
+) -> Response:
+    form = parse_form_data_sync(request)
+    success, message = (
+        web_network_ont_assignments_service.reassign_subscription_ont_from_form(
+            db,
+            subscription_id=subscription_id,
+            form=form,
+            actor_id=_get_actor_id(request),
+        )
+    )
+    param = "notice" if success else "error"
+    return RedirectResponse(
+        f"/admin/catalog/subscriptions/{subscription_id}?{param}={quote_plus(message)}",
+        status_code=303,
+    )
 
 
 @router.post(

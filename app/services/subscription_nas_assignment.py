@@ -40,6 +40,7 @@ from app.services.ip_assignment_lifecycle import (
     preview_service_ipv4_assignment_repair,
     preview_service_ipv4_projection_repair,
 )
+from app.services.nas import radius_pool_ids_from_tags
 from app.services.owner_commands import (
     CommandContext,
     OwnerCommandDefinition,
@@ -248,7 +249,10 @@ def preview_subscription_service_access_move(
     elif not target_pool.is_active or target_pool.ip_version is not IPVersion.ipv4:
         decision = ServiceAccessMoveDecision.target_pool_inactive
         detail = "The selected target IPv4 pool is not active."
-    elif target_pool.nas_device_id != target_nas_device_id:
+    elif target_pool.nas_device_id != target_nas_device_id and (
+        target_nas is None
+        or str(target_pool.id) not in set(radius_pool_ids_from_tags(target_nas.tags))
+    ):
         decision = ServiceAccessMoveDecision.target_pool_not_linked
         detail = "The selected IPv4 pool is not linked to the target router."
     elif not normalized_target_ipv4:

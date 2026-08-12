@@ -1,0 +1,95 @@
+{% extends "layouts/admin.html" %}
+
+{% block title %}Change ONT - Admin{% endblock %}
+
+{% block content %}
+{% set subscription = change_ont.subscription %}
+{% set assignment = change_ont.current_assignment %}
+{% set current_ont = assignment.ont_unit if assignment else none %}
+<div class="space-y-6">
+    <div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+            <nav class="mb-2 flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
+                <a href="/admin/catalog/subscriptions/{{ subscription.id }}" class="hover:text-primary-600">Subscription</a>
+                <span aria-current="page" class="text-slate-900 dark:text-white">Change ONT</span>
+            </nav>
+            <h1 class="text-2xl font-bold text-slate-900 dark:text-white">Change ONT</h1>
+            <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Replace the active ONT assignment for this subscriber and subscription.</p>
+        </div>
+        <a href="/admin/catalog/subscriptions/{{ subscription.id }}" class="inline-flex items-center rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">Cancel</a>
+    </div>
+
+    {% if change_ont.error %}
+    <div class="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-900/30 dark:text-red-300">
+        {{ change_ont.error }}
+    </div>
+    {% endif %}
+
+    <form method="POST" action="/admin/catalog/subscriptions/{{ subscription.id }}/change-ont" class="space-y-6" x-data="{ submitting: false }" @submit="submitting = true">
+        {% include "components/forms/csrf_input.html" %}
+
+        <div class="rounded-lg border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
+            <div class="border-b border-slate-200 px-6 py-4 dark:border-slate-700">
+                <h2 class="font-semibold text-slate-900 dark:text-white">Current active assignment</h2>
+            </div>
+            <div class="p-6">
+                {% if assignment and current_ont %}
+                <input type="hidden" name="current_assignment_id" value="{{ assignment.id }}">
+                <dl class="grid gap-4 sm:grid-cols-3">
+                    <div>
+                        <dt class="text-sm font-medium text-slate-500 dark:text-slate-400">Current ONT</dt>
+                        <dd class="mt-1 font-mono text-sm text-slate-900 dark:text-white">{{ current_ont.serial_number }}</dd>
+                    </div>
+                    <div>
+                        <dt class="text-sm font-medium text-slate-500 dark:text-slate-400">Current MAC</dt>
+                        <dd class="mt-1 font-mono text-sm text-slate-900 dark:text-white">{{ current_ont.mac_address or 'not recorded' }}</dd>
+                    </div>
+                    <div>
+                        <dt class="text-sm font-medium text-slate-500 dark:text-slate-400">Current OLT</dt>
+                        <dd class="mt-1 text-sm text-slate-900 dark:text-white">{{ current_ont.olt_device.name if current_ont.olt_device else 'not resolved' }}</dd>
+                    </div>
+                </dl>
+                {% else %}
+                <p class="text-sm text-slate-600 dark:text-slate-300">This subscription does not have one active ONT assignment to change.</p>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="rounded-lg border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
+            <div class="border-b border-slate-200 px-6 py-4 dark:border-slate-700">
+                <h2 class="font-semibold text-slate-900 dark:text-white">Replacement ONT</h2>
+            </div>
+            <div class="p-6 space-y-4">
+                <label for="target_ont_unit_id" class="block text-sm font-medium text-slate-700 dark:text-slate-300">Existing unassigned ONT</label>
+                <select id="target_ont_unit_id" name="target_ont_unit_id" required class="block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-primary-500 focus:ring-primary-500 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+                    <option value="">Select an ONT from inventory</option>
+                    {% for ont in change_ont.eligible_onts %}
+                    <option value="{{ ont.ont_unit_id }}" {% if change_ont.selected_ont_id == ont.ont_unit_id|string %}selected{% endif %}>
+                        {{ ont.serial_number }}{% if ont.mac_address %} - {{ ont.mac_address }}{% endif %} - {{ ont.olt_name }}{% if ont.pon_port_name %} / {{ ont.pon_port_name }}{% endif %}
+                    </option>
+                    {% endfor %}
+                </select>
+                {% if not change_ont.eligible_onts %}
+                <p class="text-sm text-amber-700 dark:text-amber-300">No eligible unassigned ONTs are available.</p>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="rounded-lg border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-100">
+            <p class="font-semibold">Confirm access-path change</p>
+            <p class="mt-1">Selfcare will release the current ONT assignment and assign the selected ONT to the same subscriber and active subscription. The customer access path will resolve through the replacement ONT and its actual OLT.</p>
+            <label class="mt-4 flex items-center gap-2">
+                <input type="checkbox" name="confirm_change" value="change_ont" required class="rounded border-amber-300 text-amber-600 focus:ring-amber-500">
+                <span>I confirm the old and new ONT serial/MAC details are correct.</span>
+            </label>
+        </div>
+
+        <div class="flex items-center justify-end gap-3">
+            <a href="/admin/catalog/subscriptions/{{ subscription.id }}" class="inline-flex items-center rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">Cancel</a>
+            <button type="submit" :disabled="submitting || {{ 'true' if not assignment or not change_ont.eligible_onts else 'false' }}" class="inline-flex items-center gap-2 rounded-lg bg-amber-600 px-4 py-2 text-sm font-semibold text-white hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-50">
+                <span x-text="submitting ? 'Changing...' : 'Confirm Change ONT'">Confirm Change ONT</span>
+            </button>
+        </div>
+    </form>
+</div>
+{% endblock %}

@@ -4,7 +4,7 @@ import hashlib
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from sqlalchemy import func, text
@@ -52,6 +52,9 @@ from app.services.realtime_platform import EventType
 
 logger = logging.getLogger(__name__)
 
+if TYPE_CHECKING:
+    from app.services.team_inbox_observations import InboundAttachmentObservation
+
 _INACTIVE_SUBSCRIBER_STATUSES = {
     SubscriberStatus.disabled.value,
     SubscriberStatus.canceled.value,
@@ -63,6 +66,45 @@ _OPAQUE_CONTACT_CHANNELS = {
     InboxChannelType.instagram_comment.value,
     InboxChannelType.chat_widget.value,
 }
+
+
+def _inbound_attachment_observation(
+    item: dict[str, object],
+) -> InboundAttachmentObservation:
+    from app.services import team_inbox_observations
+
+    return team_inbox_observations.InboundAttachmentObservation(
+        asset_type=str(item.get("type") or item.get("asset_type") or "file"),
+        file_name=(
+            str(item.get("filename") or item.get("file_name"))
+            if item.get("filename") or item.get("file_name")
+            else None
+        ),
+        mime_type=str(item["mime_type"]) if item.get("mime_type") else None,
+        provider_media_id=(
+            str(item.get("id") or item.get("provider_media_id"))
+            if item.get("id") or item.get("provider_media_id")
+            else None
+        ),
+        source_url=(
+            str(item.get("url") or item.get("source_url"))
+            if item.get("url") or item.get("source_url")
+            else None
+        ),
+        caption=str(item["caption"]) if item.get("caption") else None,
+        file_size=(
+            int(str(item["file_size"])) if item.get("file_size") is not None else None
+        ),
+        download_status=(
+            str(item["download_status"]) if item.get("download_status") else None
+        ),
+        location=team_inbox_observations.inbound_location_observation(
+            latitude=item.get("latitude"),
+            longitude=item.get("longitude"),
+            name=item.get("name"),
+            address=item.get("address"),
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -1027,26 +1069,7 @@ def receive_whatsapp_webhook_batch_committed(
                         {**metadata_data, **payload}
                     ),
                     attachments=tuple(
-                        team_inbox_observations.InboundAttachmentObservation(
-                            asset_type=str(item.get("type") or "file"),
-                            file_name=(
-                                str(item.get("filename") or item.get("file_name"))
-                                if item.get("filename") or item.get("file_name")
-                                else None
-                            ),
-                            mime_type=str(item["mime_type"])
-                            if item.get("mime_type")
-                            else None,
-                            provider_media_id=str(item.get("id"))
-                            if item.get("id")
-                            else None,
-                            source_url=str(item.get("url"))
-                            if item.get("url")
-                            else None,
-                            caption=str(item.get("caption"))
-                            if item.get("caption")
-                            else None,
-                        )
+                        _inbound_attachment_observation(item)
                         for item in (payload.get("attachments") or ())
                         if isinstance(item, dict)
                     ),
@@ -1327,36 +1350,7 @@ def receive_inbound_channel_batch_committed(
                         else None
                     ),
                     attachments=tuple(
-                        team_inbox_observations.InboundAttachmentObservation(
-                            asset_type=str(item.get("type") or "file"),
-                            file_name=(
-                                str(item.get("filename") or item.get("file_name"))
-                                if item.get("filename") or item.get("file_name")
-                                else None
-                            ),
-                            mime_type=str(item["mime_type"])
-                            if item.get("mime_type")
-                            else None,
-                            provider_media_id=str(item.get("id"))
-                            if item.get("id")
-                            else str(item.get("provider_media_id"))
-                            if item.get("provider_media_id")
-                            else None,
-                            source_url=str(item.get("url"))
-                            if item.get("url")
-                            else str(item.get("source_url"))
-                            if item.get("source_url")
-                            else None,
-                            caption=str(item.get("caption"))
-                            if item.get("caption")
-                            else None,
-                            file_size=int(item["file_size"])
-                            if item.get("file_size") is not None
-                            else None,
-                            download_status=str(item["download_status"])
-                            if item.get("download_status")
-                            else None,
-                        )
+                        _inbound_attachment_observation(item)
                         for item in (metadata.get("attachments") or ())
                         if isinstance(item, dict)
                     ),

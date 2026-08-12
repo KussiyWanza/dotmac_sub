@@ -15,6 +15,7 @@ from app.models.team_inbox import (
     InboxObservationKind,
 )
 from app.services import (
+    team_inbox_maintenance,
     team_inbox_observations,
     team_inbox_processing,
     team_inbox_read_state,
@@ -48,6 +49,39 @@ def _message_observation(*, body: str = "Please help"):
             external_thread_id="whatsapp:+2348035550114",
         ),
     )
+
+
+def test_location_observation_requires_valid_coordinate_pair() -> None:
+    location = team_inbox_observations.inbound_location_observation(
+        latitude="6.5243793",
+        longitude="3.3792057",
+        name="Customer location",
+        address="Lagos, Nigeria",
+    )
+
+    assert location is not None
+    assert location.latitude == 6.5243793
+    assert location.longitude == 3.3792057
+
+    with pytest.raises(team_inbox_observations.TeamInboxObservationError) as exc:
+        team_inbox_observations.inbound_location_observation(
+            latitude=6.5243793,
+            longitude=None,
+        )
+    assert exc.value.code.endswith("invalid_location")
+
+
+def test_location_repair_requires_exact_conversation_scope(db_session) -> None:
+    with pytest.raises(team_inbox_maintenance.TeamInboxMaintenanceError) as exc:
+        team_inbox_maintenance.repair_whatsapp_locations(
+            db_session,
+            team_inbox_maintenance.RepairWhatsAppLocationsCommand(
+                context=_context("invalid-location-repair-scope"),
+                conversation_ids=(),
+            ),
+        )
+
+    assert exc.value.code.endswith("invalid_location_repair_scope")
 
 
 def test_provider_observation_exact_retry_and_changed_evidence(db_session) -> None:

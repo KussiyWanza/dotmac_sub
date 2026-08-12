@@ -97,6 +97,31 @@ class RoutingOptionAvailability(str, Enum):
     unavailable = "unavailable"
 
 
+class OperatorTicketStatusSurface(str, Enum):
+    """Admin surface requesting a selectable ticket lifecycle status."""
+
+    create = "create"
+    edit = "edit"
+    quick_status = "quick_status"
+
+
+@dataclass(frozen=True, slots=True)
+class OperatorTicketStatusSelection:
+    """Typed admin intent to select or preserve one ticket lifecycle status."""
+
+    requested_status: TicketStatus
+    current_status: TicketStatus | None
+    surface: OperatorTicketStatusSurface
+
+
+@dataclass(frozen=True, slots=True)
+class OperatorTicketStatusSelectionOutcome:
+    """Configuration-owner resolution of an admin status selection."""
+
+    status: TicketStatus
+    preserved_current: bool
+
+
 @dataclass(frozen=True, slots=True)
 class RegionAssignmentRule:
     """Typed regional routing input owned by ticket configuration."""
@@ -543,6 +568,31 @@ def list_status_options(db: Session) -> list[str]:
         key=STATUS_OPTIONS_KEY,
         defaults=DEFAULT_STATUS_OPTIONS,
         normalizer=normalize_ticket_status,
+    )
+
+
+def resolve_operator_ticket_status_selection(
+    db: Session, selection: OperatorTicketStatusSelection
+) -> OperatorTicketStatusSelectionOutcome:
+    """Resolve admin selection without narrowing the lifecycle vocabulary."""
+
+    if selection.requested_status is selection.current_status:
+        return OperatorTicketStatusSelectionOutcome(
+            status=selection.requested_status,
+            preserved_current=True,
+        )
+    if selection.requested_status.value not in set(list_status_options(db)):
+        raise SupportTicketConfigurationError(
+            code="support_ticket_status_not_selectable",
+            message="Select an available ticket status",
+            details={
+                "status": selection.requested_status.value,
+                "surface": selection.surface.value,
+            },
+        )
+    return OperatorTicketStatusSelectionOutcome(
+        status=selection.requested_status,
+        preserved_current=False,
     )
 
 
