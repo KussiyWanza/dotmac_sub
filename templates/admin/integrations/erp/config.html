@@ -1,0 +1,49 @@
+{% extends "layouts/admin.html" %}
+{% from "components/ui/macros.html" import ambient_background, page_header, card, status_badge, action_button %}
+
+{% block title %}DotMac ERP - Integrations{% endblock %}
+
+{% block content %}
+{{ ambient_background("indigo", "violet") }}
+<div class="relative space-y-8">
+    {% call page_header("DotMac ERP", "Configure approved operational projections to ERP", color="indigo", color2="violet") %}
+        {{ action_button("Back to connectors", "/admin/integrations/connectors", "", "secondary") }}
+    {% endcall %}
+
+    {% if saved %}<p class="rounded-lg bg-emerald-50 p-4 text-sm text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300">ERP sync configuration saved.</p>{% endif %}
+    {% if queued %}<p class="rounded-lg bg-blue-50 p-4 text-sm text-blue-700 dark:bg-blue-900/20 dark:text-blue-300">ERP synchronization queued.</p>{% endif %}
+    {% if error %}<p class="rounded-lg bg-rose-50 p-4 text-sm text-rose-700 dark:bg-rose-900/20 dark:text-rose-300">{{ error }}</p>{% endif %}
+
+    {% call card("Connector state", color="indigo") %}
+        <div class="grid gap-4 sm:grid-cols-3 text-sm">
+            <div><p class="text-slate-500">Installation</p><p class="font-medium text-slate-900 dark:text-white">{{ installation.name }}</p></div>
+            <div><p class="text-slate-500">Version</p><p class="font-mono text-slate-900 dark:text-white">{{ installation.connector_version }}</p></div>
+            <div><p class="text-slate-500">Operational sync</p>{{ status_badge("Enabled" if enabled else "Disabled", "active" if enabled else "neutral", size="sm") }}</div>
+        </div>
+    {% endcall %}
+
+    {% call card("Operational sync profiles", color="violet") %}
+        <form method="POST" action="/admin/integrations/erp" class="space-y-5">
+            {% include "components/forms/csrf_input.html" %}
+            <p class="text-sm text-slate-600 dark:text-slate-300">Select all required profiles now. Each profile uses the reviewed ERP bulk route and its own incremental watermark.</p>
+            <div class="grid gap-3 sm:grid-cols-2">
+                {% for domain in available_domains %}
+                <label class="flex min-h-11 items-center gap-3 rounded-lg border border-slate-200 p-3 dark:border-slate-700">
+                    <input type="checkbox" name="domains" value="{{ domain }}" {% if domain in configured_domains %}checked{% endif %} class="h-4 w-4 rounded border-slate-300 text-indigo-600">
+                    <span class="text-sm font-medium text-slate-900 dark:text-white">{{ domain|replace('_', ' ')|title }}</span>
+                </label>
+                {% endfor %}
+            </div>
+            <div class="flex gap-3">
+                <button type="submit" class="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700">Save profiles</button>
+            </div>
+        </form>
+        {% if enabled %}
+        <form method="POST" action="/admin/integrations/erp/run" class="mt-4">
+            {% include "components/forms/csrf_input.html" %}
+            <button type="submit" class="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 dark:border-slate-600 dark:text-slate-200">Run now</button>
+        </form>
+        {% endif %}
+    {% endcall %}
+</div>
+{% endblock %}

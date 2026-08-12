@@ -13,6 +13,7 @@ from app.services import integration as integration_service
 from app.services import web_connector_runtime as web_connector_runtime_service
 from app.services import web_integration_syncs as web_integration_syncs_service
 from app.services import web_integrations as web_integrations_service
+from app.services import web_integrations_erp as web_integrations_erp_service
 from app.services import (
     web_integrations_payment_gateways as web_integrations_payment_gateways_service,
 )
@@ -21,6 +22,7 @@ from app.services import web_integrations_whatsapp as web_integrations_whatsapp_
 from app.services.audit_helpers import recent_activity_for_paths
 from app.services.auth_dependencies import require_permission
 from app.services.db_session_adapter import db_session_adapter
+from app.services.domain_errors import DomainError
 from app.services.field import material_catalog
 from app.services.integrations import installations
 from app.services.owner_commands import CommandContext
@@ -138,6 +140,67 @@ def integrations_overview(request: Request, db: Session = Depends(get_db)):
     return templates.TemplateResponse(
         "admin/integrations/connectors/index.html", context
     )
+
+
+@router.get(
+    "/erp",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("system:settings:read"))],
+)
+def erp_connector_config(request: Request, db: Session = Depends(get_db)):
+    context = _base_context(request, db, active_page="connectors")
+    context.update(web_integrations_erp_service.build_config_state(db))
+    context["saved"] = request.query_params.get("saved") == "1"
+    context["queued"] = request.query_params.get("queued") == "1"
+    return templates.TemplateResponse("admin/integrations/erp/config.html", context)
+
+
+@router.post(
+    "/erp",
+    dependencies=[Depends(require_permission("system:settings:write"))],
+)
+def erp_connector_config_save(
+    request: Request,
+    domains: list[str] = Form(default=[]),
+    db: Session = Depends(get_db),
+    auth: dict = Depends(require_permission("system:settings:write")),
+):
+    actor_id = str(auth.get("user_id") or auth.get("sub") or "unknown")
+    command_id = uuid4()
+    db_session_adapter.release_read_transaction(db)
+    try:
+        web_integrations_erp_service.configure_domains(
+            db,
+            domains=domains,
+            actor=f"user:{actor_id}",
+            context=CommandContext(
+                command_id=command_id,
+                correlation_id=command_id,
+                actor=f"user:{actor_id}",
+                scope=installations.CAPABILITY_PROVISIONING_SCOPE,
+                reason="Configure DotMac ERP operational synchronization",
+                idempotency_key=f"erp-operational-domains:{command_id}",
+            ),
+        )
+    except (DomainError, installations.InstallationError) as exc:
+        context = _base_context(request, db, active_page="connectors")
+        context.update(web_integrations_erp_service.build_config_state(db))
+        context["error"] = str(exc)
+        return templates.TemplateResponse(
+            "admin/integrations/erp/config.html", context, status_code=400
+        )
+    return RedirectResponse("/admin/integrations/erp?saved=1", status_code=303)
+
+
+@router.post(
+    "/erp/run",
+    dependencies=[Depends(require_permission("system:settings:write"))],
+)
+def erp_connector_run_now():
+    from app.tasks.dotmac_erp_outbox import sync_erp_operational_domains
+
+    sync_erp_operational_domains.delay()
+    return RedirectResponse("/admin/integrations/erp?queued=1", status_code=303)
 
 
 # ==================== Runtime posture ====================
