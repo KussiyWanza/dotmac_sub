@@ -1988,6 +1988,7 @@ def start_conversation(
     subject: str | None = None,
     service_team_id: str | UUID | None = None,
     subscriber_id: str | UUID | None = None,
+    legacy_contact_subscriber_id: str | UUID | None = None,
     actor_person_id: str | UUID | None = None,
     attachment_ids: Sequence[str] | None = None,
     contact_name: str | None = None,
@@ -2047,6 +2048,32 @@ def start_conversation(
                 resolved_contact_address,
                 contact_country_code,
             )
+            if legacy_contact_subscriber_id is not None:
+                from app.models.subscriber import Subscriber, SubscriberStatus
+                from app.services.customer_identity_normalization import (
+                    normalize_phone_identifier,
+                )
+
+                subscriber_uuid = coerce_uuid(legacy_contact_subscriber_id)
+                contact_subscriber = (
+                    db.query(Subscriber)
+                    .filter(Subscriber.id == subscriber_uuid)
+                    .filter(Subscriber.party_id.is_(None))
+                    .filter(Subscriber.is_active.is_(True))
+                    .filter(Subscriber.status == SubscriberStatus.active)
+                    .one_or_none()
+                    if subscriber_uuid is not None
+                    else None
+                )
+                if (
+                    contact_subscriber is None
+                    or normalize_phone_identifier(contact_subscriber.phone)
+                    != resolved_contact_address
+                ):
+                    raise InboxCommandError(
+                        "Selected customer no longer matches this WhatsApp number."
+                    )
+                resolved_subscriber_id = contact_subscriber.id
             clean_provider_template_name = str(whatsapp_template_name or "").strip()
             clean_provider_template_language = str(
                 whatsapp_template_language or ""

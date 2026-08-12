@@ -121,6 +121,7 @@
 
             <div x-show="newConversation.channel === 'whatsapp'" x-cloak class="space-y-4">
                 <input type="hidden" name="contact_id" :value="newConversation.contactId">
+                <input type="hidden" name="subscriber_id" :value="newConversation.subscriberId">
                 <input type="hidden" name="whatsapp_template_name" :value="newConversation.selectedTemplate?.name || ''">
                 <input type="hidden" name="whatsapp_template_language" :value="newConversation.selectedTemplate?.language || ''">
                 <input type="hidden" name="whatsapp_template_components" :value="whatsappTemplateComponentsJson()">

@@ -485,6 +485,10 @@ def team_inbox_whatsapp_contacts(
                 "id": contact.id,
                 "name": contact.name,
                 "whatsapp_address": contact.whatsapp_address,
+                "party_id": str(contact.party_id) if contact.party_id else None,
+                "subscriber_id": (
+                    str(contact.subscriber_id) if contact.subscriber_id else None
+                ),
             }
             for contact in contacts
         ]
@@ -2951,6 +2955,7 @@ async def team_inbox_start_conversation(
     service_team_id: str | None = Form(default=None),
     contact_name: str | None = Form(default=None),
     contact_id: str | None = Form(default=None),
+    subscriber_id: str | None = Form(default=None),
     contact_country_code: str | None = Form(default=None),
     template_id: str | None = Form(default=None),
     template_values: str | None = Form(default=None),
@@ -2976,6 +2981,7 @@ async def team_inbox_start_conversation(
             actor_person_id=_actor_id_from_request(request),
             contact_name=_query_text(contact_name),
             contact_party_id=_query_text(contact_id),
+            legacy_contact_subscriber_id=_query_text(subscriber_id),
             contact_country_code=_query_text(contact_country_code),
             template_id=_query_text(template_id),
             template_values=tuple(
