@@ -127,6 +127,10 @@ message retains approved WhatsApp template identity and submitted provider
 variables, and uploaded attachments are staged against the new conversation
 then bound only after the opening outbound intent succeeds. A failed opening
 send rolls the conversation and staged attachment facts back together.
+Temporary conversation-lock failures during attachment staging are classified
+by `communications.team_inbox_commands` only after its transaction has rolled
+back. The web adapter maps the typed retryable outcome to HTTP 409 with a short
+retry hint; it never completes the database transaction itself.
 
 The admin CRM-replication controls use these existing owners:
 

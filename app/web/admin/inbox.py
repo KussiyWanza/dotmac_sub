@@ -28,7 +28,6 @@ from fastapi.responses import (
 )
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field, ValidationError
-from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.db import finish_read_transaction, get_db
@@ -78,11 +77,6 @@ router = APIRouter(prefix="/inbox", tags=["web-admin-inbox"])
 settings_router = APIRouter(prefix="/crm/inbox", tags=["web-admin-inbox"])
 templates = Jinja2Templates(directory="templates")
 logger = logging.getLogger(__name__)
-
-
-def _is_transient_inbox_lock_error(exc: OperationalError) -> bool:
-    text = str(getattr(exc, "orig", exc)).lower()
-    return "lock timeout" in text or "locknotavailable" in text
 
 
 class InboxPolishRequest(BaseModel):
@@ -2779,17 +2773,14 @@ async def team_inbox_stage_attachments(
         )
     except team_inbox_commands.ConversationNotFoundError:
         return JSONResponse({"error": "Conversation not found."}, status_code=404)
+    except team_inbox_commands.ConversationBusyError as exc:
+        return JSONResponse(
+            {"error": str(exc)},
+            status_code=409,
+            headers={"Retry-After": "2"},
+        )
     except (team_inbox_media.MediaUploadError, ValueError) as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
-    except OperationalError as exc:
-        db.rollback()
-        if _is_transient_inbox_lock_error(exc):
-            return JSONResponse(
-                {"error": "Conversation is busy. Please retry the upload."},
-                status_code=409,
-                headers={"Retry-After": "2"},
-            )
-        raise
     return JSONResponse({"attachment_ids": staged})
 
 

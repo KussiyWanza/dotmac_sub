@@ -162,6 +162,31 @@ def test_audio_and_video_uploads_are_allowed(
     assert asset.asset_type == asset_type
 
 
+def test_transient_stage_lock_is_a_retryable_owner_error(db_session, monkeypatch):
+    from sqlalchemy.exc import OperationalError
+
+    conversation_id = _conversation_id(db_session)
+
+    def raise_lock_timeout(*_args, **_kwargs):
+        raise OperationalError("SELECT", {}, RuntimeError("lock timeout"))
+
+    monkeypatch.setattr(
+        team_inbox_commands,
+        "_active_conversation",
+        raise_lock_timeout,
+    )
+
+    with pytest.raises(team_inbox_commands.ConversationBusyError) as exc:
+        team_inbox_commands.stage_attachments(
+            db_session,
+            conversation_id=conversation_id,
+            uploads=[("diagram.png", "image/png", PNG)],
+        )
+
+    assert exc.value.code == ("communications.team_inbox_commands.conversation_busy")
+    assert not db_session.in_transaction()
+
+
 def test_pending_assets_are_listed_until_a_message_carries_them(db_session):
     conversation_id = _conversation_id(db_session)
     team_inbox_commands.stage_attachments(
@@ -380,7 +405,7 @@ def test_the_upload_route_reads_bytes_before_entering_the_command():
 def test_the_upload_route_reports_transient_conversation_locks_as_retryable():
     marker = ROUTES.index("async def team_inbox_stage_attachments")
     body = ROUTES[marker : marker + 1800]
-    assert "except OperationalError as exc" in body
-    assert "_is_transient_inbox_lock_error(exc)" in body
+    assert "except team_inbox_commands.ConversationBusyError as exc" in body
+    assert ".rollback(" not in body
     assert "status_code=409" in body
     assert '"Retry-After": "2"' in body
