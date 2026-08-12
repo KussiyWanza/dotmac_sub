@@ -57,6 +57,13 @@ unmerged. This is the pattern the remaining collision dispositions should try
 first: **make the kernel adopt the product's stronger invariant, rather than
 levelling the product down to the kernel.**
 
+One mechanical schema delta remains after that adoption decision:
+`domain_settings.tenant_id` has no foreign key to `tenants.id`. Migration
+`523_domain_settings_tenant_fk` adds only that relationship with
+`ON DELETE CASCADE`. It changes no rows, retains the `platform` server default
+and `ck_domain_settings_scope_alignment`, and fails if existing data contains
+an orphan rather than silently deleting or re-attributing it.
+
 The decision below stands unchanged. Only its premise has moved: it now records
 what Sub already does rather than what Sub should start doing.
 
