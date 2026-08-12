@@ -582,10 +582,9 @@ class _NewExpenseRequestScreenState
     super.dispose();
   }
 
-  void _addLine(List<ExpenseCategory> categories) {
-    final categoryCode = categories.isEmpty
-        ? _categoryCode.text.trim()
-        : _selectedCategory?.categoryCode ?? '';
+  void _addLine() {
+    final categoryCode =
+        _selectedCategory?.categoryCode ?? _categoryCode.text.trim();
     final description = _description.text.trim();
     final amount = double.tryParse(_amount.text.trim()) ?? 0;
     if (categoryCode.isEmpty) {
@@ -1015,7 +1014,7 @@ class _NewExpenseRequestScreenState
           const SizedBox(height: 8),
           OutlinedButton.icon(
             key: const Key('add-expense-line'),
-            onPressed: () => _addLine(categories.value ?? const []),
+            onPressed: _addLine,
             icon: const Icon(Icons.add),
             label: const Text('Add expense'),
           ),

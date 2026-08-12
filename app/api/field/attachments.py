@@ -5,6 +5,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
+from app.api.field.work_order_compat import resolve_work_order_id
 from app.schemas.common import ListResponse
 from app.schemas.field import FieldAttachmentRead
 from app.services.auth_dependencies import require_user_auth
@@ -27,7 +28,8 @@ def upload_field_attachment(
     file: UploadFile = File(...),
     kind: str = Form(default="photo"),
     client_ref: UUID | None = Form(default=None),
-    crm_work_order_id: str | None = Form(default=None),
+    work_order_id: str | None = Form(default=None),
+    crm_work_order_id: str | None = Form(default=None, deprecated=True),
     note_id: UUID | None = Form(default=None),
     latitude: float | None = Form(default=None),
     longitude: float | None = Form(default=None),
@@ -38,6 +40,9 @@ def upload_field_attachment(
     auth: dict = Depends(require_user_auth),
     db: Session = Depends(get_db),
 ):
+    resolved_work_order_id = resolve_work_order_id(
+        work_order_id=work_order_id, crm_work_order_id=crm_work_order_id
+    )
     return field_attachments.create(
         db,
         auth,
@@ -46,7 +51,7 @@ def upload_field_attachment(
         mime_type=file.content_type,
         content=file.file.read(),
         client_ref=client_ref,
-        crm_work_order_id=crm_work_order_id,
+        crm_work_order_id=resolved_work_order_id,
         note_id=note_id,
         latitude=latitude,
         longitude=longitude,
@@ -59,7 +64,8 @@ def upload_field_attachment(
 
 @router.get("/attachments", response_model=ListResponse[FieldAttachmentRead])
 def list_field_attachments(
-    crm_work_order_id: str | None = None,
+    work_order_id: str | None = None,
+    crm_work_order_id: str | None = Query(default=None, deprecated=True),
     note_id: UUID | None = None,
     kind: str | None = None,
     limit: int = Query(default=50, ge=1, le=200),
@@ -67,10 +73,13 @@ def list_field_attachments(
     auth: dict = Depends(require_user_auth),
     db: Session = Depends(get_db),
 ):
+    resolved_work_order_id = resolve_work_order_id(
+        work_order_id=work_order_id, crm_work_order_id=crm_work_order_id
+    )
     items = field_attachments.list(
         db,
         auth,
-        crm_work_order_id=crm_work_order_id,
+        crm_work_order_id=resolved_work_order_id,
         note_id=note_id,
         kind=kind,
         limit=limit,

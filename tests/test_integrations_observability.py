@@ -87,6 +87,26 @@ def test_installed_integrations_evidence_template_compiles() -> None:
     env.get_template("admin/integrations/installed.html")
 
 
+def test_connectors_index_exposes_managed_installations(db_session) -> None:
+    installation = _make_installation(db_session, name="Managed ERP transport")
+
+    data = web_integrations.build_connectors_list_data(db_session)
+
+    managed = data["managed_connectors"]
+    assert [row["installation"].id for row in managed] == [installation.id]
+    assert managed[0]["definition"].key == "webhook.http"
+    assert data["stats"]["total"] == 1
+    assert data["stats"]["active"] == 1
+
+
+def test_connectors_index_and_erp_config_templates_compile() -> None:
+    install_brand_jinja_global()
+    env = Jinja2Templates(directory="templates").env
+
+    env.get_template("admin/integrations/connectors/index.html")
+    env.get_template("admin/integrations/erp/config.html")
+
+
 def test_connector_evidence_says_when_no_signals(db_session):
     connector = _make_installation(db_session)
 

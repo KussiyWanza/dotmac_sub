@@ -95,6 +95,15 @@ def test_credit_application_requires_owner_preview_and_exact_confirmation():
     assert "restoration is not inferred from this credit" in confirmation
 
 
+def test_invoice_detail_exposes_draft_issue_action():
+    invoice_detail = _template("templates/admin/billing/invoice_detail.html")
+
+    assert 'action="/admin/billing/invoices/{{ invoice.id }}/issue"' in invoice_detail
+    assert "status_val == 'draft' and not is_proforma" in invoice_detail
+    assert "can(request, 'billing:invoice:update')" in invoice_detail
+    assert "Issue invoice" in invoice_detail
+
+
 def test_credit_application_templates_compile():
     env = Jinja2Templates(directory="templates").env
 

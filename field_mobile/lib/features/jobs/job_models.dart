@@ -129,11 +129,17 @@ class JobLocation {
   /// text search the maps app can resolve. Null when nothing is known.
   Uri? get mapsUri {
     if (hasCoordinates) {
-      return Uri.parse('geo:$latitude,$longitude?q=$latitude,$longitude');
+      return Uri.https('www.google.com', '/maps/dir/', {
+        'api': '1',
+        'destination': '$latitude,$longitude',
+      });
     }
     final address = addressText;
     if (address == null || address.isEmpty) return null;
-    return Uri.parse('geo:0,0?q=${Uri.encodeComponent(address)}');
+    return Uri.https('www.google.com', '/maps/search/', {
+      'api': '1',
+      'query': address,
+    });
   }
 }
 
@@ -167,11 +173,17 @@ class JobDestination {
 
   Uri? get mapsUri {
     if (hasCoordinates) {
-      return Uri.parse('geo:$latitude,$longitude?q=$latitude,$longitude');
+      return Uri.https('www.google.com', '/maps/dir/', {
+        'api': '1',
+        'destination': '$latitude,$longitude',
+      });
     }
     final address = addressText;
     if (address == null || address.isEmpty) return null;
-    return Uri.parse('geo:0,0?q=${Uri.encodeComponent(address)}');
+    return Uri.https('www.google.com', '/maps/search/', {
+      'api': '1',
+      'query': address,
+    });
   }
 
   Map<String, dynamic> toTransitionPayload() => {
@@ -466,22 +478,6 @@ class JobDetail {
     history: _mapList(json['history']),
   );
 }
-
-List<String> workActionsFor(String status) => switch (status) {
-  'scheduled' => ['en_route', 'arrived', 'start'],
-  'dispatched' => ['en_route', 'arrived', 'start'],
-  'in_progress' => ['en_route', 'arrived', 'pause', 'complete'],
-  'paused' => ['en_route', 'arrived', 'resume'],
-  _ => const [],
-};
-
-String? primaryActionFor(String status) => switch (status) {
-  'scheduled' => 'start',
-  'dispatched' => 'start',
-  'in_progress' => 'pause',
-  'paused' => 'resume',
-  _ => null,
-};
 
 String actionLabel(String action) => switch (action) {
   'accept' => 'Accept Work',

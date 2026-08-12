@@ -107,6 +107,18 @@ def _sync_scheduled_task(
         db.commit()
 
 
+def sync_erp_operational_schedule(db, *, enabled: bool) -> None:
+    """Apply the capability-owned ERP operational cadence immediately."""
+
+    _sync_scheduled_task(
+        db,
+        name="dotmac_erp_operational_domain_sync",
+        task_name="app.tasks.dotmac_erp_outbox.sync_erp_operational_domains",
+        enabled=enabled,
+        interval_seconds=300,
+    )
+
+
 def _retire_scheduled_task(db, task_name: str) -> None:
     tasks = db.query(ScheduledTask).filter(ScheduledTask.task_name == task_name).all()
     changed = False

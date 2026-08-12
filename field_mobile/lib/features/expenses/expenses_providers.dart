@@ -44,12 +44,20 @@ class ExpensesRepository {
     String? workOrderId,
     String? projectId,
     String? ticketId,
+    bool submit = true,
   }) async {
+    if (submit && (clientRef == null || clientRef.trim().isEmpty)) {
+      throw ArgumentError(
+        'clientRef is required when submitting an expense request',
+      );
+    }
     final response = await _ref
         .read(apiClientProvider)
         .dio
         .post(
-          '/api/v1/field/expense-requests',
+          submit
+              ? '/api/v1/field/expense-requests/submit'
+              : '/api/v1/field/expense-requests',
           data: buildExpenseRequestPayload(
             purpose: purpose,
             items: items,
