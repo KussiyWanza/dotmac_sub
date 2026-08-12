@@ -1,0 +1,38 @@
+name: Temporary OpenAPI manifest
+
+on:
+  push:
+    branches:
+      - fix/field-mobile-workflow
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    env:
+      POETRY_HTTP_BASIC_FORGEJO_USERNAME: ci-reader
+      POETRY_HTTP_BASIC_FORGEJO_PASSWORD: ${{ secrets.FORGEJO_READ_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: snok/install-poetry@v1
+        with:
+          version: "2.4.1"
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+
+      - run: poetry install --no-interaction
+
+      - run: poetry run python scripts/update_openapi_contract.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: field-mobile-openapi-contract
+          path: tests/architecture/openapi_contract_surface.json
+          retention-days: 1

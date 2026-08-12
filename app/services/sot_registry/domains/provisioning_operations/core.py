@@ -756,6 +756,19 @@ SERVICES: tuple[SOTService, ...] = (
                     "client-reference fingerprint conflict",
                 ),
             ),
+            events=EventContract(
+                event_types=("field_expense_request.submitted",),
+                schema_version=1,
+                delivery_owner="events.dispatcher",
+                compatibility=(
+                    "Version 1 is additive and identifies the expense request, "
+                    "work order, requester, client reference, and submission time."
+                ),
+                replay=(
+                    "The canonical expense request, item rows, command fingerprint, "
+                    "and ERP outbox evidence rebuild submission consequences."
+                ),
+            ),
             migration=MigrationContract(
                 state=AuthorityMigrationState.CUTOVER_READY,
                 old_owner="separate field expense draft creation and submit calls",
