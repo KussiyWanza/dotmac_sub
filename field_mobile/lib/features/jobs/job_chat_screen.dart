@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:dio/dio.dart';
 
 import 'job_models.dart';
 import 'jobs_providers.dart';
@@ -34,8 +35,12 @@ class _JobChatScreenState extends ConsumerState<JobChatScreen> {
       body: chat.when(
         data: (thread) => _buildThread(context, thread),
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (_, _) =>
-            const Center(child: Text('Could not load technician chat')),
+        error: (error, _) => Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Text(_chatLoadError(error), textAlign: TextAlign.center),
+          ),
+        ),
       ),
     );
   }
@@ -167,6 +172,16 @@ class _JobChatScreenState extends ConsumerState<JobChatScreen> {
     if (!_scrollController.hasClients) return;
     _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
   }
+}
+
+String _chatLoadError(Object error) {
+  if (error is DioException) {
+    final data = error.response?.data;
+    if (data is Map && data['detail'] != null) {
+      return data['detail'].toString();
+    }
+  }
+  return 'Could not load technician chat. Record En Route before starting work.';
 }
 
 class _MessageBubble extends StatelessWidget {

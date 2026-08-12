@@ -4131,7 +4131,8 @@
     "query:kind",
     "query:limit",
     "query:note_id",
-    "query:offset"
+    "query:offset",
+    "query:work_order_id"
    ],
    "request": null,
    "responses": {
@@ -4202,11 +4203,23 @@
     "query:crm_work_order_id",
     "query:limit",
     "query:offset",
-    "query:status"
+    "query:status",
+    "query:work_order_id"
    ],
    "request": null,
    "responses": {
     "200": "4b475834c8b9",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "GET /api/v1/field/expense-requests/categories": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key"
+   ],
+   "request": null,
+   "responses": {
+    "200": "c460c1049fc4",
     "422": "a11c9d9b2af8"
    }
   },
@@ -4680,7 +4693,8 @@
     "query:crm_work_order_id",
     "query:limit",
     "query:offset",
-    "query:status"
+    "query:status",
+    "query:work_order_id"
    ],
    "request": null,
    "responses": {
@@ -14334,6 +14348,28 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "POST /api/v1/field/expense-requests/receipts": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key"
+   ],
+   "request": "58058c73003f",
+   "responses": {
+    "201": "a0ec87667cd6",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "POST /api/v1/field/expense-requests/submit": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key"
+   ],
+   "request": "f031511772eb",
+   "responses": {
+    "201": "6cc1ebd3f658",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "POST /api/v1/field/expense-requests/{expense_request_id}/cancel": {
    "params": [
     "header:authorization",
@@ -14682,6 +14718,17 @@
     "header:x-api-key"
    ],
    "request": "3ac55028283e",
+   "responses": {
+    "201": "2ce612d842fb",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "POST /api/v1/field/material-requests/submit": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key"
+   ],
+   "request": "595c666aaaf7",
    "responses": {
     "201": "2ce612d842fb",
     "422": "a11c9d9b2af8"
@@ -18814,7 +18861,8 @@
   "Body_submit_my_payment_proof_api_v1_payment_proofs_me_post": "d9b77dbb728d",
   "Body_submit_reseller_consolidated_proof_api_v1_payment_proofs_reseller_consolidated_post": "7e14a6cc3202",
   "Body_upload_avatar_api_v1_auth_me_avatar_post": "46d7e6a42f9a",
-  "Body_upload_field_attachment_api_v1_field_attachments_post": "ffe3aa2f464b",
+  "Body_upload_field_attachment_api_v1_field_attachments_post": "e39e31ee5e0c",
+  "Body_upload_field_expense_receipt_api_v1_field_expense_requests_receipts_post": "0962fefc0121",
   "Body_upload_purchase_invoice_attachment_api_v1_vendor_purchase_invoices__invoice_id__attachment_post": "a00c2cbdf3d2",
   "BrandProfileRead": "37033a9fe2b5",
   "BrandProfileUpdate": "7488ddafe176",
@@ -19008,7 +19056,7 @@
   "FiberTerminationPointCreate": "d70cd85749a7",
   "FiberTerminationPointRead": "eef2a7ac34e4",
   "FiberTerminationPointUpdate": "ebdbeb8a047e",
-  "FieldAttachmentRead": "a4167d819d47",
+  "FieldAttachmentRead": "12a11823b799",
   "FieldCableRegistrationCreate": "2fe2e6d32087",
   "FieldCableRegistrationResponse": "7e0dd2969fbb",
   "FieldCompletionRequirements": "3a2d8a58716d",
@@ -19020,10 +19068,12 @@
   "FieldEquipmentRead": "c401fc79d178",
   "FieldEquipmentRecord": "7c7bcf16d5ae",
   "FieldEquipmentReturnRequest": "80e3640552d3",
-  "FieldExpenseRequestCreate": "63ca586b290c",
+  "FieldExpenseCategoryRead": "c8edfa89ab4d",
+  "FieldExpenseRequestCreate": "4a21a0cb3712",
   "FieldExpenseRequestItemCreate": "3b23aa8d5a6d",
   "FieldExpenseRequestItemRead": "515094e4452b",
-  "FieldExpenseRequestRead": "48008f260a1d",
+  "FieldExpenseRequestRead": "4e1e5219e3d4",
+  "FieldExpenseRequestSubmit": "e8a7e3d6ec5a",
   "FieldFiberCustomerTraceRead": "77b4750e8e06",
   "FieldFiberOntLiveRead": "b56481e9b334",
   "FieldFiberSourceObservationCreate": "e2926b09d191",
@@ -19067,10 +19117,11 @@
   "FieldMaterialConsumeItem": "911c9370f480",
   "FieldMaterialConsumeRequest": "83119748b137",
   "FieldMaterialRead": "b3ca3b51848b",
-  "FieldMaterialRequestCreate": "b0e4e38209fb",
+  "FieldMaterialRequestCreate": "beb591240e6a",
   "FieldMaterialRequestItemCreate": "04759e76cb22",
   "FieldMaterialRequestItemRead": "1e218709f934",
-  "FieldMaterialRequestRead": "5045387560f6",
+  "FieldMaterialRequestRead": "c01095e4d9b6",
+  "FieldMaterialRequestSubmit": "0bac3c573aa7",
   "FieldMeResponse": "92ccd05b3f23",
   "FieldMovementRead": "e6afbc3e60fc",
   "FieldNoteCreate": "38437360dd97",
@@ -19311,6 +19362,7 @@
   "ListResponse_FiberTerminationPointRead_": "5211ce97bd5d",
   "ListResponse_FieldAttachmentRead_": "6b63585cb6fe",
   "ListResponse_FieldEquipmentCustodyRead_": "3ca9545967e8",
+  "ListResponse_FieldExpenseCategoryRead_": "48f31f419bbc",
   "ListResponse_FieldExpenseRequestRead_": "1a0780401fd8",
   "ListResponse_FieldFiberCustomerTraceRead_": "a780397774e9",
   "ListResponse_FieldFiberSourceObservationRead_": "5ad0239abaf9",

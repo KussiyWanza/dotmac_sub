@@ -52,7 +52,6 @@ app.services.field.attachments
 app.services.field.chat
 app.services.field.equipment
 app.services.field.equipment_custody
-app.services.field.expense_requests
 app.services.field.fiber
 app.services.field.jobs
 app.services.field.location_tracking

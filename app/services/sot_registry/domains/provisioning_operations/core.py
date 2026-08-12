@@ -633,6 +633,158 @@ SERVICES: tuple[SOTService, ...] = (
         ),
     ),
     SOTService(
+        name="operations.expense_categories",
+        module="app.services.field.expense_categories",
+        owns=("ERP expense category query",),
+        depends_on=("integration.installations", "integration.runtime"),
+        notes=(
+            "ERP owns expense-category facts. This resolver returns a typed live "
+            "observation and keeps unavailable distinct from an authoritative "
+            "empty category list."
+        ),
+        contract=ServiceContract(
+            concerns=(
+                ConcernContract(
+                    name="ERP expense category query",
+                    role=OwnerRole.RESOLVER,
+                    input_names=("ERP expense category observation",),
+                ),
+            ),
+            authoritative_inputs=(
+                AuthorityInput(
+                    name="ERP expense category observation",
+                    owner="external:dotmac_erp",
+                    kind=AuthorityKind.EXTERNAL_OBSERVATION,
+                    source=(
+                        "Authenticated GET /api/v1/sync/sub/expense-categories "
+                        "through the version-pinned ERP inventory capability"
+                    ),
+                ),
+            ),
+            transaction=TransactionContract(
+                mode=TransactionMode.READ_ONLY,
+                boundary=(
+                    "The API adapter owns session lifecycle; the resolver performs "
+                    "no business write or transaction completion."
+                ),
+                locking="No business rows are locked for this live ERP read.",
+                idempotency="Repeated reads return the current ERP observation.",
+                retries="The connector runtime classifies bounded transport retries.",
+            ),
+            errors=ErrorContract(
+                domain_codes=("operations.expense_categories.erp_unavailable",),
+                mapping_owner="field expense category API adapter",
+                retryable_codes=("operations.expense_categories.erp_unavailable",),
+                fail_closed_on=(
+                    "missing capability binding",
+                    "retryable or rejected ERP response",
+                    "malformed ERP category identity or amount",
+                ),
+            ),
+            migration=MigrationContract(
+                state=AuthorityMigrationState.NATIVE,
+                old_owner=None,
+                new_owner="operations.expense_categories",
+                verification=(
+                    "Typed normalization, authoritative-empty, and unavailable "
+                    "response tests pass."
+                ),
+                cutover_gate="The ERP inventory capability binding is enabled.",
+                fallback_retirement="No empty-list fallback is permitted.",
+            ),
+            steward="field operations and finance",
+            design_refs=("docs/SOT_RELATIONSHIP_MAP.md",),
+            test_refs=("tests/test_field_expense_categories.py",),
+        ),
+    ),
+    SOTService(
+        name="operations.expense_requests",
+        module="app.services.field.expense_requests",
+        owns=("field expense request submission",),
+        depends_on=("operations.work_orders",),
+        notes=(
+            "One typed command creates and submits a technician expense request "
+            "atomically. The client reference and normalized fingerprint make "
+            "network retries safe."
+        ),
+        contract=ServiceContract(
+            concerns=(
+                ConcernContract(
+                    name="field expense request submission",
+                    role=OwnerRole.COMMAND_WRITER,
+                    input_names=("canonical service work-order state",),
+                    canonical_writer="operations.expense_requests",
+                ),
+            ),
+            authoritative_inputs=(
+                AuthorityInput(
+                    name="canonical service work-order state",
+                    owner="operations.work_orders",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source=(
+                        "Active assigned WorkOrder and technician scope plus "
+                        "validated receipt attachment evidence"
+                    ),
+                ),
+            ),
+            transaction=TransactionContract(
+                mode=TransactionMode.OWNER_MANAGED,
+                boundary=(
+                    "Create, submit, work-order activity marking, and optional ERP "
+                    "delivery staging complete in one owner transaction."
+                ),
+                locking="The command locks the scoped active work order.",
+                idempotency=(
+                    "A unique client reference replays only when the normalized "
+                    "command fingerprint is identical."
+                ),
+                retries="Identical client-reference retries return the committed request.",
+            ),
+            errors=ErrorContract(
+                domain_codes=(
+                    "operations.expense_requests.invalid_request",
+                    "operations.expense_requests.idempotency_conflict",
+                    "operations.expense_requests.requester_not_found",
+                    "operations.expense_requests.work_order_not_found",
+                    *owner_command_boundary_error_codes("operations.expense_requests"),
+                ),
+                mapping_owner="field expense request API adapter",
+                retryable_codes=(),
+                fail_closed_on=(
+                    "unknown technician or work order",
+                    "invalid receipt evidence",
+                    "client-reference fingerprint conflict",
+                ),
+            ),
+            events=EventContract(
+                event_types=("field_expense_request.submitted",),
+                schema_version=1,
+                delivery_owner="events.dispatcher",
+                compatibility=(
+                    "Version 1 is additive and identifies the expense request, "
+                    "work order, requester, client reference, and submission time."
+                ),
+                replay=(
+                    "The canonical expense request, item rows, command fingerprint, "
+                    "and ERP outbox evidence rebuild submission consequences."
+                ),
+            ),
+            migration=MigrationContract(
+                state=AuthorityMigrationState.CUTOVER_READY,
+                old_owner="separate field expense draft creation and submit calls",
+                new_owner="operations.expense_requests",
+                verification="Atomic submission, replay, and conflict tests pass.",
+                cutover_gate="Mobile online and offline clients use the atomic endpoint.",
+                fallback_retirement=(
+                    "Retire separate mobile create-then-submit use after compatibility expiry."
+                ),
+            ),
+            steward="field operations and finance",
+            design_refs=("docs/SOT_RELATIONSHIP_MAP.md",),
+            test_refs=("tests/test_field_expense_requests.py",),
+        ),
+    ),
+    SOTService(
         name="operations.material_dependencies",
         module="app.services.field.material_requests",
         owns=(
@@ -791,6 +943,7 @@ SERVICES: tuple[SOTService, ...] = (
                     "operations.material_dependencies.work_order_not_found",
                     "operations.material_dependencies.assignment_required",
                     "operations.material_dependencies.material_item_not_found",
+                    "operations.material_dependencies.requester_required",
                     "operations.material_dependencies.invalid_request",
                     "operations.material_dependencies.idempotency_conflict",
                     "operations.material_dependencies.erp_identity_conflict",

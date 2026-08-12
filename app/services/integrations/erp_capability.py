@@ -7,10 +7,12 @@ connector can implement the same contracts without changing Sub domain callers.
 
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.services.backoffice import ExpenseCategoryView
 from app.services.dotmac_erp.client import DotMacERPError, DotMacERPTransientError
 from app.services.integrations import installations
 from app.services.integrations.backoffice_contracts import (
@@ -189,6 +191,19 @@ class ErpCapabilityClient:
             or []
         )
 
+    def get_expense_categories(self) -> tuple[ExpenseCategoryView, ...]:
+        raw_items = self._execute(
+            ERP_INVENTORY_CAPABILITY,
+            "list_expense_categories",
+            {},
+            trigger=OperationTrigger.interactive,
+            correlation_id="erp-expenses:categories",
+        )
+        items = raw_items.get("items") or []
+        if not isinstance(items, list):
+            raise DotMacERPError("ERP expense categories response is invalid")
+        return tuple(_expense_category(item) for item in items)
+
     def list_available_serials(self, **params) -> dict:
         return self._execute(
             ERP_INVENTORY_CAPABILITY,
@@ -272,3 +287,31 @@ def capability_enabled(db: Session, capability_id: str) -> bool:
     except installations.InstallationError:
         return False
     return True
+
+
+def _expense_category(item: object) -> ExpenseCategoryView:
+    if not isinstance(item, dict):
+        raise DotMacERPError("ERP expense category record is invalid")
+    category_code = str(
+        item.get("category_code") or item.get("code") or item.get("id") or ""
+    ).strip()
+    category_name = str(
+        item.get("category_name") or item.get("name") or item.get("label") or ""
+    ).strip()
+    if not category_code or not category_name:
+        raise DotMacERPError("ERP expense category identity is invalid")
+    raw_maximum = item.get("max_amount_per_claim")
+    maximum: Decimal | None = None
+    if raw_maximum not in (None, ""):
+        try:
+            maximum = Decimal(str(raw_maximum))
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise DotMacERPError(
+                "ERP expense category maximum amount is invalid"
+            ) from exc
+    return ExpenseCategoryView(
+        category_code=category_code,
+        category_name=category_name,
+        requires_receipt=bool(item.get("requires_receipt", False)),
+        max_amount_per_claim=maximum,
+    )
