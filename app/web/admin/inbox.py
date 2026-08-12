@@ -730,7 +730,11 @@ def team_inbox_detail(
     # HTMX list clicks swap the thread+context partial into #triage-detail;
     # a full navigation lands in the workspace with the conversation preselected.
     if request.headers.get("hx-request"):
-        context = _ctx(request, db)
+        # The workspace page already owns the global navigation and its sidebar
+        # statistics. Rebuilding that full-page context here delays the thread
+        # swap (and therefore leaves the opening loader visible) without giving
+        # this partial any values that it consumes.
+        context: dict[str, object] = {"request": request}
         context.update(view)
         return templates.TemplateResponse("admin/inbox/_conversation.html", context)
     return RedirectResponse(url=f"/admin/inbox?c={conversation_id}", status_code=303)

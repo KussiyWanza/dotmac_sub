@@ -201,6 +201,9 @@ stale. Realtime has no replay authority.
 ## Page contract
 
 - Screen: `/admin/inbox` and `/admin/inbox/{conversation_id}`.
+- The conversation HTMX response is a thread-only partial. The loaded workspace
+  owns global navigation and sidebar statistics, so opening a conversation must
+  not recompute that full-page context before displaying its messages.
 - Audience and job: authorized support operators triage, understand, assign,
   reply, collaborate, and close communication work.
 - Information owner: `communications.team_inbox_projection` returns the list
