@@ -226,6 +226,49 @@ def test_technician_report_uses_completed_appointments_and_period_consistently(
     assert report["technician_stats"][0]["completion_rate"] == 50.0
 
 
+def test_technician_route_wires_completion_metric_and_date_filters(
+    db_session, monkeypatch
+):
+    import app.web.admin as admin_web
+
+    report_data = {
+        "total_technicians": 1,
+        "jobs_completed": 2,
+        "avg_completion_hours": 3.5,
+        "appointment_completion_rate": 50.0,
+        "technician_stats": [],
+        "job_type_breakdown": {},
+        "recent_completions": [],
+        "date_from": "2026-08-01",
+        "date_to": "2026-08-12",
+    }
+    monkeypatch.setattr(
+        web_reports, "get_technician_report_data", lambda *_args, **_kwargs: report_data
+    )
+    monkeypatch.setattr(admin_web, "get_current_user", lambda _request: None)
+    monkeypatch.setattr(admin_web, "get_sidebar_stats", lambda _db: {})
+    monkeypatch.setattr(
+        report_routes, "recent_activity_for_paths", lambda *_args, **_kwargs: []
+    )
+    monkeypatch.setattr(
+        report_routes.templates,
+        "TemplateResponse",
+        lambda _template, context: context,
+    )
+
+    context = report_routes.reports_technician(
+        SimpleNamespace(),
+        date_from="2026-08-01",
+        date_to="2026-08-12",
+        db=db_session,
+    )
+
+    assert context["appointment_completion_rate"] == 50.0
+    assert context["date_from"] == "2026-08-01"
+    assert context["date_to"] == "2026-08-12"
+    assert "first_visit_rate" not in context
+
+
 def test_operational_route_enforces_the_exact_report_permission():
     request = SimpleNamespace(
         state=SimpleNamespace(auth={"permission_keys": {"reports:support:read"}})

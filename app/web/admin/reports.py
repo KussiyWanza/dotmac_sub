@@ -689,10 +689,12 @@ def reports_technician(
         "total_technicians": report_data["total_technicians"],
         "jobs_completed": report_data["jobs_completed"],
         "avg_completion_hours": report_data["avg_completion_hours"],
-        "first_visit_rate": report_data["first_visit_rate"],
+        "appointment_completion_rate": report_data["appointment_completion_rate"],
         "technician_stats": report_data["technician_stats"],
         "job_type_breakdown": report_data["job_type_breakdown"],
         "recent_completions": report_data["recent_completions"],
+        "date_from": report_data["date_from"],
+        "date_to": report_data["date_to"],
         "recent_activities": recent_activity_for_paths(db, ["/admin/reports"]),
     }
     return templates.TemplateResponse("admin/reports/technician.html", context)
