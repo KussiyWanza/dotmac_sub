@@ -101,7 +101,11 @@ GoRouter buildRouter(Ref ref) {
           ),
           StatefulShellBranch(
             routes: [
-              GoRoute(path: '/map', builder: (_, _) => const _MapSwitch()),
+              GoRoute(
+                path: '/map',
+                builder: (_, state) =>
+                    _MapSwitch(focusJobId: state.uri.queryParameters['jobId']),
+              ),
             ],
           ),
           StatefulShellBranch(
@@ -170,7 +174,9 @@ class _HomeSwitch extends ConsumerWidget {
 /// The Map tab shows vendors their vendor-scoped nearby plant; techs get the
 /// full technician map (job pins + editable assets).
 class _MapSwitch extends ConsumerWidget {
-  const _MapSwitch();
+  const _MapSwitch({this.focusJobId});
+
+  final String? focusJobId;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -181,7 +187,7 @@ class _MapSwitch extends ConsumerWidget {
     if (isManagerProfile(ref.watch(managerProfileProvider))) {
       return const ManagerTeamMapScreen();
     }
-    return const MapScreen();
+    return MapScreen(key: ValueKey(focusJobId), focusJobId: focusJobId);
   }
 }
 

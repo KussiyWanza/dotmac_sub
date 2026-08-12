@@ -158,6 +158,16 @@ void main() {
       expect(File(row.localPath).existsSync(), isTrue);
     });
 
+    test('queued photo can be removed before upload', () async {
+      await queue.captureForJob(workOrderId: 'wo-1');
+      final row = (await db.select(db.pendingPhotos).get()).single;
+
+      await sync.removePendingPhoto(row.clientRef);
+
+      expect(await db.select(db.pendingPhotos).get(), isEmpty);
+      expect(File(row.localPath).existsSync(), isFalse);
+    });
+
     test('offline is a no-op', () async {
       await queue.captureForJob(workOrderId: 'wo-1');
       connectivity.online = false;

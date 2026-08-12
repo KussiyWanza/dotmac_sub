@@ -76,7 +76,6 @@ void main() {
         },
       );
     });
-
     final requests = await container
         .read(expensesRepositoryProvider)
         .fetchRequests();
@@ -166,7 +165,7 @@ void main() {
   });
 
   test('createRequest posts payload with items and work order', () async {
-    adapter.on('POST', '/api/v1/field/expense-requests', (options) {
+    adapter.on('POST', '/api/v1/field/expense-requests/submit', (options) {
       final data = (options.data as Map).cast<String, dynamic>();
       expect(data['purpose'], 'Site logistics');
       expect(data['work_order_id'], 'wo-1');
@@ -481,7 +480,7 @@ void main() {
     addTearDown(() => tester.binding.setSurfaceSize(null));
 
     Map<String, dynamic>? posted;
-    adapter.on('POST', '/api/v1/field/expense-requests', (options) {
+    adapter.on('POST', '/api/v1/field/expense-requests/submit', (options) {
       posted = (options.data as Map).cast<String, dynamic>();
       return (
         201,
