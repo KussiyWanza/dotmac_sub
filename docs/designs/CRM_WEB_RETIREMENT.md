@@ -73,6 +73,28 @@ Evidence must name durable repository paths, tests, migration/reconciliation
 reports, dashboards or queries, and approved operator records. A statement that
 Sub has a similarly named route is not parity evidence.
 
+### CRM reporting ownership decisions
+
+Self-Care hosts operational report projections over facts it already owns. The
+current capability/route contract is
+`docs/designs/CRM_REPORT_CAPABILITY_MATRIX.md` and the registered read owner is
+`ui.crm_operational_reports`. CRM report routes remain in shadow verification
+until the normal route retirement gate above is complete.
+
+Two legacy surfaces are explicitly outside this migration:
+
+- the orphaned manually populated Quarterly Report and its local XLSX inputs
+  are not recreated in Self-Care; the supported NCC complaints workbook is a
+  separate native capability;
+- raw customer-retention engagement history, agent notes, dispositions,
+  follow-up dates, pipeline state, campaign/outreach history, contact
+  preferences, reminders, and suppression remain CRM-owned. Self-Care neither
+  copies those records nor creates a competing retention state machine.
+
+Where an aggregate needs a fact with no authoritative owner—currently downtime
+credit decisions and project-task actual effort—the report renders the value as
+unavailable and names the ownership gap. It must not estimate or fabricate it.
+
 ### Zero-traffic evidence
 
 The zero-traffic gate uses Dotmac Observability, not an operator's memory or a
