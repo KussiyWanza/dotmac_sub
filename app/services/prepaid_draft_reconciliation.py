@@ -240,6 +240,16 @@ class FundingChangeDraftResult:
 
 
 @dataclass(frozen=True, slots=True)
+class FundingChangeDraftCommand:
+    """Typed funding observation for automatic prepaid-draft settlement."""
+
+    account_id: UUID
+    currency: str
+    effective_at: datetime
+    evidence_ref: str
+
+
+@dataclass(frozen=True, slots=True)
 class ReviewedOpeningFundingPreview:
     baseline_id: UUID | None
     approved_amount: Decimal
@@ -2243,7 +2253,7 @@ def _stage_opening_funding_consumption(
     preview: PrepaidDraftReconciliationPreview,
     amount: Decimal,
     effective_at: datetime,
-    context: CommandContext,
+    context: CommandContext | None,
 ) -> PrepaidOpeningFundingConsumption:
     baseline_id = preview.opening_funding_baseline_id
     if baseline_id is None or amount <= Decimal("0.00"):
@@ -2285,7 +2295,15 @@ def _stage_opening_funding_consumption(
             "Reviewed opening funding was already consumed; preview again.",
             available_amount=str(max(Decimal("0.00"), source_remaining)),
         )
-    command_key = context.idempotency_key or ""
+    # Reviewed opening funding is already approved, fingerprinted financial
+    # evidence. Funding-change consequences do not carry an operator command
+    # context, so bind their consumption to the exact invoice/funding preview.
+    # Interactive reconciliation keeps its caller-provided idempotency key.
+    command_key = (
+        context.idempotency_key
+        if context is not None and context.idempotency_key
+        else f"funding-change:{invoice.id}:{preview.fingerprint}"
+    )
     opening_key = (
         "prepaid-opening:" + hashlib.sha256(command_key.encode("utf-8")).hexdigest()
     )
@@ -2561,11 +2579,6 @@ def _stage_action(
                 and preview.disposition
                 is PrepaidDraftDisposition.reviewed_opening_fundable
             ):
-                if context is None:
-                    _error(
-                        "review_required",
-                        "Reviewed opening funding requires operator confirmation.",
-                    )
                 result = AccountCreditApplications.apply_invoice_available(
                     db,
                     invoice,
@@ -3893,10 +3906,7 @@ def reconcile_prepaid_draft_invoice(
 
 def stage_prepaid_draft_after_funding_change(
     db: Session,
-    *,
-    account_id: UUID,
-    currency: str,
-    effective_at: datetime,
+    command: FundingChangeDraftCommand,
 ) -> FundingChangeDraftResult:
     """Settle one exact existing draft before any invoice-less renewal.
 
@@ -3906,6 +3916,14 @@ def stage_prepaid_draft_after_funding_change(
     reconciliation.
     """
 
+    account_id = command.account_id
+    currency = command.currency.strip().upper()
+    effective_at = _utc(command.effective_at)
+    if len(currency) != 3 or not command.evidence_ref.strip():
+        _error(
+            "invalid_funding_observation",
+            "Funding change requires currency and evidence.",
+        )
     lock_account(db, str(account_id))
     invoice_ids = tuple(
         dict.fromkeys(
@@ -3940,9 +3958,6 @@ def stage_prepaid_draft_after_funding_change(
         )
 
     preview = preview_prepaid_draft_reconciliation(db, invoice_ids[0])
-    if preview.disposition is PrepaidDraftDisposition.reviewed_opening_fundable:
-        _stage_review_exception(db, preview=preview)
-        return FundingChangeDraftResult(1, 0, 1, 1, invoice_ids)
     if preview.recommended_action is not PrepaidDraftAction.settle_paid:
         return FundingChangeDraftResult(1, 0, 1, 0, invoice_ids)
     invoice, _applied, _payment_applied, _opening_consumption = _stage_action(
@@ -3962,6 +3977,7 @@ def stage_prepaid_draft_after_funding_change(
 __all__ = [
     "AdoptFundedPrepaidProformaCommand",
     "CreateReviewedPaidPrepaidInvoiceCommand",
+    "FundingChangeDraftCommand",
     "FundingChangeDraftResult",
     "MissingPaidPrepaidInvoiceRepairDisposition",
     "MissingPaidPrepaidInvoiceRepairPreview",

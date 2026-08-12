@@ -2044,14 +2044,18 @@ def apply_due_prepaid_service_after_funding_change(
     # shortfall (including NGN 0.50), unbacked credit, overlap, or ambiguity
     # leaves it unchanged and blocks the parallel invoice-less renewal path.
     from app.services.prepaid_draft_reconciliation import (
+        FundingChangeDraftCommand,
         stage_prepaid_draft_after_funding_change,
     )
 
     draft_result = stage_prepaid_draft_after_funding_change(
         db,
-        account_id=account_id,
-        currency=currency,
-        effective_at=evaluated_at,
+        FundingChangeDraftCommand(
+            account_id=account_id,
+            currency=currency,
+            effective_at=evaluated_at,
+            evidence_ref=evidence,
+        ),
     )
     if draft_result.drafts_found:
         settled = draft_result.drafts_settled
