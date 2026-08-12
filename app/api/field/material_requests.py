@@ -12,6 +12,7 @@ from app.schemas.field import (
     FieldMaterialRequestSubmit,
 )
 from app.services.auth_dependencies import require_user_auth
+from app.services.db_session_adapter import db_session_adapter
 from app.services.field.material_requests import (
     CreateStaffMaterialRequest,
     MaterialRequestError,
@@ -129,6 +130,7 @@ def create_and_submit_field_material_request(
     db: Session = Depends(get_db),
 ):
     try:
+        db_session_adapter.release_read_transaction(db)
         outcome = create_staff_material_request(
             db,
             CreateStaffMaterialRequest(

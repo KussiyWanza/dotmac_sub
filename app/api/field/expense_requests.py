@@ -23,6 +23,7 @@ from app.schemas.field import (
     FieldExpenseRequestSubmit,
 )
 from app.services.auth_dependencies import require_user_auth
+from app.services.db_session_adapter import db_session_adapter
 from app.services.field.attachments import field_attachments
 from app.services.field.expense_categories import (
     ExpenseCategoryQueryError,
@@ -168,6 +169,7 @@ def create_and_submit_field_expense_request(
     db: Session = Depends(get_db),
 ):
     try:
+        db_session_adapter.release_read_transaction(db)
         return submit_field_expense_request_command(
             db,
             SubmitFieldExpenseRequest(
