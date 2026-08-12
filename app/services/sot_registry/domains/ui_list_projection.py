@@ -19,6 +19,10 @@ from app.services.sot_manifest import (
 from app.services.sot_registry.model import DomainSOT
 
 _CRM_REPORT_CONCERNS = (
+    "network infrastructure report projection",
+    "subscriber overview report projection",
+    "churned subscriber report projection",
+    "technician performance report projection",
     "online customer activity report projection",
     "subscriber billing-risk report projection",
     "subscriber revenue and pipeline report projection",
@@ -58,8 +62,13 @@ DOMAIN = DomainSOT(
                 "financial.invoices",
                 "financial.payments",
                 "network.customer_outage_accrual",
+                "network.fiber_topology",
+                "network.identity",
+                "network.ip_pool_utilization",
                 "network.radius_sessions",
+                "network.ont_runtime_status",
                 "operations.project_lifecycle",
+                "operations.provisioning_workflow",
                 "operations.work_orders",
                 "service_intent.subscription_lifecycle",
                 "support.ticket_lifecycle",
@@ -80,11 +89,16 @@ DOMAIN = DomainSOT(
                             "authorized report scope",
                             "native customer and subscription records",
                             "native billing records",
+                            "native network inventory records",
+                            "native ONT runtime observations",
+                            "native IP pool utilization",
+                            "native fiber plant records",
                             "native RADIUS records",
                             "native customer outage intervals",
                             "native inbox records",
                             "native support records",
                             "native work-order and project records",
+                            "native provisioning records",
                         ),
                     )
                     for concern in _CRM_REPORT_CONCERNS
@@ -121,6 +135,30 @@ DOMAIN = DomainSOT(
                         source="fresh RADIUS accounting sessions",
                     ),
                     AuthorityInput(
+                        name="native network inventory records",
+                        owner="network.identity",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="OLT, ONT, IP-pool, VLAN, and PON inventory identity",
+                    ),
+                    AuthorityInput(
+                        name="native ONT runtime observations",
+                        owner="network.ont_runtime_status",
+                        kind=AuthorityKind.OBSERVATION,
+                        source="latest persisted OLT-observed ONT runtime status",
+                    ),
+                    AuthorityInput(
+                        name="native IP pool utilization",
+                        owner="network.ip_pool_utilization",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source="live IP pool used and total counts",
+                    ),
+                    AuthorityInput(
+                        name="native fiber plant records",
+                        owner="network.fiber_topology",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="fibre strand, cabinet, and splitter inventory",
+                    ),
+                    AuthorityInput(
                         name="native customer outage intervals",
                         owner="network.customer_outage_accrual",
                         kind=AuthorityKind.AUTHORITATIVE_RECORD,
@@ -143,6 +181,12 @@ DOMAIN = DomainSOT(
                         owner="operations.work_orders",
                         kind=AuthorityKind.AUTHORITATIVE_RECORD,
                         source="work orders, projects, project tasks, and assignment facts",
+                    ),
+                    AuthorityInput(
+                        name="native provisioning records",
+                        owner="operations.provisioning_workflow",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="installation appointments, provisioning tasks, and service orders",
                     ),
                 ),
                 transaction=TransactionContract(
@@ -173,6 +217,7 @@ DOMAIN = DomainSOT(
                 design_refs=(
                     "docs/designs/CRM_WEB_RETIREMENT.md",
                     "docs/designs/CRM_REPORT_CAPABILITY_MATRIX.md",
+                    "docs/designs/CRM_REPORT_DATA_FLOW_GUIDE.md",
                     "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
                 ),
                 test_refs=("tests/test_crm_reporting.py",),

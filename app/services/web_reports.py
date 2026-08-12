@@ -5,7 +5,6 @@ from __future__ import annotations
 import csv
 import io
 import logging
-from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -16,25 +15,10 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.billing import PaymentStatus
-from app.models.catalog import CatalogOffer, Subscription, SubscriptionStatus
-from app.models.network import (
-    FdhCabinet,
-    FiberStrand,
-    FiberStrandStatus,
-    IpBlock,
-    IpPool,
-    OLTDevice,
-    OntUnit,
-    OnuOnlineStatus,
-    PonPort,
-    Splitter,
-    Vlan,
-)
 from app.models.subscriber import AccountStatus, Subscriber, SubscriberCategory
-from app.models.support import Ticket
 from app.schemas.status_presentation import StatusTone
 from app.services import billing as billing_service
-from app.services import ip_pool_utilization_snapshot as ip_pool_snapshot_service
+from app.services import crm_reporting as crm_reporting_service
 from app.services import subscriber as subscriber_service
 from app.services import subscriber_growth
 from app.services import usage_summary as usage_summary_service
@@ -64,12 +48,12 @@ class NetworkPoolReportRow(TypedDict):
 
 
 class NetworkReportData(TypedDict):
-    olts: list[OLTDevice]
+    olts: list[crm_reporting_service.NetworkOltFacts]
     total_olts: int
     active_olts: int
     total_onts: int
     connected_onts: int
-    recent_ont_activity: list[OntUnit]
+    recent_ont_activity: list[crm_reporting_service.NetworkOntFacts]
     pool_data: list[NetworkPoolReportRow]
     used_ips: int
     total_ips: int
@@ -175,132 +159,44 @@ def _ensure_aware_datetime(value: datetime | None) -> datetime | None:
     return value
 
 
-def _collect_pool_data(
-    db: Session,
-) -> tuple[list[NetworkPoolReportRow], int, int]:
-    ip_pools = list(db.scalars(select(IpPool).order_by(IpPool.created_at.desc())).all())
-
-    used_ips = 0
-    total_ips = 0
-    pool_data: list[NetworkPoolReportRow] = []
-
-    for pool in ip_pools:
-        pool_used, pool_total = ip_pool_snapshot_service.live_pool_counts(db, pool)
-
-        if pool_total == 0:
-            block_count = int(
-                db.scalar(
-                    select(func.count(IpBlock.id)).where(IpBlock.pool_id == pool.id)
-                )
-                or 0
-            )
-            pool_total = block_count * 256
-        pool_total = pool_total if pool_total > 0 else 256
-
-        pool_data.append(
-            {
-                "name": pool.name,
-                "cidr": pool.cidr,
-                "used_count": pool_used,
-                "total_count": pool_total,
-            }
-        )
-        used_ips += pool_used
-        total_ips += pool_total
-
-    return pool_data, used_ips, total_ips
-
-
 def get_network_report_data(db: Session, hours: int | None = None) -> NetworkReportData:
-    olts = list(
-        db.scalars(select(OLTDevice).order_by(OLTDevice.created_at.desc())).all()
-    )
-    total_olts = int(db.scalar(select(func.count(OLTDevice.id))) or 0)
-    active_olts = int(
-        db.scalar(select(func.count(OLTDevice.id)).where(OLTDevice.is_active.is_(True)))
-        or 0
-    )
-
-    ont_filters = []
-    if hours:
-        cutoff = datetime.now(UTC) - timedelta(hours=hours)
-        ont_filters.append(OntUnit.updated_at >= cutoff)
-    total_onts = int(db.scalar(select(func.count(OntUnit.id)).where(*ont_filters)) or 0)
-    connected_onts = int(
-        db.scalar(
-            select(func.count(OntUnit.id)).where(
-                *ont_filters, OntUnit.olt_status == OnuOnlineStatus.online
-            )
-        )
-        or 0
-    )
-    recent_ont_activity = list(
-        db.scalars(
-            select(OntUnit)
-            .where(*ont_filters)
-            .order_by(OntUnit.updated_at.desc())
-            .limit(10)
-        ).all()
-    )
-
-    pool_data, used_ips, total_ips = _collect_pool_data(db=db)
-    ip_pool_usage = (used_ips / total_ips * 100) if total_ips > 0 else 0
-
-    active_vlans = int(
-        db.scalar(select(func.count(Vlan.id)).where(Vlan.is_active.is_(True))) or 0
-    )
-    pon_capacity = int(
-        db.scalar(
-            select(func.coalesce(func.sum(PonPort.max_ont_capacity), 0)).where(
-                PonPort.is_active.is_(True)
-            )
-        )
-        or 0
-    )
-    fiber_status = {
-        (status.value if status else "unknown"): int(count or 0)
-        for status, count in db.execute(
-            select(FiberStrand.status, func.count(FiberStrand.id))
-            .where(FiberStrand.is_active.is_(True))
-            .group_by(FiberStrand.status)
-        ).all()
-    }
+    facts = crm_reporting_service.network_infrastructure_facts(db, hours=hours)
+    pool_data: list[NetworkPoolReportRow] = [
+        {
+            "name": pool.name,
+            "cidr": pool.cidr,
+            "used_count": pool.used_count,
+            "total_count": pool.total_count,
+        }
+        for pool in facts.pools
+    ]
+    fiber_status = dict(facts.fiber_status)
     total_fiber_strands = sum(fiber_status.values())
-    available_fiber_strands = fiber_status.get(FiberStrandStatus.available.value, 0)
-    total_fdh = int(
-        db.scalar(
-            select(func.count(FdhCabinet.id)).where(FdhCabinet.is_active.is_(True))
-        )
-        or 0
-    )
-    splitter_capacity = int(
-        db.scalar(
-            select(func.coalesce(func.sum(Splitter.output_ports), 0)).where(
-                Splitter.is_active.is_(True)
-            )
-        )
-        or 0
-    )
+    available_fiber_strands = fiber_status.get("available", 0)
 
     return {
-        "olts": olts,
-        "total_olts": total_olts,
-        "active_olts": active_olts,
-        "total_onts": total_onts,
-        "connected_onts": connected_onts,
-        "recent_ont_activity": recent_ont_activity,
+        "olts": list(facts.olts),
+        "total_olts": facts.total_olts,
+        "active_olts": facts.active_olts,
+        "total_onts": facts.total_onts,
+        "connected_onts": facts.connected_onts,
+        "recent_ont_activity": list(facts.recent_ont_activity),
         "pool_data": pool_data,
-        "used_ips": used_ips,
-        "total_ips": total_ips,
-        "ip_pool_usage": ip_pool_usage,
-        "active_vlans": active_vlans,
-        "pon_capacity": pon_capacity,
-        "pon_utilization": (total_onts / pon_capacity * 100) if pon_capacity else 0,
+        "used_ips": facts.used_ips,
+        "total_ips": facts.total_ips,
+        "ip_pool_usage": (
+            facts.used_ips / facts.total_ips * 100 if facts.total_ips > 0 else 0
+        ),
+        "active_vlans": facts.active_vlans,
+        "pon_capacity": facts.pon_capacity,
+        "pon_utilization": (
+            facts.total_onts / facts.pon_capacity * 100 if facts.pon_capacity else 0
+        ),
         "fiber_status": fiber_status,
         "total_fiber_strands": total_fiber_strands,
         "available_fiber_strands": available_fiber_strands,
-        "total_fdh": total_fdh,
-        "splitter_capacity": splitter_capacity,
+        "total_fdh": facts.total_fdh,
+        "splitter_capacity": facts.splitter_capacity,
     }
 
 
@@ -771,44 +667,25 @@ def get_subscribers_report_data(
         ),
     }
     subscriber_ids = [subscriber.id for subscriber in all_subscribers]
-    plan_distribution: dict[str, int] = {}
-    if subscriber_ids:
-        plan_distribution = {
-            plan_name or "Unspecified": int(count or 0)
-            for plan_name, count in db.execute(
-                select(
-                    CatalogOffer.name,
-                    func.count(func.distinct(Subscription.subscriber_id)),
-                )
-                .join(CatalogOffer, CatalogOffer.id == Subscription.offer_id)
-                .where(
-                    Subscription.subscriber_id.in_(subscriber_ids),
-                    Subscription.status.in_(
-                        (SubscriptionStatus.active, SubscriptionStatus.pending)
-                    ),
-                )
-                .group_by(CatalogOffer.name)
-                .order_by(func.count(func.distinct(Subscription.subscriber_id)).desc())
-            ).all()
-        }
-    region_counts = Counter(
-        (subscriber.region or "Unspecified") for subscriber in all_subscribers
+    segment_facts = crm_reporting_service.subscriber_segment_facts(
+        db,
+        subscriber_ids=tuple(subscriber_ids),
     )
-    ticket_region_counts = {
-        region or "Unspecified": int(count or 0)
-        for region, count in db.execute(
-            select(Ticket.region, func.count(Ticket.id))
-            .where(Ticket.is_active.is_(True))
-            .group_by(Ticket.region)
-        ).all()
-    }
+    plan_distribution = dict(segment_facts.plan_distribution)
+    region_counts: dict[str, int] = {}
+    for subscriber in all_subscribers:
+        region = subscriber.region or "Unspecified"
+        region_counts[region] = region_counts.get(region, 0) + 1
+    ticket_region_counts = dict(segment_facts.ticket_counts_by_region)
     regional_breakdown: list[RegionalSubscriberReportRow] = [
         {
             "region": region,
             "subscribers": count,
             "tickets": ticket_region_counts.get(region, 0),
         }
-        for region, count in region_counts.most_common()
+        for region, count in sorted(
+            region_counts.items(), key=lambda item: item[1], reverse=True
+        )
     ]
     return {
         "subscriber_kpis": subscriber_kpis,
@@ -1009,18 +886,7 @@ def get_churn_report_data(db: Session) -> ChurnReportData:
             tone=StatusTone.positive,
         ),
     }
-    churn_reasons = {
-        reason or "Reason not captured": int(count or 0)
-        for reason, count in db.execute(
-            select(Subscription.cancel_reason, func.count(Subscription.id))
-            .where(
-                (Subscription.status == SubscriptionStatus.canceled)
-                | (Subscription.canceled_at.is_not(None))
-            )
-            .group_by(Subscription.cancel_reason)
-            .order_by(func.count(Subscription.id).desc())
-        ).all()
-    }
+    churn_reasons = dict(crm_reporting_service.subscription_churn_reason_counts(db))
     return {
         "churn_kpis": churn_kpis,
         "churn_rate": churn_rate,
@@ -1128,25 +994,17 @@ def get_technician_report_data(
     assembles them with the recent-completion listing and owns presentation
     (the top-10 slice) only.
     """
-    from app.models.provisioning import AppointmentStatus, InstallAppointment
     from app.services import provisioning_managers
 
     start_at, end_at, _, _ = _date_range_values(date_from=date_from, date_to=date_to)
     stats = provisioning_managers.technician_report_stats(
         db, start_at=start_at, end_at=end_at
     )
-    recent_filters = [InstallAppointment.status == AppointmentStatus.completed]
-    if start_at is not None:
-        recent_filters.append(InstallAppointment.scheduled_start >= start_at)
-    if end_at is not None:
-        recent_filters.append(InstallAppointment.scheduled_start < end_at)
-    recent_completions = list(
-        db.scalars(
-            select(InstallAppointment)
-            .where(*recent_filters)
-            .order_by(InstallAppointment.updated_at.desc())
-            .limit(10)
-        ).all()
+    recent_completions = provisioning_managers.recent_completed_appointments(
+        db,
+        start_at=start_at,
+        end_at=end_at,
+        limit=10,
     )
 
     return {

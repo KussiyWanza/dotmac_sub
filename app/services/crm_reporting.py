@@ -23,7 +23,24 @@ from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
 from app.models.billing import Invoice, Payment, PaymentStatus
-from app.models.catalog import BillingMode, Subscription
+from app.models.catalog import (
+    BillingMode,
+    CatalogOffer,
+    Subscription,
+    SubscriptionStatus,
+)
+from app.models.network import (
+    FdhCabinet,
+    FiberStrand,
+    IpBlock,
+    IpPool,
+    OLTDevice,
+    OntUnit,
+    OnuOnlineStatus,
+    PonPort,
+    Splitter,
+    Vlan,
+)
 from app.models.network_monitoring import CustomerOutageInterval
 from app.models.project import Project, ProjectTask
 from app.models.provisioning import ServiceOrder, ServiceOrderStatus
@@ -31,7 +48,12 @@ from app.models.subscriber import Subscriber
 from app.models.support import Ticket
 from app.models.team_inbox import InboxConversation, InboxConversationQueueEntry
 from app.models.work_order import WorkOrder
-from app.services import crm_api, team_inbox_metrics, ticket_sla_reports
+from app.services import (
+    crm_api,
+    ip_pool_utilization_snapshot,
+    team_inbox_metrics,
+    ticket_sla_reports,
+)
 
 
 class CrmReportSlug(StrEnum):
@@ -105,6 +127,54 @@ class CrmReportPage:
     @property
     def has_next(self) -> bool:
         return self.page * self.per_page < self.total
+
+
+@dataclass(frozen=True, slots=True)
+class NetworkPoolFacts:
+    name: str
+    cidr: str
+    used_count: int
+    total_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class NetworkOltFacts:
+    name: str
+    serial_number: str | None
+    mgmt_ip: str | None
+    is_active: bool
+
+
+@dataclass(frozen=True, slots=True)
+class NetworkOntFacts:
+    model: str | None
+    serial_number: str
+    olt_name: str | None
+    is_online: bool
+
+
+@dataclass(frozen=True, slots=True)
+class NetworkInfrastructureFacts:
+    olts: tuple[NetworkOltFacts, ...]
+    total_olts: int
+    active_olts: int
+    total_onts: int
+    connected_onts: int
+    recent_ont_activity: tuple[NetworkOntFacts, ...]
+    pools: tuple[NetworkPoolFacts, ...]
+    used_ips: int
+    total_ips: int
+    active_vlans: int
+    pon_capacity: int
+    fiber_status: tuple[tuple[str, int], ...]
+    total_fdh: int
+    splitter_capacity: int
+
+
+@dataclass(frozen=True, slots=True)
+class SubscriberSegmentFacts:
+    plan_distribution: tuple[tuple[str, int], ...]
+    ticket_counts_by_region: tuple[tuple[str, int], ...]
 
 
 REPORT_DEFINITIONS: dict[CrmReportSlug, CrmReportDefinition] = {
@@ -261,6 +331,196 @@ def _page(
     )
 
 
+def network_infrastructure_facts(
+    db: Session, *, hours: int | None = None
+) -> NetworkInfrastructureFacts:
+    """Read typed network facts for the infrastructure report projection."""
+    olts = tuple(
+        NetworkOltFacts(
+            name=row.name,
+            serial_number=row.serial_number,
+            mgmt_ip=row.mgmt_ip,
+            is_active=bool(row.is_active),
+        )
+        for row in db.execute(
+            select(
+                OLTDevice.name,
+                OLTDevice.serial_number,
+                OLTDevice.mgmt_ip,
+                OLTDevice.is_active,
+            ).order_by(OLTDevice.created_at.desc())
+        ).all()
+    )
+    total_olts = int(db.scalar(select(func.count(OLTDevice.id))) or 0)
+    active_olts = int(
+        db.scalar(select(func.count(OLTDevice.id)).where(OLTDevice.is_active.is_(True)))
+        or 0
+    )
+
+    ont_filters: list[ColumnElement[bool]] = []
+    if hours:
+        ont_filters.append(
+            OntUnit.updated_at >= datetime.now(UTC) - timedelta(hours=hours)
+        )
+    total_onts = int(db.scalar(select(func.count(OntUnit.id)).where(*ont_filters)) or 0)
+    connected_onts = int(
+        db.scalar(
+            select(func.count(OntUnit.id)).where(
+                *ont_filters, OntUnit.olt_status == OnuOnlineStatus.online
+            )
+        )
+        or 0
+    )
+    recent_ont_activity = tuple(
+        NetworkOntFacts(
+            model=row.model,
+            serial_number=row.serial_number,
+            olt_name=row.olt_name,
+            is_online=row.olt_status == OnuOnlineStatus.online,
+        )
+        for row in db.execute(
+            select(
+                OntUnit.model,
+                OntUnit.serial_number,
+                OLTDevice.name.label("olt_name"),
+                OntUnit.olt_status,
+            )
+            .outerjoin(OLTDevice, OLTDevice.id == OntUnit.olt_device_id)
+            .where(*ont_filters)
+            .order_by(OntUnit.updated_at.desc())
+            .limit(10)
+        ).all()
+    )
+
+    pools: list[NetworkPoolFacts] = []
+    used_ips = 0
+    total_ips = 0
+    for pool in db.scalars(select(IpPool).order_by(IpPool.created_at.desc())).all():
+        pool_used, pool_total = ip_pool_utilization_snapshot.live_pool_counts(db, pool)
+        if pool_total == 0:
+            block_count = int(
+                db.scalar(
+                    select(func.count(IpBlock.id)).where(IpBlock.pool_id == pool.id)
+                )
+                or 0
+            )
+            pool_total = block_count * 256
+        pool_total = pool_total if pool_total > 0 else 256
+        pools.append(
+            NetworkPoolFacts(
+                name=pool.name,
+                cidr=pool.cidr,
+                used_count=pool_used,
+                total_count=pool_total,
+            )
+        )
+        used_ips += pool_used
+        total_ips += pool_total
+
+    fiber_status = tuple(
+        (
+            status.value if status else "unknown",
+            int(count or 0),
+        )
+        for status, count in db.execute(
+            select(FiberStrand.status, func.count(FiberStrand.id))
+            .where(FiberStrand.is_active.is_(True))
+            .group_by(FiberStrand.status)
+        ).all()
+    )
+    return NetworkInfrastructureFacts(
+        olts=olts,
+        total_olts=total_olts,
+        active_olts=active_olts,
+        total_onts=total_onts,
+        connected_onts=connected_onts,
+        recent_ont_activity=recent_ont_activity,
+        pools=tuple(pools),
+        used_ips=used_ips,
+        total_ips=total_ips,
+        active_vlans=int(
+            db.scalar(select(func.count(Vlan.id)).where(Vlan.is_active.is_(True))) or 0
+        ),
+        pon_capacity=int(
+            db.scalar(
+                select(func.coalesce(func.sum(PonPort.max_ont_capacity), 0)).where(
+                    PonPort.is_active.is_(True)
+                )
+            )
+            or 0
+        ),
+        fiber_status=fiber_status,
+        total_fdh=int(
+            db.scalar(
+                select(func.count(FdhCabinet.id)).where(FdhCabinet.is_active.is_(True))
+            )
+            or 0
+        ),
+        splitter_capacity=int(
+            db.scalar(
+                select(func.coalesce(func.sum(Splitter.output_ports), 0)).where(
+                    Splitter.is_active.is_(True)
+                )
+            )
+            or 0
+        ),
+    )
+
+
+def subscriber_segment_facts(
+    db: Session, *, subscriber_ids: tuple[UUID, ...]
+) -> SubscriberSegmentFacts:
+    """Read plan and support-region facts for a subscriber report cohort."""
+    plan_distribution: tuple[tuple[str, int], ...] = ()
+    if subscriber_ids:
+        plan_distribution = tuple(
+            (plan_name or "Unspecified", int(count or 0))
+            for plan_name, count in db.execute(
+                select(
+                    CatalogOffer.name,
+                    func.count(func.distinct(Subscription.subscriber_id)),
+                )
+                .join(CatalogOffer, CatalogOffer.id == Subscription.offer_id)
+                .where(
+                    Subscription.subscriber_id.in_(subscriber_ids),
+                    Subscription.status.in_(
+                        (SubscriptionStatus.active, SubscriptionStatus.pending)
+                    ),
+                )
+                .group_by(CatalogOffer.name)
+                .order_by(func.count(func.distinct(Subscription.subscriber_id)).desc())
+            ).all()
+        )
+    ticket_counts_by_region = tuple(
+        (region or "Unspecified", int(count or 0))
+        for region, count in db.execute(
+            select(Ticket.region, func.count(Ticket.id))
+            .where(Ticket.is_active.is_(True))
+            .group_by(Ticket.region)
+        ).all()
+    )
+    return SubscriberSegmentFacts(
+        plan_distribution=plan_distribution,
+        ticket_counts_by_region=ticket_counts_by_region,
+    )
+
+
+def subscription_churn_reason_counts(db: Session) -> tuple[tuple[str, int], ...]:
+    """Read authoritative service-cancellation reasons for the churn report."""
+    return tuple(
+        (reason or "Reason not captured", int(count or 0))
+        for reason, count in db.execute(
+            select(Subscription.cancel_reason, func.count(Subscription.id))
+            .where(
+                (Subscription.status == SubscriptionStatus.canceled)
+                | (Subscription.canceled_at.is_not(None))
+            )
+            .group_by(Subscription.cancel_reason)
+            .order_by(func.count(Subscription.id).desc())
+        ).all()
+    )
+
+
 def _all_crm_rows(
     db: Session,
     fetcher: Callable[..., tuple[list[dict[str, object]], int]],
@@ -288,12 +548,9 @@ def _online_activity(db: Session, query: CrmReportQuery) -> CrmReportPage:
         tuple(
             _text(item.get(key))
             for key in (
-                "name",
-                "username",
-                "framed_ip_address",
-                "session_start",
-                "last_update",
-                "location",
+                "subscriber_number",
+                "status",
+                "last_seen",
             )
         )
         for item in raw
@@ -302,12 +559,9 @@ def _online_activity(db: Session, query: CrmReportQuery) -> CrmReportPage:
         REPORT_DEFINITIONS[CrmReportSlug.ONLINE_ACTIVITY],
         (CrmReportMetric("Online customers", str(total), "Fresh RADIUS sessions"),),
         (
-            "Customer",
-            "Username",
-            "IP address",
-            "Session start",
+            "Subscriber number",
+            "Status",
             "Last activity",
-            "Location",
         ),
         rows,
         total,

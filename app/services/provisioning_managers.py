@@ -1156,6 +1156,29 @@ class TechnicianReportStats(TypedDict):
     job_type_breakdown: dict[str, int]
 
 
+def recent_completed_appointments(
+    db: Session,
+    *,
+    start_at: datetime | None = None,
+    end_at: datetime | None = None,
+    limit: int = 10,
+) -> list[InstallAppointment]:
+    """Return recent completed appointments within the report period."""
+    filters = [InstallAppointment.status == AppointmentStatus.completed]
+    if start_at is not None:
+        filters.append(InstallAppointment.scheduled_start >= start_at)
+    if end_at is not None:
+        filters.append(InstallAppointment.scheduled_start < end_at)
+    return list(
+        db.scalars(
+            select(InstallAppointment)
+            .where(*filters)
+            .order_by(InstallAppointment.updated_at.desc())
+            .limit(limit)
+        ).all()
+    )
+
+
 def _ensure_aware_datetime(value: datetime | None) -> datetime | None:
     if value is None:
         return None

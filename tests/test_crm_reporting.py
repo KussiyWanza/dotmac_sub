@@ -38,6 +38,18 @@ def test_expected_operational_inventory_is_complete_and_exclusions_stay_excluded
     assert "CustomerRetentionEngagement" not in service_source
     assert "retention notes" not in service_source.lower()
 
+    data_flow_guide = Path("docs/designs/CRM_REPORT_DATA_FLOW_GUIDE.md").read_text(
+        encoding="utf-8"
+    )
+    for required_flow in (
+        "Shared operational projection",
+        "Billing aggregation",
+        "Customer/network observations",
+        "Team inbox metrics",
+        "NCC ownership",
+    ):
+        assert required_flow in data_flow_guide
+
 
 @pytest.mark.parametrize("slug", list(crm_reporting.CrmReportSlug))
 def test_every_operational_report_has_a_typed_empty_state(db_session, slug):
@@ -85,6 +97,93 @@ def test_network_report_uses_uncapped_counts_and_observed_ont_status(db_session)
     assert report["active_olts"] == 101
     assert report["total_onts"] == 2
     assert report["connected_onts"] == 1
+    assert all(
+        isinstance(item, crm_reporting.NetworkOltFacts) for item in report["olts"]
+    )
+    assert any(item.mgmt_ip == "10.0.0.1" for item in report["olts"])
+    assert all(
+        isinstance(item, crm_reporting.NetworkOntFacts)
+        for item in report["recent_ont_activity"]
+    )
+    assert sum(item.is_online for item in report["recent_ont_activity"]) == 1
+
+
+def test_network_route_wires_all_infrastructure_capacity_metrics(
+    db_session, monkeypatch
+):
+    import app.web.admin as admin_web
+
+    report_data = {
+        "total_olts": 2,
+        "active_olts": 1,
+        "total_onts": 8,
+        "connected_onts": 7,
+        "ip_pool_usage": 25.0,
+        "used_ips": 64,
+        "total_ips": 256,
+        "active_vlans": 4,
+        "pon_capacity": 128,
+        "pon_utilization": 6.25,
+        "total_fiber_strands": 48,
+        "available_fiber_strands": 12,
+        "total_fdh": 3,
+        "splitter_capacity": 64,
+        "olts": [],
+        "pool_data": [],
+        "recent_ont_activity": [],
+    }
+    monkeypatch.setattr(
+        web_reports, "get_network_report_data", lambda **_kwargs: report_data
+    )
+    monkeypatch.setattr(admin_web, "get_current_user", lambda _request: None)
+    monkeypatch.setattr(admin_web, "get_sidebar_stats", lambda _db: {})
+    monkeypatch.setattr(
+        report_routes, "recent_activity_for_paths", lambda *_args, **_kwargs: []
+    )
+    monkeypatch.setattr(
+        report_routes.templates,
+        "TemplateResponse",
+        lambda _template, context: context,
+    )
+
+    context = report_routes.reports_network(SimpleNamespace(), db_session)
+
+    for key in (
+        "pon_capacity",
+        "pon_utilization",
+        "total_fiber_strands",
+        "available_fiber_strands",
+        "total_fdh",
+        "splitter_capacity",
+    ):
+        assert context[key] == report_data[key]
+
+
+def test_online_activity_maps_the_internal_api_contract(monkeypatch, db_session):
+    monkeypatch.setattr(
+        crm_reporting.crm_api,
+        "online_subscribers",
+        lambda *_args, **_kwargs: (
+            [
+                {
+                    "id": "subscriber-id",
+                    "subscriber_number": "SUB-1001",
+                    "status": "active",
+                    "last_seen": "2026-08-12T09:30:00+00:00",
+                }
+            ],
+            1,
+        ),
+    )
+
+    report = crm_reporting.get_report(
+        db_session,
+        slug=crm_reporting.CrmReportSlug.ONLINE_ACTIVITY,
+        query=crm_reporting.CrmReportQuery(),
+    )
+
+    assert report.columns == ("Subscriber number", "Status", "Last activity")
+    assert report.rows == (("Sub-1001", "Active", "2026-08-12T09:30:00+00:00"),)
 
 
 def test_subscriber_overview_projects_plan_region_and_ticket_counts(

@@ -144,7 +144,7 @@
                             </div>
                             <div>
                                 <p class="text-sm font-medium text-slate-900 dark:text-white">{{ olt.name or olt.serial_number }}</p>
-                                <p class="text-xs text-slate-500 dark:text-slate-400">{{ olt.management_ip or 'No IP' }}</p>
+                                <p class="text-xs text-slate-500 dark:text-slate-400">{{ olt.mgmt_ip or 'No IP' }}</p>
                             </div>
                         </div>
                         {% if olt.is_active %}
@@ -216,12 +216,12 @@
                         <tr>
                             <td class="px-4 py-3 text-sm text-slate-900 dark:text-white">{{ ont.model or 'Unknown' }}</td>
                             <td class="px-4 py-3 text-sm font-mono text-slate-500 dark:text-slate-400">{{ ont.serial_number }}</td>
-                            <td class="px-4 py-3 text-sm text-slate-500 dark:text-slate-400">{{ ont.olt.name if ont.olt else '-' }}</td>
+                            <td class="px-4 py-3 text-sm text-slate-500 dark:text-slate-400">{{ ont.olt_name or '-' }}</td>
                             <td class="px-4 py-3">
-                                {% if ont.is_active %}
-                                {{ status_badge("Active", "active", size="sm") }}
+                                {% if ont.is_online %}
+                                {{ status_badge("Online", "online", size="sm") }}
                                 {% else %}
-                                {{ status_badge("Inactive", "inactive", size="sm") }}
+                                {{ status_badge("Offline", "offline", size="sm") }}
                                 {% endif %}
                             </td>
                         </tr>

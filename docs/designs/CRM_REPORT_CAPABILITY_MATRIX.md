@@ -5,6 +5,9 @@ Status: implementation and shadow-verification contract
 Owner: `ui.crm_operational_reports` for report projections; the domain services
 listed below retain ownership of every underlying fact.
 
+Detailed source-to-UI handover documentation is in
+`docs/designs/CRM_REPORT_DATA_FLOW_GUIDE.md`.
+
 The legacy manually populated Quarterly Report and all CRM retention notes,
 dispositions, follow-ups, campaign/outreach history, and raw engagement records
 are intentionally outside Self-Care. The supported NCC complaints workbook is
@@ -14,11 +17,11 @@ unrelated and remains native.
 | --- | --- | --- | --- | --- |
 | NCC complaints | `ncc_complaints_report` | `/admin/reports/ncc-complaints` | `provisioning:read` | Existing native page/export tests |
 | NCC regulatory pack | `ncc_regulatory_pack` | `/admin/reports/ncc-pack` | `provisioning:read` | Existing native page/PDF tests |
-| Network infrastructure | `web_reports.get_network_report_data` composing network owners | `/admin/reports/network` | `reports:network:read`; export separately gated | Repaired totals, observed ONT status, PON/fibre/FDH facts |
-| Subscriber overview | `web_reports.get_subscribers_report_data` composing customer/usage owners | `/admin/reports/customers` | `customer:read` | Repaired plan/region/ticket cohorts and pagination |
-| Churned subscribers | `subscriber_growth` plus native Subscription cancellation reasons | `/admin/reports/churn` | `customer:read` | Repaired reason breakdown; CRM retention records excluded |
-| Technician performance | `provisioning_managers.technician_report_stats` | `/admin/reports/technician` | `reports:support:read` | Repaired completion semantics and date-consistent export |
-| Online activity | `crm_reporting`, native RADIUS owner | `/admin/reports/operational/online-activity` | `customer:read` | Native page/export/empty state |
+| Network infrastructure | `crm_reporting.network_infrastructure_facts` composed by `web_reports.get_network_report_data` | `/admin/reports/network` | `reports:network:read`; export separately gated | Repaired totals, observed ONT status, PON/fibre/FDH facts |
+| Subscriber overview | `crm_reporting.subscriber_segment_facts` plus customer/usage owners, composed by `web_reports.get_subscribers_report_data` | `/admin/reports/customers` | `customer:read` | Repaired plan/region/ticket cohorts and pagination |
+| Churned subscribers | `subscriber_growth` plus `crm_reporting.subscription_churn_reason_counts` | `/admin/reports/churn` | `customer:read` | Repaired reason breakdown; CRM retention records excluded |
+| Technician performance | `provisioning_managers.technician_report_stats` and `recent_completed_appointments` | `/admin/reports/technician` | `reports:support:read` | Repaired completion semantics and date-consistent export |
+| Online activity | `crm_reporting`, native RADIUS owner | `/admin/reports/operational/online-activity` | `customer:read` | Subscriber/status/last-activity page, export, and empty state |
 | Subscriber billing risk | `crm_reporting`, native customer/billing owners | `/admin/reports/operational/billing-risk` | `reports:billing:read` | Facts only; no copied CRM engagement state |
 | Subscriber revenue/pipeline | `crm_reporting`, Invoice/Payment owners | `/admin/reports/operational/subscriber-revenue` | `reports:billing:read` | Period-filtered page/export |
 | Postpaid customers | `crm_reporting`, customer/billing owners | `/admin/reports/operational/postpaid-customers` | `reports:billing:read` | Native page/export |
