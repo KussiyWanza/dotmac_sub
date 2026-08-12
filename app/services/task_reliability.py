@@ -475,6 +475,14 @@ TASK_RELIABILITY_CONTRACTS: dict[str, TaskReliabilityContract] = {
         STATUS,
         "Permanent convergence pass converts assignments and stages expired cleanup.",
     ),
+    "app.tasks.ont_service_configuration.apply": _c(
+        "network",
+        STATE,
+        STATEFUL,
+        STATUS,
+        "The dispatch outbox admits an existing operation once; exact assignment, "
+        "configuration-head, revision, and readback evidence prevent stale delivery.",
+    ),
     "app.tasks.ont_reconcile.run_ont_reconcile_sweep": _c(
         "network", SWEEP, IDEMP, HEALTH
     ),
@@ -643,6 +651,14 @@ TASK_RELIABILITY_CONTRACTS: dict[str, TaskReliabilityContract] = {
         "Routes only expired AI intake waits through the configured fallback; "
         "locked rows already settled by inbound processing or an earlier sweep "
         "are skipped on re-run.",
+    ),
+    "app.tasks.team_inbox.repair_whatsapp_locations": _c(
+        "support",
+        MANUAL,
+        IDEMP,
+        STATUS,
+        "Repairs only explicitly named conversations from verified Inbox receipt "
+        "evidence; already-complete location attachments are unchanged on re-run.",
     ),
     "app.tasks.team_inbox.release_scheduled_replies": _c(
         "support",

@@ -4,6 +4,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
+from urllib.parse import urlencode
 from uuid import UUID
 
 from sqlalchemy import and_, false, func, or_, select
@@ -35,6 +36,7 @@ from app.services import (
     team_inbox_field_job,
     team_inbox_filters,
     team_inbox_media,
+    team_inbox_observations,
     team_inbox_read_state,
 )
 
@@ -73,6 +75,36 @@ class InboxTimelineSenderIdentity:
 
 
 @dataclass(frozen=True)
+class InboxTimelineLocation:
+    latitude: float
+    longitude: float
+    name: str | None
+    address: str | None
+    map_url: str
+
+
+@dataclass(frozen=True)
+class InboxTimelineAttachment:
+    id: str | None
+    type: str
+    filename: str | None
+    file_name: str | None
+    mime_type: str | None
+    file_size: int | None
+    caption: str | None
+    url: str | None
+    source_url: str | None
+    storage_url: str | None
+    provider: str | None
+    provider_media_id: str | None
+    download_status: str | None
+    download_error: str | None
+    content_available: bool
+    metadata: dict[str, object] | None
+    location: InboxTimelineLocation | None
+
+
+@dataclass(frozen=True)
 class InboxTimelineMessage:
     id: str
     channel_type: str
@@ -86,7 +118,7 @@ class InboxTimelineMessage:
     received_at: datetime | None
     created_at: datetime
     metadata: dict[str, object] | None
-    attachments: list[dict[str, object]]
+    attachments: list[InboxTimelineAttachment]
     sender: InboxTimelineSenderIdentity | None
 
 
@@ -853,42 +885,134 @@ def _delivery_error(message: InboxMessage | None) -> str | None:
     return value or None
 
 
-def _message_attachments(message: InboxMessage) -> list[dict[str, object]]:
+def _optional_text(value: object) -> str | None:
+    text = str(value).strip() if value is not None else ""
+    return text or None
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _location_presentation(value: object) -> InboxTimelineLocation | None:
+    if not isinstance(value, Mapping):
+        return None
+    try:
+        location = team_inbox_observations.inbound_location_observation(
+            latitude=value.get("latitude"),
+            longitude=value.get("longitude"),
+            name=value.get("name"),
+            address=value.get("address"),
+        )
+    except team_inbox_observations.TeamInboxObservationError:
+        return None
+    if location is None:
+        return None
+    latitude = format(location.latitude, ".7f").rstrip("0").rstrip(".")
+    longitude = format(location.longitude, ".7f").rstrip("0").rstrip(".")
+    query = urlencode({"api": "1", "query": f"{latitude},{longitude}"})
+    return InboxTimelineLocation(
+        latitude=location.latitude,
+        longitude=location.longitude,
+        name=location.name,
+        address=location.address,
+        map_url=f"https://www.google.com/maps/search/?{query}",
+    )
+
+
+def _attachment_from_mapping(item: Mapping[str, object]) -> InboxTimelineAttachment:
+    asset_type = _optional_text(item.get("type") or item.get("asset_type")) or "file"
+    location = (
+        _location_presentation(item.get("location"))
+        if asset_type == "location"
+        else None
+    )
+    raw_url = _optional_text(
+        item.get("url") or item.get("storage_url") or item.get("source_url")
+    )
+    url = (
+        location.map_url
+        if location
+        else (None if asset_type == "location" else raw_url)
+    )
+    raw_metadata = item.get("metadata")
+    return InboxTimelineAttachment(
+        id=_optional_text(item.get("id")),
+        type=asset_type,
+        filename=_optional_text(item.get("filename") or item.get("file_name")),
+        file_name=_optional_text(item.get("file_name") or item.get("filename")),
+        mime_type=_optional_text(item.get("mime_type")),
+        file_size=_optional_int(item.get("file_size")),
+        caption=_optional_text(item.get("caption")),
+        url=url,
+        source_url=_optional_text(item.get("source_url")),
+        storage_url=_optional_text(item.get("storage_url")),
+        provider=_optional_text(item.get("provider")),
+        provider_media_id=_optional_text(
+            item.get("provider_media_id") or item.get("id")
+        ),
+        download_status=_optional_text(item.get("download_status")),
+        download_error=_optional_text(item.get("download_error")),
+        content_available=bool(url),
+        metadata=(
+            {str(key): nested for key, nested in raw_metadata.items()}
+            if isinstance(raw_metadata, Mapping)
+            else None
+        ),
+        location=location,
+    )
+
+
+def _message_attachments(message: InboxMessage) -> list[InboxTimelineAttachment]:
     metadata = message.metadata_ or {}
     attachments = metadata.get("attachments")
     if not isinstance(attachments, list):
         return []
     return [
-        {str(key): value for key, value in item.items()}
-        for item in attachments
-        if isinstance(item, dict)
+        _attachment_from_mapping(item) for item in attachments if isinstance(item, dict)
     ]
 
 
-def _asset_attachment(asset: InboxMediaAsset) -> dict[str, object]:
-    url = (
-        team_inbox_media.media_content_url(asset.id)
-        if asset.download_status in {"stored", "remote_available", "metadata_only"}
-        else (asset.storage_url or asset.source_url)
+def _asset_attachment(asset: InboxMediaAsset) -> InboxTimelineAttachment:
+    metadata = asset.metadata_ or {}
+    location = (
+        _location_presentation(metadata.get("location"))
+        if asset.asset_type == "location"
+        else None
     )
-    return {
-        "id": str(asset.id),
-        "type": asset.asset_type,
-        "filename": asset.file_name,
-        "file_name": asset.file_name,
-        "mime_type": asset.mime_type,
-        "file_size": asset.file_size,
-        "caption": asset.caption,
-        "url": url,
-        "source_url": asset.source_url,
-        "storage_url": asset.storage_url,
-        "provider": asset.provider,
-        "provider_media_id": asset.provider_media_id,
-        "download_status": asset.download_status,
-        "download_error": asset.download_error,
-        "content_available": bool(url),
-        "metadata": asset.metadata_,
-    }
+    url = None
+    if location is not None:
+        url = location.map_url
+    elif asset.asset_type != "location":
+        url = (
+            team_inbox_media.media_content_url(asset.id)
+            if asset.download_status in {"stored", "remote_available", "metadata_only"}
+            else (asset.storage_url or asset.source_url)
+        )
+    return InboxTimelineAttachment(
+        id=str(asset.id),
+        type=asset.asset_type,
+        filename=asset.file_name,
+        file_name=asset.file_name,
+        mime_type=asset.mime_type,
+        file_size=asset.file_size,
+        caption=asset.caption,
+        url=url,
+        source_url=asset.source_url,
+        storage_url=asset.storage_url,
+        provider=asset.provider,
+        provider_media_id=asset.provider_media_id,
+        download_status=asset.download_status,
+        download_error=asset.download_error,
+        content_available=bool(url),
+        metadata={str(key): value for key, value in metadata.items()},
+        location=location,
+    )
 
 
 def list_conversations(

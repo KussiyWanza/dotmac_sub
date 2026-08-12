@@ -1655,10 +1655,12 @@ def test_set_wan_config_omci_fails_before_adapter_when_dependencies_invalid(
 def test_ont_config_form_has_single_operator_path():
     from pathlib import Path
 
-    source = Path("templates/admin/network/onts/_configure_form.html").read_text()
+    source = Path("templates/admin/network/onts/_configure_form.html").read_text(
+        encoding="utf-8"
+    )
     panel = Path(
         "templates/admin/network/onts/_apply_device_config_panel.html"
-    ).read_text()
+    ).read_text(encoding="utf-8")
 
     assert "Create PPPoE WAN Service" not in source
     assert "Push PPPoE Credentials" not in source
@@ -1677,7 +1679,9 @@ def test_ont_config_form_has_single_operator_path():
     assert 'value="all"' not in source
     assert "Apply All" not in source
     assert "Apply one section at a time" in source
-    assert 'name="push_to_device" value="true"' in source
+    assert 'name="push_to_device"' not in source
+    assert 'name="idempotency_key"' in source
+    assert "queues tracked delivery" in source
     assert "Apply Mgmt" in source
     assert "Apply WAN" in source
     assert "Apply LAN" in source

@@ -48,8 +48,14 @@ from app.services.list_query import (
 from app.services.network._common import decode_huawei_hex_serial, encode_to_hex_serial
 from app.services.network.effective_ont_config import resolve_effective_ont_config
 from app.services.network.olt_polling_parsers import _decode_huawei_packed_fsp
+from app.services.network.ont_service_configuration import (
+    get_ont_service_configuration_projection,
+)
 from app.services.network.ont_status import resolve_effective_ont_status
-from app.services.network.provisioning_events import list_ont_provisioning_events
+from app.services.network.provisioning_events import (
+    ProvisioningLifecycleScope,
+    list_ont_provisioning_events,
+)
 from app.services.web_network_core_devices_inventory import (
     _build_legacy_probe_statuses,
     resolve_olt_device_for_network_device,
@@ -2377,8 +2383,33 @@ def ont_detail_page_data(db: Session, ont_id: str) -> dict[str, object] | None:
     configure_mgmt_ip_choices = web_network_onts_service.management_ip_choices_for_ont(
         db, ont
     )
-    provisioning_events = list_ont_provisioning_events(db, ont.id, limit=12)
-    provisioning_summary = _build_ont_provisioning_summary(ont, provisioning_events)
+    configuration_lifecycle = get_ont_service_configuration_projection(
+        db, ont_unit_id=ont.id
+    )
+    if (
+        configuration_lifecycle.configuration_head_id is not None
+        and configuration_lifecycle.revision is not None
+    ):
+        provisioning_events = list_ont_provisioning_events(
+            db,
+            ont.id,
+            limit=12,
+            lifecycle_scope=ProvisioningLifecycleScope(
+                configuration_head_id=(configuration_lifecycle.configuration_head_id),
+                configuration_revision=configuration_lifecycle.revision,
+            ),
+        )
+    else:
+        provisioning_events = []
+    provisioning_summary = _build_ont_provisioning_summary(
+        ont,
+        provisioning_events,
+        configuration_phase=(
+            configuration_lifecycle.phase.value
+            if configuration_lifecycle.phase is not None
+            else None
+        ),
+    )
 
     return {
         "ont": ont,
@@ -2401,6 +2432,7 @@ def ont_detail_page_data(db: Session, ont_id: str) -> dict[str, object] | None:
         "profile_state": profile_state,
         "capabilities": capabilities,
         "provisioning_summary": provisioning_summary,
+        "configuration_lifecycle": configuration_lifecycle,
         "inventory_ready": (
             not bool(assignment)
             and not bool(getattr(ont, "external_id", None))
@@ -2636,11 +2668,39 @@ def _humanize_provisioning_step(step_name: object) -> str:
 def _build_ont_provisioning_summary(
     ont: object,
     events: Sequence[object],
+    *,
+    configuration_phase: str | None = None,
 ) -> dict[str, object]:
-    status = (
-        _event_status_value(getattr(ont, "provisioning_status", None))
-        or "unprovisioned"
-    )
+    phase_status = {
+        "queued": "pending_service_config",
+        "applying": "pending_service_config",
+        "readback_pending": "pending_service_config",
+        "verified": "provisioned",
+        "failed": "failed",
+        "superseded": "partial",
+        "retired": "unprovisioned",
+        "saved": "pending_service_config",
+    }
+    # Before an assigned ONT has a service-configuration head, commissioning
+    # still owns the current operational phase (for example, waiting for the
+    # first ACS Inform). Once a configuration lifecycle exists, its exact
+    # assignment/revision phase takes precedence. Event evidence remains
+    # lifecycle-scoped by the caller, so this fallback cannot reintroduce an
+    # old assignment's unscoped latest failure.
+    if configuration_phase is not None:
+        status = phase_status.get(configuration_phase, "unprovisioned")
+    else:
+        raw_status = str(
+            getattr(
+                getattr(ont, "provisioning_status", None),
+                "value",
+                getattr(ont, "provisioning_status", None),
+            )
+            or ""
+        ).strip()
+        status = (
+            raw_status if raw_status in _PROVISIONING_STATUS_META else "unprovisioned"
+        )
     status_meta = _PROVISIONING_STATUS_META.get(
         status, _PROVISIONING_STATUS_META["unprovisioned"]
     )

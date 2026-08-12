@@ -28,6 +28,7 @@ import pytest
 
 from app.services.network.reconcile import (
     AcsObservedFields,
+    AcsSetPppoe,
     OltObservedFields,
     OntDesiredState,
     OntObservedState,
@@ -352,6 +353,77 @@ def test_reader_observes_the_real_device_id_for_any_product_class():
     assert result.observed is not None
     assert result.observed.acs_observed_device_id == EG8145V5_ID
     assert result.observed.acs_observed_device_match_count == 1
+
+
+def test_hex_serial_acs_document_still_plans_pppoe_for_linked_device_id():
+    """The UI's canonical Huawei serial must not hide its linked CWMP document."""
+    from app.services.network.reconcile.readers.acs_reader import read_acs_state
+
+    device_id = "00259E-HG8546M-485754431DAF83D1"
+    desired = _desired(
+        serial_number="HWTC1DAF83D1",
+        acs_device_id=device_id,
+        wan_pppoe_username="100099999",
+    )
+
+    class _Client:
+        def __init__(self):
+            self.queries: list[dict[str, object] | None] = []
+
+        def list_devices(self, query=None, projection=None):
+            self.queries.append(query)
+            return [
+                {
+                    "_id": device_id,
+                    "_lastInform": "2026-08-12T01:15:26.285Z",
+                    "InternetGatewayDevice": {
+                        "WANDevice": {"1": {"WANConnectionDevice": {"1": {}}}}
+                    },
+                }
+            ]
+
+    client = _Client()
+    acs_result = read_acs_state(client, desired)
+    assert acs_result.observed is not None
+    observed = _observed(acs=acs_result.observed)
+
+    plan = compute_plan(desired, observed, "sync")
+
+    assert client.queries == [{"_id": device_id}]
+    pppoe = next(action for action in plan.actions if isinstance(action, AcsSetPppoe))
+    assert pppoe.device_id == device_id
+    assert plan.acs_wait_reason is None
+
+
+def test_hex_serial_acs_document_plans_pppoe_from_observed_identity_fallback():
+    from app.services.network.reconcile.readers.acs_reader import read_acs_state
+
+    device_id = "00259E-HG8546M-485754431DAF83D1"
+    desired = _desired(
+        serial_number="HWTC1DAF83D1",
+        acs_device_id=None,
+        wan_pppoe_username="100099999",
+    )
+
+    class _Client:
+        def list_devices(self, query=None, projection=None):
+            return [
+                {
+                    "_id": device_id,
+                    "InternetGatewayDevice": {
+                        "WANDevice": {"1": {"WANConnectionDevice": {"1": {}}}}
+                    },
+                }
+            ]
+
+    acs_result = read_acs_state(_Client(), desired)
+    assert acs_result.observed is not None
+
+    plan = compute_plan(desired, _observed(acs=acs_result.observed), "sync")
+
+    pppoe = next(action for action in plan.actions if isinstance(action, AcsSetPppoe))
+    assert pppoe.device_id == device_id
+    assert plan.acs_wait_reason is None
 
 
 def test_reader_reports_an_ambiguous_match_count():

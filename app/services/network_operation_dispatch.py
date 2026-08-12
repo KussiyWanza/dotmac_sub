@@ -71,6 +71,7 @@ class NetworkOperationCommand(StrEnum):
     ont_firmware_upgrade_v1 = "ont_firmware_upgrade.v1"
     olt_firmware_upgrade_v1 = "olt_firmware_upgrade.v1"
     ont_desired_reconcile_v1 = "ont_desired_reconcile.v1"
+    ont_service_config_apply_v1 = "ont_service_config_apply.v1"
     cpe_tr069_command_v1 = "cpe_tr069_command.v1"
 
 
@@ -361,6 +362,46 @@ def _ont_reconcile_invocation(
     )
 
 
+def _ont_service_config_invocation(
+    operation: NetworkOperation,
+    dispatch_key: str,
+) -> DispatchInvocation:
+    ont_id = _payload_matches_target(operation, "ont_id")
+    head_id = _required_payload_id(operation, "configuration_head_id")
+    revision = (operation.input_payload or {}).get("configuration_revision")
+    try:
+        parsed_revision = int(str(revision))
+    except (TypeError, ValueError) as exc:
+        raise NetworkOperationDispatchError(
+            "invalid_operation_payload",
+            "ONT service configuration payload has an invalid revision.",
+        ) from exc
+    if parsed_revision < 1:
+        raise NetworkOperationDispatchError(
+            "invalid_operation_payload",
+            "ONT service configuration revision must be positive.",
+        )
+    verification_attempt = 0
+    if dispatch_key.startswith("verify:"):
+        try:
+            verification_attempt = int(dispatch_key.partition(":")[2])
+        except ValueError as exc:
+            raise NetworkOperationDispatchError(
+                "invalid_dispatch_key",
+                "ONT service configuration verification key is invalid.",
+            ) from exc
+    return DispatchInvocation(
+        args=[ont_id, str(operation.id), head_id, parsed_revision],
+        kwargs={
+            "verification_attempt": verification_attempt,
+            "explicit_repair": bool(
+                (operation.input_payload or {}).get("explicit_repair")
+            ),
+        },
+        queue="network",
+    )
+
+
 def _cpe_tr069_invocation(
     operation: NetworkOperation,
     _dispatch_key: str,
@@ -456,6 +497,12 @@ _COMMAND_SPECS: dict[NetworkOperationCommand, _CommandSpec] = {
         operation_type=NetworkOperationType.olt_ont_sync,
         target_types=frozenset({NetworkOperationTargetType.ont}),
         invocation=_ont_reconcile_invocation,
+    ),
+    NetworkOperationCommand.ont_service_config_apply_v1: _CommandSpec(
+        task_name="app.tasks.ont_service_configuration.apply",
+        operation_type=NetworkOperationType.ont_service_config,
+        target_types=frozenset({NetworkOperationTargetType.ont}),
+        invocation=_ont_service_config_invocation,
     ),
     NetworkOperationCommand.cpe_tr069_command_v1: _CommandSpec(
         task_name="app.tasks.tr069.execute_network_operation_job",

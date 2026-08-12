@@ -816,6 +816,28 @@ def return_ont_to_inventory(db: Session, ont_id: str) -> ActionResult:
                     f"Return to inventory stopped before local cleanup: {details}."
                 )
 
+            # External cleanup has succeeded. Retire the assignment-scoped
+            # reconcile/configuration projection now, inside the same local
+            # transaction as assignment and desired-state cleanup. If any
+            # later local step fails, the savepoint rolls this retirement back
+            # and the current fault remains visible.
+            from app.services.network.reconcile.lifecycle import (
+                RetireOntReconcileProjectionForInventory,
+                retire_ont_reconcile_projection_for_inventory,
+            )
+
+            retire_ont_reconcile_projection_for_inventory(
+                db,
+                RetireOntReconcileProjectionForInventory(
+                    ont_unit_id=ont.id,
+                    assignment_ids=tuple(
+                        assignment.id for assignment in active_assignments
+                    ),
+                    actor="system:return_to_inventory",
+                    reason="returned_to_inventory",
+                ),
+            )
+
             released_management_ips = _release_management_ip_for_inventory_return(
                 db,
                 ont=ont,
