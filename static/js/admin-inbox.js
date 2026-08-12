@@ -235,6 +235,7 @@
         channel: "email",
         contactName: "",
         contactId: "",
+        subscriberId: "",
         contactQuery: "",
         contactResults: [],
         contactLoading: false,
@@ -907,6 +908,7 @@
       },
       newConversationChannelChanged() {
         this.newConversation.contactId = "";
+        this.newConversation.subscriberId = "";
         this.newConversation.contactResults = [];
         this.newConversation.contactError = "";
         if (this.newConversation.channel === "whatsapp") {
@@ -916,6 +918,7 @@
       async searchWhatsAppContacts() {
         const term = this.newConversation.contactQuery.trim();
         this.newConversation.contactId = "";
+        this.newConversation.subscriberId = "";
         this.newConversation.contactName = term;
         if (term.length < 2) {
           this.newConversation.contactResults = [];
@@ -939,7 +942,8 @@
         }
       },
       selectWhatsAppContact(contact) {
-        this.newConversation.contactId = contact.id || "";
+        this.newConversation.contactId = contact.party_id || "";
+        this.newConversation.subscriberId = contact.subscriber_id || "";
         this.newConversation.contactName = contact.name || "";
         this.newConversation.contactQuery = contact.name || "";
         this.newConversation.recipient = contact.whatsapp_address || "";
@@ -947,6 +951,7 @@
       },
       clearWhatsAppContactSelection() {
         this.newConversation.contactId = "";
+        this.newConversation.subscriberId = "";
       },
       async loadWhatsAppTemplates() {
         if (this.newConversation.templateLoading) return;

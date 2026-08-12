@@ -11,10 +11,11 @@ from enum import StrEnum
 from html import unescape
 from uuid import UUID
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, aliased
 
 from app.models.service_team import ServiceTeamMember
+from app.models.subscriber import Subscriber, SubscriberStatus
 from app.models.support import canonical_ticket_status_value
 from app.models.system_user import SystemUser
 from app.models.team_inbox import (
@@ -219,6 +220,8 @@ class WhatsAppContactOption:
     id: str
     name: str
     whatsapp_address: str
+    party_id: UUID | None
+    subscriber_id: UUID | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1008,9 +1011,15 @@ def list_whatsapp_contacts(
     search: str,
     limit: int = 20,
 ) -> tuple[WhatsAppContactOption, ...]:
-    """Search canonical active Party contact points for WhatsApp reachability."""
+    """Search canonical contacts plus unbound active legacy subscribers.
+
+    Canonical Party reachability always wins. The legacy branch is a bounded
+    compatibility reader for accounts awaiting the reviewed Party backfill;
+    it never creates identity or guesses between subscribers sharing a number.
+    """
 
     from app.models.party import Party, PartyContactPoint, PartyIdentityStatus
+    from app.services.customer_identity_normalization import normalize_phone_identifier
 
     term = str(search or "").strip()
     if len(term) < 2:
@@ -1047,6 +1056,7 @@ def list_whatsapp_contacts(
     for party, point in rows:
         current = by_party.setdefault(party.id, (party, []))
         current[1].append(point)
+    requested_limit = max(1, min(int(limit), 20))
     options: list[WhatsAppContactOption] = []
     channel_rank = {"whatsapp": 0, "phone": 1, "sms": 2}
     for party, points in by_party.values():
@@ -1061,14 +1071,89 @@ def list_whatsapp_contacts(
         address = str(selected.normalized_value or selected.display_value or "").strip()
         if not address:
             continue
+        normalized_address = normalize_phone_identifier(address)
+        if normalized_address is None:
+            continue
         options.append(
             WhatsAppContactOption(
                 id=str(party.id),
                 name=party.display_name,
-                whatsapp_address=address,
+                whatsapp_address=normalized_address,
+                party_id=party.id,
+                subscriber_id=None,
             )
         )
-    return tuple(options[: max(1, min(int(limit), 20))])
+    address_counts = Counter(option.whatsapp_address for option in options)
+    canonical_addresses = set(address_counts)
+    options = [
+        option for option in options if address_counts[option.whatsapp_address] == 1
+    ]
+
+    phone_term = normalize_phone_identifier(term)
+    phone_variants: set[str] = {re.sub(r"\D", "", term)}
+    if phone_term is not None:
+        digits = phone_term.removeprefix("+")
+        phone_variants.add(digits)
+        if digits.startswith("234") and len(digits) > 3:
+            phone_variants.add(f"0{digits[3:]}")
+    legacy_filters = [
+        Subscriber.display_name.ilike(like),
+        Subscriber.first_name.ilike(like),
+        Subscriber.last_name.ilike(like),
+    ]
+    normalized_legacy_phone = func.replace(
+        func.replace(
+            func.replace(
+                func.replace(func.replace(Subscriber.phone, "+", ""), " ", ""),
+                "-",
+                "",
+            ),
+            "(",
+            "",
+        ),
+        ")",
+        "",
+    )
+    legacy_filters.extend(
+        normalized_legacy_phone.ilike(f"%{value}%")
+        for value in sorted(phone_variants)
+        if value
+    )
+    legacy_rows = (
+        db.query(Subscriber)
+        .filter(Subscriber.party_id.is_(None))
+        .filter(Subscriber.is_active.is_(True))
+        .filter(Subscriber.status == SubscriberStatus.active)
+        .filter(or_(*legacy_filters))
+        .order_by(func.lower(Subscriber.display_name).asc(), Subscriber.id.asc())
+        .limit(requested_limit * 4)
+        .all()
+    )
+    legacy_by_address: dict[str, list[Subscriber]] = {}
+    for subscriber in legacy_rows:
+        normalized_address = normalize_phone_identifier(subscriber.phone)
+        if normalized_address is None or normalized_address in canonical_addresses:
+            continue
+        legacy_by_address.setdefault(normalized_address, []).append(subscriber)
+    for address, subscribers in legacy_by_address.items():
+        if len(subscribers) != 1:
+            continue
+        subscriber = subscribers[0]
+        name = str(subscriber.display_name or "").strip() or " ".join(
+            part
+            for part in (subscriber.first_name.strip(), subscriber.last_name.strip())
+            if part
+        )
+        options.append(
+            WhatsAppContactOption(
+                id=f"subscriber:{subscriber.id}",
+                name=name,
+                whatsapp_address=address,
+                party_id=None,
+                subscriber_id=subscriber.id,
+            )
+        )
+    return tuple(options[:requested_limit])
 
 
 def _plain_ai_message_body(value: object | None) -> str:

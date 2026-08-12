@@ -1081,7 +1081,7 @@ def test_lapsed_opening_funded_invoice_reanchors_coverage_to_effective_date(
     assert subscription.next_billing_at == entitlement.ends_at
 
 
-def test_funding_event_creates_review_exception_without_spending_opening_funding(
+def test_funding_event_settles_with_payment_and_approved_opening_funding(
     db_session,
     subscriber,
     subscription,
@@ -1104,32 +1104,55 @@ def test_funding_event_creates_review_exception_without_spending_opening_funding
         account_id=subscriber.id,
         effective_at=datetime(2026, 7, 23, 10, tzinfo=UTC),
         funding_currency="NGN",
-        evidence_ref="pytest:opening-review-required",
+        evidence_ref="pytest:approved-opening-funding",
     )
-    second = apply_due_prepaid_service_after_funding_change(
+    db_session.commit()
+
+    db_session.refresh(invoice)
+    assert first.disposition is FundingChangeRenewalDisposition.draft_invoice_settled
+    assert invoice.status is InvoiceStatus.paid
+    assert invoice.balance_due == Decimal("0.00")
+    assert db_session.query(PrepaidDraftReconciliationException).count() == 0
+    assert db_session.query(PaymentAllocation).count() == 1
+    consumption = db_session.query(PrepaidOpeningFundingConsumption).one()
+    assert consumption.invoice_id == invoice.id
+    assert consumption.amount == Decimal("2000.00")
+
+
+def test_funding_event_settles_from_approved_account_balance_alone(
+    db_session,
+    subscriber,
+    subscription,
+):
+    invoice = _draft(
+        db_session,
+        subscriber,
+        subscription,
+        total=Decimal("18812.50"),
+    )
+    materialize_test_prepaid_opening_balance(
+        db_session,
+        subscriber.id,
+        Decimal("20000.00"),
+    )
+
+    result = apply_due_prepaid_service_after_funding_change(
         db_session,
         account_id=subscriber.id,
         effective_at=datetime(2026, 7, 23, 10, tzinfo=UTC),
         funding_currency="NGN",
-        evidence_ref="pytest:opening-review-required-retry",
+        evidence_ref="pytest:approved-account-balance-only",
     )
     db_session.commit()
 
-    exception = db_session.query(PrepaidDraftReconciliationException).one()
-    assert (
-        first.disposition
-        is FundingChangeRenewalDisposition.draft_invoice_review_required
-    )
-    assert (
-        second.disposition
-        is FundingChangeRenewalDisposition.draft_invoice_review_required
-    )
-    assert exception.invoice_id == invoice.id
-    assert exception.status == "open"
-    assert exception.opening_funding_amount == Decimal("2000.00")
-    assert exception.attempt_count == 1
+    db_session.refresh(invoice)
+    assert result.disposition is FundingChangeRenewalDisposition.draft_invoice_settled
+    assert invoice.status is InvoiceStatus.paid
+    assert invoice.balance_due == Decimal("0.00")
     assert db_session.query(PaymentAllocation).count() == 0
-    assert db_session.query(PrepaidOpeningFundingConsumption).count() == 0
+    consumption = db_session.query(PrepaidOpeningFundingConsumption).one()
+    assert consumption.amount == Decimal("18812.50")
+    assert prepaid_available_balance(db_session, subscriber.id) == Decimal("1187.50")
 
 
 def test_multiple_drafts_fail_closed_without_exception_or_funding_consumption(
