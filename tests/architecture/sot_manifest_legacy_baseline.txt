@@ -98,7 +98,6 @@ network.monitoring_inventory
 network.nas_access_path_evidence
 network.nas_inventory
 network.nas_lifecycle
-network.ont_assignment_commands
 network.ont_assignment_constraint_authorization
 network.ont_assignment_cutover
 network.ont_assignment_cutover_batches

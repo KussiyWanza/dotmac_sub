@@ -280,6 +280,65 @@ def _latest_visible_direction():
     )
 
 
+def _base_queue_query(db: Session):
+    query = db.query(InboxConversation).filter(InboxConversation.is_active.is_(True))
+    followup = InboxConversation.metadata_[
+        team_inbox_field_job.QUEUE_FOLLOWUP_KEY
+    ].as_boolean()
+    return query.filter(
+        or_(
+            InboxConversation.channel_type != InboxChannelType.field_job.value,
+            followup.is_(True),
+        )
+    )
+
+
+def queue_conversation_count(db: Session) -> int:
+    return int(
+        _base_queue_query(db).with_entities(func.count(InboxConversation.id)).scalar()
+        or 0
+    )
+
+
+def assigned_conversation_count(
+    db: Session,
+    *,
+    assigned_person_id: str | UUID | None,
+) -> int:
+    assignee_uuid = _optional_uuid(assigned_person_id)
+    if assignee_uuid is None:
+        return 0
+    return int(
+        _base_queue_query(db)
+        .filter(
+            InboxConversation.id.in_(
+                select(InboxConversationAssignment.conversation_id).where(
+                    InboxConversationAssignment.person_id == assignee_uuid,
+                    InboxConversationAssignment.is_active.is_(True),
+                )
+            )
+        )
+        .with_entities(func.count(InboxConversation.id))
+        .scalar()
+        or 0
+    )
+
+
+def needs_response_conversation_count(db: Session) -> int:
+    return int(
+        _base_queue_query(db)
+        .filter(InboxConversation.status != InboxConversationStatus.resolved.value)
+        .filter(_latest_visible_direction() == InboxMessageDirection.inbound.value)
+        .with_entities(func.count(InboxConversation.id))
+        .scalar()
+        or 0
+    )
+
+
+def needs_attention_conversation_count(db: Session) -> int:
+    return len(needs_attention_conversation_ids(db))
+
+
 def _timestamp(value: datetime) -> float:
     normalized = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
     return normalized.timestamp()
@@ -810,7 +869,7 @@ def _asset_attachment(asset: InboxMediaAsset) -> dict[str, object]:
     url = (
         team_inbox_media.media_content_url(asset.id)
         if asset.download_status in {"stored", "remote_available", "metadata_only"}
-        else asset.storage_url or asset.source_url
+        else (asset.storage_url or asset.source_url)
     )
     return {
         "id": str(asset.id),
@@ -827,6 +886,7 @@ def _asset_attachment(asset: InboxMediaAsset) -> dict[str, object]:
         "provider_media_id": asset.provider_media_id,
         "download_status": asset.download_status,
         "download_error": asset.download_error,
+        "content_available": bool(url),
         "metadata": asset.metadata_,
     }
 

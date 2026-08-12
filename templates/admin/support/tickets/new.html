@@ -259,6 +259,7 @@
             <div>
                 <label class="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-200">Status</label>
                 <select name="status" class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+                    {% if unavailable_status_presentation %}<option value="{{ unavailable_status_presentation.value }}" selected hidden>{{ unavailable_status_presentation.label }} (current)</option>{% endif %}
                     {% for s in all_statuses %}<option value="{{ s }}" {% if prefill.status == s %}selected{% endif %}>{{ s|replace('_', ' ')|title }}</option>{% endfor %}
                 </select>
             </div>

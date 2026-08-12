@@ -294,15 +294,7 @@ def team_inbox_queue(
     if projection.canonical_url is not None:
         return RedirectResponse(url=projection.canonical_url, status_code=307)
     can_manage_inbox = can(request, "support:ticket:update")
-    manager_dashboard = (
-        team_inbox_projection.build_manager_dashboard_projection(
-            db,
-            queue_metrics=projection.queue_metrics,
-            needs_attention=projection.assignment_counts.needs_attention,
-        )
-        if can_manage_inbox and not is_list_fragment_request
-        else None
-    )
+    manager_dashboard = None
     context = _ctx(request, db)
     context.update(
         {
@@ -385,6 +377,7 @@ def team_inbox_queue(
                 "action_eligibility": projection.selected.action_eligibility,
                 "is_unread": projection.selected.is_unread,
                 "priority_options": projection.selected.priority_options,
+                "activity_events": projection.selected.activity_events,
             }
         )
     if is_list_fragment_request:
@@ -446,6 +439,31 @@ def team_inbox_social_comments(
         }
     )
     return templates.TemplateResponse("admin/inbox/comments.html", context)
+
+
+@router.get(
+    "/manager-dashboard",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("support:ticket:read"))],
+)
+def team_inbox_manager_dashboard(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    queue_metrics = team_inbox_operations.queue_metrics(db)
+    manager_dashboard = team_inbox_projection.build_manager_dashboard_projection(
+        db,
+        queue_metrics=queue_metrics,
+        needs_attention=team_inbox_read.needs_attention_conversation_count(db),
+    )
+    context = _ctx(request, db)
+    context.update(
+        {
+            "can_manage_inbox": True,
+            "manager_dashboard": manager_dashboard,
+        }
+    )
+    return templates.TemplateResponse("admin/inbox/_manager_dashboard.html", context)
 
 
 @router.get(
@@ -665,6 +683,8 @@ def team_inbox_detail(
         db,
         conversation_id=conversation_id,
         actor_person_id=actor_person_id,
+        include_contact_candidates=False,
+        include_label_usage_counts=False,
     )
     view = (
         {
@@ -685,6 +705,7 @@ def team_inbox_detail(
                 else ""
             ),
             "priority_options": projection.priority_options,
+            "activity_events": projection.activity_events,
             "agent_options": team_inbox_projection.list_agent_options(db),
             "service_team_options": team_inbox_projection.list_service_team_options(db),
             "actor_service_team_options": (
@@ -1187,6 +1208,10 @@ def team_inbox_reply(
         if outcome.kind == "scheduled"
         else f"Reply queued from {outcome.sender}."
         if outcome.kind == "queued"
+        else f"Reply delivery is retrying from {outcome.sender}. Watch the thread delivery status."
+        if outcome.kind == "retried"
+        else f"Reply could not be delivered from {outcome.sender}: provider rejected it."
+        if outcome.kind == "failed"
         else f"Reply sent from {outcome.sender}."
     )
     if _is_htmx_request(request):

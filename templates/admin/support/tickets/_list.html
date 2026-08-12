@@ -41,6 +41,9 @@
                 <select id="ticket-status-filter" name="status" data-auto-submit class="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-900 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 dark:border-slate-600 dark:bg-slate-800 dark:text-white">
                     <option value="">All Statuses</option>
                     <option value="not_closed" {% if status == 'not_closed' %}selected{% endif %}>Not closed</option>
+                    {% if unavailable_status_filter %}
+                    <option value="{{ unavailable_status_filter.value }}" selected hidden>{{ unavailable_status_filter.label }} (not selectable)</option>
+                    {% endif %}
                     {% for s in all_statuses %}
                     <option value="{{ s }}" {% if status == s %}selected{% endif %}>{{ s|replace('_', ' ')|title }}</option>
                     {% endfor %}

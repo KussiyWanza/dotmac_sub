@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -35,7 +36,10 @@ from app.schemas.field import FieldLiveMapFeedQuery, FieldLiveMapSearchQuery
 from app.services import field_maps as field_maps_service
 from app.services import vendor_routes_api
 from app.web.admin import field_maps as web_field_maps
+from app.web.admin import network as web_network
 from app.web.admin import vendor_routes as web_vendor_routes
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 # ---------------------------------------------------------------------------
 # Route registration + permission guards
@@ -86,6 +90,29 @@ def test_field_map_routes_registered():
         "/dispatch/movement-playback",
         "/dispatch/movement-playback/feed",
     } <= paths
+
+
+def test_plant_data_requires_network_map_permission_while_dispatch_stays_dispatch_only():
+    assert _route_has_permission(
+        web_network.router, "/network/map/plant-data", "GET", "network:map:read"
+    )
+    assert not _route_has_permission(
+        web_field_maps.router, "/dispatch/live-map", "GET", "network:map:read"
+    )
+
+
+def test_movement_playback_context_uses_public_work_order_id_and_technician_id():
+    live_map = (PROJECT_ROOT / "templates/admin/dispatch/live_map.html").read_text(
+        encoding="utf-8"
+    )
+    playback = (
+        PROJECT_ROOT / "templates/admin/dispatch/movement_playback.html"
+    ).read_text(encoding="utf-8")
+
+    assert "?technician_id=' + encodeURIComponent(item.technician_id)" in live_map
+    assert "?work_order=' + encodeURIComponent(item.id)" in live_map
+    assert "params.set('work_order', wo)" in playback
+    assert "params.set('technician_id', selectedTechnicianId)" in playback
 
 
 def test_vendor_route_routes_registered():

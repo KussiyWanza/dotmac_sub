@@ -86,6 +86,7 @@
 {% endif %}
 <article class="conversation-item group relative border-b border-slate-100 transition-colors dark:border-slate-800/70
         {% if is_active %}border-l-[3px] border-l-amber-500 bg-amber-50 dark:bg-amber-950/25{% elif row.is_unread %}{% if row.channel_type == 'whatsapp' %}bg-emerald-50/60 dark:bg-emerald-950/15{% elif row.channel_type == 'email' %}bg-violet-50/60 dark:bg-violet-950/15{% else %}bg-amber-50/50 dark:bg-amber-950/10{% endif %}{% else %}border-l-[3px] border-l-transparent hover:bg-amber-50/60 dark:hover:bg-amber-950/15{% endif %}"
+         :class="conversationOpening && selectedId === '{{ row.id }}' ? 'opacity-70 ring-2 ring-amber-400' : ''"
          data-conversation-id="{{ row.id }}">
     <div class="flex items-start gap-2.5 px-3 py-3">
         <label class="mt-3 inline-flex h-10 w-6 shrink-0 cursor-pointer items-center justify-center" @click.stop>
@@ -112,6 +113,7 @@
            hx-target="#triage-detail"
            hx-swap="innerHTML"
            hx-push-url="/admin/inbox?conversation_id={{ row.id }}"
+           data-conversation-link
            @click="selectConversation('{{ row.id }}', $event.currentTarget)"
            class="min-w-0 flex-1 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
            {% if is_active %}aria-current="true"{% endif %}>
@@ -210,12 +212,18 @@
             {% if message.attachments %}
             <div class="mt-2 grid gap-2 sm:grid-cols-2">
                 {% for att in message.attachments %}
-                {% if att.mime_type and att.mime_type.startswith('image/') and (att.url or att.source_url or att.storage_url) %}
-                <a href="{{ att.url or att.source_url or att.storage_url }}" target="_blank" rel="noopener" class="block overflow-hidden rounded-lg border border-black/10">
-                    <img src="{{ att.url or att.source_url or att.storage_url }}" alt="{{ att.filename or att.file_name or 'Message image' }}" loading="lazy" class="max-h-56 w-full object-cover">
+                {% set attachment_url = att.url or att.storage_url or att.source_url %}
+                {% if att.mime_type and att.mime_type.startswith('image/') and attachment_url %}
+                <a href="{{ attachment_url }}" target="_blank" rel="noopener" class="block overflow-hidden rounded-lg border border-black/10">
+                    <img src="{{ attachment_url }}" alt="{{ att.filename or att.file_name or 'Message image' }}" loading="lazy" class="max-h-56 w-full object-cover">
                 </a>
+                {% elif not attachment_url %}
+                <span class="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium bg-white/70 text-slate-500 dark:bg-slate-700 dark:text-slate-300">
+                    <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/></svg>
+                    {{ att.filename or att.file_name or att.type or "Attachment unavailable" }}
+                </span>
                 {% else %}
-                <a href="{{ att.url or att.source_url or att.storage_url or '#' }}" target="_blank" rel="noopener"
+                <a href="{{ attachment_url }}" target="_blank" rel="noopener"
                    class="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium
                           bg-white/70 text-slate-700 hover:bg-white dark:bg-slate-700 dark:text-slate-200">
                     <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/></svg>
@@ -232,7 +240,11 @@
             <span class="text-[10px] font-medium {% if delivery == 'failed' %}text-rose-600{% else %}text-slate-400{% endif %}">{{ delivery | title }}{% if metadata.get('read_at') %} · Read{% endif %}</span>
             {% endif %}
             <button type="button"
-                    @click='$dispatch("inbox-quote", {{ {"id": message.id, "author": (outbound_sender_name if outbound else (message.from_address or "Customer")), "excerpt": (message.body or "")[:120]} | tojson }})'
+                    @click.prevent.stop='$dispatch("inbox-quote", {{ {"id": message.id, "author": (outbound_sender_name if outbound else (message.from_address or "Customer")), "excerpt": (message.body or "")[:120]} | tojson }})'
+                    data-inbox-quote-button
+                    data-message-id="{{ message.id }}"
+                    data-message-author="{{ outbound_sender_name if outbound else (message.from_address or 'Customer') }}"
+                    data-message-excerpt="{{ (message.body or '')[:120] }}"
                     class="min-h-8 rounded-md px-2 text-[10px] font-semibold text-slate-400 hover:bg-slate-100 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:hover:bg-slate-800 dark:hover:text-slate-200">Quote</button>
         </div>
         {% if metadata.get('delivery_status') == 'failed' %}

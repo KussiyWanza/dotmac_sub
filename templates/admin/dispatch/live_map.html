@@ -30,6 +30,12 @@
             </div>
         </div>
         <div class="flex flex-wrap items-center gap-2">
+            {% if can_read_network_map %}
+            <select id="plant-preset" aria-label="Plant layers" class="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-800">
+                <option value="osp">OSP</option><option value="backbone">Backbone</option><option value="customer-edge">Customer edge</option><option value="sites">PoP/Sites</option><option value="all">All layers</option><option value="hide">Hide plant</option>
+            </select>
+            <button id="btn-plant-refresh" type="button" class="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-800">Refresh plant</button>
+            {% endif %}
             <span id="last-updated" class="text-xs text-slate-400 dark:text-slate-500"></span>
             <button id="btn-refresh" type="button" class="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 shadow-sm transition-all hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700">
                 <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
@@ -82,6 +88,8 @@
                     <h2 class="font-semibold text-slate-900 dark:text-white">Legend</h2>
                 </div>
                 <div class="p-6 space-y-3">
+                    {% if can_read_network_map %}<div class="border-b border-slate-200 pb-3 text-xs text-slate-500 dark:border-slate-700"><div>OSP nodes <span id="plant-osp-count">0</span></div><div>Sites/devices <span id="plant-sites-count">0</span></div><div>Fiber lines <span id="plant-lines-count">0</span></div></div>{% endif %}
+                    <div class="text-xs font-semibold uppercase tracking-wide text-slate-400">Field crew</div>
                     <div class="flex items-center gap-3"><span class="h-3 w-3 rounded-full bg-emerald-500"></span><span class="text-sm text-slate-600 dark:text-slate-300">Live &amp; on shift</span></div>
                     <div class="flex items-center gap-3"><span class="h-3 w-3 rounded-full bg-amber-500"></span><span class="text-sm text-slate-600 dark:text-slate-300">On break</span></div>
                     <div class="flex items-center gap-3"><span class="h-3 w-3 rounded-full bg-slate-400"></span><span class="text-sm text-slate-600 dark:text-slate-300">Stale / off shift</span></div>
@@ -98,6 +106,8 @@
 <script>
 (function() {
     const FEED_URL = '/admin/dispatch/live-map/feed?stale_after_seconds=120&limit=500';
+    const PLANT_URL = '/admin/network/map/plant-data';
+    const canReadNetworkMap = {{ 'true' if can_read_network_map else 'false' }};
     const SEARCH_URL = '/admin/dispatch/live-map/search';
     const REFRESH_MS = 30000;
 
@@ -107,12 +117,18 @@
     }
 
     const map = L.map('field-map').setView([6.5244, 3.3792], 11);
+    map.createPane('fiber-lines'); map.getPane('fiber-lines').style.zIndex = 350;
+    map.createPane('plant-markers'); map.getPane('plant-markers').style.zIndex = 450;
+    map.createPane('search-work-order'); map.getPane('search-work-order').style.zIndex = 600;
+    map.createPane('technicians'); map.getPane('technicians').style.zIndex = 650;
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
         maxZoom: 19
     }).addTo(map);
 
     const markers = new Map();
+    const plantGroups = { osp: L.layerGroup().addTo(map), backbone: L.layerGroup().addTo(map), 'customer-edge': L.layerGroup().addTo(map), sites: L.layerGroup().addTo(map) };
+    let plantBounds = [];
     let searchMarker = null;
     let searchTimer = null;
     let searchController = null;
@@ -138,7 +154,7 @@
         if (item.last_location_at) {
             html += '<div style="font-size:11px;opacity:0.6;margin-top:4px">' + new Date(item.last_location_at).toLocaleString() + '</div>';
         }
-        html += '<a href="/admin/dispatch/movement-playback" style="display:inline-block;margin-top:6px;font-size:12px;color:#f97316;font-weight:500">Movement playback &rarr;</a>';
+        html += '<a href="/admin/dispatch/movement-playback?technician_id=' + encodeURIComponent(item.technician_id) + '" style="display:inline-block;margin-top:6px;font-size:12px;color:#f97316;font-weight:500">Movement playback &rarr;</a>';
         return html;
     }
 
@@ -164,7 +180,7 @@
                 m.setIcon(techIcon(color));
                 m.setPopupContent(popupHtml(item));
             } else {
-                m = L.marker(latlng, { icon: techIcon(color) }).addTo(map).bindPopup(popupHtml(item));
+                m = L.marker(latlng, { pane: 'technicians', icon: techIcon(color) }).addTo(map).bindPopup(popupHtml(item));
                 markers.set(item.technician_id, m);
             }
             const row = document.createElement('div');
@@ -181,10 +197,7 @@
 
         document.getElementById('empty-note').classList.toggle('hidden', items.length !== 0);
 
-        if (!hasFit && bounds.length) {
-            map.fitBounds(bounds, { padding: [40, 40], maxZoom: 15 });
-            hasFit = true;
-        }
+        if (!hasFit && (bounds.length || plantBounds.length)) { map.fitBounds(bounds.concat(plantBounds), { padding: [40, 40], maxZoom: 15 }); hasFit = true; }
     }
 
     function refresh() {
@@ -214,6 +227,7 @@
         if (item.detail) popup += '<div style="font-size:12px;opacity:0.75">' + escapeHtml(item.detail) + '</div>';
         if (item.status) popup += '<div style="font-size:11px;margin-top:3px;text-transform:capitalize">' + escapeHtml(item.status.replace(/_/g, ' ')) + '</div>';
         if (item.href) popup += '<a href="' + escapeHtml(item.href) + '" style="display:inline-block;margin-top:6px;font-size:12px;color:#f97316;font-weight:500">Open work order &rarr;</a>';
+        if (item.kind === 'work_order') popup += '<a href="/admin/dispatch/movement-playback?work_order=' + encodeURIComponent(item.id) + '" style="display:inline-block;margin:6px 0 0 10px;font-size:12px;color:#f97316;font-weight:500">Movement playback &rarr;</a>';
         searchMarker = L.marker(latlng).addTo(map).bindPopup(popup).openPopup();
     }
 
@@ -261,6 +275,26 @@
     }
 
     document.getElementById('btn-refresh').addEventListener('click', refresh);
+    function plantLayer(feature) {
+        const p = feature.properties || {}; const type = p.type;
+        if (type === 'fiber_segment') return p.segment_type === 'feeder' ? 'backbone' : 'osp';
+        if (type === 'access_point' || type === 'service_building') return 'customer-edge';
+        if (type === 'fdh_cabinet' || type === 'splice_closure') return 'osp';
+        return 'sites';
+    }
+    function loadPlant() {
+        if (!canReadNetworkMap) return;
+        fetch(PLANT_URL, { headers: { 'Accept': 'application/json' } }).then(function(r) { return r.ok ? r.json() : Promise.reject(r.status); }).then(function(data) {
+            plantBounds = []; Object.keys(plantGroups).forEach(function(key) { plantGroups[key].clearLayers(); });
+            (data.features || []).forEach(function(feature) { const group = plantGroups[plantLayer(feature)]; const geometry = feature.geometry || {}; let layer;
+                if (geometry.type === 'LineString') layer = L.geoJSON(feature, { pane: 'fiber-lines', style: { color: '#2563eb', weight: 3 } });
+                else { const c = geometry.coordinates || []; plantBounds.push([c[1], c[0]]); layer = L.marker([c[1], c[0]], { pane: 'plant-markers' }).bindPopup(escapeHtml((feature.properties || {}).name || 'Plant asset')); }
+                layer.addTo(group);
+            });
+            const counts = data.counts || {}; document.getElementById('plant-osp-count').textContent = counts.osp || 0; document.getElementById('plant-sites-count').textContent = counts.sites || 0; document.getElementById('plant-lines-count').textContent = (counts.osp || 0) + (counts.backbone || 0);
+        }).catch(function() {});
+    }
+    if (canReadNetworkMap) { document.getElementById('btn-plant-refresh').addEventListener('click', loadPlant); document.getElementById('plant-preset').addEventListener('change', function(e) { const value = e.target.value; Object.keys(plantGroups).forEach(function(key) { const show = value === 'all' || value === key || (value === 'hide' ? false : false); if (show) plantGroups[key].addTo(map); else map.removeLayer(plantGroups[key]); }); }); loadPlant(); }
     document.getElementById('map-search').addEventListener('input', function(event) {
         window.clearTimeout(searchTimer);
         searchTimer = window.setTimeout(function() { runSearch(event.target.value); }, 250);

@@ -20,15 +20,34 @@
             <div><dt class="text-xs uppercase tracking-wide text-slate-500">Account</dt><dd class="mt-1 break-all text-sm text-slate-900 dark:text-white">{{ preview.account_id }}</dd></div>
             <div><dt class="text-xs uppercase tracking-wide text-slate-500">Prepaid funding before</dt><dd class="mt-1 text-sm text-slate-900 dark:text-white">{{ preview.currency }} {{ preview.prepaid_funding_before }}</dd></div>
             <div><dt class="text-xs uppercase tracking-wide text-slate-500">Prepaid funding after</dt><dd class="mt-1 text-sm font-medium text-slate-900 dark:text-white">{{ preview.currency }} {{ preview.prepaid_funding_after }}</dd></div>
+            <div><dt class="text-xs uppercase tracking-wide text-slate-500">Application disposition</dt><dd class="mt-1 text-sm font-medium text-slate-900 dark:text-white">{{ preview.application_disposition.value|replace('_', ' ')|title }}</dd></div>
+            <div><dt class="text-xs uppercase tracking-wide text-slate-500">Reason</dt><dd class="mt-1 text-sm text-slate-900 dark:text-white">{{ preview.application_reason.value|replace('_', ' ')|title }}</dd></div>
         </dl>
+
+        {% if preview.invoice_id %}
+        <div class="mt-6 rounded-lg border border-slate-200 p-4 dark:border-slate-700">
+            <h2 class="text-sm font-semibold text-slate-900 dark:text-white">Named invoice result</h2>
+            <dl class="mt-3 grid gap-3 sm:grid-cols-3">
+                <div><dt class="text-xs uppercase tracking-wide text-slate-500">Receivable before</dt><dd class="mt-1 text-sm text-slate-900 dark:text-white">{{ preview.currency }} {{ preview.invoice_receivable_before }}</dd></div>
+                <div><dt class="text-xs uppercase tracking-wide text-slate-500">Applied now</dt><dd class="mt-1 text-sm font-medium text-slate-900 dark:text-white">{{ preview.currency }} {{ preview.application_amount }}</dd></div>
+                <div><dt class="text-xs uppercase tracking-wide text-slate-500">Receivable after</dt><dd class="mt-1 text-sm font-medium text-slate-900 dark:text-white">{{ preview.currency }} {{ preview.invoice_receivable_after }}</dd></div>
+            </dl>
+        </div>
+        {% endif %}
 
         <div class="mt-6 rounded-lg border border-slate-200 p-4 dark:border-slate-700">
             <h2 class="text-sm font-semibold text-slate-900 dark:text-white">Exact ledger result</h2>
             <p class="mt-2 text-sm text-slate-600 dark:text-slate-300">{{ preview.ledger_entry_type.value|title }} · {{ preview.ledger_source.value|replace('_', ' ')|title }} · {{ preview.currency }} {{ preview.ledger_amount }}</p>
+            <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">Residual account credit: {{ preview.currency }} {{ preview.residual_credit }}</p>
         </div>
 
         <div class="mt-4 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-800 dark:border-blue-900/50 dark:bg-blue-900/20 dark:text-blue-200">
-            <strong>Service access:</strong> no direct change. Access remains a separate owner decision.
+            <strong>Service access:</strong>
+            {% if preview.access_consequence == 'recheck_after_receivable_settlement' %}
+            the settled invoice requests an access recheck; restoration is not inferred from this credit.
+            {% else %}
+            no direct change. Access remains a separate owner decision.
+            {% endif %}
         </div>
 
         {% if payload.memo %}<p class="mt-4 text-sm text-slate-600 dark:text-slate-300"><strong>Memo:</strong> {{ payload.memo }}</p>{% endif %}

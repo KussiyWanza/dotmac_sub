@@ -75,6 +75,16 @@ class SubscriberValidator(Protocol):
         """Validate a catalog subscription binding and return its owner."""
         ...
 
+    def validate_active_assignment_subscription(
+        self,
+        db: Session,
+        *,
+        subscription_id: object,
+        subscriber_id: object,
+    ) -> tuple[object, object]:
+        """Validate that a subscription and its subscriber are active and consistent."""
+        ...
+
     def apply_subscription_device_intent(
         self,
         db: Session,

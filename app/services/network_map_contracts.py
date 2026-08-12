@@ -28,6 +28,8 @@ class NetworkMapFeatureType(StrEnum):
     fiber_segment = "fiber_segment"
     ont = "ont"
     customer = "customer"
+    olt_device = "olt_device"
+    service_building = "service_building"
 
 
 class NetworkMapCustomerRouteKind(StrEnum):
@@ -334,4 +336,30 @@ class NetworkMapProjection:
             "stats": self.stats.to_transport(),
             "customer_count": self.customer_count,
             "customer_map_count": self.customer_map_count,
+        }
+
+
+class NetworkMapPlantLayer(StrEnum):
+    osp = "osp"
+    backbone = "backbone"
+    customer_edge = "customer_edge"
+    sites = "sites"
+
+
+@dataclass(frozen=True, slots=True)
+class NetworkMapPlantProjection:
+    """Read-only dispatch plant subset; it deliberately has no customer state."""
+
+    features: tuple[NetworkMapFeature, ...]
+    layer_counts: dict[NetworkMapPlantLayer, int]
+    unmatched_olt_count: int
+
+    def to_transport(self) -> dict[str, object]:
+        return {
+            "type": "FeatureCollection",
+            "features": [feature.to_transport() for feature in self.features],
+            "counts": {
+                **{layer.value: count for layer, count in self.layer_counts.items()},
+                "unmatched_olts": self.unmatched_olt_count,
+            },
         }

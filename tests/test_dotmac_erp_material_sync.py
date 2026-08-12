@@ -13,8 +13,11 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import uuid4
 
+import pytest
+
 import app.models  # noqa: F401 — registers every model on Base.metadata
 from app.models.dispatch import TechnicianProfile
+from app.models.event_store import EventStore
 from app.models.field_erp_sync import (
     FieldErpSyncEvent,
     FieldErpSyncFlow,
@@ -31,8 +34,10 @@ from app.models.subscriber import Subscriber, UserType
 from app.models.system_user import SystemUser
 from app.models.work_order import WorkOrder
 from app.services.dotmac_erp import material_sync, outbox
+from app.services.field import material_requests
 from app.services.field.material_requests import field_material_requests
 from app.services.integrations.backoffice_contracts import ERP_OUTBOX_CAPABILITY
+from app.services.owner_commands import CommandContext
 from tests.integration_platform_helpers import enable_erp_capability
 
 # ---------------------------------------------------------------------------
@@ -490,3 +495,79 @@ def test_refresh_skips_unsynced_and_terminal_requests(db_session):
     assert result["processed"] == 0
     assert client.status_calls == []
     assert unsynced.support_reference is None
+
+
+def _erp_observation(request_id, *, command_id, observed_at):
+    return material_requests.ObserveErpMaterialStatus(
+        context=CommandContext(
+            command_id=command_id,
+            correlation_id=command_id,
+            actor="integration:test-dotmac-erp",
+            scope="erp.material_status.webhook.v1",
+            reason="Test ERP material status observation",
+            idempotency_key="stable-test-delivery",
+        ),
+        request_id=request_id,
+        provider_request_id="MR-TEST-1",
+        provider_status="ISSUED",
+        observed_at=observed_at,
+    )
+
+
+def test_signed_observation_path_is_idempotent_after_issuance(db_session):
+    request = _make_approved_request(db_session)
+    request_id = request.id
+    observed_at = datetime.now(UTC)
+    db_session.commit()
+
+    first = material_requests.observe_erp_material_status(
+        db_session,
+        _erp_observation(request_id, command_id=uuid4(), observed_at=observed_at),
+    )
+    first_row = db_session.get(FieldMaterialRequest, request_id)
+    first_issued_at = first_row.issued_at
+    db_session.commit()
+    second = material_requests.observe_erp_material_status(
+        db_session,
+        _erp_observation(request_id, command_id=uuid4(), observed_at=observed_at),
+    )
+
+    assert first.status is material_requests.MaterialRequestStatus.ISSUED
+    assert second.status is material_requests.MaterialRequestStatus.ISSUED
+    assert second.support_reference == "MR-TEST-1"
+    second_row = db_session.get(FieldMaterialRequest, request_id)
+    assert second_row.issued_at == first_issued_at
+    assert db_session.query(FieldWorkOrderMaterial).count() == 1
+    assert (
+        db_session.query(EventStore)
+        .filter(EventStore.event_type == "field_material_request.fulfilled")
+        .count()
+        == 1
+    )
+    manager_events = list((second_row.metadata_ or {}).get("manager_events") or [])
+    assert (
+        sum(
+            event.get("event") == "backoffice_material_issued"
+            for event in manager_events
+        )
+        == 1
+    )
+
+
+def test_signed_observation_rejects_manual_request(db_session):
+    request = _make_approved_request(db_session)
+    request_id = request.id
+    request.fulfillment_channel = "manual"
+    db_session.commit()
+
+    with pytest.raises(material_requests.MaterialRequestError) as exc_info:
+        material_requests.observe_erp_material_status(
+            db_session,
+            _erp_observation(
+                request_id,
+                command_id=uuid4(),
+                observed_at=datetime.now(UTC),
+            ),
+        )
+
+    assert exc_info.value.code.endswith("manual_delivery_conflict")

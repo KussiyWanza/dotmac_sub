@@ -7,8 +7,31 @@ from app.schemas.typeahead import TypeaheadItem
 from app.services import customer_search as customer_search_service
 from app.services import typeahead as typeahead_service
 from app.services.auth_dependencies import require_permission
+from app.services.field import material_catalog
+from app.services.response import list_response
 
 router = APIRouter(prefix="/search", tags=["search"])
+
+
+@router.get(
+    "/material-items",
+    response_model=ListResponse[TypeaheadItem],
+    dependencies=[Depends(require_permission("operations:material_request:write"))],
+)
+def search_material_items(
+    q: str = Query(min_length=2, max_length=120),
+    limit: int = Query(default=20, ge=1, le=50),
+    db: Session = Depends(get_db),
+):
+    matches = material_catalog.search_eligible_material_items(
+        db,
+        material_catalog.SearchEligibleMaterialItems(query=q, limit=limit),
+    )
+    return list_response(
+        [TypeaheadItem(id=item.id, label=item.label) for item in matches],
+        limit,
+        0,
+    )
 
 
 @router.get("/accounts", response_model=ListResponse[TypeaheadItem])

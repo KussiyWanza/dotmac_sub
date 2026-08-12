@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi.routing import APIRoute
 
+from app.api import search as search_api
 from app.models.dispatch import (
     DispatchQueueStatus,
     TechnicianProfile,
@@ -25,7 +26,7 @@ from app.models.support import Ticket
 from app.models.system_user import SystemUser
 from app.models.work_order import WorkOrder
 from app.services import backoffice
-from app.services.field import material_requests
+from app.services.field import material_catalog, material_requests
 from app.services.owner_commands import CommandContext
 from app.web.admin import material_requests as material_requests_web
 
@@ -341,3 +342,77 @@ def test_material_request_web_routes_templates_and_navigation_are_complete():
     assert "/admin/operations/material-requests/new?work_order_id=" in work_order_detail
     for detail_template in (ticket_detail, project_detail, task_detail):
         assert "admin/material_requests/_context_panel.html" in detail_template
+
+
+def test_material_item_typeahead_searches_only_active_eligible_erp_items(db_session):
+    eligible = FieldInventoryItem(
+        source_system="dotmac_erp",
+        source_item_id="erp-cable-1",
+        sku="CAT6-BLUE",
+        name="Blue CAT6 Cable",
+        category_name="Network Cabling",
+        source_is_active=True,
+        is_active=True,
+        field_request_eligible=True,
+    )
+    ineligible = FieldInventoryItem(
+        source_system="dotmac_erp",
+        source_item_id="erp-cable-2",
+        sku="CAT6-RED",
+        name="Red CAT6 Cable",
+        source_is_active=True,
+        is_active=True,
+        field_request_eligible=False,
+    )
+    inactive = FieldInventoryItem(
+        source_system="dotmac_erp",
+        source_item_id="erp-cable-3",
+        sku="CAT6-OLD",
+        name="Old CAT6 Cable",
+        source_is_active=False,
+        is_active=False,
+        field_request_eligible=True,
+    )
+    db_session.add_all((eligible, ineligible, inactive))
+    db_session.flush()
+
+    matches = material_catalog.search_eligible_material_items(
+        db_session,
+        material_catalog.SearchEligibleMaterialItems(query="cat6", limit=20),
+    )
+
+    assert [(row.id, row.label) for row in matches] == [
+        (eligible.id, "Blue CAT6 Cable (CAT6-BLUE)")
+    ]
+    assert (
+        material_catalog.search_eligible_material_items(
+            db_session,
+            material_catalog.SearchEligibleMaterialItems(query="c", limit=20),
+        )
+        == ()
+    )
+
+
+def test_material_request_form_uses_dynamic_item_typeahead():
+    source = Path("templates/admin/material_requests/form.html").read_text()
+
+    assert 'data-typeahead-url="/api/v1/search/material-items"' in source
+    assert "data-typeahead-input" in source
+    assert 'name="item_id" data-typeahead-hidden' in source
+    assert '<select name="item_id"' not in source
+    assert "typeahead.removeAttribute('data-typeahead-ready')" in source
+    assert "window.initTypeaheadFields(row)" in source
+
+
+def test_material_item_typeahead_endpoint_requires_material_write_permission():
+    route = next(
+        route
+        for route in search_api.router.routes
+        if isinstance(route, APIRoute) and route.path == "/search/material-items"
+    )
+    dependencies = route.dependant.dependencies
+    assert any(
+        "operations:material_request:write" in str(cell.cell_contents)
+        for dependency in dependencies
+        for cell in (getattr(dependency.call, "__closure__", None) or ())
+    )

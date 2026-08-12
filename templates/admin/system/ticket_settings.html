@@ -45,7 +45,7 @@
                 <div class="flex items-start justify-between gap-3">
                     <div>
                         <h2 class="text-lg font-semibold text-slate-900 dark:text-white">Statuses</h2>
-                        <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Choose a subset of the lifecycle statuses supported by the ticket service.</p>
+                        <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Choose from the operator-selectable lifecycle statuses supported by the ticket service.</p>
                     </div>
                     <button type="button" @click="statusValues.push('')" class="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700">Add</button>
                 </div>
@@ -202,7 +202,7 @@
         </div>
 
         <div class="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
-            Keep the built-in status keys <code>closed</code>, <code>canceled</code>, and <code>merged</code> if you want existing ticket lifecycle timestamps and reporting to keep their current behavior.
+            Keep the built-in status keys <code>closed</code>, <code>canceled</code>, and <code>merged</code> configured if you want them available to administrators.
         </div>
 
         <div class="flex justify-end gap-3">

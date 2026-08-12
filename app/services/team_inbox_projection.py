@@ -12,7 +12,7 @@ from html import unescape
 from uuid import UUID
 
 from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from app.models.service_team import ServiceTeamMember
 from app.models.support import canonical_ticket_status_value
@@ -23,8 +23,11 @@ from app.models.team_inbox import (
     InboxChannelType,
     InboxConversation,
     InboxConversationAssignment,
+    InboxConversationReadState,
     InboxConversationStatus,
     InboxConversationTeam,
+    InboxRoutingEvent,
+    InboxStatusTransitionEvent,
 )
 from app.services import (
     conversation_ticket_handoff,
@@ -81,18 +84,33 @@ def get_media_content_projection(
     asset_id: UUID,
 ) -> InboxMediaContentProjection:
     media_content = team_inbox_media.stream_asset_content(db, asset_id)
+    if isinstance(media_content, tuple):
+        asset, stream = media_content
+        content_type = (
+            stream.content_type or asset.mime_type or "application/octet-stream"
+        )
+        file_name = asset.file_name or f"inbox-media-{asset.id}"
+        content_length = stream.content_length
+        chunks = stream.chunks
+        resolved_asset_id = asset.id
+    else:
+        content_type = media_content.content_type
+        file_name = media_content.file_name
+        content_length = media_content.stream.content_length
+        chunks = media_content.stream.chunks
+        resolved_asset_id = media_content.asset_id
     presentation = (
         InboxMediaBrowserPresentation.inline
-        if media_content.content_type in SAFE_INLINE_IMAGE_CONTENT_TYPES
+        if content_type in SAFE_INLINE_IMAGE_CONTENT_TYPES
         else InboxMediaBrowserPresentation.attachment
     )
     return InboxMediaContentProjection(
-        asset_id=media_content.asset_id,
-        file_name=media_content.file_name,
-        content_type=media_content.content_type,
-        content_length=media_content.stream.content_length,
+        asset_id=resolved_asset_id,
+        file_name=file_name,
+        content_type=content_type,
+        content_length=content_length,
         presentation=presentation,
-        chunks=media_content.stream.chunks,
+        chunks=chunks,
     )
 
 
@@ -250,6 +268,16 @@ SOCIAL_COMMENT_LIST_DEFINITION = ListDefinition(
 
 
 @dataclass(frozen=True, slots=True)
+class InboxLifecycleEvent:
+    kind: str
+    label: str
+    actor_name: str
+    actor_email: str | None
+    occurred_at: datetime | None
+    detail: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class InboxConversationProjection:
     timeline: team_inbox_read.InboxConversationTimeline
     subscriber_summary: Mapping[str, object] | None
@@ -262,6 +290,7 @@ class InboxConversationProjection:
     action_eligibility: InboxActionEligibility
     is_unread: bool
     priority_options: tuple[InboxPriorityOption, ...]
+    activity_events: tuple[InboxLifecycleEvent, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -678,15 +707,10 @@ def _assignment_counts(
     actor_person_id: UUID | None,
     queue_metrics: team_inbox_operations.InboxQueueMetrics,
 ) -> InboxAssignmentCounts:
-    all_count = team_inbox_read.list_conversations(db, limit=1).count
-    assigned_to_me = (
-        team_inbox_read.list_conversations(
-            db,
-            assigned_person_id=actor_person_id,
-            limit=1,
-        ).count
-        if actor_person_id is not None
-        else 0
+    all_count = team_inbox_read.queue_conversation_count(db)
+    assigned_to_me = team_inbox_read.assigned_conversation_count(
+        db,
+        assigned_person_id=actor_person_id,
     )
     my_team = 0
     my_team_ids: tuple[str, ...] = ()
@@ -735,11 +759,7 @@ def _assignment_counts(
         my_team_ids=my_team_ids,
         unassigned=queue_metrics.unassigned_open,
         unreplied=queue_metrics.needs_response,
-        needs_attention=team_inbox_read.list_conversations(
-            db,
-            needs_attention=True,
-            limit=1,
-        ).count,
+        needs_attention=team_inbox_read.needs_attention_conversation_count(db),
     )
 
 
@@ -792,11 +812,129 @@ def contact_link_candidates(
     )
 
 
+def _actor_label(
+    user: SystemUser | None, fallback: str = "System"
+) -> tuple[str, str | None]:
+    if user is None:
+        return fallback, None
+    name = (
+        getattr(user, "display_name", None)
+        or getattr(user, "full_name", None)
+        or getattr(user, "email", None)
+        or "System"
+    ).strip()
+    return name or fallback, getattr(user, "email", None)
+
+
+def _conversation_activity(
+    db: Session,
+    conversation_id: UUID,
+    *,
+    limit: int = 8,
+) -> tuple[InboxLifecycleEvent, ...]:
+    events: list[InboxLifecycleEvent] = []
+
+    status_rows = (
+        db.query(InboxStatusTransitionEvent, SystemUser)
+        .outerjoin(
+            SystemUser, SystemUser.id == InboxStatusTransitionEvent.actor_person_id
+        )
+        .filter(InboxStatusTransitionEvent.conversation_id == conversation_id)
+        .order_by(InboxStatusTransitionEvent.occurred_at.desc())
+        .limit(limit)
+        .all()
+    )
+    for event, actor in status_rows:
+        actor_name, actor_email = _actor_label(actor)
+        status = getattr(event.status, "value", None) or str(event.status or "")
+        label = (
+            "Resolved"
+            if status == InboxConversationStatus.resolved.value
+            else "Reopened"
+            if status == InboxConversationStatus.open.value
+            else f"Status changed to {status or 'unknown'}"
+        )
+        events.append(
+            InboxLifecycleEvent(
+                kind="status",
+                label=label,
+                actor_name=actor_name,
+                actor_email=actor_email,
+                occurred_at=event.occurred_at,
+                detail=event.reason_code,
+            )
+        )
+
+    routing_actor = aliased(SystemUser)
+    routing_assignee = aliased(SystemUser)
+    routing_rows = (
+        db.query(InboxRoutingEvent, routing_actor, routing_assignee)
+        .outerjoin(routing_actor, routing_actor.id == InboxRoutingEvent.actor_person_id)
+        .outerjoin(
+            routing_assignee,
+            routing_assignee.id == InboxRoutingEvent.person_id,
+        )
+        .filter(InboxRoutingEvent.conversation_id == conversation_id)
+        .order_by(InboxRoutingEvent.occurred_at.desc())
+        .limit(limit)
+        .all()
+    )
+    for event, actor, assignee in routing_rows:
+        actor_name, actor_email = _actor_label(actor)
+        assignee_name, _ = _actor_label(assignee, fallback="Unassigned")
+        if event.person_id:
+            label = f"Assigned to {assignee_name}"
+        else:
+            label = "Assignment changed"
+        events.append(
+            InboxLifecycleEvent(
+                kind="assignment",
+                label=label,
+                actor_name=actor_name,
+                actor_email=actor_email,
+                occurred_at=event.occurred_at,
+                detail=event.reason_code,
+            )
+        )
+
+    read_rows = (
+        db.query(InboxConversationReadState, SystemUser)
+        .join(SystemUser, SystemUser.id == InboxConversationReadState.person_id)
+        .filter(
+            InboxConversationReadState.conversation_id == conversation_id,
+            InboxConversationReadState.last_read_at.isnot(None),
+        )
+        .order_by(InboxConversationReadState.last_read_at.desc())
+        .limit(limit)
+        .all()
+    )
+    for read_state, actor in read_rows:
+        actor_name, actor_email = _actor_label(actor)
+        events.append(
+            InboxLifecycleEvent(
+                kind="read",
+                label="Opened",
+                actor_name=actor_name,
+                actor_email=actor_email,
+                occurred_at=read_state.last_read_at,
+            )
+        )
+
+    events.sort(
+        key=lambda item: item.occurred_at or datetime.min.replace(tzinfo=UTC),
+        reverse=True,
+    )
+    return tuple(events[:limit])
+
+
 def get_conversation_projection(
     db: Session,
     *,
     conversation_id: UUID,
     actor_person_id: UUID | None,
+    include_contact_candidates: bool = True,
+    include_catalogue_options: bool = True,
+    include_label_usage_counts: bool = False,
 ) -> InboxConversationProjection | None:
     timeline = team_inbox_read.get_conversation_timeline(db, conversation_id)
     if timeline is None:
@@ -808,8 +946,16 @@ def get_conversation_projection(
     return InboxConversationProjection(
         timeline=timeline,
         subscriber_summary=summary,
-        contact_link_candidates=contact_link_candidates(db, timeline),
-        label_options=tuple(team_inbox_operations.list_labels(db)),
+        contact_link_candidates=(
+            contact_link_candidates(db, timeline)
+            if include_contact_candidates
+            else ContactLinkCandidateSet(subscribers=(), resellers=(), organizations=())
+        ),
+        label_options=tuple(
+            team_inbox_operations.list_labels(
+                db, include_usage_counts=include_label_usage_counts
+            )
+        ),
         conversation_labels=tuple(
             team_inbox_operations.conversation_labels(db, conversation_id)
         ),
@@ -819,7 +965,11 @@ def get_conversation_projection(
         template_options=tuple(
             team_inbox_operations.list_templates(db, channel_type=timeline.channel_type)
         ),
-        catalogue_options=plan_family_catalogues.list_catalogue_options(db),
+        catalogue_options=(
+            plan_family_catalogues.list_catalogue_options(db)
+            if include_catalogue_options
+            else ()
+        ),
         action_eligibility=InboxActionEligibility(
             can_reply=not is_resolved and not outbound_unsupported,
             can_resolve=not is_resolved,
@@ -848,6 +998,7 @@ def get_conversation_projection(
             else False
         ),
         priority_options=INBOX_PRIORITY_OPTIONS,
+        activity_events=_conversation_activity(db, conversation_id),
     )
 
 
@@ -1367,6 +1518,7 @@ def build_queue_projection(
             db,
             conversation_id=selected_id,
             actor_person_id=request.actor_person_id,
+            include_contact_candidates=False,
         )
         if (
             selected_id is not None

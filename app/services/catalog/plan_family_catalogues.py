@@ -169,13 +169,6 @@ def _publish_catalogue(
     db: Session, command: PublishPlanFamilyCatalogueCommand
 ) -> PublishPlanFamilyCatalogueOutcome:
     family = _normalize_family(command.plan_family)
-    configured = {_normalize_family(item) for item in plan_family_values(db)}
-    if family not in configured:
-        raise _error(
-            "invalid_plan_family",
-            "Choose a configured catalogue plan family.",
-            plan_family=family,
-        )
     display_name = command.display_name.strip()
     if not display_name:
         raise _error("display_name_required", "Catalogue name is required.")
@@ -183,6 +176,33 @@ def _publish_catalogue(
         raise _error("display_name_too_long", "Catalogue name is too long.")
     if not command.file_bytes:
         raise _error("file_required", "Choose a PDF catalogue to upload.")
+
+    # Do external object-storage I/O before the first database operation.  The
+    # command transaction is active, but SQLAlchemy has not checked out a
+    # connection yet; this keeps a slow upload from leaving PostgreSQL idle in
+    # a transaction until its timeout terminates the request.
+    catalogue_id = uuid4()
+    try:
+        prepared_file = file_uploads.prepare_upload(
+            domain="catalogues",
+            entity_type="plan_family_catalogue",
+            entity_id=str(catalogue_id),
+            original_filename=command.original_filename,
+            content_type=command.content_type,
+            data=command.file_bytes,
+            uploaded_by=None,
+            owner_subscriber_id=None,
+        )
+    except FileValidationError as exc:
+        raise _error("invalid_file", str(exc)) from exc
+
+    configured = {_normalize_family(item) for item in plan_family_values(db)}
+    if family not in configured:
+        raise _error(
+            "invalid_plan_family",
+            "Choose a configured catalogue plan family.",
+            plan_family=family,
+        )
 
     rows = db.scalars(
         select(PlanFamilyCatalogue)
@@ -224,21 +244,7 @@ def _publish_catalogue(
         )
         + 1
     )
-    catalogue_id = uuid4()
-    try:
-        stored = file_uploads.stage_upload(
-            db=db,
-            domain="catalogues",
-            entity_type="plan_family_catalogue",
-            entity_id=str(catalogue_id),
-            original_filename=command.original_filename,
-            content_type=command.content_type,
-            data=command.file_bytes,
-            uploaded_by=None,
-            owner_subscriber_id=None,
-        )
-    except FileValidationError as exc:
-        raise _error("invalid_file", str(exc)) from exc
+    stored = file_uploads.stage_prepared_upload(db=db, prepared=prepared_file)
     row = PlanFamilyCatalogue(
         id=catalogue_id,
         plan_family=family,

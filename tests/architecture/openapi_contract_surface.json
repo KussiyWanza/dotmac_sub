@@ -9036,6 +9036,19 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "GET /api/v1/search/material-items": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "query:limit",
+    "query:q!"
+   ],
+   "request": null,
+   "responses": {
+    "200": "79dcaa8692e2",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "GET /api/v1/search/nas-devices": {
    "params": [
     "header:authorization",
@@ -18872,8 +18885,10 @@
   "CreditNoteApplicationRead": "b53f641e9f06",
   "CreditNoteApplyRequest": "2108396b9c45",
   "CreditNoteCreate": "731b447fdafe",
+  "CreditNoteIssueApplicationDisposition": "7a58562715d4",
+  "CreditNoteIssueApplicationReason": "1caec0cd05ec",
   "CreditNoteIssueConfirmation": "53de2744cd22",
-  "CreditNoteIssuePreviewRead": "91a08365ee12",
+  "CreditNoteIssuePreviewRead": "b5acb6ede765",
   "CreditNoteIssuePreviewRequest": "15ed51ca44f5",
   "CreditNoteIssueRequest": "ac5cefadd1f2",
   "CreditNoteLineCreate": "bf223130f49a",

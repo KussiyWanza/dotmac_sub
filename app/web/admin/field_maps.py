@@ -24,7 +24,7 @@ from app.schemas.field import (
     FieldLiveMapSearchResponse,
 )
 from app.services import field_maps as field_maps_service
-from app.services.auth_dependencies import require_permission
+from app.services.auth_dependencies import can, require_permission
 
 templates = Jinja2Templates(directory="templates")
 router = APIRouter(prefix="/dispatch", tags=["web-admin-dispatch-maps"])
@@ -59,6 +59,7 @@ def _parse_dt(value: str | None) -> datetime | None:
 )
 def field_live_map(request: Request, db: Session = Depends(get_db)):
     context = _ctx(request, db, "field-live-map")
+    context["can_read_network_map"] = can(request, "network:map:read")
     return templates.TemplateResponse("admin/dispatch/live_map.html", context)
 
 
@@ -105,6 +106,7 @@ def field_live_map_search(
 def field_movement_playback(
     request: Request,
     work_order: str | None = Query(default=None),
+    technician_id: str | None = Query(default=None),
     db: Session = Depends(get_db),
 ):
     context = _ctx(request, db, "field-movement-playback")
@@ -112,6 +114,7 @@ def field_movement_playback(
         {
             "work_orders": field_maps_service.list_movement_work_orders(db),
             "selected_work_order": work_order,
+            "selected_technician_id": technician_id,
         }
     )
     return templates.TemplateResponse("admin/dispatch/movement_playback.html", context)

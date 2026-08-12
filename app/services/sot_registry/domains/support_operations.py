@@ -758,7 +758,11 @@ DOMAIN = DomainSOT(
             ),
             notes=(
                 "Configured status choices are constrained to the lifecycle "
-                "vocabulary and do not own semantic colors or tones. Every "
+                "vocabulary, with legacy resolved input canonicalized to closed. "
+                "Admin selection uses the typed OperatorTicketStatusSelection "
+                "resolver and may preserve a current canonical status that was "
+                "later removed from the configured subset. "
+                "Status configuration does not own semantic colors or tones. Every "
                 "ticket SLA target is operator-managed in the ticket settings UI. "
                 "Customer-portal routing resolves current native Service Teams by "
                 "exact case-insensitive name without owning their identity."

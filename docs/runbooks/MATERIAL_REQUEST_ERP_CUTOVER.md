@@ -24,6 +24,9 @@
 1. Keep Sub flow ownership off while installing the integration.
 2. Run a complete catalogue refresh and compare item/warehouse counts with ERP.
 3. Explicitly enable eligible items; new ERP items remain ineligible by default.
+   The request form resolves enabled items through the bounded
+   `/api/v1/search/material-items` typeahead rather than loading the full
+   catalogue into a select control.
 4. Submit and issue one ERP canary, then prove both webhook and scheduled reconciliation converge.
 5. Prove a manual canary creates no ERP delivery and rejects an ERP callback.
 6. Disable the CRM sender before assigning material-request flow ownership to Sub.

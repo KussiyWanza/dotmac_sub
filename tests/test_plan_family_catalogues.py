@@ -4,13 +4,18 @@ import hashlib
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
+from sqlalchemy import event
+
 from app.models.plan_family_catalogue import PlanFamilyCatalogue
-from app.models.stored_file import StoredFile
 from app.models.system_user import SystemUser
 from app.models.team_inbox import InboxConversation
 from app.schemas.plan_family_catalogue import PublishPlanFamilyCatalogueCommand
 from app.services.catalog import plan_family_catalogues
-from app.services.file_storage import FileValidationError, file_uploads
+from app.services.file_storage import (
+    FileValidationError,
+    PreparedFileUpload,
+    file_uploads,
+)
 from app.services.owner_commands import CommandContext
 from app.services.sales import lead_intake
 
@@ -48,24 +53,22 @@ def _command(user_id: UUID, *, payload: bytes) -> PublishPlanFamilyCatalogueComm
 
 
 def _stub_side_effects(monkeypatch) -> None:
-    def stage_upload(**kwargs):
+    def prepare_upload(**kwargs):
         data = kwargs["data"]
-        record = StoredFile(
+        return PreparedFileUpload(
+            owner_subscriber_id=kwargs["owner_subscriber_id"],
             entity_type=kwargs["entity_type"],
             entity_id=kwargs["entity_id"],
             original_filename=kwargs["original_filename"],
-            storage_key_or_relative_path=f"catalogues/{hashlib.sha256(data).hexdigest()}.pdf",
+            storage_key=f"catalogues/{hashlib.sha256(data).hexdigest()}.pdf",
             file_size=len(data),
             content_type="application/pdf",
             checksum=hashlib.sha256(data).hexdigest(),
-            storage_provider="s3",
+            uploaded_by=kwargs["uploaded_by"],
         )
-        kwargs["db"].add(record)
-        kwargs["db"].flush()
-        return record
 
     monkeypatch.setattr(
-        plan_family_catalogues.file_uploads, "stage_upload", stage_upload
+        plan_family_catalogues.file_uploads, "prepare_upload", prepare_upload
     )
     monkeypatch.setattr(
         plan_family_catalogues, "stage_audit_event", lambda *_a, **_k: None
@@ -102,6 +105,48 @@ def test_publish_replays_same_pdf_and_supersedes_changed_pdf(db_session, monkeyp
     }
     assert options["home_flex"].catalogue_id == second.catalogue_id
     assert options["home_flex"].is_shareable is True
+
+
+def test_publish_uploads_object_before_its_first_database_query(
+    db_session, monkeypatch
+):
+    user = _staff(db_session)
+    _stub_side_effects(monkeypatch)
+    object_uploaded = False
+    original_prepare = plan_family_catalogues.file_uploads.prepare_upload
+
+    def prepare_upload(**kwargs):
+        nonlocal object_uploaded
+        object_uploaded = True
+        return original_prepare(**kwargs)
+
+    # The owner command guards a connection-bound session with a savepoint, so
+    # this suite's Connection-bound fixture emits SAVEPOINT before the command
+    # body runs. Production binds a Session to an Engine and never issues it.
+    # Transaction control is not the idle-in-transaction query this guards.
+    def assert_upload_precedes_sql(_conn, _cursor, statement, *_args, **_kwargs):
+        if (
+            statement.strip()
+            .upper()
+            .startswith(("SAVEPOINT", "RELEASE SAVEPOINT", "ROLLBACK TO SAVEPOINT"))
+        ):
+            return
+        assert object_uploaded is True, (
+            f"query ran before the object upload: {statement.strip()[:120]}"
+        )
+
+    monkeypatch.setattr(
+        plan_family_catalogues.file_uploads, "prepare_upload", prepare_upload
+    )
+    event.listen(db_session.bind, "before_cursor_execute", assert_upload_precedes_sql)
+    try:
+        plan_family_catalogues.publish_catalogue(
+            db_session, _command(user, payload=b"%PDF-1.4 upload first")
+        )
+    finally:
+        event.remove(
+            db_session.bind, "before_cursor_execute", assert_upload_precedes_sql
+        )
 
 
 def test_public_resolution_keeps_superseded_links_but_denies_withdrawn(

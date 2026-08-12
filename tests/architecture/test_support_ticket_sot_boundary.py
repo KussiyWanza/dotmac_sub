@@ -130,6 +130,27 @@ def test_portal_ticket_routing_stays_in_configuration_and_lifecycle_owners() -> 
     )
 
 
+def test_operator_status_subset_is_owned_by_ticket_configuration() -> None:
+    configuration = _source("app/services/support_ticket_settings.py")
+    web_projection = _source("app/services/web_support_tickets.py")
+    admin_adapter = _source("app/web/admin/support_tickets.py")
+    list_template = _source("templates/admin/support/tickets/_list.html")
+    form_template = _source("templates/admin/support/tickets/new.html")
+
+    assert "DEFAULT_STATUS_OPTIONS = [status.value for status in TicketStatus]" in (
+        configuration
+    )
+    assert "parse_ticket_status(normalized).value" in configuration
+    assert "class OperatorTicketStatusSelection" in configuration
+    assert "class OperatorTicketStatusSelectionOutcome" in configuration
+    assert "def resolve_operator_ticket_status_selection(" in configuration
+    assert "list_status_options(db)" in web_projection
+    assert "support_ticket_status_not_selectable" in web_projection
+    assert "WebSupportTicketInputError" in admin_adapter
+    assert "s != 'resolved'" not in list_template
+    assert "s != 'resolved'" not in form_template
+
+
 def test_ticket_region_projection_has_one_typed_owner() -> None:
     configuration = _source("app/services/support_ticket_settings.py")
     lifecycle = _source("app/services/support.py")
