@@ -621,7 +621,9 @@ def _resolved_context(
     ticket = db.get(Ticket, ticket_id) if ticket_id else None
     if ticket_id and (ticket is None or not ticket.is_active):
         raise _material_error("context_not_found", "Ticket was not found.")
-    work_order = db.get(WorkOrder, command.work_order_id) if command.work_order_id else None
+    work_order = (
+        db.get(WorkOrder, command.work_order_id) if command.work_order_id else None
+    )
     if work_order is None and command.work_order_public_id:
         work_order = db.execute(
             select(WorkOrder)

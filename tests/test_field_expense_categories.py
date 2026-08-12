@@ -15,7 +15,9 @@ from app.services.field.expense_categories import ExpenseCategoryQueryError
 from app.services.integrations.erp_capability import ErpCapabilityClient
 
 
-def test_capability_normalizes_expense_categories(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_capability_normalizes_expense_categories(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     client = ErpCapabilityClient(object())  # type: ignore[arg-type]
     monkeypatch.setattr(
         client,

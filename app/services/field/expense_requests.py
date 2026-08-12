@@ -162,7 +162,9 @@ def submit_field_expense_request_command(
             .one_or_none()
         )
         if existing is not None:
-            metadata = existing.metadata_ if isinstance(existing.metadata_, dict) else {}
+            metadata = (
+                existing.metadata_ if isinstance(existing.metadata_, dict) else {}
+            )
             if metadata.get("command_fingerprint") != fingerprint:
                 raise FieldExpenseRequestError(
                     code="operations.expense_requests.idempotency_conflict",

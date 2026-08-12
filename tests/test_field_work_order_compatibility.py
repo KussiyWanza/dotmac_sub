@@ -88,13 +88,9 @@ def test_query_and_form_alias_resolution() -> None:
         == "wo-legacy"
     )
     assert (
-        resolve_work_order_id(
-            work_order_id="wo-same", crm_work_order_id="wo-same"
-        )
+        resolve_work_order_id(work_order_id="wo-same", crm_work_order_id="wo-same")
         == "wo-same"
     )
     with pytest.raises(HTTPException) as exc_info:
-        resolve_work_order_id(
-            work_order_id="wo-new", crm_work_order_id="wo-legacy"
-        )
+        resolve_work_order_id(work_order_id="wo-new", crm_work_order_id="wo-legacy")
     assert exc_info.value.status_code == 422
