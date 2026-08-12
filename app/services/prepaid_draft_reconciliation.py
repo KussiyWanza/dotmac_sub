@@ -4127,7 +4127,7 @@ def preview_opening_settlement_correction(
             issues.append("allocation and remaining balance do not equal invoice total")
         if confirmed_balance != round_money(query.expected_confirmed_balance):
             issues.append("confirmed customer balance changed")
-        if len(groups) != 1 or original_group is None:
+        if allocation is None or len(groups) != 1 or original_group is None:
             issues.append("allocation does not have one exact customer posting group")
         else:
             ledger_entry_ids = tuple(
