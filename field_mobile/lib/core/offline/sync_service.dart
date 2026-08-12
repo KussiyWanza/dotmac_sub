@@ -39,8 +39,8 @@ class OutboxRouting {
         'POST',
         '/api/v1/field/jobs/${payload['work_order_id']}/equipment',
       ),
-      'material_request' => ('POST', '/api/v1/field/material-requests'),
-      'expense_request' => ('POST', '/api/v1/field/expense-requests'),
+      'material_request' => ('POST', '/api/v1/field/material-requests/submit'),
+      'expense_request' => ('POST', '/api/v1/field/expense-requests/submit'),
       _ => throw ArgumentError('Unknown outbox kind: $kind'),
     };
   }
@@ -219,6 +219,35 @@ class SyncService {
             ..orderBy([(row) => OrderingTerm.asc(row.seq)]))
           .get();
 
+  Future<OutboxEntry?> outboxEntry(String clientRef) => (db.select(
+    db.outboxEntries,
+  )..where((row) => row.clientRef.equals(clientRef))).getSingleOrNull();
+
+  Future<List<PendingPhoto>> pendingPhotosForJob(String workOrderId) =>
+      (db.select(
+        db.pendingPhotos,
+      )..where((row) => row.workOrderId.equals(workOrderId))).get();
+
+  Future<void> removePendingPhoto(String clientRef) async {
+    final row = await (db.select(
+      db.pendingPhotos,
+    )..where((photo) => photo.clientRef.equals(clientRef))).getSingleOrNull();
+    if (row == null || row.uploaded) return;
+    final file = File(row.localPath);
+    if (file.existsSync()) {
+      try {
+        file.deleteSync();
+      } on FileSystemException {
+        // Cache-file cleanup is best effort.
+      }
+    }
+    await (db.delete(
+      db.pendingPhotos,
+    )..where((photo) => photo.clientRef.equals(clientRef))).go();
+  }
+
+  Future<bool> get isOnline => connectivity.isOnline;
+
   /// Flush pending entries FIFO. One failure stops the flush (order matters:
   /// a note may reference a transition); conflicts are parked, not dropped.
   Future<int> flushOutbox() async {
@@ -230,6 +259,10 @@ class SyncService {
       for (final entry in await pending()) {
         final payload = (jsonDecode(entry.payloadJson) as Map)
             .cast<String, dynamic>();
+        if (entry.kind == 'material_request' ||
+            entry.kind == 'expense_request') {
+          payload['client_ref'] = entry.clientRef;
+        }
         final (method, path) = OutboxRouting.route(entry.kind, payload);
         try {
           await api.dio.request(
@@ -387,6 +420,10 @@ class SyncService {
   String _detail(DioException error) {
     final data = error.response?.data;
     if (data is Map && data['detail'] != null) return data['detail'].toString();
+    if (data is String && data.trim().isNotEmpty) return data.trim();
+    if (data != null) return data.toString();
+    final status = error.response?.statusCode;
+    if (status != null) return 'Request rejected with HTTP $status';
     return error.message ?? 'request failed';
   }
 

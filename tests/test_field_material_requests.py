@@ -257,13 +257,14 @@ def test_material_request_api(db_session):
     created = client.post(
         "/api/v1/field/material-requests",
         json={
-            "crm_work_order_id": "wo-material-request-api",
+            "work_order_id": "wo-material-request-api",
             "priority": "high",
             "source_warehouse_code": "WH-LAGOS",
             "items": [{"item_id": str(item.id), "quantity": 3}],
         },
     )
     assert created.status_code == 201
+    assert created.json()["work_order_id"] == "wo-material-request-api"
     request_id = created.json()["id"]
 
     listed = client.get("/api/v1/field/material-requests?status=draft")
@@ -273,4 +274,48 @@ def test_material_request_api(db_session):
     submitted = client.post(f"/api/v1/field/material-requests/{request_id}/submit")
     assert submitted.status_code == 200
     assert submitted.json()["status"] == "submitted"
+    assert db_session.query(FieldMaterialRequest).count() == 1
+
+
+def test_atomic_material_submission_prevents_duplicate_retries(db_session):
+    user = _user(db_session)
+    _profile(db_session, user)
+    subscriber = _subscriber(db_session)
+    _work_order(db_session, subscriber, crm_work_order_id="wo-material-atomic")
+    item = _item(
+        db_session,
+        name="Atomic drop cable",
+        source_system="dotmac_erp",
+        source_item_id=f"erp-{uuid4()}",
+        source_is_active=True,
+        field_request_eligible=True,
+    )
+    db_session.commit()
+
+    app = FastAPI()
+    app.include_router(router, prefix="/api/v1")
+    app.dependency_overrides[get_db] = lambda: db_session
+    app.dependency_overrides[require_user_auth] = lambda: _auth(user)
+    client = TestClient(app)
+    client_ref = str(uuid4())
+    payload = {
+        "client_ref": client_ref,
+        "work_order_id": "wo-material-atomic",
+        "priority": "high",
+        "source_warehouse_code": "WH-LAGOS",
+        "items": [{"item_id": str(item.id), "quantity": 3}],
+    }
+
+    created = client.post("/api/v1/field/material-requests/submit", json=payload)
+    replayed = client.post("/api/v1/field/material-requests/submit", json=payload)
+    changed = client.post(
+        "/api/v1/field/material-requests/submit",
+        json={**payload, "priority": "urgent"},
+    )
+
+    assert created.status_code == 201
+    assert created.json()["status"] == "submitted"
+    assert replayed.status_code == 201
+    assert replayed.json()["id"] == created.json()["id"]
+    assert changed.status_code == 409
     assert db_session.query(FieldMaterialRequest).count() == 1

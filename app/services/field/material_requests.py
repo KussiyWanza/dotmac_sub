@@ -100,6 +100,7 @@ class CreateStaffMaterialRequest:
     fulfillment_channel: MaterialRequestFulfillmentChannel = (
         MaterialRequestFulfillmentChannel.ERP
     )
+    work_order_public_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -530,6 +531,7 @@ def _command_fingerprint(command: CreateStaffMaterialRequest) -> str:
     scope = command.scope or MaterialRequestScope()
     payload = {
         "work_order_id": str(command.work_order_id) if command.work_order_id else None,
+        "work_order_public_id": command.work_order_public_id,
         "ticket_id": str(scope.ticket_id) if scope.ticket_id else None,
         "project_id": str(scope.project_id) if scope.project_id else None,
         "project_task_id": str(scope.project_task_id)
@@ -622,7 +624,18 @@ def _resolved_context(
     work_order = (
         db.get(WorkOrder, command.work_order_id) if command.work_order_id else None
     )
-    if command.work_order_id and (work_order is None or not work_order.is_active):
+    if work_order is None and command.work_order_public_id:
+        work_order = db.execute(
+            select(WorkOrder)
+            .where(
+                WorkOrder.public_id == command.work_order_public_id,
+                WorkOrder.is_active.is_(True),
+            )
+            .with_for_update()
+        ).scalar_one_or_none()
+    if (command.work_order_id or command.work_order_public_id) and (
+        work_order is None or not work_order.is_active
+    ):
         raise _material_error("work_order_not_found", "Work order was not found.")
     if work_order is not None:
         project_id = project_id or work_order.project_id
@@ -999,7 +1012,7 @@ def observe_erp_material_status(
 def serialize_material_request(request: FieldMaterialRequest) -> dict:
     return {
         "id": request.id,
-        "crm_work_order_id": (
+        "work_order_id": (
             request.work_order_mirror.public_id if request.work_order_mirror else None
         ),
         "crm_material_request_id": request.crm_material_request_id,

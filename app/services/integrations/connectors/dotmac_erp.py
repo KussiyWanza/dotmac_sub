@@ -208,6 +208,8 @@ class DotmacErpRunner:
                 return {"items": client.list_inventory_warehouses()}
             if action == "list_categories":
                 return {"items": client.list_inventory_categories()}
+            if action == "list_expense_categories":
+                return {"items": client.get_expense_categories()}
             if action == "list_available_serials":
                 return client.list_available_serials(**params)
         elif capability_id == ERP_OPERATIONAL_SYNC_CAPABILITY:

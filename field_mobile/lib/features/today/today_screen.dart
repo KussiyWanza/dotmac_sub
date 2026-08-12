@@ -111,7 +111,9 @@ class TodayScreen extends ConsumerWidget {
                               return _LiveJobPanel(
                                 job: job,
                                 onOpen: () => context.push('/jobs/${job.id}'),
-                                onMap: () => context.go('/map'),
+                                onMap: () => context.go(
+                                  '/map?jobId=${Uri.encodeQueryComponent(job.id)}',
+                                ),
                               );
                             }
                             final job = list.jobs[index - 1];

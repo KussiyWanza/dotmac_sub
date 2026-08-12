@@ -62,26 +62,37 @@ class MaterialsRepository {
   Future<MaterialRequest> createRequest({
     required String priority,
     required List<MaterialRequestItemDraft> items,
+    String? clientRef,
     String? notes,
     String? workOrderId,
     String? projectId,
     String? ticketId,
     String? sourceLocationId,
+    String? sourceWarehouseCode,
     String? destinationLocationId,
     bool submit = true,
   }) async {
+    if (submit && (clientRef == null || clientRef.trim().isEmpty)) {
+      throw ArgumentError(
+        'clientRef is required when submitting a material request',
+      );
+    }
     final response = await _ref
         .read(apiClientProvider)
         .dio
         .post(
-          '/api/v1/field/material-requests',
+          submit
+              ? '/api/v1/field/material-requests/submit'
+              : '/api/v1/field/material-requests',
           data: buildMaterialRequestPayload(
             priority: priority,
+            clientRef: clientRef,
             notes: notes,
             workOrderId: workOrderId,
             projectId: projectId,
             ticketId: ticketId,
             sourceLocationId: sourceLocationId,
+            sourceWarehouseCode: sourceWarehouseCode,
             destinationLocationId: destinationLocationId,
             items: items,
             submit: submit,
@@ -106,15 +117,19 @@ class MaterialsRepository {
 Map<String, dynamic> buildMaterialRequestPayload({
   required String priority,
   required List<MaterialRequestItemDraft> items,
+  String? clientRef,
   String? notes,
   String? workOrderId,
   String? projectId,
   String? ticketId,
   String? sourceLocationId,
+  String? sourceWarehouseCode,
   String? destinationLocationId,
   bool submit = true,
 }) => {
   'priority': priority,
+  if (clientRef != null && clientRef.trim().isNotEmpty)
+    'client_ref': clientRef.trim(),
   if (notes != null && notes.trim().isNotEmpty) 'notes': notes.trim(),
   if (workOrderId != null && workOrderId.trim().isNotEmpty)
     'work_order_id': workOrderId.trim(),
@@ -122,10 +137,9 @@ Map<String, dynamic> buildMaterialRequestPayload({
     'project_id': projectId.trim(),
   if (ticketId != null && ticketId.trim().isNotEmpty)
     'ticket_id': ticketId.trim(),
-  'source_location_id': ?sourceLocationId,
-  'destination_location_id': ?destinationLocationId,
+  if (sourceWarehouseCode != null && sourceWarehouseCode.trim().isNotEmpty)
+    'source_warehouse_code': sourceWarehouseCode.trim(),
   'items': items.map((item) => item.toJson()).toList(),
-  'submit': submit,
 };
 
 List<Map<String, dynamic>> _items(Object? data) {

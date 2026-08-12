@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
+from typing import TypedDict
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
@@ -1138,6 +1139,46 @@ def service_order_dashboard_counts(db: Session) -> dict[str, int]:
 # ---------------------------------------------------------------------------
 
 
+class TechnicianReportRow(TypedDict):
+    name: str
+    total_jobs: int
+    completed_jobs: int
+    avg_hours: float
+    completion_rate: float
+
+
+class TechnicianReportStats(TypedDict):
+    total_technicians: int
+    jobs_completed: int
+    avg_completion_hours: float
+    appointment_completion_rate: float
+    technician_stats: list[TechnicianReportRow]
+    job_type_breakdown: dict[str, int]
+
+
+def recent_completed_appointments(
+    db: Session,
+    *,
+    start_at: datetime | None = None,
+    end_at: datetime | None = None,
+    limit: int = 10,
+) -> list[InstallAppointment]:
+    """Return recent completed appointments within the report period."""
+    filters = [InstallAppointment.status == AppointmentStatus.completed]
+    if start_at is not None:
+        filters.append(InstallAppointment.scheduled_start >= start_at)
+    if end_at is not None:
+        filters.append(InstallAppointment.scheduled_start < end_at)
+    return list(
+        db.scalars(
+            select(InstallAppointment)
+            .where(*filters)
+            .order_by(InstallAppointment.updated_at.desc())
+            .limit(limit)
+        ).all()
+    )
+
+
 def _ensure_aware_datetime(value: datetime | None) -> datetime | None:
     if value is None:
         return None
@@ -1146,21 +1187,37 @@ def _ensure_aware_datetime(value: datetime | None) -> datetime | None:
     return value
 
 
-def technician_report_stats(db: Session) -> dict:
+def technician_report_stats(
+    db: Session,
+    *,
+    start_at: datetime | None = None,
+    end_at: datetime | None = None,
+) -> TechnicianReportStats:
     """Aggregated technician/provisioning figures for the admin report.
 
-    Returns ``total_technicians``, ``jobs_completed`` (active service
-    orders), ``avg_completion_hours``, ``first_visit_rate``,
+    Returns ``total_technicians``, completed installation appointments,
+    ``avg_completion_hours``, ``appointment_completion_rate``,
     ``technician_stats`` (per-technician appointment counts, unsliced), and
-    ``job_type_breakdown`` (service-order counts by status).
-
-    Note: the original web implementation also counted no-show appointments
-    but never used the result; that dead aggregation was dropped in the move.
+    ``job_type_breakdown`` (service-order counts by order type). The optional
+    period is applied consistently to every displayed and exported metric.
     """
-    jobs_completed = (
+    appointment_period = []
+    task_period = []
+    order_period = []
+    if start_at is not None:
+        appointment_period.append(InstallAppointment.scheduled_start >= start_at)
+        task_period.append(ProvisioningTask.completed_at >= start_at)
+        order_period.append(ServiceOrder.created_at >= start_at)
+    if end_at is not None:
+        appointment_period.append(InstallAppointment.scheduled_start < end_at)
+        task_period.append(ProvisioningTask.completed_at < end_at)
+        order_period.append(ServiceOrder.created_at < end_at)
+
+    jobs_completed = int(
         db.scalar(
-            select(func.count(ServiceOrder.id)).where(
-                ServiceOrder.status == ServiceOrderStatus.active
+            select(func.count(InstallAppointment.id)).where(
+                InstallAppointment.status == AppointmentStatus.completed,
+                *appointment_period,
             )
         )
         or 0
@@ -1170,13 +1227,13 @@ def technician_report_stats(db: Session) -> dict:
     tech_names: set[str] = set()
     appt_techs = db.scalars(
         select(InstallAppointment.technician)
-        .where(InstallAppointment.technician.isnot(None))
+        .where(InstallAppointment.technician.isnot(None), *appointment_period)
         .distinct()
     ).all()
     tech_names.update(t for t in appt_techs if t)
     task_assignees = db.scalars(
         select(ProvisioningTask.assigned_to)
-        .where(ProvisioningTask.assigned_to.isnot(None))
+        .where(ProvisioningTask.assigned_to.isnot(None), *task_period)
         .distinct()
     ).all()
     tech_names.update(t for t in task_assignees if t)
@@ -1191,6 +1248,7 @@ def technician_report_stats(db: Session) -> dict:
             ProvisioningTask.status == TaskStatus.completed,
             ProvisioningTask.started_at.isnot(None),
             ProvisioningTask.completed_at.isnot(None),
+            *task_period,
         )
     ).all()
     if completed_tasks:
@@ -1206,37 +1264,35 @@ def technician_report_stats(db: Session) -> dict:
     else:
         avg_completion_hours = 0.0
 
-    # First visit rate from appointments (completed vs total)
-    total_appointments = db.scalar(select(func.count(InstallAppointment.id))) or 0
-    completed_appointments = (
-        db.scalar(
-            select(func.count(InstallAppointment.id)).where(
-                InstallAppointment.status == AppointmentStatus.completed
-            )
-        )
+    total_appointments = int(
+        db.scalar(select(func.count(InstallAppointment.id)).where(*appointment_period))
         or 0
     )
+    completed_appointments = jobs_completed
     if total_appointments > 0:
-        first_visit_rate = round((completed_appointments / total_appointments) * 100, 1)
+        appointment_completion_rate = round(
+            (completed_appointments / total_appointments) * 100, 1
+        )
     else:
-        first_visit_rate = 0.0
+        appointment_completion_rate = 0.0
 
     # Per-technician stats
-    technician_stats: list[dict[str, object]] = []
+    technician_stats: list[TechnicianReportRow] = []
     for tech_name in sorted(tech_names):
-        tech_total = (
+        tech_total = int(
             db.scalar(
                 select(func.count(InstallAppointment.id)).where(
-                    InstallAppointment.technician == tech_name
+                    InstallAppointment.technician == tech_name, *appointment_period
                 )
             )
             or 0
         )
-        tech_completed = (
+        tech_completed = int(
             db.scalar(
                 select(func.count(InstallAppointment.id)).where(
                     InstallAppointment.technician == tech_name,
                     InstallAppointment.status == AppointmentStatus.completed,
+                    *appointment_period,
                 )
             )
             or 0
@@ -1247,19 +1303,19 @@ def technician_report_stats(db: Session) -> dict:
                 "total_jobs": tech_total,
                 "completed_jobs": tech_completed,
                 "avg_hours": avg_completion_hours,
-                "rating": round(
-                    (tech_completed / tech_total * 5) if tech_total > 0 else 0, 1
+                "completion_rate": round(
+                    (tech_completed / tech_total * 100) if tech_total > 0 else 0, 1
                 ),
             }
         )
 
     job_type_rows = db.execute(
-        select(ServiceOrder.status, func.count(ServiceOrder.id)).group_by(
-            ServiceOrder.status
-        )
+        select(ServiceOrder.order_type, func.count(ServiceOrder.id))
+        .where(*order_period)
+        .group_by(ServiceOrder.order_type)
     ).all()
     job_type_breakdown = {
-        (row.status.value if row.status else "unknown"): int(row[1] or 0)
+        (row.order_type.value if row.order_type else "unspecified"): int(row[1] or 0)
         for row in job_type_rows
     }
 
@@ -1267,7 +1323,7 @@ def technician_report_stats(db: Session) -> dict:
         "total_technicians": total_technicians,
         "jobs_completed": jobs_completed,
         "avg_completion_hours": avg_completion_hours,
-        "first_visit_rate": first_visit_rate,
+        "appointment_completion_rate": appointment_completion_rate,
         "technician_stats": technician_stats,
         "job_type_breakdown": job_type_breakdown,
     }

@@ -18,6 +18,26 @@ from app.services.sot_manifest import (
 )
 from app.services.sot_registry.model import DomainSOT
 
+_CRM_REPORT_CONCERNS = (
+    "network infrastructure report projection",
+    "subscriber overview report projection",
+    "churned subscriber report projection",
+    "technician performance report projection",
+    "online customer activity report projection",
+    "subscriber billing-risk report projection",
+    "subscriber revenue and pipeline report projection",
+    "postpaid customer report projection",
+    "CRM team performance report projection",
+    "administrative agent performance report projection",
+    "personal agent performance report projection",
+    "operations SLA violation report projection",
+    "inbox queue and issue-classification report projection",
+    "subscriber lifecycle report projection",
+    "subscriber service-quality report projection",
+    "revenue and service downtime report projection",
+    "project and task people-performance report projection",
+)
+
 DOMAIN = DomainSOT(
     domain="ui_list_projection",
     services=(
@@ -29,6 +49,178 @@ DOMAIN = DomainSOT(
                 "page metadata derivation",
                 "canonical list URL serialization",
                 "list capability declarations",
+            ),
+        ),
+        SOTService(
+            name="ui.crm_operational_reports",
+            module="app.services.crm_reporting",
+            owns=_CRM_REPORT_CONCERNS,
+            depends_on=(
+                "auth.permission_gate",
+                "communications.team_inbox_projection",
+                "customer.accounts",
+                "financial.invoices",
+                "financial.payments",
+                "network.customer_outage_accrual",
+                "network.fiber_topology",
+                "network.identity",
+                "network.ip_pool_utilization",
+                "network.radius_sessions",
+                "network.ont_runtime_status",
+                "operations.project_lifecycle",
+                "operations.provisioning_workflow",
+                "operations.work_orders",
+                "service_intent.subscription_lifecycle",
+                "support.ticket_lifecycle",
+                "ui.list_contracts",
+            ),
+            notes=(
+                "Read-only Self-Care report projections compose native owner facts. "
+                "They never copy CRM retention notes, dispositions, follow-ups, "
+                "campaign state, outreach history, or engagement records."
+            ),
+            contract=ServiceContract(
+                concerns=tuple(
+                    ConcernContract(
+                        name=concern,
+                        role=OwnerRole.RESOLVER,
+                        input_names=(
+                            "typed CRM report query",
+                            "authorized report scope",
+                            "native customer and subscription records",
+                            "native billing records",
+                            "native network inventory records",
+                            "native ONT runtime observations",
+                            "native IP pool utilization",
+                            "native fiber plant records",
+                            "native RADIUS records",
+                            "native customer outage intervals",
+                            "native inbox records",
+                            "native support records",
+                            "native work-order and project records",
+                            "native provisioning records",
+                        ),
+                    )
+                    for concern in _CRM_REPORT_CONCERNS
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="typed CRM report query",
+                        owner="ui.list_contracts",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source="inclusive dates, pagination, and personal-agent scope",
+                    ),
+                    AuthorityInput(
+                        name="authorized report scope",
+                        owner="auth.permission_gate",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source="exact customer, billing-report, or support-report permission",
+                    ),
+                    AuthorityInput(
+                        name="native customer and subscription records",
+                        owner="customer.accounts",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="customer accounts and canonical subscription lifecycle",
+                    ),
+                    AuthorityInput(
+                        name="native billing records",
+                        owner="financial.invoices",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="Invoices and settled Payments",
+                    ),
+                    AuthorityInput(
+                        name="native RADIUS records",
+                        owner="network.radius_sessions",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="fresh RADIUS accounting sessions",
+                    ),
+                    AuthorityInput(
+                        name="native network inventory records",
+                        owner="network.identity",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="OLT, ONT, IP-pool, VLAN, and PON inventory identity",
+                    ),
+                    AuthorityInput(
+                        name="native ONT runtime observations",
+                        owner="network.ont_runtime_status",
+                        kind=AuthorityKind.OBSERVATION,
+                        source="latest persisted OLT-observed ONT runtime status",
+                    ),
+                    AuthorityInput(
+                        name="native IP pool utilization",
+                        owner="network.ip_pool_utilization",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source="live IP pool used and total counts",
+                    ),
+                    AuthorityInput(
+                        name="native fiber plant records",
+                        owner="network.fiber_topology",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="fibre strand, cabinet, and splitter inventory",
+                    ),
+                    AuthorityInput(
+                        name="native customer outage intervals",
+                        owner="network.customer_outage_accrual",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="customer outage impact intervals",
+                    ),
+                    AuthorityInput(
+                        name="native inbox records",
+                        owner="communications.team_inbox_projection",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source="inbox conversations, assignments, queues, messages, and recorded classifications",
+                    ),
+                    AuthorityInput(
+                        name="native support records",
+                        owner="support.ticket_lifecycle",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="support Tickets and SLA clocks",
+                    ),
+                    AuthorityInput(
+                        name="native work-order and project records",
+                        owner="operations.work_orders",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="work orders, projects, project tasks, and assignment facts",
+                    ),
+                    AuthorityInput(
+                        name="native provisioning records",
+                        owner="operations.provisioning_workflow",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="installation appointments, provisioning tasks, and service orders",
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.READ_ONLY,
+                    boundary="The adapter supplies a read session; the projection never flushes or commits.",
+                    locking="Committed operational facts require no mutation lock.",
+                    idempotency="The same committed facts and typed query produce the same report rows.",
+                    retries="Bounded report reads and CSV serialization are safe to retry.",
+                ),
+                errors=ErrorContract(
+                    domain_codes=("ui.crm_operational_reports.invalid_query",),
+                    mapping_owner="app.web.admin.reports operational report adapter",
+                    fail_closed_on=(
+                        "missing exact report permission",
+                        "invalid report slug, date, or pagination input",
+                        "missing signed-in identity for personal reporting",
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.SHADOWING,
+                    old_owner="dotmac_crm report projection routes and templates",
+                    new_owner="ui.crm_operational_reports",
+                    verification="typed owner, route, permission, render, empty-state, pagination, and export tests",
+                    cutover_gate="report-by-report comparison against the retained CRM surface",
+                    fallback_retirement="CRM routes retire only under the CRM web retirement gate",
+                ),
+                steward="Self-Care reporting",
+                design_refs=(
+                    "docs/designs/CRM_WEB_RETIREMENT.md",
+                    "docs/designs/CRM_REPORT_CAPABILITY_MATRIX.md",
+                    "docs/designs/CRM_REPORT_DATA_FLOW_GUIDE.md",
+                    "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                ),
+                test_refs=("tests/test_crm_reporting.py",),
             ),
         ),
         SOTService(

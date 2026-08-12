@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
+from uuid import UUID
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session, selectinload
@@ -18,18 +22,284 @@ from app.models.field_expense import (
 )
 from app.models.work_order import WorkOrder
 from app.services.common import apply_pagination, coerce_uuid
+from app.services.domain_errors import DomainError
 from app.services.field.jobs import _profile_from_principal, _scoped_query
 from app.services.field.source import (
     mark_sub_authoritative as _mark_source_authoritative,
+)
+from app.services.owner_commands import (
+    CommandContext,
+    OwnerCommandDefinition,
+    execute_owner_command,
+    execute_owner_savepoint,
 )
 
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True, slots=True)
+class ExpenseRequestLineInput:
+    category_code: str
+    category_name: str | None
+    description: str
+    amount: Decimal
+    expense_date: date | None
+    vendor_name: str | None
+    receipt_url: str | None
+    receipt_attachment_id: UUID | None
+    notes: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class SubmitFieldExpenseRequest:
+    context: CommandContext
+    requester_person_id: UUID
+    work_order_public_id: str
+    request_id: UUID
+    purpose: str
+    expense_date: date | None
+    currency: str
+    notes: str | None
+    items: tuple[ExpenseRequestLineInput, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ExpenseRequestItemOutcome:
+    id: UUID
+    category_code: str
+    category_name: str | None
+    description: str
+    amount: Decimal
+    expense_date: date | None
+    vendor_name: str | None
+    receipt_url: str | None
+    receipt_attachment_id: UUID | None
+    notes: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ExpenseRequestSubmissionOutcome:
+    id: UUID
+    work_order_id: str
+    requested_by_person_id: UUID
+    requested_by_system_user_id: UUID | None
+    status: str
+    purpose: str
+    expense_date: date | None
+    currency: str
+    notes: str | None
+    client_ref: UUID
+    total_amount: Decimal
+    submitted_at: datetime
+    created_at: datetime
+    updated_at: datetime
+    items: tuple[ExpenseRequestItemOutcome, ...]
+
+
+class FieldExpenseRequestError(DomainError):
+    pass
+
+
+_EXPENSE_SUBMIT_COMMAND = OwnerCommandDefinition(
+    owner="operations.expense_requests",
+    concern="field expense request submission",
+    name="submit_field_expense_request",
+)
+
+
+def _expense_fingerprint(command: SubmitFieldExpenseRequest) -> str:
+    payload = {
+        "work_order_public_id": command.work_order_public_id,
+        "purpose": command.purpose.strip(),
+        "expense_date": str(command.expense_date) if command.expense_date else None,
+        "currency": command.currency.strip().upper(),
+        "notes": (command.notes or "").strip() or None,
+        "items": [
+            {
+                "category_code": item.category_code.strip(),
+                "category_name": (item.category_name or "").strip() or None,
+                "description": item.description.strip(),
+                "amount": str(item.amount),
+                "expense_date": str(item.expense_date) if item.expense_date else None,
+                "vendor_name": (item.vendor_name or "").strip() or None,
+                "receipt_url": (item.receipt_url or "").strip() or None,
+                "receipt_attachment_id": str(item.receipt_attachment_id)
+                if item.receipt_attachment_id
+                else None,
+                "notes": (item.notes or "").strip() or None,
+            }
+            for item in command.items
+        ],
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def submit_field_expense_request_command(
+    db: Session, command: SubmitFieldExpenseRequest
+) -> ExpenseRequestSubmissionOutcome:
+    fingerprint = _expense_fingerprint(command)
+
+    def operation() -> ExpenseRequestSubmissionOutcome:
+        try:
+            profile = _profile_from_principal(
+                db,
+                {
+                    "principal_id": str(command.requester_person_id),
+                    "person_id": str(command.requester_person_id),
+                },
+            )
+        except HTTPException as exc:
+            raise FieldExpenseRequestError(
+                code="operations.expense_requests.requester_not_found",
+                message="Technician profile not found.",
+            ) from exc
+        existing = (
+            db.query(FieldExpenseRequest)
+            .options(selectinload(FieldExpenseRequest.items))
+            .filter(FieldExpenseRequest.client_ref == command.request_id)
+            .one_or_none()
+        )
+        if existing is not None:
+            metadata = (
+                existing.metadata_ if isinstance(existing.metadata_, dict) else {}
+            )
+            if metadata.get("command_fingerprint") != fingerprint:
+                raise FieldExpenseRequestError(
+                    code="operations.expense_requests.idempotency_conflict",
+                    message="Request identity was already used with different expense details.",
+                )
+            return _submission_outcome(existing)
+        row = (
+            _scoped_query(db, profile)
+            .filter(WorkOrder.public_id == command.work_order_public_id)
+            .with_for_update()
+            .one_or_none()
+        )
+        if row is None:
+            raise FieldExpenseRequestError(
+                code="operations.expense_requests.work_order_not_found",
+                message="Job not found.",
+            )
+        raw_items = [
+            {
+                "category_code": item.category_code,
+                "category_name": item.category_name,
+                "description": item.description,
+                "amount": item.amount,
+                "expense_date": item.expense_date,
+                "vendor_name": item.vendor_name,
+                "receipt_url": item.receipt_url,
+                "receipt_attachment_id": item.receipt_attachment_id,
+                "notes": item.notes,
+            }
+            for item in command.items
+        ]
+        if not raw_items:
+            raise FieldExpenseRequestError(
+                code="operations.expense_requests.invalid_request",
+                message="At least one item is required.",
+            )
+        try:
+            planned_items = _validate_items(db, row, raw_items)
+            currency = _currency(command.currency)
+        except HTTPException as exc:
+            raise FieldExpenseRequestError(
+                code="operations.expense_requests.invalid_request",
+                message=str(exc.detail),
+            ) from exc
+        purpose = command.purpose.strip()
+        if not purpose:
+            raise FieldExpenseRequestError(
+                code="operations.expense_requests.invalid_request",
+                message="purpose is required",
+            )
+        now = datetime.now(UTC)
+        request = FieldExpenseRequest(
+            work_order_mirror_id=row.id,
+            requested_by_technician_id=profile.id,
+            requested_by_person_id=profile.person_id,
+            requested_by_system_user_id=profile.system_user_id,
+            status="submitted",
+            purpose=purpose,
+            expense_date=command.expense_date,
+            currency=currency,
+            notes=(command.notes or "").strip() or None,
+            client_ref=command.request_id,
+            submitted_at=now,
+            metadata_={"command_fingerprint": fingerprint},
+        )
+        db.add(request)
+        db.flush()
+        for item in planned_items:
+            request.items.append(FieldExpenseRequestItem(**item))
+        _mark_sub_authoritative(row)
+        try:
+            execute_owner_savepoint(db, lambda: _enqueue_backoffice(db, request))
+        except Exception:
+            _note_backoffice_delivery_pending(request)
+            logger.warning(
+                "field expense %s: back-office enqueue failed; submission retained",
+                request.id,
+                exc_info=True,
+            )
+        db.flush()
+        return _submission_outcome(request)
+
+    return execute_owner_command(
+        db,
+        definition=_EXPENSE_SUBMIT_COMMAND,
+        context=command.context,
+        operation=operation,
+    )
+
+
+def _submission_outcome(
+    request: FieldExpenseRequest,
+) -> ExpenseRequestSubmissionOutcome:
+    if request.client_ref is None or request.submitted_at is None:
+        raise FieldExpenseRequestError(
+            code="operations.expense_requests.invalid_request",
+            message="Submitted expense request evidence is incomplete.",
+        )
+    return ExpenseRequestSubmissionOutcome(
+        id=request.id,
+        work_order_id=request.work_order_mirror.public_id,
+        requested_by_person_id=request.requested_by_person_id,
+        requested_by_system_user_id=request.requested_by_system_user_id,
+        status=request.status,
+        purpose=request.purpose,
+        expense_date=request.expense_date,
+        currency=request.currency,
+        notes=request.notes,
+        client_ref=request.client_ref,
+        total_amount=request.total_amount,
+        submitted_at=request.submitted_at,
+        created_at=request.created_at,
+        updated_at=request.updated_at,
+        items=tuple(
+            ExpenseRequestItemOutcome(
+                id=item.id,
+                category_code=item.category_code,
+                category_name=item.category_name,
+                description=item.description,
+                amount=item.amount,
+                expense_date=item.expense_date,
+                vendor_name=item.vendor_name,
+                receipt_url=item.receipt_url,
+                receipt_attachment_id=item.receipt_attachment_id,
+                notes=item.notes,
+            )
+            for item in request.items
+        ),
+    )
+
+
 def serialize_expense_request(request: FieldExpenseRequest) -> dict:
     return {
         "id": request.id,
-        "crm_work_order_id": request.work_order_mirror.public_id,
+        "work_order_id": request.work_order_mirror.public_id,
         "crm_expense_request_id": request.crm_expense_request_id,
         "requested_by_person_id": request.requested_by_person_id,
         "requested_by_system_user_id": request.requested_by_system_user_id,
@@ -363,6 +633,16 @@ def _maybe_enqueue_backoffice(db: Session, request: FieldExpenseRequest) -> None
             request.id,
             exc_info=True,
         )
+
+
+def _enqueue_backoffice(db: Session, request: FieldExpenseRequest) -> None:
+    """Flush-only optional participant used by the atomic submission owner."""
+    from app.services.backoffice import enqueue_expense_claim
+
+    result = enqueue_expense_claim(db, request)
+    if result.requires_attention:
+        _note_backoffice_delivery_pending(request)
+    db.flush()
 
 
 def _note_backoffice_delivery_pending(request: FieldExpenseRequest) -> None:
