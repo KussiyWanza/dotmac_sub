@@ -57,6 +57,25 @@
         </form>
     </div>
 
+    <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <div class="rounded-xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-800">
+            <h2 class="mb-4 font-semibold text-slate-900 dark:text-white">Active Customers by Plan</h2>
+            <div class="space-y-3">
+                {% for plan, count in plan_distribution.items() %}
+                <div class="flex justify-between text-sm"><span class="text-slate-600 dark:text-slate-300">{{ plan }}</span><span class="font-semibold text-slate-900 dark:text-white">{{ count }}</span></div>
+                {% else %}<p class="text-sm text-slate-500">No active plan data for this cohort.</p>{% endfor %}
+            </div>
+        </div>
+        <div class="rounded-xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-800">
+            <h2 class="mb-4 font-semibold text-slate-900 dark:text-white">Regional Breakdown</h2>
+            <div class="space-y-3">
+                {% for item in regional_breakdown %}
+                <div class="flex justify-between gap-4 text-sm"><span class="text-slate-600 dark:text-slate-300">{{ item.region }}</span><span class="text-slate-900 dark:text-white">{{ item.subscribers }} customers · {{ item.tickets }} tickets</span></div>
+                {% else %}<p class="text-sm text-slate-500">No regional data for this cohort.</p>{% endfor %}
+            </div>
+        </div>
+    </div>
+
     {# KPI Cards #}
     <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 animate-fade-in-up" style="animation-delay: 50ms;">
         {{ stats_card(subscriber_kpis.total.label, (subscriber_kpis.total.value.value if subscriber_kpis.total.value.is_present else subscriber_kpis.total.value.placeholder), icon='<svg class="h-6 w-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"/></svg>', color="slate", color2="gray", href=subscriber_kpis.total.cohort_url, tone=subscriber_kpis.total.tone, change=subscriber_growth) }}
@@ -201,6 +220,13 @@
             {% endif %}
         {% endcall %}
     </div>
+
+    {% if has_previous or has_next %}
+    <nav class="flex justify-end gap-2" aria-label="Customer report pages">
+        {% if has_previous %}<a class="rounded-lg border border-slate-300 px-3 py-2 text-sm" href="?page={{ page - 1 }}&per_page={{ per_page }}&date_from={{ date_from }}&date_to={{ date_to }}&status={{ status_filter }}">Previous</a>{% endif %}
+        {% if has_next %}<a class="rounded-lg border border-slate-300 px-3 py-2 text-sm" href="?page={{ page + 1 }}&per_page={{ per_page }}&date_from={{ date_from }}&date_to={{ date_to }}&status={{ status_filter }}">Next</a>{% endif %}
+    </nav>
+    {% endif %}
 
     {% set activity_title = "Reports Activity" %}
     {% set activity_link = "/admin/system/audit" %}
