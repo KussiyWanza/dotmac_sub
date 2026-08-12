@@ -140,6 +140,9 @@ def test_workspace_exposes_responsive_realtime_and_accessible_controls():
     assert 'aria-label="Sent by {{ outbound_sender_name }}"' in triage
     assert ">AG</div>" not in triage
     assert "att.location.map_url" in triage
+    assert "att.location.latitude" in triage
+    assert "att.location.longitude" in triage
+    assert "https://www.google.com/maps/search/?api=1&query=" in triage
     assert "Open in Google Maps" in triage
     assert 'rel="noopener noreferrer"' in triage
     assert "dotmac.inbox.draft." in javascript
