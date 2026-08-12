@@ -13,7 +13,6 @@ from app.services import integration as integration_service
 from app.services import web_connector_runtime as web_connector_runtime_service
 from app.services import web_integration_syncs as web_integration_syncs_service
 from app.services import web_integrations as web_integrations_service
-from app.services import web_integrations_erp as web_integrations_erp_service
 from app.services import (
     web_integrations_payment_gateways as web_integrations_payment_gateways_service,
 )
@@ -24,6 +23,7 @@ from app.services.auth_dependencies import require_permission
 from app.services.db_session_adapter import db_session_adapter
 from app.services.domain_errors import DomainError
 from app.services.field import material_catalog
+from app.services.integrations import erp_admin as erp_admin_service
 from app.services.integrations import installations
 from app.services.owner_commands import CommandContext
 from app.tasks.dotmac_erp_outbox import refresh_material_catalog
@@ -149,7 +149,7 @@ def integrations_overview(request: Request, db: Session = Depends(get_db)):
 )
 def erp_connector_config(request: Request, db: Session = Depends(get_db)):
     context = _base_context(request, db, active_page="connectors")
-    context.update(web_integrations_erp_service.build_config_state(db))
+    context.update(erp_admin_service.build_config_state(db))
     context["saved"] = request.query_params.get("saved") == "1"
     context["queued"] = request.query_params.get("queued") == "1"
     return templates.TemplateResponse("admin/integrations/erp/config.html", context)
@@ -169,7 +169,7 @@ def erp_connector_config_save(
     command_id = uuid4()
     db_session_adapter.release_read_transaction(db)
     try:
-        web_integrations_erp_service.configure_domains(
+        erp_admin_service.configure_domains(
             db,
             domains=domains,
             actor=f"user:{actor_id}",
@@ -184,7 +184,7 @@ def erp_connector_config_save(
         )
     except (DomainError, installations.InstallationError) as exc:
         context = _base_context(request, db, active_page="connectors")
-        context.update(web_integrations_erp_service.build_config_state(db))
+        context.update(erp_admin_service.build_config_state(db))
         context["error"] = str(exc)
         return templates.TemplateResponse(
             "admin/integrations/erp/config.html", context, status_code=400

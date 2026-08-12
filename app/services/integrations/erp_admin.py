@@ -1,4 +1,4 @@
-"""Admin projection and commands for the DotMac ERP operational feed."""
+"""Own DotMac ERP operational-feed administration and persistence."""
 
 from __future__ import annotations
 

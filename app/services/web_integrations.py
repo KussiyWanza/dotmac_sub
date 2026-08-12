@@ -232,14 +232,11 @@ def build_connectors_list_data(db) -> dict[str, object]:
         limit=100,
         offset=0,
     )
-    installations_rows = (
-        db.query(IntegrationInstallation)
-        .filter(
-            IntegrationInstallation.state != IntegrationInstallationState.retired.value
-        )
-        .order_by(IntegrationInstallation.connector_key, IntegrationInstallation.name)
-        .all()
-    )
+    installations_rows = [
+        row
+        for row in installations.list_installations(db, limit=500)
+        if row.state != IntegrationInstallationState.retired.value
+    ]
     managed_connectors = [
         {
             "installation": installation,
