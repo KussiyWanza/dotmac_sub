@@ -282,16 +282,38 @@
         if (type === 'fdh_cabinet' || type === 'splice_closure') return 'osp';
         return 'sites';
     }
+    function plantPopupHtml(feature) {
+        const p = feature.properties || {};
+        let html = '<div style="font-weight:600;margin-bottom:4px">' + escapeHtml(p.name || 'Plant asset') + '</div>';
+        const details = [];
+        if (p.code) details.push(['Code', p.code]);
+        if (p.splitter_count !== undefined) details.push(['Splitters', p.splitter_count]);
+        if (p.splice_count !== undefined) details.push(['Splices', p.splice_count]);
+        if (p.tray_count !== undefined) details.push(['Trays', p.tray_count]);
+        if (p.ap_type) details.push(['Access point', p.ap_type]);
+        if (p.placement) details.push(['Placement', p.placement]);
+        if (p.segment_type) details.push(['Segment', p.segment_type]);
+        if (p.fiber_count !== undefined) details.push(['Fibers', p.fiber_count]);
+        if (p.length_m !== undefined) details.push(['Length', p.length_m + ' m']);
+        if (p.street) details.push(['Street', p.street]);
+        if (p.city) details.push(['City', p.city]);
+        details.forEach(function(detail) {
+            html += '<div style="font-size:12px"><span style="opacity:0.65">' + escapeHtml(detail[0]) + ':</span> ' + escapeHtml(detail[1]) + '</div>';
+        });
+        if (p.notes) html += '<div style="font-size:11px;opacity:0.7;margin-top:4px">' + escapeHtml(p.notes) + '</div>';
+        return html;
+    }
     function loadPlant() {
         if (!canReadNetworkMap) return;
         fetch(PLANT_URL, { headers: { 'Accept': 'application/json' } }).then(function(r) { return r.ok ? r.json() : Promise.reject(r.status); }).then(function(data) {
             plantBounds = []; Object.keys(plantGroups).forEach(function(key) { plantGroups[key].clearLayers(); });
+            let ospNodeCount = 0, siteCount = 0, fiberLineCount = 0;
             (data.features || []).forEach(function(feature) { const group = plantGroups[plantLayer(feature)]; const geometry = feature.geometry || {}; let layer;
-                if (geometry.type === 'LineString') layer = L.geoJSON(feature, { pane: 'fiber-lines', style: { color: '#2563eb', weight: 3 } });
-                else { const c = geometry.coordinates || []; plantBounds.push([c[1], c[0]]); layer = L.marker([c[1], c[0]], { pane: 'plant-markers' }).bindPopup(escapeHtml((feature.properties || {}).name || 'Plant asset')); }
+                if (geometry.type === 'LineString') { fiberLineCount += 1; layer = L.geoJSON(feature, { pane: 'fiber-lines', style: { color: '#2563eb', weight: 3 } }); }
+                else { const c = geometry.coordinates || []; plantBounds.push([c[1], c[0]]); if (group === plantGroups.osp) ospNodeCount += 1; if (group === plantGroups.sites) siteCount += 1; layer = L.marker([c[1], c[0]], { pane: 'plant-markers' }).bindPopup(plantPopupHtml(feature)); }
                 layer.addTo(group);
             });
-            const counts = data.counts || {}; document.getElementById('plant-osp-count').textContent = counts.osp || 0; document.getElementById('plant-sites-count').textContent = counts.sites || 0; document.getElementById('plant-lines-count').textContent = (counts.osp || 0) + (counts.backbone || 0);
+            document.getElementById('plant-osp-count').textContent = ospNodeCount; document.getElementById('plant-sites-count').textContent = siteCount; document.getElementById('plant-lines-count').textContent = fiberLineCount;
         }).catch(function() {});
     }
     if (canReadNetworkMap) { document.getElementById('btn-plant-refresh').addEventListener('click', loadPlant); document.getElementById('plant-preset').addEventListener('change', function(e) { const value = e.target.value; Object.keys(plantGroups).forEach(function(key) { const show = value === 'all' || value === key || (value === 'hide' ? false : false); if (show) plantGroups[key].addTo(map); else map.removeLayer(plantGroups[key]); }); }); loadPlant(); }

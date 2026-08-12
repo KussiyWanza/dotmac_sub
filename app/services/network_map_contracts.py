@@ -173,8 +173,12 @@ class NetworkMapFeatureProperties:
     name: str
     code: str | None = None
     city: str | None = None
+    street: str | None = None
+    notes: str | None = None
     device_count: int | None = None
     splitter_count: int | None = None
+    splice_count: int | None = None
+    tray_count: int | None = None
     access_point_type: str | None = None
     placement: str | None = None
     support_type: NetworkMapSupportType | None = None
@@ -211,8 +215,12 @@ class NetworkMapFeatureProperties:
             "name": self.name,
             "code": self.code,
             "city": self.city,
+            "street": self.street,
+            "notes": self.notes,
             "device_count": self.device_count,
             "splitter_count": self.splitter_count,
+            "splice_count": self.splice_count,
+            "tray_count": self.tray_count,
             "ap_type": self.access_point_type,
             "placement": self.placement,
             "support_type": self.support_type.value if self.support_type else None,

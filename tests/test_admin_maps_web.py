@@ -13,7 +13,9 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from fastapi import Request
 from fastapi.routing import APIRoute
+from pydantic import ValidationError
 
 from app.models.dispatch import TechnicianProfile
 from app.models.fiber_change_request import (
@@ -32,7 +34,12 @@ from app.models.vendor_routes import (
     Vendor,
 )
 from app.models.work_order import WorkOrder
-from app.schemas.field import FieldLiveMapFeedQuery, FieldLiveMapSearchQuery
+from app.schemas.field import (
+    FieldLiveMapFeedQuery,
+    FieldLiveMapSearchQuery,
+    FieldMovementPlaybackFeed,
+    FieldMovementPlaybackQuery,
+)
 from app.services import field_maps as field_maps_service
 from app.services import vendor_routes_api
 from app.web.admin import field_maps as web_field_maps
@@ -113,6 +120,93 @@ def test_movement_playback_context_uses_public_work_order_id_and_technician_id()
     assert "?work_order=' + encodeURIComponent(item.id)" in live_map
     assert "params.set('work_order', wo)" in playback
     assert "params.set('technician_id', selectedTechnicianId)" in playback
+
+
+def test_movement_playback_page_preserves_direct_technician_context(
+    db_session, monkeypatch
+):
+    technician_id = uuid4()
+    request = Request(
+        {
+            "type": "http",
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "http",
+            "path": "/admin/dispatch/movement-playback",
+            "raw_path": b"/admin/dispatch/movement-playback",
+            "query_string": f"technician_id={technician_id}".encode(),
+            "headers": [],
+            "client": ("testclient", 50000),
+            "server": ("testserver", 80),
+            "root_path": "",
+        }
+    )
+    monkeypatch.setattr(
+        web_field_maps,
+        "_ctx",
+        lambda request, db, active_page: {
+            "request": request,
+            "active_page": active_page,
+        },
+    )
+    captured: dict[str, object] = {}
+
+    def capture_template(name, context):
+        captured.update({"name": name, "context": context})
+        return captured
+
+    monkeypatch.setattr(
+        web_field_maps.templates,
+        "TemplateResponse",
+        capture_template,
+    )
+
+    response = web_field_maps.field_movement_playback(
+        request=request,
+        work_order=None,
+        technician_id=technician_id,
+        db=db_session,
+    )
+
+    assert response["name"] == "admin/dispatch/movement_playback.html"
+    context = response["context"]
+    assert context["selected_work_order"] is None
+    assert context["selected_technician_id"] == str(technician_id)
+
+
+def test_invalid_technician_id_is_rejected_by_typed_query_contract():
+    with pytest.raises(ValidationError):
+        FieldMovementPlaybackQuery(technician_id="not-a-uuid")
+
+
+def test_movement_feed_adapter_passes_exact_technician_id(db_session, monkeypatch):
+    technician_id = uuid4()
+    captured: dict[str, object] = {}
+
+    def capture_feed(*, db, filters):
+        captured.update({"db": db, "filters": filters})
+        return FieldMovementPlaybackFeed(leg_count=0, point_count=0, points=[])
+
+    monkeypatch.setattr(
+        field_maps_service,
+        "list_movement_points",
+        capture_feed,
+    )
+
+    response = web_field_maps.field_movement_playback_feed(
+        work_order=None,
+        technician_id=technician_id,
+        since=None,
+        until=None,
+        limit=1000,
+        db=db_session,
+    )
+
+    assert response.point_count == 0
+    assert captured["db"] is db_session
+    filters = captured["filters"]
+    assert filters.technician_id == technician_id
+    assert filters.work_order_public_id is None
 
 
 def test_vendor_route_routes_registered():
@@ -397,16 +491,91 @@ def test_movement_points_feed_shape(db_session):
     db_session.flush()
 
     feed = field_maps_service.list_movement_points(
-        db_session, crm_work_order_id="wo-map-1"
+        db=db_session,
+        filters=FieldMovementPlaybackQuery(work_order_public_id="wo-map-1"),
     )
-    assert feed["leg_count"] == 1
-    assert feed["point_count"] == 2
-    assert feed["points"][0]["kind"] == "start"
-    assert feed["points"][1]["kind"] == "arrival"
-    assert feed["points"][1]["latitude"] == 6.52
+    assert feed.leg_count == 1
+    assert feed.point_count == 2
+    assert feed.points[0].kind == "start"
+    assert feed.points[1].kind == "arrival"
+    assert feed.points[1].latitude == 6.52
 
     picker = field_maps_service.list_movement_work_orders(db_session)
-    assert {"public_id": "wo-map-1", "label": "Install fiber drop"} in picker
+    assert any(
+        item.public_id == "wo-map-1" and item.label == "Install fiber drop"
+        for item in picker
+    )
+
+
+def test_technician_movement_histories_are_isolated(db_session):
+    first_user = _user(db_session)
+    first = _technician(db_session, first_user)
+    second_user = _user(db_session)
+    second = _technician(db_session, second_user)
+    subscriber = _subscriber(db_session)
+    mirror = WorkOrder(
+        public_id=f"movement-isolation-{uuid4().hex}",
+        subscriber_id=subscriber.id,
+        title="Technician isolation",
+        status="dispatched",
+    )
+    db_session.add(mirror)
+    db_session.flush()
+    started_at = datetime.now(UTC)
+    db_session.add_all(
+        [
+            FieldWorkOrderMovement(
+                work_order_mirror_id=mirror.id,
+                actor_technician_id=first.id,
+                actor_person_id=first_user.id,
+                destination_type="site",
+                destination_label="First technician site",
+                started_at=started_at,
+                start_latitude=6.51,
+                start_longitude=3.31,
+                status="en_route",
+            ),
+            FieldWorkOrderMovement(
+                work_order_mirror_id=mirror.id,
+                actor_technician_id=second.id,
+                actor_person_id=second_user.id,
+                destination_type="site",
+                destination_label="Second technician site",
+                started_at=started_at + timedelta(minutes=1),
+                start_latitude=9.01,
+                start_longitude=7.41,
+                status="en_route",
+            ),
+        ]
+    )
+    db_session.flush()
+
+    first_feed = field_maps_service.list_movement_points(
+        db=db_session,
+        filters=FieldMovementPlaybackQuery(technician_id=first.id),
+    )
+    second_feed = field_maps_service.list_movement_points(
+        db=db_session,
+        filters=FieldMovementPlaybackQuery(technician_id=second.id),
+    )
+
+    assert first_feed.leg_count == 1
+    assert first_feed.points[0].label == "First technician site"
+    assert first_feed.points[0].latitude == 6.51
+    assert second_feed.leg_count == 1
+    assert second_feed.points[0].label == "Second technician site"
+    assert second_feed.points[0].latitude == 9.01
+
+
+def test_unknown_technician_history_is_empty(db_session):
+    feed = field_maps_service.list_movement_points(
+        db=db_session,
+        filters=FieldMovementPlaybackQuery(technician_id=uuid4()),
+    )
+
+    assert feed.leg_count == 0
+    assert feed.point_count == 0
+    assert feed.points == []
 
 
 # ---------------------------------------------------------------------------
@@ -582,3 +751,15 @@ def test_live_map_template_exposes_street_search_and_focus_behavior():
     assert "street" in source.lower()
     assert "/admin/dispatch/live-map/search" in source
     assert "map.setView(latlng, 16)" in source
+
+
+def test_live_map_plant_legend_counts_geometry_categories_not_layer_totals():
+    source = web_field_maps.templates.env.loader.get_source(
+        web_field_maps.templates.env,
+        "admin/dispatch/live_map.html",
+    )[0]
+
+    assert "fiberLineCount += 1" in source
+    assert "group === plantGroups.osp" in source
+    assert "group === plantGroups.sites" in source
+    assert "(counts.osp || 0) + (counts.backbone || 0)" not in source

@@ -10,6 +10,7 @@ JSON feeds live under the same ``/dispatch`` prefix and share the
 from __future__ import annotations
 
 from datetime import datetime
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse
@@ -22,6 +23,8 @@ from app.schemas.field import (
     FieldLiveMapFeedQuery,
     FieldLiveMapSearchQuery,
     FieldLiveMapSearchResponse,
+    FieldMovementPlaybackFeed,
+    FieldMovementPlaybackQuery,
 )
 from app.services import field_maps as field_maps_service
 from app.services.auth_dependencies import can, require_permission
@@ -40,16 +43,6 @@ def _ctx(request: Request, db: Session, active_page: str) -> dict:
         "current_user": get_current_user(request),
         "sidebar_stats": get_sidebar_stats(db),
     }
-
-
-def _parse_dt(value: str | None) -> datetime | None:
-    text = (value or "").strip()
-    if not text:
-        return None
-    try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        return None
 
 
 @router.get(
@@ -105,16 +98,18 @@ def field_live_map_search(
 )
 def field_movement_playback(
     request: Request,
-    work_order: str | None = Query(default=None),
-    technician_id: str | None = Query(default=None),
+    work_order: str | None = Query(default=None, min_length=1, max_length=64),
+    technician_id: UUID | None = Query(default=None),
     db: Session = Depends(get_db),
 ):
     context = _ctx(request, db, "field-movement-playback")
     context.update(
         {
-            "work_orders": field_maps_service.list_movement_work_orders(db),
+            "work_orders": field_maps_service.list_movement_work_orders(db=db),
             "selected_work_order": work_order,
-            "selected_technician_id": technician_id,
+            "selected_technician_id": (
+                str(technician_id) if technician_id is not None else None
+            ),
         }
     )
     return templates.TemplateResponse("admin/dispatch/movement_playback.html", context)
@@ -122,21 +117,24 @@ def field_movement_playback(
 
 @router.get(
     "/movement-playback/feed",
+    response_model=FieldMovementPlaybackFeed,
     dependencies=[Depends(require_permission("operations:dispatch:read"))],
 )
 def field_movement_playback_feed(
-    work_order: str | None = Query(default=None),
-    technician_id: str | None = Query(default=None),
-    since: str | None = Query(default=None),
-    until: str | None = Query(default=None),
+    work_order: str | None = Query(default=None, min_length=1, max_length=64),
+    technician_id: UUID | None = Query(default=None),
+    since: datetime | None = Query(default=None),
+    until: datetime | None = Query(default=None),
     limit: int = Query(1000, ge=1, le=5000),
     db: Session = Depends(get_db),
-):
+) -> FieldMovementPlaybackFeed:
     return field_maps_service.list_movement_points(
-        db,
-        crm_work_order_id=work_order,
-        technician_id=technician_id,
-        since=_parse_dt(since),
-        until=_parse_dt(until),
-        limit=limit,
+        db=db,
+        filters=FieldMovementPlaybackQuery(
+            work_order_public_id=work_order,
+            technician_id=technician_id,
+            since=since,
+            until=until,
+            limit=limit,
+        ),
     )

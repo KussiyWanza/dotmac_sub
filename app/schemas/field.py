@@ -736,6 +736,34 @@ class FieldLiveMapSearchResponse(BaseModel):
     items: list[FieldLiveMapSearchResult]
 
 
+class FieldMovementPlaybackQuery(BaseModel):
+    work_order_public_id: str | None = Field(default=None, min_length=1, max_length=64)
+    technician_id: UUID | None = None
+    since: datetime | None = None
+    until: datetime | None = None
+    limit: int = Field(default=1000, ge=1, le=5000)
+
+
+class FieldMovementWorkOrderOption(BaseModel):
+    public_id: str
+    label: str
+
+
+class FieldMovementPlaybackPoint(BaseModel):
+    latitude: float
+    longitude: float
+    captured_at: datetime | None = None
+    kind: Literal["start", "arrival"]
+    status: str
+    label: str | None = None
+
+
+class FieldMovementPlaybackFeed(BaseModel):
+    leg_count: int
+    point_count: int
+    points: list[FieldMovementPlaybackPoint]
+
+
 class FieldSpliceCreate(BaseModel):
     closure_id: UUID
     from_strand_id: UUID
