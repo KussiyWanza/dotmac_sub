@@ -232,9 +232,31 @@ def build_connectors_list_data(db) -> dict[str, object]:
         limit=100,
         offset=0,
     )
+    installations_rows = [
+        row
+        for row in installations.list_installations(db, limit=500)
+        if row.state != IntegrationInstallationState.retired.value
+    ]
+    managed_connectors = [
+        {
+            "installation": installation,
+            "definition": integration_registry.require_connector_definition(
+                installation.connector_key
+            ),
+            "manage_url": _installation_manage_url(installation),
+        }
+        for installation in installations_rows
+    ]
+    stats = connector_stats(connectors)
+    stats["total"] += len(managed_connectors)
+    stats["active"] += sum(
+        row.state == IntegrationInstallationState.enabled.value
+        for row in installations_rows
+    )
     return {
         "connectors": connectors,
-        "stats": connector_stats(connectors),
+        "managed_connectors": managed_connectors,
+        "stats": stats,
     }
 
 
@@ -318,6 +340,8 @@ def build_marketplace_data(db) -> dict[str, object]:
 
 
 def _installation_manage_url(installation: IntegrationInstallation) -> str:
+    if installation.connector_key == "dotmac.erp":
+        return "/admin/integrations/erp"
     if installation.connector_key == "webhook.http":
         return f"/admin/integrations/webhooks/{installation.id}"
     if installation.connector_key == "whatsapp":

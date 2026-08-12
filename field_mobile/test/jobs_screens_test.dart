@@ -1,6 +1,7 @@
 import 'package:dotmac_field/app/status_presentation.dart';
 import 'package:dotmac_field/app/theme.dart';
 import 'package:dotmac_field/features/execution/completion_wizard.dart';
+import 'package:dotmac_field/features/execution/signature_pad.dart';
 import 'package:dotmac_field/features/jobs/job_chat_screen.dart';
 import 'package:dotmac_field/features/jobs/job_detail_screen.dart';
 import 'package:dotmac_field/features/jobs/job_models.dart';
@@ -112,10 +113,10 @@ void main() {
 
   group('action bar shows work actions per status', () {
     for (final (status, expected) in [
-      ('scheduled', ['En Route', 'Arrived', 'Start Work']),
-      ('dispatched', ['En Route', 'Arrived', 'Start Work']),
-      ('in_progress', ['En Route', 'Arrived', 'Pause Work', 'Complete Work']),
-      ('paused', ['En Route', 'Arrived', 'Resume Work']),
+      ('scheduled', ['En Route']),
+      ('dispatched', ['En Route']),
+      ('in_progress', ['Pause Work', 'Complete Work']),
+      ('paused', ['Resume Work']),
     ]) {
       testWidgets(status, (tester) async {
         final detail = _detail(status: status);
@@ -143,6 +144,45 @@ void main() {
       });
     }
 
+    testWidgets('departure unlocks arrival', (tester) async {
+      final detail = _detail(
+        status: 'dispatched',
+        history: const [
+          {'event': 'en_route'},
+        ],
+      );
+      await tester.pumpWidget(
+        _wrap(
+          const JobDetailScreen(jobId: 'wo-1'),
+          overrides: [
+            jobDetailProvider('wo-1').overrideWith((ref) async => detail),
+          ],
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Arrived'), findsOneWidget);
+    });
+
+    testWidgets('arrival unlocks start work', (tester) async {
+      final detail = _detail(
+        status: 'dispatched',
+        history: const [
+          {'event': 'en_route'},
+          {'event': 'arrived'},
+        ],
+      );
+      await tester.pumpWidget(
+        _wrap(
+          const JobDetailScreen(jobId: 'wo-1'),
+          overrides: [
+            jobDetailProvider('wo-1').overrideWith((ref) async => detail),
+          ],
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Start Work'), findsOneWidget);
+    });
+
     testWidgets('completed jobs have no work action', (tester) async {
       final detail = _detail(status: 'completed');
       await tester.pumpWidget(
@@ -161,7 +201,7 @@ void main() {
     });
   });
 
-  testWidgets('navigate button launches geo uri from coordinates', (
+  testWidgets('navigate button launches directions uri from coordinates', (
     tester,
   ) async {
     final launched = <Uri>[];
@@ -180,7 +220,10 @@ void main() {
     await tester.pumpAndSettle();
 
     await tester.tap(find.byKey(const Key('navigate-button')));
-    expect(launched.single.toString(), 'geo:6.43,3.42?q=6.43,3.42');
+    expect(launched.single.scheme, 'https');
+    expect(launched.single.host, 'www.google.com');
+    expect(launched.single.path, '/maps/dir/');
+    expect(launched.single.queryParameters['destination'], '6.43,3.42');
   });
 
   testWidgets('address-only location falls back to maps text search', (
@@ -208,7 +251,10 @@ void main() {
     await tester.pumpAndSettle();
 
     await tester.tap(find.byKey(const Key('navigate-button')));
-    expect(launched.single.toString(), contains('q=12%20Admiralty%20Way'));
+    expect(launched.single.scheme, 'https');
+    expect(launched.single.host, 'www.google.com');
+    expect(launched.single.path, '/maps/search/');
+    expect(launched.single.queryParameters['query'], '12 Admiralty Way, Lekki');
   });
 
   test('maps uri is null when nothing is known', () {
@@ -366,6 +412,47 @@ void main() {
       find.byKey(const Key('wizard-finish')),
     );
     expect(finish.onPressed, isNotNull);
+  });
+
+  testWidgets('signature can be cleared and redrawn', (tester) async {
+    const requirements = JobCompletionRequirements(
+      evidenceRequired: false,
+      minimumPhotoCount: 0,
+      customerSignoffRequired: true,
+      signatureUnavailableReasonAllowed: false,
+    );
+    await tester.pumpWidget(
+      _wrap(const CompletionWizard(jobId: 'wo-1', requirements: requirements)),
+    );
+    await tester.tap(find.byKey(const Key('wizard-next')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('wizard-next')));
+    await tester.pump();
+
+    final pad = find.byType(SignaturePad);
+    final detector = tester.widget<GestureDetector>(
+      find.descendant(of: pad, matching: find.byType(GestureDetector)),
+    );
+    detector.onPanStart!(
+      DragStartDetails(
+        globalPosition: const Offset(20, 20),
+        localPosition: const Offset(20, 20),
+      ),
+    );
+    detector.onPanUpdate!(
+      DragUpdateDetails(
+        globalPosition: const Offset(100, 40),
+        localPosition: const Offset(100, 40),
+        delta: const Offset(80, 20),
+      ),
+    );
+    await tester.pump();
+    final clear = find.byKey(const Key('clear-signature'));
+    expect(tester.widget<TextButton>(clear).onPressed, isNotNull);
+
+    await tester.tap(clear);
+    await tester.pump();
+    expect(tester.widget<TextButton>(clear).onPressed, isNull);
   });
 
   test('job chat thread parses field-service messages', () {
@@ -581,7 +668,10 @@ void main() {
       );
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('navigate-destination-pop')));
-      expect(launched.single.toString(), 'geo:6.44,3.43?q=6.44,3.43');
+      expect(launched.single.scheme, 'https');
+      expect(launched.single.host, 'www.google.com');
+      expect(launched.single.path, '/maps/dir/');
+      expect(launched.single.queryParameters['destination'], '6.44,3.43');
     },
   );
 

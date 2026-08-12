@@ -57,6 +57,7 @@ class _SignaturePadState extends State<SignaturePad> {
         border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
       ),
       child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
         onPanStart: (details) => setState(() {
           widget.controller.strokes.add([details.localPosition]);
         }),

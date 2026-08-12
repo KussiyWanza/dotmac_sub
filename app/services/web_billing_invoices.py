@@ -271,6 +271,28 @@ def maybe_issue_invoice(db: Session, *, invoice_id, issue_immediately: str | Non
     return transition.invoice
 
 
+def issue_invoice_from_detail(db: Session, *, invoice_id: UUID) -> Invoice:
+    """Issue a draft invoice from the admin detail page."""
+    invoice_id_text = str(invoice_id)
+    invoice = billing_service.invoices.get(db=db, invoice_id=invoice_id_text)
+    if invoice is None:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    if invoice.status != InvoiceStatus.draft:
+        raise HTTPException(status_code=409, detail="Only draft invoices can be issued")
+    transition = billing_service.invoices.issue_draft_system(
+        db,
+        invoice_id_text,
+        issued_at=datetime.now(UTC),
+        due_at=invoice.due_at,
+        reason="admin_invoice_detail_issue",
+        announce=False,
+        apply_available_credit=True,
+        require_full_available_credit=True,
+        commit=True,
+    )
+    return transition.invoice
+
+
 def maybe_send_invoice_notification(
     db: Session, *, invoice, send_notification: str | None
 ) -> None:

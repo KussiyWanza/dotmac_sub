@@ -107,6 +107,39 @@ def _apply_available_account_credit(db: Session, invoice: Invoice) -> None:
         AccountCreditApplications.apply(db, str(invoice.account_id))
 
 
+def _apply_available_account_credit_when_fully_funded(
+    db: Session, invoice: Invoice
+) -> None:
+    """Apply account credit only when it can settle the whole invoice."""
+    if (
+        not invoice.is_active
+        or invoice.is_proforma
+        or invoice.status
+        not in {
+            InvoiceStatus.issued,
+            InvoiceStatus.partially_paid,
+            InvoiceStatus.overdue,
+        }
+        or round_money(to_decimal(invoice.balance_due)) <= Decimal("0.00")
+    ):
+        return
+
+    from app.services.billing.account_credit import AccountCreditApplications
+
+    db.flush()
+    preview = AccountCreditApplications.preview_invoice_funding(db, invoice)
+    if not preview.fully_funded:
+        return
+    try:
+        AccountCreditApplications.apply_invoice_fully(
+            db,
+            invoice,
+            preview_fingerprint=preview.fingerprint,
+        )
+    except DomainError as exc:
+        raise HTTPException(status_code=409, detail=exc.message) from exc
+
+
 @dataclass(frozen=True)
 class InvoiceClosureLedgerEffect:
     reverses_ledger_entry_id: UUID | None
@@ -1534,6 +1567,7 @@ class Invoices(ListResponseMixin):
         reason: str,
         announce: bool = False,
         apply_available_credit: bool = True,
+        require_full_available_credit: bool = False,
         commit: bool = False,
     ) -> InvoiceLifecycleTransitionResult:
         """Own the deterministic draft -> issued transition.
@@ -1541,6 +1575,9 @@ class Invoices(ListResponseMixin):
         ``apply_available_credit=False`` is reserved for domain owners that
         immediately compose a stricter allocation policy, such as prepaid
         draft-until-fully-funded renewal. Thin adapters must keep the default.
+        ``require_full_available_credit=True`` narrows the automatic credit
+        application to exact full settlement and leaves underfunded credit
+        untouched.
         """
         invoice = lock_for_update(db, Invoice, invoice_id)
         if invoice is None:
@@ -1596,7 +1633,9 @@ class Invoices(ListResponseMixin):
                 account_id=invoice.account_id,
                 invoice_id=invoice.id,
             )
-        if apply_available_credit:
+        if apply_available_credit and require_full_available_credit:
+            _apply_available_account_credit_when_fully_funded(db, invoice)
+        elif apply_available_credit:
             _apply_available_account_credit(db, invoice)
         if commit:
             db.commit()

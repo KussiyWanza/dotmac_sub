@@ -22,6 +22,7 @@ class FakeHttpAdapter implements HttpClientAdapter {
     Future<void>? cancelFuture,
   ) async {
     requests.add(options);
+    await requestStream?.drain<void>();
     final key = '${options.method.toUpperCase()} ${options.path}';
     final handler = handlers[key];
     if (handler == null) {

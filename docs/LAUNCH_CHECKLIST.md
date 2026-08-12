@@ -186,7 +186,7 @@ final gate.
 ## 6. Mobile release readiness
 
 - [ ] Release builds with prod `--dart-define-from-file` — brand.json
-      API_BASE_URL currently points at `10.0.2.2:8000` (emulator value)
+      API_BASE_URL points at `https://selfcare.dotmac.io`
 - [ ] Store metadata, signed builds, app identity (applicationId / bundle id)
 - [ ] Payment deep-link scheme `dotmacpay` returns from gateway webview
       (wired in #201, merged 2026-06-12 — verify on a real gateway round-trip)

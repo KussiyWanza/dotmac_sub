@@ -8,6 +8,7 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import TYPE_CHECKING, TypedDict, cast
 from urllib.parse import urlencode
 
 from sqlalchemy import func, select
@@ -17,12 +18,15 @@ from app.models.billing import PaymentStatus
 from app.models.subscriber import AccountStatus, Subscriber, SubscriberCategory
 from app.schemas.status_presentation import StatusTone
 from app.services import billing as billing_service
-from app.services import ip_pool_utilization_snapshot as ip_pool_snapshot_service
-from app.services import network as network_service
+from app.services import crm_reporting as crm_reporting_service
 from app.services import subscriber as subscriber_service
 from app.services import subscriber_growth
 from app.services import usage_summary as usage_summary_service
 from app.services.ui_contracts import Kpi, StateValue
+
+if TYPE_CHECKING:
+    from app.models.provisioning import InstallAppointment
+    from app.services.provisioning_managers import TechnicianReportRow
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +38,102 @@ class RecentSubscriberReportRow:
     name: str
     created_at: datetime | None
     derived_status: AccountStatus
+
+
+class NetworkPoolReportRow(TypedDict):
+    name: str
+    cidr: str
+    used_count: int
+    total_count: int
+
+
+class NetworkReportData(TypedDict):
+    olts: list[crm_reporting_service.NetworkOltFacts]
+    total_olts: int
+    active_olts: int
+    total_onts: int
+    connected_onts: int
+    recent_ont_activity: list[crm_reporting_service.NetworkOntFacts]
+    pool_data: list[NetworkPoolReportRow]
+    used_ips: int
+    total_ips: int
+    ip_pool_usage: float
+    active_vlans: int
+    pon_capacity: int
+    pon_utilization: float
+    fiber_status: dict[str, int]
+    total_fiber_strands: int
+    available_fiber_strands: int
+    total_fdh: int
+    splitter_capacity: int
+
+
+class CustomerGrowthSeries(TypedDict):
+    labels: list[str]
+    total: list[int]
+    new: list[int]
+
+
+class ChurnSeries(TypedDict):
+    labels: list[str]
+    rate: list[float]
+    count: list[int]
+
+
+class RegionalSubscriberReportRow(TypedDict):
+    region: str
+    subscribers: int
+    tickets: int
+
+
+class SubscriberReportData(TypedDict):
+    subscriber_kpis: dict[str, Kpi]
+    total_subscribers: int
+    subscriber_growth: float | None
+    new_this_month: int
+    active_subscribers: int
+    suspended_subscribers: int
+    active_rate: float
+    status_breakdown: dict[str, int]
+    recent_subscribers: list[RecentSubscriberReportRow]
+    customers: list[Subscriber]
+    page: int
+    per_page: int
+    has_previous: bool
+    has_next: bool
+    date_from: str
+    date_to: str
+    usage_date_from: str
+    usage_date_to: str
+    total_usage_gb: float
+    status_filter: str
+    status_options: list[str]
+    growth_data: CustomerGrowthSeries
+    plan_distribution: dict[str, int]
+    regional_breakdown: list[RegionalSubscriberReportRow]
+
+
+class ChurnReportData(TypedDict):
+    churn_kpis: dict[str, Kpi]
+    churn_rate: float
+    retention_rate: float
+    cancelled_count: int
+    at_risk_count: int
+    churn_reasons: dict[str, int]
+    churn_data: ChurnSeries
+    recent_cancellations: list[Subscriber]
+
+
+class TechnicianReportData(TypedDict):
+    total_technicians: int
+    jobs_completed: int
+    avg_completion_hours: float
+    appointment_completion_rate: float
+    technician_stats: list[TechnicianReportRow]
+    job_type_breakdown: dict[str, int]
+    recent_completions: list[InstallAppointment]
+    date_from: str
+    date_to: str
 
 
 def _customers_report_cohort_url(
@@ -59,127 +159,48 @@ def _ensure_aware_datetime(value: datetime | None) -> datetime | None:
     return value
 
 
-def _collect_pool_data(
-    db: Session,
-    pool_limit: int,
-    block_limit: int,
-) -> tuple[list[dict], int, int]:
-    ip_pools = network_service.ip_pools.list(
-        db=db,
-        ip_version=None,
-        is_active=None,
-        order_by="created_at",
-        order_dir="desc",
-        limit=pool_limit,
-        offset=0,
-    )
-
-    used_ips = 0
-    total_ips = 0
-    pool_data = []
-
-    for pool in ip_pools:
-        blocks = network_service.ip_blocks.list(
-            db=db,
-            pool_id=str(pool.id),
-            is_active=None,
-            order_by="created_at",
-            order_dir="desc",
-            limit=block_limit,
-            offset=0,
-        )
-        pool_used, pool_total = ip_pool_snapshot_service.live_pool_counts(db, pool)
-
-        if pool_total == 0:
-            for _ in blocks:
-                pool_total += 256
-        pool_total = pool_total if pool_total > 0 else 256
-
-        pool_data.append(
-            {
-                "name": pool.name,
-                "cidr": pool.cidr,
-                "used_count": pool_used,
-                "total_count": pool_total,
-            }
-        )
-        used_ips += pool_used
-        total_ips += pool_total
-
-    return pool_data, used_ips, total_ips
-
-
-def get_network_report_data(db: Session, hours: int | None = None) -> dict:
-    olts = network_service.olt_devices.list(
-        db=db,
-        is_active=None,
-        order_by="created_at",
-        order_dir="desc",
-        limit=5000 if hours else 100,
-        offset=0,
-    )
-    total_olts = len(olts)
-    active_olts = sum(1 for olt in olts if olt.is_active)
-
-    onts = network_service.ont_units.list(
-        db=db,
-        is_active=None,
-        order_by="created_at",
-        order_dir="desc",
-        limit=5000 if hours else 1000,
-        offset=0,
-    )
-    if hours:
-        cutoff = datetime.now(UTC) - timedelta(hours=hours)
-        onts = [
-            ont
-            for ont in onts
-            if (updated_at := _ensure_aware_datetime(ont.updated_at)) is not None
-            and updated_at >= cutoff
-        ]
-    total_onts = len(onts)
-    connected_onts = sum(1 for ont in onts if ont.is_active)
-
-    recent_ont_activity = sorted(
-        onts,
-        key=lambda x: x.updated_at if x.updated_at else datetime.min,
-        reverse=True,
-    )[:10]
-
-    pool_data, used_ips, total_ips = _collect_pool_data(
-        db=db,
-        pool_limit=5000 if hours else 100,
-        block_limit=100,
-    )
-    ip_pool_usage = (used_ips / total_ips * 100) if total_ips > 0 else 0
-
-    vlans = network_service.vlans.list(
-        db=db,
-        region_id=None,
-        is_active=None,
-        order_by="created_at",
-        order_dir="desc",
-        limit=5000 if hours else 100,
-        offset=0,
-    )
-    active_vlans = sum(1 for v in vlans if v.is_active)
+def get_network_report_data(db: Session, hours: int | None = None) -> NetworkReportData:
+    facts = crm_reporting_service.network_infrastructure_facts(db, hours=hours)
+    pool_data: list[NetworkPoolReportRow] = [
+        {
+            "name": pool.name,
+            "cidr": pool.cidr,
+            "used_count": pool.used_count,
+            "total_count": pool.total_count,
+        }
+        for pool in facts.pools
+    ]
+    fiber_status = dict(facts.fiber_status)
+    total_fiber_strands = sum(fiber_status.values())
+    available_fiber_strands = fiber_status.get("available", 0)
 
     return {
-        "olts": olts,
-        "total_olts": total_olts,
-        "active_olts": active_olts,
-        "total_onts": total_onts,
-        "connected_onts": connected_onts,
-        "recent_ont_activity": recent_ont_activity,
+        "olts": list(facts.olts),
+        "total_olts": facts.total_olts,
+        "active_olts": facts.active_olts,
+        "total_onts": facts.total_onts,
+        "connected_onts": facts.connected_onts,
+        "recent_ont_activity": list(facts.recent_ont_activity),
         "pool_data": pool_data,
-        "used_ips": used_ips,
-        "total_ips": total_ips,
-        "ip_pool_usage": ip_pool_usage,
-        "active_vlans": active_vlans,
+        "used_ips": facts.used_ips,
+        "total_ips": facts.total_ips,
+        "ip_pool_usage": (
+            facts.used_ips / facts.total_ips * 100 if facts.total_ips > 0 else 0
+        ),
+        "active_vlans": facts.active_vlans,
+        "pon_capacity": facts.pon_capacity,
+        "pon_utilization": (
+            facts.total_onts / facts.pon_capacity * 100 if facts.pon_capacity else 0
+        ),
+        "fiber_status": fiber_status,
+        "total_fiber_strands": total_fiber_strands,
+        "available_fiber_strands": available_fiber_strands,
+        "total_fdh": facts.total_fdh,
+        "splitter_capacity": facts.splitter_capacity,
     }
 
 
-def build_network_export_csv(data: dict, hours: int | None = None) -> str:
+def build_network_export_csv(data: NetworkReportData, hours: int | None = None) -> str:
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["metric", "value"])
@@ -191,6 +212,12 @@ def build_network_export_csv(data: dict, hours: int | None = None) -> str:
     writer.writerow(["total_ips", data["total_ips"]])
     writer.writerow(["ip_pool_usage_percent", f"{data['ip_pool_usage']:.2f}"])
     writer.writerow(["active_vlans", data["active_vlans"]])
+    writer.writerow(["pon_capacity", data["pon_capacity"]])
+    writer.writerow(["pon_utilization_percent", f"{data['pon_utilization']:.2f}"])
+    writer.writerow(["total_fiber_strands", data["total_fiber_strands"]])
+    writer.writerow(["available_fiber_strands", data["available_fiber_strands"]])
+    writer.writerow(["active_fdh", data["total_fdh"]])
+    writer.writerow(["splitter_output_capacity", data["splitter_capacity"]])
     writer.writerow(["report_window_hours", hours or ""])
     writer.writerow([])
     writer.writerow(["pool_name", "cidr", "used_count", "total_count", "usage_percent"])
@@ -237,15 +264,16 @@ def _load_report_subscribers(
     date_from: str | None = None,
     date_to: str | None = None,
     status: str | None = None,
-    limit: int = 5000,
+    limit: int | None = None,
 ) -> list[Subscriber]:
     start, end, _, _ = _date_range_values(date_from=date_from, date_to=date_to)
     stmt = (
         select(Subscriber)
         .where(subscriber_service.visible_subscriber_clause())
         .order_by(Subscriber.created_at.desc())
-        .limit(limit)
     )
+    if limit is not None:
+        stmt = stmt.limit(limit)
     if start is not None:
         stmt = stmt.where(Subscriber.created_at >= start)
     if end is not None:
@@ -531,7 +559,9 @@ def get_subscribers_report_data(
     date_from: str | None = None,
     date_to: str | None = None,
     status: str | None = None,
-) -> dict:
+    page: int = 1,
+    per_page: int = 50,
+) -> SubscriberReportData:
     all_subscribers = _load_report_subscribers(
         db,
         date_from=date_from,
@@ -636,6 +666,27 @@ def get_subscribers_report_data(
             tone=StatusTone.warning,
         ),
     }
+    subscriber_ids = [subscriber.id for subscriber in all_subscribers]
+    segment_facts = crm_reporting_service.subscriber_segment_facts(
+        db,
+        subscriber_ids=tuple(subscriber_ids),
+    )
+    plan_distribution = dict(segment_facts.plan_distribution)
+    region_counts: dict[str, int] = {}
+    for subscriber in all_subscribers:
+        region = subscriber.region or "Unspecified"
+        region_counts[region] = region_counts.get(region, 0) + 1
+    ticket_region_counts = dict(segment_facts.ticket_counts_by_region)
+    regional_breakdown: list[RegionalSubscriberReportRow] = [
+        {
+            "region": region,
+            "subscribers": count,
+            "tickets": ticket_region_counts.get(region, 0),
+        }
+        for region, count in sorted(
+            region_counts.items(), key=lambda item: item[1], reverse=True
+        )
+    ]
     return {
         "subscriber_kpis": subscriber_kpis,
         "total_subscribers": total_subscribers,
@@ -646,7 +697,11 @@ def get_subscribers_report_data(
         "active_rate": active_rate,
         "status_breakdown": status_breakdown,
         "recent_subscribers": recent_subscribers,
-        "customers": all_subscribers[:200],
+        "customers": all_subscribers[(page - 1) * per_page : page * per_page],
+        "page": page,
+        "per_page": per_page,
+        "has_previous": page > 1,
+        "has_next": page * per_page < total_subscribers,
         "date_from": date_from or "",
         "date_to": date_to or "",
         "usage_date_from": usage_date_from,
@@ -654,7 +709,12 @@ def get_subscribers_report_data(
         "total_usage_gb": total_usage_gb,
         "status_filter": status or "",
         "status_options": [item.value for item in AccountStatus],
-        "growth_data": subscriber_growth.monthly_customer_growth_series(db),
+        "growth_data": cast(
+            CustomerGrowthSeries,
+            subscriber_growth.monthly_customer_growth_series(db),
+        ),
+        "plan_distribution": plan_distribution,
+        "regional_breakdown": regional_breakdown,
     }
 
 
@@ -739,7 +799,7 @@ def build_subscribers_export_csv(
     return content
 
 
-def get_churn_report_data(db: Session) -> dict:
+def get_churn_report_data(db: Session) -> ChurnReportData:
     """Compose the churn report from the subscriber growth/churn read owner.
 
     Counts, the monthly churn series, and the recent-cancellation list are
@@ -826,28 +886,26 @@ def get_churn_report_data(db: Session) -> dict:
             tone=StatusTone.positive,
         ),
     }
+    churn_reasons = dict(crm_reporting_service.subscription_churn_reason_counts(db))
     return {
         "churn_kpis": churn_kpis,
         "churn_rate": churn_rate,
         "retention_rate": retention_rate,
         "cancelled_count": cancelled_count,
         "at_risk_count": at_risk_count,
-        "churn_reasons": {},
-        "churn_data": subscriber_growth.monthly_churn_series(db),
+        "churn_reasons": churn_reasons,
+        "churn_data": cast(
+            ChurnSeries,
+            subscriber_growth.monthly_churn_series(db),
+        ),
         "recent_cancellations": subscriber_growth.recent_cancellations(db, limit=10),
     }
 
 
 def build_churn_export_csv(db: Session, days: int | None = None) -> str:
-    all_subscribers = subscriber_service.subscribers.list(
-        db=db,
-        subscriber_type=None,
-        business_account_id=None,
-        order_by="created_at",
-        order_dir="desc",
-        limit=5000,
-        offset=0,
-    )
+    # Export the complete visible cohort.  The old CRUD-list path silently
+    # capped this regulatory/operational artifact at 5,000 subscribers.
+    all_subscribers = _load_report_subscribers(db)
     if days:
         cutoff = datetime.now(UTC) - timedelta(days=days)
         all_subscribers = [
@@ -871,12 +929,21 @@ def build_churn_export_csv(db: Session, days: int | None = None) -> str:
         for sub in all_subscribers
         if derived_status_by_id[sub.id] == AccountStatus.suspended
     ]
+    active_subscribers = [
+        sub
+        for sub in all_subscribers
+        if derived_status_by_id[sub.id] == AccountStatus.active
+    ]
     churn_rate = (
         (len(cancelled_subscribers) / total_subscribers * 100)
         if total_subscribers > 0
         else 0
     )
-    retention_rate = 100 - churn_rate
+    retention_rate = (
+        (len(active_subscribers) / total_subscribers * 100)
+        if total_subscribers > 0
+        else 0
+    )
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["metric", "value"])
@@ -914,7 +981,12 @@ def build_churn_export_csv(db: Session, days: int | None = None) -> str:
     return content
 
 
-def get_technician_report_data(db: Session) -> dict:
+def get_technician_report_data(
+    db: Session,
+    *,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> TechnicianReportData:
     """Compose the technician report from the provisioning read owner.
 
     The aggregated figures are owned by
@@ -922,32 +994,42 @@ def get_technician_report_data(db: Session) -> dict:
     assembles them with the recent-completion listing and owns presentation
     (the top-10 slice) only.
     """
-    from app.models.provisioning import ServiceOrder, ServiceOrderStatus
     from app.services import provisioning_managers
 
-    stats = provisioning_managers.technician_report_stats(db)
-    recent_completions = list(
-        db.scalars(
-            select(ServiceOrder)
-            .where(ServiceOrder.status == ServiceOrderStatus.active)
-            .order_by(ServiceOrder.updated_at.desc())
-            .limit(10)
-        ).all()
+    start_at, end_at, _, _ = _date_range_values(date_from=date_from, date_to=date_to)
+    stats = provisioning_managers.technician_report_stats(
+        db, start_at=start_at, end_at=end_at
+    )
+    recent_completions = provisioning_managers.recent_completed_appointments(
+        db,
+        start_at=start_at,
+        end_at=end_at,
+        limit=10,
     )
 
     return {
         "total_technicians": stats["total_technicians"],
         "jobs_completed": stats["jobs_completed"],
         "avg_completion_hours": stats["avg_completion_hours"],
-        "first_visit_rate": stats["first_visit_rate"],
+        "appointment_completion_rate": stats["appointment_completion_rate"],
         "technician_stats": stats["technician_stats"][:10],
         "job_type_breakdown": stats["job_type_breakdown"],
         "recent_completions": recent_completions,
+        "date_from": date_from or "",
+        "date_to": date_to or "",
     }
 
 
-def build_technician_export_csv(db: Session, days: int | None = None) -> str:
-    report_data = get_technician_report_data(db)
+def build_technician_export_csv(
+    db: Session,
+    days: int | None = None,
+    *,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> str:
+    if days and not date_from:
+        date_from = (datetime.now(UTC) - timedelta(days=days)).date().isoformat()
+    report_data = get_technician_report_data(db, date_from=date_from, date_to=date_to)
     technician_stats = list(report_data.get("technician_stats") or [])
     output = io.StringIO()
     writer = csv.writer(output)
@@ -957,7 +1039,7 @@ def build_technician_export_csv(db: Session, days: int | None = None) -> str:
             "total_jobs",
             "completed_jobs",
             "avg_completion_hours",
-            "rating",
+            "completion_rate_percent",
             "jobs_completed_total",
             "report_window_days",
         ]
@@ -970,7 +1052,7 @@ def build_technician_export_csv(db: Session, days: int | None = None) -> str:
                 tech["total_jobs"],
                 tech["completed_jobs"],
                 tech["avg_hours"],
-                tech["rating"],
+                tech["completion_rate"],
                 jobs_completed,
                 days or "",
             ]

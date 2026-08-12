@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 from app.schemas.network import FiberSplicePlanDiffRead, FiberSplicePlanRead
 from app.schemas.status_presentation import StatusPresentation
@@ -129,7 +129,7 @@ class FieldAttachmentRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    crm_work_order_id: str
+    work_order_id: str
     note_id: UUID | None = None
     kind: str
     file_name: str
@@ -367,12 +367,38 @@ class FieldMaterialRequestItemCreate(BaseModel):
     serial_numbers: list[str] = Field(default_factory=list, max_length=100)
 
 
-class FieldMaterialRequestCreate(BaseModel):
-    crm_work_order_id: str = Field(min_length=1, max_length=64)
+class WorkOrderCompatibilityInput(BaseModel):
+    """Temporary input alias; responses remain canonical ``work_order_id``."""
+
+    work_order_id: str = Field(
+        min_length=1,
+        max_length=64,
+        validation_alias=AliasChoices("work_order_id", "crm_work_order_id"),
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_conflicting_work_order_aliases(cls, value):
+        if isinstance(value, dict):
+            canonical = value.get("work_order_id")
+            legacy = value.get("crm_work_order_id")
+            if canonical is not None and legacy is not None and canonical != legacy:
+                raise ValueError(
+                    "work_order_id and crm_work_order_id must identify the same "
+                    "work order"
+                )
+        return value
+
+
+class FieldMaterialRequestCreate(WorkOrderCompatibilityInput):
     priority: Literal["low", "medium", "high", "urgent"] = "medium"
     notes: str | None = Field(default=None, max_length=2000)
     source_warehouse_code: str = Field(min_length=1, max_length=100)
     items: list[FieldMaterialRequestItemCreate] = Field(min_length=1, max_length=50)
+
+
+class FieldMaterialRequestSubmit(FieldMaterialRequestCreate):
+    client_ref: UUID
 
 
 class FieldMaterialRequestItemRead(BaseModel):
@@ -388,7 +414,7 @@ class FieldMaterialRequestItemRead(BaseModel):
 
 class FieldMaterialRequestRead(BaseModel):
     id: UUID
-    crm_work_order_id: str
+    work_order_id: str
     crm_material_request_id: str | None = None
     requested_by_person_id: UUID
     requested_by_system_user_id: UUID | None = None
@@ -444,14 +470,24 @@ class FieldExpenseRequestItemCreate(BaseModel):
     notes: str | None = Field(default=None, max_length=2000)
 
 
-class FieldExpenseRequestCreate(BaseModel):
-    crm_work_order_id: str = Field(min_length=1, max_length=64)
+class FieldExpenseCategoryRead(BaseModel):
+    category_code: str
+    category_name: str
+    requires_receipt: bool = False
+    max_amount_per_claim: Decimal | None = None
+
+
+class FieldExpenseRequestCreate(WorkOrderCompatibilityInput):
     purpose: str = Field(min_length=1, max_length=500)
     expense_date: date | None = None
     currency: str = Field(default="NGN", min_length=3, max_length=3)
     notes: str | None = Field(default=None, max_length=2000)
     client_ref: UUID | None = None
     items: list[FieldExpenseRequestItemCreate] = Field(min_length=1, max_length=50)
+
+
+class FieldExpenseRequestSubmit(FieldExpenseRequestCreate):
+    client_ref: UUID
 
 
 class FieldExpenseRequestItemRead(BaseModel):
@@ -469,7 +505,7 @@ class FieldExpenseRequestItemRead(BaseModel):
 
 class FieldExpenseRequestRead(BaseModel):
     id: UUID
-    crm_work_order_id: str
+    work_order_id: str
     crm_expense_request_id: str | None = None
     requested_by_person_id: UUID
     requested_by_system_user_id: UUID | None = None

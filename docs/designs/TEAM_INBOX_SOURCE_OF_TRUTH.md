@@ -140,8 +140,14 @@ The admin CRM-replication controls use these existing owners:
 - A business-initiated WhatsApp conversation requires a server-listed approved
   template name and language. Numeric header/body/button inputs become explicit
   Meta components and stay on the intent/message metadata through delivery.
-  Contact lookup reads active canonical Party contact points and manual numbers
-  normalize using the selected country.
+  Contact lookup prefers unique active canonical Party contact points. Until
+  the reviewed Subscriber-to-Party migration is complete, it also reads unique
+  active unbound Subscriber phone fields as an explicit compatibility source.
+  A selected compatibility result carries the Subscriber identity separately;
+  it never pretends that the Subscriber UUID is a Party UUID. Canonical contact
+  points win over compatibility rows, shared normalized numbers are omitted as
+  ambiguous, and manual numbers normalize using the selected country. The
+  fallback is retired after the Party/contact convergence audit reaches zero.
 - Email CC/BCC is limited to opening a conversation. The command validates,
   lowercases and deduplicates each list, then stores both on internal intent
   metadata. SMTP places CC in the MIME header, never emits a BCC header, and

@@ -70,8 +70,10 @@ def test_crm_replication_surfaces_exclude_customer_placeholder_data():
     assert "data-social-comment-thread" in COMMENT_THREAD
     assert 'action="/admin/inbox/{{ timeline.id }}/reply"' in COMMENT_THREAD
     assert 'name="whatsapp_template_components"' in OVERLAYS
+    assert 'name="subscriber_id"' in OVERLAYS
     assert "newConversation.templateFields" in OVERLAYS
     assert "whatsapp-contacts" in JAVASCRIPT
+    assert "contact.subscriber_id" in JAVASCRIPT
 
     assert "inbox-ticket-panel" in TICKET_PANEL
     assert ':action="`/admin/inbox/${selectedId}/tickets`"' in TICKET_PANEL

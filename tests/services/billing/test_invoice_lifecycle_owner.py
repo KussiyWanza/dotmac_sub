@@ -60,6 +60,80 @@ def test_invoice_owner_issues_draft_with_audited_no_money_result(
     )
 
 
+def test_invoice_owner_skips_underfunded_credit_when_full_credit_required(
+    db_session, subscriber, monkeypatch
+):
+    invoice = _invoice(db_session, subscriber, status=InvoiceStatus.draft)
+    applied: list[str] = []
+
+    monkeypatch.setattr(
+        "app.services.billing.account_credit.AccountCreditApplications.preview_invoice_funding",
+        lambda db, invoice: type(
+            "Preview",
+            (),
+            {"fully_funded": False, "fingerprint": "underfunded-preview"},
+        )(),
+    )
+    monkeypatch.setattr(
+        "app.services.billing.account_credit.AccountCreditApplications.apply_invoice_fully",
+        lambda db, invoice, *, preview_fingerprint: applied.append(preview_fingerprint),
+    )
+
+    result = Invoices.issue_draft_system(
+        db_session,
+        str(invoice.id),
+        issued_at=datetime.now(UTC),
+        due_at=None,
+        reason="test_full_credit_required",
+        require_full_available_credit=True,
+        commit=True,
+    )
+
+    assert result.invoice.status == InvoiceStatus.issued
+    assert result.invoice.balance_due == Decimal("100.00")
+    assert applied == []
+
+
+def test_invoice_owner_applies_credit_when_full_credit_required_and_funded(
+    db_session, subscriber, monkeypatch
+):
+    invoice = _invoice(db_session, subscriber, status=InvoiceStatus.draft)
+    applied: list[str] = []
+
+    monkeypatch.setattr(
+        "app.services.billing.account_credit.AccountCreditApplications.preview_invoice_funding",
+        lambda db, invoice: type(
+            "Preview",
+            (),
+            {"fully_funded": True, "fingerprint": "fully-funded-preview"},
+        )(),
+    )
+
+    def _fake_apply(db, invoice, *, preview_fingerprint):
+        applied.append(preview_fingerprint)
+        invoice.balance_due = Decimal("0.00")
+        invoice.status = InvoiceStatus.paid
+
+    monkeypatch.setattr(
+        "app.services.billing.account_credit.AccountCreditApplications.apply_invoice_fully",
+        _fake_apply,
+    )
+
+    result = Invoices.issue_draft_system(
+        db_session,
+        str(invoice.id),
+        issued_at=datetime.now(UTC),
+        due_at=None,
+        reason="test_full_credit_required",
+        require_full_available_credit=True,
+        commit=True,
+    )
+
+    assert result.invoice.status == InvoiceStatus.paid
+    assert result.invoice.balance_due == Decimal("0.00")
+    assert applied == ["fully-funded-preview"]
+
+
 def test_invoice_owner_marks_overdue_once_and_keeps_access_as_observation(
     db_session, subscriber
 ):

@@ -3,7 +3,7 @@
 Technician/vendor field app for DotMac ISP operations.
 
 This app was moved from `dotmac_crm/mobile` during the CRM-to-sub migration. Its
-default API base URL is `https://sub.dotmac.io`; local and CI builds can still
+default API base URL is `https://selfcare.dotmac.io`; local and CI builds can still
 override it with `--dart-define=API_BASE_URL=...`.
 
 Field service is work-order execution only. The old CRM field-sales/customer
