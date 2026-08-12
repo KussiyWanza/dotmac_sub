@@ -2362,6 +2362,9 @@ def email_transcript(
     to inform.
     """
 
+    if actor_type is not AuditActorType.system and actor_person_id is None:
+        raise InboxCommandError("An audit actor is required to export a transcript.")
+
     def action() -> str:
         conversation = _active_conversation(db, conversation_id)
         clean_recipient = str(recipient or "").strip()

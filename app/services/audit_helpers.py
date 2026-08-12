@@ -15,8 +15,11 @@ from app.models.audit import AuditActorType
 from app.models.auth import ApiKey
 from app.models.subscriber import Subscriber
 from app.models.system_user import SystemUser
-from app.schemas.audit import AuditEventCreate
 from app.services import audit as audit_service
+from app.services.audit_adapter import (
+    record_audit_event as persist_audit_event,
+)
+from app.services.audit_adapter import stage_audit_event
 from app.services.owner_commands import owner_command_active
 from app.timezone import APP_TIMEZONE
 
@@ -238,24 +241,38 @@ def log_audit_event(
     actor_label = metadata_payload.get("actor_name") or metadata_payload.get(
         "actor_email"
     )
-    payload = AuditEventCreate(
-        actor_type=actor_type,
-        actor_id=resolved_actor_id,
-        actor_label=actor_label,
-        action=action,
-        entity_type=entity_type,
-        entity_id=entity_id,
-        status_code=status_code,
-        is_success=is_success,
-        ip_address=request.client.host if request and request.client else None,
-        user_agent=request.headers.get("user-agent") if request else None,
-        request_id=request.headers.get("x-request-id") if request else None,
-        metadata_=metadata_payload or None,
-    )
     if owner_command_active(db):
-        audit_service.audit_events.stage(db=db, payload=payload)
+        stage_audit_event(
+            db,
+            actor_type=actor_type,
+            actor_id=resolved_actor_id,
+            actor_label=actor_label,
+            action=action,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            status_code=status_code,
+            is_success=is_success,
+            ip_address=request.client.host if request and request.client else None,
+            user_agent=request.headers.get("user-agent") if request else None,
+            request_id=request.headers.get("x-request-id") if request else None,
+            metadata=metadata_payload or None,
+        )
     else:
-        audit_service.audit_events.create(db=db, payload=payload)
+        persist_audit_event(
+            db,
+            actor_type=actor_type,
+            actor_id=resolved_actor_id,
+            actor_label=actor_label,
+            action=action,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            status_code=status_code,
+            is_success=is_success,
+            ip_address=request.client.host if request and request.client else None,
+            user_agent=request.headers.get("user-agent") if request else None,
+            request_id=request.headers.get("x-request-id") if request else None,
+            metadata=metadata_payload or None,
+        )
 
 
 def _resolve_request_actor_id(request, actor_id: str | None) -> str | None:

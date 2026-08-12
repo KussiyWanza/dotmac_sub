@@ -3,7 +3,7 @@
 **Status:** Rebaselined 2026-08-02 for slice S1 of the selective kernel-adoption
 plan; amended the same day for slice S2 (dependency pinned — see "S2 acceptance
 claim") and slice S3 (composition declared in `app/composition.py` — see "S3
-acceptance claim"). The pin moved to `dotmac-kernel==0.1.0a40` on 2026-08-11 —
+acceptance claim"). The pin moved to `dotmac-kernel==0.1.0a42` on 2026-08-12 —
 see "Pin history". Supersedes the
 2026-07-19 Phase-0 draft, which was surveyed before the kernel was released and
 against `origin/main` 7807afcd. No code, schema, or dependency change is
@@ -41,6 +41,35 @@ exists to hold.
 
 
 ## Pin history
+
+**2026-08-12 — `0.1.0a40` → `0.1.0a42`.** The dependency half of audit R1,
+after protected release run `31592573094` published and registry-verified a42
+from Starter main `048662dbd944aca95b2e89f133b0c864c3fd5a59`. The annotated
+tag `dotmac-kernel-v0.1.0a42` resolves to that exact commit. The lock records
+wheel SHA256 `0678241f808b564cafd218fc86d45a096f685568aace90868a70b71c5d907106`
+and sdist SHA256
+`8658e05d78ecf2579187588f2af96c9f084bcfe977fcafd7f518248097ac25cb`;
+no unrelated locked dependency moves.
+
+The released wheel was then installed into a disposable Linux environment on
+Observe. Sub's complete migration chain reached
+`524_audit_events_kernel_r1` on PostgreSQL 16 with PostGIS 3.4, and all 103
+Postgres-backed integration tests passed. The rehearsal returned exit code 0
+and removed its disposable resources. This is package-compatibility evidence,
+not a lineage, authority, merge, or deployment claim.
+
+a41 is breaking for consumers of the kernel `PartyRole` model, renamed to
+`PartyRoleGrant` with no alias. Sub imports neither name, so the reviewed Sub
+surface is unaffected. a42 adds the polymorphic audit actor and request
+forensics contract plus kernel migration 0023. Sub still does not import
+`dotmac_kernel.audit` or compose the kernel lineage: migration 524 expands
+Sub's own table and its existing `observability.audit_log` owner remains the
+single writer during shadowing. This pin makes the immutable contract available
+for compatibility and rehearsal; it does not claim an authority or lineage
+cutover.
+
+The release and lock evidence is machine-readable in
+[`docs/audits/audit-r1-kernel-release.json`](audits/audit-r1-kernel-release.json).
 
 **2026-08-11 — `dotmac-ui` `0.1.0a3` pinned (new distribution).** A SECOND
 platform distribution enters this ledger. Nothing in this document's kernel
