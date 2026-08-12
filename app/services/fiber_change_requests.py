@@ -2,7 +2,7 @@ import json
 import logging
 import uuid
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, TypeAlias
 
 from fastapi import HTTPException
 from sqlalchemy import Uuid, func, select
@@ -27,7 +27,16 @@ from app.models.network import (
     Splitter,
     SplitterPort,
 )
+from app.schemas.network_map_asset_changes import (
+    AppliedNetworkAssetChange,
+    ApplyReviewedNetworkAssetChange,
+    GovernedNetworkAssetType,
+    NetworkAssetChangeOperation,
+    NetworkAssetCoordinates,
+    NetworkAssetSnapshot,
+)
 from app.services.common import coerce_uuid
+from app.services.domain_errors import DomainError
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +56,303 @@ ASSET_MODEL_MAP = {
     "splitter": Splitter,
     "splitter_port": SplitterPort,
 }
+
+GovernedAssetRow: TypeAlias = (
+    FdhCabinet | FiberSpliceClosure | FiberAccessPoint | FiberSupportStructure
+)
+
+
+class GovernedFiberAssetError(DomainError):
+    """Transport-neutral refusal from the canonical passive-asset writer."""
+
+
+def _governed_error(
+    code: str, message: str, **details: object
+) -> GovernedFiberAssetError:
+    return GovernedFiberAssetError(
+        code=f"network.fiber_asset_changes.{code}",
+        message=message,
+        details=details,
+    )
+
+
+def _governed_snapshot(
+    asset_type: GovernedNetworkAssetType,
+    row: GovernedAssetRow,
+) -> NetworkAssetSnapshot:
+    latitude = getattr(row, "latitude", None)
+    longitude = getattr(row, "longitude", None)
+    if latitude is None or longitude is None:
+        raise _governed_error(
+            "coordinates_unavailable",
+            "The canonical asset has no complete mapped coordinates.",
+            asset_type=asset_type.value,
+            asset_id=str(row.id),
+        )
+    return NetworkAssetSnapshot(
+        asset_type=asset_type,
+        asset_id=row.id,
+        name=row.name,
+        code=getattr(row, "code", None),
+        coordinates=NetworkAssetCoordinates(
+            latitude=float(latitude),
+            longitude=float(longitude),
+        ),
+        notes=getattr(row, "notes", None),
+        access_point_type=getattr(row, "access_point_type", None),
+        placement=getattr(row, "placement", None),
+        street=getattr(row, "street", None),
+        city=getattr(row, "city", None),
+        support_type=getattr(row, "support_type", None),
+        is_active=bool(getattr(row, "is_active", True)),
+    )
+
+
+def _governed_asset_row(
+    db: Session,
+    *,
+    asset_type: GovernedNetworkAssetType,
+    asset_id: uuid.UUID,
+    lock: bool,
+) -> GovernedAssetRow | None:
+    """Load one governed model without erasing its precise ORM type."""
+
+    if asset_type is GovernedNetworkAssetType.fdh_cabinet:
+        stmt = select(FdhCabinet).where(FdhCabinet.id == asset_id)
+        return db.scalar(stmt.with_for_update() if lock else stmt)
+    if asset_type is GovernedNetworkAssetType.splice_closure:
+        closure_stmt = select(FiberSpliceClosure).where(
+            FiberSpliceClosure.id == asset_id
+        )
+        return db.scalar(closure_stmt.with_for_update() if lock else closure_stmt)
+    if asset_type is GovernedNetworkAssetType.access_point:
+        access_stmt = select(FiberAccessPoint).where(FiberAccessPoint.id == asset_id)
+        return db.scalar(access_stmt.with_for_update() if lock else access_stmt)
+    support_stmt = select(FiberSupportStructure).where(
+        FiberSupportStructure.id == asset_id
+    )
+    return db.scalar(support_stmt.with_for_update() if lock else support_stmt)
+
+
+def get_governed_asset_snapshot(
+    db: Session,
+    *,
+    asset_type: GovernedNetworkAssetType,
+    asset_id: uuid.UUID,
+    lock: bool = False,
+) -> NetworkAssetSnapshot:
+    """Read one canonical passive asset through its owning service."""
+
+    row = _governed_asset_row(
+        db,
+        asset_type=asset_type,
+        asset_id=asset_id,
+        lock=lock,
+    )
+    if row is None:
+        raise _governed_error(
+            "asset_not_found",
+            "The canonical network asset was not found.",
+            asset_type=asset_type.value,
+            asset_id=str(asset_id),
+        )
+    snapshot = _governed_snapshot(asset_type, row)
+    if not snapshot.is_active:
+        raise _governed_error(
+            "asset_inactive",
+            "Inactive network assets cannot be changed from Network Map V2.",
+            asset_type=asset_type.value,
+            asset_id=str(asset_id),
+        )
+    return snapshot
+
+
+def _governed_geometry(db: Session, snapshot: NetworkAssetSnapshot) -> object | None:
+    if db.bind is None or db.bind.dialect.name == "sqlite":
+        return None
+    return _geojson_to_geom(
+        {
+            "type": "Point",
+            "coordinates": [
+                snapshot.coordinates.longitude,
+                snapshot.coordinates.latitude,
+            ],
+        }
+    )
+
+
+def _support_payload(snapshot: NetworkAssetSnapshot) -> dict[str, object]:
+    return {
+        "code": snapshot.code,
+        "name": snapshot.name,
+        "support_type": snapshot.support_type or "pole",
+        "notes": snapshot.notes,
+        "geojson": {
+            "type": "Point",
+            "coordinates": [
+                snapshot.coordinates.longitude,
+                snapshot.coordinates.latitude,
+            ],
+        },
+    }
+
+
+def apply_governed_map_asset_change(
+    db: Session,
+    *,
+    change: ApplyReviewedNetworkAssetChange,
+) -> AppliedNetworkAssetChange:
+    """Apply one independently reviewed exact change without committing.
+
+    This is a typed participant of ``network.map_asset_change_governance``.
+    It retains canonical passive-asset ownership, performs explicit field
+    assignments only, and never creates topology or route geometry.
+    """
+
+    before = change.before
+    after = change.after
+    if change.operation is NetworkAssetChangeOperation.create:
+        if change.target_asset_id is not None or before is not None:
+            raise _governed_error(
+                "invalid_create_shape",
+                "A create change cannot name an existing canonical asset.",
+            )
+        geometry = _governed_geometry(db, after)
+        row: GovernedAssetRow
+        if change.asset_type is GovernedNetworkAssetType.fdh_cabinet:
+            row = FdhCabinet(
+                name=after.name,
+                code=after.code,
+                latitude=after.coordinates.latitude,
+                longitude=after.coordinates.longitude,
+                geom=geometry,
+                notes=after.notes,
+                is_active=True,
+            )
+            db.add(row)
+            db.flush()
+        elif change.asset_type is GovernedNetworkAssetType.splice_closure:
+            row = FiberSpliceClosure(
+                name=after.name,
+                latitude=after.coordinates.latitude,
+                longitude=after.coordinates.longitude,
+                geom=geometry,
+                notes=after.notes,
+                is_active=True,
+            )
+            db.add(row)
+            db.flush()
+        elif change.asset_type is GovernedNetworkAssetType.access_point:
+            row = FiberAccessPoint(
+                name=after.name,
+                code=after.code,
+                latitude=after.coordinates.latitude,
+                longitude=after.coordinates.longitude,
+                geom=geometry,
+                notes=after.notes,
+                access_point_type=after.access_point_type,
+                placement=after.placement,
+                street=after.street,
+                city=after.city,
+                is_active=True,
+            )
+            db.add(row)
+            db.flush()
+        else:
+            from app.services.network.fiber_support_structures import (
+                FiberSupportStructureError,
+                apply_reviewed_support_change,
+            )
+
+            try:
+                row = apply_reviewed_support_change(
+                    db,
+                    operation=FiberChangeRequestOperation.create,
+                    asset_id=None,
+                    payload=_support_payload(after),
+                )
+            except FiberSupportStructureError as exc:
+                raise _governed_error("support_change_refused", str(exc)) from exc
+        result = _governed_snapshot(change.asset_type, row)
+        return AppliedNetworkAssetChange(asset_id=row.id, snapshot=result)
+
+    if change.target_asset_id is None or before is None:
+        raise _governed_error(
+            "missing_target",
+            "An edit or movement must name its canonical target and prior state.",
+        )
+    current = get_governed_asset_snapshot(
+        db,
+        asset_type=change.asset_type,
+        asset_id=change.target_asset_id,
+        lock=True,
+    )
+    if current != before:
+        raise _governed_error(
+            "stale_asset",
+            "The canonical asset changed after this proposal was submitted.",
+            asset_id=str(change.target_asset_id),
+        )
+    if change.operation is NetworkAssetChangeOperation.edit and (
+        before.coordinates != after.coordinates
+    ):
+        raise _governed_error(
+            "edit_cannot_move",
+            "An edit cannot change coordinates; submit a movement proposal.",
+        )
+    if change.operation is NetworkAssetChangeOperation.move and (
+        before.name != after.name
+        or before.code != after.code
+        or before.notes != after.notes
+        or before.access_point_type != after.access_point_type
+        or before.placement != after.placement
+        or before.street != after.street
+        or before.city != after.city
+        or before.support_type != after.support_type
+    ):
+        raise _governed_error(
+            "move_cannot_edit",
+            "A movement proposal cannot change non-coordinate asset fields.",
+        )
+
+    target_row = _governed_asset_row(
+        db,
+        asset_type=change.asset_type,
+        asset_id=change.target_asset_id,
+        lock=True,
+    )
+    assert target_row is not None
+    if change.asset_type is GovernedNetworkAssetType.support_structure:
+        from app.services.network.fiber_support_structures import (
+            FiberSupportStructureError,
+            apply_reviewed_support_change,
+        )
+
+        try:
+            target_row = apply_reviewed_support_change(
+                db,
+                operation=FiberChangeRequestOperation.update,
+                asset_id=change.target_asset_id,
+                payload=_support_payload(after),
+            )
+        except FiberSupportStructureError as exc:
+            raise _governed_error("support_change_refused", str(exc)) from exc
+    else:
+        target_row.name = after.name
+        target_row.latitude = after.coordinates.latitude
+        target_row.longitude = after.coordinates.longitude
+        target_row.geom = _governed_geometry(db, after)
+        target_row.notes = after.notes
+        if isinstance(target_row, (FdhCabinet, FiberAccessPoint)):
+            target_row.code = after.code
+        if isinstance(target_row, FiberAccessPoint):
+            target_row.access_point_type = after.access_point_type
+            target_row.placement = after.placement
+            target_row.street = after.street
+            target_row.city = after.city
+        db.flush()
+    result = _governed_snapshot(change.asset_type, target_row)
+    return AppliedNetworkAssetChange(asset_id=target_row.id, snapshot=result)
 
 
 def _normalize_asset_type(asset_type: str) -> str:

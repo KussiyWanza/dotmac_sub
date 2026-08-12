@@ -535,6 +535,9 @@ from app.models.network import (  # noqa: F401
     WanMode,
     WanServiceType,
 )
+from app.models.network_map_asset_change import (  # noqa: F401
+    NetworkMapAssetChangeProposal,
+)
 from app.models.network_monitoring import (  # noqa: F401
     Alert,
     AlertEvent,

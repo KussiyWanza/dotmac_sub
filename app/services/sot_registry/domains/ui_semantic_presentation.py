@@ -725,6 +725,7 @@ DOMAIN = DomainSOT(
             owns=(
                 "comprehensive network map typed projection",
                 "dispatch plant-subset map projection",
+                "isolated network map V2 parity projection",
                 "customer access-session map presentation",
                 "network map customer drill-down projection",
             ),
@@ -769,6 +770,16 @@ DOMAIN = DomainSOT(
                         input_names=(
                             "canonical network inventory and geometry",
                             "validated fiber route geometry",
+                            "binary device operation verdict",
+                        ),
+                    ),
+                    ConcernContract(
+                        name="isolated network map V2 parity projection",
+                        role=OwnerRole.RESOLVER,
+                        input_names=(
+                            "canonical network inventory and geometry",
+                            "validated fiber route geometry",
+                            "canonical segment termination relationships",
                             "binary device operation verdict",
                         ),
                     ),
@@ -820,6 +831,16 @@ DOMAIN = DomainSOT(
                         source=(
                             "canonical FiberSegment identity, declared segment and "
                             "cable types, and persisted PostGIS LineString geometry"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical segment termination relationships",
+                        owner="network.fiber_topology",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "FiberSegment from_point_id and to_point_id references, "
+                            "canonical termination-point identities and coordinates, "
+                            "and explicit referenced endpoint owners"
                         ),
                     ),
                     AuthorityInput(
@@ -949,6 +970,33 @@ DOMAIN = DomainSOT(
                         ),
                         repair_owner="ui.network_map_projection",
                     ),
+                    ProjectionContract(
+                        name="isolated network map V2 parity projection",
+                        input_names=(
+                            "canonical network inventory and geometry",
+                            "validated fiber route geometry",
+                            "canonical segment termination relationships",
+                            "binary device operation verdict",
+                        ),
+                        writer="ui.network_map_projection",
+                        freshness=(
+                            "Recomputed for each V2 map read from current plant and "
+                            "termination-point records."
+                        ),
+                        stale_behavior=(
+                            "Unmatched OLTs and unavailable layers are reported. "
+                            "Missing or invalid route geometry is labelled incomplete "
+                            "and never replaced by a proximity line."
+                        ),
+                        drift_signal=(
+                            "V2 projection, endpoint-identity, route-isolation, and "
+                            "frontend behavior tests."
+                        ),
+                        rebuild_operation=(
+                            "Recompute on read; the parity projection persists nothing."
+                        ),
+                        repair_owner="ui.network_map_projection",
+                    ),
                 ),
                 migration=MigrationContract(
                     state=AuthorityMigrationState.COMPLETE,
@@ -976,6 +1024,7 @@ DOMAIN = DomainSOT(
                 steward="network operations UI",
                 design_refs=(
                     "docs/designs/NETWORK_OPERATIONS_MAP.md",
+                    "docs/designs/NETWORK_MAP_V2_PARITY.md",
                     "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
                     "docs/SOT_RELATIONSHIP_MAP.md",
                 ),
@@ -984,6 +1033,8 @@ DOMAIN = DomainSOT(
                     "tests/test_network_map_plant_projection.py",
                     "tests/integration/test_network_map_plant_projection.py",
                     "tests/test_network_map_support_structures.py",
+                    "tests/test_network_map_v2.py",
+                    "tests/js/network_map_v2.test.js",
                     "tests/architecture/test_network_map_projection_boundary.py",
                 ),
             ),
