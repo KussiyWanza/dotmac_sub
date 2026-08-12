@@ -33,6 +33,10 @@ from app.schemas.field import (
     FieldLiveMapSearchQuery,
     FieldLiveMapSearchResponse,
     FieldLiveMapSearchResult,
+    FieldMovementPlaybackFeed,
+    FieldMovementPlaybackPoint,
+    FieldMovementPlaybackQuery,
+    FieldMovementWorkOrderOption,
 )
 from app.services.field.jobs import _location
 from app.services.service_address import service_address
@@ -48,11 +52,6 @@ def _as_utc(value: datetime | None) -> datetime | None:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
-
-
-def _iso(value: datetime | None) -> str | None:
-    aware = _as_utc(value)
-    return aware.isoformat() if aware else None
 
 
 def _technician_label(profile: TechnicianProfile | None) -> str:
@@ -274,7 +273,9 @@ def search_live_map(
     return FieldLiveMapSearchResponse(query=term, count=len(items), items=items)
 
 
-def list_movement_work_orders(db: Session, *, limit: int = 200) -> list[dict]:
+def list_movement_work_orders(
+    db: Session, *, limit: int = 200
+) -> list[FieldMovementWorkOrderOption]:
     """Distinct work orders that have recorded travel legs (playback picker)."""
     rows = (
         db.query(
@@ -295,70 +296,83 @@ def list_movement_work_orders(db: Session, *, limit: int = 200) -> list[dict]:
         seen[public_id] = (title or "").strip() or public_id
         if len(seen) >= limit:
             break
-    return [{"public_id": wo_id, "label": label} for wo_id, label in seen.items()]
+    return [
+        FieldMovementWorkOrderOption(public_id=wo_id, label=label)
+        for wo_id, label in seen.items()
+    ]
 
 
 def list_movement_points(
     db: Session,
     *,
-    crm_work_order_id: str | None = None,
-    technician_id: str | None = None,
-    since: datetime | None = None,
-    until: datetime | None = None,
-    limit: int = 1000,
-) -> dict:
+    filters: FieldMovementPlaybackQuery,
+) -> FieldMovementPlaybackFeed:
     """Ordered travel points for a public work-order id and/or technician UUID.
 
     Each leg contributes its start point (at ``started_at``) and, once the
     technician has arrived, its arrival point (at ``arrived_at``). Points are
     returned in chronological order for the client-side scrubber.
     """
-    query = db.query(FieldWorkOrderMovement)
-    if crm_work_order_id:
+    movement_query = db.query(FieldWorkOrderMovement)
+    if filters.work_order_public_id:
         wo_id = (
             db.query(WorkOrder.id)
-            .filter(WorkOrder.public_id == crm_work_order_id)
+            .filter(WorkOrder.public_id == filters.work_order_public_id)
             .scalar()
         )
         if wo_id is None:
-            return {"leg_count": 0, "point_count": 0, "points": []}
-        query = query.filter(FieldWorkOrderMovement.work_order_mirror_id == wo_id)
-    if technician_id:
-        query = query.filter(
-            FieldWorkOrderMovement.actor_technician_id == technician_id
+            return FieldMovementPlaybackFeed(
+                leg_count=0,
+                point_count=0,
+                points=[],
+            )
+        movement_query = movement_query.filter(
+            FieldWorkOrderMovement.work_order_mirror_id == wo_id
         )
-    if since is not None:
-        query = query.filter(FieldWorkOrderMovement.started_at >= since)
-    if until is not None:
-        query = query.filter(FieldWorkOrderMovement.started_at <= until)
-    legs = query.order_by(FieldWorkOrderMovement.started_at.asc()).limit(limit).all()
+    if filters.technician_id:
+        movement_query = movement_query.filter(
+            FieldWorkOrderMovement.actor_technician_id == filters.technician_id
+        )
+    if filters.since is not None:
+        movement_query = movement_query.filter(
+            FieldWorkOrderMovement.started_at >= filters.since
+        )
+    if filters.until is not None:
+        movement_query = movement_query.filter(
+            FieldWorkOrderMovement.started_at <= filters.until
+        )
+    legs = (
+        movement_query.order_by(FieldWorkOrderMovement.started_at.asc())
+        .limit(filters.limit)
+        .all()
+    )
 
-    points: list[dict] = []
+    points: list[FieldMovementPlaybackPoint] = []
     for leg in legs:
         if leg.start_latitude is not None and leg.start_longitude is not None:
             points.append(
-                {
-                    "latitude": leg.start_latitude,
-                    "longitude": leg.start_longitude,
-                    "captured_at": _iso(leg.started_at),
-                    "kind": "start",
-                    "status": leg.status,
-                    "label": leg.destination_label,
-                }
+                FieldMovementPlaybackPoint(
+                    latitude=leg.start_latitude,
+                    longitude=leg.start_longitude,
+                    captured_at=_as_utc(leg.started_at),
+                    kind="start",
+                    status=leg.status,
+                    label=leg.destination_label,
+                )
             )
         if leg.arrival_latitude is not None and leg.arrival_longitude is not None:
             points.append(
-                {
-                    "latitude": leg.arrival_latitude,
-                    "longitude": leg.arrival_longitude,
-                    "captured_at": _iso(leg.arrived_at or leg.started_at),
-                    "kind": "arrival",
-                    "status": leg.status,
-                    "label": leg.destination_label,
-                }
+                FieldMovementPlaybackPoint(
+                    latitude=leg.arrival_latitude,
+                    longitude=leg.arrival_longitude,
+                    captured_at=_as_utc(leg.arrived_at or leg.started_at),
+                    kind="arrival",
+                    status=leg.status,
+                    label=leg.destination_label,
+                )
             )
-    return {
-        "leg_count": len(legs),
-        "point_count": len(points),
-        "points": points,
-    }
+    return FieldMovementPlaybackFeed(
+        leg_count=len(legs),
+        point_count=len(points),
+        points=points,
+    )

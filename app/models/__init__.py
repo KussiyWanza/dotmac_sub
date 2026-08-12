@@ -620,6 +620,11 @@ from app.models.ont_commissioning import (  # noqa: F401
     OntCommissioningState,
 )
 from app.models.ont_observation import OntObservation  # noqa: F401
+from app.models.ont_service_configuration import (  # noqa: F401
+    OntServiceConfigurationHead,
+    OntServiceConfigurationPhase,
+    OntServiceConfigurationRevision,
+)
 from app.models.ont_topology_observation import (  # noqa: F401
     OntTopologyObservationEvidence,
 )

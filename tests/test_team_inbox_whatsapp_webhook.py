@@ -15,10 +15,12 @@ from app.models.integration_platform import IntegrationInbox
 from app.models.subscriber import Subscriber, SubscriberStatus
 from app.models.team_inbox import (
     InboxConversation,
+    InboxMediaAsset,
     InboxMessage,
     InboxMessageDirection,
     InboxProviderObservation,
 )
+from app.services import team_inbox_maintenance, team_inbox_read
 from app.services.integrations import installations
 from app.services.integrations.runtime import ValidationResult
 from app.services.integrations.whatsapp_capability import (
@@ -28,6 +30,7 @@ from app.services.integrations.whatsapp_capability import (
 from app.services.integrations.whatsapp_installation import (
     VerifyWhatsAppWebhookChallengeQuery,
 )
+from app.services.owner_commands import CommandContext
 
 META_TEST_SECRET = "meta-secret"  # pragma: allowlist secret
 
@@ -339,6 +342,128 @@ def test_meta_whatsapp_webhook_preserves_media_message(db_session, monkeypatch):
     assert message.metadata_["attachments"][0]["type"] == "image"
     assert message.metadata_["attachments"][0]["id"] == "media-1"
     assert "raw" not in message.metadata_
+
+
+def test_meta_whatsapp_webhook_renders_location_as_google_maps_link(
+    db_session, monkeypatch
+):
+    monkeypatch.setattr(inbox_webhooks, "_app_secret", lambda db: META_TEST_SECRET)
+    payload = {
+        "object": "whatsapp_business_account",
+        "entry": [
+            {
+                "id": "waba-1",
+                "changes": [
+                    {
+                        "field": "messages",
+                        "value": {
+                            "messaging_product": "whatsapp",
+                            "contacts": [{"wa_id": "2348035550114"}],
+                            "messages": [
+                                {
+                                    "from": "2348035550114",
+                                    "id": "wamid.location-1",
+                                    "timestamp": "1783670400",
+                                    "type": "location",
+                                    "location": {
+                                        "latitude": 6.5243793,
+                                        "longitude": 3.3792057,
+                                        "name": "Customer location",
+                                        "address": "Lagos, Nigeria",
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+    body = json.dumps(payload).encode("utf-8")
+
+    response = _run_async(
+        inbox_webhooks.receive_meta_whatsapp_webhook(
+            _request(body, {"X-Hub-Signature-256": _sign(body)}), db_session
+        )
+    )
+
+    message = db_session.query(InboxMessage).one()
+    asset = db_session.query(InboxMediaAsset).one()
+    message_id = message.id
+    asset_id = asset.id
+    conversation_id = message.conversation_id
+    location = message.metadata_["attachments"][0]["location"]
+    timeline = team_inbox_read.get_conversation_timeline(
+        db_session, message.conversation_id
+    )
+
+    assert response["processed"] == 1
+    assert location == {
+        "latitude": 6.5243793,
+        "longitude": 3.3792057,
+        "name": "Customer location",
+        "address": "Lagos, Nigeria",
+    }
+    assert asset.asset_type == "location"
+    assert asset.metadata_["location"] == location
+    assert timeline is not None
+    attachment = timeline.messages[0].attachments[0]
+    assert attachment.location is not None
+    assert attachment.location.name == "Customer location"
+    assert attachment.url == (
+        "https://www.google.com/maps/search/?api=1&query=6.5243793%2C3.3792057"
+    )
+    assert attachment.url is not None
+    assert "/admin/inbox/media/" not in attachment.url
+
+    message_metadata = dict(message.metadata_)
+    legacy_attachment = dict(message_metadata["attachments"][0])
+    legacy_attachment.pop("location")
+    message_metadata["attachments"] = [legacy_attachment]
+    message.metadata_ = message_metadata
+    asset_metadata = dict(asset.metadata_)
+    asset_metadata.pop("location")
+    asset.metadata_ = asset_metadata
+    db_session.commit()
+
+    repaired = team_inbox_maintenance.repair_whatsapp_locations(
+        db_session,
+        team_inbox_maintenance.RepairWhatsAppLocationsCommand(
+            context=CommandContext.system(
+                actor="test:team-inbox-location-repair",
+                scope="team-inbox:maintenance",
+                reason="repair historical WhatsApp location test fixture",
+                idempotency_key="repair-location-1",
+            ),
+            conversation_ids=(conversation_id,),
+        ),
+    )
+
+    assert repaired.repaired == 1
+    assert repaired.missing_evidence == 0
+    db_session.expire_all()
+    repaired_message = db_session.get(InboxMessage, message_id)
+    repaired_asset = db_session.get(InboxMediaAsset, asset_id)
+    assert repaired_message is not None
+    assert repaired_asset is not None
+    assert repaired_message.metadata_["attachments"][0]["location"] == location
+    assert repaired_asset.metadata_["location"] == location
+    db_session.commit()
+
+    replay = team_inbox_maintenance.repair_whatsapp_locations(
+        db_session,
+        team_inbox_maintenance.RepairWhatsAppLocationsCommand(
+            context=CommandContext.system(
+                actor="test:team-inbox-location-repair",
+                scope="team-inbox:maintenance",
+                reason="verify historical WhatsApp location repair idempotency",
+                idempotency_key="repair-location-2",
+            ),
+            conversation_ids=(conversation_id,),
+        ),
+    )
+    assert replay.repaired == 0
+    assert replay.already_complete == 1
 
 
 def test_meta_whatsapp_webhook_updates_outbound_delivery_status(

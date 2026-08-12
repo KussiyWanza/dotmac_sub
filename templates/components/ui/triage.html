@@ -213,7 +213,19 @@
             <div class="mt-2 grid gap-2 sm:grid-cols-2">
                 {% for att in message.attachments %}
                 {% set attachment_url = att.url or att.storage_url or att.source_url %}
-                {% if att.mime_type and att.mime_type.startswith('image/') and attachment_url %}
+                {% if att.location %}
+                <a href="{{ att.location.map_url }}" target="_blank" rel="noopener noreferrer"
+                   class="group flex min-w-52 items-center gap-3 rounded-xl border border-emerald-200 bg-emerald-50/80 p-3 text-left text-emerald-950 hover:bg-emerald-100 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-100 dark:hover:bg-emerald-950/50">
+                    <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-white">
+                        <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 21s6-5.686 6-11a6 6 0 10-12 0c0 5.314 6 11 6 11z"/><circle cx="12" cy="10" r="2" stroke-width="2"/></svg>
+                    </span>
+                    <span class="min-w-0">
+                        <span class="block truncate text-xs font-semibold">{{ att.location.name or "Shared location" }}</span>
+                        {% if att.location.address %}<span class="block truncate text-[11px] text-emerald-800 dark:text-emerald-300">{{ att.location.address }}</span>{% endif %}
+                        <span class="mt-0.5 block text-[10px] font-semibold uppercase tracking-wide text-emerald-700 group-hover:underline dark:text-emerald-400">Open in Google Maps</span>
+                    </span>
+                </a>
+                {% elif att.mime_type and att.mime_type.startswith('image/') and attachment_url %}
                 <a href="{{ attachment_url }}" target="_blank" rel="noopener" class="block overflow-hidden rounded-lg border border-black/10">
                     <img src="{{ attachment_url }}" alt="{{ att.filename or att.file_name or 'Message image' }}" loading="lazy" class="max-h-56 w-full object-cover">
                 </a>

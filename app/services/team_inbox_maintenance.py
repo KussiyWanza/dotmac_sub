@@ -5,20 +5,26 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from app.models.integration_platform import IntegrationInbox
 from app.models.team_inbox import (
     InboxConversation,
     InboxConversationAssignment,
     InboxConversationStatus,
+    InboxMediaAsset,
+    InboxMessage,
 )
 from app.services import (
     team_inbox_media,
+    team_inbox_observations,
     team_inbox_operations,
     team_inbox_realtime,
     team_inbox_routing,
 )
+from app.services.domain_errors import DomainError
 from app.services.owner_commands import (
     CommandContext,
     OwnerCommandDefinition,
@@ -59,6 +65,257 @@ class AutoResolveStaleCommand:
 class MaintenanceOutcome:
     changed: int
     skipped: int = 0
+
+
+class TeamInboxMaintenanceError(DomainError):
+    """A bounded Inbox repair command cannot be executed safely."""
+
+
+@dataclass(frozen=True, slots=True)
+class RepairWhatsAppLocationsCommand:
+    context: CommandContext
+    conversation_ids: tuple[UUID, ...]
+    receipt_limit: int = 5000
+
+
+@dataclass(frozen=True, slots=True)
+class RepairWhatsAppLocationsOutcome:
+    repaired: int
+    already_complete: int
+    missing_evidence: int
+    receipts_scanned: int
+
+
+@dataclass(frozen=True, slots=True)
+class _RecoveredLocationEvidence:
+    provider_message_id: str
+    receipt_id: UUID
+    location: team_inbox_observations.InboundLocationObservation
+
+
+def _receipt_message_ids(receipt: IntegrationInbox) -> frozenset[UUID]:
+    consequence = receipt.consequence_json or {}
+    raw_items = consequence.get("items")
+    if not isinstance(raw_items, list):
+        return frozenset()
+    message_ids: set[UUID] = set()
+    for item in raw_items:
+        if not isinstance(item, dict) or not item.get("message_id"):
+            continue
+        try:
+            message_ids.add(UUID(str(item["message_id"])))
+        except ValueError:
+            continue
+    return frozenset(message_ids)
+
+
+def _receipt_location_evidence(
+    receipt: IntegrationInbox,
+    *,
+    provider_message_id: str,
+) -> _RecoveredLocationEvidence | None:
+    payload = receipt.payload_json or {}
+    raw_entries = payload.get("entry")
+    if not isinstance(raw_entries, list):
+        return None
+    for entry in raw_entries:
+        if not isinstance(entry, dict):
+            continue
+        raw_changes = entry.get("changes")
+        if not isinstance(raw_changes, list):
+            continue
+        for change in raw_changes:
+            if not isinstance(change, dict):
+                continue
+            value = change.get("value")
+            if not isinstance(value, dict):
+                continue
+            raw_messages = value.get("messages")
+            if not isinstance(raw_messages, list):
+                continue
+            for raw_message in raw_messages:
+                if (
+                    not isinstance(raw_message, dict)
+                    or str(raw_message.get("id") or "") != provider_message_id
+                    or str(raw_message.get("type") or "") != "location"
+                ):
+                    continue
+                raw_location = raw_message.get("location")
+                if not isinstance(raw_location, dict):
+                    return None
+                try:
+                    location = team_inbox_observations.inbound_location_observation(
+                        latitude=raw_location.get("latitude"),
+                        longitude=raw_location.get("longitude"),
+                        name=raw_location.get("name"),
+                        address=raw_location.get("address"),
+                    )
+                except team_inbox_observations.TeamInboxObservationError:
+                    return None
+                if location is None:
+                    return None
+                return _RecoveredLocationEvidence(
+                    provider_message_id=provider_message_id,
+                    receipt_id=receipt.id,
+                    location=location,
+                )
+    return None
+
+
+def _apply_location_repair(
+    *,
+    message: InboxMessage,
+    asset: InboxMediaAsset,
+    evidence: _RecoveredLocationEvidence,
+) -> None:
+    location_metadata = evidence.location.to_metadata()
+    message_metadata = dict(message.metadata_ or {})
+    raw_attachments = message_metadata.get("attachments")
+    attachments = list(raw_attachments) if isinstance(raw_attachments, list) else []
+    updated_attachments: list[object] = []
+    repaired_attachment = False
+    for item in attachments:
+        if (
+            not repaired_attachment
+            and isinstance(item, dict)
+            and item.get("type") == "location"
+        ):
+            updated_item = dict(item)
+            updated_item["location"] = location_metadata
+            updated_attachments.append(updated_item)
+            repaired_attachment = True
+        else:
+            updated_attachments.append(item)
+    if not repaired_attachment:
+        updated_attachments.append({"type": "location", "location": location_metadata})
+    message_metadata["attachments"] = updated_attachments
+    message_metadata["location_repair"] = {
+        "source": "verified_integration_inbox_receipt",
+        "receipt_id": str(evidence.receipt_id),
+    }
+    message.metadata_ = message_metadata
+
+    asset_metadata = dict(asset.metadata_ or {})
+    asset_metadata["location"] = location_metadata
+    asset_metadata["location_repair"] = {
+        "source": "verified_integration_inbox_receipt",
+        "receipt_id": str(evidence.receipt_id),
+    }
+    asset.metadata_ = asset_metadata
+
+
+def repair_whatsapp_locations(
+    db: Session,
+    command: RepairWhatsAppLocationsCommand,
+) -> RepairWhatsAppLocationsOutcome:
+    """Restore dropped WhatsApp coordinates from verified raw receipts.
+
+    The caller must name the exact conversations. The repair locks their
+    location assets and messages, accepts only receipts whose recorded
+    consequence names the same message, and is idempotent once coordinates are
+    present.
+    """
+
+    def operation() -> RepairWhatsAppLocationsOutcome:
+        conversation_ids = tuple(dict.fromkeys(command.conversation_ids))
+        if not conversation_ids or len(conversation_ids) > 100:
+            raise TeamInboxMaintenanceError(
+                code="communications.team_inbox_maintenance.invalid_location_repair_scope",
+                message="Location repair requires between 1 and 100 conversation IDs.",
+            )
+        receipt_limit = max(1, min(command.receipt_limit, 10000))
+        assets = (
+            db.query(InboxMediaAsset)
+            .filter(InboxMediaAsset.conversation_id.in_(conversation_ids))
+            .filter(InboxMediaAsset.asset_type == "location")
+            .order_by(InboxMediaAsset.created_at.asc(), InboxMediaAsset.id.asc())
+            .with_for_update()
+            .all()
+        )
+        message_ids = tuple(
+            dict.fromkeys(asset.message_id for asset in assets if asset.message_id)
+        )
+        messages = (
+            db.query(InboxMessage)
+            .filter(InboxMessage.id.in_(message_ids))
+            .with_for_update()
+            .all()
+            if message_ids
+            else []
+        )
+        messages_by_id = {message.id: message for message in messages}
+        incomplete: dict[UUID, InboxMediaAsset] = {}
+        already_complete = 0
+        missing_without_message = 0
+        for asset in assets:
+            if isinstance((asset.metadata_ or {}).get("location"), dict):
+                already_complete += 1
+            elif asset.message_id is None:
+                missing_without_message += 1
+            else:
+                incomplete[asset.message_id] = asset
+        if not incomplete:
+            return RepairWhatsAppLocationsOutcome(
+                repaired=0,
+                already_complete=already_complete,
+                missing_evidence=missing_without_message,
+                receipts_scanned=0,
+            )
+
+        receipts = (
+            db.query(IntegrationInbox)
+            .filter(IntegrationInbox.event_type == "whatsapp.meta.webhook.v1")
+            .filter(IntegrationInbox.state == "processed")
+            .order_by(IntegrationInbox.received_at.desc())
+            .limit(receipt_limit)
+            .all()
+        )
+        evidence_by_message_id: dict[UUID, _RecoveredLocationEvidence] = {}
+        target_ids = frozenset(incomplete)
+        for receipt in receipts:
+            matched_ids = _receipt_message_ids(receipt) & target_ids
+            for message_id in matched_ids:
+                message = messages_by_id.get(message_id)
+                if message is None or not message.external_message_id:
+                    continue
+                evidence = _receipt_location_evidence(
+                    receipt,
+                    provider_message_id=message.external_message_id,
+                )
+                if evidence is not None:
+                    evidence_by_message_id[message_id] = evidence
+
+        repaired = 0
+        for message_id, asset in incomplete.items():
+            message = messages_by_id.get(message_id)
+            evidence = evidence_by_message_id.get(message_id)
+            if message is None or evidence is None:
+                continue
+            _apply_location_repair(message=message, asset=asset, evidence=evidence)
+            repaired += 1
+            logger.info(
+                "team inbox WhatsApp location repaired",
+                extra={
+                    "event": "team_inbox_whatsapp_location_repaired",
+                    "conversation_id": str(message.conversation_id),
+                    "message_id": str(message.id),
+                    "receipt_id": str(evidence.receipt_id),
+                },
+            )
+        db.flush()
+        return RepairWhatsAppLocationsOutcome(
+            repaired=repaired,
+            already_complete=already_complete,
+            missing_evidence=missing_without_message + len(incomplete) - repaired,
+            receipts_scanned=len(receipts),
+        )
+
+    return execute_owner_command(
+        db,
+        definition=_MAINTENANCE_COMMAND,
+        context=command.context,
+        operation=operation,
+    )
 
 
 @dataclass(frozen=True, slots=True)

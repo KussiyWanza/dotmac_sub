@@ -244,6 +244,50 @@ Click any ONT to see its detail page (`/admin/network/onts/{ont_id}`) with tabs:
 4. Select the PON port
 5. Save
 
+### Applying Customer-Service Configuration
+
+The ONT **Configure** tab is the supported path for WAN, LAN, management, and
+Wi-Fi desired state after an exact subscription assignment exists. Apply one
+section at a time. A successful POST returns **Configuration queued** and a
+tracked operation ID immediately; it does not wait for ACS or OLT I/O.
+
+The lifecycle panel distinguishes these states:
+
+- **Saved/queued**: desired state and the exact-service WAN intent committed
+  atomically with a durable dispatch.
+- **Applying**: the worker claimed the existing dispatch and is converging the
+  exact assignment and revision.
+- **Readback pending**: delivery ran, but fresh device evidence has not yet
+  proved the revision.
+- **Verified**: readback for the exact current assignment, revision, and
+  operation agrees with desired state. This is the only configured-success
+  state.
+- **Failed**: current-revision delivery or verification failed. Use **Retry
+  current configuration** only when the page offers it; a deliberate changed
+  submission creates the next revision and supersedes the failure.
+
+The customer VLAN is shown with its source (config pack or exact service
+intent). PPPoE credentials are derived from the subscriber access credential:
+the page may show a masked username and provenance, but never accepts or
+reveals the password. Prior assignment attempts remain in the separate history
+section and do not determine the current lifecycle status.
+
+Returning an ONT to inventory retires the current configuration lifecycle only
+after external cleanup succeeds. A failed return preserves the current fault.
+Reassignment creates a new lifecycle, so an old assignment failure cannot
+block the reused ONT.
+
+For legacy projection drift, run the exact-ID report first:
+
+```bash
+poetry run python -m scripts.network.repair_ont_service_configuration_drift \
+  --ont-id <ONT_UUID>
+```
+
+Execution additionally requires `--execute`, `--actor`, `--reason`,
+`--reviewed-evidence`, and `--idempotency-key`. Never run execution for a
+production ONT without Michael's separate authorization.
+
 ---
 
 ## 4. Provisioning a New Subscriber
@@ -571,7 +615,8 @@ For each NAS device:
 
 Pick an online ONT and test:
 1. **Reboot** — ONT should go offline briefly, then come back online
-2. **Set WiFi SSID** — change to a test SSID, verify on ONT's WiFi
+2. Use **Configure / Wi-Fi** to queue a test SSID, follow the operation, and
+   require current-revision readback to reach **Verified**
 3. **Run Ping** — ping 8.8.8.8 from the ONT, expect success
 4. **View Config** — should return full device parameters
 

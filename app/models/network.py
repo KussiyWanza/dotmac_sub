@@ -1935,6 +1935,15 @@ class OntUnit(Base):
             postgresql_where=text("is_active AND splitter_port_id IS NOT NULL"),
             sqlite_where=text("is_active AND splitter_port_id IS NOT NULL"),
         ),
+        ForeignKeyConstraint(
+            ["reconcile_configuration_head_id", "reconcile_desired_revision"],
+            [
+                "ont_service_configuration_revisions.head_id",
+                "ont_service_configuration_revisions.revision",
+            ],
+            name="fk_ont_reconcile_configuration_revision",
+            ondelete="SET NULL",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -2116,6 +2125,20 @@ class OntUnit(Base):
         DateTime(timezone=True)
     )
     last_error: Mapped[str | None] = mapped_column(Text)
+    reconcile_configuration_head_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    reconcile_assignment_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("ont_assignments.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    reconcile_desired_revision: Mapped[int | None] = mapped_column(Integer)
+    reconcile_operation_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("network_operations.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     consecutive_sweep_unreachable: Mapped[int] = mapped_column(
         Integer, default=0, server_default="0", nullable=False
     )
@@ -2129,7 +2152,11 @@ class OntUnit(Base):
         onupdate=lambda: datetime.now(UTC),
     )
 
-    assignments = relationship("OntAssignment", back_populates="ont_unit")
+    assignments = relationship(
+        "OntAssignment",
+        back_populates="ont_unit",
+        foreign_keys="OntAssignment.ont_unit_id",
+    )
     zone = relationship("NetworkZone", back_populates="ont_units")
     onu_type = relationship("OnuType", back_populates="ont_units")
     olt_device = relationship("OLTDevice")
@@ -2222,6 +2249,20 @@ class OntProvisioningEvent(Base):
         Index("ix_ont_provisioning_events_status", "status"),
         Index("ix_ont_provisioning_events_correlation_key", "correlation_key"),
         Index("ix_ont_provisioning_events_created_at", "created_at"),
+        Index(
+            "ix_ont_provisioning_events_configuration",
+            "configuration_head_id",
+            "configuration_revision",
+        ),
+        ForeignKeyConstraint(
+            ["configuration_head_id", "configuration_revision"],
+            [
+                "ont_service_configuration_revisions.head_id",
+                "ont_service_configuration_revisions.revision",
+            ],
+            name="fk_ont_provisioning_event_configuration_revision",
+            ondelete="SET NULL",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -2245,6 +2286,16 @@ class OntProvisioningEvent(Base):
     event_data: Mapped[dict | None] = mapped_column(JSON)
     compensation_applied: Mapped[bool] = mapped_column(Boolean, default=False)
     correlation_key: Mapped[str | None] = mapped_column(String(256))
+    assignment_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("ont_assignments.id", ondelete="SET NULL"),
+    )
+    configuration_head_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    configuration_revision: Mapped[int | None] = mapped_column(Integer)
+    operation_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("network_operations.id", ondelete="SET NULL"),
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )
@@ -2468,7 +2519,9 @@ class OntAssignment(Base):
         onupdate=lambda: datetime.now(UTC),
     )
 
-    ont_unit = relationship("OntUnit", back_populates="assignments")
+    ont_unit = relationship(
+        "OntUnit", back_populates="assignments", foreign_keys=[ont_unit_id]
+    )
     pon_port = relationship("PonPort", back_populates="ont_assignments")
     subscriber = relationship("Subscriber", back_populates="ont_assignments")
     subscription = relationship("Subscription")

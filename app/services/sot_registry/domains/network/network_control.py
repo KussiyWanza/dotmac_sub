@@ -11,10 +11,12 @@ from app.services.sot_manifest import (
     EventContract,
     MigrationContract,
     OwnerRole,
+    ProjectionContract,
     ServiceContract,
     SOTService,
     TransactionContract,
     TransactionMode,
+    owner_command_boundary_error_codes,
 )
 
 SERVICES: tuple[SOTService, ...] = (
@@ -416,6 +418,268 @@ SERVICES: tuple[SOTService, ...] = (
                 "tests/test_ont_reconcile_admission_migration.py",
                 "tests/architecture/test_ont_reconcile_admission_boundary.py",
                 "tests/integration/test_ont_reconcile_hold_concurrency.py",
+            ),
+        ),
+    ),
+    SOTService(
+        name="network.ont_service_configuration",
+        module="app.services.network.ont_service_configuration",
+        owns=(
+            "assigned ONT service configuration admission and revision head",
+            "atomic ONT service configuration coordination",
+            "current-lifecycle ONT Configure UI projection",
+            "reviewed ONT configuration lifecycle drift repair",
+        ),
+        depends_on=(
+            "auth.permission_gate",
+            "network.ont_assignment_identity",
+            "network.ont_wan_service_intent",
+            "network.cpe_dialer_credential",
+            "network.ppp_delivery_authorization",
+            "network.operation_ledger",
+            "network.operation_dispatch",
+            "events.dispatcher",
+            "runtime.db_sessions",
+        ),
+        notes=(
+            "Coordinates one exact assignment and monotonically ordered "
+            "configuration revision. Desired state, WAN intent, the derived "
+            "CPE dialer projection, tracked operation and durable dispatch "
+            "are admitted atomically. Device delivery and sync_status remain "
+            "owned by the ONT reconciler; saved or queued state is never "
+            "presented as verified. Historical events stay append-only and "
+            "are excluded from the current UI projection unless their head "
+            "and revision exactly match the active lifecycle."
+        ),
+        contract=ServiceContract(
+            concerns=(
+                ConcernContract(
+                    name="assigned ONT service configuration admission and revision head",
+                    role=OwnerRole.APPLICATION_COORDINATOR,
+                    input_names=(
+                        "exact active ONT assignment",
+                        "typed operator configuration change",
+                        "effective ONT configuration pack",
+                    ),
+                ),
+                ConcernContract(
+                    name="atomic ONT service configuration coordination",
+                    role=OwnerRole.APPLICATION_COORDINATOR,
+                    input_names=(
+                        "declared ONT WAN service intent",
+                        "authoritative subscriber access credential",
+                        "PPP delivery authorization",
+                    ),
+                ),
+                ConcernContract(
+                    name="current-lifecycle ONT Configure UI projection",
+                    role=OwnerRole.RESOLVER,
+                    input_names=(
+                        "configuration lifecycle evidence",
+                        "lifecycle-bound ONT reconcile projection",
+                    ),
+                ),
+                ConcernContract(
+                    name="reviewed ONT configuration lifecycle drift repair",
+                    role=OwnerRole.APPLICATION_COORDINATOR,
+                    input_names=(
+                        "configuration lifecycle evidence",
+                        "reviewed repair evidence",
+                    ),
+                ),
+            ),
+            authoritative_inputs=(
+                AuthorityInput(
+                    name="exact active ONT assignment",
+                    owner="network.ont_assignment_identity",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source="active OntAssignment with exact ONT, subscription and PON identity",
+                ),
+                AuthorityInput(
+                    name="typed operator configuration change",
+                    owner="network.ont_service_configuration",
+                    kind=AuthorityKind.CONTROL_INPUT,
+                    source="ConfigureOntServiceCommand parsed by the HTTP adapter",
+                ),
+                AuthorityInput(
+                    name="effective ONT configuration pack",
+                    owner="network.ont_provisioning_execution",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source="effective config-pack resolution for the locked ONT and OLT",
+                ),
+                AuthorityInput(
+                    name="declared ONT WAN service intent",
+                    owner="network.ont_wan_service_intent",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source="active exact-service OntWanServiceInstance",
+                ),
+                AuthorityInput(
+                    name="authoritative subscriber access credential",
+                    owner="access.radius_projection",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source="active subscriber AccessCredential",
+                ),
+                AuthorityInput(
+                    name="PPP delivery authorization",
+                    owner="network.ppp_delivery_authorization",
+                    kind=AuthorityKind.DERIVED_PROJECTION,
+                    source="delivery-time PPP authorization ruling",
+                ),
+                AuthorityInput(
+                    name="configuration lifecycle evidence",
+                    owner="network.ont_service_configuration",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source="OntServiceConfigurationHead and revision records",
+                ),
+                AuthorityInput(
+                    name="lifecycle-bound ONT reconcile projection",
+                    owner="network.ont_reconcile_projection",
+                    kind=AuthorityKind.DERIVED_PROJECTION,
+                    source="OntUnit reconcile bindings and OntObservation readback",
+                ),
+                AuthorityInput(
+                    name="reviewed repair evidence",
+                    owner="network.ont_service_configuration",
+                    kind=AuthorityKind.CONTROL_INPUT,
+                    source="exact ONT IDs, actor, reason, evidence and idempotency key",
+                ),
+            ),
+            transaction=TransactionContract(
+                mode=TransactionMode.COORDINATOR_MANAGED,
+                boundary=(
+                    "Each public write enters execute_owner_command once on a "
+                    "transaction-free session. Participating owners are flush-only; "
+                    "desired state, intent, revision, operation and dispatch commit together."
+                ),
+                locking=(
+                    "Locks ONT, active assignment, assignment configuration head, "
+                    "current revision and relevant active intent in canonical order."
+                ),
+                idempotency=(
+                    "The assignment head plus idempotency key and keyed material-input "
+                    "fingerprint replay the same operation; changed input under the "
+                    "same key is refused."
+                ),
+                retries=(
+                    "A failed revision is retried only by the typed reviewed repair "
+                    "command. A deliberate changed submission advances the revision "
+                    "and supersedes the old failure."
+                ),
+            ),
+            errors=ErrorContract(
+                domain_codes=owner_command_boundary_error_codes(
+                    "network.ont_service_configuration"
+                )
+                + (
+                    "network.ont_service_configuration.idempotency_required",
+                    "network.ont_service_configuration.invalid_idempotency_key",
+                    "network.ont_service_configuration.fingerprint_key_unavailable",
+                    "network.ont_service_configuration.invalid_change",
+                    "network.ont_service_configuration.section_mismatch",
+                    "network.ont_service_configuration.permission_denied",
+                    "network.ont_service_configuration.ont_not_found",
+                    "network.ont_service_configuration.active_assignment_required",
+                    "network.ont_service_configuration.ambiguous_assignment",
+                    "network.ont_service_configuration.assignment_incomplete",
+                    "network.ont_service_configuration.subscription_not_active",
+                    "network.ont_service_configuration.assignment_identity_conflict",
+                    "network.ont_service_configuration.pon_not_ready",
+                    "network.ont_service_configuration.olt_not_ready",
+                    "network.ont_service_configuration.assignment_topology_conflict",
+                    "network.ont_service_configuration.commissioning_not_ready",
+                    "network.ont_service_configuration.configuration_head_conflict",
+                    "network.ont_service_configuration.configuration_head_retired",
+                    "network.ont_service_configuration.wan_mode_unresolved",
+                    "network.ont_service_configuration.idempotency_conflict",
+                    "network.ont_service_configuration.repair_required",
+                    "network.ont_service_configuration.authoritative_credential_unavailable",
+                    "network.ont_service_configuration.config_pack_missing",
+                    "network.ont_service_configuration.customer_vlan_missing",
+                    "network.ont_service_configuration.concurrent_configuration",
+                    "network.ont_service_configuration.execution_target_missing",
+                    "network.ont_service_configuration.configuration_head_not_found",
+                    "network.ont_service_configuration.stale_configuration",
+                    "network.ont_service_configuration.retry_not_eligible",
+                    "network.ont_service_configuration.exact_ont_ids_required",
+                    "network.ont_service_configuration.reviewed_evidence_required",
+                ),
+                mapping_owner="app.web.admin.network_onts",
+                fail_closed_on=(
+                    "missing or ambiguous assignment, subscription, PON or commissioning identity",
+                    "missing authoritative PPP credential or delivery authorization",
+                    "stale assignment, head, revision or operation identity",
+                    "unreviewed repair or changed material input under an existing key",
+                ),
+            ),
+            events=EventContract(
+                event_types=(
+                    "ont.service_configuration.queued",
+                    "ont.service_configuration.phase_changed",
+                    "ont.service_configuration.retired",
+                ),
+                schema_version=1,
+                delivery_owner="events.dispatcher",
+                compatibility=(
+                    "Version 1 carries assignment, head, revision and operation identity; "
+                    "it never carries a PPP or Wi-Fi secret."
+                ),
+                replay=(
+                    "Events are evidence only. Replay never reissues a device command; "
+                    "repair revalidates current authoritative inputs."
+                ),
+            ),
+            projections=(
+                ProjectionContract(
+                    name="current-lifecycle ONT Configure UI projection",
+                    input_names=(
+                        "configuration lifecycle evidence",
+                        "lifecycle-bound ONT reconcile projection",
+                    ),
+                    writer="network.ont_service_configuration",
+                    freshness=(
+                        "Current only when assignment, head, revision and latest operation "
+                        "match the active assignment head."
+                    ),
+                    stale_behavior=(
+                        "Unbound and prior-lifecycle evidence moves to history and cannot "
+                        "block or label the active lifecycle."
+                    ),
+                    drift_signal=(
+                        "Explicit binding disagreement; timestamps are never lifecycle identity."
+                    ),
+                    rebuild_operation=(
+                        "Run the dry-run drift report, then the exact-ID reviewed repair command."
+                    ),
+                    repair_owner="network.ont_service_configuration",
+                ),
+            ),
+            migration=MigrationContract(
+                state=AuthorityMigrationState.COMPLETE,
+                new_owner="network.ont_service_configuration",
+                old_owner="app.services.web_network_ont_actions.update_ont_config",
+                verification=(
+                    "Architecture tests pin that the route only constructs typed commands "
+                    "and never calls the reconciler, device adapters or Celery directly."
+                ),
+                cutover_gate=(
+                    "All new operations carry assignment, head, revision and operation identity."
+                ),
+                fallback_retirement=(
+                    "The synchronous update_ont_config write-and-reconcile path is removed."
+                ),
+            ),
+            steward="network operations",
+            design_refs=(
+                "docs/designs/ONT_UI_SERVICE_CONFIGURATION_SOT.md",
+                "docs/SOT_RELATIONSHIP_MAP.md",
+                "docs/PROVISIONING_OPERATIONS_GUIDE.md",
+                "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+            ),
+            test_refs=(
+                "tests/test_ont_service_configuration.py",
+                "tests/test_return_to_inventory.py",
+                "tests/architecture/test_ont_service_configuration_boundary.py",
+                "tests/integration/test_ont_service_configuration_concurrency.py",
             ),
         ),
     ),

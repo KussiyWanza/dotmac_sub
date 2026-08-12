@@ -29,6 +29,7 @@ from app.models.network import (
     OltServicePort,
     OntAssignment,
     OntProvisioningStatus,
+    OntSyncStatus,
     OntUnit,
     OntWanServiceInstance,
     OntWanServiceLifecycle,
@@ -723,6 +724,9 @@ class TestReturnOntToInventory:
         self, db_session, sample_ont, sample_olt, sample_assignment
     ):
         """Test that failure during OLT cleanup stops the return process."""
+        sample_ont.sync_status = OntSyncStatus.out_of_sync
+        sample_ont.last_error = "current assignment delivery failed"
+        db_session.commit()
         _add_imported_service_port(db_session, sample_olt, sample_ont)
         mock_adapter = MagicMock()
         mock_adapter.delete_service_port.return_value = ActionResult(
@@ -742,6 +746,8 @@ class TestReturnOntToInventory:
         # ONT state should NOT be changed
         db_session.refresh(sample_ont)
         assert sample_ont.olt_device_id == sample_olt.id
+        assert sample_ont.sync_status is OntSyncStatus.out_of_sync
+        assert sample_ont.last_error == "current assignment delivery failed"
         db_session.refresh(sample_assignment)
         assert sample_assignment.active is True
 

@@ -9,15 +9,19 @@ from playwright.sync_api import Page, expect
 
 def _first_ont_detail_path(admin_page: Page, base_url: str) -> str:
     admin_page.goto(f"{base_url}/admin/network/onts", wait_until="domcontentloaded")
-    detail_link = admin_page.locator("a[href*='/admin/network/onts/']").first
-    if detail_link.count() == 0:
-        pytest.skip("No ONT records available for device-config panel check")
+    links = admin_page.locator("a[href*='/admin/network/onts/']")
+    for index in range(links.count()):
+        href = links.nth(index).get_attribute("href")
+        if not href:
+            continue
+        path = href if href.startswith("/") else re.sub(r"^https?://[^/]+", "", href)
+        if re.search(
+            r"/admin/network/onts/[0-9a-fA-F]{8}-[0-9a-fA-F-]{27}(?:[/?#]|$)",
+            path,
+        ):
+            return path
 
-    href = detail_link.get_attribute("href")
-    if not href:
-        pytest.skip("No ONT detail link available")
-
-    return href if href.startswith("/") else re.sub(r"^https?://[^/]+", "", href)
+    pytest.skip("No ONT record detail link available")
 
 
 def _route_success(admin_page: Page, pattern: str):
@@ -94,6 +98,52 @@ def test_ont_apply_device_config_save_push_and_actions(admin_page: Page, setting
     web_password = web_credentials.locator("input[name='password']")
     expect(web_password).to_be_visible()
     assert web_password.get_attribute("type") == "password"
+
+
+@pytest.mark.parametrize("viewport", ((1440, 900), (390, 844)))
+def test_ont_configure_htmx_exposes_queued_operation_on_desktop_and_mobile(
+    admin_page: Page,
+    settings,
+    viewport: tuple[int, int],
+):
+    """The supported Configure form swaps tracked progress at both breakpoints."""
+
+    admin_page.set_viewport_size({"width": viewport[0], "height": viewport[1]})
+    detail_path = _first_ont_detail_path(admin_page, settings.base_url)
+    admin_page.goto(
+        f"{settings.base_url}{detail_path.split('?')[0]}?tab=configuration",
+        wait_until="domcontentloaded",
+    )
+    configure = admin_page.locator("#configure-content")
+    expect(configure).to_be_visible()
+    form = configure.locator("form[hx-post$='/configure']")
+    expect(form).to_be_visible()
+    expect(form.locator("input[name='idempotency_key']")).to_have_count(1)
+    expect(form.locator("input[name='pppoe_password']")).to_have_count(0)
+    expect(form.locator("input[name='pppoe_username']")).to_have_count(0)
+
+    operation_id = "11111111-1111-1111-1111-111111111111"
+
+    def _queued(route):
+        route.fulfill(
+            status=200,
+            headers={"Content-Type": "text/html"},
+            body=(
+                '<section aria-label="Current ONT configuration lifecycle">'
+                '<div role="status">Configuration queued</div>'
+                f"<div>Operation {operation_id}</div>"
+                "<div>Queued revision 2 - readback not verified</div>"
+                "</section>"
+            ),
+        )
+
+    admin_page.route("**/admin/network/onts/*/configure", _queued)
+    with admin_page.expect_request("**/admin/network/onts/*/configure"):
+        form.get_by_role("button", name="Apply Mgmt").click()
+
+    expect(configure.get_by_text("Configuration queued")).to_be_visible()
+    expect(configure.get_by_text(f"Operation {operation_id}")).to_be_visible()
+    expect(configure.get_by_text("readback not verified", exact=False)).to_be_visible()
 
 
 def test_ont_return_to_inventory_ui_posts_and_redirects(admin_page: Page, settings):

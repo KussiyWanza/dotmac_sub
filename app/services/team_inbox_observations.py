@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -60,6 +61,75 @@ class TeamInboxObservationError(DomainError):
 
 
 @dataclass(frozen=True, slots=True)
+class InboundLocationObservation:
+    latitude: float
+    longitude: float
+    name: str | None = None
+    address: str | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            not math.isfinite(self.latitude)
+            or not -90 <= self.latitude <= 90
+            or not math.isfinite(self.longitude)
+            or not -180 <= self.longitude <= 180
+        ):
+            raise TeamInboxObservationError(
+                code="communications.team_inbox_observations.invalid_location",
+                message="The provider location coordinates are invalid.",
+            )
+
+    def to_metadata(self) -> dict[str, float | str | None]:
+        return {
+            "latitude": self.latitude,
+            "longitude": self.longitude,
+            "name": self.name,
+            "address": self.address,
+        }
+
+
+def inbound_location_observation(
+    *,
+    latitude: object,
+    longitude: object,
+    name: object = None,
+    address: object = None,
+) -> InboundLocationObservation | None:
+    if latitude is None and longitude is None:
+        return None
+    if (
+        latitude is None
+        or longitude is None
+        or isinstance(latitude, bool)
+        or isinstance(longitude, bool)
+    ):
+        raise TeamInboxObservationError(
+            code="communications.team_inbox_observations.invalid_location",
+            message="The provider location must include valid latitude and longitude.",
+        )
+    try:
+        latitude_value = float(str(latitude).strip())
+        longitude_value = float(str(longitude).strip())
+    except (TypeError, ValueError) as exc:
+        raise TeamInboxObservationError(
+            code="communications.team_inbox_observations.invalid_location",
+            message="The provider location must include valid latitude and longitude.",
+        ) from exc
+    return InboundLocationObservation(
+        latitude=latitude_value,
+        longitude=longitude_value,
+        name=(
+            str(name).strip()[:255] if name is not None and str(name).strip() else None
+        ),
+        address=(
+            str(address).strip()[:500]
+            if address is not None and str(address).strip()
+            else None
+        ),
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class InboundAttachmentObservation:
     asset_type: str
     file_name: str | None = None
@@ -69,6 +139,7 @@ class InboundAttachmentObservation:
     caption: str | None = None
     file_size: int | None = None
     download_status: str | None = None
+    location: InboundLocationObservation | None = None
 
 
 @dataclass(frozen=True, slots=True)
