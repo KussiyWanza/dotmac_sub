@@ -9,7 +9,7 @@ from typing import Literal, TypedDict
 from urllib.parse import quote_plus
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Form, Query, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.exc import SQLAlchemyError
@@ -20,6 +20,7 @@ from app.models.billing import InvoiceDiscountSource, InvoiceStatus
 from app.models.catalog import SubscriptionStatus
 from app.models.sales import QuoteStatus
 from app.models.team_inbox import InboxConversation, InboxConversationStatus
+from app.services import crm_reporting as crm_reporting_service
 from app.services import ncc_complaints_report as ncc_complaints_service
 from app.services import ncc_regulatory_pack as ncc_pack_service
 from app.services import ncc_subscriber_report as ncc_report_service
@@ -30,7 +31,11 @@ from app.services import web_document_discount_report as discount_report_service
 from app.services import web_reports as web_reports_service
 from app.services import web_reports_extended as web_reports_ext_service
 from app.services.audit_helpers import recent_activity_for_paths
-from app.services.auth_dependencies import require_any_permission, require_permission
+from app.services.auth_dependencies import (
+    can,
+    require_any_permission,
+    require_permission,
+)
 from app.services.db_session_adapter import db_session_adapter
 from app.services.domain_errors import DomainError
 
@@ -242,6 +247,100 @@ REPORT_HUB_SECTIONS: list[ReportHubSection] = [
             },
         ],
     },
+    {
+        "id": "crm-operations",
+        "name": "CRM Operations",
+        "description": "Customer activity, lifecycle, service quality, and inbox performance",
+        "color": "violet",
+        "links": [
+            {
+                "name": "Online Activity",
+                "url": "/admin/reports/operational/online-activity",
+                "description": "Customers with fresh RADIUS activity",
+                "permission": "customer:read",
+            },
+            {
+                "name": "Subscriber Lifecycle",
+                "url": "/admin/reports/operational/subscriber-lifecycle",
+                "description": "Subscriber and service lifecycle state from native records",
+                "permission": "customer:read",
+            },
+            {
+                "name": "Subscriber Service Quality",
+                "url": "/admin/reports/operational/service-quality",
+                "description": "Support, field-work, and outage observations by subscriber",
+                "permission": "reports:support:read",
+            },
+            {
+                "name": "CRM Performance",
+                "url": "/admin/reports/operational/crm-performance",
+                "description": "Inbox performance by service team",
+                "permission": "reports:support:read",
+            },
+            {
+                "name": "Agent Performance",
+                "url": "/admin/reports/operational/agent-performance",
+                "description": "Inbox handling and response performance by agent",
+                "permission": "reports:support:read",
+            },
+            {
+                "name": "My Performance",
+                "url": "/admin/reports/operational/my-performance",
+                "description": "The signed-in agent's own inbox performance",
+                "permission": "reports:support:read",
+            },
+            {
+                "name": "Queue & Issue Classification",
+                "url": "/admin/reports/operational/queue-classification",
+                "description": "Queue settlement times and recorded AI/tag classifications",
+                "permission": "reports:support:read",
+            },
+        ],
+    },
+    {
+        "id": "crm-finance-operations",
+        "name": "CRM Finance & Delivery",
+        "description": "Billing exposure, revenue, SLA, and project delivery performance",
+        "color": "amber",
+        "links": [
+            {
+                "name": "Subscriber Billing Risk",
+                "url": "/admin/reports/operational/billing-risk",
+                "description": "Authoritative balances, blocks, billing dates, and payment recency",
+                "permission": "reports:billing:read",
+            },
+            {
+                "name": "Subscriber Revenue & Pipeline",
+                "url": "/admin/reports/operational/subscriber-revenue",
+                "description": "Invoiced, collected, and outstanding value by subscriber",
+                "permission": "reports:billing:read",
+            },
+            {
+                "name": "Postpaid Customers",
+                "url": "/admin/reports/operational/postpaid-customers",
+                "description": "Postpaid accounts and their current billing position",
+                "permission": "reports:billing:read",
+            },
+            {
+                "name": "Revenue & Service",
+                "url": "/admin/reports/operational/revenue-service",
+                "description": "Revenue alongside authoritative customer outage intervals",
+                "permission": "reports:billing:read",
+            },
+            {
+                "name": "Operations SLA Violations",
+                "url": "/admin/reports/operational/operations-sla",
+                "description": "Overdue tickets, projects, and project tasks",
+                "permission": "reports:support:read",
+            },
+            {
+                "name": "Project & Task Performance",
+                "url": "/admin/reports/operational/project-task-performance",
+                "description": "Assigned, completed, overdue, and blocked project work",
+                "permission": "reports:support:read",
+            },
+        ],
+    },
 ]
 
 
@@ -280,6 +379,41 @@ def _parse_date_end(value: str | None) -> datetime | None:
         return datetime.combine(datetime.fromisoformat(value).date(), time.max, UTC)
     except (ValueError, TypeError):
         return None
+
+
+def _parse_report_date(value: str | None) -> date | None:
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid report date") from None
+
+
+def _operational_report_query(
+    *,
+    request: Request,
+    date_from: str | None,
+    date_to: str | None,
+    page: int,
+    per_page: int | None,
+    personal: bool,
+) -> crm_reporting_service.CrmReportQuery:
+    person_id = None
+    if personal:
+        user = getattr(request.state, "user", None)
+        raw_person_id = getattr(user, "id", None)
+        try:
+            person_id = UUID(str(raw_person_id)) if raw_person_id else None
+        except ValueError:
+            person_id = None
+    return crm_reporting_service.CrmReportQuery(
+        date_from=_parse_report_date(date_from),
+        date_to=_parse_report_date(date_to),
+        page=page,
+        per_page=per_page,
+        person_id=person_id,
+    )
 
 
 @router.get(
@@ -368,6 +502,8 @@ def reports_subscribers(
     date_from: str | None = None,
     date_to: str | None = None,
     status: str | None = None,
+    page: int = Query(default=1, ge=1),
+    per_page: int = Query(default=50, ge=10, le=200),
     db: Session = Depends(get_db),
 ):
     from app.web.admin import get_current_user, get_sidebar_stats
@@ -377,6 +513,8 @@ def reports_subscribers(
         date_from=date_from,
         date_to=date_to,
         status=status,
+        page=page,
+        per_page=per_page,
     )
 
     context = {
@@ -401,6 +539,12 @@ def reports_subscribers(
         "date_to": report_data["date_to"],
         "status_filter": report_data["status_filter"],
         "status_options": report_data["status_options"],
+        "plan_distribution": report_data["plan_distribution"],
+        "regional_breakdown": report_data["regional_breakdown"],
+        "page": report_data["page"],
+        "per_page": report_data["per_page"],
+        "has_previous": report_data["has_previous"],
+        "has_next": report_data["has_next"],
     }
     return templates.TemplateResponse("admin/reports/subscribers.html", context)
 
@@ -497,6 +641,12 @@ def reports_network(request: Request, db: Session = Depends(get_db)):
         "used_ips": report_data["used_ips"],
         "total_ips": report_data["total_ips"],
         "active_vlans": report_data["active_vlans"],
+        "pon_capacity": report_data["pon_capacity"],
+        "pon_utilization": report_data["pon_utilization"],
+        "total_fiber_strands": report_data["total_fiber_strands"],
+        "available_fiber_strands": report_data["available_fiber_strands"],
+        "total_fdh": report_data["total_fdh"],
+        "splitter_capacity": report_data["splitter_capacity"],
         "olts": report_data["olts"],
         "ip_pools": report_data["pool_data"],
         "recent_ont_activity": report_data["recent_ont_activity"],
@@ -524,10 +674,17 @@ def reports_network_export(hours: int | None = None, db: Session = Depends(get_d
     response_class=HTMLResponse,
     dependencies=[Depends(require_permission("reports:support:read"))],
 )
-def reports_technician(request: Request, db: Session = Depends(get_db)):
+def reports_technician(
+    request: Request,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    db: Session = Depends(get_db),
+):
     from app.web.admin import get_current_user, get_sidebar_stats
 
-    report_data = web_reports_service.get_technician_report_data(db)
+    report_data = web_reports_service.get_technician_report_data(
+        db, date_from=date_from, date_to=date_to
+    )
 
     context = {
         "request": request,
@@ -538,10 +695,12 @@ def reports_technician(request: Request, db: Session = Depends(get_db)):
         "total_technicians": report_data["total_technicians"],
         "jobs_completed": report_data["jobs_completed"],
         "avg_completion_hours": report_data["avg_completion_hours"],
-        "first_visit_rate": report_data["first_visit_rate"],
+        "appointment_completion_rate": report_data["appointment_completion_rate"],
         "technician_stats": report_data["technician_stats"],
         "job_type_breakdown": report_data["job_type_breakdown"],
         "recent_completions": report_data["recent_completions"],
+        "date_from": report_data["date_from"],
+        "date_to": report_data["date_to"],
         "recent_activities": recent_activity_for_paths(db, ["/admin/reports"]),
     }
     return templates.TemplateResponse("admin/reports/technician.html", context)
@@ -551,8 +710,15 @@ def reports_technician(request: Request, db: Session = Depends(get_db)):
     "/technician/export",
     dependencies=[Depends(require_permission("reports:support:read"))],
 )
-def reports_technician_export(days: int | None = None, db: Session = Depends(get_db)):
-    content = web_reports_service.build_technician_export_csv(db=db, days=days)
+def reports_technician_export(
+    days: int | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    db: Session = Depends(get_db),
+):
+    content = web_reports_service.build_technician_export_csv(
+        db=db, days=days, date_from=date_from, date_to=date_to
+    )
     return Response(
         content,
         media_type="text/csv",
@@ -1828,6 +1994,102 @@ def reports_ncc_email_settings(
     return RedirectResponse(
         url="/admin/reports/ncc-complaints?saved=1", status_code=303
     )
+
+
+_OPERATIONAL_REPORT_PERMISSIONS = tuple(
+    sorted(
+        {
+            definition.permission
+            for definition in crm_reporting_service.REPORT_DEFINITIONS.values()
+        }
+    )
+)
+
+
+def _operational_definition(
+    request: Request, report_slug: str
+) -> crm_reporting_service.CrmReportDefinition:
+    try:
+        slug = crm_reporting_service.CrmReportSlug(report_slug)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Report not found") from None
+    definition = crm_reporting_service.REPORT_DEFINITIONS[slug]
+    if not can(request, definition.permission):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    return definition
+
+
+@router.get(
+    "/operational/{report_slug}/export",
+    dependencies=[Depends(require_any_permission(*_OPERATIONAL_REPORT_PERMISSIONS))],
+)
+def reports_operational_export(
+    request: Request,
+    report_slug: str,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    db: Session = Depends(get_db),
+):
+    definition = _operational_definition(request, report_slug)
+    if not definition.supports_date_filter:
+        date_from = date_to = None
+    query = _operational_report_query(
+        request=request,
+        date_from=date_from,
+        date_to=date_to,
+        page=1,
+        per_page=None,
+        personal=definition.slug == crm_reporting_service.CrmReportSlug.MY_PERFORMANCE,
+    )
+    report = crm_reporting_service.get_report(db, slug=definition.slug, query=query)
+    return Response(
+        content=crm_reporting_service.build_csv(report),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{report_slug}.csv"'},
+    )
+
+
+@router.get(
+    "/operational/{report_slug}",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_any_permission(*_OPERATIONAL_REPORT_PERMISSIONS))],
+)
+def reports_operational_page(
+    request: Request,
+    report_slug: str,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    page: int = Query(default=1, ge=1),
+    per_page: int = Query(default=50, ge=10, le=200),
+    db: Session = Depends(get_db),
+):
+    definition = _operational_definition(request, report_slug)
+    if not definition.supports_date_filter:
+        date_from = date_to = None
+    query = _operational_report_query(
+        request=request,
+        date_from=date_from,
+        date_to=date_to,
+        page=page,
+        per_page=per_page,
+        personal=definition.slug == crm_reporting_service.CrmReportSlug.MY_PERFORMANCE,
+    )
+    report = crm_reporting_service.get_report(db, slug=definition.slug, query=query)
+    context = _base_context(
+        request,
+        db,
+        f"reports-{report_slug}",
+        definition.title,
+        definition.description,
+    )
+    context.update(
+        {
+            "report": report,
+            "date_from": date_from or "",
+            "date_to": date_to or "",
+        }
+    )
+    return templates.TemplateResponse("admin/reports/operational.html", context)
 
 
 # ── AI: on-demand insight for an owned report projection ─────────────────────
