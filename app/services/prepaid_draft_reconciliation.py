@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time
 from decimal import Decimal
 from enum import StrEnum
@@ -58,6 +58,16 @@ from app.models.collections import (
     FinancialAccessConsequence,
     FinancialAccessOrigin,
 )
+from app.models.customer_subledger import (
+    CustomerPositionEffect,
+    CustomerPostingGroup,
+    CustomerSubledgerAuthorityCutover,
+    CustomerSubledgerOpeningPosition,
+    PositionEffectKind,
+    PostingCommandKind,
+    PostingProducer,
+    PostingSourceKind,
+)
 from app.models.idempotency import IdempotencyKey
 from app.models.prepaid_funding import (
     PrepaidDraftReconciliationException,
@@ -76,8 +86,14 @@ from app.services.billing.account_credit import (
     AccountCreditApplicationError,
     AccountCreditApplications,
     AccountCreditInvoiceFundingPreview,
+    ReviewedOpeningSettlementAllocationRelease,
 )
 from app.services.billing.adjustments import AccountAdjustmentOrigin
+from app.services.billing.customer_subledger import (
+    StageReversalCommand,
+    resolve_position,
+    stage_reversal,
+)
 from app.services.billing.invoices import (
     InvoiceLines,
     InvoiceOwnerError,
@@ -89,8 +105,12 @@ from app.services.billing.ledger import LedgerEntries
 from app.services.billing.payments import (
     PaymentAllocations,
     finalize_invoice_application_for_owner,
+    finalize_reviewed_document_settlement_for_owner,
 )
 from app.services.common import round_money, to_decimal
+from app.services.customer_financial_ledger import (
+    native_customer_financial_balances_by_currency,
+)
 from app.services.domain_errors import DomainError
 from app.services.events import emit_event
 from app.services.events.types import EventType
@@ -128,10 +148,16 @@ _MISSING_PAID_INVOICE_REPAIR_COMMAND = OwnerCommandDefinition(
     concern="reviewed missing prepaid paid-invoice repair",
     name="create_reviewed_paid_prepaid_invoice",
 )
+_OPENING_SETTLEMENT_CORRECTION_COMMAND = OwnerCommandDefinition(
+    owner=_OWNER,
+    concern="reviewed pre-opening invoice settlement correction",
+    name="reconcile_preopening_invoice_settlement",
+)
 _IDEMPOTENCY_SCOPE = "prepaid_draft_reconcile"
 _PROFORMA_ADOPTION_IDEMPOTENCY_SCOPE = "prepaid_proforma_adoption"
 _PAID_INVOICE_REPAIR_IDEMPOTENCY_SCOPE = "paid_prepaid_invoice_repair"
 _MISSING_PAID_INVOICE_REPAIR_IDEMPOTENCY_SCOPE = "missing_paid_prepaid_invoice_repair"
+_OPENING_SETTLEMENT_IDEMPOTENCY_SCOPE = "preopening_invoice_settlement_correction"
 _METADATA_KEY = "prepaid_draft_reconciliation"
 _PROFORMA_ADOPTION_METADATA_KEY = "prepaid_proforma_adoption"
 _PAID_INVOICE_REPAIR_METADATA_KEY = "paid_prepaid_invoice_repair"
@@ -171,6 +197,12 @@ class MissingPaidPrepaidInvoiceRepairDisposition(StrEnum):
     exact_missing_invoice = "exact_missing_invoice"
     manual_review = "manual_review"
     already_repaired = "already_repaired"
+
+
+class OpeningSettlementCorrectionDisposition(StrEnum):
+    exact_preopening_double_application = "exact_preopening_double_application"
+    manual_review = "manual_review"
+    already_reconciled = "already_reconciled"
 
 
 class PrepaidDraftReconciliationError(DomainError):
@@ -435,6 +467,67 @@ class MissingPaidPrepaidInvoiceRepairResult:
     billing_period_end: datetime
     total: Decimal
     remaining_credit: Decimal
+    preview_fingerprint: str
+    replayed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class OpeningSettlementCorrectionQuery:
+    invoice_id: UUID
+    allocation_id: UUID
+    expected_confirmed_balance: Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class OpeningSettlementCorrectionPreview:
+    invoice_id: UUID
+    account_id: UUID
+    invoice_number: str | None
+    allocation_id: UUID
+    payment_id: UUID | None
+    opening_position_id: UUID | None
+    baseline_id: UUID | None
+    original_posting_group_id: UUID | None
+    disposition: OpeningSettlementCorrectionDisposition
+    currency: str
+    invoice_total: Decimal
+    balance_due: Decimal
+    allocated_amount: Decimal
+    confirmed_balance: Decimal
+    subledger_credit_before: Decimal
+    subledger_receivable_before: Decimal
+    opening_settlement_amount: Decimal
+    reason: str
+    fingerprint: str
+
+    @property
+    def actionable(self) -> bool:
+        return (
+            self.disposition
+            is OpeningSettlementCorrectionDisposition.exact_preopening_double_application
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ReconcileOpeningSettlementCorrectionCommand:
+    context: CommandContext
+    query: OpeningSettlementCorrectionQuery
+    preview_fingerprint: str
+    effective_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class OpeningSettlementCorrectionResult:
+    invoice_id: UUID
+    allocation_id: UUID
+    opening_funding_consumption_id: UUID
+    customer_posting_reversal_id: UUID
+    ledger_reversal_ids: tuple[UUID, ...]
+    final_status: InvoiceStatus
+    final_balance_due: Decimal
+    confirmed_balance: Decimal
+    subledger_credit_after: Decimal
+    subledger_receivable_after: Decimal
     preview_fingerprint: str
     replayed: bool
 
@@ -3809,6 +3902,630 @@ def repair_historical_paid_prepaid_invoice(
     )
 
 
+def _opening_settlement_preview_payload(
+    preview: OpeningSettlementCorrectionPreview,
+) -> dict[str, object]:
+    return {
+        "invoice_id": preview.invoice_id,
+        "account_id": preview.account_id,
+        "invoice_number": preview.invoice_number,
+        "allocation_id": preview.allocation_id,
+        "payment_id": preview.payment_id,
+        "opening_position_id": preview.opening_position_id,
+        "baseline_id": preview.baseline_id,
+        "original_posting_group_id": preview.original_posting_group_id,
+        "disposition": preview.disposition,
+        "currency": preview.currency,
+        "invoice_total": preview.invoice_total,
+        "balance_due": preview.balance_due,
+        "allocated_amount": preview.allocated_amount,
+        "confirmed_balance": preview.confirmed_balance,
+        "subledger_credit_before": preview.subledger_credit_before,
+        "subledger_receivable_before": preview.subledger_receivable_before,
+        "opening_settlement_amount": preview.opening_settlement_amount,
+        "reason": preview.reason,
+    }
+
+
+def preview_opening_settlement_correction(
+    db: Session,
+    query: OpeningSettlementCorrectionQuery,
+) -> OpeningSettlementCorrectionPreview:
+    """Prove one invoice/allocation was already absorbed by its opening.
+
+    The preview is deliberately narrow.  It accepts only the exact signature
+    where a pre-opening invoice is reconstructed in the approved opening, a
+    later payment allocation duplicated that economic effect, and the linked
+    customer-subledger group is the complete two-lane application posting.
+    """
+
+    invoice = db.get(Invoice, query.invoice_id)
+    if invoice is None:
+        _error("invoice_not_found", "Invoice was not found.")
+    allocation = db.get(PaymentAllocation, query.allocation_id)
+    currency = (invoice.currency or "NGN").strip().upper()
+    invoice_total = round_money(to_decimal(invoice.total))
+    balance_due = round_money(to_decimal(invoice.balance_due))
+    allocated_amount = (
+        round_money(to_decimal(allocation.amount))
+        if allocation is not None
+        else Decimal("0.00")
+    )
+    payment = allocation.payment if allocation is not None else None
+    opening = db.scalar(
+        select(CustomerSubledgerOpeningPosition).where(
+            CustomerSubledgerOpeningPosition.account_id == invoice.account_id,
+            CustomerSubledgerOpeningPosition.currency == currency,
+        )
+    )
+    baseline = (
+        db.get(PrepaidFundingBaseline, opening.baseline_id)
+        if opening is not None and opening.baseline_id is not None
+        else None
+    )
+    groups = (
+        tuple(
+            db.scalars(
+                select(CustomerPostingGroup)
+                .where(
+                    CustomerPostingGroup.source_kind
+                    == PostingSourceKind.payment_allocation.value,
+                    CustomerPostingGroup.source_id == query.allocation_id,
+                    CustomerPostingGroup.command_kind
+                    == PostingCommandKind.customer_credit_application,
+                    CustomerPostingGroup.reverses_group_id.is_(None),
+                )
+                .order_by(CustomerPostingGroup.id)
+            ).all()
+        )
+        if allocation is not None
+        else ()
+    )
+    original_group = groups[0] if len(groups) == 1 else None
+    group_reversal = (
+        db.scalar(
+            select(CustomerPostingGroup).where(
+                CustomerPostingGroup.reverses_group_id == original_group.id
+            )
+        )
+        if original_group is not None
+        else None
+    )
+    consumption = db.scalar(
+        select(PrepaidOpeningFundingConsumption).where(
+            PrepaidOpeningFundingConsumption.invoice_id == invoice.id
+        )
+    )
+
+    try:
+        confirmed_balance = round_money(
+            verified_prepaid_funding_balance(db, invoice.account_id, currency=currency)
+        )
+    except PrepaidFundingBaselineMissingError:
+        confirmed_balance = Decimal("0.00")
+    position = resolve_position(
+        db,
+        account_id=invoice.account_id,
+        currency=currency,
+    )
+
+    issues: list[str] = []
+    if not invoice.is_active or invoice.is_proforma:
+        issues.append("invoice is not an active financial document")
+    if invoice.status not in (
+        InvoiceStatus.partially_paid,
+        InvoiceStatus.issued,
+        InvoiceStatus.overdue,
+        InvoiceStatus.paid,
+    ):
+        issues.append("invoice status is outside the reviewed correction cohort")
+    if len(currency) != 3 or invoice_total <= Decimal("0.00"):
+        issues.append("invoice currency or total is invalid")
+    if allocation is None or allocation.invoice_id != invoice.id:
+        issues.append("selected allocation does not belong to the invoice")
+    elif payment is None or payment.account_id != invoice.account_id:
+        issues.append("allocation payment does not belong to the invoice account")
+    elif (
+        not payment.is_active
+        or payment.status is not PaymentStatus.succeeded
+        or payment.settlement is None
+        or payment.refunds
+        or payment.reversal is not None
+        or (payment.currency or "").upper() != currency
+    ):
+        issues.append("allocation payment lacks exact unreturned settlement evidence")
+
+    active_allocations = tuple(
+        db.scalars(
+            select(PaymentAllocation)
+            .where(
+                PaymentAllocation.invoice_id == invoice.id,
+                PaymentAllocation.is_active.is_(True),
+            )
+            .order_by(PaymentAllocation.id)
+        ).all()
+    )
+    already_reconciled = bool(
+        consumption is not None
+        and allocation is not None
+        and not allocation.is_active
+        and group_reversal is not None
+        and invoice.status is InvoiceStatus.paid
+        and balance_due == Decimal("0.00")
+        and round_money(to_decimal(consumption.amount)) == invoice_total
+        and confirmed_balance == round_money(query.expected_confirmed_balance)
+        and position.unapplied_customer_credit == confirmed_balance
+        and position.collectible_receivable == Decimal("0.00")
+    )
+    if not already_reconciled:
+        if allocation is None or not allocation.is_active:
+            issues.append(
+                "selected allocation is not the sole active invoice allocation"
+            )
+        elif active_allocations != (allocation,):
+            issues.append("invoice has competing active allocation evidence")
+        if consumption is not None:
+            issues.append("invoice already has opening-funding consumption evidence")
+        if opening is None or baseline is None:
+            issues.append("approved subledger opening or funding baseline is missing")
+        else:
+            invoice_instant = invoice.issued_at or invoice.created_at
+            allocation_instant = (
+                allocation.created_at if allocation is not None else None
+            )
+            if invoice_instant is None or not (
+                _utc(baseline.position_at)
+                < _utc(invoice_instant)
+                <= _utc(opening.occurred_at)
+            ):
+                issues.append("invoice is not between the baseline and opening")
+            if allocation_instant is None or _utc(allocation_instant) <= _utc(
+                opening.occurred_at
+            ):
+                issues.append("allocation does not post after the approved opening")
+            delta = (
+                native_customer_financial_balances_by_currency(
+                    db,
+                    [invoice.account_id],
+                    after=_utc(baseline.position_at),
+                    before=_utc(opening.occurred_at),
+                )
+                .get(invoice.account_id, {})
+                .get(currency, Decimal("0.00"))
+            )
+            reconstructed_opening = round_money(
+                to_decimal(baseline.amount) + to_decimal(delta)
+            )
+            if reconstructed_opening != round_money(
+                to_decimal(opening.legacy_position)
+            ):
+                issues.append(
+                    "opening does not exactly reconstruct from baseline facts"
+                )
+            prior_consumption = round_money(
+                to_decimal(
+                    db.scalar(
+                        select(
+                            func.coalesce(
+                                func.sum(PrepaidOpeningFundingConsumption.amount), 0
+                            )
+                        ).where(
+                            PrepaidOpeningFundingConsumption.baseline_id == baseline.id
+                        )
+                    )
+                )
+            )
+            if (
+                round_money(to_decimal(baseline.amount) - prior_consumption)
+                < invoice_total
+            ):
+                issues.append("approved opening source cannot fund the full invoice")
+
+        if balance_due <= Decimal("0.00") or allocated_amount <= Decimal("0.00"):
+            issues.append("invoice does not have a positive partial-settlement gap")
+        if round_money(allocated_amount + balance_due) != invoice_total:
+            issues.append("allocation and remaining balance do not equal invoice total")
+        if confirmed_balance != round_money(query.expected_confirmed_balance):
+            issues.append("confirmed customer balance changed")
+        if len(groups) != 1 or original_group is None:
+            issues.append("allocation does not have one exact customer posting group")
+        else:
+            ledger_entry_ids = tuple(
+                value
+                for value in (
+                    allocation.ledger_entry_id,
+                    allocation.consumption_ledger_entry_id,
+                )
+                if value is not None
+            )
+            prior_ledger_reversal = (
+                db.scalar(
+                    select(LedgerEntry.id).where(
+                        LedgerEntry.reversal_of_entry_id.in_(ledger_entry_ids)
+                    )
+                )
+                if ledger_entry_ids
+                else None
+            )
+            effects = tuple(
+                db.scalars(
+                    select(CustomerPositionEffect)
+                    .where(CustomerPositionEffect.group_id == original_group.id)
+                    .order_by(CustomerPositionEffect.effect, CustomerPositionEffect.id)
+                ).all()
+            )
+            effect_signature = {
+                (
+                    effect.effect,
+                    round_money(to_decimal(effect.amount)),
+                    effect.invoice_id,
+                    effect.payment_id,
+                )
+                for effect in effects
+            }
+            expected_signature = {
+                (
+                    PositionEffectKind.customer_credit_consumed,
+                    allocated_amount,
+                    None,
+                    payment.id if payment is not None else None,
+                ),
+                (
+                    PositionEffectKind.receivable_settled,
+                    allocated_amount,
+                    invoice.id,
+                    None,
+                ),
+            }
+            if (
+                original_group.authority.value != "authoritative"
+                or prior_ledger_reversal is not None
+                or original_group.producer_owner
+                != PostingProducer.account_credit_applications.value
+                or len(effects) != 2
+                or effect_signature != expected_signature
+                or group_reversal is not None
+            ):
+                issues.append(
+                    "allocation posting is not the exact unreversed two-lane effect"
+                )
+        expected_credit_before = round_money(confirmed_balance - allocated_amount)
+        if (
+            position.unapplied_customer_credit != expected_credit_before
+            or position.collectible_receivable != -allocated_amount
+            or position.prepaid_funding_reserved != Decimal("0.00")
+            or position.written_off_total != Decimal("0.00")
+            or position.refunded_total != Decimal("0.00")
+            or position.adjustment_total != Decimal("0.00")
+        ):
+            issues.append(
+                "customer subledger does not match the duplicate-application signature"
+            )
+        if db.scalar(select(CustomerSubledgerAuthorityCutover.id).limit(1)) is None:
+            issues.append("customer subledger authority is not active")
+
+    if already_reconciled:
+        disposition = OpeningSettlementCorrectionDisposition.already_reconciled
+        reason = "the exact reviewed correction is already complete"
+    elif issues:
+        disposition = OpeningSettlementCorrectionDisposition.manual_review
+        reason = "; ".join(dict.fromkeys(issues))
+    else:
+        disposition = (
+            OpeningSettlementCorrectionDisposition.exact_preopening_double_application
+        )
+        reason = (
+            "invoice is fully embedded in the approved opening and the later "
+            "allocation duplicated only its customer-subledger effect"
+        )
+    preview = OpeningSettlementCorrectionPreview(
+        invoice_id=invoice.id,
+        account_id=invoice.account_id,
+        invoice_number=invoice.invoice_number,
+        allocation_id=query.allocation_id,
+        payment_id=payment.id if payment is not None else None,
+        opening_position_id=opening.id if opening is not None else None,
+        baseline_id=baseline.id if baseline is not None else None,
+        original_posting_group_id=(
+            original_group.id if original_group is not None else None
+        ),
+        disposition=disposition,
+        currency=currency,
+        invoice_total=invoice_total,
+        balance_due=balance_due,
+        allocated_amount=allocated_amount,
+        confirmed_balance=confirmed_balance,
+        subledger_credit_before=position.unapplied_customer_credit,
+        subledger_receivable_before=position.collectible_receivable,
+        opening_settlement_amount=invoice_total,
+        reason=reason,
+        fingerprint="",
+    )
+    return replace(
+        preview,
+        fingerprint=_hash(_opening_settlement_preview_payload(preview)),
+    )
+
+
+def _opening_settlement_result(
+    db: Session,
+    *,
+    query: OpeningSettlementCorrectionQuery,
+    preview_fingerprint: str,
+    replayed: bool,
+) -> OpeningSettlementCorrectionResult:
+    invoice = db.get(Invoice, query.invoice_id)
+    allocation = db.get(PaymentAllocation, query.allocation_id)
+    consumption = db.scalar(
+        select(PrepaidOpeningFundingConsumption).where(
+            PrepaidOpeningFundingConsumption.invoice_id == query.invoice_id
+        )
+    )
+    if invoice is None or allocation is None or consumption is None:
+        _error("incomplete_repair", "Opening-settlement evidence is incomplete.")
+    original_group = db.scalar(
+        select(CustomerPostingGroup).where(
+            CustomerPostingGroup.source_kind
+            == PostingSourceKind.payment_allocation.value,
+            CustomerPostingGroup.source_id == allocation.id,
+            CustomerPostingGroup.command_kind
+            == PostingCommandKind.customer_credit_application,
+            CustomerPostingGroup.reverses_group_id.is_(None),
+        )
+    )
+    posting_reversal = (
+        db.scalar(
+            select(CustomerPostingGroup).where(
+                CustomerPostingGroup.reverses_group_id == original_group.id
+            )
+        )
+        if original_group is not None
+        else None
+    )
+    ledger_original_ids = tuple(
+        value
+        for value in (
+            allocation.ledger_entry_id,
+            allocation.consumption_ledger_entry_id,
+        )
+        if value is not None
+    )
+    ledger_reversals = tuple(
+        db.scalars(
+            select(LedgerEntry)
+            .where(LedgerEntry.reversal_of_entry_id.in_(ledger_original_ids))
+            .order_by(LedgerEntry.id)
+        ).all()
+    )
+    currency = (invoice.currency or "NGN").upper()
+    confirmed = round_money(
+        verified_prepaid_funding_balance(db, invoice.account_id, currency=currency)
+    )
+    position = resolve_position(db, account_id=invoice.account_id, currency=currency)
+    if (
+        allocation.is_active
+        or posting_reversal is None
+        or len(ledger_reversals) != len(ledger_original_ids)
+        or invoice.status is not InvoiceStatus.paid
+        or round_money(to_decimal(invoice.balance_due)) != Decimal("0.00")
+        or round_money(to_decimal(consumption.amount))
+        != round_money(to_decimal(invoice.total))
+        or confirmed != round_money(query.expected_confirmed_balance)
+        or position.unapplied_customer_credit != confirmed
+        or position.collectible_receivable != Decimal("0.00")
+    ):
+        _error(
+            "incomplete_repair", "Opening-settlement correction did not close exactly."
+        )
+    return OpeningSettlementCorrectionResult(
+        invoice_id=invoice.id,
+        allocation_id=allocation.id,
+        opening_funding_consumption_id=consumption.id,
+        customer_posting_reversal_id=posting_reversal.id,
+        ledger_reversal_ids=tuple(item.id for item in ledger_reversals),
+        final_status=invoice.status,
+        final_balance_due=round_money(to_decimal(invoice.balance_due)),
+        confirmed_balance=confirmed,
+        subledger_credit_after=position.unapplied_customer_credit,
+        subledger_receivable_after=position.collectible_receivable,
+        preview_fingerprint=preview_fingerprint,
+        replayed=replayed,
+    )
+
+
+def reconcile_opening_settlement_correction(
+    db: Session,
+    command: ReconcileOpeningSettlementCorrectionCommand,
+) -> OpeningSettlementCorrectionResult:
+    """Correct one reviewed post-opening duplicate allocation atomically."""
+
+    def operation() -> OpeningSettlementCorrectionResult:
+        key = (command.context.idempotency_key or "").strip()
+        if not key or len(key) > 120:
+            _error("missing_idempotency_key", "A bounded idempotency key is required.")
+        invoice = db.get(Invoice, command.query.invoice_id)
+        if invoice is None:
+            _error("invoice_not_found", "Invoice was not found.")
+        lock_account(db, str(invoice.account_id))
+        reservation = db.scalar(
+            select(IdempotencyKey)
+            .where(
+                IdempotencyKey.scope == _OPENING_SETTLEMENT_IDEMPOTENCY_SCOPE,
+                IdempotencyKey.key == key,
+            )
+            .with_for_update()
+        )
+        if reservation is not None:
+            if reservation.account_id != invoice.account_id or not reservation.ref_id:
+                _error(
+                    "idempotency_conflict", "Idempotency evidence belongs elsewhere."
+                )
+            replay_consumption = db.get(
+                PrepaidOpeningFundingConsumption, UUID(reservation.ref_id)
+            )
+            if (
+                replay_consumption is None
+                or replay_consumption.invoice_id != command.query.invoice_id
+                or replay_consumption.reconciliation_fingerprint
+                != command.preview_fingerprint
+            ):
+                _error("idempotency_conflict", "Idempotency evidence changed.")
+            return _opening_settlement_result(
+                db,
+                query=command.query,
+                preview_fingerprint=command.preview_fingerprint,
+                replayed=True,
+            )
+
+        locked_invoice = lock_for_update(db, Invoice, str(command.query.invoice_id))
+        locked_allocation = lock_for_update(
+            db, PaymentAllocation, str(command.query.allocation_id)
+        )
+        if locked_invoice is None or locked_allocation is None:
+            _error("not_actionable", "Invoice or allocation was not found.")
+        current = preview_opening_settlement_correction(db, command.query)
+        if current.fingerprint != command.preview_fingerprint:
+            _error(
+                "stale_preview", "Opening-settlement evidence changed; preview again."
+            )
+        if not current.actionable or current.baseline_id is None:
+            _error(
+                "not_actionable",
+                "Opening-settlement correction requires additional review.",
+                disposition=current.disposition.value,
+                reason=current.reason,
+            )
+        baseline = db.scalar(
+            select(PrepaidFundingBaseline)
+            .where(PrepaidFundingBaseline.id == current.baseline_id)
+            .with_for_update()
+        )
+        if baseline is None or not baseline.is_active:
+            _error("stale_preview", "Approved opening baseline changed; preview again.")
+        original_group = db.scalar(
+            select(CustomerPostingGroup)
+            .where(CustomerPostingGroup.id == current.original_posting_group_id)
+            .with_for_update()
+        )
+        if original_group is None:
+            _error("stale_preview", "Allocation posting changed; preview again.")
+
+        reservation = IdempotencyKey(
+            scope=_OPENING_SETTLEMENT_IDEMPOTENCY_SCOPE,
+            key=key,
+            account_id=current.account_id,
+        )
+        db.add(reservation)
+        try:
+            db.flush()
+        except IntegrityError:
+            _error("idempotency_conflict", "Idempotency key was concurrently reserved.")
+
+        ledger_reversals = AccountCreditApplications.release_for_reviewed_opening_settlement(
+            db,
+            ReviewedOpeningSettlementAllocationRelease(
+                invoice_id=current.invoice_id,
+                allocation_id=current.allocation_id,
+                reason=(
+                    "Reviewed correction: invoice was fully absorbed by the approved "
+                    "customer opening position"
+                ),
+            ),
+        )
+        ledger_entry = LedgerEntries.create(
+            db,
+            LedgerEntryCreate(
+                account_id=current.account_id,
+                invoice_id=current.invoice_id,
+                entry_type=LedgerEntryType.debit,
+                source=LedgerSource.adjustment,
+                category=LedgerCategory.internet_service,
+                amount=current.opening_settlement_amount,
+                currency=current.currency,
+                memo=(
+                    "Reviewed pre-opening settlement for invoice "
+                    f"{current.invoice_number or current.invoice_id}"
+                ),
+                effective_date=_utc(command.effective_at),
+            ),
+            affects_customer_position=False,
+            commit=False,
+        )
+        opening_key = (
+            "preopening-invoice:" + hashlib.sha256(key.encode("utf-8")).hexdigest()
+        )
+        consumption = PrepaidOpeningFundingConsumption(
+            baseline_id=baseline.id,
+            account_id=current.account_id,
+            invoice_id=current.invoice_id,
+            ledger_entry_id=ledger_entry.id,
+            amount=current.opening_settlement_amount,
+            currency=current.currency,
+            approval_evidence_ref=(
+                f"{baseline.batch.evidence_ref}; customer-subledger-opening:"
+                f"{current.opening_position_id}"
+            ),
+            approval_actor=baseline.batch.approved_by,
+            reconciliation_fingerprint=current.fingerprint,
+            idempotency_key=opening_key,
+            consumed_at=_utc(command.effective_at),
+        )
+        db.add(consumption)
+        db.flush()
+        posting_reversal = stage_reversal(
+            db,
+            StageReversalCommand(
+                original_group_id=original_group.id,
+                producer_owner=PostingProducer.prepaid_draft_reconciliation,
+                source_kind=PostingSourceKind.prepaid_opening_funding_consumption,
+                source_id=consumption.id,
+                occurred_at=_utc(command.effective_at),
+                idempotency_key=f"posting:preopening-settlement:{consumption.id}",
+            ),
+            context=command.context,
+        )
+        finalize_reviewed_document_settlement_for_owner(db, locked_invoice)
+        reservation.ref_id = str(consumption.id)
+        AuditEvents.stage(
+            db,
+            AuditEventCreate(
+                action="reconcile_preopening_invoice_settlement",
+                entity_type="invoice",
+                entity_id=str(current.invoice_id),
+                metadata_={
+                    "allocation_id": str(current.allocation_id),
+                    "payment_id": str(current.payment_id),
+                    "opening_position_id": str(current.opening_position_id),
+                    "baseline_id": str(current.baseline_id),
+                    "opening_funding_consumption_id": str(consumption.id),
+                    "original_posting_group_id": str(original_group.id),
+                    "customer_posting_reversal_id": str(posting_reversal.id),
+                    "ledger_reversal_ids": [
+                        str(reversal.id) for reversal, _original in ledger_reversals
+                    ],
+                    "invoice_total": str(current.invoice_total),
+                    "confirmed_balance": str(current.confirmed_balance),
+                    "preview_fingerprint": current.fingerprint,
+                    "economic_delta": "0.00",
+                },
+            ),
+        )
+        db.flush()
+        return _opening_settlement_result(
+            db,
+            query=command.query,
+            preview_fingerprint=current.fingerprint,
+            replayed=False,
+        )
+
+    return execute_owner_command(
+        db,
+        definition=_OPENING_SETTLEMENT_CORRECTION_COMMAND,
+        context=command.context,
+        operation=operation,
+    )
+
+
 def reconcile_prepaid_draft_invoice(
     db: Session,
     command: ReconcilePrepaidDraftCommand,
@@ -3983,6 +4700,10 @@ __all__ = [
     "MissingPaidPrepaidInvoiceRepairPreview",
     "MissingPaidPrepaidInvoiceRepairQuery",
     "MissingPaidPrepaidInvoiceRepairResult",
+    "OpeningSettlementCorrectionDisposition",
+    "OpeningSettlementCorrectionPreview",
+    "OpeningSettlementCorrectionQuery",
+    "OpeningSettlementCorrectionResult",
     "PrepaidDraftAction",
     "PrepaidDraftDisposition",
     "PrepaidDraftReconciliationError",
@@ -3997,6 +4718,7 @@ __all__ = [
     "PrepaidProformaAdoptionQuery",
     "PrepaidProformaAdoptionResult",
     "ReconcilePrepaidDraftCommand",
+    "ReconcileOpeningSettlementCorrectionCommand",
     "RepairHistoricalPaidPrepaidInvoiceCommand",
     "adopt_funded_prepaid_proforma",
     "create_reviewed_paid_prepaid_invoice",
@@ -4005,7 +4727,9 @@ __all__ = [
     "preview_funded_prepaid_proforma_adoption",
     "preview_historical_paid_prepaid_invoice_repair",
     "preview_missing_paid_prepaid_invoice_repair",
+    "preview_opening_settlement_correction",
     "reconcile_prepaid_draft_invoice",
+    "reconcile_opening_settlement_correction",
     "repair_historical_paid_prepaid_invoice",
     "stage_prepaid_draft_after_funding_change",
 ]
