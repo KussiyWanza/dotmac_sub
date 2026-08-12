@@ -29,8 +29,11 @@ if _e2e_database_url:
     from sqlalchemy import create_engine as _create_engine
     from sqlalchemy.orm import sessionmaker as _sessionmaker
 
+    from scripts.ci.migrated_test_database import parse_test_database_target
+
+    _e2e_database_target = parse_test_database_target(_e2e_database_url)
     SessionLocal = _sessionmaker(
-        bind=_create_engine(_e2e_database_url), expire_on_commit=False
+        bind=_create_engine(_e2e_database_target.url), expire_on_commit=False
     )
 else:
     from app.db import SessionLocal

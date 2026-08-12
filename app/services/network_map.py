@@ -18,7 +18,9 @@ from app.models.network import (
     FiberAccessPoint,
     FiberSegment,
     FiberSegmentType,
+    FiberSplice,
     FiberSpliceClosure,
+    FiberSpliceTray,
     OLTDevice,
     OntUnit,
     Splitter,
@@ -96,6 +98,21 @@ def _line_geometry(geojson: str) -> NetworkMapLineGeometry:
             raise ValueError("Fiber segment coordinates must be numeric")
         coordinates.append((float(longitude), float(latitude)))
     return NetworkMapLineGeometry(coordinates=tuple(coordinates))
+
+
+def _plant_segment_rows(db: Session) -> list[tuple[FiberSegment, str | None]]:
+    """Load authoritative active route geometry in one PostGIS query."""
+
+    if db.bind is None or db.bind.dialect.name == "sqlite":
+        return []
+    return (
+        db.query(FiberSegment, func.ST_AsGeoJSON(FiberSegment.route_geom))
+        .filter(
+            FiberSegment.is_active.is_(True),
+            FiberSegment.route_geom.isnot(None),
+        )
+        .all()
+    )
 
 
 def resolve_customer_connectivity(
@@ -626,6 +643,7 @@ def build_network_map_plant_projection(*, db: Session) -> NetworkMapPlantProject
                     name=site.name,
                     code=site.code,
                     city=site.city,
+                    notes=site.notes,
                 ),
             )
         )
@@ -673,12 +691,28 @@ def build_network_map_plant_projection(*, db: Session) -> NetworkMapPlantProject
         )
         counts[NetworkMapPlantLayer.sites] += 1
 
+    matched_olt_ids = {
+        node.matched_device_id
+        for node, _ in devices
+        if node.matched_device_type == "olt" and node.matched_device_id is not None
+    }
+    olts_by_id = {
+        olt.id: olt
+        for olt in (
+            db.query(OLTDevice)
+            .filter(
+                OLTDevice.id.in_(matched_olt_ids),
+                OLTDevice.is_active.is_(True),
+            )
+            .all()
+        )
+    }
     mapped_olt_ids: set[UUID] = set()
     for index, (node, site) in enumerate(devices):
         if node.matched_device_type != "olt" or node.matched_device_id is None:
             continue
-        olt = db.get(OLTDevice, node.matched_device_id)
-        if olt is None or not olt.is_active:
+        olt = olts_by_id.get(node.matched_device_id)
+        if olt is None:
             continue
         mapped_olt_ids.add(olt.id)
         angle = (index % 12) * (math.pi / 6.0)
@@ -701,6 +735,7 @@ def build_network_map_plant_projection(*, db: Session) -> NetworkMapPlantProject
                     model=olt.model,
                     management_ip=olt.mgmt_ip,
                     pop_site_name=site.name,
+                    notes=olt.notes,
                 ),
             )
         )
@@ -714,76 +749,148 @@ def build_network_map_plant_projection(*, db: Session) -> NetworkMapPlantProject
         )
     unmatched_olt_count = int(unmatched_olt_query.scalar() or 0)
 
-    point_groups = (
-        (
-            db.query(FdhCabinet)
-            .filter(
-                FdhCabinet.is_active.is_(True),
-                FdhCabinet.latitude.isnot(None),
-                FdhCabinet.longitude.isnot(None),
-            )
-            .all(),
-            NetworkMapFeatureType.fdh_cabinet,
-            NetworkMapPlantLayer.osp,
-        ),
-        (
-            db.query(FiberSpliceClosure)
-            .filter(
-                FiberSpliceClosure.is_active.is_(True),
-                FiberSpliceClosure.latitude.isnot(None),
-                FiberSpliceClosure.longitude.isnot(None),
-            )
-            .all(),
-            NetworkMapFeatureType.splice_closure,
-            NetworkMapPlantLayer.osp,
-        ),
-        (
-            db.query(FiberAccessPoint)
-            .filter(
-                FiberAccessPoint.is_active.is_(True),
-                FiberAccessPoint.latitude.isnot(None),
-                FiberAccessPoint.longitude.isnot(None),
-            )
-            .all(),
-            NetworkMapFeatureType.access_point,
-            NetworkMapPlantLayer.customer_edge,
-        ),
-        (
-            db.query(ServiceBuilding)
-            .filter(
-                ServiceBuilding.is_active.is_(True),
-                ServiceBuilding.latitude.isnot(None),
-                ServiceBuilding.longitude.isnot(None),
-            )
-            .all(),
-            NetworkMapFeatureType.service_building,
-            NetworkMapPlantLayer.customer_edge,
-        ),
-    )
-    for rows, feature_type, layer in point_groups:
-        for row in rows:
-            features.append(
-                NetworkMapFeature(
-                    geometry=_point(row.longitude, row.latitude),
-                    properties=NetworkMapFeatureProperties(
-                        id=row.id,
-                        feature_type=feature_type,
-                        name=row.name,
-                        code=getattr(row, "code", None),
-                    ),
-                )
-            )
-            counts[layer] += 1
-    segment_rows: list[tuple[FiberSegment, str | None]] = []
-    if db.bind is not None and db.bind.dialect.name != "sqlite":
-        segment_rows = (
-            db.query(FiberSegment, func.ST_AsGeoJSON(FiberSegment.route_geom))
-            .filter(
-                FiberSegment.is_active.is_(True), FiberSegment.route_geom.isnot(None)
-            )
-            .all()
+    fdhs = (
+        db.query(FdhCabinet)
+        .filter(
+            FdhCabinet.is_active.is_(True),
+            FdhCabinet.latitude.isnot(None),
+            FdhCabinet.longitude.isnot(None),
         )
-    for segment, geometry in segment_rows:
+        .all()
+    )
+    fdh_ids = [fdh.id for fdh in fdhs]
+    splitter_counts = (
+        {
+            fdh_id: count
+            for fdh_id, count in (
+                db.query(Splitter.fdh_id, func.count(Splitter.id))
+                .filter(Splitter.fdh_id.in_(fdh_ids))
+                .group_by(Splitter.fdh_id)
+                .all()
+            )
+        }
+        if fdh_ids
+        else {}
+    )
+    for fdh in fdhs:
+        features.append(
+            NetworkMapFeature(
+                geometry=_point(fdh.longitude, fdh.latitude),
+                properties=NetworkMapFeatureProperties(
+                    id=fdh.id,
+                    feature_type=NetworkMapFeatureType.fdh_cabinet,
+                    name=fdh.name,
+                    code=fdh.code,
+                    splitter_count=splitter_counts.get(fdh.id, 0),
+                    notes=fdh.notes,
+                ),
+            )
+        )
+        counts[NetworkMapPlantLayer.osp] += 1
+
+    closures = (
+        db.query(FiberSpliceClosure)
+        .filter(
+            FiberSpliceClosure.is_active.is_(True),
+            FiberSpliceClosure.latitude.isnot(None),
+            FiberSpliceClosure.longitude.isnot(None),
+        )
+        .all()
+    )
+    closure_ids = [closure.id for closure in closures]
+    splice_counts = (
+        {
+            closure_id: count
+            for closure_id, count in (
+                db.query(FiberSplice.closure_id, func.count(FiberSplice.id))
+                .filter(FiberSplice.closure_id.in_(closure_ids))
+                .group_by(FiberSplice.closure_id)
+                .all()
+            )
+        }
+        if closure_ids
+        else {}
+    )
+    tray_counts = (
+        {
+            closure_id: count
+            for closure_id, count in (
+                db.query(FiberSpliceTray.closure_id, func.count(FiberSpliceTray.id))
+                .filter(FiberSpliceTray.closure_id.in_(closure_ids))
+                .group_by(FiberSpliceTray.closure_id)
+                .all()
+            )
+        }
+        if closure_ids
+        else {}
+    )
+    for closure in closures:
+        features.append(
+            NetworkMapFeature(
+                geometry=_point(closure.longitude, closure.latitude),
+                properties=NetworkMapFeatureProperties(
+                    id=closure.id,
+                    feature_type=NetworkMapFeatureType.splice_closure,
+                    name=closure.name,
+                    splice_count=splice_counts.get(closure.id, 0),
+                    tray_count=tray_counts.get(closure.id, 0),
+                    notes=closure.notes,
+                ),
+            )
+        )
+        counts[NetworkMapPlantLayer.osp] += 1
+
+    access_points = (
+        db.query(FiberAccessPoint)
+        .filter(
+            FiberAccessPoint.is_active.is_(True),
+            FiberAccessPoint.latitude.isnot(None),
+            FiberAccessPoint.longitude.isnot(None),
+        )
+        .all()
+    )
+    for access_point in access_points:
+        features.append(
+            NetworkMapFeature(
+                geometry=_point(access_point.longitude, access_point.latitude),
+                properties=NetworkMapFeatureProperties(
+                    id=access_point.id,
+                    feature_type=NetworkMapFeatureType.access_point,
+                    name=access_point.name,
+                    code=access_point.code,
+                    access_point_type=access_point.access_point_type,
+                    placement=access_point.placement,
+                ),
+            )
+        )
+        counts[NetworkMapPlantLayer.customer_edge] += 1
+
+    buildings = (
+        db.query(ServiceBuilding)
+        .filter(
+            ServiceBuilding.is_active.is_(True),
+            ServiceBuilding.latitude.isnot(None),
+            ServiceBuilding.longitude.isnot(None),
+        )
+        .all()
+    )
+    for building in buildings:
+        features.append(
+            NetworkMapFeature(
+                geometry=_point(building.longitude, building.latitude),
+                properties=NetworkMapFeatureProperties(
+                    id=building.id,
+                    feature_type=NetworkMapFeatureType.service_building,
+                    name=building.name,
+                    code=building.code,
+                    street=building.street,
+                    city=building.city,
+                    notes=building.notes,
+                ),
+            )
+        )
+        counts[NetworkMapPlantLayer.customer_edge] += 1
+    for segment, geometry in _plant_segment_rows(db):
         if geometry and segment.segment_type in {
             FiberSegmentType.feeder,
             FiberSegmentType.distribution,
@@ -800,6 +907,7 @@ def build_network_map_plant_projection(*, db: Session) -> NetworkMapPlantProject
                         cable_type=segment.cable_type,
                         fiber_count=segment.fiber_count,
                         length_m=segment.length_m,
+                        notes=segment.notes,
                     ),
                 )
             )

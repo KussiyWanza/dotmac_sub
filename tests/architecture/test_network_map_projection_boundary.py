@@ -67,3 +67,15 @@ def test_plant_projection_is_typed_and_does_not_enter_customer_session_paths():
     assert "subscription_session_snapshots" not in source
     assert "OntUnit" not in source
     assert "build_network_map_projection" not in source
+    assert "db.get(OLTDevice" not in source
+    assert "func.count(Splitter.id)" in source
+    assert "func.count(FiberSplice.id)" in source
+    assert "func.count(FiberSpliceTray.id)" in source
+
+
+def test_playwright_database_setup_uses_disposable_postgres_guard():
+    source = (PROJECT_ROOT / "tests/playwright/conftest.py").read_text(encoding="utf-8")
+
+    assert "parse_test_database_target(_e2e_database_url)" in source
+    assert "_create_engine(_e2e_database_target.url)" in source
+    assert "_create_engine(_e2e_database_url)" not in source
