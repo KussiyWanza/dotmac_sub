@@ -520,6 +520,9 @@ def _scope_candidates(request: AiIntakeRequest) -> tuple[str, ...]:
         f"{provider}:{scope}",
         f"{channel}:{scope}",
         scope,
+        "default",
+        "global",
+        "any",
     )
     return tuple(dict.fromkeys(values))
 
@@ -653,7 +656,6 @@ def resolve_config(
         )
     )
     config = _resolved_config(matching[0])
-    _validate_runtime_config(db, config)
     return config
 
 

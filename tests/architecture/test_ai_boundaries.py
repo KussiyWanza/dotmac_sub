@@ -133,7 +133,7 @@ def test_customer_intake_has_one_non_email_inbound_adapter_and_no_side_effect_po
             continue
         if "classify_message(" in source_text(path):
             callers.append(rel)
-    assert callers == ["app/services/team_inbox_channel_receive.py"]
+    assert callers == ["app/services/ai_conversation_intake.py"]
 
     tree = python_ast(SERVICES / "ai_intake.py")
     forbidden_calls = {

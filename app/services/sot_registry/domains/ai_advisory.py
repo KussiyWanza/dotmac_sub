@@ -547,6 +547,104 @@ DOMAIN = DomainSOT(
             ),
         ),
         SOTService(
+            name="ai.conversation_intake_sessions",
+            module="app.services.ai_conversation_intake",
+            owns=(
+                "durable conversational AI intake session lifecycle",
+                "AI intake generation attempt evidence",
+            ),
+            depends_on=(
+                "ai.intake",
+                "ai.gateway",
+                "communications.team_inbox_threads",
+                "communications.team_inbox_routing",
+            ),
+            notes=(
+                "Background owner for AI intake sessions. It never owns Inbox "
+                "status, assignment, queue membership, or outbound transport; "
+                "those consequences go through Team Inbox owners."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name="durable conversational AI intake session lifecycle",
+                        role=OwnerRole.COMMAND_WRITER,
+                        input_names=(
+                            "inbound conversation facts",
+                            "active intake policy version",
+                            "provider generation observation",
+                        ),
+                        canonical_writer="ai.conversation_intake_sessions",
+                    ),
+                    ConcernContract(
+                        name="AI intake generation attempt evidence",
+                        role=OwnerRole.AUTHORITATIVE_RECORD,
+                        input_names=(
+                            "inbound conversation facts",
+                            "active intake policy version",
+                            "provider generation observation",
+                        ),
+                        canonical_writer="ai.conversation_intake_sessions",
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="inbound conversation facts",
+                        owner="communications.team_inbox_threads",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="Normalized Team Inbox conversation and message records.",
+                    ),
+                    AuthorityInput(
+                        name="active intake policy version",
+                        owner="ai.intake",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source="Pinned AI intake policy/version and legacy compatible configuration.",
+                    ),
+                    AuthorityInput(
+                        name="provider generation observation",
+                        owner="ai.gateway",
+                        kind=AuthorityKind.EXTERNAL_OBSERVATION,
+                        source="Structured provider response and transport metadata.",
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.OWNER_MANAGED,
+                    boundary="Session processing enters execute_owner_command once and delegates Inbox consequences to Team Inbox owners.",
+                    locking="Ready sessions are selected with row locks and skip_locked; human takeover is rechecked before dispatch.",
+                    idempotency="Session/message/generation and outbound dedupe keys suppress duplicate webhook and worker execution.",
+                    retries="Beat reruns pick up incomplete sessions; failed sessions are recorded and safely escalated.",
+                ),
+                errors=ErrorContract(
+                    domain_codes=owner_command_boundary_error_codes(
+                        "ai.conversation_intake_sessions"
+                    ),
+                    mapping_owner="Team Inbox AI intake task and channel adapters",
+                    fail_closed_on=(
+                        "human takeover",
+                        "invalid configuration",
+                        "provider failure",
+                    ),
+                ),
+                events=EventContract(
+                    event_types=("ai.intake_session.changed.v1",),
+                    schema_version=1,
+                    delivery_owner="events.dispatcher",
+                    compatibility="Version 1 records session IDs and outcome evidence without raw DOB or prompt payloads.",
+                    replay="Re-run the session processor; completed sessions are skipped.",
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.NATIVE,
+                    new_owner="ai.conversation_intake_sessions",
+                    verification="AI intake flow, idempotency, human takeover, and architecture tests.",
+                    cutover_gate="Feature remains disabled until an active policy scope is configured.",
+                    fallback_retirement="No legacy conversational session owner exists.",
+                ),
+                steward="customer experience platform",
+                design_refs=("docs/designs/AI_SOT.md", "docs/SOT_RELATIONSHIP_MAP.md"),
+                test_refs=("tests/test_team_inbox_ai_intake_flow.py",),
+            ),
+        ),
+        SOTService(
             name="ai.insights",
             module="app.services.ai_operations",
             owns=(

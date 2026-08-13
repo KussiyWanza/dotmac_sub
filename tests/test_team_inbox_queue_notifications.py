@@ -88,6 +88,7 @@ def test_queue_notification_sweep_uses_next_due_and_sends_heartbeat_once(
     )
     assert five_minutes.sent == 0
     assert db_session.query(InboxQueueNotification).count() == 1
+    db_session.commit()
 
     heartbeat = team_inbox_queue_notifications.sweep_queue_notifications(
         db_session,
@@ -105,6 +106,7 @@ def test_queue_notification_sweep_uses_next_due_and_sends_heartbeat_once(
         .count()
         == 1
     )
+    db_session.commit()
 
     duplicate = team_inbox_queue_notifications.sweep_queue_notifications(
         db_session,
@@ -166,6 +168,7 @@ def test_queue_notification_sends_changed_position_update_once(db_session):
         .one()
     )
     assert update.queue_position == 1
+    db_session.commit()
 
     duplicate = team_inbox_queue_notifications.sweep_queue_notifications(
         db_session,
@@ -219,6 +222,7 @@ def test_failed_queue_notice_retries_same_logical_notification(
     notice = db_session.query(InboxQueueNotification).one()
     assert notice.status == "failed"
     dedupe_key = notice.dedupe_key
+    next_due_at = notice.next_due_at
     db_session.commit()
 
     retried = team_inbox_queue_notifications.sweep_queue_notifications(
@@ -227,7 +231,7 @@ def test_failed_queue_notice_retries_same_logical_notification(
             context=CommandContext.system(
                 actor="test", scope="team-inbox:routing-command", reason="test"
             ),
-            now=notice.next_due_at,
+            now=next_due_at,
         ),
     )
     assert retried.sent == 1

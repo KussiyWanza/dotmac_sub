@@ -805,7 +805,7 @@ def mark_conversation_ai_metadata(
     if session is not None:
         metadata["ai_intake_session_id"] = str(session.id)
         metadata["ai_intake_state"] = session.state
-    metadata["ai_intake_display_name"] = session.display_name
+        metadata["ai_intake_display_name"] = session.display_name
     conversation.metadata_ = metadata
 
 
@@ -1111,6 +1111,37 @@ def _data_cleanup_policy(version: AiIntakePolicyVersion | None) -> dict[str, obj
     }
 
 
+def _cleanup_gender_choices(policy: Mapping[str, object]) -> Mapping[str, str]:
+    value = policy.get("gender_choices")
+    if not isinstance(value, Mapping):
+        return DEFAULT_GENDER_CHOICES
+    return {str(key): str(mapped) for key, mapped in value.items()}
+
+
+def _cleanup_dob_formats(policy: Mapping[str, object]) -> tuple[str, ...]:
+    value = policy.get("dob_formats")
+    if isinstance(value, (list, tuple)):
+        return tuple(str(item) for item in value)
+    return ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y")
+
+
+def _cleanup_max_attempts(policy: Mapping[str, object]) -> int:
+    value = policy.get("max_attempts")
+    try:
+        raw = int(value) if isinstance(value, (str, int, float)) else 2
+        return min(max(raw, 1), 2)
+    except (TypeError, ValueError):
+        return 2
+
+
+def _cleanup_attempt_count(state: Mapping[str, object]) -> int:
+    value = state.get("attempts")
+    try:
+        return int(value) if isinstance(value, (str, int, float)) else 0
+    except (TypeError, ValueError):
+        return 0
+
+
 def _format_cleanup_fields(fields: tuple[str, ...]) -> str:
     labels = {
         "gender": "gender",
@@ -1167,8 +1198,7 @@ def _parse_cleanup_response(
     if re.search(r"\b(no|decline|refuse|prefer not|not disclose|skip)\b", normalized):
         return "refused", None, None
     gender: str | None = None
-    gender_choices = policy.get("gender_choices")
-    choices = gender_choices if isinstance(gender_choices, Mapping) else {}
+    choices = _cleanup_gender_choices(policy)
     for public_value in choices:
         token = str(public_value).strip().lower().replace("_", " ")
         if token and re.search(rf"\b{re.escape(token)}\b", normalized):
@@ -1179,7 +1209,7 @@ def _parse_cleanup_response(
         candidates = re.findall(
             r"\b\d{4}-\d{2}-\d{2}\b|\b\d{2}/\d{2}/\d{4}\b|\b\d{2}-\d{2}-\d{4}\b", text
         )
-        formats = tuple(str(item) for item in policy.get("dob_formats") or ())
+        formats = _cleanup_dob_formats(policy)
         for candidate in candidates:
             for fmt in formats:
                 try:
@@ -1228,7 +1258,7 @@ def _process_data_cleanup_turn(
     processed_ids = list(processed) if isinstance(processed, list) else []
     if str(inbound.id) in processed_ids:
         return state.get("status") == "awaiting_response"
-    attempts = int(state.get("attempts") or 0)
+    attempts = _cleanup_attempt_count(state)
     templates = policy["templates"]
     assert isinstance(templates, Mapping)
     field_text = _format_cleanup_fields(missing)
@@ -1273,9 +1303,7 @@ def _process_data_cleanup_turn(
                 source_conversation_id=conversation.id,
                 candidate_gender=gender,
                 candidate_date_of_birth=dob,
-                gender_mapping=policy.get("gender_choices")
-                if isinstance(policy.get("gender_choices"), Mapping)
-                else None,
+                gender_mapping=_cleanup_gender_choices(policy),
                 consent_text="customer supplied profile cleanup candidate",
                 attempt_count=attempts,
                 activation_enabled=bool(policy.get("production_collection_enabled")),
@@ -1321,7 +1349,7 @@ def _process_data_cleanup_turn(
             },
         )
         return False
-    if attempts >= int(policy["max_attempts"]):
+    if attempts >= _cleanup_max_attempts(policy):
         _send_cleanup_message(
             db,
             session=session,

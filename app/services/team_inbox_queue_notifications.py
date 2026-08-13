@@ -129,6 +129,14 @@ def _queue_policy(db: Session, conversation: InboxConversation) -> dict[str, obj
     }
 
 
+def _queue_policy_minutes(policy: dict[str, object], key: str, default: int) -> int:
+    value = policy.get(key)
+    try:
+        return int(value) if isinstance(value, (str, int, float)) else default
+    except (TypeError, ValueError):
+        return default
+
+
 def _queue_lifecycle(entry: InboxConversationQueueEntry) -> str:
     return entry.entered_at.astimezone(UTC).isoformat()
 
@@ -164,6 +172,12 @@ def _schedule_next_due(
     notice.next_due_at = now + timedelta(minutes=max(int(minutes), 1))
 
 
+def _aware_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
 def _send_notice(
     db: Session,
     *,
@@ -176,8 +190,16 @@ def _send_notice(
     existing_notice: InboxQueueNotification | None = None,
 ) -> InboxQueueNotification:
     policy = _queue_policy(db, conversation)
-    update_minutes = int(policy["position_update_minutes"])
-    heartbeat_minutes = int(policy["heartbeat_minutes"])
+    update_minutes = _queue_policy_minutes(
+        policy,
+        "position_update_minutes",
+        ai_conversation_intake.DEFAULT_QUEUE_POSITION_UPDATE_MINUTES,
+    )
+    heartbeat_minutes = _queue_policy_minutes(
+        policy,
+        "heartbeat_minutes",
+        ai_conversation_intake.DEFAULT_QUEUE_HEARTBEAT_MINUTES,
+    )
     dedupe_key = (
         existing_notice.dedupe_key
         if existing_notice is not None
@@ -350,8 +372,16 @@ def _process_due_notice(
         return None
     position = current_queue_position(db, entry)
     policy = _queue_policy(db, conversation)
-    update_minutes = int(policy["position_update_minutes"])
-    heartbeat_minutes = int(policy["heartbeat_minutes"])
+    update_minutes = _queue_policy_minutes(
+        policy,
+        "position_update_minutes",
+        ai_conversation_intake.DEFAULT_QUEUE_POSITION_UPDATE_MINUTES,
+    )
+    heartbeat_minutes = _queue_policy_minutes(
+        policy,
+        "heartbeat_minutes",
+        ai_conversation_intake.DEFAULT_QUEUE_HEARTBEAT_MINUTES,
+    )
 
     if notice.status == "failed":
         return _send_notice(
@@ -393,7 +423,7 @@ def _process_due_notice(
             ),
         )
     elapsed = (
-        observed_at - last_sent.sent_at
+        _aware_utc(observed_at) - _aware_utc(last_sent.sent_at)
         if last_sent.sent_at is not None
         else timedelta()
     )
@@ -411,7 +441,9 @@ def _process_due_notice(
             ),
         )
     if last_sent.sent_at is not None:
-        target_due = last_sent.sent_at + timedelta(minutes=heartbeat_minutes)
+        target_due = _aware_utc(last_sent.sent_at) + timedelta(
+            minutes=heartbeat_minutes
+        )
         notice.next_due_at = max(target_due, observed_at + timedelta(minutes=1))
     else:
         _schedule_next_due(notice, now=observed_at, minutes=update_minutes)

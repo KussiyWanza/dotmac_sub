@@ -97,6 +97,7 @@ class InboxAssignmentResult:
     service_team_id: str | None
     assigned_person_id: str | None = None
     reason: str | None = None
+    queue_entry_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -672,18 +673,6 @@ def assign_conversation_to_agent(
             reason="service_team_id must reference an active team",
         )
 
-    person_is_active = (
-        db.query(SystemUser.id)
-        .filter(SystemUser.id == person_uuid)
-        .filter(SystemUser.is_active.is_(True))
-        .scalar()
-    )
-    if person_is_active is None:
-        return InboxAssignmentResult(
-            kind="invalid_agent",
-            service_team_id=str(team_uuid),
-            reason="person_id must reference an active staff user",
-        )
     if require_team_membership:
         member = (
             db.query(ServiceTeamMember)
@@ -702,6 +691,19 @@ def assign_conversation_to_agent(
                 kind="invalid_agent",
                 service_team_id=str(team_uuid),
                 reason="person_id must be an active member of the target team",
+            )
+    else:
+        person_is_active = (
+            db.query(SystemUser.id)
+            .filter(SystemUser.id == person_uuid)
+            .filter(SystemUser.is_active.is_(True))
+            .scalar()
+        )
+        if person_is_active is None:
+            return InboxAssignmentResult(
+                kind="invalid_agent",
+                service_team_id=str(team_uuid),
+                reason="person_id must reference an active staff user",
             )
 
     previous_assignment = _active_assignment(db, conversation)
@@ -872,6 +874,7 @@ def queue_conversation_for_team(
         kind="queued",
         service_team_id=str(team_uuid),
         reason=reason_code,
+        queue_entry_id=str(entry.id),
     )
 
 
