@@ -233,6 +233,10 @@
                 <a href="{{ attachment_url }}" target="_blank" rel="noopener" class="block overflow-hidden rounded-lg border border-black/10">
                     <img src="{{ attachment_url }}" alt="{{ att.filename or att.file_name or 'Message image' }}" loading="lazy" class="max-h-56 w-full object-cover">
                 </a>
+                {% elif att.mime_type and att.mime_type.startswith('video/') and attachment_url %}
+                <video src="{{ attachment_url }}" controls preload="metadata" class="block max-h-72 w-full rounded-lg border border-black/10 bg-black"></video>
+                {% elif att.mime_type and att.mime_type.startswith('audio/') and attachment_url %}
+                <audio src="{{ attachment_url }}" controls preload="metadata" class="w-full"></audio>
                 {% elif not attachment_url %}
                 <span class="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium bg-white/70 text-slate-500 dark:bg-slate-700 dark:text-slate-300">
                     <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/></svg>
