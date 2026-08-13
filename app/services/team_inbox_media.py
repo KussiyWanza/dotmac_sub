@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 from uuid import UUID
 
 import httpx
@@ -11,6 +12,27 @@ from sqlalchemy.orm import Session
 from app.models.stored_file import StoredFile
 from app.models.team_inbox import InboxMediaAsset, InboxMessage
 from app.services.file_storage import ObjectNotFoundError, StreamResult, file_uploads
+
+REMOTE_MEDIA_PROVIDERS = frozenset(
+    {
+        "facebook",
+        "instagram",
+        "meta",
+        "whatsapp",
+    }
+)
+REMOTE_MEDIA_HOSTS = frozenset(
+    {
+        "graph.facebook.com",
+        "lookaside.facebook.com",
+        "lookaside.fbsbx.com",
+    }
+)
+REMOTE_MEDIA_HOST_SUFFIXES = (
+    ".cdninstagram.com",
+    ".fbcdn.net",
+    ".fbsbx.com",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,6 +207,19 @@ def _content_type(asset: InboxMediaAsset) -> str:
     return asset.mime_type or "application/octet-stream"
 
 
+def can_stream_remote_media(asset: InboxMediaAsset) -> bool:
+    source_url = str(asset.source_url or "").strip()
+    parsed = urlparse(source_url)
+    host = (parsed.hostname or "").lower()
+    provider = str(asset.provider or "").strip().lower()
+    allowed_host = host in REMOTE_MEDIA_HOSTS or any(
+        host.endswith(suffix) for suffix in REMOTE_MEDIA_HOST_SUFFIXES
+    )
+    return (
+        parsed.scheme == "https" and provider in REMOTE_MEDIA_PROVIDERS and allowed_host
+    )
+
+
 def _graph_version(config: Mapping[str, Any]) -> str:
     version = str(config.get("graph_version") or "v21.0").strip() or "v21.0"
     return version if version.startswith("v") else f"v{version}"
@@ -235,7 +270,7 @@ def _whatsapp_media_content(db: Session, asset: InboxMediaAsset) -> StreamResult
 
 def _remote_media_content(asset: InboxMediaAsset) -> StreamResult:
     source_url = str(asset.source_url or "").strip()
-    if not source_url.startswith(("https://", "http://")):
+    if not can_stream_remote_media(asset):
         raise MediaContentError("Media content is not available.")
     try:
         response = httpx.get(source_url, timeout=20, follow_redirects=True)
