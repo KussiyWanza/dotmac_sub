@@ -656,6 +656,7 @@ def resolve_config(
         )
     )
     config = _resolved_config(matching[0])
+    _validate_runtime_config(db, config)
     return config
 
 

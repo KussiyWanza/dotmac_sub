@@ -113,7 +113,8 @@ def _config(
         metadata_={
             "data_cleaning_support_team_id": str(data_cleaning_support_team_id)
             if data_cleaning_support_team_id
-            else None
+            else None,
+            "data_cleanup_enabled": data_cleaning_support_team_id is not None,
         },
     )
     db_session.add(row)
@@ -755,6 +756,9 @@ def test_active_session_remains_pinned_to_original_policy_version(db_session):
         policy_id=policy.id,
         policy_version_id=first.version_id,
         state="awaiting_customer",
+        channel_type=InboxChannelType.whatsapp.value,
+        provider="meta_cloud_api",
+        account_scope="phone-pin",
         display_name="Dotmac Virtual Assistant",
         turn_count=1,
     )

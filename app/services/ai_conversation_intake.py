@@ -984,6 +984,9 @@ def _process_one_session(
     outcome = ai_intake.classify_message(db, request)
     metadata.update(ai_intake.route_metadata(outcome))
     inbound.metadata_ = metadata
+    conversation_metadata = dict(conversation.metadata_ or {})
+    conversation_metadata["ai_intake"] = ai_intake.conversation_state(request, outcome)
+    conversation.metadata_ = conversation_metadata
     session.turn_count = outcome.follow_up_count
     if outcome.classification is not None:
         session.final_intent = outcome.classification.intent.value
@@ -1031,6 +1034,12 @@ def _process_one_session(
         generation.outbound_message_id = (
             UUID(delivery.message_id) if delivery.message_id else None
         )
+        conversation_metadata = dict(conversation.metadata_ or {})
+        intake_metadata = dict(conversation_metadata.get("ai_intake") or {})
+        intake_metadata["follow_up_delivery_status"] = delivery.kind
+        intake_metadata["follow_up_delivery_reason"] = delivery.reason
+        conversation_metadata["ai_intake"] = intake_metadata
+        conversation.metadata_ = conversation_metadata
         session.state = "awaiting_customer"
         transition_conversation_status(
             db,
@@ -1049,6 +1058,25 @@ def _process_one_session(
         fallback_service_team_id=session.fallback_team_id,
         metadata=metadata,
     )
+    inbound_metadata = dict(inbound.metadata_ or {})
+    inbound_metadata["routing"] = {
+        "primary_service_team_id": routing.primary_service_team_id,
+        "channel_service_team_id": routing.channel_service_team_id,
+        "ai_service_team_id": routing.ai_service_team_id,
+        "channel_route_id": routing.channel_route_id,
+        "ai_route_id": routing.ai_route_id,
+        "ai_routing_allowed": routing.ai_routing_allowed,
+        "ai_intent_key": routing.ai_intent_key,
+        "ai_confidence": routing.ai_confidence,
+        "reason": routing.reason,
+    }
+    inbound.metadata_ = inbound_metadata
+    conversation_metadata = dict(conversation.metadata_ or {})
+    intake_metadata = dict(conversation_metadata.get("ai_intake") or {})
+    intake_metadata["destination_team_id"] = routing.primary_service_team_id
+    intake_metadata["routing_reason"] = routing.reason
+    conversation_metadata["ai_intake"] = intake_metadata
+    conversation.metadata_ = conversation_metadata
     if routing.primary_service_team_id:
         team_inbox_routing.apply_email_routing_plan(
             db,

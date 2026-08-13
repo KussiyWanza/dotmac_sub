@@ -1,7 +1,7 @@
 """Persist the unique reusable Lead for each customer-backed Quote flow.
 
-Revision ID: 529_customer_quote_lead_linkage
-Revises: 528_roles_kernel_r1_additive
+Revision ID: 530_customer_quote_lead_linkage
+Revises: 529_conversational_ai_intake
 Create Date: 2026-08-13
 """
 
@@ -13,8 +13,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "529_customer_quote_lead_linkage"
-down_revision: str | None = "528_roles_kernel_r1_additive"
+revision: str = "530_customer_quote_lead_linkage"
+down_revision: str | None = "529_conversational_ai_intake"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

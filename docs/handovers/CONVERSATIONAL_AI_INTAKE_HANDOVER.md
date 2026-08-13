@@ -102,9 +102,9 @@ git diff --check
 
 Migration graph parser was run after reparenting and should show
 `529_conversational_ai_intake` as the feature migration. On the consolidated
-branch, `530_merge_ai_intake_customer_quote` is the sole head and preserves both
-that revision and `529_customer_quote_lead_linkage` without imposing schema
-operations of its own.
+branch, `531_consolidated_open_prs` is the sole head. The customer quote linkage
+is revision `530_customer_quote_lead_linkage`, sequenced after AI intake; the
+531 revision contains no schema operations.
 
 ## Local Test Blocker
 

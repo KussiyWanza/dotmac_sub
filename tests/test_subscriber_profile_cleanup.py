@@ -27,7 +27,8 @@ def _house_reseller(db_session) -> Reseller:
 def _subscriber(db_session, reseller: Reseller) -> Subscriber:
     row = Subscriber(
         email=f"customer-{uuid4()}@example.test",
-        full_name="Residential Customer",
+        first_name="Residential",
+        last_name="Customer",
         user_type=UserType.customer,
         reseller_id=reseller.id,
         gender=Gender.unknown,
