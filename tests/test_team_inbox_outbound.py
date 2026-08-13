@@ -8,6 +8,7 @@ from app.models.notification import (
     CommunicationIntentRecord,
     Notification,
     NotificationChannel,
+    NotificationStatus,
 )
 from app.models.service_team import ServiceTeam, ServiceTeamType
 from app.models.subscriber import Subscriber, SubscriberStatus
@@ -25,7 +26,12 @@ from app.schemas.ai_intake import GENERIC_FOLLOW_UP_QUESTION
 from app.schemas.settings import DomainSettingUpdate
 from app.schemas.team_inbox import InboxConversationReplyRequest
 from app.services import email as email_service
-from app.services import team_inbox_media, team_inbox_outbound, team_outbound
+from app.services import (
+    team_inbox_commands,
+    team_inbox_media,
+    team_inbox_outbound,
+    team_outbound,
+)
 from app.services.domain_settings import notification_settings
 from app.tasks import notifications as notification_tasks
 
@@ -426,6 +432,244 @@ def test_social_comment_reply_targets_quoted_comment_not_latest_inbound(
     assert result.kind == "queued"
     assert calls[0]["comment_id"] == "comment-123"
     assert outbound.metadata_["parent_provider_comment_id"] == "comment-123"
+
+
+def test_facebook_targeted_comment_reply_dispatches_exact_page_and_comment(
+    db_session, monkeypatch
+):
+    from app.services import meta_pages
+
+    conversation = _social_comment_conversation(
+        db_session,
+        channel="facebook_comment",
+        account_key="page_id",
+        account_id="page-123",
+    )
+    target = (
+        db_session.query(InboxMessage)
+        .filter(InboxMessage.direction == InboxMessageDirection.inbound.value)
+        .one()
+    )
+    target.metadata_ = {
+        "page_id": "page-123",
+        "post_id": "page-123_987",
+        "provider_comment_id": "comment-123",
+    }
+    db_session.add(
+        InboxMessage(
+            conversation_id=conversation.id,
+            channel_type=conversation.channel_type,
+            direction=InboxMessageDirection.inbound.value,
+            body="Do not reply here",
+            external_message_id="comment-latest",
+            metadata_={
+                "page_id": "page-123",
+                "post_id": "page-123_987",
+                "provider_comment_id": "comment-latest",
+            },
+            received_at=datetime(2026, 7, 10, 8, 5, tzinfo=UTC),
+        )
+    )
+    db_session.flush()
+    calls: list[dict[str, str]] = []
+    monkeypatch.setattr(
+        meta_pages,
+        "reply_to_comment_sync",
+        lambda _db, **kwargs: calls.append(kwargs) or {"id": "fb-reply-1"},
+    )
+
+    result = team_inbox_commands.reply(
+        db_session,
+        conversation_id=conversation.id,
+        body_text="Replying publicly.",
+        actor_person_id=uuid4(),
+        reply_to_message_id=target.id,
+        idempotency_key="facebook-public-comment-reply",
+    )
+    notification_tasks._deliver_notification_queue_stats(db_session)
+
+    outbound = (
+        db_session.query(InboxMessage)
+        .filter(InboxMessage.direction == InboxMessageDirection.outbound.value)
+        .one()
+    )
+    assert result.kind == "queued"
+    assert calls == [
+        {
+            "page_id": "page-123",
+            "comment_id": "comment-123",
+            "message": "Replying publicly.",
+        }
+    ]
+    assert outbound.external_message_id == "fb-reply-1"
+    assert outbound.metadata_["target_inbox_message_id"] == str(target.id)
+    assert outbound.metadata_["provider_post_id"] == "page-123_987"
+
+
+def test_instagram_targeted_comment_reply_dispatches_exact_account_and_comment(
+    db_session, monkeypatch
+):
+    from app.services import meta_pages
+
+    conversation = _social_comment_conversation(
+        db_session,
+        channel="instagram_comment",
+        account_key="instagram_account_id",
+        account_id="ig-123",
+    )
+    target = (
+        db_session.query(InboxMessage)
+        .filter(InboxMessage.direction == InboxMessageDirection.inbound.value)
+        .one()
+    )
+    target.external_message_id = "ig-comment-123"
+    target.metadata_ = {
+        "instagram_account_id": "ig-123",
+        "media_id": "ig-media-987",
+        "provider_comment_id": "ig-comment-123",
+        "parent_provider_comment_id": "ig-root-1",
+    }
+    db_session.add(
+        InboxMessage(
+            conversation_id=conversation.id,
+            channel_type=conversation.channel_type,
+            direction=InboxMessageDirection.inbound.value,
+            body="Wrong target",
+            external_message_id="ig-comment-latest",
+            metadata_={
+                "instagram_account_id": "ig-123",
+                "media_id": "ig-media-987",
+                "provider_comment_id": "ig-comment-latest",
+            },
+            received_at=datetime(2026, 7, 10, 8, 5, tzinfo=UTC),
+        )
+    )
+    db_session.flush()
+    calls: list[dict[str, str]] = []
+    monkeypatch.setattr(
+        meta_pages,
+        "reply_to_instagram_comment_sync",
+        lambda _db, **kwargs: calls.append(kwargs) or {"id": "ig-reply-1"},
+    )
+
+    result = team_inbox_commands.reply(
+        db_session,
+        conversation_id=conversation.id,
+        body_text="Instagram public reply.",
+        actor_person_id=uuid4(),
+        reply_to_message_id=target.id,
+        idempotency_key="instagram-public-comment-reply",
+    )
+    notification_tasks._deliver_notification_queue_stats(db_session)
+
+    outbound = (
+        db_session.query(InboxMessage)
+        .filter(InboxMessage.direction == InboxMessageDirection.outbound.value)
+        .one()
+    )
+    assert result.kind == "queued"
+    assert calls == [
+        {
+            "ig_account_id": "ig-123",
+            "comment_id": "ig-comment-123",
+            "message": "Instagram public reply.",
+        }
+    ]
+    assert outbound.external_message_id == "ig-reply-1"
+    assert outbound.metadata_["target_inbox_message_id"] == str(target.id)
+    assert outbound.metadata_["provider_media_id"] == "ig-media-987"
+    assert outbound.metadata_["root_provider_comment_id"] == "ig-root-1"
+
+
+def test_targeted_social_reply_cannot_fall_back_from_outbound_message(
+    db_session,
+):
+    conversation = _social_comment_conversation(
+        db_session,
+        channel="facebook_comment",
+        account_key="page_id",
+        account_id="page-123",
+    )
+    outbound_target = InboxMessage(
+        conversation_id=conversation.id,
+        channel_type=conversation.channel_type,
+        direction=InboxMessageDirection.outbound.value,
+        body="Previous public reply",
+        external_message_id="reply-previous",
+        sent_at=datetime(2026, 7, 10, 8, 5, tzinfo=UTC),
+    )
+    db_session.add(outbound_target)
+    db_session.flush()
+
+    result = team_inbox_outbound.send_inbox_reply(
+        db_session,
+        conversation=conversation,
+        payload=team_inbox_outbound.InboxReplyPayload(
+            body_html="<p>Must not fall through.</p>",
+            body_text="Must not fall through.",
+            sent_by_person_id=uuid4(),
+            metadata={"reply_to": {"message_id": str(outbound_target.id)}},
+        ),
+    )
+
+    assert result.kind == "invalid_reply_target"
+    assert db_session.query(Notification).count() == 0
+    assert (
+        db_session.query(InboxMessage)
+        .filter(InboxMessage.direction == InboxMessageDirection.outbound.value)
+        .count()
+        == 1
+    )
+
+
+def test_worker_rejects_social_reply_when_target_account_context_does_not_match(
+    db_session, monkeypatch
+):
+    from app.services import meta_pages
+
+    conversation = _social_comment_conversation(
+        db_session,
+        channel="facebook_comment",
+        account_key="page_id",
+        account_id="page-123",
+    )
+    target = (
+        db_session.query(InboxMessage)
+        .filter(InboxMessage.direction == InboxMessageDirection.inbound.value)
+        .one()
+    )
+    target.metadata_ = {
+        "page_id": "page-123",
+        "post_id": "page-123_987",
+        "provider_comment_id": "comment-123",
+    }
+    result = team_inbox_outbound.send_inbox_reply(
+        db_session,
+        conversation=conversation,
+        payload=team_inbox_outbound.InboxReplyPayload(
+            body_html="<p>Account mismatch.</p>",
+            body_text="Account mismatch.",
+            sent_by_person_id=uuid4(),
+            metadata={"reply_to": {"message_id": str(target.id)}},
+        ),
+    )
+    notification = db_session.query(Notification).one()
+    notification.metadata_["provider_account_id"] = "page-999"
+    calls: list[dict[str, str]] = []
+    monkeypatch.setattr(
+        meta_pages,
+        "reply_to_comment_sync",
+        lambda _db, **kwargs: calls.append(kwargs) or {"id": "unexpected"},
+    )
+
+    notification_tasks._deliver_notification_queue_stats(db_session)
+
+    outbound = db_session.get(InboxMessage, result.message_id)
+    assert calls == []
+    assert notification.status == NotificationStatus.failed
+    assert notification.last_error == "meta_comment_target_account_mismatch"
+    assert outbound.metadata_["delivery_status"] == "failed"
+    assert outbound.metadata_["send_error"] == "meta_comment_target_account_mismatch"
 
 
 def test_social_comment_provider_failure_does_not_create_a_false_reply(
