@@ -686,6 +686,13 @@ def test_status_and_assignment_filters_use_flexible_wrapping_groups():
     assert "bg-amber-500" in SIDEBAR
 
 
+def test_blank_priority_is_omitted_from_inbox_htmx_filter_requests():
+    assert 'form?.id !== "inbox-filter-form"' in JAVASCRIPT
+    assert 'event.detail.parameters?.priority_at_most === ""' in JAVASCRIPT
+    assert "delete event.detail.parameters.priority_at_most" in JAVASCRIPT
+    assert "priority_at_most: str | None = Query(default=None)" in ROUTES
+
+
 def test_assignment_filter_colours_and_counts_are_present():
     for label in (
         "Assigned to me",

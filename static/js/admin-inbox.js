@@ -369,6 +369,13 @@
       bindHtmx() {
         if (window.__dotmacInboxHtmxBound) return;
         window.__dotmacInboxHtmxBound = true;
+        document.body.addEventListener("htmx:configRequest", (event) => {
+          const form = event.detail?.elt;
+          if (form?.id !== "inbox-filter-form") return;
+          if (event.detail.parameters?.priority_at_most === "") {
+            delete event.detail.parameters.priority_at_most;
+          }
+        });
         document.body.addEventListener("htmx:beforeRequest", (event) => {
           const path = event.detail?.requestConfig?.path || "";
           const target = event.detail?.target?.id || "";
