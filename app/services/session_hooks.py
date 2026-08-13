@@ -6,8 +6,11 @@ from time import monotonic
 from typing import Any
 
 from sqlalchemy import event
+from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.session import SessionTransaction
+
+from app.services.operator_tenant import apply_operator_tenant_transaction_scope
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +32,7 @@ def _observe_transaction_span(duration_seconds: float, *, slow: bool) -> None:
 
 
 def install_session_hooks() -> None:
-    """Explicit import-time installation hook used by the session factory."""
+    """Import-time installation hook for tenant scope and session telemetry."""
     return None
 
 
@@ -111,10 +114,21 @@ def _cleanup_after_transaction_end(
 
 
 @event.listens_for(Session, "after_begin")
+def _apply_operator_tenant_scope(
+    _session: Session,
+    transaction: SessionTransaction,
+    connection: Connection,
+) -> None:
+    if transaction.parent is not None:
+        return
+    apply_operator_tenant_transaction_scope(connection)
+
+
+@event.listens_for(Session, "after_begin")
 def _start_root_transaction_span(
     session: Session,
     transaction: SessionTransaction,
-    _connection: Any,
+    _connection: Connection,
 ) -> None:
     if transaction.parent is not None or _ROOT_TRANSACTION_SPAN_KEY in session.info:
         return

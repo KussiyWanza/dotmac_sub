@@ -265,6 +265,15 @@ the tenant GUC and forced-RLS session contract. Migration 527 does not enable
 RLS because doing so before that session contract would turn a loud migration
 failure into fail-silent empty reads.
 
+The 2026-08-13 predecessor slice installs the operator-tenant GUC on every
+PostgreSQL SQLAlchemy root transaction and proves commit/rollback reapplication
+plus pool cleanup in the PostgreSQL integration lane. That discharges the
+application-side prerequisite only. FORCE RLS still cannot activate until a
+later production-derived rehearsal proves populated roles, credentials and
+audit rows remain visible through the complete kernel-revision-0001
+disposition, and until this GUC-setting image is already the deployed
+predecessor.
+
 Only after parity may legacy person UUID resolution, fake-subscriber principal
 fallbacks, duplicated OrganizationMembership decisions, the unused VendorUser
 path, or compatibility vendor bridges be retired. Migration 353 alone is not a
