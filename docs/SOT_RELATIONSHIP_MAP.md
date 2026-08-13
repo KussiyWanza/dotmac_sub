@@ -3370,7 +3370,9 @@ in forms, or rotate key material directly.
    chronology, agent reply provenance and delivery state, conversation
    lifecycle, and ticket handoff provenance. KPI links carry the matching
    server filter; resolved conversations cannot leak into an open-derived
-   drilldown.
+   drilldown. The same projection owns exact filtered pagination bounds;
+   conversation drill-down and reply refresh adapters preserve its normalized
+   filter, sort, page-size, and page-number state.
 9. Campaign services own marketing audience, sequence, and content decisions.
    They apply `communications.eligibility` when building an audience, before
    enqueueing a send, and again through the marketing communication intent at

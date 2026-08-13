@@ -342,7 +342,13 @@ def test_admin_inbox_detail_renders_timeline(db_session, monkeypatch):
         request=SimpleNamespace(
             state=SimpleNamespace(),
             query_params={},
-            headers={"hx-request": "true"},
+            headers={
+                "hx-request": "true",
+                "hx-current-url": (
+                    "https://selfcare.dotmac.io/admin/inbox?"
+                    "status=open&page=7&per_page=25"
+                ),
+            },
         ),
         db=db_session,
     )
@@ -352,6 +358,7 @@ def test_admin_inbox_detail_renders_timeline(db_session, monkeypatch):
     assert context["timeline"].id == str(conversation.id)
     assert context["timeline"].messages[0].body == "Down"
     assert context["request"].headers["hx-request"] == "true"
+    assert context["queue_return_url"] == "/admin/inbox?status=open&page=7&per_page=25"
     assert "sidebar_stats" not in context
     assert "Down" in captured["html"]
 

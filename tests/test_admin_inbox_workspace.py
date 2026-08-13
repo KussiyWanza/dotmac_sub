@@ -97,14 +97,47 @@ def test_inbox_pagination_builds_only_available_navigation_links(
 
     rendered = str(pagination(list_query, page_meta, "/admin/inbox"))
 
-    assert f"Page {page}" in rendered
+    assert f'aria-current="page" aria-label="Page {page}"' in rendered
     assert ("page=0" in rendered) is False
-    assert (">Back</a>" in rendered) is (previous_page is not None)
+    assert (">Previous</a>" in rendered) is (previous_page is not None)
     assert (">Next</a>" in rendered) is (next_page is not None)
     if previous_page is not None:
         assert f"page={previous_page}" in rendered
     if next_page is not None:
         assert f"page={next_page}" in rendered
+
+
+def test_inbox_pagination_renders_compact_page_numbers_and_preserves_selection():
+    environment = Environment(loader=FileSystemLoader("templates"), autoescape=True)
+    pagination = environment.get_template(
+        "admin/inbox/_queue_macros.html"
+    ).module.inbox_pagination
+    list_query = team_inbox_projection.INBOX_LIST_DEFINITION.build_query(
+        search="router",
+        filters={"status": "open"},
+        page=7,
+        per_page=25,
+    )
+    page_meta = PageMeta.from_query(list_query, total_items=300)
+    active_id = str(uuid.uuid4())
+
+    rendered = str(
+        pagination(
+            list_query,
+            page_meta,
+            "/admin/inbox",
+            active_id=active_id,
+        )
+    )
+
+    assert page_meta.navigation == (1, None, 6, 7, 8, None, 12)
+    assert "151&ndash;175 of 300 conversations" in rendered
+    assert 'aria-label="Page 1"' in rendered
+    assert 'aria-label="Page 6"' in rendered
+    assert 'aria-current="page" aria-label="Page 7"' in rendered
+    assert 'aria-label="Page 8"' in rendered
+    assert 'aria-label="Page 12"' in rendered
+    assert rendered.count(f"conversation_id={active_id}") == 12
 
 
 def test_workspace_exposes_responsive_realtime_and_accessible_controls():

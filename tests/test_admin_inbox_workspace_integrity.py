@@ -174,6 +174,15 @@ def test_delivery_status_updates_in_place_from_authoritative_realtime_hint():
     assert "applyDeliveryStatus(data)" in JAVASCRIPT
 
 
+def test_conversation_drilldown_and_reply_fallback_preserve_queue_page_state():
+    assert "conversation_queue_item(row, list_query" in QUEUE
+    assert "conversation_url = list_query.url('/admin/inbox')" in QUEUE
+    assert 'hx-push-url="{{ conversation_url }}"' in QUEUE
+    assert "conversation_queue_item(row, list_query" in SIDEBAR
+    assert 'name="next_url"' in CONVERSATION
+    assert "queue_return_url | default('/admin/inbox')" in CONVERSATION
+
+
 def test_macro_menu_dispatches_identity_not_just_text():
     assert '"macroId"' in CONVERSATION
 
@@ -663,8 +672,10 @@ def test_empty_state_and_inbox_pagination_are_scoped_to_the_queue():
         "@click.prevent='navigatePage(",
         "border border-slate-200 bg-white",
         "hover:bg-slate-50",
-        "Page {{ page_meta.page }}",
-        ">Back</a>",
+        "page_meta.start_item",
+        "page_meta.navigation",
+        'aria-current="page" aria-label="Page {{ page_number }}"',
+        ">Previous</a>",
         ">Next</a>",
     ):
         assert contract in QUEUE
