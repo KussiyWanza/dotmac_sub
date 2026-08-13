@@ -401,6 +401,10 @@ void main() {
       _wrap(const CompletionWizard(jobId: 'wo-1', requirements: requirements)),
     );
 
+    expect(find.byKey(const Key('completion-prerequisites')), findsOneWidget);
+    expect(find.text('Work photos are optional'), findsOneWidget);
+    expect(find.text('Customer sign-off is optional'), findsOneWidget);
+
     await tester.tap(find.byKey(const Key('wizard-next')));
     await tester.pump();
     expect(find.text('Photos: 0 · optional'), findsOneWidget);
@@ -408,6 +412,7 @@ void main() {
     await tester.pump();
 
     expect(find.text('Customer sign-off (optional)'), findsOneWidget);
+    expect(find.byKey(const Key('equipment-serial')), findsNothing);
     final finish = tester.widget<FilledButton>(
       find.byKey(const Key('wizard-finish')),
     );

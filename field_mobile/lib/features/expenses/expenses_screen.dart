@@ -96,6 +96,8 @@ class _ExpenseRequestTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isLocal =
+        request.status == 'queued' || request.status == 'sync failed';
     final date = request.createdAt == null
         ? null
         : DateFormat('d MMM, HH:mm').format(request.createdAt!.toLocal());
@@ -103,7 +105,7 @@ class _ExpenseRequestTile extends StatelessWidget {
       margin: const EdgeInsets.only(bottom: 8),
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
-        onTap: () => context.push('/expenses/${request.id}'),
+        onTap: isLocal ? null : () => context.push('/expenses/${request.id}'),
         child: Padding(
           padding: const EdgeInsets.all(12),
           child: Row(

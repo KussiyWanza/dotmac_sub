@@ -101,6 +101,7 @@ class CreateStaffMaterialRequest:
         MaterialRequestFulfillmentChannel.ERP
     )
     work_order_public_id: str | None = None
+    requester_person_id: UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -602,6 +603,25 @@ def _system_user_id_for_actor(db: Session, context: CommandContext) -> UUID | No
     return actor_id if db.get(SystemUser, actor_id) is not None else None
 
 
+def _requesting_technician(
+    db: Session,
+    *,
+    requester_person_id: UUID | None,
+    system_user_id: UUID,
+) -> TechnicianProfile | None:
+    query = db.query(TechnicianProfile).filter(TechnicianProfile.is_active.is_(True))
+    if requester_person_id is not None:
+        query = query.filter(
+            or_(
+                TechnicianProfile.person_id == requester_person_id,
+                TechnicianProfile.system_user_id == system_user_id,
+            )
+        )
+    else:
+        query = query.filter(TechnicianProfile.system_user_id == system_user_id)
+    return query.order_by(TechnicianProfile.created_at.desc()).first()
+
+
 def _resolved_context(
     db: Session, command: CreateStaffMaterialRequest
 ) -> tuple[UUID | None, UUID | None, UUID | None, WorkOrder | None]:
@@ -688,6 +708,11 @@ def create_staff_material_request(
             raise _material_error(
                 "requester_required", "The requesting staff user no longer exists."
             )
+        technician = _requesting_technician(
+            db,
+            requester_person_id=command.requester_person_id,
+            system_user_id=system_user_id,
+        )
         seen_items: set[UUID] = set()
         planned: list[tuple[FieldInventoryItem, MaterialRequestLineInput]] = []
         for line in command.items:
@@ -726,7 +751,7 @@ def create_staff_material_request(
             ticket_id=ticket_id,
             project_id=project_id,
             project_task_id=task_id,
-            requested_by_technician_id=None,
+            requested_by_technician_id=technician.id if technician else None,
             requested_by_person_id=(system_user.person_party_id or system_user.id),
             requested_by_system_user_id=system_user_id,
             status=MaterialRequestStatus.SUBMITTED.value,
@@ -1060,10 +1085,7 @@ class FieldMaterialRequests:
         offset: int = 0,
     ) -> list[dict]:
         profile = _profile_from_principal(db, principal)
-        scoped = _scoped_query(db, profile)
-        if crm_work_order_id:
-            scoped = scoped.filter(WorkOrder.public_id == crm_work_order_id)
-        scoped_ids = scoped.with_entities(WorkOrder.id)
+        ownership = _material_request_ownership(profile)
         query = (
             db.query(FieldMaterialRequest)
             .options(
@@ -1071,10 +1093,14 @@ class FieldMaterialRequests:
                     FieldMaterialRequestItem.item
                 )
             )
-            .filter(FieldMaterialRequest.work_order_mirror_id.in_(scoped_ids))
+            .filter(ownership)
             .filter(FieldMaterialRequest.is_active.is_(True))
             .order_by(FieldMaterialRequest.created_at.desc())
         )
+        if crm_work_order_id:
+            query = query.join(FieldMaterialRequest.work_order_mirror).filter(
+                WorkOrder.public_id == crm_work_order_id
+            )
         if status:
             query = query.filter(FieldMaterialRequest.status == _status(status))
         return [
@@ -1146,9 +1172,6 @@ class FieldMaterialRequests:
         material_request_id: str,
     ) -> dict:
         request = _get_scoped_request(db, principal, material_request_id)
-        profile = _profile_from_principal(db, principal)
-        if request.requested_by_technician_id != profile.id:
-            raise HTTPException(status_code=404, detail="Material request not found")
         if request.status != "draft":
             raise HTTPException(status_code=409, detail="Only draft requests submit")
         request.status = "submitted"
@@ -1395,7 +1418,6 @@ def _get_scoped_request(
     material_request_id: str,
 ) -> FieldMaterialRequest:
     profile = _profile_from_principal(db, principal)
-    scoped_ids = _scoped_query(db, profile).with_entities(WorkOrder.id)
     request = (
         db.query(FieldMaterialRequest)
         .options(
@@ -1404,13 +1426,26 @@ def _get_scoped_request(
             )
         )
         .filter(FieldMaterialRequest.id == coerce_uuid(material_request_id))
-        .filter(FieldMaterialRequest.work_order_mirror_id.in_(scoped_ids))
+        .filter(_material_request_ownership(profile))
         .filter(FieldMaterialRequest.is_active.is_(True))
         .one_or_none()
     )
     if request is None:
         raise HTTPException(status_code=404, detail="Material request not found")
     return request
+
+
+def _material_request_ownership(profile: TechnicianProfile):
+    ownership = or_(
+        FieldMaterialRequest.requested_by_person_id == profile.person_id,
+        FieldMaterialRequest.requested_by_technician_id == profile.id,
+    )
+    if profile.system_user_id is not None:
+        ownership = or_(
+            ownership,
+            FieldMaterialRequest.requested_by_system_user_id == profile.system_user_id,
+        )
+    return ownership
 
 
 def _get_request(db: Session, material_request_id: str) -> FieldMaterialRequest:

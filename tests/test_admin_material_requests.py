@@ -120,6 +120,9 @@ def test_staff_material_request_create_review_and_replay(db_session):
     assert created.status is material_requests.MaterialRequestStatus.SUBMITTED
     assert created.requested_by_person_id == technician.person_id
     assert created.requested_by_system_user_id == user.id
+    row = db_session.get(FieldMaterialRequest, created.id)
+    assert row is not None
+    assert row.requested_by_technician_id == technician.id
     assert created.items[0].name == "Drop cable"
     assert created.items[0].quantity == 120
     assert db_session.query(FieldMaterialRequest).count() == 1

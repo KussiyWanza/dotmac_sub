@@ -141,6 +141,97 @@ def test_create_submit_and_surface_material_request_in_job_detail(db_session):
     assert detail.material_requests[0].status == "submitted"
 
 
+def test_material_history_survives_completion_and_reassignment(db_session):
+    user = _user(db_session)
+    profile = _profile(db_session, user)
+    other = _user(db_session, "Other")
+    _profile(db_session, other, crm_person_id="other-material-history-tech")
+    subscriber = _subscriber(db_session)
+    work_order = _work_order(
+        db_session, subscriber, crm_work_order_id="wo-material-history"
+    )
+    item = _item(db_session)
+    db_session.commit()
+
+    created = field_material_requests.create(
+        db_session,
+        _auth(user),
+        crm_work_order_id=work_order.public_id,
+        priority="medium",
+        notes=None,
+        items=[{"item_id": item.id, "quantity": 1}],
+    )
+    work_order.status = "completed"
+    work_order.assigned_to_crm_person_id = "other-material-history-tech"
+    db_session.commit()
+
+    own_history = field_material_requests.list_mine(db_session, _auth(user))
+    assert [row["id"] for row in own_history] == [created["id"]]
+    assert field_material_requests.list_mine(db_session, _auth(other)) == []
+    stored = db_session.get(FieldMaterialRequest, created["id"])
+    assert stored is not None
+    assert stored.requested_by_technician_id == profile.id
+    assert (
+        field_material_requests.get(db_session, _auth(user), str(created["id"]))["id"]
+        == created["id"]
+    )
+    with pytest.raises(HTTPException) as other_detail:
+        field_material_requests.get(db_session, _auth(other), str(created["id"]))
+    assert other_detail.value.status_code == 404
+    assert (
+        field_material_requests.submit(db_session, _auth(user), str(created["id"]))[
+            "status"
+        ]
+        == "submitted"
+    )
+
+
+def test_material_history_supports_person_and_legacy_user_ownership(db_session):
+    user = _user(db_session)
+    profile = _profile(db_session, user)
+    other = _user(db_session, "OtherIdentity")
+    _profile(db_session, other, crm_person_id="other-material-identity-tech")
+    subscriber = _subscriber(db_session)
+    work_order = _work_order(
+        db_session, subscriber, crm_work_order_id="wo-material-identity"
+    )
+    item = _item(db_session)
+    db_session.commit()
+
+    created = field_material_requests.create(
+        db_session,
+        _auth(user),
+        crm_work_order_id=work_order.public_id,
+        priority="medium",
+        notes=None,
+        items=[{"item_id": item.id, "quantity": 1}],
+    )
+    row = db_session.get(FieldMaterialRequest, created["id"])
+    assert row is not None
+
+    permanent_person_id = uuid4()
+    profile.person_id = permanent_person_id
+    row.requested_by_person_id = permanent_person_id
+    row.requested_by_technician_id = None
+    row.requested_by_system_user_id = None
+    db_session.commit()
+    assert [
+        item["id"]
+        for item in field_material_requests.list_mine(
+            db_session, {**_auth(user), "person_id": str(permanent_person_id)}
+        )
+    ] == [created["id"]]
+
+    row.requested_by_person_id = uuid4()
+    row.requested_by_system_user_id = user.id
+    db_session.commit()
+    assert [
+        item["id"]
+        for item in field_material_requests.list_mine(db_session, _auth(user))
+    ] == [created["id"]]
+    assert field_material_requests.list_mine(db_session, _auth(other)) == []
+
+
 def test_material_request_validation_and_scope(db_session):
     user = _user(db_session)
     _profile(db_session, user)
