@@ -280,7 +280,14 @@ def test_customer_360_groups_profile_location_and_account_access() -> None:
     assert "Account &amp; Access" in account_tab
     assert "Subscriber Accounts" in account_tab
     assert "Portal Access" in account_tab
-    assert "CRM Sync" in account_tab
+    assert "CRM Sync" not in account_tab
+    assert 'aria-label="Portal access actions"' in account_tab
+    assert "lg:grid-cols-3" in account_tab
+    assert "lg:col-span-2" in account_tab
+    assert "Account actions" in account_tab
+    assert account_tab.index("Account actions") < account_tab.index(
+        "Impersonate account"
+    )
     assert '<div class="contents">' in template
     assert 'data-convert-id="{{ customer.id }}"' in account_tab
     assert "<!-- Active Subscriptions Preview -->" not in account_tab

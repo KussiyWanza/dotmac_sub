@@ -306,6 +306,15 @@ class AccountCreditReleasePreview:
     entries: tuple[AccountCreditReleaseEntry, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class ReviewedOpeningSettlementAllocationRelease:
+    """Exact historical allocation to release back to its payment source."""
+
+    invoice_id: UUID
+    allocation_id: UUID
+    reason: str
+
+
 def _invoice_void_release_preview(
     db: Session, invoice_id: UUID
 ) -> AccountCreditReleasePreview:
@@ -1126,6 +1135,34 @@ class AccountCreditApplications:
             allocation.payment.updated_at = datetime.now(UTC)
         db.flush()
         return reversals
+
+    @staticmethod
+    def release_for_reviewed_opening_settlement(
+        db: Session,
+        command: ReviewedOpeningSettlementAllocationRelease,
+    ) -> list[tuple[LedgerEntry, UUID]]:
+        """Release one reviewed allocation whose invoice predates an opening.
+
+        The original allocation and ledger entries remain durable.  The shared
+        release path appends exact ledger reversals and retires only the active
+        projection, so the payment becomes reusable without deleting history.
+        The coordinating reconciliation owner has already fingerprinted the
+        opening, allocation, invoice, and customer-subledger posting.
+        """
+
+        reason = command.reason.strip()
+        if not reason:
+            raise AccountCreditApplicationError(
+                code="financial.account_credit_applications.missing_review_reason",
+                message="Reviewed allocation release requires a reason.",
+                details={"allocation_id": str(command.allocation_id)},
+            )
+        return AccountCreditApplications.release_for_invoice_void(
+            db,
+            invoice_id=command.invoice_id,
+            expected_allocation_ids=(command.allocation_id,),
+            memo=reason,
+        )
 
     @staticmethod
     def inspect_invariants(
