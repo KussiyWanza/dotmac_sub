@@ -119,7 +119,7 @@ def _open_whatsapp_window(
         channel_type=InboxChannelType.whatsapp.value,
         direction=InboxMessageDirection.inbound.value,
         body="Hello",
-        received_at=at or datetime(2026, 7, 10, 8, 0, tzinfo=UTC),
+        received_at=at or datetime.now(UTC),
     )
     db_session.add(inbound)
     db_session.flush()

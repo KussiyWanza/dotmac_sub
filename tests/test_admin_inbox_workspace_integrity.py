@@ -711,7 +711,7 @@ def test_status_and_assignment_filters_use_flexible_wrapping_groups():
     group_classes = (
         "flex flex-wrap gap-1 rounded-xl bg-slate-100 p-1 dark:bg-slate-800/50"
     )
-    assert SIDEBAR.count(group_classes) == 2
+    assert SIDEBAR.count(group_classes) == 3
     assert 'name="status" value="open"' in SIDEBAR
     assert 'name="status" value="pending"' in SIDEBAR
     assert 'name="has_ticket" value="true"' in SIDEBAR
