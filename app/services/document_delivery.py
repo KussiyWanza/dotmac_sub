@@ -215,7 +215,7 @@ def deliver(
     recipient: EmailRecipient,
     artifact: DocumentArtifact,
     composition: DocumentComposition,
-    subscriber_id: UUID,
+    subscriber_id: UUID | None,
     record: Callable[[DeliveryRecord], None],
     event_type: EventType,
     on_queued: Callable[[], None] | None = None,
