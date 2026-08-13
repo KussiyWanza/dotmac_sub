@@ -427,7 +427,7 @@ class InboxResponseCohort(StrEnum):
 
 
 _SUCCESSFUL_AGENT_DELIVERY_STATUSES = frozenset(
-    {"queued", "accepted", "sent", "delivered", "read", "retried"}
+    {"accepted", "sent", "delivered", "read"}
 )
 _SOCIAL_COMMENT_CHANNELS = frozenset({"facebook_comment", "instagram_comment"})
 _SOCIAL_COMMENT_METADATA_VALUES = frozenset(

@@ -3311,7 +3311,13 @@ in forms, or rotate key material directly.
    unread decisions, and action eligibility live in the typed projection
    service. Inbox ORM rows have no writer outside the `team_inbox_*` family —
    campaigns and other domains request materialization rather than constructing
-   rows themselves.
+   rows themselves. A committed operator reply returns its exact notification
+   outbox UUID to the HTTP transport, which schedules an after-response wake-up
+   on the dedicated `notifications` worker. The scheduled notification runner
+   remains the durable recovery sweep. Both paths use the same row-locked
+   eligibility claim before
+   provider delivery, and committed status changes publish bounded realtime
+   invalidations so clients refetch the authoritative Inbox projection.
    `app.team_inbox_smtp` owns only the dedicated SMTP process lifecycle,
    readiness check, and continuous/deployment probe orchestration; it delegates
    every inbound write and exact-probe verification to

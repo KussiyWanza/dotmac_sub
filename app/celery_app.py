@@ -55,6 +55,13 @@ celery_app.autodiscover_tasks(["app.tasks"])
 # Route critical OLT authorization and ACS/TR-069 tasks to dedicated queues.
 # This prevents ACS work from being starved by slow SNMP/polling/default tasks.
 celery_app.conf.task_routes = {
+    # Customer-facing delivery must not wait behind unrelated default, CRM, or
+    # identity work. The periodic runner is the durable recovery sweep; exact
+    # post-commit wake-ups use the same isolated consumer.
+    "app.tasks.notifications.deliver_notification": {"queue": "notifications"},
+    "app.tasks.notifications.deliver_notification_queue": {
+        "queue": "notifications"
+    },
     "app.tasks.tr069.sync_all_acs_devices": {"queue": "acs"},
     "app.tasks.tr069.reconcile_command_outcomes": {"queue": "acs"},
     "app.tasks.tr069.execute_network_operation_job": {"queue": "acs"},
@@ -164,6 +171,7 @@ celery_app.conf.task_routes = {
 
 celery_app.conf.task_queues = (
     Queue("celery"),  # Default queue
+    Queue("notifications"),  # Immediate and recovery customer delivery
     Queue("nin"),  # Dedicated identity verification queue
     Queue("tr069"),  # Dedicated OLT/TR-069 operations queue
     Queue("acs"),  # Dedicated GenieACS/TR-069 queue

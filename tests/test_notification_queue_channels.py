@@ -12,6 +12,7 @@ from app.services.branding_config import get_brand
 from app.services.communication_attachments import CommunicationAttachmentError
 from app.tasks.notifications import (
     _deliver_notification_queue,
+    _deliver_notification_queue_stats,
     deliver_inbound_smtp_health_probe,
 )
 
@@ -125,6 +126,42 @@ def test_deliver_notification_queue_handles_sms_and_whatsapp(db_session, monkeyp
     assert delivered == 2
     assert sms.status == NotificationStatus.delivered
     assert wa.status == NotificationStatus.delivered
+
+
+def test_immediate_delivery_is_bounded_to_exact_notification(
+    db_session, monkeypatch
+):
+    selected = _queued_notification(
+        channel=NotificationChannel.sms,
+        recipient="+2348000000001",
+        body="Selected",
+    )
+    untouched = _queued_notification(
+        channel=NotificationChannel.sms,
+        recipient="+2348000000002",
+        body="Untouched",
+    )
+    db_session.add_all([selected, untouched])
+    db_session.commit()
+    sent: list[str] = []
+    monkeypatch.setattr(
+        "app.tasks.notifications.sms_service.send_sms",
+        lambda **kwargs: sent.append(kwargs["notification_id"]) or True,
+    )
+
+    stats = _deliver_notification_queue_stats(
+        db_session,
+        batch_size=1,
+        notification_id=selected.id,
+    )
+
+    db_session.refresh(selected)
+    db_session.refresh(untouched)
+    assert stats["delivered"] == 1
+    assert stats["expired"] == 0
+    assert sent == [str(selected.id)]
+    assert selected.status == NotificationStatus.delivered
+    assert untouched.status == NotificationStatus.queued
 
 
 def test_deliver_notification_queue_marks_failed_on_whatsapp_error(

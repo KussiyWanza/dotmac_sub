@@ -34,6 +34,11 @@ services:
       - ./app:/app/app
       - ./scripts:/app/scripts
 
+  celery-worker-notifications:
+    build: .
+    volumes:
+      - ./app:/app/app
+
   celery-worker-bandwidth:
     build: .
     volumes:

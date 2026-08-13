@@ -382,6 +382,13 @@ TASK_RELIABILITY_CONTRACTS: dict[str, TaskReliabilityContract] = {
         "Transactional outbox publisher; row state owns retries and unknown delivery.",
     ),
     "app.tasks.nin_tasks.verify_nin_task": _c("identity", AUTORETRY, GUARDED, STATUS),
+    "app.tasks.notifications.deliver_notification": _c(
+        "notifications",
+        STATE,
+        GUARDED,
+        STATUS,
+        "Exact-row wake-up after commit; the periodic queue sweep owns recovery.",
+    ),
     "app.tasks.notifications.deliver_notification_queue": _c(
         "notifications", STATE, GUARDED, STATUS
     ),

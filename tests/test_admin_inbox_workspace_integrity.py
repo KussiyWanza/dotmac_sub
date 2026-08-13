@@ -29,6 +29,7 @@ OVERLAYS = Path("templates/admin/inbox/_overlays.html").read_text()
 QUEUE = Path("templates/admin/inbox/_queue_macros.html").read_text()
 SIDEBAR = Path("templates/admin/inbox/_sidebar.html").read_text()
 TICKET_PANEL = Path("templates/admin/inbox/_ticket_panel.html").read_text()
+TRIAGE = Path("templates/components/ui/triage.html").read_text()
 JAVASCRIPT = Path("static/js/admin-inbox.js").read_text()
 REPLICA_CSS = Path("static/css/admin-inbox-replica.css").read_text()
 ROUTES = Path("app/web/admin/inbox.py").read_text()
@@ -153,7 +154,13 @@ def test_reply_submission_refreshes_inbox_fragments_without_page_navigation():
     assert 'workspace?.refreshConversationList?.("reply")' in JAVASCRIPT
     assert 'this.draft = ""' in JAVASCRIPT
     assert "window.location.reload" not in JAVASCRIPT
-    assert "admin-inbox.js?v=20260811a" in INDEX
+    assert "admin-inbox.js?v=20260813a" in INDEX
+
+
+def test_delivery_status_updates_in_place_from_authoritative_realtime_hint():
+    assert 'data-inbox-delivery-status="{{ message.id }}"' in TRIAGE
+    assert 'eventType === "message_status_changed"' in JAVASCRIPT
+    assert "applyDeliveryStatus(data)" in JAVASCRIPT
 
 
 def test_macro_menu_dispatches_identity_not_just_text():

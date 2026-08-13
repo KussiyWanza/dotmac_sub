@@ -83,6 +83,7 @@ class InboxReplyResult:
     kind: str
     conversation_id: str
     message_id: str | None = None
+    notification_id: UUID | None = None
     service_team_id: str | None = None
     sender_key: str | None = None
     activity: str | None = None
@@ -252,6 +253,7 @@ def _queue_outbox_reply(
         kind="queued",
         conversation_id=str(conversation.id),
         message_id=str(message.id),
+        notification_id=notification.id,
         to_email=recipient,
     )
 
@@ -700,6 +702,7 @@ def send_inbox_reply(
         kind=result.kind,
         conversation_id=result.conversation_id,
         message_id=result.message_id,
+        notification_id=result.notification_id,
         service_team_id=sender.service_team_id,
         sender_key=config.get("sender_key") or sender.sender_key,
         activity=sender.activity,

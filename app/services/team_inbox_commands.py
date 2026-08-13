@@ -136,6 +136,7 @@ class ReplyOutcome:
     kind: str
     sender: str
     message_id: str | None = None
+    notification_id: UUID | None = None
     replayed: bool = False
 
 
@@ -460,6 +461,7 @@ def reply(
                     ),
                     sender=previous.from_address or "team sender",
                     message_id=str(previous.id),
+                    notification_id=previous.notification_id,
                     replayed=True,
                 )
         template = None
@@ -605,6 +607,7 @@ def reply(
             kind=result.kind,
             sender=result.from_address or result.sender_key or "team sender",
             message_id=result.message_id,
+            notification_id=result.notification_id,
         )
 
     return _commit(db, action)

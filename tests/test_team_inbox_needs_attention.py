@@ -75,7 +75,7 @@ def _add_completed_exchange_with_follow_up(
                 channel_type=conversation.channel_type,
                 metadata={
                     "sent_by_person_id": str(uuid.uuid4()),
-                    "delivery_status": "queued",
+                    "delivery_status": "delivered",
                 },
             ),
             _message(
@@ -186,6 +186,18 @@ def test_unreplied_is_distinct_from_needs_attention(db_session):
         {
             "sent_by_person_id": "agent",
             "delivery_status": "scheduled",
+        },
+        {
+            "sent_by_person_id": "agent",
+            "delivery_status": "queued",
+        },
+        {
+            "sent_by_person_id": "agent",
+            "delivery_status": "sending",
+        },
+        {
+            "sent_by_person_id": "agent",
+            "delivery_status": "retried",
         },
         {
             "sent_by_person_id": "agent",

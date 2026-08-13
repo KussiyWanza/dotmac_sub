@@ -127,6 +127,7 @@ def test_send_inbox_reply_uses_owner_team_sender(db_session, monkeypatch):
     assert result.sender_key == "support"
     assert result.activity == "support_ticket"
     assert result.from_address == "support@dotmac.io"
+    assert result.notification_id == notification.id
     assert notification.recipient == "customer@example.com"
     assert notification.subject == "Re: Router offline"
     assert notification.metadata_["activity"] == "support_ticket"
@@ -325,7 +326,7 @@ def _social_comment_conversation(
 def test_facebook_comment_reply_records_provider_id_only_after_meta_accepts(
     db_session, monkeypatch
 ):
-    from app.services import meta_pages
+    from app.services import meta_pages, team_inbox_realtime
 
     conversation = _social_comment_conversation(
         db_session,
@@ -334,6 +335,14 @@ def test_facebook_comment_reply_records_provider_id_only_after_meta_accepts(
         account_id="page-123",
     )
     calls: list[dict[str, str]] = []
+    realtime_events: list[tuple[object, dict[str, object]]] = []
+    monkeypatch.setattr(
+        team_inbox_realtime,
+        "publish_conversation_event",
+        lambda _db, _conversation_id, *, event_type, payload: realtime_events.append(
+            (event_type, payload)
+        ),
+    )
     monkeypatch.setattr(
         meta_pages,
         "reply_to_comment_sync",
@@ -369,6 +378,11 @@ def test_facebook_comment_reply_records_provider_id_only_after_meta_accepts(
     assert outbound.external_message_id == "reply-456"
     assert outbound.metadata_["delivery_status"] == "delivered"
     assert outbound.metadata_["parent_provider_comment_id"] == "comment-123"
+    assert [
+        payload["delivery_status"]
+        for event_type, payload in realtime_events
+        if event_type == team_inbox_realtime.EventType.MESSAGE_STATUS_CHANGED
+    ] == ["sending", "delivered"]
 
 
 def test_social_comment_reply_targets_quoted_comment_not_latest_inbound(
