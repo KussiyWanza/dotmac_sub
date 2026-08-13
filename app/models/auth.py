@@ -124,7 +124,7 @@ class UserCredential(Base):
             "(provider != 'local') OR (username IS NOT NULL AND password_hash IS NOT NULL)",
             name="ck_user_credentials_local_requires_username_password",
         ),
-        # Migration 525. Tenant, Party, verifier binding and evidence are one
+        # Migration 527. Tenant, Party, verifier binding and evidence are one
         # projection: all present or all absent.
         CheckConstraint(
             "(party_id IS NULL AND authentication_binding_id IS NULL AND "
@@ -185,7 +185,7 @@ class UserCredential(Base):
     radius_server_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("radius_servers.id")
     )
-    # Migration 525 — additive Party/binding/tenant columns. Nothing reads
+    # Migration 527 — additive Party/binding/tenant columns. Nothing reads
     # through them yet; the legacy principal FKs above stay authoritative until
     # a separate reader cutover (R2). All nullable, and they stay nullable
     # until R3.
@@ -202,7 +202,7 @@ class UserCredential(Base):
     # The deployed schema has a RESTRICT FK to kernel-owned ``tenants``. The
     # kernel maps that table on a separate declarative base, so repeating the FK
     # here would make Sub's metadata unable to resolve its own graph in the
-    # SQLite unit lane. Migration 525 remains the schema authority for the FK.
+    # SQLite unit lane. Migration 527 remains the schema authority for the FK.
     tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)
     password_updated_at: Mapped[datetime | None] = mapped_column(

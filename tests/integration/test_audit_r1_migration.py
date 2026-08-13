@@ -30,7 +30,7 @@ from app.schemas.audit import AuditEventCreate
 from app.services.audit import audit_events
 
 PREDECESSOR = "524_network_map_v2_asset_proposals"
-REVISION = "525_audit_events_kernel_r1"
+REVISION = "526_audit_events_kernel_r1"
 
 
 def _render(url: URL) -> str:

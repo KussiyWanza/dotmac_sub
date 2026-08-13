@@ -523,7 +523,7 @@ UserCredential (Login credentials)
 ├── provider (legacy persisted enum; sso is compatibility-only/unimplemented)
 ├── username, password_hash
 ├── radius_server_id (when provider='radius')
-├── party_id → Person Party (nullable additive projection; migration 525)
+├── party_id → Person Party (nullable additive projection; migration 527)
 ├── authentication_binding_id → installed verifier binding
 ├── tenant_id → operator tenant
 ├── party_bound_at, party_binding_source, party_binding_reason

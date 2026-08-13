@@ -1,6 +1,6 @@
 """Canonical credential-to-Party authentication projection owner.
 
-Migration 525 is additive: legacy principal foreign keys remain authoritative
+Migration 527 is additive: legacy principal foreign keys remain authoritative
 for login until a later reader cutover. This service is the only runtime writer
 of the new projection. It binds a credential to a Person Party, one installed
 verifier binding, Sub's operator tenant, and reviewed evidence in one command.

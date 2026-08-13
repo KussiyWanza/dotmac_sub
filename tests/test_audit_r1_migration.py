@@ -1,4 +1,4 @@
-"""Migration 525 is an additive, history-preserving audit expansion."""
+"""Migration 526 is an additive, history-preserving audit expansion."""
 
 from __future__ import annotations
 
@@ -11,12 +11,12 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 ROOT = Path(__file__).resolve().parents[1]
-MIGRATION = ROOT / "alembic/versions/525_audit_events_kernel_r1.py"
+MIGRATION = ROOT / "alembic/versions/526_audit_events_kernel_r1.py"
 
 
 def _load_migration() -> ModuleType:
     assert MIGRATION.exists()
-    spec = importlib.util.spec_from_file_location("migration_525_audit_r1", MIGRATION)
+    spec = importlib.util.spec_from_file_location("migration_526_audit_r1", MIGRATION)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -37,8 +37,8 @@ class _RecordingOperations:
 def test_revision_extends_the_current_product_head() -> None:
     migration = _load_migration()
 
-    assert migration.revision == "525_audit_events_kernel_r1"
-    assert migration.down_revision == "524_network_map_v2_asset_proposals"
+    assert migration.revision == "526_audit_events_kernel_r1"
+    assert migration.down_revision == "525_inbox_self_assign_permission"
 
 
 def test_upgrade_is_nullable_additive_and_sets_created_default_separately() -> None:

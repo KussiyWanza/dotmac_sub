@@ -8,7 +8,7 @@ Owner: `observability.audit_log`
 
 ## Outcome
 
-Sub migration `525_audit_events_kernel_r1` adds the three missing members of
+Sub migration `526_audit_events_kernel_r1` adds the three missing members of
 the accepted audit union:
 
 - `actor_party_id UUID NULL`, indexed and deliberately without a foreign key;
@@ -52,7 +52,8 @@ On 2026-08-12, the released wheel was installed into a disposable Linux
 environment on the explicitly named Observe host. The integration candidate's
 then-current Alembic chain reached `524_audit_events_kernel_r1` on PostgreSQL
 16 with PostGIS 3.4. Promotion rebased the same additive migration to
-`525_audit_events_kernel_r1` after Network Map V2 claimed revision 524. The
+`526_audit_events_kernel_r1` after Network Map V2 claimed revision 524 and Team
+Inbox claimed revision 525. The
 rehearsal ran 103 integration tests: all passed against that migrated database. It
 returned exit code 0 and removed its disposable database container and network.
 This proves released-artifact compatibility; it does not compose kernel
@@ -90,8 +91,8 @@ ratchet and database access controls own prevention of unsanctioned writers.
 ## Cutover and rollback boundaries
 
 R1 is expansion only. Reads continue using Sub's legacy columns. A code rollback
-is safe while migration 524 remains because older code ignores the new nullable
-columns. Downgrading 524 after R1 writes begin destroys the additive evidence
+is safe while migration 526 remains because older code ignores the new nullable
+columns. Downgrading 526 after R1 writes begin destroys the additive evidence
 and requires explicit operator approval; normal rollback leaves the columns in
 place.
 
