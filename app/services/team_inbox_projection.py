@@ -1896,6 +1896,11 @@ def build_queue_projection(
         if raw_status in {item.value for item in InboxConversationStatus}
         else None
     )
+    # The unqualified Inbox queue is active work. Resolved conversations are
+    # historical and remain available only through the explicit Done filter.
+    # Keep this presentation rule here rather than changing the generic read
+    # model's default, which is also used by history-oriented callers.
+    effective_open_only = open_only or status is None
     channel = (
         raw_channel
         if raw_channel in {item.value for item in InboxChannelType}
@@ -1982,7 +1987,7 @@ def build_queue_projection(
             priority_at_most=priority,
             muted=muted,
             snoozed=snoozed,
-            open_only=open_only,
+            open_only=effective_open_only,
             unassigned=unassigned,
             operator_person_id=request.actor_person_id,
             unread_only=unread,

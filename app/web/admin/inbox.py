@@ -181,7 +181,17 @@ def _is_htmx_request(request: Request) -> bool:
 
 
 def _query_int(value: object, *, default: int | None = None) -> int | None:
-    return value if isinstance(value, int) and not isinstance(value, bool) else default
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return default
+        try:
+            return int(text)
+        except ValueError:
+            return default
+    return default
 
 
 def _ctx(request: Request, db: Session) -> dict:
@@ -213,7 +223,7 @@ def team_inbox_queue(
     needs_response: bool = Query(default=False),
     needs_attention: bool = Query(default=False),
     contact_resolution_status: str | None = Query(default=None),
-    priority_at_most: int | None = Query(default=None),
+    priority_at_most: str | None = Query(default=None),
     muted: bool | None = Query(default=None),
     snoozed: bool | None = Query(default=None),
     open_only: bool = Query(default=False),
@@ -1707,7 +1717,7 @@ def team_inbox_saved_filter_create(
     needs_response: bool = Form(default=False),
     needs_attention: bool = Form(default=False),
     contact_resolution_status: str | None = Form(default=None),
-    priority_at_most: int | None = Form(default=None),
+    priority_at_most: str | None = Form(default=None),
     muted: bool | None = Form(default=None),
     snoozed: bool | None = Form(default=None),
     open_only: bool = Form(default=False),

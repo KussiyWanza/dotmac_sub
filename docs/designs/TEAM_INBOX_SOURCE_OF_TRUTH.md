@@ -52,6 +52,10 @@ Campaign materialization remains the flush-only
 `communications.team_inbox_campaigns` participant under the campaign and
 outbound-intent owners.
 
+The Inbox **All** status filter is the active operational queue and excludes
+resolved conversations. The explicit **Done** filter is the resolved-history
+view.
+
 ## Inbound flow and idempotency
 
 1. The adapter verifies the provider signature or SMTP envelope and reduces the
