@@ -198,6 +198,18 @@ ROLE_SLUG_MAX_LENGTH = 63
 #: staying short enough to leave the readable prefix intact.
 _SLUG_DIGEST_LENGTH = 7
 
+#: Anything outside the kernel's slug alphabet, collapsed to one separator.
+#: `_normalize_role_name` guards names arriving through a catalog COMMAND, but it
+#: never saw the legacy population: `roles.name` carries no pattern CHECK, only a
+#: normalized-uniqueness index, and rows predating that validator still hold
+#: spaces and capitals. Measured on production 2026-08-13: nine of sixteen role
+#: names fail `^[a-z][a-z0-9_-]*$`, and three of those — "Technical support",
+#: "Customer experience", "Customer experience managers" — contain spaces.
+#: `_apply_kernel_identity` converges such rows on any write, so the derivation
+#: has to be total over arbitrary legacy text rather than assuming the
+#: command-path alphabet.
+_SLUG_ILLEGAL_RUN = re.compile(r"[^a-z0-9_-]+")
+
 #: Domain type for the kernel half of a role identity. It remains a string at
 #: the ORM boundary, but cannot be confused with the legacy display/name key in
 #: service and report contracts.
@@ -213,21 +225,39 @@ def derive_role_slug(name: str) -> RoleSlug:
     `scripts/roles_slug_collision_report.py` predict, before any write, exactly
     which names will contend for one kernel identity.
 
-    Names that already fit are used unchanged, so the overwhelming majority of
-    slugs stay equal to the name an operator recognises. Longer names keep a
-    readable prefix and carry a digest of the *whole* name, so two names sharing
-    a 55-character prefix still separate. Collisions remain possible in
-    principle; they are reported and then fail closed against
-    `uq_roles_tenant_slug` rather than being silently disambiguated with a
-    counter, which would make the slug depend on insertion order.
+    Names that already fit the kernel alphabet are used unchanged, so the
+    overwhelming majority of slugs stay equal to the name an operator
+    recognises.
+
+    Total over arbitrary legacy text, not just over names the catalog command
+    would accept today. Anything outside `[a-z0-9_-]` collapses to a single
+    separator, and any name that is rewritten OR truncated carries a digest of
+    the original — otherwise "Technical support" and "technical-support" would
+    derive one slug and contend for a single kernel identity without either
+    operator having done anything wrong. A name with nothing legal left, or one
+    no longer starting with a letter, becomes `role-<digest>`: unreadable, but
+    addressable and reported.
+
+    Collisions remain possible in principle; they are reported and then fail
+    closed against `uq_roles_tenant_slug` rather than being silently
+    disambiguated with a counter, which would make the slug depend on insertion
+    order.
     """
 
     normalized = _role_name_identity(name)
-    if len(normalized) <= ROLE_SLUG_MAX_LENGTH:
-        return RoleSlug(normalized)
     digest = hashlib.sha256(normalized.encode()).hexdigest()[:_SLUG_DIGEST_LENGTH]
-    prefix = normalized[: ROLE_SLUG_MAX_LENGTH - _SLUG_DIGEST_LENGTH - 1].rstrip("-_")
-    return RoleSlug(f"{prefix}-{digest}")
+    legal = _SLUG_ILLEGAL_RUN.sub("-", normalized).strip("-_")
+    if not legal or not legal[0].isalpha():
+        # Nothing survived, or it no longer starts with a letter. A digest-only
+        # slug is unreadable but addressable, and the report names the row so a
+        # human can rename it deliberately.
+        return RoleSlug(f"role-{digest}")
+    if legal == normalized and len(legal) <= ROLE_SLUG_MAX_LENGTH:
+        return RoleSlug(legal)
+    # Either characters were rewritten or the name is too long. Both are lossy,
+    # so both carry the digest of the ORIGINAL name.
+    prefix = legal[: ROLE_SLUG_MAX_LENGTH - _SLUG_DIGEST_LENGTH - 1].strip("-_")
+    return RoleSlug(f"{prefix}-{digest}" if prefix else f"role-{digest}")
 
 
 @dataclass(frozen=True)
@@ -252,7 +282,7 @@ class RoleSlugCollisionReportPayload(TypedDict):
 
     total_roles: int
     distinct_slugs: int
-    truncated_names: list[str]
+    rewritten_names: list[str]
     collisions: list[RoleSlugCollisionPayload]
     blocking: bool
 
@@ -263,7 +293,7 @@ class RoleSlugCollisionReport:
 
     total_roles: int
     distinct_slugs: int
-    truncated_names: tuple[str, ...]
+    rewritten_names: tuple[str, ...]
     collisions: tuple[RoleSlugCollision, ...]
 
     @property
@@ -274,7 +304,7 @@ class RoleSlugCollisionReport:
         return {
             "total_roles": self.total_roles,
             "distinct_slugs": self.distinct_slugs,
-            "truncated_names": list(self.truncated_names),
+            "rewritten_names": list(self.rewritten_names),
             "collisions": [
                 {
                     "slug": str(collision.slug),
@@ -302,14 +332,14 @@ def role_slug_collision_report(
     """
 
     by_slug: dict[RoleSlug, list[tuple[UUID, str]]] = {}
-    truncated: set[str] = set()
+    rewritten: set[str] = set()
     total = 0
     for role_id, name in roles:
         total += 1
         slug = derive_role_slug(name)
         normalized = _role_name_identity(name)
         if slug != normalized:
-            truncated.add(normalized)
+            rewritten.add(normalized)
         by_slug.setdefault(slug, []).append((role_id, normalized))
     collisions = tuple(
         RoleSlugCollision(
@@ -323,7 +353,7 @@ def role_slug_collision_report(
     return RoleSlugCollisionReport(
         total_roles=total,
         distinct_slugs=len(by_slug),
-        truncated_names=tuple(sorted(truncated)),
+        rewritten_names=tuple(sorted(rewritten)),
         collisions=collisions,
     )
 

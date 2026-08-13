@@ -8,6 +8,7 @@ a half-populated identity cannot be persisted at all.
 
 from __future__ import annotations
 
+import re
 from uuid import UUID, uuid4
 
 import pytest
@@ -43,6 +44,98 @@ def test_slug_derivation_is_pure_and_stable_across_calls() -> None:
     first = rbac_catalog.derive_role_slug(name)
     assert first == rbac_catalog.derive_role_slug(name)
     assert len(first) <= rbac_catalog.ROLE_SLUG_MAX_LENGTH
+
+
+class TestLegacyNamesOutsideTheCommandAlphabet:
+    """`roles.name` has no pattern CHECK, so the legacy population is not clean.
+
+    Measured on production 2026-08-13: nine of sixteen role names fail
+    `^[a-z][a-z0-9_-]*$`, and three contain spaces — "Technical support",
+    "Customer experience", "Customer experience managers".
+    `_normalize_role_name` never saw those rows; it guards the catalog command
+    path. `_apply_kernel_identity` converges them on any write, so the
+    derivation has to be total over arbitrary text or the first edit to one of
+    those roles writes a space into the kernel identity column.
+    """
+
+    LEGAL = re.compile(r"^[a-z][a-z0-9_-]*$")
+
+    @pytest.mark.parametrize(
+        "name",
+        (
+            "Technical support",
+            "Customer experience",
+            "Customer experience managers",
+            "Project",
+            "Read-only",
+            "Network_support",
+            "NOC",
+            "Field Ops / Abuja",
+            "  spaced  out  ",
+            "tabs\tand\nnewlines",
+            "trailing-punctuation!!!",
+            "café supervisor",
+        ),
+    )
+    def test_every_legacy_name_derives_a_legal_slug(self, name: str) -> None:
+        slug = rbac_catalog.derive_role_slug(name)
+        assert self.LEGAL.fullmatch(slug), slug
+        assert len(slug) <= rbac_catalog.ROLE_SLUG_MAX_LENGTH
+
+    @pytest.mark.parametrize("name", ("!!!", "   ", "123", "…", "42_operator"))
+    def test_names_with_no_legal_leading_letter_still_derive_something(
+        self, name: str
+    ) -> None:
+        slug = rbac_catalog.derive_role_slug(name)
+        assert self.LEGAL.fullmatch(slug), slug
+
+    def test_a_rewritten_name_does_not_collide_with_its_clean_twin(self) -> None:
+        """The whole point of carrying the digest on a lossy derivation."""
+
+        assert rbac_catalog.derive_role_slug(
+            "Technical support"
+        ) != rbac_catalog.derive_role_slug("technical-support")
+
+    def test_rewriting_is_deterministic(self) -> None:
+        first = rbac_catalog.derive_role_slug("Field Ops / Abuja")
+        assert first == rbac_catalog.derive_role_slug("Field Ops / Abuja")
+        # Case and surrounding whitespace are identity, not difference.
+        assert first == rbac_catalog.derive_role_slug("  field ops / abuja  ")
+
+    def test_the_production_population_derives_sixteen_distinct_legal_slugs(
+        self,
+    ) -> None:
+        """The exact production role names, as measured 2026-08-13."""
+
+        names = (
+            "Administrator",
+            "Customer experience",
+            "Customer experience managers",
+            "Finance",
+            "NOC",
+            "Network_support",
+            "Project",
+            "Read-only",
+            "Technical support",
+            "admin",
+            "auditor",
+            "engineer",
+            "finance_manager",
+            "operator",
+            "project_management_office",
+            "support",
+        )
+        report = rbac_catalog.role_slug_collision_report(
+            (uuid4(), name) for name in names
+        )
+        assert report.total_roles == 16
+        assert report.distinct_slugs == 16
+        assert report.collisions == ()
+        assert report.rewritten_names == (
+            "customer experience",
+            "customer experience managers",
+            "technical support",
+        )
 
 
 def test_model_declares_the_complete_kernel_a42_role_parent_contract() -> None:
@@ -244,11 +337,11 @@ class TestCollisionReport:
             str(role_id) for role_id in sorted((left, right), key=str)
         ]
 
-    def test_truncated_names_are_named_even_without_a_collision(self) -> None:
+    def test_rewritten_names_are_named_even_without_a_collision(self) -> None:
         long_name = "a" * 70
         report = rbac_catalog.role_slug_collision_report([(uuid4(), long_name)])
         assert report.collisions == ()
-        assert report.truncated_names == (long_name,)
+        assert report.rewritten_names == (long_name,)
 
     def test_the_report_is_byte_identical_across_runs(self) -> None:
         """Determinism is the property that makes it diffable between snapshots."""
