@@ -681,7 +681,7 @@ def resolve_channel_routing_decision(
     confidence = _metadata_float(
         metadata, "ai_confidence", "classification_confidence", "confidence"
     )
-    if status == "awaiting_follow_up":
+    if status in {"awaiting_follow_up", "classifying"}:
         return ChannelRoutingDecision(
             primary_service_team_id=None,
             channel_service_team_id=channel_team_id,
@@ -691,7 +691,11 @@ def resolve_channel_routing_decision(
             ai_routing_allowed=ai_allowed,
             ai_intent_key=intent,
             ai_confidence=confidence,
-            reason="ai_awaiting_follow_up",
+            reason=(
+                "ai_awaiting_follow_up"
+                if status == "awaiting_follow_up"
+                else "ai_classifying"
+            ),
         )
     if status in {"fallback", "failed", "escalated"}:
         fallback_team_id = _active_team_id(

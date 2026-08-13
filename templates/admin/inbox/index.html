@@ -120,7 +120,7 @@
     {% if request.query_params.get('message') %}
     <div class="pointer-events-none fixed bottom-4 left-1/2 z-[70] -translate-x-1/2"
          x-data="{ show: true }" x-show="show" x-init="setTimeout(() => show = false, 5000)" x-transition>
-        <div class="status-tone status-panel status-tone-{{ 'negative' if request.query_params.get('status') == 'error' else 'positive' }} pointer-events-auto rounded-lg border px-4 py-2.5 text-sm font-medium shadow-lg">
+        <div class="status-tone status-panel status-tone-{{ 'negative' if (request.query_params.get('notice_status') or request.query_params.get('status')) == 'error' else 'positive' }} pointer-events-auto rounded-lg border px-4 py-2.5 text-sm font-medium shadow-lg">
             {{ request.query_params.get('message') }}
         </div>
     </div>
@@ -131,6 +131,6 @@
 
 {% block scripts %}
 {{ super() }}
-<script src="/static/js/admin-inbox.js?v=20260811a"></script>
+<script src="/static/js/admin-inbox.js?v=20260813a"></script>
 <script src="/static/js/voice-input.js?v=20260730a"></script>
 {% endblock %}

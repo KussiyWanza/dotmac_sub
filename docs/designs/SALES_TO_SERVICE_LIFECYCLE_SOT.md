@@ -210,7 +210,7 @@ depend on HTTP request/response or exception types.
   `/admin/sales/quotes/new`, posting to `/admin/sales/quotes` with
   POST-Redirect-GET and HTTP 303 on success.
 - Audience and job: staff with `crm:quote:write` create a pricing proposal for
-  one eligible Lead while retaining the existing optional Install Location.
+  exactly one eligible Lead or eligible active Customer while retaining the existing optional Install Location.
 - Decision owners: `sales.quote_authoring` owns typed validation, Lead/Party
   recipient resolution, line-reference validation, Decimal calculations,
   metadata enrichment, Draft/Sent initial status, idempotency, audit, and
@@ -218,12 +218,14 @@ depend on HTTP request/response or exception types.
   later Accepted transition and conversion. Tax configuration, Lead lifecycle, account,
   order, Project, Task, WorkOrder, and fulfillment owners retain their named
   decisions.
-- Identity contract: Lead is the only recipient or opportunity selector. The
-  server locks the submitted active/open Lead, validates its Party binding, and
-  derives the Quote recipient through `Quote -> Lead -> Party`. Browser values
-  for Person, customer, Subscriber, account, or owner never establish identity;
-  the authenticated SystemUser supplies Quote ownership server-side.
-- First viewport: Quotes breadcrumb, New Quote title and purpose, required Lead,
+- Identity contract: staff select exactly one Lead or Customer. A customer search
+  is server-backed and exposes only active accounts with reviewed active Party
+  bindings. `sales.customer_quote_linkage` locks the submitted Customer and
+  reuses (or creates) its unique system Lead; the Quote remains Lead-backed and
+  also carries the existing Subscriber id. Browser values never establish Party,
+  account, or owner identity; the authenticated SystemUser supplies ownership.
+- First viewport: Quotes breadcrumb, New Quote title and purpose, mutually
+  exclusive Lead and Customer pickers (one required),
   Draft-default status, NGN-default currency, required Project Type, and the
   start of the responsive Line Items editor.
 - Authoring contract: one empty row remains visible; completely empty rows are
@@ -283,7 +285,7 @@ configuration. Changing one requires a migration/versioned contract and tests.
 1. Capture never creates a Subscriber implicitly and never deduplicates a
    person by email, phone, name, or social handle. Exact provider-event replay
    is idempotent; different content under the same event identity is rejected.
-2. A Quote is authored manually from an exact Lead and requires a selected
+2. A Quote is authored manually from an exact Lead or Customer and requires a selected
    Project Type. The typed `Quote.project_type` column is the authoritative
    downstream input; the metadata key is a compatibility projection only. The Lead
    may have multiple Quotes, and Draft/Sent Quote authoring creates no

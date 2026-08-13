@@ -470,6 +470,10 @@ def test_ticket_full_and_htmx_views_share_canonical_accessible_partials():
     assert (
         "document.removeEventListener('click', this.closeOnOutsideClick, true);" in page
     )
+    assert (
+        '@click.window.capture="if (!$el.contains($event.target)) open = false"'
+        not in list_partial
+    )
     assert '@keydown.escape.window="open = false"' in list_partial
     assert "@click.outside" not in list_partial
     assert 'name="region" data-auto-submit' in list_partial

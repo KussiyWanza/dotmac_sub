@@ -83,9 +83,30 @@ def _require_participant(db: Session, *, action: str) -> None:
         )
 
 
+def _latest_timer(
+    db: Session, *, owner: str, entity_kind: str, entity_id: UUID, purpose: str
+) -> DurableTimer | None:
+    """Lock the newest generation, including fired or canceled history."""
+
+    return db.execute(
+        select(DurableTimer)
+        .where(
+            DurableTimer.owner == owner,
+            DurableTimer.entity_kind == entity_kind,
+            DurableTimer.entity_id == entity_id,
+            DurableTimer.purpose == purpose,
+        )
+        .order_by(DurableTimer.generation.desc())
+        .limit(1)
+        .with_for_update()
+    ).scalar_one_or_none()
+
+
 def _current_timer(
     db: Session, *, owner: str, entity_kind: str, entity_id: UUID, purpose: str
 ) -> DurableTimer | None:
+    """Lock the current scheduled generation, if one exists."""
+
     return db.execute(
         select(DurableTimer)
         .where(
@@ -123,17 +144,16 @@ def schedule_timer(
             "A timer must declare its output event type.",
         )
 
-    current = _current_timer(
+    latest = _latest_timer(
         db,
         owner=command.owner,
         entity_kind=command.entity_kind,
         entity_id=command.entity_id,
         purpose=command.purpose,
     )
-    generation = 1
-    if current is not None:
-        current.status = TimerStatus.superseded
-        generation = current.generation + 1
+    generation = latest.generation + 1 if latest is not None else 1
+    if latest is not None and latest.status == TimerStatus.scheduled:
+        latest.status = TimerStatus.superseded
         db.flush()
 
     timer = DurableTimer(

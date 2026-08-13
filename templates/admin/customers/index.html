@@ -32,11 +32,7 @@
                 Customer Network Map
             </a>
             {% endif %}
-            <button @click="exportCustomers()"
-                    class="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700">
-                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
-                Export CSV
-            </button>
+            {% include "admin/customers/_export_controls.html" %}
             <a href="/admin/customers/wizard"
                class="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700">
                 <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>
@@ -849,6 +845,115 @@ function customersPage(bulkContract) {
         searchErrorMessage: '',
         loadingMessage: 'Searching customers...',
         pendingSearchRequests: 0,
+        exportMenuOpen: false,
+        exportLoading: false,
+        exportError: '',
+        selectedExportColumns: ['all'],
+        exportOptions: [
+            {
+                sourceColumn: 'all',
+                label: 'Full customer CSV',
+                description: 'All available customer details'
+            },
+            {
+                sourceColumn: 'name',
+                label: 'Customer names',
+                description: 'Names only',
+                csvHeader: 'customer_name'
+            },
+            {
+                sourceColumn: 'email',
+                label: 'Email addresses',
+                description: 'Email addresses only',
+                csvHeader: 'email_address'
+            },
+            {
+                sourceColumn: 'phone',
+                label: 'Phone numbers',
+                description: 'Phone numbers only',
+                csvHeader: 'phone_number'
+            },
+            {
+                sourceColumn: 'is_active',
+                label: 'Account statuses',
+                description: 'Active or inactive only',
+                csvHeader: 'account_status'
+            },
+            {
+                sourceColumn: 'type',
+                label: 'Customer types',
+                description: 'Individual or business only',
+                csvHeader: 'customer_type'
+            },
+            {
+                sourceColumn: 'created_at',
+                label: 'Creation dates',
+                description: 'Customer creation timestamps only',
+                csvHeader: 'created_at'
+            }
+        ],
+        advancedExportOptions: [
+            {
+                sourceColumn: 'id',
+                label: 'Customer IDs',
+                description: 'Internal identifiers for dataset joins',
+                csvHeader: 'customer_id'
+            },
+            {
+                sourceColumn: 'account_number',
+                label: 'Account numbers',
+                description: 'Billing account identifiers',
+                csvHeader: 'account_number'
+            },
+            {
+                sourceColumn: 'subscriber_number',
+                label: 'Subscriber numbers',
+                description: 'Operational subscriber identifiers',
+                csvHeader: 'subscriber_number'
+            },
+            {
+                sourceColumn: 'subscription_plans',
+                label: 'Subscription plans',
+                description: 'All plans assigned to each customer',
+                csvHeader: 'subscription_plans'
+            },
+            {
+                sourceColumn: 'service_statuses',
+                label: 'Service statuses',
+                description: 'Subscription lifecycle states',
+                csvHeader: 'service_statuses'
+            },
+            {
+                sourceColumn: 'locations',
+                label: 'Locations / POPs',
+                description: 'Assigned service locations',
+                csvHeader: 'locations'
+            },
+            {
+                sourceColumn: 'pppoe_usernames',
+                label: 'PPPoE usernames',
+                description: 'Network access identifiers',
+                csvHeader: 'pppoe_usernames'
+            },
+            {
+                sourceColumn: 'service_ip_addresses',
+                label: 'Service IP addresses',
+                description: 'Assigned service IPv4 addresses',
+                csvHeader: 'service_ip_addresses'
+            },
+            {
+                sourceColumn: 'nas_devices',
+                label: 'NAS / devices',
+                description: 'Provisioning network devices',
+                csvHeader: 'nas_devices'
+            },
+            {
+                sourceColumn: 'contact_completeness',
+                label: 'Contact completeness',
+                description: 'Email and phone availability',
+                csvHeader: 'contact_completeness'
+            }
+        ],
         availableNotificationChannels: {{ bulk_notification_channels | tojson }},
         notificationTemplates: {{ bulk_notification_templates | tojson }},
         bulkUpdateModal: false,
@@ -1828,13 +1933,164 @@ function customersPage(bulkContract) {
             }
         },
 
-        exportCustomers() {
+        customerExportUrl() {
             const ids = this.selectedIds.length > 0
                 ? this.selectedIds.map(s => `${s.type}:${s.id}`).join(',')
                 : 'all';
             const params = new URLSearchParams(window.location.search);
             params.set('ids', ids);
-            window.location.href = `/admin/customers/export?${params.toString()}`;
+            return `/admin/customers/export?${params.toString()}`;
+        },
+
+        isExportOptionSelected(sourceColumn) {
+            return this.selectedExportColumns.includes(sourceColumn);
+        },
+
+        toggleExportOption(sourceColumn, checked) {
+            this.exportError = '';
+            if (sourceColumn === 'all') {
+                this.selectedExportColumns = checked ? ['all'] : [];
+                return;
+            }
+
+            const selected = new Set(
+                this.selectedExportColumns.filter((column) => column !== 'all')
+            );
+            if (checked) {
+                selected.add(sourceColumn);
+            } else {
+                selected.delete(sourceColumn);
+            }
+            this.selectedExportColumns = Array.from(selected);
+        },
+
+        exportSelectionSummary() {
+            if (this.selectedExportColumns.includes('all')) return 'All details selected';
+            const count = this.selectedExportColumns.length;
+            return count === 1 ? '1 column selected' : `${count} columns selected`;
+        },
+
+        parseCustomerCsv(csvText) {
+            const rows = [];
+            let row = [];
+            let value = '';
+            let quoted = false;
+
+            for (let index = 0; index < csvText.length; index += 1) {
+                const character = csvText[index];
+                if (quoted) {
+                    if (character === '"') {
+                        if (csvText[index + 1] === '"') {
+                            value += '"';
+                            index += 1;
+                        } else {
+                            quoted = false;
+                        }
+                    } else {
+                        value += character;
+                    }
+                    continue;
+                }
+
+                if (character === '"' && value === '') {
+                    quoted = true;
+                } else if (character === ',') {
+                    row.push(value);
+                    value = '';
+                } else if (character === '\n' || character === '\r') {
+                    if (character === '\r' && csvText[index + 1] === '\n') index += 1;
+                    row.push(value);
+                    rows.push(row);
+                    row = [];
+                    value = '';
+                } else {
+                    value += character;
+                }
+            }
+
+            if (value !== '' || row.length > 0) {
+                row.push(value);
+                rows.push(row);
+            }
+            return rows;
+        },
+
+        exportCsvCell(value) {
+            const text = String(value ?? '');
+            const spreadsheetSafeText = /^[=+\-@]/.test(text.trimStart()) ? `'${text}` : text;
+            return `"${spreadsheetSafeText.replaceAll('"', '""')}"`;
+        },
+
+        exportTimestamp() {
+            return new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+        },
+
+        downloadCustomerCsv(content, filename) {
+            const blob = new Blob(['\ufeff', content], { type: 'text/csv;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = filename;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            window.setTimeout(() => URL.revokeObjectURL(url), 0);
+        },
+
+        async exportSelectedCustomers() {
+            if (this.selectedExportColumns.length === 0 || this.exportLoading) return;
+            if (this.selectedExportColumns.includes('all')) {
+                this.exportMenuOpen = false;
+                window.location.href = this.customerExportUrl();
+                return;
+            }
+
+            const selectedOptions = [
+                ...this.exportOptions,
+                ...this.advancedExportOptions
+            ].filter(
+                (option) => this.selectedExportColumns.includes(option.sourceColumn)
+            );
+            this.exportLoading = true;
+            this.exportError = '';
+            try {
+                const response = await fetch(this.customerExportUrl(), {
+                    credentials: 'same-origin',
+                    headers: { 'Accept': 'text/csv' }
+                });
+                if (!response.ok) {
+                    throw new Error(`Customer export failed (HTTP ${response.status}).`);
+                }
+
+                const rows = this.parseCustomerCsv(await response.text());
+                const headers = rows.shift() || [];
+                const selectedColumnIndexes = selectedOptions.map(
+                    (option) => headers.indexOf(option.sourceColumn)
+                );
+                if (selectedColumnIndexes.some((columnIndex) => columnIndex === -1)) {
+                    throw new Error('The selected customer field is unavailable in the export.');
+                }
+
+                const projectedRows = [
+                    selectedOptions.map((option) => option.csvHeader),
+                    ...rows.map((customer) => selectedColumnIndexes.map(
+                        (columnIndex) => customer[columnIndex] || ''
+                    ))
+                ];
+                const content = `${projectedRows.map(
+                    (row) => row.map((value) => this.exportCsvCell(value)).join(',')
+                ).join('\r\n')}\r\n`;
+                const filename = `customers_selected_fields_${this.exportTimestamp()}.csv`;
+                this.downloadCustomerCsv(content, filename);
+                this.exportMenuOpen = false;
+            } catch (error) {
+                console.error('Customer export failed:', error);
+                this.exportError = error instanceof Error
+                    ? error.message
+                    : 'The customer export could not be created. Please try again.';
+            } finally {
+                this.exportLoading = false;
+            }
         }
     };
 }

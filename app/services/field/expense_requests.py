@@ -12,8 +12,10 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import HTTPException
+from sqlalchemy import or_
 from sqlalchemy.orm import Session, selectinload
 
+from app.models.dispatch import TechnicianProfile
 from app.models.field_attachment import FieldAttachment
 from app.models.field_expense import (
     FIELD_EXPENSE_STATUSES,
@@ -351,17 +353,18 @@ class FieldExpenseRequests:
         offset: int = 0,
     ) -> list[dict]:
         profile = _profile_from_principal(db, principal)
-        scoped = _scoped_query(db, profile)
-        if crm_work_order_id:
-            scoped = scoped.filter(WorkOrder.public_id == crm_work_order_id)
-        scoped_ids = scoped.with_entities(WorkOrder.id)
+        ownership = _expense_request_ownership(profile)
         query = (
             db.query(FieldExpenseRequest)
             .options(selectinload(FieldExpenseRequest.items))
-            .filter(FieldExpenseRequest.work_order_mirror_id.in_(scoped_ids))
+            .filter(ownership)
             .filter(FieldExpenseRequest.is_active.is_(True))
             .order_by(FieldExpenseRequest.created_at.desc())
         )
+        if crm_work_order_id:
+            query = query.join(FieldExpenseRequest.work_order_mirror).filter(
+                WorkOrder.public_id == crm_work_order_id
+            )
         if status:
             query = query.filter(FieldExpenseRequest.status == _status(status))
         return [
@@ -436,9 +439,6 @@ class FieldExpenseRequests:
     @staticmethod
     def submit(db: Session, principal: dict[str, Any], expense_request_id: str) -> dict:
         request = _get_scoped_request(db, principal, expense_request_id)
-        profile = _profile_from_principal(db, principal)
-        if request.requested_by_technician_id != profile.id:
-            raise HTTPException(status_code=404, detail="Expense request not found")
         if request.status != "draft":
             raise HTTPException(status_code=409, detail="Only draft requests submit")
         request.status = "submitted"
@@ -507,9 +507,6 @@ class FieldExpenseRequests:
     @staticmethod
     def cancel(db: Session, principal: dict[str, Any], expense_request_id: str) -> dict:
         request = _get_scoped_request(db, principal, expense_request_id)
-        profile = _profile_from_principal(db, principal)
-        if request.requested_by_technician_id != profile.id:
-            raise HTTPException(status_code=404, detail="Expense request not found")
         if request.status not in {"draft", "submitted"}:
             raise HTTPException(
                 status_code=409, detail="Only draft or submitted requests cancel"
@@ -538,18 +535,30 @@ def _get_scoped_request(
     db: Session, principal: dict[str, Any], expense_request_id: str
 ) -> FieldExpenseRequest:
     profile = _profile_from_principal(db, principal)
-    scoped_ids = _scoped_query(db, profile).with_entities(WorkOrder.id)
     request = (
         db.query(FieldExpenseRequest)
         .options(selectinload(FieldExpenseRequest.items))
         .filter(FieldExpenseRequest.id == coerce_uuid(expense_request_id))
-        .filter(FieldExpenseRequest.work_order_mirror_id.in_(scoped_ids))
+        .filter(_expense_request_ownership(profile))
         .filter(FieldExpenseRequest.is_active.is_(True))
         .one_or_none()
     )
     if request is None:
         raise HTTPException(status_code=404, detail="Expense request not found")
     return request
+
+
+def _expense_request_ownership(profile: TechnicianProfile):
+    ownership = or_(
+        FieldExpenseRequest.requested_by_person_id == profile.person_id,
+        FieldExpenseRequest.requested_by_technician_id == profile.id,
+    )
+    if profile.system_user_id is not None:
+        ownership = or_(
+            ownership,
+            FieldExpenseRequest.requested_by_system_user_id == profile.system_user_id,
+        )
+    return ownership
 
 
 def _validate_items(

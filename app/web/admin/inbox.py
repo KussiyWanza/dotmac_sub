@@ -11,6 +11,7 @@ from uuid import UUID
 
 from fastapi import (
     APIRouter,
+    BackgroundTasks,
     Depends,
     File,
     Form,
@@ -60,6 +61,9 @@ from app.services import (
 )
 from app.services import email as email_service
 from app.services import (
+    team_inbox_ai_polish as team_inbox_ai_polish_service,
+)
+from app.services import (
     team_inbox_contact_context as contact_context_service,
 )
 from app.services.ai.client import AIClientError
@@ -82,6 +86,7 @@ logger = logging.getLogger(__name__)
 class InboxPolishRequest(BaseModel):
     text: str = Field(min_length=1, max_length=5000)
     context: str = Field(default="crm_reply", max_length=80)
+    style: str | None = Field(default=None, max_length=80)
 
 
 class InboxReplyPresentation(BaseModel):
@@ -181,7 +186,17 @@ def _is_htmx_request(request: Request) -> bool:
 
 
 def _query_int(value: object, *, default: int | None = None) -> int | None:
-    return value if isinstance(value, int) and not isinstance(value, bool) else default
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return default
+        try:
+            return int(text)
+        except ValueError:
+            return default
+    return default
 
 
 def _ctx(request: Request, db: Session) -> dict:
@@ -213,12 +228,13 @@ def team_inbox_queue(
     needs_response: bool = Query(default=False),
     needs_attention: bool = Query(default=False),
     contact_resolution_status: str | None = Query(default=None),
-    priority_at_most: int | None = Query(default=None),
+    priority_at_most: str | None = Query(default=None),
     muted: bool | None = Query(default=None),
     snoozed: bool | None = Query(default=None),
     open_only: bool = Query(default=False),
     unassigned: bool = Query(default=False),
     unread: bool = Query(default=False),
+    reply_window_status: str | None = Query(default=None),
     # Declared `bool | None` like `muted`/`snoozed`, not `str | None`: these ride
     # `_query_optional_bool`, which keeps only real booleans. Typed as strings the
     # checkbox value "true" was discarded at the adapter and neither filter ever
@@ -270,6 +286,7 @@ def team_inbox_queue(
                 open_only=_query_bool(open_only),
                 unassigned=_query_bool(unassigned),
                 unread=_query_bool(unread),
+                reply_window_status=_query_text(reply_window_status),
                 ai_handling=_query_optional_bool(ai_handling),
                 has_ticket=_query_optional_bool(has_ticket),
                 activity_from=_parse_datetime_field(activity_from),
@@ -287,7 +304,9 @@ def team_inbox_queue(
                     if is_list_fragment_request
                     else team_inbox_projection.InboxQueueComposition.full_workspace
                 ),
-                include_total_count=False,
+                # Numbered pagination requires exact filtered bounds from the
+                # projection owner, including a truthful final-page link.
+                include_total_count=True,
             ),
         )
     except team_inbox_filters.InboxFilterError as exc:
@@ -310,6 +329,7 @@ def team_inbox_queue(
             "per_page": projection.page_meta.per_page,
             "has_previous": projection.page_meta.has_previous,
             "has_next": projection.page_meta.has_next,
+            "queue_return_url": _inbox_queue_return_url(request),
             "search": projection.list_query.search or "",
             "status": projection.status,
             "channel_type": projection.channel_type,
@@ -325,6 +345,7 @@ def team_inbox_queue(
             "open_only": projection.open_only,
             "unassigned": projection.unassigned,
             "unread": projection.unread,
+            "reply_window_status": projection.reply_window_status,
             "ai_handling": projection.ai_handling,
             "has_ticket": projection.has_ticket,
             "activity_from": projection.activity_from,
@@ -374,6 +395,8 @@ def team_inbox_queue(
                 "is_unread": projection.selected.is_unread,
                 "priority_options": projection.selected.priority_options,
                 "activity_events": projection.selected.activity_events,
+                "timeline_entries": projection.selected.timeline_entries,
+                "reply_window": projection.selected.reply_window,
             }
         )
     if is_list_fragment_request:
@@ -534,12 +557,12 @@ def _detail_redirect(
         query_items = [
             (key, value)
             for key, value in parse_qsl(parsed.query, keep_blank_values=True)
-            if key not in {"c", "status", "message"}
+            if key not in {"c", "conversation_id", "notice_status", "message"}
         ]
         query_items.extend(
             (
                 ("c", str(conversation_id)),
-                ("status", status),
+                ("notice_status", status),
                 ("message", message),
             )
         )
@@ -549,11 +572,25 @@ def _detail_redirect(
         )
     return RedirectResponse(
         url=(
-            f"/admin/inbox?c={conversation_id}&status={quote_plus(status)}"
+            f"/admin/inbox?c={conversation_id}&notice_status={quote_plus(status)}"
             f"&message={quote_plus(message)}"
         ),
         status_code=303,
     )
+
+
+def _inbox_queue_return_url(request: Request) -> str:
+    """Return the current local Inbox queue URL for mutation fallbacks."""
+
+    candidates = (
+        getattr(request, "headers", {}).get("hx-current-url"),
+        str(getattr(request, "url", "")),
+    )
+    for candidate in candidates:
+        parsed = urlsplit(str(candidate or "").strip())
+        if parsed.path == "/admin/inbox":
+            return urlunsplit(("", "", parsed.path, parsed.query, ""))
+    return "/admin/inbox"
 
 
 def _reply_presentation_response(
@@ -577,6 +614,29 @@ def _reply_presentation_response(
             )
         },
     )
+
+
+def _request_immediate_notification_delivery(notification_id: UUID) -> None:
+    """Wake the dedicated delivery transport for one committed outbox row.
+
+    Broker publication is best-effort because the durable periodic sweep is
+    the recovery owner. A broker outage must not turn a committed reply into an
+    HTTP failure that encourages the agent to submit a duplicate message.
+    """
+
+    try:
+        from app.tasks.notifications import deliver_notification
+
+        deliver_notification.apply_async(
+            args=[str(notification_id)],
+            retry=False,
+        )
+    except Exception:
+        logger.warning(
+            "team_inbox_immediate_delivery_dispatch_failed",
+            extra={"notification_id": str(notification_id)},
+            exc_info=True,
+        )
 
 
 @router.get(
@@ -711,6 +771,8 @@ def team_inbox_detail(
             ),
             "priority_options": projection.priority_options,
             "activity_events": projection.activity_events,
+            "timeline_entries": projection.timeline_entries,
+            "reply_window": projection.reply_window,
             "agent_options": team_inbox_projection.list_agent_options(db),
             "service_team_options": team_inbox_projection.list_service_team_options(db),
             "can_manage_leads": can(request, "crm:lead:write"),
@@ -730,7 +792,10 @@ def team_inbox_detail(
         # statistics. Rebuilding that full-page context here delays the thread
         # swap (and therefore leaves the opening loader visible) without giving
         # this partial any values that it consumes.
-        context: dict[str, object] = {"request": request}
+        context: dict[str, object] = {
+            "request": request,
+            "queue_return_url": _inbox_queue_return_url(request),
+        }
         context.update(view)
         return templates.TemplateResponse("admin/inbox/_conversation.html", context)
     return RedirectResponse(url=f"/admin/inbox?c={conversation_id}", status_code=303)
@@ -793,6 +858,34 @@ def team_inbox_contact_context(
         }
     )
     return templates.TemplateResponse("admin/inbox/_contact_drawer.html", context)
+
+
+@router.get(
+    "/{conversation_id}/mentionable-users",
+    dependencies=[Depends(require_permission("support:ticket:read"))],
+)
+def team_inbox_mentionable_users(
+    conversation_id: UUID,
+    q: str = Query(default=""),
+    db: Session = Depends(get_db),
+):
+    users = team_inbox_projection.list_mentionable_users(
+        db,
+        conversation_id=conversation_id,
+        search=q,
+        limit=10,
+    )
+    return {
+        "users": [
+            {
+                "id": str(user.id),
+                "name": user.name,
+                "email": user.email,
+                "initials": user.initials,
+            }
+            for user in users
+        ]
+    }
 
 
 def _inbox_action_permissions(
@@ -1150,6 +1243,7 @@ def team_inbox_mark_read(
 def team_inbox_reply(
     conversation_id: UUID,
     request: Request,
+    background_tasks: BackgroundTasks,
     body_text: str = Form(default=""),
     macro_id: str | None = Form(default=None),
     template_id: str | None = Form(default=None),
@@ -1157,6 +1251,9 @@ def team_inbox_reply(
     send_after: str | None = Form(default=None),
     idempotency_key: str | None = Form(default=None),
     reply_to_message_id: str | None = Form(default=None),
+    whatsapp_template_name: str | None = Form(default=None),
+    whatsapp_template_language: str | None = Form(default=None),
+    whatsapp_template_components: str | None = Form(default=None),
     next_url: str | None = Form(default=None),
     db: Session = Depends(get_db),
 ) -> Response:
@@ -1176,6 +1273,11 @@ def team_inbox_reply(
             send_after=_parse_datetime_field(send_after),
             idempotency_key=_query_text(idempotency_key),
             reply_to_message_id=_query_text(reply_to_message_id),
+            whatsapp_template_name=_query_text(whatsapp_template_name),
+            whatsapp_template_language=_query_text(whatsapp_template_language),
+            whatsapp_template_components=_json_object_list(
+                _query_text(whatsapp_template_components)
+            ),
             actor_person_id=_actor_id_from_request(request),
         )
     except team_inbox_commands.ConversationNotFoundError:
@@ -1218,6 +1320,14 @@ def team_inbox_reply(
         if outcome.kind == "failed"
         else f"Reply sent from {outcome.sender}."
     )
+    if outcome.notification_id is not None:
+        # The outbox row is already committed. Publish after the HTTP response
+        # so broker latency never holds the agent's composer open; the periodic
+        # sweep recovers a missed best-effort wake-up.
+        background_tasks.add_task(
+            _request_immediate_notification_delivery,
+            outcome.notification_id,
+        )
     if _is_htmx_request(request):
         return _reply_presentation_response(
             conversation_id,
@@ -1370,34 +1480,22 @@ def team_inbox_ai_polish(
     request: Request,
     db: Session = Depends(get_db),
 ):
-    timeline = team_inbox_read.get_conversation_timeline(db, conversation_id)
-    if timeline is None:
-        return JSONResponse(
-            {"ok": False, "error": "Suggestion unavailable."},
-            status_code=200,
-        )
-    text = payload.text.strip()
-    if not text:
-        return JSONResponse(
-            {"ok": False, "error": "Enter text to polish."},
-            status_code=200,
-        )
     _prepare_mutation(db)
     try:
-        from app.services.ai.engine import AIEngineError, intelligence_engine
-
-        insight = intelligence_engine.advise(
+        result = team_inbox_ai_polish_service.polish_reply(
             db,
-            advisor_key="inbox_sentence_polish",
-            report={"text": text, "context": payload.context},
-            entity_type="inbox_composer",
-            entity_id=str(conversation_id),
-            trigger="manual",
-            triggered_by_system_user_id=_actor_id_from_request(request),
+            team_inbox_ai_polish_service.TeamInboxAIPolishCommand(
+                auth=getattr(request.state, "auth", None) or {},
+                actor_person_id=_actor_uuid_from_request(request),
+                conversation_id=conversation_id,
+                draft=payload.text,
+                requested_style=payload.style,
+                channel_context=payload.context,
+            ),
         )
-    except (AIEngineError, ValueError):
+    except team_inbox_ai_polish_service.TeamInboxAIPolishError as exc:
         return JSONResponse(
-            {"ok": False, "error": "Suggestion unavailable."},
+            {"ok": False, "error": exc.message, "code": exc.code.value},
             status_code=200,
         )
     except Exception:
@@ -1409,27 +1507,27 @@ def team_inbox_ai_polish(
             {"ok": False, "error": "Suggestion unavailable."},
             status_code=200,
         )
-    output = dict(insight.structured_output or {})
-    suggestion = str(output.get("suggested_text") or "").strip()
-    alternatives = output.get("alternatives")
-    if not suggestion:
-        return JSONResponse(
-            {"ok": False, "error": "Suggestion unavailable."},
-            status_code=200,
-        )
     return JSONResponse(
         {
             "ok": True,
-            "suggested_text": suggestion,
-            "alternatives": (
-                [str(value) for value in alternatives[:2]]
-                if isinstance(alternatives, list)
-                else []
-            ),
+            "suggestion": result.suggestion,
+            "suggested_text": result.suggestion,
+            "detected_mood": result.detected_mood.value,
+            "recommended_tone": result.recommended_tone,
+            "reason": result.reason,
+            "warnings": [
+                {"code": warning.code.value, "message": warning.message}
+                for warning in result.warnings
+            ],
+            "facts_preserved": result.facts_preserved,
+            "suggestion_ready": result.suggestion_ready,
+            "original_draft": result.original_draft,
             "meta": {
-                "provider": insight.llm_provider,
-                "model": insight.llm_model,
-                "endpoint": insight.llm_endpoint,
+                "provider": result.provider,
+                "model": result.model,
+                "endpoint": result.endpoint,
+                "insight_id": str(result.insight_id) if result.insight_id else None,
+                "context_fingerprint": result.context_fingerprint,
             },
         }
     )
@@ -1707,7 +1805,7 @@ def team_inbox_saved_filter_create(
     needs_response: bool = Form(default=False),
     needs_attention: bool = Form(default=False),
     contact_resolution_status: str | None = Form(default=None),
-    priority_at_most: int | None = Form(default=None),
+    priority_at_most: str | None = Form(default=None),
     muted: bool | None = Form(default=None),
     snoozed: bool | None = Form(default=None),
     open_only: bool = Form(default=False),
@@ -2018,6 +2116,7 @@ def team_inbox_internal_note(
     conversation_id: UUID,
     request: Request,
     body_text: str = Form(...),
+    mention_user_ids: str | None = Form(default=None),
     db: Session = Depends(get_db),
 ):
     _prepare_mutation(db)
@@ -2027,6 +2126,11 @@ def team_inbox_internal_note(
             conversation_id=conversation_id,
             body=body_text,
             actor_person_id=_actor_id_from_request(request),
+            mention_user_ids=[
+                item.strip()
+                for item in (_query_text(mention_user_ids) or "").split(",")
+                if item.strip()
+            ],
         )
     except team_inbox_commands.ConversationNotFoundError:
         return RedirectResponse(
@@ -2356,12 +2460,7 @@ def _settings_context(
         intake_configs[0] if intake_configs else None,
     )
     if selected_intake_config is None:
-        intake_mapping_json = (
-            '[{"intent":"technical_support","department":"technical_support",'
-            '"service_team_id":null},'
-            '{"intent":"billing_issue","department":"helpdesk",'
-            '"service_team_id":null}]'
-        )
+        intake_mapping_json = "[]"
     else:
         intake_mapping_json = json.dumps(
             [
@@ -2481,7 +2580,7 @@ def _routes_redirect(*, status: str, message: str) -> RedirectResponse:
 )
 def team_inbox_ai_intake_policy_update(
     request: Request,
-    scope_key: str = Form("global"),
+    scope_key: str = Form(...),
     channel_type: str = Form("any"),
     is_enabled: bool = Form(default=False),
     confidence_threshold: float = Form(default=0.75),
@@ -2491,6 +2590,20 @@ def team_inbox_ai_intake_policy_update(
     exclude_campaign_attribution: bool = Form(default=True),
     fallback_team_id: str | None = Form(default=None),
     data_cleaning_support_team_id: str | None = Form(default=None),
+    display_name: str | None = Form(default="Dotmac Virtual Assistant"),
+    welcome_message: str | None = Form(default=None),
+    business_tone: str | None = Form(default=None),
+    approved_isp_information: str | None = Form(default=None),
+    queue_initial_template: str | None = Form(default=None),
+    queue_position_update_template: str | None = Form(default=None),
+    queue_heartbeat_template: str | None = Form(default=None),
+    queue_handoff_template: str | None = Form(default=None),
+    queue_position_update_minutes: int = Form(default=5),
+    queue_heartbeat_minutes: int = Form(default=15),
+    data_cleanup_enabled: bool = Form(default=False),
+    data_cleanup_prompt: str | None = Form(default=None),
+    data_cleanup_gender_choices_json: str | None = Form(default=None),
+    data_cleanup_dob_formats: str | None = Form(default=None),
     instructions: str | None = Form(default=None),
     department_mappings_json: str | None = Form(default=None),
     db: Session = Depends(get_db),
@@ -2503,6 +2616,18 @@ def team_inbox_ai_intake_policy_update(
             AiIntakeDepartmentMapping.model_validate(item)
             for item in _json_mapping_list(department_mappings_json)
         )
+        gender_choices = (
+            json.loads(data_cleanup_gender_choices_json)
+            if data_cleanup_gender_choices_json
+            else {}
+        )
+        if gender_choices and not isinstance(gender_choices, dict):
+            raise ValueError("Data-cleanup gender choices must be a JSON object.")
+        dob_formats = [
+            item.strip()
+            for item in str(data_cleanup_dob_formats or "").splitlines()
+            if item.strip()
+        ]
         policy = AiIntakeConfigUpsert(
             scope_key=scope_key,
             channel_type=channel_type,
@@ -2518,7 +2643,34 @@ def team_inbox_ai_intake_policy_update(
             metadata=AiIntakeConfigMetadata(
                 data_cleaning_support_team_id=_uuid_form_value(
                     data_cleaning_support_team_id
-                )
+                ),
+                display_name=(display_name or "Dotmac Virtual Assistant"),
+                welcome_message=welcome_message,
+                business_tone=business_tone,
+                approved_isp_information=approved_isp_information,
+                queue_templates={
+                    "initial": queue_initial_template or "",
+                    "position_update": queue_position_update_template or "",
+                    "heartbeat": queue_heartbeat_template or "",
+                    "handoff": queue_handoff_template or "",
+                    "position_update_minutes": max(
+                        1, min(int(queue_position_update_minutes), 120)
+                    ),
+                    "heartbeat_minutes": max(5, min(int(queue_heartbeat_minutes), 240)),
+                },
+                data_cleanup_enabled=data_cleanup_enabled,
+                data_cleanup_policy={
+                    "production_collection_enabled": bool(data_cleanup_enabled),
+                    "prompt": data_cleanup_prompt or "",
+                    "max_attempts": 2,
+                    "gender_choices": gender_choices,
+                    "dob_formats": dob_formats,
+                    "eligible_channels": [
+                        "whatsapp",
+                        "facebook_messenger",
+                        "instagram_dm",
+                    ],
+                },
             ),
         )
     except (TypeError, ValueError, ValidationError, json.JSONDecodeError) as exc:

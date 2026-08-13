@@ -8,8 +8,10 @@ from uuid import UUID
 from app.celery_app import celery_app
 from app.models.domain_settings import SettingDomain
 from app.services import (
+    ai_conversation_intake,
     team_inbox_assignment,
     team_inbox_maintenance,
+    team_inbox_queue_notifications,
     team_inbox_reply_reminders,
 )
 from app.services.db_session_adapter import db_session_adapter
@@ -110,6 +112,58 @@ def promote_queued_conversations(*, limit: int = 200) -> dict[str, int]:
         logger.info(
             "team inbox FIFO queue promotion complete",
             extra={"event": "team_inbox_queue_promotion", **payload},
+        )
+        return payload
+
+
+@celery_app.task(name="app.tasks.team_inbox.send_queue_position_notifications")
+def send_queue_position_notifications(*, limit: int = 200) -> dict[str, int]:
+    with db_session_adapter.session() as session:
+        result = team_inbox_queue_notifications.sweep_queue_notifications(
+            session,
+            team_inbox_queue_notifications.QueueNotificationSweepCommand(
+                context=CommandContext.system(
+                    actor="task:team-inbox-queue-notifications",
+                    scope="team-inbox:routing-command",
+                    reason="send throttled FIFO queue customer updates",
+                ),
+                limit=limit,
+            ),
+        )
+        payload = {
+            "sent": result.sent,
+            "skipped": result.skipped,
+            "failed": result.failed,
+        }
+        logger.info(
+            "team inbox queue notification sweep complete",
+            extra={"event": "team_inbox_queue_notifications", **payload},
+        )
+        return payload
+
+
+@celery_app.task(name="app.tasks.team_inbox.process_ai_intake_sessions")
+def process_ai_intake_sessions(*, limit: int = 100) -> dict[str, int]:
+    with db_session_adapter.session() as session:
+        result = ai_conversation_intake.process_ready_sessions(
+            session,
+            ai_conversation_intake.AiSessionProcessCommand(
+                context=CommandContext.system(
+                    actor="task:ai-intake-session-processor",
+                    scope="ai:intake-session",
+                    reason="process pending conversational AI intake sessions",
+                ),
+                limit=limit,
+            ),
+        )
+        payload = {
+            "processed": result.processed,
+            "skipped": result.skipped,
+            "failed": result.failed,
+        }
+        logger.info(
+            "AI intake session processing complete",
+            extra={"event": "ai_intake_session_processing", **payload},
         )
         return payload
 

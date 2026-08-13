@@ -29,6 +29,7 @@ OVERLAYS = Path("templates/admin/inbox/_overlays.html").read_text()
 QUEUE = Path("templates/admin/inbox/_queue_macros.html").read_text()
 SIDEBAR = Path("templates/admin/inbox/_sidebar.html").read_text()
 TICKET_PANEL = Path("templates/admin/inbox/_ticket_panel.html").read_text()
+TRIAGE = Path("templates/components/ui/triage.html").read_text()
 JAVASCRIPT = Path("static/js/admin-inbox.js").read_text()
 REPLICA_CSS = Path("static/css/admin-inbox-replica.css").read_text()
 ROUTES = Path("app/web/admin/inbox.py").read_text()
@@ -164,7 +165,22 @@ def test_reply_submission_refreshes_inbox_fragments_without_page_navigation():
     assert 'workspace?.refreshConversationList?.("reply")' in JAVASCRIPT
     assert 'this.draft = ""' in JAVASCRIPT
     assert "window.location.reload" not in JAVASCRIPT
-    assert "admin-inbox.js?v=20260811a" in INDEX
+    assert "admin-inbox.js?v=20260813a" in INDEX
+
+
+def test_delivery_status_updates_in_place_from_authoritative_realtime_hint():
+    assert 'data-inbox-delivery-status="{{ message.id }}"' in TRIAGE
+    assert 'eventType === "message_status_changed"' in JAVASCRIPT
+    assert "applyDeliveryStatus(data)" in JAVASCRIPT
+
+
+def test_conversation_drilldown_and_reply_fallback_preserve_queue_page_state():
+    assert "conversation_queue_item(row, list_query" in QUEUE
+    assert "conversation_url = list_query.url('/admin/inbox')" in QUEUE
+    assert 'hx-push-url="{{ conversation_url }}"' in QUEUE
+    assert "conversation_queue_item(row, list_query" in SIDEBAR
+    assert 'name="next_url"' in CONVERSATION
+    assert "queue_return_url | default('/admin/inbox')" in CONVERSATION
 
 
 def test_macro_menu_dispatches_identity_not_just_text():
@@ -656,8 +672,10 @@ def test_empty_state_and_inbox_pagination_are_scoped_to_the_queue():
         "@click.prevent='navigatePage(",
         "border border-slate-200 bg-white",
         "hover:bg-slate-50",
-        "Page {{ page_meta.page }}",
-        ">Back</a>",
+        "page_meta.start_item",
+        "page_meta.navigation",
+        'aria-current="page" aria-label="Page {{ page_number }}"',
+        ">Previous</a>",
         ">Next</a>",
     ):
         assert contract in QUEUE
@@ -711,13 +729,20 @@ def test_status_and_assignment_filters_use_flexible_wrapping_groups():
     group_classes = (
         "flex flex-wrap gap-1 rounded-xl bg-slate-100 p-1 dark:bg-slate-800/50"
     )
-    assert SIDEBAR.count(group_classes) == 2
+    assert SIDEBAR.count(group_classes) == 3
     assert 'name="status" value="open"' in SIDEBAR
     assert 'name="status" value="pending"' in SIDEBAR
     assert 'name="has_ticket" value="true"' in SIDEBAR
     assert 'name="status" value="resolved"' in SIDEBAR
     assert "bg-emerald-500" in SIDEBAR
     assert "bg-amber-500" in SIDEBAR
+
+
+def test_blank_priority_is_omitted_from_inbox_htmx_filter_requests():
+    assert 'form?.id !== "inbox-filter-form"' in JAVASCRIPT
+    assert 'event.detail.parameters?.priority_at_most === ""' in JAVASCRIPT
+    assert "delete event.detail.parameters.priority_at_most" in JAVASCRIPT
+    assert "priority_at_most: str | None = Query(default=None)" in ROUTES
 
 
 def test_assignment_filter_colours_and_counts_are_present():

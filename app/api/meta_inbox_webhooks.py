@@ -319,6 +319,10 @@ def _iter_meta_social_messages(payload: dict[str, Any]):
             message = event.get("message")
             if not sender_id or not isinstance(message, dict):
                 continue
+            if bool(message.get("is_echo")):
+                continue
+            if any(key in message for key in ("reaction", "is_deleted", "deleted")):
+                continue
             body = _message_text(message)
             if not body:
                 continue
@@ -329,6 +333,7 @@ def _iter_meta_social_messages(payload: dict[str, Any]):
                 "provider_account_scope": page_or_account_id,
                 "external_account_id": page_or_account_id,
                 "attachments": _message_attachments(message),
+                "reply_window_qualifying": True,
             }
             if channel_type == InboxChannelType.facebook_messenger.value:
                 metadata["page_id"] = page_or_account_id

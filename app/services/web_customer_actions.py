@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import csv
 import hashlib
 import hmac
-import io
 import json
 import logging
 import re
@@ -3120,132 +3118,6 @@ def bulk_delete_customers(
         "deleted_count": deleted_count,
         "skipped": skipped,
     }
-
-
-def export_customers_csv(
-    db: Session,
-    *,
-    ids: str,
-    search: str | None,
-    customer_type: str | None,
-) -> tuple[str, str]:
-    customers: list[dict[str, str]] = []
-    if ids == "all":
-        if customer_type != "business":
-            people_stmt = select(Subscriber).where(
-                func.lower(
-                    func.coalesce(
-                        Subscriber.metadata_["subscriber_category"].as_string(), ""
-                    )
-                )
-                != SubscriberCategory.business.value
-            )
-            if search:
-                people_stmt = people_stmt.where(Subscriber.email.ilike(f"%{search}%"))
-            people = db.scalars(
-                people_stmt.order_by(Subscriber.created_at.desc())
-            ).all()
-            for person in people:
-                customers.append(
-                    {
-                        "id": str(person.id),
-                        "type": "person",
-                        "name": f"{person.first_name} {person.last_name}",
-                        "email": person.email,
-                        "phone": person.phone or "",
-                        "is_active": "Active" if person.is_active else "Inactive",
-                        "created_at": person.created_at.strftime("%Y-%m-%d %H:%M:%S")
-                        if person.created_at
-                        else "",
-                    }
-                )
-        if customer_type != "person":
-            orgs_stmt = select(Subscriber).where(
-                func.lower(
-                    func.coalesce(
-                        Subscriber.metadata_["subscriber_category"].as_string(), ""
-                    )
-                )
-                == SubscriberCategory.business.value
-            )
-            if search:
-                orgs_stmt = orgs_stmt.where(
-                    Subscriber.company_name.ilike(f"%{search}%")
-                )
-            orgs = db.scalars(orgs_stmt.order_by(Subscriber.company_name.asc())).all()
-            for org in orgs:
-                customers.append(
-                    {
-                        "id": str(org.id),
-                        "type": "business",
-                        "name": org.company_name or org.display_name or org.full_name,
-                        "email": org.email,
-                        "phone": org.phone or "",
-                        "is_active": "Active" if org.is_active else "Inactive",
-                        "created_at": org.created_at.strftime("%Y-%m-%d %H:%M:%S")
-                        if org.created_at
-                        else "",
-                    }
-                )
-    else:
-        for item in ids.split(","):
-            if ":" not in item:
-                continue
-            ctype, cid = item.split(":", 1)
-            try:
-                if ctype == "person":
-                    person = subscriber_service.subscribers.get(
-                        db=db, subscriber_id=cid
-                    )
-                    customers.append(
-                        {
-                            "id": str(person.id),
-                            "type": "person",
-                            "name": f"{person.first_name} {person.last_name}",
-                            "email": person.email,
-                            "phone": person.phone or "",
-                            "is_active": "Active" if person.is_active else "Inactive",
-                            "created_at": person.created_at.strftime(
-                                "%Y-%m-%d %H:%M:%S"
-                            )
-                            if person.created_at
-                            else "",
-                        }
-                    )
-                elif ctype == "business":
-                    org = subscriber_service.subscribers.get(db=db, subscriber_id=cid)
-                    customers.append(
-                        {
-                            "id": str(org.id),
-                            "type": "business",
-                            "name": org.company_name
-                            or org.display_name
-                            or org.full_name,
-                            "email": org.email,
-                            "phone": org.phone or "",
-                            "is_active": "Active" if org.is_active else "Inactive",
-                            "created_at": org.created_at.strftime("%Y-%m-%d %H:%M:%S")
-                            if org.created_at
-                            else "",
-                        }
-                    )
-            except Exception:
-                logger.debug(
-                    "Skipping organization %s during customer export",
-                    getattr(org, "id", None),
-                    exc_info=True,
-                )
-                continue
-    output = io.StringIO()
-    fieldnames = ["id", "type", "name", "email", "phone", "is_active", "created_at"]
-    writer = csv.DictWriter(output, fieldnames=fieldnames)
-    writer.writeheader()
-    for customer in customers:
-        writer.writerow(customer)
-    content = output.getvalue()
-    output.close()
-    filename = f"customers_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-    return content, filename
 
 
 def _status_from_legacy(

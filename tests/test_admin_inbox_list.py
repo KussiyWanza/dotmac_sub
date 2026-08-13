@@ -4,15 +4,23 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from app.models.team_inbox import InboxConversation
+from app.models.team_inbox import InboxConversation, InboxConversationStatus
 from app.services import team_inbox_projection, team_inbox_read
 
 
-def _conv(db, *, priority, last_message_at, thread):
+def _conv(
+    db,
+    *,
+    priority,
+    last_message_at,
+    thread,
+    status=InboxConversationStatus.open.value,
+):
     conversation = InboxConversation(
         priority=priority,
         last_message_at=last_message_at,
         external_thread_id=thread,
+        status=status,
     )
     db.add(conversation)
     db.flush()
@@ -70,6 +78,77 @@ def test_order_by_last_message_at_ignores_priority(db_session):
     )
     # Sorted by recency only — the more-recent a (despite lower urgency) leads.
     assert [row.id for row in result.items] == [str(a.id), str(b.id)]
+
+
+def test_all_status_is_the_active_queue_and_done_is_resolved_history(db_session):
+    now = datetime(2026, 7, 19, 12, 0, tzinfo=UTC)
+    open_conversation = _conv(
+        db_session, priority=1, last_message_at=now, thread="open"
+    )
+    pending_conversation = _conv(
+        db_session,
+        priority=1,
+        last_message_at=now - timedelta(minutes=1),
+        thread="pending",
+        status=InboxConversationStatus.pending.value,
+    )
+    resolved_conversation = _conv(
+        db_session,
+        priority=1,
+        last_message_at=now - timedelta(minutes=2),
+        thread="resolved",
+        status=InboxConversationStatus.resolved.value,
+    )
+    db_session.commit()
+
+    all_queue = team_inbox_projection.build_queue_projection(
+        db_session, team_inbox_projection.InboxQueueRequest()
+    )
+    done_queue = team_inbox_projection.build_queue_projection(
+        db_session,
+        team_inbox_projection.InboxQueueRequest(
+            status=InboxConversationStatus.resolved.value
+        ),
+    )
+    open_queue = team_inbox_projection.build_queue_projection(
+        db_session,
+        team_inbox_projection.InboxQueueRequest(
+            status=InboxConversationStatus.open.value
+        ),
+    )
+    pending_queue = team_inbox_projection.build_queue_projection(
+        db_session,
+        team_inbox_projection.InboxQueueRequest(
+            status=InboxConversationStatus.pending.value
+        ),
+    )
+
+    assert {row.id for row in all_queue.rows} == {
+        str(open_conversation.id),
+        str(pending_conversation.id),
+    }
+    assert [row.id for row in done_queue.rows] == [str(resolved_conversation.id)]
+    assert [row.id for row in open_queue.rows] == [str(open_conversation.id)]
+    assert [row.id for row in pending_queue.rows] == [str(pending_conversation.id)]
+
+
+def test_explicit_open_only_still_excludes_resolved_history(db_session):
+    now = datetime(2026, 7, 19, 12, 0, tzinfo=UTC)
+    active = _conv(db_session, priority=1, last_message_at=now, thread="active")
+    _conv(
+        db_session,
+        priority=1,
+        last_message_at=now - timedelta(minutes=1),
+        thread="resolved",
+        status=InboxConversationStatus.resolved.value,
+    )
+    db_session.commit()
+
+    result = team_inbox_projection.build_queue_projection(
+        db_session, team_inbox_projection.InboxQueueRequest(open_only=True)
+    )
+
+    assert [row.id for row in result.rows] == [str(active.id)]
 
 
 def test_list_conversations_can_skip_exact_total_count(db_session):

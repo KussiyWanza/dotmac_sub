@@ -416,6 +416,96 @@ def test_send_email_queues_one_pdf_intent_and_replays(
     assert "accepted by the configured mail transport" in delivered["description"]
 
 
+def test_send_email_allows_prospect_bank_transfer_quote(
+    db_session, subscriber, monkeypatch
+):
+    quote, primary, quote_id = _quote(db_session, subscriber)
+    quote.subscriber_id = None
+    db_session.commit()
+    prospect_brand = replace(_brand(), app_url="", portal_domain="")
+    _stub_pdf_storage(monkeypatch, brand=prospect_brand)
+    monkeypatch.setattr(
+        quote_deposits,
+        "quote_payment_page",
+        lambda *_args, **_kwargs: pytest.fail(
+            "prospect delivery must not resolve Paystack eligibility"
+        ),
+    )
+    captured = []
+
+    def submit(db, intent):
+        captured.append(intent)
+        record = CommunicationIntentRecord(
+            subscriber_id=intent.subscriber_id,
+            event_type=intent.event_type,
+            category=intent.category,
+            communication_class=intent.communication_class.value,
+            template_code=intent.template_code,
+            subject=intent.subject,
+            body=intent.body,
+            channels=[NotificationChannel.email.value],
+            include_reseller=False,
+            status="expanded",
+            suppression_reasons=[],
+            dedupe_key=intent.dedupe_key,
+            metadata_=dict(intent.metadata),
+        )
+        db.add(record)
+        db.flush()
+        notification = Notification(
+            communication_intent_id=record.id,
+            audience_type="subscriber",
+            channel=NotificationChannel.email,
+            event_type=intent.event_type,
+            category=intent.category,
+            recipient=intent.recipients[NotificationChannel.email],
+            subject=intent.subject,
+            body=intent.body,
+            metadata_=dict(intent.metadata),
+            status=NotificationStatus.queued,
+        )
+        db.add(notification)
+        db.flush()
+        return CommunicationIntentResult(
+            intent_id=record.id,
+            deliveries=(notification,),
+            queued=(notification,),
+            suppressed=(),
+        )
+
+    monkeypatch.setattr(document_delivery, "submit", submit)
+    monkeypatch.setattr(
+        document_delivery,
+        "emit_event",
+        lambda *_args, **_kwargs: None,
+    )
+
+    outcome = quote_delivery.send_quote_email(
+        db_session,
+        quote_delivery.SendQuoteEmailCommand(
+            context=_context(key=f"pytest-prospect-quote-email:{uuid4()}"),
+            quote_id=quote_id,
+        ),
+    )
+
+    assert outcome.queued is True
+    assert len(captured) == 1
+    intent = captured[0]
+    assert intent.subscriber_id is None
+    assert intent.resolve_subscriber_identity is False
+    assert intent.recipients == {NotificationChannel.email: primary.normalized_value}
+    assert intent.metadata["quote_payment_mode"] == "bank_transfer"
+    assert intent.metadata["quote_delivery_mode"] == "prospect_bank_transfer"
+    assert "quote_payment_url" not in intent.metadata
+    assert "Pay Now" not in intent.metadata["body_html"]
+    assert "Paystack" not in intent.metadata["body_text"]
+    assert "Bank transfer details" in intent.metadata["body_html"]
+    assert "Zenith Bank" in intent.metadata["body_html"]
+    assert "1016946461" in intent.metadata["body_text"]
+    assert "Dotmac Technologies Ltd." in intent.metadata["body_text"]
+    assert db_session.get(Quote, quote_id).status == QuoteStatus.sent.value
+
+
 def test_suppressed_email_does_not_mark_quote_sent(db_session, subscriber, monkeypatch):
     quote, _primary, quote_id = _quote(db_session, subscriber)
     _stub_pdf_storage(monkeypatch)

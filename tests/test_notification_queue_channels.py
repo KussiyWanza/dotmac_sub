@@ -12,6 +12,7 @@ from app.services.branding_config import get_brand
 from app.services.communication_attachments import CommunicationAttachmentError
 from app.tasks.notifications import (
     _deliver_notification_queue,
+    _deliver_notification_queue_stats,
     deliver_inbound_smtp_health_probe,
 )
 
@@ -127,6 +128,40 @@ def test_deliver_notification_queue_handles_sms_and_whatsapp(db_session, monkeyp
     assert wa.status == NotificationStatus.delivered
 
 
+def test_immediate_delivery_is_bounded_to_exact_notification(db_session, monkeypatch):
+    selected = _queued_notification(
+        channel=NotificationChannel.sms,
+        recipient="+2348000000001",
+        body="Selected",
+    )
+    untouched = _queued_notification(
+        channel=NotificationChannel.sms,
+        recipient="+2348000000002",
+        body="Untouched",
+    )
+    db_session.add_all([selected, untouched])
+    db_session.commit()
+    sent: list[str] = []
+    monkeypatch.setattr(
+        "app.tasks.notifications.sms_service.send_sms",
+        lambda **kwargs: sent.append(kwargs["notification_id"]) or True,
+    )
+
+    stats = _deliver_notification_queue_stats(
+        db_session,
+        batch_size=1,
+        notification_id=selected.id,
+    )
+
+    db_session.refresh(selected)
+    db_session.refresh(untouched)
+    assert stats["delivered"] == 1
+    assert stats["expired"] == 0
+    assert sent == [str(selected.id)]
+    assert selected.status == NotificationStatus.delivered
+    assert untouched.status == NotificationStatus.queued
+
+
 def test_deliver_notification_queue_marks_failed_on_whatsapp_error(
     db_session, monkeypatch
 ):
@@ -148,7 +183,7 @@ def test_deliver_notification_queue_marks_failed_on_whatsapp_error(
     db_session.refresh(wa)
     assert delivered == 0
     assert wa.status == NotificationStatus.failed
-    assert wa.last_error == "provider down"
+    assert wa.last_error.startswith("provider_unknown_failure:")
 
 
 def test_deliver_notification_queue_brands_plain_text_email(db_session, monkeypatch):
@@ -267,12 +302,15 @@ def test_required_invoice_attachment_failure_does_not_send_body_only_email(
     assert email.last_error == "invoice_pdf_generation_failed"
 
 
-def test_deliver_notification_queue_processes_push_channel(db_session, monkeypatch):
+def test_deliver_notification_queue_processes_push_channel(
+    db_session, subscriber, monkeypatch
+):
     push = _queued_notification(
         channel=NotificationChannel.push,
         recipient="subscriber",
         body="Usage alert",
     )
+    push.subscriber_id = subscriber.id
     db_session.add(push)
     db_session.commit()
 
@@ -285,6 +323,33 @@ def test_deliver_notification_queue_processes_push_channel(db_session, monkeypat
     db_session.refresh(push)
     assert delivered == 1
     assert push.status == NotificationStatus.delivered
+
+
+def test_push_delivery_fails_closed_without_subscriber_identity(
+    db_session, monkeypatch
+):
+    push = _queued_notification(
+        channel=NotificationChannel.push,
+        recipient="subscriber",
+        body="Usage alert",
+    )
+    db_session.add(push)
+    db_session.commit()
+    monkeypatch.setattr(
+        "app.tasks.notifications.push_service.send_push",
+        lambda **_: (_ for _ in ()).throw(AssertionError("transport called")),
+    )
+
+    stats = _deliver_notification_queue_stats(
+        db_session,
+        batch_size=1,
+        notification_id=push.id,
+    )
+
+    db_session.refresh(push)
+    assert stats["retried"] == 1
+    assert push.status == NotificationStatus.failed
+    assert push.last_error == "push_missing_subscriber"
 
 
 def test_deliver_notification_queue_expires_stale_notifications(

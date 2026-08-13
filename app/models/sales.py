@@ -331,6 +331,30 @@ class Lead(Base):
         return self.estimated_value * Decimal(self.probability) / Decimal(100)
 
 
+class CustomerQuoteLeadLink(Base):
+    """The one system Lead that represents an existing customer in quoting."""
+
+    __tablename__ = "customer_quote_lead_links"
+
+    subscriber_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("subscribers.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    lead_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("leads.id", ondelete="RESTRICT"),
+        nullable=False,
+        unique=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+
+    subscriber = relationship("Subscriber", foreign_keys=[subscriber_id])
+    lead = relationship("Lead", foreign_keys=[lead_id])
+
+
 class LeadOriginCapture(Base):
     """Immutable, structured evidence for how a Lead entered Sub.
 

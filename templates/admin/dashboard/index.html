@@ -21,21 +21,20 @@
                never a stale render-time clock standing in for an unresolved build. #}
             <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">{% if data_freshness is defined and data_freshness.is_present %}Data as of {{ data_freshness.value | app_datetime('%b %d, %Y %H:%M') }}{% else %}Data freshness {{ data_freshness.placeholder if data_freshness is defined else 'Unknown' }}{% endif %}</p>
         </div>
-        <div class="flex gap-3">
+        <div class="flex flex-wrap items-center gap-3">
             {{ action_button("Add Customer", "/admin/customers/new", icon_plus(), "primary", "amber", "orange") }}
+            {% if show_attendance %}
+            <section id="attendance-widget"
+                     hx-get="/admin/dashboard/attendance"
+                     hx-trigger="load"
+                     hx-swap="outerHTML"
+                     aria-label="Attendance"
+                     class="flex min-h-11 min-w-40 items-center rounded-xl border border-slate-200/60 bg-white px-3 shadow-sm dark:border-slate-700/60 dark:bg-slate-800">
+                <span class="h-4 w-28 animate-pulse rounded bg-slate-100 dark:bg-slate-700/50" aria-label="Loading attendance"></span>
+            </section>
+            {% endif %}
         </div>
     </div>
-
-    {% if show_attendance %}
-    <section id="attendance-widget"
-             hx-get="/admin/dashboard/attendance"
-             hx-trigger="load"
-             hx-swap="outerHTML"
-             aria-label="Attendance"
-             class="rounded-2xl border border-slate-200/60 bg-white p-5 shadow-sm dark:border-slate-700/60 dark:bg-slate-800">
-        <div class="h-12 animate-pulse rounded-xl bg-slate-100 dark:bg-slate-700/50" aria-label="Loading attendance"></div>
-    </section>
-    {% endif %}
 
     {# ═══════════ Section 2: Needs Attention (single unified surface) ═══════════ #}
     {# The exception feed (inclusion, severity, order, tone) is owned by

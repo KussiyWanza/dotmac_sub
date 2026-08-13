@@ -167,7 +167,6 @@ ui.action_form_contracts
 ui.audit_events_list_projection
 ui.bulk_action_contracts
 ui.customer_bulk_action_projection
-ui.customer_list_projection
 ui.display_formatting
 ui.form_contracts
 ui.invoice_bulk_action_projection
