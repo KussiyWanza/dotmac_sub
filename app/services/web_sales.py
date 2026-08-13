@@ -2193,6 +2193,7 @@ def _quote_form_fields(
     *,
     subscriber_id: str | None = None,
     lead_id: str | None = None,
+    customer_id: str | None = None,
     status: str | None = None,
     currency: str | None = None,
     tax_rate: str | None = None,
@@ -2215,6 +2216,7 @@ def _quote_form_fields(
     return {
         "subscriber_id": (subscriber_id or "").strip(),
         "lead_id": (lead_id or "").strip(),
+        "customer_id": (customer_id or "").strip(),
         "status": (status or QuoteStatus.draft.value).strip(),
         "currency": (currency or "NGN").strip().upper(),
         "tax_rate": (tax_rate or "").strip(),
@@ -2517,6 +2519,17 @@ def build_quote_form_error_context(
                 "label": "Unavailable Lead (selection cannot be used)",
             }
         )
+    submitted_customer_id = str(fields.get("customer_id") or "").strip()
+    if submitted_customer_id:
+        try:
+            customer = db.get(Subscriber, UUID(submitted_customer_id))
+        except ValueError:
+            customer = None
+        if customer is not None:
+            options["selected_customer"] = {
+                "id": str(customer.id),
+                "label": customer.display_name or customer.full_name,
+            }
     context: dict[str, Any] = {
         "quote_form": _quote_form_fields(**fields),
         "status_values": (
@@ -2580,9 +2593,12 @@ def create_quote_from_form(
     unit_prices: list[str],
     sub_offer_ids: list[str],
     inventory_item_ids: list[str],
+    customer_id: str | None = None,
 ) -> str:
-    if not (lead_id or "").strip():
-        raise ValueError("A Lead is required.")
+    has_lead = bool((lead_id or "").strip())
+    has_customer = bool((customer_id or "").strip())
+    if has_lead == has_customer:
+        raise ValueError("Select exactly one Lead or Customer.")
 
     def parsed_uuid(value: str | None, field: str) -> UUID | None:
         candidate = (value or "").strip()
@@ -2679,7 +2695,8 @@ def create_quote_from_form(
     try:
         actor_id = UUID(str(actor_system_user_id))
         quote_id = UUID(str(submission_id))
-        selected_lead_id = UUID(str(lead_id))
+        selected_lead_id = UUID(str(lead_id)) if has_lead else None
+        selected_customer_id = UUID(str(customer_id)) if has_customer else None
     except ValueError:
         raise ValueError("The authenticated Quote submission is not valid.") from None
     command = quote_authoring.AuthorQuoteCommand(
@@ -2692,6 +2709,7 @@ def create_quote_from_form(
         quote_id=quote_id,
         actor_system_user_id=actor_id,
         lead_id=selected_lead_id,
+        customer_id=selected_customer_id,
         status=requested_status,
         currency=(currency or "NGN").strip().upper(),
         project_type=requested_project_type,

@@ -37,6 +37,7 @@ from app.services.owner_commands import (
     OwnerCommandDefinition,
     execute_owner_command,
 )
+from app.services.sales.customer_quote_linkage import resolve_customer_quote_lead
 from app.services.sales.selfserve import compute_feasibility
 
 _AUTHOR_QUOTE = OwnerCommandDefinition(
@@ -96,7 +97,7 @@ class AuthorQuoteCommand:
     context: CommandContext
     quote_id: UUID
     actor_system_user_id: UUID
-    lead_id: UUID
+    lead_id: UUID | None
     status: QuoteStatus
     currency: str
     project_type: ProjectType
@@ -108,6 +109,7 @@ class AuthorQuoteCommand:
     install: QuoteInstallLocation
     lines: tuple[QuoteLineDraft, ...]
     discount: QuoteDiscountInput | None = None
+    customer_id: UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,7 +159,8 @@ def _error(
 def _fingerprint(command: AuthorQuoteCommand) -> str:
     payload = {
         "actor_system_user_id": str(command.actor_system_user_id),
-        "lead_id": str(command.lead_id),
+        "lead_id": str(command.lead_id) if command.lead_id else None,
+        "customer_id": str(command.customer_id) if command.customer_id else None,
         "status": command.status.value,
         "currency": command.currency,
         "project_type": command.project_type.value,
@@ -571,7 +574,20 @@ def _operation(db: Session, command: AuthorQuoteCommand) -> AuthorQuoteOutcome:
             )
         return AuthorQuoteOutcome(quote_id=replay.id, replayed=True)
 
-    lead = _lead(db, command.lead_id)
+    if (command.lead_id is None) == (command.customer_id is None):
+        raise _error(
+            "recipient_required",
+            "Select exactly one eligible Lead or Customer.",
+            field="recipient",
+        )
+    customer_id: UUID | None = None
+    if command.customer_id is not None:
+        resolution = resolve_customer_quote_lead(db, customer_id=command.customer_id)
+        lead = _lead(db, resolution.lead_id)
+        customer_id = resolution.customer_id
+    else:
+        assert command.lead_id is not None
+        lead = _lead(db, command.lead_id)
     currency = command.currency.strip().upper()
     if len(currency) != 3 or not currency.isascii() or not currency.isalpha():
         raise _error(
@@ -623,6 +639,8 @@ def _operation(db: Session, command: AuthorQuoteCommand) -> AuthorQuoteOutcome:
         "authoring_fingerprint": fingerprint,
         "authoring_actor_system_user_id": str(actor.id),
     }
+    if customer_id is not None:
+        metadata["customer_quote_linkage"] = {"subscriber_id": str(customer_id)}
     # Compatibility projection for readers that predate the typed Quote
     # column. Fulfillment reads ``Quote.project_type`` as the authority.
     metadata["project_type"] = command.project_type.value
@@ -645,7 +663,7 @@ def _operation(db: Session, command: AuthorQuoteCommand) -> AuthorQuoteOutcome:
     quote = Quote(
         id=command.quote_id,
         lead_id=lead.id,
-        subscriber_id=None,
+        subscriber_id=customer_id,
         owner_person_id=actor.id,
         status=command.status.value,
         project_type=command.project_type.value,
@@ -739,6 +757,7 @@ def _operation(db: Session, command: AuthorQuoteCommand) -> AuthorQuoteOutcome:
         {
             "quote_id": str(quote.id),
             "lead_id": str(lead.id),
+            "subscriber_id": str(customer_id) if customer_id else None,
             "person_id": str(lead.party_id),
             "status": command.status.value,
             "currency": quote.currency,
@@ -755,6 +774,7 @@ def _operation(db: Session, command: AuthorQuoteCommand) -> AuthorQuoteOutcome:
         request_id=str(command.context.command_id),
         metadata={
             "lead_id": str(lead.id),
+            "subscriber_id": str(customer_id) if customer_id else None,
             "person_id": str(lead.party_id),
             "status": command.status.value,
             "line_count": len(lines),

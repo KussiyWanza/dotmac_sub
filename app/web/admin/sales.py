@@ -24,7 +24,13 @@ from urllib.parse import urlencode
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    StreamingResponse,
+)
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
@@ -32,6 +38,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.services import conversation_lead_relationships
+from app.services import customer_search as customer_search_service
 from app.services import web_sales as web_sales_service
 from app.services import web_sales_dashboard as dashboard_service
 from app.services.auth_dependencies import can, require_permission
@@ -1232,6 +1239,19 @@ def quote_new(
     return templates.TemplateResponse("admin/sales/quotes/form.html", context)
 
 
+@router.get(
+    "/quotes/customers/search",
+    dependencies=[Depends(require_permission("crm:quote:write"))],
+)
+def quote_customer_search(q: str = Query(min_length=2), db: Session = Depends(get_db)):
+    """Server-backed customer picker projection for Quote authoring."""
+    return JSONResponse(
+        jsonable_encoder(
+            customer_search_service.search_response(db, q, limit=20, reviewed_only=True)
+        )
+    )
+
+
 @router.post(
     "/quotes",
     response_class=HTMLResponse,
@@ -1241,6 +1261,7 @@ def quote_create(
     request: Request,
     submission_id: str | None = Form(default=None),
     lead_id: str | None = Form(default=None),
+    customer_id: str | None = Form(default=None),
     status: str | None = Form(default=None),
     currency: str | None = Form(default=None),
     project_type: str | None = Form(default=None),
@@ -1274,6 +1295,7 @@ def quote_create(
     fields = {
         "submission_id": submission_id,
         "lead_id": lead_id,
+        "customer_id": customer_id,
         "status": status,
         "currency": currency,
         "project_type": project_type,
@@ -1297,6 +1319,7 @@ def quote_create(
             actor_system_user_id=_quote_actor_system_user_id(request),
             submission_id=submission_id,
             lead_id=lead_id,
+            customer_id=customer_id,
             status=status,
             currency=currency,
             project_type=project_type,

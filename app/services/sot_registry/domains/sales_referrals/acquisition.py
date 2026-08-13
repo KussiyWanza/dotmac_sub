@@ -616,6 +616,57 @@ SERVICES: tuple[SOTService, ...] = (
         ),
     ),
     SOTService(
+        name="sales.customer_quote_linkage",
+        module="app.services.sales.customer_quote_linkage",
+        owns=("customer-to-dedicated-Quote-Lead resolution",),
+        depends_on=("customer.accounts", "party.registry", "sales.lead_lifecycle"),
+        notes=(
+            "The quote authoring coordinator invokes this flush-only participant to "
+            "lock an active reviewed customer, reuse or create its unique system Lead, "
+            "and preserve the existing customer account for later acceptance."
+        ),
+        contract=ServiceContract(
+            concerns=(
+                ConcernContract(
+                    name="customer-to-dedicated-Quote-Lead resolution",
+                    role=OwnerRole.RESOLVER,
+                    input_names=("canonical customer account state",),
+                ),
+            ),
+            authoritative_inputs=(
+                AuthorityInput(
+                    name="canonical customer account state",
+                    owner="customer.accounts",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source="locked active Subscriber and its reviewed active Party binding",
+                ),
+            ),
+            transaction=TransactionContract(
+                mode=TransactionMode.PARTICIPANT,
+                boundary="Called only inside sales.quote_authoring; it locks customer then linkage and flushes without completing a transaction.",
+                locking="Locks the selected Subscriber then its unique customer_quote_lead_links row.",
+                idempotency="The customer primary key and unique Lead key return the same dedicated Lead.",
+                retries="The enclosing authoring command retries the complete transaction after a transient conflict.",
+            ),
+            errors=ErrorContract(
+                domain_codes=(
+                    "sales.customer_quote_linkage.customer_not_found",
+                    "sales.customer_quote_linkage.customer_not_eligible",
+                ),
+                mapping_owner="admin sales Quote form adapter",
+                fail_closed_on=("inactive customer or missing reviewed Party binding",),
+            ),
+            migration=MigrationContract(
+                state=AuthorityMigrationState.NATIVE,
+                new_owner="sales.customer_quote_linkage",
+                verification="Unique linkage and customer-backed Quote acceptance tests.",
+            ),
+            steward="sales operations",
+            design_refs=("docs/designs/SALES_TO_SERVICE_LIFECYCLE_SOT.md",),
+            test_refs=("tests/test_web_sales_quote_authoring.py",),
+        ),
+    ),
+    SOTService(
         name="sales.quote_authoring",
         module="app.services.sales.quote_authoring",
         owns=(
@@ -628,6 +679,7 @@ SERVICES: tuple[SOTService, ...] = (
             "financial.tax_configuration",
             "observability.audit_log",
             "party.registry",
+            "sales.customer_quote_linkage",
             "sales.lead_lifecycle",
             "sales.service",
             "service_intent.catalog_policy",

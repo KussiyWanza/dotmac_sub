@@ -126,16 +126,18 @@ def _create(db_session, actor: SystemUser, lead: Lead, **overrides: object) -> U
     return UUID(web_sales.create_quote_from_form(db_session, **fields))  # type: ignore[arg-type]
 
 
-def test_new_quote_template_has_required_lead_as_its_only_identity_selector():
+def test_new_quote_template_has_mutually_exclusive_lead_and_customer_selectors():
     template = Path("templates/admin/sales/quotes/form.html").read_text(
         encoding="utf-8"
     )
 
-    assert 'name="lead_id" required' in template
+    assert 'name="lead_id"' in template
     assert "Select a Lead" in template
+    assert 'name="customer_id"' in template
+    assert "searchCustomers()" in template
+    assert "clearCustomer()" in template
     assert 'name="person_id"' not in template
     assert 'name="subscriber_id"' not in template
-    assert 'name="customer_id"' not in template
     assert 'name="account_id"' not in template
     assert 'name="owner_person_id"' not in template
     assert 'name="project_type" required' in template
@@ -233,7 +235,7 @@ def test_new_quote_context_omits_invalid_active_tax_rate_without_500(db_session)
 
 def test_missing_and_nonexistent_leads_fail_server_side(db_session):
     actor, lead, _party = _identity(db_session)
-    with pytest.raises(ValueError, match="Lead is required"):
+    with pytest.raises(ValueError, match="exactly one Lead or Customer"):
         _create(db_session, actor, lead, lead_id=None)
 
     with pytest.raises(quote_authoring.QuoteAuthoringError, match="valid Lead"):
