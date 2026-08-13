@@ -4,6 +4,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
+from app.models.party import Party, PartyIdentityStatus
 from app.models.subscriber import Subscriber, SubscriberCategory
 from app.services.response import list_response
 
@@ -26,7 +27,9 @@ def _escape_like(term: str) -> str:
     return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-def search(db: Session, query: str, limit: int = 20) -> list[dict]:
+def search(
+    db: Session, query: str, limit: int = 20, *, reviewed_only: bool = False
+) -> list[dict]:
     term = (query or "").strip()
     if not term:
         return []
@@ -44,6 +47,7 @@ def search(db: Session, query: str, limit: int = 20) -> list[dict]:
         Subscriber.legal_name.ilike(like_term),
         Subscriber.domain.ilike(like_term),
         Subscriber.email.ilike(like_term),
+        Subscriber.phone.ilike(like_term),
         Subscriber.account_number.ilike(like_term),
         Subscriber.subscriber_number.ilike(like_term),
     ]
@@ -60,15 +64,21 @@ def search(db: Session, query: str, limit: int = 20) -> list[dict]:
             )
         )
 
+    statement = select(Subscriber).where(
+        Subscriber.is_active.is_(True),
+        or_(*conditions),
+    )
+    if reviewed_only:
+        statement = statement.join(Party, Subscriber.party_id == Party.id).where(
+            Subscriber.party_id.is_not(None),
+            Subscriber.party_bound_at.is_not(None),
+            Subscriber.party_binding_source.is_not(None),
+            Subscriber.party_binding_reason.is_not(None),
+            Party.status == PartyIdentityStatus.active.value,
+        )
     people = list(
         db.scalars(
-            select(Subscriber)
-            .where(
-                Subscriber.is_active.is_(True),
-                or_(*conditions),
-            )
-            .order_by(Subscriber.last_name, Subscriber.first_name)
-            .limit(limit)
+            statement.order_by(Subscriber.last_name, Subscriber.first_name).limit(limit)
         ).all()
     )
     items: list[dict] = []
@@ -107,6 +117,8 @@ def search(db: Session, query: str, limit: int = 20) -> list[dict]:
     return items[:limit]
 
 
-def search_response(db: Session, query: str, limit: int = 20) -> dict:
-    items = search(db, query, limit)
+def search_response(
+    db: Session, query: str, limit: int = 20, *, reviewed_only: bool = False
+) -> dict:
+    items = search(db, query, limit, reviewed_only=reviewed_only)
     return list_response(items, limit, 0)
