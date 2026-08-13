@@ -1117,6 +1117,10 @@ def test_radius_login_failures_lock_credential(db_session, person, monkeypatch):
 def test_mfa_verify_locks_after_repeated_wrong_codes(db_session, person, monkeypatch):
     monkeypatch.setenv("JWT_SECRET", "test-secret")
     monkeypatch.setenv("TOTP_ENCRYPTION_KEY", Fernet.generate_key().decode("utf-8"))
+    # This test covers the default lockout behavior. Keep it independent from
+    # persisted/cached policy values; the next test covers policy resolution.
+    monkeypatch.setattr(auth_flow_service, "_mfa_max_failed_attempts", lambda _db: 5)
+    monkeypatch.setattr(auth_flow_service, "_mfa_lockout_minutes", lambda _db: 15)
     credential = UserCredential(
         person_id=person.id,
         provider=AuthProvider.local,

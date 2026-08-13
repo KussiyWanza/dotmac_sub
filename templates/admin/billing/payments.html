@@ -273,6 +273,9 @@
                             {% endif %}
                         </td>
                         {% call row_actions() %}
+                            {% if payment.status.value == 'succeeded' %}
+                            {{ row_action(href="/admin/billing/payments/" ~ payment.id ~ "/receipt/pdf", icon='<svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v10m0 0 4-4m-4 4-4-4M5 19h14"/></svg>', title="Download receipt", color="emerald") }}
+                            {% endif %}
                             {{ row_action(href="/admin/billing/payments/" ~ payment.id ~ "/edit", icon=icon_edit(), title="Edit", color="amber") }}
                         {% endcall %}
                     {% endcall %}

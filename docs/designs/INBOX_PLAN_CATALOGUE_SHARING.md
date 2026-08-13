@@ -28,7 +28,9 @@ optimizations; the version selected by this owner remains the decision.
 
 - `service_intent.plan_family_catalogues` owns catalogue version, publication
   status, current-version selection, and public download eligibility.
-- `control.settings_spec` owns the configured `plan_families` vocabulary.
+- `service_intent.plan_family_catalogues` owns the configured `plan_families`
+  vocabulary used for catalogue publication; it persists that bounded control
+  through `control.domain_settings`.
 - The catalog offer owner remains authoritative for actual commercial offer,
   price, speed, policy, and availability configuration. An uploaded brochure is
   an approved communication artifact, not an alternate offer database.
@@ -50,10 +52,12 @@ optimizations; the version selected by this owner remains the decision.
 | `superseded` | Former approved version retained for sent links | Allowed |
 | `withdrawn` | Explicitly removed from circulation | Denied |
 
-Publication locks the plan-family versions and the database permits only one
-`published` row per family. The PDF is validated by extension, MIME allow-list,
-magic bytes, and a 20 MB limit. Its SHA-256 checksum provides safe retry
-recognition and its object key is content-addressed.
+The PDF is validated by extension, MIME allow-list, magic bytes, and a 20 MB
+limit, then uploaded to private object storage before publication acquires its
+plan-family database lock. Publication locks the plan-family versions and the
+database permits only one `published` row per family. This keeps slow object
+storage from holding a PostgreSQL transaction open. Its SHA-256 checksum
+provides safe retry recognition and its object key is content-addressed.
 
 ## Page contracts
 
@@ -61,13 +65,18 @@ recognition and its object key is content-addressed.
 
 - Screen: `/admin/catalog/settings/catalogues`.
 - Audience/job: Commercial Operations sees every configured plan family,
-  identifies missing PDFs, and publishes an approved replacement.
+  identifies missing PDFs, adds or edits the configured plan-family vocabulary,
+  and publishes an approved replacement.
 - Information owner: `service_intent.plan_family_catalogues.list_catalogue_options`.
-- Mutation owner: `service_intent.plan_family_catalogues.publish_catalogue`.
+- Mutation owners: `service_intent.plan_family_catalogues.configure_plan_families`
+  and `service_intent.plan_family_catalogues.publish_catalogue`.
 - Primary state: Ready or Missing PDF, with current title, version, filename,
   and size.
 - Empty state: configured families remain visible with Upload PDF, so missing
   work is explicit.
+- Vocabulary safety: plan-family keys use lowercase letters, numbers, and
+  underscores. A family with a currently published PDF cannot be removed from
+  the configuration; the operator must replace or withdraw that catalogue first.
 
 ### Inbox conversation
 

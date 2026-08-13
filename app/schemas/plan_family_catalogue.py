@@ -21,6 +21,20 @@ class PublishPlanFamilyCatalogueCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class ConfigurePlanFamilyCataloguesCommand:
+    """Replace the configured plan-family vocabulary for catalogue publication."""
+
+    context: CommandContext
+    plan_families: tuple[str, ...]
+    actor_system_user_id: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class ConfigurePlanFamilyCataloguesOutcome:
+    plan_families: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class PublishPlanFamilyCatalogueOutcome:
     catalogue_id: UUID
     plan_family: str

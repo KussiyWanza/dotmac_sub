@@ -3,21 +3,28 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.models.audit import AuditActorType
+from app.models.domain_settings import SettingDomain
 from app.models.plan_family_catalogue import PlanFamilyCatalogue
+from app.models.subscription_engine import SettingValueType
 from app.schemas.plan_family_catalogue import (
+    ConfigurePlanFamilyCataloguesCommand,
+    ConfigurePlanFamilyCataloguesOutcome,
     PlanFamilyCatalogueOption,
     PublicPlanFamilyCatalogue,
     PublishPlanFamilyCatalogueCommand,
     PublishPlanFamilyCatalogueOutcome,
     ResolveShareablePlanFamilyCatalogueQuery,
 )
+from app.schemas.settings import DomainSettingUpdate
+from app.services import domain_settings
 from app.services.audit_adapter import stage_audit_event
 from app.services.domain_errors import DomainError
 from app.services.events import emit_event
@@ -33,6 +40,12 @@ _PUBLISH = OwnerCommandDefinition(
     concern=CONCERN,
     name="publish_plan_family_catalogue",
 )
+_CONFIGURE_FAMILIES = OwnerCommandDefinition(
+    owner=OWNER,
+    concern="configured plan-family catalogue vocabulary",
+    name="configure_plan_family_catalogues",
+)
+_FAMILY_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 
 
 class PlanFamilyCatalogueError(DomainError):
@@ -47,6 +60,20 @@ def _error(code: str, message: str, **details: object) -> PlanFamilyCatalogueErr
 
 def _normalize_family(value: str) -> str:
     return value.strip().lower().replace(" ", "_")
+
+
+def _configured_families(values: tuple[str, ...]) -> tuple[str, ...]:
+    normalized = tuple(_normalize_family(value) for value in values)
+    if not normalized:
+        raise _error("plan_family_required", "Add at least one plan family.")
+    if any(not _FAMILY_PATTERN.fullmatch(value) for value in normalized):
+        raise _error(
+            "invalid_plan_family",
+            "Plan families must start with a letter and use lowercase letters, numbers, or underscores.",
+        )
+    if len(set(normalized)) != len(normalized):
+        raise _error("duplicate_plan_family", "Each plan family must be unique.")
+    return normalized
 
 
 def _label(value: str) -> str:
@@ -64,6 +91,22 @@ def _published_rows(db: Session) -> dict[str, PlanFamilyCatalogue]:
         )
     ).all()
     return {row.plan_family: row for row in rows}
+
+
+def _publication_rows_statement(
+    plan_family: str,
+) -> Select[tuple[PlanFamilyCatalogue]]:
+    """Select and lock only the catalogue versions being superseded."""
+
+    return (
+        select(PlanFamilyCatalogue)
+        .options(joinedload(PlanFamilyCatalogue.stored_file))
+        .where(PlanFamilyCatalogue.plan_family == plan_family)
+        .order_by(PlanFamilyCatalogue.version.desc())
+        # ``stored_file`` is outer-joined by joinedload. PostgreSQL cannot lock
+        # that nullable join target, so lock just the authoritative versions.
+        .with_for_update(of=PlanFamilyCatalogue)
+    )
 
 
 def list_catalogue_options(db: Session) -> tuple[PlanFamilyCatalogueOption, ...]:
@@ -94,6 +137,60 @@ def list_catalogue_options(db: Session) -> tuple[PlanFamilyCatalogueOption, ...]
             )
         )
     return tuple(options)
+
+
+def configure_plan_families(
+    db: Session, command: ConfigurePlanFamilyCataloguesCommand
+) -> ConfigurePlanFamilyCataloguesOutcome:
+    """Persist the vocabulary that controls which catalogues can be published."""
+
+    return execute_owner_command(
+        db,
+        definition=_CONFIGURE_FAMILIES,
+        context=command.context,
+        operation=lambda: _configure_plan_families(db, command),
+    )
+
+
+def _configure_plan_families(
+    db: Session, command: ConfigurePlanFamilyCataloguesCommand
+) -> ConfigurePlanFamilyCataloguesOutcome:
+    families = _configured_families(command.plan_families)
+    published = set(
+        db.scalars(
+            select(PlanFamilyCatalogue.plan_family).where(
+                PlanFamilyCatalogue.status == "published"
+            )
+        )
+    )
+    removed_published = published.difference(families)
+    if removed_published:
+        raise _error(
+            "published_plan_family_removal",
+            "A plan family with a published catalogue cannot be removed. Replace or withdraw its catalogue first.",
+            plan_families=tuple(sorted(removed_published)),
+        )
+    domain_settings.catalog_settings.stage_upsert_by_key(
+        db,
+        "plan_families",
+        DomainSettingUpdate(
+            value_type=SettingValueType.string,
+            value_text=",".join(families),
+            value_json=None,
+            is_secret=False,
+            is_active=True,
+        ),
+    )
+    stage_audit_event(
+        db,
+        action="catalog.plan_family_catalogues.configured",
+        entity_type="domain_setting",
+        entity_id=f"{SettingDomain.catalog.value}:plan_families",
+        actor_type=AuditActorType.user,
+        actor_id=str(command.actor_system_user_id),
+        metadata={"plan_families": list(families)},
+    )
+    return ConfigurePlanFamilyCataloguesOutcome(plan_families=families)
 
 
 def resolve_public_catalogue(
@@ -184,13 +281,26 @@ def _publish_catalogue(
     if not command.file_bytes:
         raise _error("file_required", "Choose a PDF catalogue to upload.")
 
-    rows = db.scalars(
-        select(PlanFamilyCatalogue)
-        .options(joinedload(PlanFamilyCatalogue.stored_file))
-        .where(PlanFamilyCatalogue.plan_family == family)
-        .order_by(PlanFamilyCatalogue.version.desc())
-        .with_for_update()
-    ).all()
+    # Do external object-storage I/O before the first database operation.  The
+    # command transaction is active, but SQLAlchemy has not checked out a
+    # connection yet; this keeps a slow upload from leaving PostgreSQL idle in
+    # a transaction until its timeout terminates the request.
+    catalogue_id = uuid4()
+    try:
+        prepared_file = file_uploads.prepare_upload(
+            domain="catalogues",
+            entity_type="plan_family_catalogue",
+            entity_id=str(catalogue_id),
+            original_filename=command.original_filename,
+            content_type=command.content_type,
+            data=command.file_bytes,
+            uploaded_by=None,
+            owner_subscriber_id=None,
+        )
+    except FileValidationError as exc:
+        raise _error("invalid_file", str(exc)) from exc
+
+    rows = db.scalars(_publication_rows_statement(family)).all()
     checksum = hashlib.sha256(command.file_bytes).hexdigest()
     current = next((row for row in rows if row.status == "published"), None)
     if (
@@ -224,21 +334,7 @@ def _publish_catalogue(
         )
         + 1
     )
-    catalogue_id = uuid4()
-    try:
-        stored = file_uploads.stage_upload(
-            db=db,
-            domain="catalogues",
-            entity_type="plan_family_catalogue",
-            entity_id=str(catalogue_id),
-            original_filename=command.original_filename,
-            content_type=command.content_type,
-            data=command.file_bytes,
-            uploaded_by=None,
-            owner_subscriber_id=None,
-        )
-    except FileValidationError as exc:
-        raise _error("invalid_file", str(exc)) from exc
+    stored = file_uploads.stage_prepared_upload(db=db, prepared=prepared_file)
     row = PlanFamilyCatalogue(
         id=catalogue_id,
         plan_family=family,
