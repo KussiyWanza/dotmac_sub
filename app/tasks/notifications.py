@@ -328,11 +328,7 @@ def _deliver_notification_queue_stats(
     # The periodic sweep owns global expiry. An immediate single-row wake-up
     # must remain bounded to the notification the committed Inbox command
     # returned.
-    expired = (
-        0
-        if notification_id is not None
-        else _expire_stale_notifications(db, now)
-    )
+    expired = 0 if notification_id is not None else _expire_stale_notifications(db, now)
 
     candidate_query = _eligible_notification_query(
         db,
