@@ -22,3 +22,7 @@ class DomainSOT:
     #: duplicate. An annotated field on this frozen record is also what the
     #: governance schema-v3 ``declaration_field`` gate resolves.
     setting_domains: tuple[str, ...] = ()
+    #: Authentication mechanism codes implemented by this domain. This is an
+    #: open, owner-declared vocabulary (ADR-0008), not a host enum. Exactly one
+    #: SOT domain may declare a code; the registry rejects duplicates.
+    authentication_mechanisms: tuple[str, ...] = ()

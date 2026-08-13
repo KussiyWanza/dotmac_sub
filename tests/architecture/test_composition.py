@@ -112,6 +112,14 @@ def test_assembly_spec_is_frozen_metadata() -> None:
 
     assert SUB_ASSEMBLY.name == "dotmac-sub"
     assert SUB_ASSEMBLY.modules == SUB_FEATURE_MANIFESTS
+    assert SUB_ASSEMBLY.tenancy == "single"
+    assert SUB_ASSEMBLY.platform_surface_enabled is False
+    assert SUB_ASSEMBLY.web_enabled is True
+    assert SUB_ASSEMBLY.startup_checks == ()
+    assert SUB_ASSEMBLY.startup_hooks == ()
+    assert SUB_ASSEMBLY.security_policy.content_security_policy == ""
+    assert SUB_ASSEMBLY.security_policy.cross_origin_opener_policy == ""
+    assert SUB_ASSEMBLY.security_policy.cross_origin_resource_policy == ""
     with pytest.raises(dataclasses.FrozenInstanceError):
         SUB_ASSEMBLY.name = "other"  # type: ignore[misc]
 

@@ -4,6 +4,8 @@ import json
 import logging
 import time
 from datetime import UTC, datetime, timedelta
+from typing import Any
+from uuid import UUID
 
 import httpx
 from sqlalchemy import or_
@@ -52,6 +54,87 @@ MAX_RETRIES = 3
 # of sent (guards against draining weeks of stale dunning when the queue
 # runner is re-enabled). 0 disables expiry.
 DEFAULT_MAX_QUEUE_AGE_HOURS = 72
+
+
+def _metadata_text(source: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = str(source.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _meta_comment_target_validation_error(
+    db: Session,
+    *,
+    notification: Notification,
+    delivery_metadata: dict[str, Any],
+    account_id: str,
+    comment_id: str,
+) -> str | None:
+    target_message_id = str(
+        delivery_metadata.get("target_inbox_message_id") or ""
+    ).strip()
+    if not target_message_id:
+        return None
+    try:
+        target_uuid = UUID(target_message_id)
+    except ValueError:
+        return "meta_comment_target_invalid"
+
+    from app.models.team_inbox import InboxMessage
+
+    target = db.get(InboxMessage, target_uuid)
+    if target is None:
+        return "meta_comment_target_missing"
+    if target.direction != "inbound":
+        return "meta_comment_target_not_inbound"
+    if target.channel_type != notification.channel.value:
+        return "meta_comment_target_channel_mismatch"
+
+    target_metadata = dict(target.metadata_ or {})
+    target_comment_id = str(target.external_message_id or "").strip() or _metadata_text(
+        target_metadata,
+        "provider_comment_id",
+        "comment_id",
+        "external_comment_id",
+    )
+    if not target_comment_id or target_comment_id != comment_id:
+        return "meta_comment_target_comment_mismatch"
+
+    target_account_id = _metadata_text(
+        target_metadata,
+        "source_account_id",
+        "provider_account_id",
+        "provider_account_scope",
+        "page_id",
+        "instagram_account_id",
+        "ig_account_id",
+    )
+    if target_account_id and target_account_id != account_id:
+        return "meta_comment_target_account_mismatch"
+
+    provider_post_id = str(delivery_metadata.get("provider_post_id") or "").strip()
+    target_post_id = _metadata_text(target_metadata, "post_id")
+    if provider_post_id and target_post_id and provider_post_id != target_post_id:
+        return "meta_comment_target_post_mismatch"
+
+    provider_media_id = str(delivery_metadata.get("provider_media_id") or "").strip()
+    target_media_id = _metadata_text(target_metadata, "media_id")
+    if provider_media_id and target_media_id and provider_media_id != target_media_id:
+        return "meta_comment_target_media_mismatch"
+
+    root_provider_comment_id = str(
+        delivery_metadata.get("root_provider_comment_id") or ""
+    ).strip()
+    target_root_id = (
+        _metadata_text(target_metadata, "parent_provider_comment_id")
+        or target_comment_id
+    )
+    if root_provider_comment_id and target_root_id != root_provider_comment_id:
+        return "meta_comment_target_root_mismatch"
+    return None
+
 
 # Per-channel reclaim policy for notifications stuck in "sending" (the worker
 # may have crashed AFTER handing the message to the provider but BEFORE the
@@ -654,6 +737,15 @@ def _deliver_notification_queue_stats(db, batch_size: int = 50) -> dict[str, int
                 try:
                     if not account_id or not comment_id:
                         raise ValueError("meta_comment_context_missing")
+                    target_error = _meta_comment_target_validation_error(
+                        db,
+                        notification=notification,
+                        delivery_metadata=delivery_metadata,
+                        account_id=account_id,
+                        comment_id=comment_id,
+                    )
+                    if target_error is not None:
+                        raise ValueError(target_error)
                     if notification.channel == NotificationChannel.facebook_comment:
                         provider_result = meta_pages.reply_to_comment_sync(
                             db,
@@ -678,10 +770,15 @@ def _deliver_notification_queue_stats(db, batch_size: int = 50) -> dict[str, int
                     if status_code not in {408, 409, 425, 429} and status_code < 500:
                         notification.retry_count = max_retries - 1
                     provider_error = f"meta_comment_http_{status_code}"
-                except ValueError:
+                except ValueError as exc:
                     success = False
                     notification.retry_count = max_retries - 1
-                    provider_error = "meta_comment_configuration_rejected"
+                    error_code = str(exc)
+                    provider_error = (
+                        error_code
+                        if error_code.startswith("meta_comment_")
+                        else "meta_comment_configuration_rejected"
+                    )
                 except (httpx.TimeoutException, httpx.NetworkError):
                     success = False
                     provider_error = "meta_comment_provider_unavailable"

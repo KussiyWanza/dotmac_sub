@@ -17,12 +17,17 @@ application image.
 The active candidate path uses the contracts through
 `scripts/release_candidate_evidence.py`. The exact intended green `dev` commit
 is selected manually by full SHA, built once, and recorded as a digest-bound
-artifact. An open rolling version-bump pull request is not deployment authority
-for an already-selected candidate; version metadata and semver aliases are
-separate from digest eligibility. Staging consumes and records that digest. The
-production authorization is recorded separately after the staged tree reaches
-green `main`. The application publisher no longer rebuilds on `dev` or `main`;
-only the independent pinned GenieACS runtime remains in `ghcr.yml`.
+artifact. The same Docker build derives a canonical product manifest from the
+image's exact `SUB_ASSEMBLY` and `VERSION` and stores it inside the image, so the
+OCI digest transitively binds those bytes. Candidate evidence records the
+manifest digest and retains the canonical document as a separate evidence
+artifact for downstream catalogue attestation. An open rolling version-bump
+pull request is not deployment authority for an already-selected candidate;
+version metadata and semver aliases are separate from digest eligibility.
+Staging consumes and records that digest. The production authorization is
+recorded separately after the staged tree reaches green `main`. The application
+publisher no longer rebuilds on `dev` or `main`; only the independent pinned
+GenieACS runtime remains in `ghcr.yml`.
 
 The release freeze is merge control, not deployment authority. While a
 candidate, staging deployment, production authorization, or production
@@ -39,6 +44,8 @@ production-eligibility decisions. Its authoritative inputs are:
 - GitHub-hosted CI workflow conclusions for exact source and release commits;
 - Git commit and tree identities supplied by GitHub;
 - the immutable OCI manifest digest published to GHCR;
+- the kernel-canonical product manifest embedded in that image and its
+  `sha256:` document digest;
 - the GitHub staging deployment result for that exact digest; and
 - explicit, typed migration evidence for a production hotfix backup exception.
 
@@ -51,7 +58,7 @@ decision.
 The release record has one canonical identity tuple:
 
 ```text
-(source commit, source tree, OCI digest, build workflow run)
+(source commit, source tree, OCI digest, product-manifest digest, build workflow run)
 ```
 
 Staging acceptance must repeat the same source commit, tree, and digest.
@@ -62,7 +69,8 @@ equal the source tree and whose ancestry must contain the source commit.
 
 The control plane derives these states from evidence rather than mutable tags:
 
-1. **Built:** exact `dev` source CI is green and one OCI digest exists.
+1. **Built:** exact `dev` source CI is green, one OCI digest exists, and its
+   embedded product manifest verifies against the image's assembly and version.
 2. **Staging accepted:** the staging deployment succeeded for the same source
    commit, source tree, and OCI digest.
 3. **Main authorized:** exact `main` CI is green, its tree equals the staged

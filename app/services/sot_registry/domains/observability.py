@@ -8,6 +8,7 @@ from app.services.sot_manifest import (
     AuthorityMigrationState,
     ConcernContract,
     ErrorContract,
+    EventContract,
     MigrationContract,
     OwnerRole,
     ServiceContract,
@@ -31,6 +32,161 @@ DOMAIN = DomainSOT(
                 "audit event persistence and queries",
                 "request audit payload redaction",
                 "staged and deferred audit recording",
+            ),
+            notes=(
+                "AuditEvents is the sole AuditEvent constructor and query owner. "
+                "Kernel audit R1 keeps legacy metadata and forensic columns live "
+                "while every sanctioned writer dual-populates details; migration "
+                "524 adds actor_party_id, details, and created_at without an "
+                "authority transfer or kernel-lineage stamp. The aggregate-only "
+                "r1_parity query owns drift detection during expansion."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name="audit event persistence and queries",
+                        role=OwnerRole.AUTHORITATIVE_RECORD,
+                        input_names=(
+                            "typed audit evidence",
+                            "persisted audit rows",
+                        ),
+                        canonical_writer="observability.audit_log",
+                    ),
+                    ConcernContract(
+                        name="request audit payload redaction",
+                        role=OwnerRole.POLICY,
+                        input_names=(
+                            "request forensic observation",
+                            "audit actor and redaction contract",
+                        ),
+                    ),
+                    ConcernContract(
+                        name="staged and deferred audit recording",
+                        role=OwnerRole.COMMAND_WRITER,
+                        input_names=(
+                            "typed audit evidence",
+                            "audit actor and redaction contract",
+                        ),
+                        canonical_writer="observability.audit_log",
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="typed audit evidence",
+                        owner="observability.audit_log",
+                        kind=AuthorityKind.OBSERVATION,
+                        source=(
+                            "AuditRecord and AuditEventCreate values normalized at "
+                            "the one AuditEvents model-construction boundary"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="persisted audit rows",
+                        owner="observability.audit_log",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="the audit_events table built by Sub's Alembic chain",
+                    ),
+                    AuthorityInput(
+                        name="request forensic observation",
+                        owner="runtime.db_sessions",
+                        kind=AuthorityKind.OBSERVATION,
+                        source=(
+                            "authenticated request actor state, request id, response "
+                            "status, client address, user agent, path and redacted query"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="audit actor and redaction contract",
+                        owner="observability.audit_log",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "the closed system/user/api_key/service actor rules and "
+                            "the request sensitive-key allow/deny policy"
+                        ),
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.PARTICIPANT,
+                    boundary=(
+                        "The canonical stage surface adds only to the calling "
+                        "owner's transaction. Deferred record runs only after the "
+                        "source transaction commits. Standalone immediate recording "
+                        "is legacy shadow debt and cannot be invoked from an active "
+                        "owner command."
+                    ),
+                    locking=(
+                        "Append-only row inserts need no application lock; the audit "
+                        "row UUID is the database uniqueness arbiter."
+                    ),
+                    idempotency=(
+                        "The audit owner does not deduplicate business decisions. The "
+                        "calling owner supplies stable entity/correlation evidence and "
+                        "owns command idempotency."
+                    ),
+                    retries=(
+                        "Staged writes roll back with the caller. Deferred writes run "
+                        "after commit and remain independently retryable; parity drift "
+                        "fails the R1 gate instead of being silently repaired."
+                    ),
+                ),
+                errors=ErrorContract(
+                    domain_codes=(
+                        "observability.audit_log.invalid_actor",
+                        "observability.audit_log.persistence_failed",
+                        "observability.audit_log.parity_drift",
+                    ),
+                    mapping_owner="calling owner adapters and audit R1 operators",
+                    retryable_codes=("observability.audit_log.persistence_failed",),
+                    fail_closed_on=(
+                        "a non-system actor without a non-empty identifier",
+                        "an actor type outside the kernel-owned closed taxonomy",
+                        "R1 details or actor parity drift",
+                    ),
+                ),
+                events=EventContract(
+                    event_types=("audit.event.recorded",),
+                    schema_version=1,
+                    delivery_owner="observability.audit_log",
+                    compatibility=(
+                        "R1 is additive: legacy columns remain readable while details, "
+                        "actor_party_id and created_at are added and dual-written."
+                    ),
+                    replay=(
+                        "The audit_events rows are the durable event record. Readers "
+                        "replay from persisted rows; no transport delivery is required."
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.SHADOWING,
+                    old_owner=(
+                        "legacy direct AuditEvent constructors and mixed immediate/"
+                        "deferred recording surfaces"
+                    ),
+                    new_owner="observability.audit_log",
+                    verification=(
+                        "AST writer ratchet, PostgreSQL 523-to-524 rehearsal, and the "
+                        "aggregate-only audit R1 parity report"
+                    ),
+                    cutover_gate=(
+                        "released kernel a42 exact pin plus observed post-R1 rows with "
+                        "zero parity mismatches"
+                    ),
+                    fallback_retirement=(
+                        "retire the remaining standalone immediate-write compatibility "
+                        "path after all adapters stage or defer through typed contracts"
+                    ),
+                ),
+                steward="platform operations",
+                design_refs=(
+                    "docs/audits/AUDIT_R1_KERNEL_INTEGRATION.md",
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                ),
+                test_refs=(
+                    "tests/architecture/test_audit_writer_surfaces.py",
+                    "tests/integration/test_audit_r1_migration.py",
+                    "tests/test_audit_r1_parity.py",
+                    "tests/test_transactional_audit_events.py",
+                ),
             ),
         ),
         SOTService(

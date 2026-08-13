@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
+from typing import NewType, TypedDict
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -28,6 +30,7 @@ from app.services.common import apply_ordering, apply_pagination
 from app.services.domain_errors import DomainError
 from app.services.events import emit_event
 from app.services.events.types import EventType
+from app.services.operator_tenant import operator_tenant_id
 from app.services.owner_commands import (
     CommandContext,
     OwnerCommandDefinition,
@@ -136,6 +139,8 @@ class DeactivatePermissionCommand:
 class RoleCatalogOutcome:
     id: UUID
     name: str
+    tenant_id: UUID | None
+    slug: RoleSlug | None
     description: str | None
     is_active: bool
     created_at: datetime
@@ -182,6 +187,197 @@ def _role_name_identity(value: str) -> str:
     """Return the case/whitespace-normalized catalog identity key."""
 
     return value.strip().lower()
+
+
+#: The kernel's `Role.slug` width. Sub's established role-name command limit is
+#: 80, so an accepted name is not always a legal slug and the derivation below
+#: has to be lossy for the long tail.
+ROLE_SLUG_MAX_LENGTH = 63
+
+#: Enough of a SHA-256 to make truncated names distinct in practice while
+#: staying short enough to leave the readable prefix intact.
+_SLUG_DIGEST_LENGTH = 7
+
+#: Anything outside the kernel's slug alphabet, collapsed to one separator.
+#: `_normalize_role_name` guards names arriving through a catalog COMMAND, but it
+#: never saw the legacy population: `roles.name` carries no pattern CHECK, only a
+#: normalized-uniqueness index, and rows predating that validator still hold
+#: spaces and capitals. Measured on production 2026-08-13: nine of sixteen role
+#: names fail `^[a-z][a-z0-9_-]*$`, and three of those — "Technical support",
+#: "Customer experience", "Customer experience managers" — contain spaces.
+#: `_apply_kernel_identity` converges such rows on any write, so the derivation
+#: has to be total over arbitrary legacy text rather than assuming the
+#: command-path alphabet.
+_SLUG_ILLEGAL_RUN = re.compile(r"[^a-z0-9_-]+")
+
+#: Domain type for the kernel half of a role identity. It remains a string at
+#: the ORM boundary, but cannot be confused with the legacy display/name key in
+#: service and report contracts.
+RoleSlug = NewType("RoleSlug", str)
+
+
+def derive_role_slug(name: str) -> RoleSlug:
+    """Derive a role's kernel slug from its catalog name. Pure and stable.
+
+    Deterministic in the strong sense the collision report depends on: the same
+    name yields the same slug on every host, process and run, with no clock, no
+    counter and no database lookup. That is what lets
+    `scripts/roles_slug_collision_report.py` predict, before any write, exactly
+    which names will contend for one kernel identity.
+
+    Names that already fit the kernel alphabet are used unchanged, so the
+    overwhelming majority of slugs stay equal to the name an operator
+    recognises.
+
+    Total over arbitrary legacy text, not just over names the catalog command
+    would accept today. Anything outside `[a-z0-9_-]` collapses to a single
+    separator, and any name that is rewritten OR truncated carries a digest of
+    the original — otherwise "Technical support" and "technical-support" would
+    derive one slug and contend for a single kernel identity without either
+    operator having done anything wrong. A name with nothing legal left, or one
+    no longer starting with a letter, becomes `role-<digest>`: unreadable, but
+    addressable and reported.
+
+    Collisions remain possible in principle; they are reported and then fail
+    closed against `uq_roles_tenant_slug` rather than being silently
+    disambiguated with a counter, which would make the slug depend on insertion
+    order.
+    """
+
+    normalized = _role_name_identity(name)
+    digest = hashlib.sha256(normalized.encode()).hexdigest()[:_SLUG_DIGEST_LENGTH]
+    legal = _SLUG_ILLEGAL_RUN.sub("-", normalized).strip("-_")
+    if not legal or not legal[0].isalpha():
+        # Nothing survived, or it no longer starts with a letter. A digest-only
+        # slug is unreadable but addressable, and the report names the row so a
+        # human can rename it deliberately.
+        return RoleSlug(f"role-{digest}")
+    if legal == normalized and len(legal) <= ROLE_SLUG_MAX_LENGTH:
+        return RoleSlug(legal)
+    # Either characters were rewritten or the name is too long. Both are lossy,
+    # so both carry the digest of the ORIGINAL name.
+    prefix = legal[: ROLE_SLUG_MAX_LENGTH - _SLUG_DIGEST_LENGTH - 1].strip("-_")
+    return RoleSlug(f"{prefix}-{digest}" if prefix else f"role-{digest}")
+
+
+@dataclass(frozen=True)
+class RoleSlugCollision:
+    """Two or more role names that derive one kernel slug."""
+
+    slug: RoleSlug
+    role_ids: tuple[UUID, ...]
+    role_names: tuple[str, ...]
+
+
+class RoleSlugCollisionPayload(TypedDict):
+    """Serialized form of one collision at the operator-adapter boundary."""
+
+    slug: str
+    role_ids: list[str]
+    role_names: list[str]
+
+
+class RoleSlugCollisionReportPayload(TypedDict):
+    """Stable JSON contract emitted by the collision-report adapter."""
+
+    total_roles: int
+    distinct_slugs: int
+    rewritten_names: list[str]
+    collisions: list[RoleSlugCollisionPayload]
+    blocking: bool
+
+
+@dataclass(frozen=True)
+class RoleSlugCollisionReport:
+    """What adopting kernel role identity would cost this population."""
+
+    total_roles: int
+    distinct_slugs: int
+    rewritten_names: tuple[str, ...]
+    collisions: tuple[RoleSlugCollision, ...]
+
+    @property
+    def blocking(self) -> bool:
+        return bool(self.collisions)
+
+    def as_dict(self) -> RoleSlugCollisionReportPayload:
+        return {
+            "total_roles": self.total_roles,
+            "distinct_slugs": self.distinct_slugs,
+            "rewritten_names": list(self.rewritten_names),
+            "collisions": [
+                {
+                    "slug": str(collision.slug),
+                    "role_ids": [str(role_id) for role_id in collision.role_ids],
+                    "role_names": list(collision.role_names),
+                }
+                for collision in self.collisions
+            ],
+            "blocking": self.blocking,
+        }
+
+
+def role_slug_collision_report(
+    roles: Iterable[tuple[UUID, str]],
+) -> RoleSlugCollisionReport:
+    """Report which role names would contend for one kernel slug. Pure.
+
+    Takes `(role_id, name)` pairs rather than a session so the same function
+    answers for production rows, a restored snapshot and a test fixture, and so
+    the answer can be computed before any migration has run anywhere.
+
+    Every output sequence is sorted. Two runs over the same population produce
+    byte-identical JSON, which is what makes the report reviewable as an
+    artifact and diffable between snapshots.
+    """
+
+    by_slug: dict[RoleSlug, list[tuple[UUID, str]]] = {}
+    rewritten: set[str] = set()
+    total = 0
+    for role_id, name in roles:
+        total += 1
+        slug = derive_role_slug(name)
+        normalized = _role_name_identity(name)
+        if slug != normalized:
+            rewritten.add(normalized)
+        by_slug.setdefault(slug, []).append((role_id, normalized))
+    collisions = tuple(
+        RoleSlugCollision(
+            slug=slug,
+            role_ids=tuple(sorted((role_id for role_id, _ in entries), key=str)),
+            role_names=tuple(sorted(name for _, name in entries)),
+        )
+        for slug, entries in sorted(by_slug.items())
+        if len(entries) > 1
+    )
+    return RoleSlugCollisionReport(
+        total_roles=total,
+        distinct_slugs=len(by_slug),
+        rewritten_names=tuple(sorted(rewritten)),
+        collisions=collisions,
+    )
+
+
+def _apply_kernel_identity(role: Role) -> None:
+    """Write the kernel half of a role's identity beside the legacy half.
+
+    Dual-write, not a second authority: `auth.rbac_catalog` remains the sole
+    owner and sets `name`, `slug` and `tenant_id` on the same row in the same
+    unit of work. No projection table, no reconciler, no follower to drift.
+
+    Applied on every catalog write, including writes that did not change the
+    name, so a role the owner touches converges without a backfill DDL. Rows
+    nothing writes keep both kernel columns NULL, which the 528 projection
+    CHECK permits.
+
+    A derived slug that collides with another role's raises `IntegrityError`
+    against `uq_roles_tenant_slug` and surfaces as `catalog_conflict`. That is
+    deliberate: the alternative is two roles sharing one kernel identity.
+    Run the collision report before adopting a population.
+    """
+
+    role.slug = derive_role_slug(role.name)
+    role.tenant_id = operator_tenant_id()
 
 
 def _normalize_role_name(value: str) -> str:
@@ -323,6 +519,8 @@ def _role_outcome(
     return RoleCatalogOutcome(
         id=role.id,
         name=role.name,
+        tenant_id=role.tenant_id,
+        slug=RoleSlug(role.slug) if role.slug is not None else None,
         description=role.description,
         is_active=role.is_active,
         created_at=role.created_at,
@@ -528,6 +726,7 @@ def create_role(db: Session, command: CreateRoleCommand) -> RoleCatalogOutcome:
             description=_normalize_description(command.description),
             is_active=command.is_active,
         )
+        _apply_kernel_identity(role)
         db.add(role)
         db.flush()
         _replace_role_permissions(
@@ -544,7 +743,11 @@ def create_role(db: Session, command: CreateRoleCommand) -> RoleCatalogOutcome:
             entity_type="role",
             entity_id=role.id,
             event_type=EventType.rbac_role_catalog_changed,
-            metadata={"operation": "create", "role_name": role.name},
+            metadata={
+                "operation": "create",
+                "role_name": role.name,
+                "role_slug": role.slug,
+            },
             changed=True,
         )
         return _role_outcome(db, role, changed=True, context=command.context)
@@ -615,6 +818,12 @@ def update_role(db: Session, command: UpdateRoleCommand) -> RoleCatalogOutcome:
                 )
                 or changed
             )
+        # Converge the kernel half on every write, including writes that did not
+        # touch the name. Convergence alone does not flip `changed`: it grants
+        # nothing and revokes nothing, so emitting a catalog-changed event and
+        # flushing every auth cache for it would be noise. It is still recorded,
+        # because the row did change.
+        _apply_kernel_identity(role)
         _stage_change(
             db,
             context=command.context,
@@ -624,7 +833,11 @@ def update_role(db: Session, command: UpdateRoleCommand) -> RoleCatalogOutcome:
             entity_type="role",
             entity_id=role.id,
             event_type=EventType.rbac_role_catalog_changed,
-            metadata={"operation": "update", "role_name": role.name},
+            metadata={
+                "operation": "update",
+                "role_name": role.name,
+                "role_slug": role.slug,
+            },
             changed=changed,
         )
         return _role_outcome(db, role, changed=changed, context=command.context)
@@ -663,6 +876,7 @@ def deactivate_role(db: Session, command: DeactivateRoleCommand) -> RoleCatalogO
         if changed:
             _ensure_role_can_deactivate(db, role)
             role.is_active = False
+        _apply_kernel_identity(role)
         _stage_change(
             db,
             context=command.context,
@@ -672,7 +886,11 @@ def deactivate_role(db: Session, command: DeactivateRoleCommand) -> RoleCatalogO
             entity_type="role",
             entity_id=role.id,
             event_type=EventType.rbac_role_catalog_changed,
-            metadata={"operation": "deactivate", "role_name": role.name},
+            metadata={
+                "operation": "deactivate",
+                "role_name": role.name,
+                "role_slug": role.slug,
+            },
             changed=changed,
         )
         return _role_outcome(db, role, changed=changed, context=command.context)
@@ -1176,6 +1394,7 @@ def ensure_role(db: Session, *, name: str, description: str | None) -> Role:
         role.is_active = True
         if description and not role.description:
             role.description = _normalize_description(description)
+    _apply_kernel_identity(role)
     db.flush()
     return role
 
