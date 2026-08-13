@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 import logging
 import math
+from collections import Counter
 from collections.abc import Sequence
 from uuid import UUID
 
 from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.models.catalog import Subscription
 from app.models.domain_settings import SettingDomain
@@ -21,6 +22,7 @@ from app.models.network import (
     FiberSplice,
     FiberSpliceClosure,
     FiberSpliceTray,
+    FiberTerminationPoint,
     OLTDevice,
     OntUnit,
     Splitter,
@@ -63,6 +65,13 @@ from app.services.network_map_contracts import (
     NetworkMapStatusPresentation,
     NetworkMapSupportLifecycle,
     NetworkMapSupportType,
+    NetworkMapV2Endpoint,
+    NetworkMapV2GeometryStatus,
+    NetworkMapV2Layer,
+    NetworkMapV2Projection,
+    NetworkMapV2SegmentTopology,
+    NetworkMapV2TopologyStatus,
+    NetworkMapV2UnavailableLayer,
 )
 from app.services.status_presentation import access_session_status_presentation
 
@@ -920,4 +929,214 @@ def build_network_map_plant_projection(*, db: Session) -> NetworkMapPlantProject
         features=tuple(features),
         layer_counts=counts,
         unmatched_olt_count=unmatched_olt_count,
+    )
+
+
+def _v2_layer_for_feature(feature: NetworkMapFeature) -> NetworkMapV2Layer | None:
+    properties = feature.properties
+    feature_type = properties.feature_type
+    point_layers = {
+        NetworkMapFeatureType.pop_site: NetworkMapV2Layer.pop,
+        NetworkMapFeatureType.fdh_cabinet: NetworkMapV2Layer.fdh,
+        NetworkMapFeatureType.splice_closure: NetworkMapV2Layer.closures,
+        NetworkMapFeatureType.access_point: NetworkMapV2Layer.access_points,
+        NetworkMapFeatureType.support_structure: NetworkMapV2Layer.support_structures,
+        NetworkMapFeatureType.network_device: NetworkMapV2Layer.network_devices,
+        NetworkMapFeatureType.ont: NetworkMapV2Layer.onts,
+        NetworkMapFeatureType.olt_device: NetworkMapV2Layer.olt,
+        NetworkMapFeatureType.service_building: NetworkMapV2Layer.service_buildings,
+    }
+    if feature_type is NetworkMapFeatureType.customer:
+        if (
+            properties.connectivity
+            and properties.connectivity.layer is NetworkMapCustomerLayer.connected
+        ):
+            return NetworkMapV2Layer.customers_connected
+        return NetworkMapV2Layer.customers_not_connected
+    if feature_type is NetworkMapFeatureType.fiber_segment:
+        if properties.segment_type is None:
+            return None
+        return {
+            FiberSegmentType.feeder: NetworkMapV2Layer.feeder,
+            FiberSegmentType.distribution: NetworkMapV2Layer.distribution,
+            FiberSegmentType.drop: NetworkMapV2Layer.drop,
+        }.get(properties.segment_type)
+    return point_layers.get(feature_type)
+
+
+def _v2_endpoint(
+    endpoint: FiberTerminationPoint | None,
+    *,
+    attached_segment_counts: Counter[UUID],
+) -> NetworkMapV2Endpoint:
+    if endpoint is None:
+        return NetworkMapV2Endpoint(
+            id=None,
+            name=None,
+            endpoint_type=None,
+            reference_id=None,
+            longitude=None,
+            latitude=None,
+            attached_segment_count=0,
+        )
+    endpoint_type = endpoint.endpoint_type
+    return NetworkMapV2Endpoint(
+        id=endpoint.id,
+        name=endpoint.name,
+        endpoint_type=(endpoint_type.value if endpoint_type is not None else None),
+        reference_id=endpoint.ref_id,
+        longitude=(
+            float(endpoint.longitude) if endpoint.longitude is not None else None
+        ),
+        latitude=(float(endpoint.latitude) if endpoint.latitude is not None else None),
+        attached_segment_count=attached_segment_counts[endpoint.id],
+    )
+
+
+def _v2_segment_topology(
+    *,
+    segments: Sequence[FiberSegment],
+    rendered_route_ids: set[UUID],
+    geometry_available: bool,
+) -> tuple[NetworkMapV2SegmentTopology, ...]:
+    """Project only explicit segment/termination relationships.
+
+    Coordinate proximity is deliberately absent from this resolver. Two endpoint
+    markers can occupy the same pixels and remain disconnected unless they share
+    a canonical termination point or reference an authoritative endpoint owner.
+    """
+
+    attached_segment_counts: Counter[UUID] = Counter()
+    for segment in segments:
+        if segment.from_point_id is not None:
+            attached_segment_counts[segment.from_point_id] += 1
+        if segment.to_point_id is not None:
+            attached_segment_counts[segment.to_point_id] += 1
+
+    topology: list[NetworkMapV2SegmentTopology] = []
+    for segment in segments:
+        from_endpoint = _v2_endpoint(
+            segment.from_point,
+            attached_segment_counts=attached_segment_counts,
+        )
+        to_endpoint = _v2_endpoint(
+            segment.to_point,
+            attached_segment_counts=attached_segment_counts,
+        )
+        if segment.route_geom is None:
+            geometry_status = NetworkMapV2GeometryStatus.missing
+        elif segment.id in rendered_route_ids:
+            geometry_status = NetworkMapV2GeometryStatus.stored_valid
+        elif not geometry_available:
+            geometry_status = NetworkMapV2GeometryStatus.unavailable
+        else:
+            geometry_status = NetworkMapV2GeometryStatus.invalid
+
+        if (
+            from_endpoint.id is None
+            or to_endpoint.id is None
+            or geometry_status is not NetworkMapV2GeometryStatus.stored_valid
+        ):
+            topology_status = NetworkMapV2TopologyStatus.incomplete
+        elif (
+            from_endpoint.has_explicit_connection
+            and to_endpoint.has_explicit_connection
+        ):
+            topology_status = NetworkMapV2TopologyStatus.connected
+        else:
+            topology_status = NetworkMapV2TopologyStatus.disconnected
+
+        topology.append(
+            NetworkMapV2SegmentTopology(
+                id=segment.id,
+                name=segment.name,
+                segment_type=segment.segment_type,
+                geometry_status=geometry_status,
+                topology_status=topology_status,
+                from_endpoint=from_endpoint,
+                to_endpoint=to_endpoint,
+            )
+        )
+    return tuple(topology)
+
+
+def build_network_map_v2_projection(
+    *, db: Session, base_projection: NetworkMapProjection
+) -> NetworkMapV2Projection:
+    """Compose the isolated V2 parity overlay from authoritative map owners."""
+
+    plant_projection = build_network_map_plant_projection(db=db)
+    additional_features = tuple(
+        feature
+        for feature in plant_projection.features
+        if feature.properties.feature_type
+        in {
+            NetworkMapFeatureType.olt_device,
+            NetworkMapFeatureType.service_building,
+        }
+    )
+
+    all_counted_features = (*base_projection.features, *additional_features)
+    counts = dict.fromkeys(NetworkMapV2Layer, 0)
+    seen_features: set[tuple[NetworkMapFeatureType, UUID]] = set()
+    for feature in all_counted_features:
+        identity = (feature.properties.feature_type, feature.properties.id)
+        if identity in seen_features:
+            continue
+        seen_features.add(identity)
+        layer = _v2_layer_for_feature(feature)
+        if layer is not None:
+            counts[layer] += 1
+
+    segments = (
+        db.query(FiberSegment)
+        .options(
+            selectinload(FiberSegment.from_point),
+            selectinload(FiberSegment.to_point),
+        )
+        .filter(FiberSegment.is_active.is_(True))
+        .all()
+    )
+    rendered_route_ids = {
+        feature.properties.id
+        for feature in plant_projection.features
+        if feature.properties.feature_type is NetworkMapFeatureType.fiber_segment
+    }
+    geometry_available = db.bind is not None and db.bind.dialect.name != "sqlite"
+    segment_topology = _v2_segment_topology(
+        segments=segments,
+        rendered_route_ids=rendered_route_ids,
+        geometry_available=geometry_available,
+    )
+    endpoint_ids_with_coordinates = {
+        endpoint.id
+        for segment in segment_topology
+        for endpoint in (segment.from_endpoint, segment.to_endpoint)
+        if endpoint.id is not None
+        and endpoint.longitude is not None
+        and endpoint.latitude is not None
+    }
+    counts[NetworkMapV2Layer.topology_endpoints] = len(endpoint_ids_with_coordinates)
+
+    return NetworkMapV2Projection(
+        additional_features=additional_features,
+        layer_counts=counts,
+        segment_topology=segment_topology,
+        unavailable_layers=(
+            NetworkMapV2UnavailableLayer(
+                layer=NetworkMapV2Layer.base_stations,
+                reason=(
+                    "No authoritative Selfcare base-station projection is exposed "
+                    "to the Network Map."
+                ),
+            ),
+            NetworkMapV2UnavailableLayer(
+                layer=NetworkMapV2Layer.live_technicians,
+                reason=(
+                    "Live technician presence has a separate owner and permission "
+                    "contract; it is not part of network:map:read."
+                ),
+            ),
+        ),
+        unmatched_olt_count=plant_projection.unmatched_olt_count,
     )

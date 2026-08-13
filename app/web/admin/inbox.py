@@ -287,6 +287,7 @@ def team_inbox_queue(
                     if is_list_fragment_request
                     else team_inbox_projection.InboxQueueComposition.full_workspace
                 ),
+                include_total_count=False,
             ),
         )
     except team_inbox_filters.InboxFilterError as exc:
@@ -329,11 +330,6 @@ def team_inbox_queue(
             "activity_from": projection.activity_from,
             "activity_to": projection.activity_to,
             "service_team_options": projection.service_team_options,
-            "actor_service_team_options": (
-                team_inbox_projection.list_actor_service_team_options(
-                    db, actor_person_id
-                )
-            ),
             "agent_options": projection.agent_options,
             "agent_presence": projection.agent_presence,
             "assignment_counts": projection.assignment_counts,
@@ -712,11 +708,6 @@ def team_inbox_detail(
             "activity_events": projection.activity_events,
             "agent_options": team_inbox_projection.list_agent_options(db),
             "service_team_options": team_inbox_projection.list_service_team_options(db),
-            "actor_service_team_options": (
-                team_inbox_projection.list_actor_service_team_options(
-                    db, actor_person_id
-                )
-            ),
             "can_manage_leads": can(request, "crm:lead:write"),
         }
         if projection is not None
@@ -730,7 +721,11 @@ def team_inbox_detail(
     # HTMX list clicks swap the thread+context partial into #triage-detail;
     # a full navigation lands in the workspace with the conversation preselected.
     if request.headers.get("hx-request"):
-        context = _ctx(request, db)
+        # The workspace page already owns the global navigation and its sidebar
+        # statistics. Rebuilding that full-page context here delays the thread
+        # swap (and therefore leaves the opening loader visible) without giving
+        # this partial any values that it consumes.
+        context: dict[str, object] = {"request": request}
         context.update(view)
         return templates.TemplateResponse("admin/inbox/_conversation.html", context)
     return RedirectResponse(url=f"/admin/inbox?c={conversation_id}", status_code=303)
@@ -1857,6 +1852,39 @@ def team_inbox_bulk_action(
 
 
 @router.post(
+    "/{conversation_id}/assign-to-me",
+    dependencies=[Depends(require_permission("support:inbox:self_assign"))],
+)
+def team_inbox_assign_to_me(
+    conversation_id: UUID,
+    request: Request,
+    service_team_id: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
+    actor_person_id = _actor_uuid_from_request(request)
+    _prepare_mutation(db)
+    try:
+        outcome = team_inbox_commands.assign_conversation_to_me(
+            db,
+            conversation_id=conversation_id,
+            service_team_id=_query_text(service_team_id),
+            actor_person_id=actor_person_id,
+        )
+    except (
+        team_inbox_commands.InboxCommandError,
+        team_inbox_operations.InboxOperationError,
+    ) as exc:
+        return RedirectResponse(
+            url=f"/admin/inbox?status=error&message={quote_plus(str(exc))}",
+            status_code=303,
+        )
+    return RedirectResponse(
+        url=f"/admin/inbox?c={conversation_id}&status=success&message={quote_plus(outcome.message)}",
+        status_code=303,
+    )
+
+
+@router.post(
     "/presence",
     dependencies=[Depends(require_permission("support:ticket:update"))],
 )
@@ -2773,6 +2801,12 @@ async def team_inbox_stage_attachments(
         )
     except team_inbox_commands.ConversationNotFoundError:
         return JSONResponse({"error": "Conversation not found."}, status_code=404)
+    except team_inbox_commands.ConversationBusyError as exc:
+        return JSONResponse(
+            {"error": str(exc)},
+            status_code=409,
+            headers={"Retry-After": "2"},
+        )
     except (team_inbox_media.MediaUploadError, ValueError) as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
     return JSONResponse({"attachment_ids": staged})

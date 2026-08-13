@@ -124,6 +124,47 @@ def _verified_genieacs_device_id(
     return live_id or clean_id
 
 
+def _genieacs_device_id_candidates_from_identity(
+    device: Tr069CpeDevice | None,
+) -> list[str]:
+    """Build exact GenieACS IDs from the locally recorded ACS identity parts."""
+    if device is None:
+        return []
+    oui = str(getattr(device, "oui", "") or "").strip()
+    product_class = str(getattr(device, "product_class", "") or "").strip()
+    serial_number = str(getattr(device, "serial_number", "") or "").strip()
+    if not oui or not product_class or not serial_number:
+        return []
+    normalized_serials = _normalized_serial_candidates(serial_number)
+    serials = [serial_number, *normalized_serials]
+    candidates: list[str] = []
+    for serial in serials:
+        candidate = f"{oui}-{product_class}-{serial}"
+        if candidate not in candidates:
+            candidates.append(candidate)
+    return candidates
+
+
+def _resolve_linked_genieacs_identity_candidate(
+    client: GenieACSClient,
+    linked: Tr069CpeDevice,
+) -> str | None:
+    for candidate in _genieacs_device_id_candidates_from_identity(linked):
+        try:
+            live_device_id = _verified_genieacs_device_id(client, candidate)
+        except GenieACSError:
+            logger.debug(
+                "GenieACS exact identity candidate did not resolve for "
+                "TR-069 device %s: %s",
+                linked.id,
+                candidate,
+            )
+            continue
+        if live_device_id:
+            return live_device_id
+    return None
+
+
 def clear_stale_genieacs_device_id(
     db: Session,
     ont: OntUnit,
@@ -463,8 +504,9 @@ def resolve_genieacs_with_reason(
 
     Resolution priority:
     1. Linked TR-069 device with genieacs_device_id (authoritative)
-    2. Search GenieACS via OLT's ACS server
-    3. Search GenieACS via default ACS server
+    2. Linked TR-069 ACS identity parts (OUI, product class, ACS serial)
+    3. Search GenieACS via OLT's ACS server
+    4. Search GenieACS via default ACS server
 
     Returns:
         Tuple of (client, device_id) or None if not resolvable.
@@ -484,29 +526,36 @@ def resolve_genieacs_with_reason(
         .limit(1)
     )
     linked = db.scalars(linked_stmt).first()
-    if linked and linked.acs_server_id and linked.genieacs_device_id:
+    if linked and linked.acs_server_id:
         server = _resolve_server_by_id(db, str(linked.acs_server_id))
         if server:
             desired_server = acs_resolution.server
             if desired_server is None or linked.acs_server_id == desired_server.id:
                 client = create_genieacs_client(server.base_url)
-                linked_device_id = str(linked.genieacs_device_id)
-                try:
-                    live_device_id = _verified_genieacs_device_id(
-                        client,
-                        linked_device_id,
-                    )
-                except GenieACSError as exc:
-                    if _is_genieacs_device_not_found(exc, linked_device_id):
-                        clear_stale_genieacs_device_id(db, ont, linked_device_id)
-                    else:
-                        logger.debug(
-                            "GenieACS verification failed for linked ONT %s device %s",
-                            ont.id,
+                live_device_id = None
+                if linked.genieacs_device_id:
+                    linked_device_id = str(linked.genieacs_device_id)
+                    try:
+                        live_device_id = _verified_genieacs_device_id(
+                            client,
                             linked_device_id,
-                            exc_info=True,
                         )
-                    live_device_id = None
+                    except GenieACSError as exc:
+                        if _is_genieacs_device_not_found(exc, linked_device_id):
+                            clear_stale_genieacs_device_id(db, ont, linked_device_id)
+                        else:
+                            logger.debug(
+                                "GenieACS verification failed for linked ONT %s device %s",
+                                ont.id,
+                                linked_device_id,
+                                exc_info=True,
+                            )
+                        live_device_id = None
+                else:
+                    live_device_id = _resolve_linked_genieacs_identity_candidate(
+                        client,
+                        linked,
+                    )
                 if live_device_id:
                     _cache_genieacs_device_id(db, linked, live_device_id)
                     return (

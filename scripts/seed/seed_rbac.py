@@ -210,6 +210,10 @@ DEFAULT_PERMISSIONS = [
     # Network - Fiber
     ("network:fiber:read", "View fiber infrastructure"),
     ("network:fiber:write", "Manage fiber infrastructure"),
+    (
+        "network:fiber:review",
+        "Independently review governed fiber asset proposals",
+    ),
     # Network - RADIUS
     ("network:radius:read", "View RADIUS configuration"),
     ("network:radius:write", "Manage RADIUS configuration"),
@@ -251,6 +255,7 @@ DEFAULT_PERMISSIONS = [
     ("support:ticket:update", "Update tickets"),
     ("support:ticket:delete", "Delete tickets"),
     ("support:ticket:assign", "Assign tickets"),
+    ("support:inbox:self_assign", "Assign inbox conversations to yourself"),
     ("support:automation:read", "View ticket automation rules"),
     ("support:automation:write", "Manage ticket automation rules"),
     ("support:inbox_ai:read", "Use manager AI for Team Inbox insight"),
@@ -463,6 +468,7 @@ ROLE_PERMISSIONS = {
         "operations:service_team:read",
         "support:ticket:create",
         "support:ticket:update",
+        "support:inbox:self_assign",
         "support:automation:read",
         "support:automation:write",
         "support:inbox_ai:read",

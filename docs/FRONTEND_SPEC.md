@@ -748,7 +748,7 @@ Dashboard implementation notes:
 and provisioning staff verifying customer identity, contactability, service
 location, account linkage, and access readiness. Its authoritative read owner is
 `app.services.web_customer_details`; action eligibility and execution remain with
-their existing customer, access, identity, and CRM owners.
+their existing customer, access, and identity owners.
 
 - The first decision layer remains the four-item Active Services, Balance Due,
   Service Orders, and Monthly Revenue summary.
@@ -758,8 +758,12 @@ their existing customer, access, identity, and CRM owners.
   retain the same location footprint and show `Location not set` with the existing
   geocoding or add-address action.
 - `Account & Access` groups Subscriber Accounts (including the existing Convert
-  action), Portal Access, and CRM Sync without changing their status meanings,
-  permissions, confirmations, or command destinations.
+  action) and Portal Access. Desktop Portal Access keeps login and PPPoE facts
+  on the left and places login actions plus the separately highlighted
+  impersonation control in a right-hand action rail; that rail moves below the
+  access facts on smaller screens. Existing permissions, confirmations, and
+  command destinations do not change. CRM synchronization evidence is managed
+  from the integrations surface rather than displayed on Customer 360.
 - Subscription records are investigated and managed in the Services tab; the
   Account tab does not duplicate an Active Subscriptions preview.
 

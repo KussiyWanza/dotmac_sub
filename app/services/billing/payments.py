@@ -1215,6 +1215,15 @@ def _finalize_reviewed_document_payment_effects(
         revoke_prepaid_entitlements_for_unpaid_invoice(db, invoice)
 
 
+def finalize_reviewed_document_settlement_for_owner(
+    db: Session,
+    invoice: Invoice,
+) -> None:
+    """Flush-only participant for a zero-economic-delta document correction."""
+
+    _finalize_reviewed_document_payment_effects(db, invoice)
+
+
 def _finalize_invoice_payment_effects(db: Session, invoice: Invoice) -> None:
     """Recompute invoice totals, restore eligible service, then derive account status."""
     _recalculate_invoice_totals(db, invoice)

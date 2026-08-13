@@ -139,6 +139,54 @@ def test_content_type_parameters_do_not_defeat_the_allowlist(db_session):
     assert db_session.get(InboxMediaAsset, staged[0]).mime_type == "text/plain"
 
 
+@pytest.mark.parametrize(
+    ("file_name", "content_type", "asset_type"),
+    (
+        ("voice.ogg", "audio/ogg", "audio"),
+        ("clip.mp4", "video/mp4", "video"),
+    ),
+)
+def test_audio_and_video_uploads_are_allowed(
+    db_session, file_name, content_type, asset_type
+):
+    conversation_id = _conversation_id(db_session)
+
+    staged = team_inbox_commands.stage_attachments(
+        db_session,
+        conversation_id=conversation_id,
+        uploads=[(file_name, content_type, b"media-bytes")],
+    )
+
+    asset = db_session.get(InboxMediaAsset, staged[0])
+    assert asset.mime_type == content_type
+    assert asset.asset_type == asset_type
+
+
+def test_transient_stage_lock_is_a_retryable_owner_error(db_session, monkeypatch):
+    from sqlalchemy.exc import OperationalError
+
+    conversation_id = _conversation_id(db_session)
+
+    def raise_lock_timeout(*_args, **_kwargs):
+        raise OperationalError("SELECT", {}, RuntimeError("lock timeout"))
+
+    monkeypatch.setattr(
+        team_inbox_commands,
+        "_active_conversation",
+        raise_lock_timeout,
+    )
+
+    with pytest.raises(team_inbox_commands.ConversationBusyError) as exc:
+        team_inbox_commands.stage_attachments(
+            db_session,
+            conversation_id=conversation_id,
+            uploads=[("diagram.png", "image/png", PNG)],
+        )
+
+    assert exc.value.code == ("communications.team_inbox_commands.conversation_busy")
+    assert not db_session.in_transaction()
+
+
 def test_pending_assets_are_listed_until_a_message_carries_them(db_session):
     conversation_id = _conversation_id(db_session)
     team_inbox_commands.stage_attachments(
@@ -183,6 +231,16 @@ def test_pending_assets_are_listed_until_a_message_carries_them(db_session):
         (
             "application/octet-stream",
             "image/webp",
+            team_inbox_projection.InboxMediaBrowserPresentation.inline,
+        ),
+        (
+            "video/mp4",
+            "video/mp4",
+            team_inbox_projection.InboxMediaBrowserPresentation.inline,
+        ),
+        (
+            "audio/mpeg",
+            "audio/mpeg",
             team_inbox_projection.InboxMediaBrowserPresentation.inline,
         ),
         (
@@ -231,6 +289,35 @@ def test_media_content_selects_a_safe_browser_presentation(
     assert content.presentation is expected_presentation
     assert content.content_type == response_content_type.split(";", 1)[0]
     assert content.file_name == "customer-image.png"
+
+
+def test_remote_media_streaming_requires_known_provider_and_host(db_session):
+    conversation_id = _conversation_id(db_session)
+    trusted = InboxMediaAsset(
+        conversation_id=conversation_id,
+        channel_type="instagram_comment",
+        direction="inbound",
+        asset_type="video",
+        file_name="clip.mp4",
+        mime_type="video/mp4",
+        provider="instagram",
+        source_url="https://scontent.cdninstagram.com/v/t50.2886-16/clip.mp4",
+        download_status="remote_available",
+    )
+    untrusted = InboxMediaAsset(
+        conversation_id=conversation_id,
+        channel_type="email",
+        direction="inbound",
+        asset_type="video",
+        file_name="clip.mp4",
+        mime_type="video/mp4",
+        provider="email",
+        source_url="https://example.test/clip.mp4",
+        download_status="remote_available",
+    )
+
+    assert team_inbox_media.can_stream_remote_media(trusted) is True
+    assert team_inbox_media.can_stream_remote_media(untrusted) is False
 
 
 @pytest.mark.parametrize(
@@ -352,3 +439,12 @@ def test_the_upload_route_reads_bytes_before_entering_the_command():
     marker = ROUTES.index("async def team_inbox_stage_attachments")
     body = ROUTES[marker : marker + 1200]
     assert body.index("await upload.read()") < body.index("_prepare_mutation")
+
+
+def test_the_upload_route_reports_transient_conversation_locks_as_retryable():
+    marker = ROUTES.index("async def team_inbox_stage_attachments")
+    body = ROUTES[marker : marker + 1800]
+    assert "except team_inbox_commands.ConversationBusyError as exc" in body
+    assert ".rollback(" not in body
+    assert "status_code=409" in body
+    assert '"Retry-After": "2"' in body
