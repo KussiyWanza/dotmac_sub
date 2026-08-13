@@ -503,7 +503,7 @@ Rules the guard enforces beyond the module list:
 - `dotmac_kernel.testing.*` is consume-pure for `tests/` and the dev dependency
   group only; it is not on the `app/` allowlist.
 
-## Collision inventory (kernel 0.1.0a42 vs Sub through migration 527)
+## Collision inventory (kernel 0.1.0a42 vs Sub through migration 528)
 
 The authoritative migration-lineage measurement has nine overlaps at current
 lineage head plus one transient name that still needs a chain disposition; see
@@ -530,7 +530,7 @@ tables below do have models on both sides, with different authority surfaces:
 | Table | Kernel owner | Sub owner |
 | --- | --- | --- |
 | `parties` | `dotmac_kernel.models.Party` (platform identity) | `app/models/party.py::Party` (Sub party model) |
-| `roles` | `dotmac_kernel.models.Role` | `app/models/rbac.py::Role` |
+| `roles` | `dotmac_kernel.models.Role` | `app/models/rbac.py::Role` (R1 nullable kernel identity projection; legacy readers remain authoritative) |
 | `user_credentials` | `dotmac_kernel.models.UserCredential` | `app/models/auth.py::UserCredential` |
 | `audit_events` | `dotmac_kernel.audit.AuditEvent` | `app/models/audit.py::AuditEvent` |
 | `domain_settings` | `dotmac_kernel.settings_models.DomainSetting` | `app/models/domain_settings.py::DomainSetting` |
@@ -548,6 +548,17 @@ against Sub until all current and transient lineage overlaps have explicit
 dispositions;
 otherwise they would corrupt, duplicate, or silently take ownership of live
 product tables.
+
+Migration `528_roles_kernel_r1_additive` is an expand prerequisite, not a
+collision disposition or lineage-ratchet movement. It widens `roles.name`, adds
+the kernel timestamp defaults, nullable `tenant_id`/`slug`, the a42 cascade FK,
+both kernel composite unique keys, and a complete-or-absent projection CHECK.
+`auth.rbac_catalog` remains the sole row writer and derives the projection on
+every role mutation; `roles.name` remains the authorization identity read by
+Sub. Existing rows are not backfilled by DDL. Kernel reader cutover remains
+blocked until the typed collision report and mismatch cohorts are clean, every
+row is projected through a reviewed command, grant semantics have parity, and
+the atomic revision-0001 rehearsal passes.
 
 `party_roles` is the transient tenth name. Sub correctly retains that name for
 its concurrent, temporal business capacities. Kernel a41 renamed its unrelated
