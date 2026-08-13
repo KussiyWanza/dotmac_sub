@@ -55,6 +55,7 @@ MAX_RETRIES = 3
 # runner is re-enabled). 0 disables expiry.
 DEFAULT_MAX_QUEUE_AGE_HOURS = 72
 
+
 def _metadata_text(source: dict[str, Any], *keys: str) -> str:
     for key in keys:
         value = str(source.get(key) or "").strip()

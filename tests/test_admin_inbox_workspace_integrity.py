@@ -105,7 +105,10 @@ def test_social_comments_have_dedicated_workspace_and_filter_entry_point():
     assert "instagram_comment" not in main_channel_options
     assert 'name="channel_type"' in COMMENTS
     assert 'action="/admin/inbox/{{ selected_id }}/reply"' in COMMENTS
-    assert 'name="reply_to_message_id" value="{{ node.reply_context.message_id }}"' in COMMENTS
+    assert (
+        'name="reply_to_message_id" value="{{ node.reply_context.message_id }}"'
+        in COMMENTS
+    )
     assert "parent_provider_comment_id" in COMMENTS
     assert "post media" in COMMENTS.lower()
     assert "max-w-[1800px]" in COMMENTS
