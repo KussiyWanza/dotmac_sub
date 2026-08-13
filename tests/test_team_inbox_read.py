@@ -318,6 +318,9 @@ def test_admin_inbox_detail_renders_timeline(db_session, monkeypatch):
     def _fake_template_response(template_name, context):
         captured["template_name"] = template_name
         captured["context"] = context
+        captured["html"] = admin_inbox.templates.env.get_template(template_name).render(
+            **context
+        )
         return context
 
     monkeypatch.setattr(
@@ -325,6 +328,13 @@ def test_admin_inbox_detail_renders_timeline(db_session, monkeypatch):
         "TemplateResponse",
         _fake_template_response,
     )
+
+    def _fail_full_page_context(*_args, **_kwargs):
+        raise AssertionError(
+            "conversation partial must not rebuild global sidebar statistics"
+        )
+
+    monkeypatch.setattr(admin_inbox, "_ctx", _fail_full_page_context)
     db_session.commit()
 
     context = admin_inbox.team_inbox_detail(
@@ -341,6 +351,9 @@ def test_admin_inbox_detail_renders_timeline(db_session, monkeypatch):
     assert captured["template_name"] == "admin/inbox/_conversation.html"
     assert context["timeline"].id == str(conversation.id)
     assert context["timeline"].messages[0].body == "Down"
+    assert context["request"].headers["hx-request"] == "true"
+    assert "sidebar_stats" not in context
+    assert "Down" in captured["html"]
 
 
 def test_admin_inbox_detail_non_htmx_redirects_to_workspace(db_session):
