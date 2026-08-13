@@ -15,8 +15,8 @@ import re
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, cast
-from xml.etree import ElementTree as ET
 
+from defusedxml import ElementTree as ET
 from sqlalchemy import MetaData, Table, func, inspect, select
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.sql.elements import ColumnElement
