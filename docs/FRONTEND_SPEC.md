@@ -329,6 +329,27 @@ Import what you need:
 {% from "components/ui/macros.html" import page_header, stats_card, status_badge, data_table, table_head, table_row, row_actions, row_action, empty_state, card, search_input, filter_select, filter_bar, pagination, action_button, tabs, info_row, detail_header, icon_badge, info_banner, type_badge, step_indicator, progress_bar, timeline_item, metric_row, info_grid, section_divider, setting_row, setting_toggle, submit_button, danger_button, warning_button, validated_input, avatar, vendor_badge, connection_status, alert_count_badge, status_filter_card, ambient_background %}
 ```
 
+### Published package empty state
+
+The portable panel contract is owned by `dotmac-ui` and imported by its
+namespaced path:
+
+```html
+{% from "dotmac_ui/components/empty_state.html" import empty_state %}
+{{ empty_state(title="No records found", message="Adjust the filters and try again.") }}
+```
+
+Its parameters are `title`, `message`, `action_label`, and `action_url`; its
+markup and `.dmui-empty-state*` classes come from the installed package. The
+legacy `components/data/empty_state.html` include is only a temporary adapter
+for six existing callers and must not gain new markup or parameters.
+
+The `components/ui/macros.html::empty_state` entry documented below is a
+different Sub table macro: it owns the `<tr>`/`colspan` wrapper and historical
+icon/accent inputs. Do not treat the two signatures as aliases. New non-table
+panels use the package component; migrating the table macro requires a separate
+caller cutover.
+
 ### Layout & Page Structure
 
 | Macro | Parameters | Purpose |

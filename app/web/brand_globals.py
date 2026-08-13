@@ -1,11 +1,12 @@
-"""Attach the static white-label ``brand`` value to every Jinja2 environment.
+"""Compose the shared presentation contract into every Jinja2 environment.
 
 Brand fields are deployment-static (see :mod:`app.services.branding_config`), so
 they belong as a Jinja *global* available to every template rather than a
 per-request context processor. The web route modules each create their own
 ``Jinja2Templates`` instance and are imported lazily during app startup (see the
 router specs in :mod:`app.main`), so patching ``Jinja2Templates.__init__`` once
-before routers are imported makes ``brand`` available to all of them.
+before routers are imported makes both the globals and the installed
+``dotmac-ui`` template directory available to all of them.
 
 Templates should still guard with a default (``brand.primary_color if brand is
 defined and brand else "#3b82f6"``) so error pages rendered by instances created
@@ -17,8 +18,10 @@ from __future__ import annotations
 import logging
 import sys
 from datetime import UTC, datetime
+from weakref import WeakKeyDictionary
 
 from fastapi.templating import Jinja2Templates
+from jinja2 import ChoiceLoader, Environment, FileSystemLoader
 
 from app.services.branding_config import get_brand
 from app.version import get_app_version
@@ -26,11 +29,27 @@ from app.version import get_app_version
 logger = logging.getLogger(__name__)
 
 _installed = False
+_composed_ui_roots: WeakKeyDictionary[Environment, str] = WeakKeyDictionary()
 
 
 def _current_year() -> int:
     """Live current year for footers, so hardcoded years can't go stale."""
     return datetime.now(UTC).year
+
+
+def _compose_ui_template_loader(templates: Jinja2Templates) -> None:
+    """Add the package template root after the product root exactly once."""
+    from app.ui import UI_TEMPLATE_DIRECTORY
+
+    marker = str(UI_TEMPLATE_DIRECTORY.resolve())
+    if _composed_ui_roots.get(templates.env) == marker:
+        return
+    if templates.env.loader is None:
+        raise RuntimeError("Sub's Jinja environment has no template loader")
+    templates.env.loader = ChoiceLoader(
+        [templates.env.loader, FileSystemLoader(UI_TEMPLATE_DIRECTORY)]
+    )
+    _composed_ui_roots[templates.env] = marker
 
 
 def _money_filter(amount: object, currency: str | None = None) -> str:
@@ -172,7 +191,7 @@ def _attach_globals(templates: Jinja2Templates) -> None:
 
 
 def _backfill_loaded_template_instances() -> None:
-    """Attach globals to template instances created before the init patch."""
+    """Compose instances created before the init patch."""
     seen: set[int] = set()
     for module in list(sys.modules.values()):
         namespace = getattr(module, "__dict__", None)
@@ -182,6 +201,7 @@ def _backfill_loaded_template_instances() -> None:
             if not isinstance(value, Jinja2Templates) or id(value) in seen:
                 continue
             seen.add(id(value))
+            _compose_ui_template_loader(value)
             try:
                 _attach_globals(value)
             except Exception:
@@ -192,7 +212,7 @@ def _backfill_loaded_template_instances() -> None:
 
 
 def install_brand_jinja_global() -> None:
-    """Patch Jinja2Templates so every instance exposes the ``brand`` global."""
+    """Patch Jinja2Templates with Sub's shared presentation composition."""
     global _installed
     if _installed:
         return
@@ -201,6 +221,7 @@ def install_brand_jinja_global() -> None:
 
     def _patched_init(self, *args, **kwargs):
         _original_init(self, *args, **kwargs)
+        _compose_ui_template_loader(self)
         try:
             _attach_globals(self)
         except Exception:  # pragma: no cover - never break template setup

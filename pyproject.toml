@@ -48,7 +48,7 @@ dependencies = [
     "dotmac-integration-client",
     "defusedxml==0.7.1",
     "dotmac-kernel==0.1.0a50",
-    "dotmac-ui==0.1.0a3",
+    "dotmac-ui==0.1.0a7",
 ]
 
 [tool.poetry]
@@ -68,8 +68,9 @@ dotmac-kernel = { version = "0.1.0a50", source = "forgejo" }
 # kernel: a token vocabulary change is reviewed deliberately, never pulled in
 # by an unrelated lock refresh. Sub is its second consumer — the package's role
 # names were derived from Sub's own design-system.css, so this adoption is Sub
-# reclaiming its vocabulary from a shared owner, not learning a new one.
-dotmac-ui = { version = "0.1.0a3", source = "forgejo" }
+# reclaiming its vocabulary from a shared owner, not learning a new one. a7
+# adds the first inert, namespaced Jinja component without changing UI contract 1.
+dotmac-ui = { version = "0.1.0a7", source = "forgejo" }
 
 # Same-source enrichment for the dev-group `dotmac-kernel[testing]` entry in
 # [dependency-groups] below.
