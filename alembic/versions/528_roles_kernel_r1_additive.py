@@ -65,15 +65,34 @@ depends_on: str | Sequence[str] | None = None
 
 ROLES = "roles"
 
-#: Both halves of the kernel identity, or neither. `lower(slug) = slug` is the
-#: dialect-neutral half of the kernel's slug rule that SQLite can also enforce;
-#: the character-class rule lives in the canonical writer, which is the only
-#: thing that may set this column.
-_PROJECTION = (
+#: The slug alphabet, enforced by the database rather than trusted to the writer.
+#:
+#: `_normalize_role_name` validates names arriving through a catalog COMMAND, but
+#: `roles.name` itself carries no pattern CHECK — only `uq_roles_normalized_name`
+#: — and the legacy population predates that validator. Measured on production
+#: 2026-08-13: nine of sixteen role names fail this pattern, and three contain
+#: spaces ("Technical support", "Customer experience", "Customer experience
+#: managers"). `auth.rbac_catalog` converges such rows on any write, so the owner
+#: being correct is a property that can regress in a single edit. This makes an
+#: illegal kernel identity unstorable instead.
+_SLUG_ALPHABET = "slug ~ '^[a-z][a-z0-9_-]*$'"
+
+#: Both halves of the kernel identity, or neither. SQLite has no regex operator,
+#: so the alphabet rule is appended only on PostgreSQL — where every migrated
+#: database lives. The SQLite model surface keeps the weaker form;
+#: `derive_role_slug` is total over arbitrary legacy text and is tested
+#: directly, so the two agree in practice.
+_PROJECTION_BASE = (
     "(tenant_id IS NULL AND slug IS NULL) OR "
     "(tenant_id IS NOT NULL AND slug IS NOT NULL AND "
-    "length(trim(slug)) > 0 AND lower(slug) = slug)"
+    "length(trim(slug)) > 0 AND lower(slug) = slug{alphabet})"
 )
+
+
+def _projection(dialect: str) -> str:
+    return _PROJECTION_BASE.format(
+        alphabet=f" AND {_SLUG_ALPHABET}" if dialect == "postgresql" else ""
+    )
 
 
 def _matching_fk_name(
@@ -174,7 +193,9 @@ def upgrade() -> None:
     indexes = {item["name"] for item in inspector.get_indexes(ROLES)}
     if "ck_roles_kernel_identity_projection" not in constraints:
         op.create_check_constraint(
-            "ck_roles_kernel_identity_projection", ROLES, _PROJECTION
+            "ck_roles_kernel_identity_projection",
+            ROLES,
+            _projection(bind.dialect.name),
         )
     if "uq_roles_tenant_slug" not in uniques:
         op.create_unique_constraint(
