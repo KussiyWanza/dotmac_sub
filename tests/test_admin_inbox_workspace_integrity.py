@@ -109,7 +109,9 @@ def test_social_comments_have_dedicated_workspace_and_filter_entry_point():
         'name="reply_to_message_id" value="{{ node.reply_context.message_id }}"'
         in COMMENTS
     )
-    assert "parent_provider_comment_id" in COMMENTS
+    assert "parent_provider_comment_id" not in COMMENTS
+    assert "provider_comment_id" not in COMMENTS
+    assert "provider_account_id" not in COMMENTS
     assert "post media" in COMMENTS.lower()
     assert "max-w-[1800px]" in COMMENTS
     assert "md:w-[360px]" in COMMENTS

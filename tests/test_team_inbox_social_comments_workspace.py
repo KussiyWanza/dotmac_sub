@@ -32,7 +32,6 @@ def _post_conversation(
         subject=subject,
         status=InboxConversationStatus.open.value,
         contact_address="social-user",
-        contact_name="Social User",
         external_thread_id=external_thread_id,
         first_message_at=datetime(2026, 8, 1, 8, 0, tzinfo=UTC),
         last_message_at=datetime(2026, 8, 1, 8, 0, tzinfo=UTC),
