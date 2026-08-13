@@ -37,7 +37,7 @@ from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Final
 
-from dotmac_kernel.assembly import ProductAssemblySpec
+from dotmac_kernel.assembly import ProductAssemblySpec, ProductSecurityPolicy
 from dotmac_kernel.capabilities import CapabilityCatalogue
 from dotmac_kernel.features import FeatureManifest
 from dotmac_kernel.profiles import (
@@ -116,8 +116,17 @@ CAPABILITY_CATALOGUE: Final[CapabilityCatalogue] = CapabilityCatalogue.from_mani
 SUB_ASSEMBLY: Final[ProductAssemblySpec] = ProductAssemblySpec(
     name=PRODUCT_NAME,
     modules=SUB_FEATURE_MANIFESTS,
-    # Sub mounts its own web surface in app.main; recorded here as metadata.
+    # ADR-0009: dedicated single-operator topology. This remains metadata;
+    # app.main and app.db still own runtime tenancy and transaction boundaries.
+    tenancy="single",
+    # Sub has its own platform/admin, auth, route, middleware, and security
+    # surfaces. The kernel factory is not mounted, so every factory-owned
+    # surface is explicitly off rather than inherited from a permissive default.
+    platform_surface_enabled=False,
     web_enabled=True,
+    startup_checks=(),
+    startup_hooks=(),
+    security_policy=ProductSecurityPolicy(),
 )
 
 DEDICATED_ISP_PROFILE_CODE: Final = "sub-dedicated-isp"

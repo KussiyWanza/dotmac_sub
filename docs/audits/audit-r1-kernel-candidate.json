@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "status": "candidate_not_released",
+  "measured_at": "2026-08-12",
+  "kernel": {
+    "repository": "dotmac_starter_mt",
+    "branch": "integration/audit-r1",
+    "commit": "efdf4b9ed70f1ef3a29bb62f66cef4583fc250f4",
+    "candidate_version": "0.1.0a42",
+    "wheel_sha256": "b1dc54c5e3768a40a48586f997096228b9324dbae4bdfef59c87cff124064cad"
+  },
+  "sub": {
+    "branch": "integration/kernel-adoption",
+    "base_commit": "73c9d9003",
+    "implementation_commit": "0bdb4f2913d03418f6ce76955ec69fa5cecd47e2",
+    "migration": "524_audit_events_kernel_r1",
+    "released_kernel_pin": "0.1.0a40"
+  },
+  "proves": [
+    "the a42 candidate is reproducibly identified by source commit and wheel digest",
+    "Sub migration 524 and dual-write code can be reviewed and rehearsed against that candidate",
+    "the candidate relationship cannot be mistaken for a released package pin"
+  ],
+  "does_not_prove": [
+    "that dotmac-kernel 0.1.0a42 has been published",
+    "that Sub has pinned or locked a released a42 artifact",
+    "that kernel revision 0001 can compose onto Sub's schema",
+    "that an audit authority cutover has occurred"
+  ],
+  "release_gate": "Publish a reviewed a42 from the exact candidate source, verify its registry digest, then update Sub's exact pin and lock hash in a separate dependency commit before any deployment."
+}

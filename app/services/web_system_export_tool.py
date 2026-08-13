@@ -32,10 +32,9 @@ from app.models.scheduler import ScheduledTask, ScheduleType
 from app.models.subscriber import Subscriber
 from app.models.subscription_engine import SettingValueType
 from app.models.system_user import SystemUser
-from app.schemas.audit import AuditEventCreate
-from app.services import audit as audit_service
 from app.services import email as email_service
 from app.services import settings_spec
+from app.services.audit_adapter import record_audit_event
 
 logger = logging.getLogger(__name__)
 
@@ -857,7 +856,8 @@ def log_export_audit_event(
     status_code: int = 200,
     metadata: dict[str, Any] | None = None,
 ) -> None:
-    payload = AuditEventCreate(
+    record_audit_event(
+        db,
         actor_type=actor_type,
         actor_id=actor_id,
         action=action,
@@ -865,12 +865,11 @@ def log_export_audit_event(
         entity_id=entity_id,
         status_code=status_code,
         is_success=is_success,
-        metadata_={
+        metadata={
             "module": module,
             **(metadata or {}),
         },
     )
-    audit_service.audit_events.create(db=db, payload=payload)
 
 
 def process_export_job(db: Session, *, job_id: str) -> dict[str, Any]:

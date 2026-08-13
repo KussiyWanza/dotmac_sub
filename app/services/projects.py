@@ -48,7 +48,7 @@ from sqlalchemy import exists, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.sql.elements import ColumnElement
 
-from app.models.audit import AuditActorType, AuditEvent
+from app.models.audit import AuditActorType
 from app.models.domain_settings import SettingDomain
 from app.models.notification import (
     Notification,
@@ -100,6 +100,7 @@ from app.schemas.project import (
 from app.services import domain_settings as domain_settings_service
 from app.services import numbering as numbering_service
 from app.services import settings_spec
+from app.services.audit_adapter import stage_audit_event
 from app.services.common import (
     apply_ordering,
     apply_pagination,
@@ -336,24 +337,23 @@ def _stage_project_audit(
     changed_fields: list[str] | None = None,
 ) -> None:
     actor = context.actor.strip()
-    db.add(
-        AuditEvent(
-            actor_type=(
-                AuditActorType.system
-                if actor.startswith("system:")
-                else AuditActorType.user
-            ),
-            actor_id=actor,
-            action=action,
-            entity_type=entity_type,
-            entity_id=str(entity_id),
-            request_id=str(context.correlation_id),
-            metadata_={
-                "command_id": str(context.command_id),
-                "reason": context.reason,
-                "changed_fields": sorted(changed_fields or []),
-            },
-        )
+    stage_audit_event(
+        db,
+        actor_type=(
+            AuditActorType.system
+            if actor.startswith("system:")
+            else AuditActorType.user
+        ),
+        actor_id=actor,
+        action=action,
+        entity_type=entity_type,
+        entity_id=str(entity_id),
+        request_id=str(context.correlation_id),
+        metadata={
+            "command_id": str(context.command_id),
+            "reason": context.reason,
+            "changed_fields": sorted(changed_fields or []),
+        },
     )
     db.flush()
 

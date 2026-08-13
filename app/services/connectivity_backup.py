@@ -26,7 +26,7 @@ from typing import Any
 from sqlalchemy import Column, Integer, String, select
 from sqlalchemy.orm import Session
 
-from app.models.audit import AuditEvent
+from app.models.audit import AuditActorType
 from app.models.catalog import AccessCredential, Subscription
 from app.models.connectivity_backup import ConnectivityStateBackup
 from app.models.network import (
@@ -36,6 +36,7 @@ from app.models.network import (
     IPVersion,
 )
 from app.models.radius import RadiusUser
+from app.services.audit_adapter import stage_audit_event
 from app.services.common import coerce_uuid
 from app.services.external_radius_targets import (
     active_external_radius_targets,
@@ -274,22 +275,23 @@ def capture_connectivity_state(
         db.add(backup)
         db.flush()
 
-        db.add(
-            AuditEvent(
-                action="connectivity_backup.capture",
-                entity_type="subscriber",
-                entity_id=str(sid),
-                metadata_={
-                    "backup_id": str(backup.id),
-                    "reason": reason,
-                    "usernames": len(usernames),
-                    "radcheck_rows": len(radcheck) if radcheck is not None else None,
-                    "radreply_rows": len(radreply) if radreply is not None else None,
-                    "radius_targets": len(radius_targets or []),
-                    "credentials": len(credentials),
-                    "radius_error": radius_error,
-                },
-            )
+        stage_audit_event(
+            db,
+            actor_type=AuditActorType.system,
+            actor_id="connectivity_backup",
+            action="connectivity_backup.capture",
+            entity_type="subscriber",
+            entity_id=str(sid),
+            metadata={
+                "backup_id": str(backup.id),
+                "reason": reason,
+                "usernames": len(usernames),
+                "radcheck_rows": len(radcheck) if radcheck is not None else None,
+                "radreply_rows": len(radreply) if radreply is not None else None,
+                "radius_targets": len(radius_targets or []),
+                "credentials": len(credentials),
+                "radius_error": radius_error,
+            },
         )
         return backup
     except Exception as exc:  # never break the guarded mutation
@@ -402,13 +404,14 @@ def restore_connectivity_state(
 
     backup.restored_at = datetime.now(UTC)
     backup.restored_by = restored_by
-    db.add(
-        AuditEvent(
-            action="connectivity_backup.restore",
-            entity_type="subscriber",
-            entity_id=str(backup.subscriber_id),
-            metadata_={"backup_id": str(backup.id), **radius_counts},
-        )
+    stage_audit_event(
+        db,
+        actor_type=AuditActorType.system,
+        actor_id="connectivity_backup",
+        action="connectivity_backup.restore",
+        entity_type="subscriber",
+        entity_id=str(backup.subscriber_id),
+        metadata={"backup_id": str(backup.id), **radius_counts},
     )
     db.commit()
 

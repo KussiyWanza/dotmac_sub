@@ -80,8 +80,15 @@ DENIED_NAMES = frozenset(
 #: operator-tenant bridge and nothing else: Sub identity is not replaced, and
 #: `Party`, `PartyRole`, `Role` and `UserCredential` each collide with a Sub
 #: model of the same name, so a careless import would shadow one.
+#:
+#: The settings resolver legitimately uses the kernel's persistence classes
+#: internally against Sub's adopted table shape. App code needs only the open
+#: ``SettingDomain`` value type from ``settings_models``; importing
+#: ``DomainSetting`` or ``DomainSettingHistory`` directly would create a second
+#: model/writer surface over two same-named Sub tables.
 RESTRICTED_MODULE_NAMES: dict[str, frozenset[str]] = {
     "dotmac_kernel.models": frozenset({"Tenant", "TenantDomain"}),
+    "dotmac_kernel.settings_models": frozenset({"SettingDomain"}),
 }
 
 
@@ -183,11 +190,13 @@ def test_guard_fails_on_forbidden_kernel_imports(tmp_path: Path) -> None:
         "from dotmac_kernel._internal import anything\n"
         "from dotmac_kernel.money import Money\n"
         "from dotmac_kernel.providers import provisioning\n"
-        "from dotmac_kernel.models import Tenant, TenantDomain\n",
+        "from dotmac_kernel.models import Tenant, TenantDomain\n"
+        "from dotmac_kernel.settings_models import DomainSetting\n"
+        "from dotmac_kernel.settings_models import SettingDomain\n",
         encoding="utf-8",
     )
     violations = _kernel_import_violations(tmp_path)
-    assert len(violations) == 6, violations
+    assert len(violations) == 7, violations
     flagged = "\n".join(violations)
     for needle in (
         "dotmac_kernel.db",
@@ -199,6 +208,7 @@ def test_guard_fails_on_forbidden_kernel_imports(tmp_path: Path) -> None:
         # and a bare `import dotmac_kernel.models` reaches all of them.
         "UserCredential",
         "reaches every name",
+        "DomainSetting",
     ):
         assert needle in flagged, f"checker missed {needle!r}: {violations}"
     assert "dotmac_kernel.money" not in flagged, violations
@@ -210,6 +220,10 @@ def test_guard_fails_on_forbidden_kernel_imports(tmp_path: Path) -> None:
     # not the subject.
     admitted_line = "offender.py:9:"
     assert not [v for v in violations if v.startswith(admitted_line)], violations
+    admitted_settings_line = "offender.py:11:"
+    assert not [v for v in violations if v.startswith(admitted_settings_line)], (
+        violations
+    )
 
 
 def test_allowlist_matches_the_ledger() -> None:
