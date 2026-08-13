@@ -25,10 +25,12 @@ validation. ERP server time is authoritative, and ERP alone accepts or rejects
 the geofence result. Mutations use ERP platform idempotency and the dashboard
 reads ERP after an ambiguous timeout rather than inferring success.
 
-The widget is a user-specific lazy partial outside the shared dashboard cache.
-ERP failure degrades only that widget. The `attendance:self:use` permission is
-seeded but intentionally granted to no non-wildcard role; pilot assignment is a
-separate rollout operation.
+The compact dashboard action control is a user-specific lazy partial beside the
+Add Customer action, outside the shared dashboard cache. ERP failure degrades
+only that control. While checked in, the browser may render a `HH:MM:SS` timer
+from ERP's confirmed `check_in_at`; after checkout it freezes using ERP's
+confirmed `check_out_at`. This is display-only and never becomes attendance
+evidence or a local work-hours calculation.
 
 Overnight shifts remain excluded from v1 because ERP's existing next-morning
 checkout lookup requires a separate domain fix. Selfcare must render the ERP

@@ -3,6 +3,42 @@
 
     const widgetSelector = "#attendance-widget";
 
+    function formatElapsed(milliseconds) {
+        const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
+        const hours = Math.floor(totalSeconds / 3600);
+        const minutes = Math.floor((totalSeconds % 3600) / 60);
+        const seconds = totalSeconds % 60;
+        return [hours, minutes, seconds]
+            .map((value) => String(value).padStart(2, "0"))
+            .join(":");
+    }
+
+    function initializeAttendanceTimer(widget) {
+        const display = widget?.querySelector("[data-attendance-elapsed]");
+        if (!display) return;
+        clearAttendanceTimer(widget);
+        const start = Date.parse(display.dataset.attendanceStart || "");
+        const end = display.dataset.attendanceEnd
+            ? Date.parse(display.dataset.attendanceEnd)
+            : null;
+        if (Number.isNaN(start) || (end !== null && Number.isNaN(end))) return;
+
+        const render = () => {
+            display.textContent = formatElapsed((end ?? Date.now()) - start);
+        };
+        render();
+        if (end === null) {
+            widget._attendanceTimer = window.setInterval(render, 1000);
+        }
+    }
+
+    function clearAttendanceTimer(widget) {
+        if (widget?._attendanceTimer) {
+            window.clearInterval(widget._attendanceTimer);
+            widget._attendanceTimer = undefined;
+        }
+    }
+
     function csrfToken() {
         return document.querySelector('meta[name="csrf-token"]')?.content || "";
     }
@@ -18,7 +54,11 @@
         const template = document.createElement("template");
         template.innerHTML = html.trim();
         const replacement = template.content.querySelector(widgetSelector);
-        if (replacement) current.replaceWith(replacement);
+        if (replacement) {
+            clearAttendanceTimer(current);
+            current.replaceWith(replacement);
+            initializeAttendanceTimer(replacement);
+        }
     }
 
     async function refreshAttendance() {
@@ -117,6 +157,22 @@
             refreshAttendance().catch(function () {
                 showError("Attendance is temporarily unavailable. Please try again.");
             });
+        }
+    });
+
+    function initializeDashboardAttendance() {
+        initializeAttendanceTimer(document.querySelector(widgetSelector));
+    }
+
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", initializeDashboardAttendance);
+    } else {
+        initializeDashboardAttendance();
+    }
+    document.body?.addEventListener("htmx:afterSwap", function (event) {
+        const target = event.detail?.target;
+        if (target?.matches?.(widgetSelector) || target?.querySelector?.(widgetSelector)) {
+            initializeAttendanceTimer(document.querySelector(widgetSelector));
         }
     });
 })();
