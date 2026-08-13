@@ -594,6 +594,11 @@ def test_domain_sot_relationships_encode_cross_domain_dependencies():
     assert sot_relationships.dependencies_for("ui.customer_list_projection") == (
         "ui.list_contracts",
         "customer.account_visibility",
+        "customer.accounts",
+        "access.subscription_lifecycle",
+        "service_intent.catalog_policy",
+        "network.identity",
+        "network.ip_assignment_lifecycle",
     )
     account_visibility = sot_relationships.owning_service_for(
         "legacy imported Subscriber deletion classification"
