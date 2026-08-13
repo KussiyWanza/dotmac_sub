@@ -65,6 +65,7 @@ def test_expected_celery_queues_uses_default_when_unset(monkeypatch):
 
     assert queues == [
         "celery",
+        "notifications",
         "nin",
         "tr069",
         "acs",
@@ -90,6 +91,7 @@ def test_celery_queue_restart_targets_default_mapping(monkeypatch):
     targets = infrastructure_health._celery_queue_restart_targets()
 
     assert targets["billing"] == "celery-worker-billing"
+    assert targets["notifications"] == "celery-worker-notifications"
     assert targets["tr069"] == "celery-worker-tr069"
     assert targets["monitoring"] == "celery-worker-monitoring"
     assert targets["ingestion"] == "celery-worker-ingestion"

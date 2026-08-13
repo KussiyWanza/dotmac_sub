@@ -203,6 +203,48 @@ services:
     - --max-tasks-per-child=50
     - -Q
     - celery,nin,crm
+  # Customer replies and other notification outbox deliveries require bounded
+  # latency and therefore cannot share the default/CRM worker backlog.
+  celery-worker-notifications:
+    image: ${APP_IMAGE:?APP_IMAGE must be set in .env to an immutable app image}
+    container_name: dotmac_sub_celery_worker_notifications
+    restart: unless-stopped
+    mem_limit: 1g
+    mem_reservation: 384m
+    cpus: 1.0
+    pids_limit: 96
+    logging: *id001
+    extra_hosts: *observability_extra_hosts
+    environment:
+      PYTHONPATH: /app
+      DATABASE_URL: ${DATABASE_URL}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND}
+      CELERY_WORKER_PREFETCH_MULTIPLIER: ${CELERY_WORKER_PREFETCH_MULTIPLIER:-1}
+      REDIS_URL: ${REDIS_URL}
+      S3_ENDPOINT_URL: ${S3_ENDPOINT_URL}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      S3_BUCKET_NAME: ${S3_BUCKET_NAME:-dotmac-private}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      OPENBAO_ADDR: ${OPENBAO_ADDR}
+      OPENBAO_TOKEN: ${OPENBAO_TOKEN}
+      APP_RELEASE: ${APP_RELEASE:-}
+      GIT_SHA: ${GIT_SHA:-}
+    env_file:
+    - .env
+    volumes:
+    - ./uploads:/app/uploads
+    command:
+    - celery
+    - -A
+    - app.celery_app.celery_app
+    - worker
+    - --loglevel=info
+    - --concurrency=2
+    - --max-tasks-per-child=50
+    - -Q
+    - notifications
   celery-worker-tr069:
     image: ${APP_IMAGE:?APP_IMAGE must be set in .env to an immutable app image}
     container_name: dotmac_sub_celery_worker_tr069

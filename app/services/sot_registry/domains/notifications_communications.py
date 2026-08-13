@@ -2063,6 +2063,13 @@ DOMAIN = DomainSOT(
                 event_types=("team_inbox.outbound_intent_recorded.v1",),
                 projections=("outbound attempt and failed-worklist projection",),
             ),
+            notes=(
+                "A committed operator reply returns the exact Notification outbox UUID "
+                "to the web transport, which schedules an after-response task on the "
+                "dedicated notifications queue. The periodic delivery runner remains "
+                "the durable recovery sweep; each worker locks and claims the exact "
+                "eligible row before provider delivery."
+            ),
         ),
         SOTService(
             name="communications.team_inbox_delivery_receipts",

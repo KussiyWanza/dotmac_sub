@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-from fastapi import HTTPException
+from fastapi import BackgroundTasks, HTTPException
 
 from app.api import support as support_api
 from app.models.notification import Notification
@@ -380,6 +380,7 @@ def test_admin_inbox_detail_reply_queues_message(db_session):
     response = admin_inbox.team_inbox_reply(
         conversation.id,
         request=SimpleNamespace(state=SimpleNamespace()),
+        background_tasks=BackgroundTasks(),
         body_text="We are checking this now.",
         db=db_session,
     )

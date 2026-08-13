@@ -18,6 +18,7 @@ _DEFAULT_RESTART_COMMAND = "docker compose restart {target}"
 _DOCKER_SOCKET = "/var/run/docker.sock"
 _DEFAULT_RESTART_CONTAINERS = {
     "celery-worker": "dotmac_sub_celery_worker",
+    "celery-worker-notifications": "dotmac_sub_celery_worker_notifications",
     "celery-worker-tr069": "dotmac_sub_celery_worker_tr069",
     "celery-worker-bandwidth": "dotmac_sub_celery_worker_bandwidth",
     "celery-worker-monitoring": "dotmac_sub_celery_worker_monitoring",

@@ -9,7 +9,7 @@ from uuid import UUID
 
 import httpx
 from sqlalchemy import or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Query, Session
 
 from app.celery_app import celery_app
 from app.models.domain_settings import SettingDomain
@@ -54,6 +54,17 @@ MAX_RETRIES = 3
 # of sent (guards against draining weeks of stale dunning when the queue
 # runner is re-enabled). 0 disables expiry.
 DEFAULT_MAX_QUEUE_AGE_HOURS = 72
+
+_DELIVERABLE_CHANNELS = (
+    NotificationChannel.email,
+    NotificationChannel.sms,
+    NotificationChannel.whatsapp,
+    NotificationChannel.facebook_messenger,
+    NotificationChannel.instagram_dm,
+    NotificationChannel.facebook_comment,
+    NotificationChannel.instagram_comment,
+    NotificationChannel.push,
+)
 
 
 def _metadata_text(source: dict[str, Any], *keys: str) -> str:
@@ -261,42 +272,24 @@ def _expire_stale_notifications(db, now) -> int:
     return len(expired_notifications)
 
 
-def _deliver_notification_queue_stats(db, batch_size: int = 50) -> dict[str, int]:
-    now = datetime.now(UTC)
-    max_retries = _max_retries(db)
-    stuck_threshold = now - timedelta(minutes=_sending_timeout_minutes(db))
-    channel_limit = _per_channel_rate_limit(db)
-
-    expired = _expire_stale_notifications(db, now)
-
-    # Query queued, stuck "sending", and retryable failed notifications
-    notifications = (
+def _eligible_notification_query(
+    db: Session,
+    *,
+    now: datetime,
+    max_retries: int,
+    stuck_threshold: datetime,
+) -> Query[Notification]:
+    return (
         db.query(Notification)
         .filter(Notification.is_active.is_(True))
-        .filter(
-            Notification.channel.in_(
-                [
-                    NotificationChannel.email,
-                    NotificationChannel.sms,
-                    NotificationChannel.whatsapp,
-                    NotificationChannel.facebook_messenger,
-                    NotificationChannel.instagram_dm,
-                    NotificationChannel.facebook_comment,
-                    NotificationChannel.instagram_comment,
-                    NotificationChannel.push,
-                ]
-            )
-        )
+        .filter(Notification.channel.in_(_DELIVERABLE_CHANNELS))
         .filter(
             or_(
-                # Queued notifications ready to send
                 Notification.status == NotificationStatus.queued,
-                # Stuck "sending" notifications (likely crashed during send)
                 (
                     (Notification.status == NotificationStatus.sending)
                     & (Notification.updated_at < stuck_threshold)
                 ),
-                # Failed notifications eligible for retry (under max retries)
                 (
                     (Notification.status == NotificationStatus.failed)
                     & (Notification.retry_count < max_retries)
@@ -304,23 +297,83 @@ def _deliver_notification_queue_stats(db, batch_size: int = 50) -> dict[str, int
             )
         )
         .filter((Notification.send_at.is_(None)) | (Notification.send_at <= now))
+    )
+
+
+def _empty_delivery_stats(*, expired: int = 0) -> dict[str, int]:
+    return {
+        "delivered": 0,
+        "retried": 0,
+        "failed": 0,
+        "expired": expired,
+        "reclaimed": 0,
+        "suppressed": 0,
+        "stuck_dropped": 0,
+        "rate_limited": 0,
+        "materialization_rejected": 0,
+    }
+
+
+def _deliver_notification_queue_stats(
+    db: Session,
+    batch_size: int = 50,
+    *,
+    notification_id: UUID | None = None,
+) -> dict[str, int]:
+    now = datetime.now(UTC)
+    max_retries = _max_retries(db)
+    stuck_threshold = now - timedelta(minutes=_sending_timeout_minutes(db))
+    channel_limit = _per_channel_rate_limit(db)
+
+    # The periodic sweep owns global expiry. An immediate single-row wake-up
+    # must remain bounded to the notification the committed Inbox command
+    # returned.
+    expired = 0 if notification_id is not None else _expire_stale_notifications(db, now)
+
+    candidate_query = _eligible_notification_query(
+        db,
+        now=now,
+        max_retries=max_retries,
+        stuck_threshold=stuck_threshold,
+    )
+    if notification_id is not None:
+        candidate_query = candidate_query.filter(Notification.id == notification_id)
+    notification_candidates = (
+        candidate_query.with_entities(Notification.id, Notification.channel)
         .order_by(Notification.created_at.asc())
         .limit(batch_size)
         .all()
     )
-    delivered = 0
-    retried = 0
-    failed = 0
-    reclaimed = 0
-    suppressed = 0
-    stuck_dropped = 0
-    rate_limited = 0
-    materialization_rejected = 0
+    stats = _empty_delivery_stats(expired=expired)
+    delivered = stats["delivered"]
+    retried = stats["retried"]
+    failed = stats["failed"]
+    reclaimed = stats["reclaimed"]
+    suppressed = stats["suppressed"]
+    stuck_dropped = stats["stuck_dropped"]
+    rate_limited = stats["rate_limited"]
+    materialization_rejected = stats["materialization_rejected"]
     channel_counts: dict[NotificationChannel, int] = {}
-    for notification in notifications:
-        current_count = channel_counts.get(notification.channel, 0)
+    for candidate_id, candidate_channel in notification_candidates:
+        current_count = channel_counts.get(candidate_channel, 0)
         if current_count >= channel_limit:
             rate_limited += 1
+            continue
+        # Candidate discovery is intentionally lock-free. Claim each exact row
+        # immediately before delivery so concurrent immediate tasks and the
+        # periodic recovery sweep cannot both hand it to a provider.
+        notification = (
+            _eligible_notification_query(
+                db,
+                now=now,
+                max_retries=max_retries,
+                stuck_threshold=stuck_threshold,
+            )
+            .filter(Notification.id == candidate_id)
+            .with_for_update(skip_locked=True)
+            .one_or_none()
+        )
+        if notification is None:
             continue
         channel_counts[notification.channel] = current_count + 1
         # Reclaim handling: a notification still in "sending" was stuck past the
@@ -816,13 +869,17 @@ def _deliver_notification_queue_stats(db, batch_size: int = 50) -> dict[str, int
                         metadata["provider_message_id"] = provider_reply_id
                         message.metadata_ = metadata
             elif notification.channel == NotificationChannel.push:
-                success = push_service.send_push(
-                    db=db,
-                    subscriber_id=notification.subscriber_id,
-                    title=subject,
-                    body=body,
-                    notification_id=str(notification.id),
-                )
+                if notification.subscriber_id is None:
+                    success = False
+                    notification.last_error = "push_missing_subscriber"
+                else:
+                    success = push_service.send_push(
+                        db=db,
+                        subscriber_id=str(notification.subscriber_id),
+                        title=subject,
+                        body=body,
+                        notification_id=str(notification.id),
+                    )
             else:
                 success = False
                 notification.last_error = (
@@ -939,6 +996,22 @@ def deliver_inbound_smtp_health_probe(
     )
 
 
+def _record_notification_task_result(
+    session: Session,
+    *,
+    task_name: str,
+    result: dict[str, int],
+    started: float,
+) -> None:
+    record_notification_queue_result(
+        session,
+        task_name=task_name,
+        result=result,
+        duration_seconds=time.monotonic() - started,
+    )
+    session.commit()
+
+
 @celery_app.task(name="app.tasks.notifications.deliver_notification_queue")
 def deliver_notification_queue() -> dict[str, int]:
     """Process queued notifications and retry failed ones."""
@@ -955,13 +1028,12 @@ def deliver_notification_queue() -> dict[str, int]:
                 "talk_reconciled": talk_result.reconciled,
             }
         )
-        record_notification_queue_result(
+        _record_notification_task_result(
             session,
             task_name="app.tasks.notifications.deliver_notification_queue",
             result=result,
-            duration_seconds=time.monotonic() - started,
+            started=started,
         )
-        session.commit()
         logger.info(
             "Notification queue processed: delivered=%d, retried=%d, failed=%d, "
             "expired=%d, rate_limited=%d",
@@ -970,5 +1042,37 @@ def deliver_notification_queue() -> dict[str, int]:
             result["failed"],
             result["expired"],
             result["rate_limited"],
+        )
+        return result
+
+
+@celery_app.task(name="app.tasks.notifications.deliver_notification")
+def deliver_notification(notification_id: str) -> dict[str, int]:
+    """Immediately deliver one committed notification outbox row.
+
+    The string is the Celery transport representation. The delivery owner
+    validates it into the precise identifier before querying authoritative
+    state. A missing, already-claimed, future, or terminal row is a safe no-op;
+    the periodic queue runner remains the recovery path.
+    """
+
+    try:
+        typed_notification_id = UUID(notification_id)
+    except (TypeError, ValueError):
+        logger.warning("notification_delivery_wakeup_invalid_id")
+        return _empty_delivery_stats()
+
+    started = time.monotonic()
+    with db_session_adapter.session() as session:
+        result = _deliver_notification_queue_stats(
+            session,
+            batch_size=1,
+            notification_id=typed_notification_id,
+        )
+        _record_notification_task_result(
+            session,
+            task_name="app.tasks.notifications.deliver_notification",
+            result=result,
+            started=started,
         )
         return result

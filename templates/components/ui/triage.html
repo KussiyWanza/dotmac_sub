@@ -257,7 +257,7 @@
         <div class="mt-1 flex items-center gap-2 {% if outbound %}justify-end{% endif %}">
             {% if outbound %}
             {% set delivery = metadata.get('delivery_status') or 'sent' %}
-            <span class="text-[10px] font-medium {% if delivery == 'failed' %}text-rose-600{% else %}text-slate-400{% endif %}">{{ delivery | title }}{% if metadata.get('read_at') %} · Read{% endif %}</span>
+            <span data-inbox-delivery-status="{{ message.id }}" class="text-[10px] font-medium {% if delivery == 'failed' %}text-rose-600{% else %}text-slate-400{% endif %}">{{ delivery | title }}{% if metadata.get('read_at') %} · Read{% endif %}</span>
             {% endif %}
             <button type="button"
                     @click.prevent.stop='$dispatch("inbox-quote", {{ {"id": message.id, "author": (outbound_sender_name if outbound else (message.from_address or "Customer")), "excerpt": (message.body or "")[:120]} | tojson }})'

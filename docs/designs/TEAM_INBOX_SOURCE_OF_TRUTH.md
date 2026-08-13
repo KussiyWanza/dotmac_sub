@@ -136,6 +136,17 @@ temporary mood/tone for the current request, but that metadata is not written to
 the conversation or customer profile. Accepting a suggestion updates only the
 unsent browser composer; sending remains owned by `communications.team_inbox_commands`.
 
+For operator replies, the committed outcome exposes the exact notification
+UUID to the HTTP transport. The adapter schedules an after-response single-row
+delivery task on the dedicated `notifications` worker queue, so broker latency
+does not hold the composer response open. The periodic notification runner
+remains the recovery sweep when broker publication or a worker is unavailable.
+Immediate tasks and sweeps both lock and claim the exact
+eligible outbox row before provider delivery, so concurrent wake-ups are safe
+no-ops rather than duplicate sends. Delivery changes publish only bounded
+message/conversation/status invalidations after commit; the Inbox refetches the
+authoritative projection and never treats realtime as delivery evidence.
+
 Operator-initiated conversations use the same command boundary. The opening
 message retains approved WhatsApp template identity and submitted provider
 variables, and uploaded attachments are staged against the new conversation
@@ -268,8 +279,10 @@ stale. Realtime has no replay authority.
   exchange. `Needs Attention` means a customer message was followed by a
   successful human-agent reply and then a later customer follow-up without a
   subsequent successful human-agent reply.
-- A successful reply has an agent provenance identifier and a current delivery
-  state of queued, accepted, sent, delivered, read, or retried. Failed,
+- A submitted reply has an agent provenance identifier and a current delivery
+  state of queued, sending, accepted, sent, delivered, read, or retried. Only
+  provider-accepted `accepted`, `sent`, `delivered`, or `read` states establish
+  a successful agent delivery. Queued, sending, retried, failed,
   scheduled, AI-intake, and explicitly no-response-required messages do not
   establish the prior agent reply.
 - Outbound message bubbles resolve their saved `sent_by_person_id` against the

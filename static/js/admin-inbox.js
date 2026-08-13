@@ -1364,6 +1364,9 @@
           }
           return;
         }
+        if (eventType === "message_status_changed") {
+          this.applyDeliveryStatus(data);
+        }
         if (
           [
             "message_new",
@@ -1384,6 +1387,32 @@
           if (eventType === "message_new" || eventType === "agent_notification") {
             this.playSound();
           }
+        }
+      },
+
+      applyDeliveryStatus(data) {
+        if (String(data.conversation_id || "") !== String(this.selectedId)) {
+          return;
+        }
+        const messageId = String(data.message_id || "");
+        const status = String(data.delivery_status || "").trim().toLowerCase();
+        if (!messageId || !status) return;
+        const statusNode = Array.from(
+          document.querySelectorAll("[data-inbox-delivery-status]"),
+        ).find((node) => node.dataset.inboxDeliveryStatus === messageId);
+        if (!statusNode) {
+          if (!this.composerFocused()) this.refreshThread(this.selectedId);
+          return;
+        }
+        statusNode.textContent = status
+          .replace(/_/g, " ")
+          .replace(/^./, (value) => value.toUpperCase());
+        statusNode.classList.toggle("text-rose-600", status === "failed");
+        statusNode.classList.toggle("text-slate-400", status !== "failed");
+        if (status === "failed") {
+          this.showToast(
+            "Message delivery failed. Open the message status to retry.",
+          );
         }
       },
 
