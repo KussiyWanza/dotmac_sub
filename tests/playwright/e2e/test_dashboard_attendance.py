@@ -37,8 +37,8 @@ def _page_html(action: str = "check-in") -> str:
 
 def _completed_partial(*, checked_out: bool = False) -> str:
     if checked_out:
-        return """<section id="attendance-widget"><p>Checked in: 08:04</p><p>Checked out: 17:11</p><p data-attendance-error></p></section>"""
-    return """<section id="attendance-widget"><p>Checked in: 08:04</p><p data-attendance-error></p><button data-attendance-action="check-out">Check Out</button></section>"""
+        return """<section id="attendance-widget"><time data-attendance-elapsed data-attendance-start="2026-08-09T08:04:00+00:00" data-attendance-end="2026-08-09T17:11:00+00:00">00:00:00</time><p data-attendance-error></p></section>"""
+    return """<section id="attendance-widget"><time data-attendance-elapsed data-attendance-start="2026-08-09T08:04:00+00:00">00:00:00</time><p data-attendance-error></p><button data-attendance-action="check-out">Check Out</button></section>"""
 
 
 def _open(page: Page, html: str) -> None:
@@ -116,6 +116,6 @@ def test_check_out_captures_fresh_location_and_finishes_widget(attendance_page: 
     _open(page, _page_html("check-out"))
     page.get_by_role("button", name="Check Out").click()
 
-    expect(page.locator("#attendance-widget")).to_contain_text("Checked out: 17:11")
+    expect(page.locator("[data-attendance-elapsed]")).to_have_text("09:07:00")
     expect(page.locator("#attendance-widget button")).to_have_count(0)
     assert payloads[0]["accuracy_m"] == 8
