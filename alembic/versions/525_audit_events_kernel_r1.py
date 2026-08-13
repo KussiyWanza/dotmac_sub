@@ -22,8 +22,8 @@ table scan or data rewrite is intended. Downgrade removes only these additive
 columns and their index; it is destructive to post-R1 values and is therefore
 appropriate only before any R1 writer is admitted.
 
-Revision ID: 524_audit_events_kernel_r1
-Revises: 523_domain_settings_tenant_fk
+Revision ID: 525_audit_events_kernel_r1
+Revises: 524_network_map_v2_asset_proposals
 Create Date: 2026-08-12
 """
 
@@ -36,8 +36,8 @@ from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
-revision: str = "524_audit_events_kernel_r1"
-down_revision: str | None = "523_domain_settings_tenant_fk"
+revision: str = "525_audit_events_kernel_r1"
+down_revision: str | None = "524_network_map_v2_asset_proposals"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

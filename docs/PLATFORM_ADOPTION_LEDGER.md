@@ -63,11 +63,13 @@ and sdist SHA256
 no unrelated locked dependency moves.
 
 The released wheel was then installed into a disposable Linux environment on
-Observe. Sub's complete migration chain reached
+Observe. The integration candidate's complete migration chain reached
 `524_audit_events_kernel_r1` on PostgreSQL 16 with PostGIS 3.4, and all 103
 Postgres-backed integration tests passed. The rehearsal returned exit code 0
-and removed its disposable resources. This is package-compatibility evidence,
-not a lineage, authority, merge, or deployment claim.
+and removed its disposable resources. Promotion rebased the same additive
+migration to `525_audit_events_kernel_r1` after Network Map V2 claimed revision
+524. This is package-compatibility evidence, not a lineage, authority, merge,
+or deployment claim.
 
 a41 is breaking for consumers of the kernel `PartyRole` model, renamed to
 `PartyRoleGrant` with no alias. Sub imports neither name, so the reviewed Sub

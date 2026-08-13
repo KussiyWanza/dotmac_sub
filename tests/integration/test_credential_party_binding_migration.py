@@ -26,8 +26,8 @@ from app.models.subscriber import UserType
 from app.models.system_user import SystemUser
 
 ROOT = Path(__file__).resolve().parents[2]
-PREDECESSOR = "524_audit_events_kernel_r1"
-CANDIDATE = "525_credential_party_binding_additive"
+PREDECESSOR = "525_audit_events_kernel_r1"
+CANDIDATE = "526_credential_party_binding_additive"
 
 
 def _render(url: URL) -> str:

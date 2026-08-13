@@ -29,8 +29,8 @@ from app.models.audit import AuditActorType, AuditEvent
 from app.schemas.audit import AuditEventCreate
 from app.services.audit import audit_events
 
-PREDECESSOR = "523_domain_settings_tenant_fk"
-REVISION = "524_audit_events_kernel_r1"
+PREDECESSOR = "524_network_map_v2_asset_proposals"
+REVISION = "525_audit_events_kernel_r1"
 
 
 def _render(url: URL) -> str:

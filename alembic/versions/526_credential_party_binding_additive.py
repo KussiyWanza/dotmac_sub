@@ -44,8 +44,8 @@ same Party and verifier.
 - no backfill. Production has 4,102 unbound credential-bearing principals; they
   are bound by the reviewed command, in approved capped batches, never by DDL.
 
-Revision ID: 525_credential_party_binding_additive
-Revises: 524_audit_events_kernel_r1
+Revision ID: 526_credential_party_binding_additive
+Revises: 525_audit_events_kernel_r1
 Create Date: 2026-08-12
 """
 
@@ -59,8 +59,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "525_credential_party_binding_additive"
-down_revision: str | None = "524_audit_events_kernel_r1"
+revision: str = "526_credential_party_binding_additive"
+down_revision: str | None = "525_audit_events_kernel_r1"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
