@@ -3,8 +3,9 @@
 This is deliberately not Alembic lineage composition.  Sub migration 514 owns
 the existing constraint and Sub's ``alembic_version`` remains untouched.  The
 canary executes the released kernel migration body inside a rollback-only
-transaction to prove that a40 recognises Sub's stronger predecessor, marks it
-as adopted, and preserves it on downgrade.
+transaction to prove that the released a42 package still recognises Sub's
+stronger predecessor, marks it as adopted, and preserves it on downgrade. The
+behavior originated in a40's revision 0021; the proof follows the installed pin.
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ ADOPTION_MARKER = "dotmac-kernel:0021:adopted-existing"
 def _load_scope_migration() -> ModuleType:
     matches = tuple(versions_dir().glob("*_0021_setting_scope_alignment.py"))
     assert len(matches) == 1, (
-        "the reviewed a40 wheel must ship exactly one kernel 0021 migration; "
+        "the reviewed a42 wheel must ship exactly one kernel 0021 migration; "
         f"found {[path.name for path in matches]}"
     )
     path: Path = matches[0]
@@ -77,7 +78,7 @@ def _run(module: ModuleType, operation: str, connection: Connection) -> None:
 
 
 def test_kernel_0021_adopts_and_preserves_subs_514_invariant(engine: Engine) -> None:
-    """a40 may adopt Sub's constraint; it may not weaken or take it away."""
+    """Released a42 may adopt Sub's constraint; it may not weaken or remove it."""
 
     assert engine.dialect.name == "postgresql"
     module = _load_scope_migration()

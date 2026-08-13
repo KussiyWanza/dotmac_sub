@@ -34,18 +34,22 @@ collision inventory re-verified at each rebase rather than assumed to hold:
   `customer_posting_groups`. None of those names collides with a kernel table,
   so the six then-documented collisions (`parties`, `party_roles`, `roles`,
   `user_credentials`, `audit_events`, `domain_settings`) were unchanged.
-- against `origin/dev` `8e8c2c658` and released kernel a40
-  (`b37d25b6a`), the migration-lineage inventory has ten table-name overlaps,
+- against the party-identity integration batch through migration 526 and
+  released kernel a42, the lineage-head inventory has nine table-name overlaps,
   classified in
   `dotmac_starter_mt/docs/inventories/sub-lineage-dispositions.md`. Two are the
   intentionally hosted kernel models `tenants` and `tenant_domains`; the other
-  eight are competing model declarations. The ten-name set is rehearsed against
-  a real Sub-migrated PostgreSQL schema by
-  `tests/integration/test_kernel_lineage_rehearsal.py`; the narrower model set is
-  exact and executable in
-  `tests/architecture/test_kernel_table_collisions.py`. Any ninth competing
-  declaration fails CI, while every lineage remeasurement must continue to
-  include the two hosted tables and both repositories' migration histories.
+  seven are competing model declarations. Kernel 0022 renamed its RBAC grant
+  from `party_roles` to `party_role_grants`, so Sub's archetype-shaped
+  `party_roles` is no longer a current model or lineage-head collision. The
+  lineage still creates the old name at 0003 before renaming it at 0022, so that
+  transient tenth name remains a disposition rather than disappearing from the
+  migration review. The nine-name head set is exact in
+  `tests/integration/test_kernel_lineage_rehearsal.py`; the seven-name model set
+  is exact in `tests/architecture/test_kernel_table_collisions.py`. Any eighth
+  competing declaration fails CI, while every lineage remeasurement must
+  continue to include hosted tables, transient DDL names, and both repositories'
+  migration histories.
 
 The recon is re-run on every pin and Sub model change because a stale inventory
 would silently under-report the very risk the S7 ADR gate exists to hold.
@@ -72,8 +76,12 @@ migration to `525_audit_events_kernel_r1` after Network Map V2 claimed revision
 or deployment claim.
 
 a41 is breaking for consumers of the kernel `PartyRole` model, renamed to
-`PartyRoleGrant` with no alias. Sub imports neither name, so the reviewed Sub
-surface is unaffected. a42 adds the polymorphic audit actor and request
+`PartyRoleGrant` with no alias. Sub imports neither name, so its runtime import
+surface is unaffected. The collision inventory does change: Sub's business
+capacity table remains `party_roles`, while the kernel's current RBAC grant is
+`party_role_grants`. The names no longer collide at lineage head, although the
+kernel chain still creates the old name at 0003 before 0022 renames it. a42 adds
+the polymorphic audit actor and request
 forensics contract plus kernel migration 0023. Sub still does not import
 `dotmac_kernel.audit` or compose the kernel lineage: migration 524 expands
 Sub's own table and its existing `observability.audit_log` owner remains the
@@ -139,7 +147,7 @@ checks, and an empty kernel security policy because Sub's existing runtime owns
 those concerns. This remains metadata; `app.main` remains the runtime owner.
 
 The PostgreSQL canary
-`tests/integration/test_kernel_a40_scope_adoption.py` invokes only the released
+`tests/integration/test_kernel_a42_scope_adoption.py` invokes only the released
 0021 migration body inside a rollback-only transaction against the real,
 Sub-migrated schema. It proves adoption and downgrade preserve 514 while Sub's
 `alembic_version` is unchanged. That is disposition evidence for the future S7
@@ -287,11 +295,11 @@ modules (including any `dotmac_kernel._*` and `display`) are forbidden outright.
 | `dotmac_kernel.entitlements` | defer-db | S8 | `tenant_entitlement_grants` table. Only after the operator-tenant bridge (S7) and capability catalogue (S3) are proven. Commercial product/module availability only — never subscriber financial-access, service-readiness, or RBAC |
 | `dotmac_kernel.licensing` | defer-db | S8 | The verifier itself is DB-free, but adoption is gated on entitlements persistence and the S7 ADR; a Sub-owned WS8 receiver comes after both |
 | `dotmac_kernel.db` | defer-db | S7 | Importing constructs the SQLAlchemy engine from `DATABASE_URL`. `app/db.py` remains Sub's session/transaction authority; any kernel engine use requires the S7 ADR |
-| `dotmac_kernel.migrations` | defer-db | S7 | Kernel Alembic revisions `0001`–`0021`. They are not added to Sub's `alembic.ini` (`script_location = alembic`, no `version_locations`). The a40 canary executes 0021's body transactionally and leaves Sub's version table unchanged; composition still needs the S7 ADR and all collision dispositions |
+| `dotmac_kernel.migrations` | defer-db | S7 | Kernel Alembic revisions `0001`–`0023`. They are not added to Sub's `alembic.ini` (`script_location = alembic`, no `version_locations`). The released-a42 canary executes inherited revision 0021's body transactionally and leaves Sub's version table unchanged; composition still needs the S7 ADR and all current and transient collision dispositions |
 | `dotmac_kernel.audit` | defer-db | deferred | `AuditEvent` model collides with Sub's (`audit_events` table). Sub's writers stay `record_audit_event` + `AuditEvents.stage` (pinned by `tests/architecture/test_audit_writer_surfaces.py`); kernel audit adapts behind them after parity, never as a second writer |
 | `dotmac_kernel.settings_models` / `.settings_resolver` / `.settings_cache` / `.settings_crypto` / `.setting_scopes` / `.setting_value_types` / `.secret_sources` | adapt (consumed) | settings cutover | Sub declares product specs and retains product storage/transaction owners while the kernel supplies typed vocabulary, resolution, cache, crypto, and held-secret contracts. `DomainSetting` and `DomainSettingHistory` collide with Sub tables; app code may import only `SettingDomain` from `settings_models`, and migration composition remains closed |
 | `dotmac_kernel.settings_admin` / `.setting_domains` | defer-db | deferred | Not imported by Sub. Admin/write authority remains in Sub services until a typed owner cutover removes the existing path; module availability alone is not a reason to add a second writer |
-| `dotmac_kernel.models` | **partial (S7a)** | ADR-0009 | `Tenant`/`TenantDomain` ONLY, per ADR-0009. Sub migrations 508/509 host and provision those exact kernel models as the one operator tenant; they are admitted records, not duplicate Sub models. Every other name stays prohibited: kernel Party/identity (`Party`, `PartyRole`, `Role`, `UserCredential`, `AuthSession`, and related records) would collide with or replace Sub identity. This program does not do that |
+| `dotmac_kernel.models` | **partial (S7a)** | ADR-0009 | `Tenant`/`TenantDomain` ONLY, per ADR-0009. Sub migrations 508/509 host and provision those exact kernel models as the one operator tenant; they are admitted records, not duplicate Sub models. Every other name stays prohibited: kernel Party/identity (`Party`, `PartyRoleGrant`, `Role`, `UserCredential`, `AuthSession`, and related records) would collide with or replace Sub identity or authorization. This program does not do that |
 | `dotmac_kernel.tenancy` | prohibited | — | Sub records `tenancy="single"` as composition metadata but does not install the kernel binding/resolver runtime; the operator-tenant service remains the owner |
 | `dotmac_kernel.models_platform` | prohibited | — | `PlatformAdmin`/`PlatformSession` — Sub keeps its own staff identity (`app/models/system_user.py`, `app/models/auth.py`) |
 | `dotmac_kernel.config` | prohibited | — | `app/config.py` remains Sub's settings owner; a second `Settings`/`validate_settings` authority is a drift source |
@@ -337,7 +345,7 @@ and the settings cutover all import from this list.
 
 `dotmac_kernel.models` is admitted for **two names only** — `Tenant` and
 `TenantDomain` (ADR-0009). Every other name in it, including `Party`,
-`PartyRole`, `Role` and `UserCredential`, stays forbidden, and a bare
+`PartyRoleGrant`, `Role` and `UserCredential`, stays forbidden, and a bare
 `import dotmac_kernel.models` is refused because it reaches all of them. The
 guard enforces the narrowing through `RESTRICTED_MODULE_NAMES`, not a comment.
 
@@ -474,15 +482,16 @@ Rules the guard enforces beyond the module list:
 - `dotmac_kernel.testing.*` is consume-pure for `tests/` and the dev dependency
   group only; it is not on the `app/` allowlist.
 
-## Collision inventory (kernel 0.1.0a40 vs Sub at 8e8c2c658)
+## Collision inventory (kernel 0.1.0a42 vs Sub through migration 526)
 
-The authoritative migration-lineage measurement has ten table-name overlaps;
-see `dotmac_starter_mt/docs/inventories/sub-lineage-dispositions.md`. Comparing
-the installed kernel's model declarations against Sub's `app/models/**`
-declarations yields the eight competing-model overlaps below. Their exact
+The authoritative migration-lineage measurement has nine overlaps at current
+lineage head plus one transient name that still needs a chain disposition; see
+`dotmac_starter_mt/docs/inventories/sub-lineage-dispositions.md`. Comparing the
+installed kernel's model declarations against Sub's `app/models/**`
+declarations yields the seven competing-model overlaps below. Their exact
 intersection and a sensitivity proof are enforced by
-`tests/architecture/test_kernel_table_collisions.py`; the broader ten-table
-lineage set is also checked against a real Sub-migrated schema by
+`tests/architecture/test_kernel_table_collisions.py`; the exact nine-table
+lineage-head set is checked against a real Sub-migrated schema by
 `tests/integration/test_kernel_lineage_rehearsal.py`.
 
 ### Python package names
@@ -490,17 +499,16 @@ lineage set is also checked against a real Sub-migrated schema by
 No collision: Sub's code lives under `app/` (plus `alembic/`, `scripts/`,
 `tests/`); the kernel imports as `dotmac_kernel`. Sub's `src/` contains only CSS.
 
-### SQLAlchemy table names — ten lineage overlaps, eight competing models
+### SQLAlchemy table names — nine at lineage head, seven competing models
 
 `tenants` and `tenant_domains` are the two intentional hosted overlaps: Sub
 migrations 508/509 create and provision them, while Sub imports the kernel's
-`Tenant` and `TenantDomain` models. They have no competing Sub model. The eight
+`Tenant` and `TenantDomain` models. They have no competing Sub model. The seven
 tables below do have models on both sides, with different authority surfaces:
 
 | Table | Kernel owner | Sub owner |
 | --- | --- | --- |
 | `parties` | `dotmac_kernel.models.Party` (platform identity) | `app/models/party.py::Party` (Sub party model) |
-| `party_roles` | `dotmac_kernel.models.PartyRole` | `app/models/party.py` |
 | `roles` | `dotmac_kernel.models.Role` | `app/models/rbac.py::Role` |
 | `user_credentials` | `dotmac_kernel.models.UserCredential` | `app/models/auth.py::UserCredential` |
 | `audit_events` | `dotmac_kernel.audit.AuditEvent` | `app/models/audit.py::AuditEvent` |
@@ -508,22 +516,32 @@ tables below do have models on both sides, with different authority surfaces:
 | `domain_setting_history` | `dotmac_kernel.settings_models.DomainSettingHistory` | `app/models/domain_setting_history.py::DomainSettingHistory` |
 | `communication_suppressions` | `dotmac_kernel.consent_models.CommunicationSuppression` | `app/models/notification.py::CommunicationSuppression` |
 
-The colliding class names (`Party`, `PartyRole`, `Role`, `UserCredential`,
+The colliding class names (`Party`, `Role`, `UserCredential`,
 `AuditEvent`, `DomainSetting`, and `DomainSettingHistory`) are also identical;
 the suppression classes differ in name but still target one table. A careless
 import can therefore shadow a Sub model even before metadata reaches an engine.
 `dotmac_kernel.models` and `.settings_models` are name-restricted by the import
 guard, while `.audit` and `.consent_models` remain forbidden. Kernel
 `Base.metadata.create_all`, autogenerate, or composed migrations must never run
-against Sub until all ten lineage overlaps have explicit dispositions;
+against Sub until all current and transient lineage overlaps have explicit
+dispositions;
 otherwise they would corrupt, duplicate, or silently take ownership of live
 product tables.
+
+`party_roles` is the transient tenth name. Sub correctly retains that name for
+its concurrent, temporal business capacities. Kernel a41 renamed its unrelated
+RBAC grant to `party_role_grants`, so the two current models and lineage heads no
+longer collide. Kernel revision 0003 still creates `party_roles` before 0022
+renames it, however; migration composition must handle that intermediate state
+explicitly rather than treating the final-name separation as a complete chain
+disposition.
 
 Hosted overlaps and non-competing names worth recording: kernel `tenants`,
 `tenant_domains`,
 `party_persons`, `party_organizations`, `auth_sessions`, `outbox_events`,
 `platform_outbox_events`,
-`platform_admins`, `platform_sessions`, `platform_audit_events`, and
+`platform_admins`, `platform_sessions`, `platform_audit_events`,
+`party_role_grants`, and
 `tenant_entitlement_grants` do not collide with a Sub model. The first two are
 intentionally hosted through the admitted kernel models; a40 renamed the inbox
 tables to `idempotency_records` / `platform_idempotency_records`, which likewise
@@ -540,7 +558,7 @@ different owners.
   revisions into Sub's `version_locations` would put two independent heads in
   one version table — forbidden before the S7 ADR.
 - Kernel revision IDs are `0001_initial_tenant_schema` …
-  `0021_setting_scope_alignment`
+  `0023_audit_actor_and_forensics`
   (four-digit prefixes); Sub's files use three-digit-and-up prefixes
   (`001_squashed_initial_schema` …, 498 files plus `versions_archive`). The ID
   strings do not collide today, but Sub's numeric-prefix guard

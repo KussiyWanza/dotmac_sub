@@ -27,7 +27,6 @@ EXPECTED_COMPETING_MODEL_TABLES = frozenset(
         "domain_setting_history",
         "domain_settings",
         "parties",
-        "party_roles",
         "roles",
         "user_credentials",
     }
@@ -56,14 +55,21 @@ def _declared_tables(root: Path) -> frozenset[str]:
     return frozenset(tables)
 
 
-def test_kernel_sub_competing_models_match_the_reviewed_a40_inventory() -> None:
+def _collision_drift(
+    actual: frozenset[str], expected: frozenset[str]
+) -> tuple[frozenset[str], frozenset[str]]:
+    return actual - expected, expected - actual
+
+
+def test_kernel_sub_competing_models_match_the_reviewed_a42_inventory() -> None:
     collisions = _declared_tables(KERNEL_ROOT) & _declared_tables(SUB_MODELS)
-    assert collisions == EXPECTED_COMPETING_MODEL_TABLES, (
+    added, removed = _collision_drift(collisions, EXPECTED_COMPETING_MODEL_TABLES)
+    assert not added and not removed, (
         "kernel/Sub competing-model inventory changed; classify every added or "
         "removed name in docs/PLATFORM_ADOPTION_LEDGER.md and the lineage "
         "disposition inventory before changing this reviewed set.\n"
-        f"added: {sorted(collisions - EXPECTED_COMPETING_MODEL_TABLES)}\n"
-        f"removed: {sorted(EXPECTED_COMPETING_MODEL_TABLES - collisions)}"
+        f"added: {sorted(added)}\n"
+        f"removed: {sorted(removed)}"
     )
 
 
@@ -82,3 +88,13 @@ def test_collision_detector_is_sensitive_to_a_new_shared_table(tmp_path: Path) -
     )
 
     assert _declared_tables(kernel) & _declared_tables(product) == {"new_collision"}
+
+
+def test_collision_drift_reports_additions_and_removals() -> None:
+    added, removed = _collision_drift(
+        frozenset({"stable", "new_collision"}),
+        frozenset({"stable", "retired_collision"}),
+    )
+
+    assert added == {"new_collision"}
+    assert removed == {"retired_collision"}
