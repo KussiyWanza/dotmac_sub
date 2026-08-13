@@ -354,6 +354,123 @@ class NetworkMapPlantLayer(StrEnum):
     sites = "sites"
 
 
+class NetworkMapV2Layer(StrEnum):
+    pop = "pop"
+    fdh = "fdh"
+    closures = "closures"
+    access_points = "access_points"
+    support_structures = "support_structures"
+    network_devices = "network_devices"
+    onts = "onts"
+    customers_connected = "customers_connected"
+    customers_not_connected = "customers_not_connected"
+    olt = "olt"
+    base_stations = "base_stations"
+    service_buildings = "service_buildings"
+    feeder = "feeder"
+    distribution = "distribution"
+    drop = "drop"
+    topology_endpoints = "topology_endpoints"
+    live_technicians = "live_technicians"
+
+
+class NetworkMapV2GeometryStatus(StrEnum):
+    stored_valid = "stored_valid"
+    missing = "missing"
+    invalid = "invalid"
+    unavailable = "unavailable"
+
+
+class NetworkMapV2TopologyStatus(StrEnum):
+    connected = "connected"
+    disconnected = "disconnected"
+    incomplete = "incomplete"
+
+
+@dataclass(frozen=True, slots=True)
+class NetworkMapV2Endpoint:
+    id: UUID | None
+    name: str | None
+    endpoint_type: str | None
+    reference_id: UUID | None
+    longitude: float | None
+    latitude: float | None
+    attached_segment_count: int
+
+    @property
+    def has_explicit_connection(self) -> bool:
+        return self.reference_id is not None or self.attached_segment_count > 1
+
+    def to_transport(self) -> dict[str, object]:
+        return {
+            "id": str(self.id) if self.id else None,
+            "name": self.name,
+            "endpoint_type": self.endpoint_type,
+            "reference_id": str(self.reference_id) if self.reference_id else None,
+            "longitude": self.longitude,
+            "latitude": self.latitude,
+            "attached_segment_count": self.attached_segment_count,
+            "has_explicit_connection": self.has_explicit_connection,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class NetworkMapV2SegmentTopology:
+    id: UUID
+    name: str
+    segment_type: FiberSegmentType
+    geometry_status: NetworkMapV2GeometryStatus
+    topology_status: NetworkMapV2TopologyStatus
+    from_endpoint: NetworkMapV2Endpoint
+    to_endpoint: NetworkMapV2Endpoint
+
+    def to_transport(self) -> dict[str, object]:
+        return {
+            "id": str(self.id),
+            "name": self.name,
+            "segment_type": self.segment_type.value,
+            "geometry_status": self.geometry_status.value,
+            "topology_status": self.topology_status.value,
+            "from_endpoint": self.from_endpoint.to_transport(),
+            "to_endpoint": self.to_endpoint.to_transport(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class NetworkMapV2UnavailableLayer:
+    layer: NetworkMapV2Layer
+    reason: str
+
+    def to_transport(self) -> dict[str, str]:
+        return {"layer": self.layer.value, "reason": self.reason}
+
+
+@dataclass(frozen=True, slots=True)
+class NetworkMapV2Projection:
+    additional_features: tuple[NetworkMapFeature, ...]
+    layer_counts: dict[NetworkMapV2Layer, int]
+    segment_topology: tuple[NetworkMapV2SegmentTopology, ...]
+    unavailable_layers: tuple[NetworkMapV2UnavailableLayer, ...]
+    unmatched_olt_count: int
+
+    def to_transport(self) -> dict[str, object]:
+        return {
+            "additional_features": [
+                feature.to_transport() for feature in self.additional_features
+            ],
+            "layer_counts": {
+                layer.value: count for layer, count in self.layer_counts.items()
+            },
+            "segment_topology": [
+                segment.to_transport() for segment in self.segment_topology
+            ],
+            "unavailable_layers": [
+                layer.to_transport() for layer in self.unavailable_layers
+            ],
+            "unmatched_olt_count": self.unmatched_olt_count,
+        }
+
+
 @dataclass(frozen=True, slots=True)
 class NetworkMapPlantProjection:
     """Read-only dispatch plant subset; it deliberately has no customer state."""

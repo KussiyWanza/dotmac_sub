@@ -210,6 +210,10 @@ DEFAULT_PERMISSIONS = [
     # Network - Fiber
     ("network:fiber:read", "View fiber infrastructure"),
     ("network:fiber:write", "Manage fiber infrastructure"),
+    (
+        "network:fiber:review",
+        "Independently review governed fiber asset proposals",
+    ),
     # Network - RADIUS
     ("network:radius:read", "View RADIUS configuration"),
     ("network:radius:write", "Manage RADIUS configuration"),
