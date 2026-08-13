@@ -16,7 +16,9 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, cast
 
-from defusedxml import ElementTree as ET
+# This module only constructs XML from normalized values; it never parses XML.
+from xml.etree import ElementTree as ET  # nosec B405
+
 from sqlalchemy import MetaData, Table, func, inspect, select
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.sql.elements import ColumnElement
