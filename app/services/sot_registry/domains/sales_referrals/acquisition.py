@@ -1230,7 +1230,7 @@ SERVICES: tuple[SOTService, ...] = (
                         "canonical Quote commercial state",
                         "canonical Party recipient state",
                         "canonical Quote PDF artifact",
-                        "canonical Quote payment eligibility",
+                        "canonical Subscriber Quote payment eligibility",
                     ),
                     canonical_writer="sales.quote_delivery",
                 ),
@@ -1267,12 +1267,12 @@ SERVICES: tuple[SOTService, ...] = (
                     source="immutable branded Quote snapshot and stored PDF",
                 ),
                 AuthorityInput(
-                    name="canonical Quote payment eligibility",
+                    name="canonical Subscriber Quote payment eligibility",
                     owner="sales.quote_payment_eligibility",
                     kind=AuthorityKind.DERIVED_PROJECTION,
                     source=(
-                        "authorized active unpaid Quote, positive authoritative "
-                        "deposit, and available Paystack capability"
+                        "authorized active unpaid Subscriber-backed Quote, positive "
+                        "authoritative deposit, and available Paystack capability"
                     ),
                 ),
             ),
@@ -1312,7 +1312,8 @@ SERVICES: tuple[SOTService, ...] = (
                     "Quote without line items",
                     "missing authoritative active recipient email",
                     "missing authoritative company legal name",
-                    "ineligible or unavailable secure Paystack payment link",
+                    "ineligible or unavailable secure Paystack payment link for a "
+                    "Subscriber-backed Quote",
                     "idempotency key reuse for another Quote",
                 ),
             ),
