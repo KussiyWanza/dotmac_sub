@@ -34,7 +34,7 @@ collision inventory re-verified at each rebase rather than assumed to hold:
   `customer_posting_groups`. None of those names collides with a kernel table,
   so the six then-documented collisions (`parties`, `party_roles`, `roles`,
   `user_credentials`, `audit_events`, `domain_settings`) were unchanged.
-- against the party-identity integration batch through migration 526 and
+- against the party-identity integration batch through migration 527 and
   released kernel a42, the lineage-head inventory has nine table-name overlaps,
   classified in
   `dotmac_starter_mt/docs/inventories/sub-lineage-dispositions.md`. Two are the
@@ -75,6 +75,12 @@ migration to `525_audit_events_kernel_r1` after Network Map V2 claimed revision
 524. This is package-compatibility evidence, not a lineage, authority, merge,
 or deployment claim.
 
+**2026-08-13 promotion correction.** Inbox self-assignment subsequently claimed
+revision 525 on `dev`. The promotion chain preserves that merged revision and
+renumbers the unchanged audit expansion to 526 and the credential projection to
+527. The 524/525 identifiers above are retained as historical rehearsal and
+earlier-promotion evidence, not current-head claims.
+
 a41 is breaking for consumers of the kernel `PartyRole` model, renamed to
 `PartyRoleGrant` with no alias. Sub imports neither name, so its runtime import
 surface is unaffected. The collision inventory does change: Sub's business
@@ -83,7 +89,7 @@ capacity table remains `party_roles`, while the kernel's current RBAC grant is
 kernel chain still creates the old name at 0003 before 0022 renames it. a42 adds
 the polymorphic audit actor and request
 forensics contract plus kernel migration 0023. Sub still does not import
-`dotmac_kernel.audit` or compose the kernel lineage: migration 525 expands
+`dotmac_kernel.audit` or compose the kernel lineage: migration 526 expands
 Sub's own table and its existing `observability.audit_log` owner remains the
 single writer during shadowing. This pin makes the immutable contract available
 for compatibility and rehearsal; it does not claim an authority or lineage
@@ -482,7 +488,7 @@ Rules the guard enforces beyond the module list:
 - `dotmac_kernel.testing.*` is consume-pure for `tests/` and the dev dependency
   group only; it is not on the `app/` allowlist.
 
-## Collision inventory (kernel 0.1.0a42 vs Sub through migration 526)
+## Collision inventory (kernel 0.1.0a42 vs Sub through migration 527)
 
 The authoritative migration-lineage measurement has nine overlaps at current
 lineage head plus one transient name that still needs a chain disposition; see

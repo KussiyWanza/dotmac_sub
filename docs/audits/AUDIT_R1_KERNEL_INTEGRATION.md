@@ -8,7 +8,7 @@ Owner: `observability.audit_log`
 
 ## Outcome
 
-Sub migration `525_audit_events_kernel_r1` adds the three missing members of
+Sub migration `526_audit_events_kernel_r1` adds the three missing members of
 the accepted audit union:
 
 - `actor_party_id UUID NULL`, indexed and deliberately without a foreign key;
@@ -58,6 +58,11 @@ returned exit code 0 and removed its disposable database container and network.
 This proves released-artifact compatibility; it does not compose kernel
 revision 0001, cut audit authority over, merge Sub, or deploy anything.
 
+On 2026-08-13, promotion was synchronized after Inbox self-assignment claimed
+revision 525 on `dev`. The same unchanged additive audit migration is therefore
+`526_audit_events_kernel_r1`, followed by credential projection revision 527.
+The prior revision identifiers above remain historical rehearsal evidence.
+
 ## Writer and parity contract
 
 `AuditEvents._build_event` is the sole model constructor. Every prior direct
@@ -90,8 +95,8 @@ ratchet and database access controls own prevention of unsanctioned writers.
 ## Cutover and rollback boundaries
 
 R1 is expansion only. Reads continue using Sub's legacy columns. A code rollback
-is safe while migration 524 remains because older code ignores the new nullable
-columns. Downgrading 524 after R1 writes begin destroys the additive evidence
+is safe while migration 526 remains because older code ignores the new nullable
+columns. Downgrading 526 after R1 writes begin destroys the additive evidence
 and requires explicit operator approval; normal rollback leaves the columns in
 place.
 

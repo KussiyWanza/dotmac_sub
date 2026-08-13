@@ -1,4 +1,4 @@
-"""Fresh and deployed-524 PostgreSQL proofs for migration 525."""
+"""Fresh and predecessor-shape PostgreSQL proofs for migration 527."""
 
 from __future__ import annotations
 
@@ -26,8 +26,8 @@ from app.models.subscriber import UserType
 from app.models.system_user import SystemUser
 
 ROOT = Path(__file__).resolve().parents[2]
-PREDECESSOR = "525_audit_events_kernel_r1"
-CANDIDATE = "526_credential_party_binding_additive"
+PREDECESSOR = "526_audit_events_kernel_r1"
+CANDIDATE = "527_credential_party_binding_additive"
 
 
 def _render(url: URL) -> str:
