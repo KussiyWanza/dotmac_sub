@@ -256,8 +256,8 @@ def _deliver_notification_queue_stats(
     )
     if notification_id is not None:
         candidate_query = candidate_query.filter(Notification.id == notification_id)
-    notification_ids = (
-        candidate_query.with_entities(Notification.id)
+    notification_candidates = (
+        candidate_query.with_entities(Notification.id, Notification.channel)
         .order_by(Notification.created_at.asc())
         .limit(batch_size)
         .all()
@@ -272,7 +272,11 @@ def _deliver_notification_queue_stats(
     rate_limited = stats["rate_limited"]
     materialization_rejected = stats["materialization_rejected"]
     channel_counts: dict[NotificationChannel, int] = {}
-    for (candidate_id,) in notification_ids:
+    for candidate_id, candidate_channel in notification_candidates:
+        current_count = channel_counts.get(candidate_channel, 0)
+        if current_count >= channel_limit:
+            rate_limited += 1
+            continue
         # Candidate discovery is intentionally lock-free. Claim each exact row
         # immediately before delivery so concurrent immediate tasks and the
         # periodic recovery sweep cannot both hand it to a provider.
@@ -288,12 +292,6 @@ def _deliver_notification_queue_stats(
             .one_or_none()
         )
         if notification is None:
-            db.rollback()
-            continue
-        current_count = channel_counts.get(notification.channel, 0)
-        if current_count >= channel_limit:
-            rate_limited += 1
-            db.rollback()
             continue
         channel_counts[notification.channel] = current_count + 1
         # Reclaim handling: a notification still in "sending" was stuck past the
@@ -902,6 +900,22 @@ def deliver_inbound_smtp_health_probe(
     )
 
 
+def _record_notification_task_result(
+    session: Session,
+    *,
+    task_name: str,
+    result: dict[str, int],
+    started: float,
+) -> None:
+    record_notification_queue_result(
+        session,
+        task_name=task_name,
+        result=result,
+        duration_seconds=time.monotonic() - started,
+    )
+    session.commit()
+
+
 @celery_app.task(name="app.tasks.notifications.deliver_notification_queue")
 def deliver_notification_queue() -> dict[str, int]:
     """Process queued notifications and retry failed ones."""
@@ -918,13 +932,12 @@ def deliver_notification_queue() -> dict[str, int]:
                 "talk_reconciled": talk_result.reconciled,
             }
         )
-        record_notification_queue_result(
+        _record_notification_task_result(
             session,
             task_name="app.tasks.notifications.deliver_notification_queue",
             result=result,
-            duration_seconds=time.monotonic() - started,
+            started=started,
         )
-        session.commit()
         logger.info(
             "Notification queue processed: delivered=%d, retried=%d, failed=%d, "
             "expired=%d, rate_limited=%d",
@@ -960,11 +973,10 @@ def deliver_notification(notification_id: str) -> dict[str, int]:
             batch_size=1,
             notification_id=typed_notification_id,
         )
-        record_notification_queue_result(
+        _record_notification_task_result(
             session,
             task_name="app.tasks.notifications.deliver_notification",
             result=result,
-            duration_seconds=time.monotonic() - started,
+            started=started,
         )
-        session.commit()
         return result

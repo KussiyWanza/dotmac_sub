@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 
+from fastapi import BackgroundTasks
 from starlette.requests import Request
 
 from app.models.notification import Notification, NotificationStatus
@@ -306,6 +307,7 @@ def test_admin_macro_create_and_reply_records_execution(db_session, monkeypatch)
     reply_response = inbox_web.team_inbox_reply(
         conversation.id,
         _request(),
+        BackgroundTasks(),
         body_text=macro.body_text,
         macro_id=str(macro.id),
         db=db_session,
@@ -385,6 +387,7 @@ def test_admin_template_create_and_reply_uses_template(db_session, monkeypatch):
     reply_response = inbox_web.team_inbox_reply(
         conversation.id,
         _request(),
+        BackgroundTasks(),
         body_text="",
         macro_id=None,
         template_id=str(template.id),

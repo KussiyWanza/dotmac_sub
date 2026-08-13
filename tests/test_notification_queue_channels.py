@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from uuid import uuid4
 
 from app.models.domain_settings import DomainSetting, SettingDomain
 from app.models.notification import (
@@ -303,13 +302,15 @@ def test_required_invoice_attachment_failure_does_not_send_body_only_email(
     assert email.last_error == "invoice_pdf_generation_failed"
 
 
-def test_deliver_notification_queue_processes_push_channel(db_session, monkeypatch):
+def test_deliver_notification_queue_processes_push_channel(
+    db_session, subscriber, monkeypatch
+):
     push = _queued_notification(
         channel=NotificationChannel.push,
         recipient="subscriber",
         body="Usage alert",
     )
-    push.subscriber_id = uuid4()
+    push.subscriber_id = subscriber.id
     db_session.add(push)
     db_session.commit()
 
