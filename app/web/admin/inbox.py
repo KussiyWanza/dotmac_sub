@@ -392,6 +392,7 @@ def team_inbox_social_comments(
     search: str | None = Query(default=None),
     status: str | None = Query(default=None),
     channel_type: str | None = Query(default=None),
+    unread: bool = Query(default=False),
     conversation_id: str | None = Query(default=None),
     page: int = Query(default=1),
     per_page: int = Query(default=25),
@@ -407,6 +408,7 @@ def team_inbox_social_comments(
         search=_query_text(search),
         status=_query_text(status),
         channel_type=_query_text(channel_type),
+        unread=_query_bool(unread),
         selected_conversation_id=_query_text(conversation_id),
         actor_person_id=actor_person_id,
         page=_query_int(page, default=1) or 1,
@@ -418,11 +420,13 @@ def team_inbox_social_comments(
     context.update(
         {
             "rows": projection.rows,
+            "post_rows": projection.post_rows,
             "selected": (
                 projection.selected.timeline
                 if projection.selected is not None
                 else None
             ),
+            "selected_post": projection.selected_post,
             "selected_id": projection.selected_id or "",
             "count": projection.count,
             "list_query": projection.list_query,
@@ -430,6 +434,7 @@ def team_inbox_social_comments(
             "search": projection.search,
             "status": projection.status,
             "channel_type": projection.channel_type,
+            "unread": projection.unread,
             "status_options": projection.status_options,
             "channel_options": projection.channel_options,
             "actor_person_id": str(actor_person_id) if actor_person_id else "",
