@@ -50,16 +50,16 @@ change has been performed.
 
 ## Migration Relationship
 
-- Current migration: `alembic/versions/528_conversational_ai_intake.py`
-- Current local revision identity: `528_conversational_ai_intake`
-- Current local parent: `527_credential_party_binding_additive`
+- Current migration: `alembic/versions/529_conversational_ai_intake.py`
+- Current local revision identity: `529_conversational_ai_intake`
+- Current local parent: `528_roles_kernel_r1_additive`
 - Obsolete local identity `524_conversational_ai_intake` was recreated and must
   not be applied to production.
 - Production was observed at `523_domain_settings_tenant_fk` during read-only
   inspection.
 - Current development already contains migrations `524_network_map_v2_asset_proposals`
-  through `527_credential_party_binding_additive`, so AI Intake is additive after
-  `527` on this clean v2 branch.
+  through `528_roles_kernel_r1_additive`, so AI Intake is additive after
+  `528` on this clean v2 branch.
 - Excluded local migration: `alembic/versions/520_inbox_self_assign_permission.py`
   because it is self-assign permission work, not conversational AI intake.
 
@@ -73,7 +73,7 @@ git diff --name-only origin/dev...HEAD
 
 Expected areas:
 
-- `alembic/versions/528_conversational_ai_intake.py`
+- `alembic/versions/529_conversational_ai_intake.py`
 - `app/models/ai_intake.py`
 - `app/models/team_inbox.py`
 - `app/services/ai_intake.py`
@@ -101,7 +101,7 @@ git diff --check
 ```
 
 Migration graph parser was run after reparenting and should show
-`528_conversational_ai_intake` as the sole head on this branch.
+`529_conversational_ai_intake` as the sole head on this branch.
 
 ## Local Test Blocker
 
@@ -184,7 +184,7 @@ Also run focused browser/admin checks for:
 - Stop queue notices by disabling queue notification scheduled task if needed.
 - Revert the feature branch before merge if validation fails.
 - If migrations were applied only in staging/test, downgrade
-  `528_conversational_ai_intake` there. Do not run production downgrade without
+  `529_conversational_ai_intake` there. Do not run production downgrade without
   an approved operator runbook.
 
 ## Explicit Warning

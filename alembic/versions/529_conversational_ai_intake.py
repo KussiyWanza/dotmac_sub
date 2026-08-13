@@ -1,7 +1,7 @@
 """Conversational AI intake sessions and queue notification evidence.
 
-Revision ID: 528_conversational_ai_intake
-Revises: 527_credential_party_binding_additive
+Revision ID: 529_conversational_ai_intake
+Revises: 528_roles_kernel_r1_additive
 Create Date: 2026-08-13
 """
 
@@ -13,8 +13,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "528_conversational_ai_intake"
-down_revision: str | None = "527_credential_party_binding_additive"
+revision: str = "529_conversational_ai_intake"
+down_revision: str | None = "528_roles_kernel_r1_additive"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
