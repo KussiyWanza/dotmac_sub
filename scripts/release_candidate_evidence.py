@@ -1,8 +1,9 @@
 """Serialize and verify immutable release-candidate evidence.
 
 This module is the JSON adapter around the typed release contracts. GitHub
-workflows use it to exchange exact source, tree, image-digest, and workflow-run
-identities without treating mutable image tags or free-form JSON as authority.
+workflows use it to exchange exact source, tree, image-digest,
+product-manifest-digest, and workflow-run identities without treating mutable
+image tags or free-form JSON as authority.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from scripts.release_artifact_contract import (
     GitTreeSha,
     MainAuthorizationEvidence,
     OCIImageDigest,
+    ProductManifestDigest,
     ReleaseArtifactEvidence,
     ReleaseCandidateRecord,
     ReleaseContractError,
@@ -27,7 +29,7 @@ from scripts.release_artifact_contract import (
     evaluate_production_eligibility,
 )
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _CANDIDATE_KIND = "dotmac.release_candidate"
 _STAGING_KIND = "dotmac.staging_acceptance"
 _PRODUCTION_KIND = "dotmac.production_authorization"
@@ -110,6 +112,7 @@ def write_candidate_evidence(
             "source_revision": evidence.source_revision.value,
             "source_tree": evidence.source_tree.value,
             "image_digest": evidence.image_digest.value,
+            "product_manifest_digest": evidence.product_manifest_digest.value,
             "build_run_id": evidence.build_run_id.value,
             "source_ci_conclusion": evidence.source_ci_conclusion.value,
         },
@@ -126,6 +129,7 @@ def read_candidate_evidence(path: Path) -> ReleaseArtifactEvidence:
             "source_revision",
             "source_tree",
             "image_digest",
+            "product_manifest_digest",
             "build_run_id",
             "source_ci_conclusion",
         },
@@ -143,6 +147,9 @@ def read_candidate_evidence(path: Path) -> ReleaseArtifactEvidence:
             source_revision=GitCommitSha(_required_string(document, "source_revision")),
             source_tree=GitTreeSha(_required_string(document, "source_tree")),
             image_digest=OCIImageDigest(_required_string(document, "image_digest")),
+            product_manifest_digest=ProductManifestDigest(
+                _required_string(document, "product_manifest_digest")
+            ),
             build_run_id=WorkflowRunId(
                 _required_positive_int(document, "build_run_id")
             ),
@@ -246,6 +253,7 @@ def write_production_authorization(
             "source_revision": artifact.source_revision.value,
             "source_tree": artifact.source_tree.value,
             "image_digest": artifact.image_digest.value,
+            "product_manifest_digest": artifact.product_manifest_digest.value,
             "build_run_id": artifact.build_run_id.value,
             "staging_deployment_id": staging.deployment_id.value,
             "release_revision": main.release_revision.value,
@@ -265,6 +273,7 @@ def read_production_authorization(path: Path) -> ReleaseCandidateRecord:
             "source_revision",
             "source_tree",
             "image_digest",
+            "product_manifest_digest",
             "build_run_id",
             "staging_deployment_id",
             "release_revision",
@@ -281,6 +290,9 @@ def read_production_authorization(path: Path) -> ReleaseCandidateRecord:
                 source_revision=source_revision,
                 source_tree=source_tree,
                 image_digest=image_digest,
+                product_manifest_digest=ProductManifestDigest(
+                    _required_string(document, "product_manifest_digest")
+                ),
                 build_run_id=WorkflowRunId(
                     _required_positive_int(document, "build_run_id")
                 ),
@@ -364,6 +376,7 @@ def _parser() -> argparse.ArgumentParser:
     candidate.add_argument("--source-revision", required=True)
     candidate.add_argument("--source-tree", required=True)
     candidate.add_argument("--image-digest", required=True)
+    candidate.add_argument("--product-manifest-digest", required=True)
     candidate.add_argument("--build-run-id", required=True, type=int)
     candidate.add_argument("--output", required=True, type=_document_path)
 
@@ -420,6 +433,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 source_revision=GitCommitSha(args.source_revision),
                 source_tree=GitTreeSha(args.source_tree),
                 image_digest=OCIImageDigest(args.image_digest),
+                product_manifest_digest=ProductManifestDigest(
+                    args.product_manifest_digest
+                ),
                 build_run_id=WorkflowRunId(args.build_run_id),
                 source_ci_conclusion=EvidenceConclusion.SUCCESS,
             ),
@@ -439,6 +455,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "source_revision": evidence.source_revision.value,
                 "source_tree": evidence.source_tree.value,
                 "image_digest": evidence.image_digest.value,
+                "product_manifest_digest": evidence.product_manifest_digest.value,
                 "build_run_id": evidence.build_run_id.value,
             },
         )
@@ -452,6 +469,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "source_revision": evidence.source_revision.value,
                 "source_tree": evidence.source_tree.value,
                 "image_digest": evidence.image_digest.value,
+                "product_manifest_digest": evidence.product_manifest_digest.value,
                 "build_run_id": evidence.build_run_id.value,
             },
         )
@@ -486,6 +504,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "source_revision": artifact.source_revision.value,
                 "source_tree": artifact.source_tree.value,
                 "image_digest": artifact.image_digest.value,
+                "product_manifest_digest": artifact.product_manifest_digest.value,
                 "build_run_id": artifact.build_run_id.value,
                 "staging_deployment_id": staging_evidence.deployment_id.value,
                 "release_revision": args.release_revision,
@@ -529,6 +548,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "source_revision": record.artifact.source_revision.value,
                     "source_tree": record.artifact.source_tree.value,
                     "image_digest": record.artifact.image_digest.value,
+                    "product_manifest_digest": (
+                        record.artifact.product_manifest_digest.value
+                    ),
                     "build_run_id": record.artifact.build_run_id.value,
                     "staging_deployment_id": (
                         record.staging.deployment_id.value

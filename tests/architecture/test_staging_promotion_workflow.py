@@ -63,6 +63,7 @@ def test_ghcr_isolated_to_the_pinned_genieacs_runtime() -> None:
 
 def test_release_candidate_build_is_explicit_green_dev_and_digest_evidenced() -> None:
     workflow = _read(".github/workflows/release-candidate.yml")
+    dockerfile = _read("Dockerfile")
 
     assert yaml.safe_load(workflow)
     assert "on:\n  workflow_dispatch:" in workflow
@@ -80,6 +81,16 @@ def test_release_candidate_build_is_explicit_green_dev_and_digest_evidenced() ->
     assert workflow.count("uses: docker/build-push-action@v6") == 1
     assert "id: build" in workflow
     assert "${{ steps.build.outputs.digest }}" in workflow
+    assert "python -m scripts.product_manifest emit" in dockerfile
+    assert "--version-file VERSION" in dockerfile
+    assert "product-manifest.json" in dockerfile
+    assert 'candidate_ref="${REGISTRY}/${IMAGE_NAME}@${IMAGE_DIGEST}"' in workflow
+    assert 'docker create "$candidate_ref"' in workflow
+    assert ":/app/product-manifest.json" in workflow
+    assert "-m scripts.product_manifest verify" in workflow
+    assert "--product-manifest-digest" in workflow
+    assert "path: |" in workflow
+    assert "product-manifest.json" in workflow
     assert "python -m scripts.release_candidate_evidence write-candidate" in workflow
     assert "name: release-candidate-evidence" in workflow
     assert "retention-days: 90" in workflow
