@@ -1523,6 +1523,8 @@
       aiDraftError: "",
       polishLoading: false,
       polishSuggestion: null,
+      polishError: "",
+      polishOriginalDraft: "",
       introductionText,
 
       init() {
@@ -1660,6 +1662,8 @@
         if (this.polishLoading || !this.draft.trim()) return;
         this.polishLoading = true;
         this.polishSuggestion = null;
+        this.polishError = "";
+        this.polishOriginalDraft = this.draft;
         try {
           const response = await fetch(
             `/admin/inbox/${this.conversationId}/ai-polish`,
@@ -1669,7 +1673,10 @@
                 "Content-Type": "application/json",
                 "X-CSRF-Token": csrfToken(),
               },
-              body: JSON.stringify({ text: this.draft, context: "crm_reply" }),
+              body: JSON.stringify({
+                text: this.draft,
+                context: "crm_reply",
+              }),
             },
           );
           const payload = await response.json().catch(() => ({}));
@@ -1678,6 +1685,7 @@
           }
           this.polishSuggestion = payload;
         } catch (error) {
+          this.polishError = error.message || "Suggestion unavailable.";
           this.workspace()?.showToast?.(
             error.message || "Suggestion unavailable.",
           );
@@ -1690,6 +1698,22 @@
         this.draft = text;
         this.releaseIdentity();
         this.polishSuggestion = null;
+        this.polishError = "";
+        this.$nextTick(() => {
+          this.$refs.textarea?.dispatchEvent(new Event("input", { bubbles: true }));
+          this.$refs.textarea?.focus();
+        });
+      },
+      dismissPolish() {
+        this.polishSuggestion = null;
+        this.polishError = "";
+      },
+      restorePolishDraft() {
+        if (!this.polishOriginalDraft) return;
+        this.draft = this.polishOriginalDraft;
+        this.releaseIdentity();
+        this.polishSuggestion = null;
+        this.polishError = "";
         this.$nextTick(() => {
           this.$refs.textarea?.dispatchEvent(new Event("input", { bubbles: true }));
           this.$refs.textarea?.focus();

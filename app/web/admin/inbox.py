@@ -60,6 +60,9 @@ from app.services import (
 )
 from app.services import email as email_service
 from app.services import (
+    team_inbox_ai_polish as team_inbox_ai_polish_service,
+)
+from app.services import (
     team_inbox_contact_context as contact_context_service,
 )
 from app.services.ai.client import AIClientError
@@ -82,6 +85,7 @@ logger = logging.getLogger(__name__)
 class InboxPolishRequest(BaseModel):
     text: str = Field(min_length=1, max_length=5000)
     context: str = Field(default="crm_reply", max_length=80)
+    style: str | None = Field(default=None, max_length=80)
 
 
 class InboxReplyPresentation(BaseModel):
@@ -1365,34 +1369,22 @@ def team_inbox_ai_polish(
     request: Request,
     db: Session = Depends(get_db),
 ):
-    timeline = team_inbox_read.get_conversation_timeline(db, conversation_id)
-    if timeline is None:
-        return JSONResponse(
-            {"ok": False, "error": "Suggestion unavailable."},
-            status_code=200,
-        )
-    text = payload.text.strip()
-    if not text:
-        return JSONResponse(
-            {"ok": False, "error": "Enter text to polish."},
-            status_code=200,
-        )
     _prepare_mutation(db)
     try:
-        from app.services.ai.engine import AIEngineError, intelligence_engine
-
-        insight = intelligence_engine.advise(
+        result = team_inbox_ai_polish_service.polish_reply(
             db,
-            advisor_key="inbox_sentence_polish",
-            report={"text": text, "context": payload.context},
-            entity_type="inbox_composer",
-            entity_id=str(conversation_id),
-            trigger="manual",
-            triggered_by_system_user_id=_actor_id_from_request(request),
+            team_inbox_ai_polish_service.TeamInboxAIPolishCommand(
+                auth=getattr(request.state, "auth", None) or {},
+                actor_person_id=_actor_uuid_from_request(request),
+                conversation_id=conversation_id,
+                draft=payload.text,
+                requested_style=payload.style,
+                channel_context=payload.context,
+            ),
         )
-    except (AIEngineError, ValueError):
+    except team_inbox_ai_polish_service.TeamInboxAIPolishError as exc:
         return JSONResponse(
-            {"ok": False, "error": "Suggestion unavailable."},
+            {"ok": False, "error": exc.message, "code": exc.code.value},
             status_code=200,
         )
     except Exception:
@@ -1404,27 +1396,27 @@ def team_inbox_ai_polish(
             {"ok": False, "error": "Suggestion unavailable."},
             status_code=200,
         )
-    output = dict(insight.structured_output or {})
-    suggestion = str(output.get("suggested_text") or "").strip()
-    alternatives = output.get("alternatives")
-    if not suggestion:
-        return JSONResponse(
-            {"ok": False, "error": "Suggestion unavailable."},
-            status_code=200,
-        )
     return JSONResponse(
         {
             "ok": True,
-            "suggested_text": suggestion,
-            "alternatives": (
-                [str(value) for value in alternatives[:2]]
-                if isinstance(alternatives, list)
-                else []
-            ),
+            "suggestion": result.suggestion,
+            "suggested_text": result.suggestion,
+            "detected_mood": result.detected_mood.value,
+            "recommended_tone": result.recommended_tone,
+            "reason": result.reason,
+            "warnings": [
+                {"code": warning.code.value, "message": warning.message}
+                for warning in result.warnings
+            ],
+            "facts_preserved": result.facts_preserved,
+            "suggestion_ready": result.suggestion_ready,
+            "original_draft": result.original_draft,
             "meta": {
-                "provider": insight.llm_provider,
-                "model": insight.llm_model,
-                "endpoint": insight.llm_endpoint,
+                "provider": result.provider,
+                "model": result.model,
+                "endpoint": result.endpoint,
+                "insight_id": str(result.insight_id) if result.insight_id else None,
+                "context_fingerprint": result.context_fingerprint,
             },
         }
     )

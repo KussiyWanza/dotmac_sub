@@ -41,6 +41,7 @@ combined Inbox/Support workspace.
 | Outbound communication intent | `communications.team_inbox_outbound_intents` | Stages the intent, notification outbox record, and Inbox attempt together |
 | Provider receipts | `communications.team_inbox_delivery_receipts` | Applies timestamp-monotonic sent/delivered/read/failed projections |
 | Operator mutations | `communications.team_inbox_commands` | Coordinates one typed owner transaction for replies and collaboration actions |
+| Composer AI polish | `communications.team_inbox_ai_polish` | Coordinates review-only, context-aware polishing of unsent staff drafts through the existing Team Inbox projection and AI generation owner |
 | Visitor chat mutations | `communications.team_inbox_widget` | Owns authenticated portal and anonymous fiber-site widget session, message, read, and satisfaction commands; anonymous identity is exact-match or Party-backed prospect with ambiguity held for review |
 | List/detail/metrics/actions, media, and location presentation | `communications.team_inbox_projection` | Normalizes filters, sort and pagination, computes KPIs, unread and action eligibility, resolves safe inline-image versus download-only media presentation, and maps validated structured coordinates to Google Maps links |
 | Repair jobs | `communications.team_inbox_maintenance` | Rebuilds media worklists, retries failed intents, and applies stale-conversation policy |
@@ -121,6 +122,15 @@ in one owner transaction. Dispatch occurs after commit through the canonical
 notification delivery point. SMTP, WhatsApp, and social integrations translate
 the intent and later return normalized receipt observations; they cannot change
 conversation or ticket lifecycle state.
+
+AI Polish is outside outbound delivery. It reads the bounded Team Inbox reply
+projection, labels customer and agent excerpts as untrusted quoted content,
+applies configurable support voice and protected safety instructions, and
+returns only a staff-reviewed composer suggestion. It excludes private notes,
+DOB, gender, credentials, delivery receipts and audit events. It may infer a
+temporary mood/tone for the current request, but that metadata is not written to
+the conversation or customer profile. Accepting a suggestion updates only the
+unsent browser composer; sending remains owned by `communications.team_inbox_commands`.
 
 Operator-initiated conversations use the same command boundary. The opening
 message retains approved WhatsApp template identity and submitted provider
