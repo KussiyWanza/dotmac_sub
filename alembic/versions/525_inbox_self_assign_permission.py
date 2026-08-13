@@ -1,7 +1,7 @@
 """Add self-assign permission for Team Inbox.
 
-Revision ID: 524_inbox_self_assign_permission
-Revises: 523_domain_settings_tenant_fk
+Revision ID: 525_inbox_self_assign_permission
+Revises: 524_network_map_v2_asset_proposals
 Create Date: 2026-08-12
 """
 
@@ -15,8 +15,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "524_inbox_self_assign_permission"
-down_revision: str | None = "523_domain_settings_tenant_fk"
+revision: str = "525_inbox_self_assign_permission"
+down_revision: str | None = "524_network_map_v2_asset_proposals"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
