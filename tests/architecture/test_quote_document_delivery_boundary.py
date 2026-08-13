@@ -138,7 +138,8 @@ def test_quote_email_reuses_typed_payment_eligibility_and_pdf_url():
     assert "snapshot.payment.paystack_url" in delivery
     assert 'f"/portal/quotes/{' not in delivery
     assert "render_quote_email(" in delivery
-    assert '("quote_payment_url", content.payment_url)' in delivery
+    assert 'metadata.append(("quote_payment_url", content.payment_url))' in delivery
+    assert 'metadata.append(("quote_payment_mode", "bank_transfer"))' in delivery
     assert "CommunicationAttachmentKind.quote_pdf" in delivery
 
 

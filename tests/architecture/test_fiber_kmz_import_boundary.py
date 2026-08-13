@@ -2,6 +2,8 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 IMPORTER = PROJECT_ROOT / "scripts" / "network" / "import_fiber_kmz.py"
+CRM_IMPORTER = PROJECT_ROOT / "scripts" / "network" / "stage_crm_network_map.py"
+CRM_SOURCE = PROJECT_ROOT / "app" / "services" / "network" / "crm_network_map_source.py"
 STAGING_OWNER = (
     PROJECT_ROOT / "app" / "services" / "network" / "fiber_topology_staging.py"
 )
@@ -94,6 +96,29 @@ def test_legacy_kmz_importer_is_preview_only() -> None:
     assert ".delete(" not in source
     assert ".commit(" not in source
     assert "db.rollback()" in source
+
+
+def test_crm_map_importer_can_only_delegate_staging_evidence() -> None:
+    importer = CRM_IMPORTER.read_text(encoding="utf-8")
+    source = CRM_SOURCE.read_text(encoding="utf-8")
+
+    assert "stage_fiber_preview_batch(" in importer
+    assert 'canonical_asset_writes": 0' in importer
+    assert ".commit(" not in importer
+    assert ".delete(" not in importer
+    assert "SessionLocal" not in source
+    assert ".commit(" not in source
+    assert ".delete(" not in source
+    for constructor in (
+        "FdhCabinet(",
+        "FiberAccessPoint(",
+        "FiberSegment(",
+        "FiberSpliceClosure(",
+        "ServiceBuilding(",
+        "OLTDevice(",
+    ):
+        assert constructor not in importer
+        assert constructor not in source
 
 
 def test_staging_owner_cannot_construct_or_delete_canonical_assets() -> None:

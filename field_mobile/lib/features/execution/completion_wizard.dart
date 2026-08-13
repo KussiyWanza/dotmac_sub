@@ -60,7 +60,6 @@ class _CompletionWizardState extends ConsumerState<CompletionWizard> {
   final _signature = SignaturePadController();
   final _signerName = TextEditingController();
   final _fallbackReason = TextEditingController();
-  final _serial = TextEditingController();
   final _summary = TextEditingController();
   bool _finishing = false;
   String _finishError = '';
@@ -115,7 +114,6 @@ class _CompletionWizardState extends ConsumerState<CompletionWizard> {
   void dispose() {
     _signerName.dispose();
     _fallbackReason.dispose();
-    _serial.dispose();
     _summary.dispose();
     super.dispose();
   }
@@ -150,18 +148,6 @@ class _CompletionWizardState extends ConsumerState<CompletionWizard> {
       await ref.read(signatureSinkProvider)(
         workOrderId: widget.jobId,
         png: png,
-      );
-    }
-    if (_serial.text.trim().isNotEmpty) {
-      // Record the installed ONT through the dedicated equipment endpoint,
-      // which links it to the subscriber + work order (not a free-text note).
-      await sync.enqueue(
-        kind: 'equipment',
-        clientRef: 'equip-${DateTime.now().microsecondsSinceEpoch}',
-        payload: {
-          'work_order_id': widget.jobId,
-          'serial_number': _serial.text.trim(),
-        },
       );
     }
     // Push evidence (photos + signature) up first so the complete transition
@@ -225,6 +211,7 @@ class _CompletionWizardState extends ConsumerState<CompletionWizard> {
         padding: const EdgeInsets.all(16),
         child: switch (_step) {
           0 => _ChecklistStep(
+            requirements: completion.requirements,
             done: completion.checklistDone,
             onChanged: (value) =>
                 _update((s) => s.copyWith(checklistDone: value)),
@@ -251,7 +238,6 @@ class _CompletionWizardState extends ConsumerState<CompletionWizard> {
             signature: _signature,
             signerName: _signerName,
             fallbackReason: _fallbackReason,
-            serial: _serial,
             onSigned: () => _update(
               (s) => s.copyWith(
                 hasSignature: widget.hasExistingSignature || _signature.hasInk,
@@ -341,8 +327,13 @@ class _CompletionWizardState extends ConsumerState<CompletionWizard> {
 }
 
 class _ChecklistStep extends StatelessWidget {
-  const _ChecklistStep({required this.done, required this.onChanged});
+  const _ChecklistStep({
+    required this.requirements,
+    required this.done,
+    required this.onChanged,
+  });
 
+  final JobCompletionRequirements requirements;
   final bool done;
   final ValueChanged<bool> onChanged;
 
@@ -350,6 +341,42 @@ class _ChecklistStep extends StatelessWidget {
   Widget build(BuildContext context) {
     return ListView(
       children: [
+        Text(
+          'Before you finish',
+          style: Theme.of(context).textTheme.titleMedium,
+        ),
+        const SizedBox(height: 8),
+        Card(
+          key: const Key('completion-prerequisites'),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Required evidence',
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+                const SizedBox(height: 8),
+                _Prerequisite(
+                  required: requirements.minimumPhotoCount > 0,
+                  label: requirements.minimumPhotoCount > 0
+                      ? 'At least ${requirements.minimumPhotoCount} work photo${requirements.minimumPhotoCount == 1 ? '' : 's'}'
+                      : 'Work photos are optional',
+                ),
+                _Prerequisite(
+                  required: requirements.customerSignoffRequired,
+                  label: requirements.customerSignoffRequired
+                      ? requirements.signatureUnavailableReasonAllowed
+                            ? 'Customer signature, or an explanation when unavailable'
+                            : 'Customer signature'
+                      : 'Customer sign-off is optional',
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
         Text(
           'Quality checklist',
           style: Theme.of(context).textTheme.titleMedium,
@@ -367,6 +394,29 @@ class _ChecklistStep extends StatelessWidget {
       ],
     );
   }
+}
+
+class _Prerequisite extends StatelessWidget {
+  const _Prerequisite({required this.required, required this.label});
+
+  final bool required;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 4),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(
+          required ? Icons.check_circle_outline : Icons.info_outline,
+          size: 20,
+        ),
+        const SizedBox(width: 8),
+        Expanded(child: Text(label)),
+      ],
+    ),
+  );
 }
 
 class _EvidenceStep extends StatelessWidget {
@@ -468,7 +518,6 @@ class _SignOffStep extends StatelessWidget {
     required this.signature,
     required this.signerName,
     required this.fallbackReason,
-    required this.serial,
     required this.onSigned,
     required this.onFallbackChanged,
     required this.onSignerChanged,
@@ -480,7 +529,6 @@ class _SignOffStep extends StatelessWidget {
   final SignaturePadController signature;
   final TextEditingController signerName;
   final TextEditingController fallbackReason;
-  final TextEditingController serial;
   final VoidCallback onSigned;
   final ValueChanged<String> onFallbackChanged;
   final ValueChanged<String> onSignerChanged;
@@ -522,14 +570,6 @@ class _SignOffStep extends StatelessWidget {
             onChanged: onFallbackChanged,
           ),
         ],
-        const SizedBox(height: 16),
-        TextField(
-          key: const Key('equipment-serial'),
-          controller: serial,
-          decoration: const InputDecoration(
-            labelText: 'Installed ONT serial (optional)',
-          ),
-        ),
       ],
     );
   }

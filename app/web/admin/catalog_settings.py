@@ -18,7 +18,10 @@ from starlette.datastructures import FormData
 
 from app.csrf import get_csrf_token
 from app.db import finish_read_transaction, form_write, get_db
-from app.schemas.plan_family_catalogue import PublishPlanFamilyCatalogueCommand
+from app.schemas.plan_family_catalogue import (
+    ConfigurePlanFamilyCataloguesCommand,
+    PublishPlanFamilyCatalogueCommand,
+)
 from app.services import web_catalog_settings as settings_svc
 from app.services.auth_dependencies import require_permission
 from app.services.catalog import plan_family_catalogues
@@ -143,6 +146,46 @@ def plan_catalogues_list(
             error=message if status == "error" else None,
             success=message if status == "success" else None,
         ),
+    )
+
+
+@router.post(
+    "/catalogues/families",
+    dependencies=[Depends(require_permission("catalog:write"))],
+)
+def plan_catalogue_families_configure(
+    request: Request,
+    plan_families: str = Form(...),
+    db: Session = Depends(get_db),
+) -> Response:
+    """Persist the plan families that may receive a catalogue PDF."""
+
+    try:
+        actor_id = _system_user_id(request)
+        finish_read_transaction(db)
+        outcome = plan_family_catalogues.configure_plan_families(
+            db,
+            ConfigurePlanFamilyCataloguesCommand(
+                context=CommandContext.system(
+                    actor=f"system_user:{actor_id}",
+                    scope="catalog:write",
+                    reason="configure plan-family catalogue vocabulary",
+                    idempotency_key=f"plan-family-catalogues:{uuid4()}",
+                ),
+                plan_families=tuple(plan_families.replace("\n", ",").split(",")),
+                actor_system_user_id=actor_id,
+            ),
+        )
+    except plan_family_catalogues.PlanFamilyCatalogueError as exc:
+        return templates.TemplateResponse(
+            "admin/catalog/settings/catalogues.html",
+            _catalogues_context(request, db, error=exc.message),
+            status_code=400,
+        )
+    return RedirectResponse(
+        "/admin/catalog/settings/catalogues"
+        f"?status=success&message={quote_plus(f'{len(outcome.plan_families)} plan families saved')}",
+        status_code=303,
     )
 
 

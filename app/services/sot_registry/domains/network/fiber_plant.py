@@ -21,6 +21,107 @@ from app.services.sot_manifest import (
 
 SERVICES: tuple[SOTService, ...] = (
     SOTService(
+        name="network.crm_map_source",
+        module="app.services.network.crm_network_map_source",
+        owns=(
+            "isolated CRM Network Map archive schema validation",
+            "deterministic CRM Network Map extraction and conflict evidence",
+        ),
+        notes=(
+            "CRM is an external observation, never a Selfcare writer. The reader "
+            "accepts only an isolated test/restore database, validates the exact "
+            "selective archive contract, and emits bounded deterministic inputs "
+            "for network.fiber_source_staging. OLT rows remain comparison-only "
+            "because Selfcare network inventory owns OLT identity."
+        ),
+        contract=ServiceContract(
+            concerns=(
+                ConcernContract(
+                    name="isolated CRM Network Map archive schema validation",
+                    role=OwnerRole.RESOLVER,
+                    input_names=("CRM Network Map archive observation",),
+                ),
+                ConcernContract(
+                    name=(
+                        "deterministic CRM Network Map extraction and conflict evidence"
+                    ),
+                    role=OwnerRole.RESOLVER,
+                    input_names=("CRM Network Map archive observation",),
+                ),
+            ),
+            authoritative_inputs=(
+                AuthorityInput(
+                    name="CRM Network Map archive observation",
+                    owner="external:dotmac_crm",
+                    kind=AuthorityKind.EXTERNAL_OBSERVATION,
+                    source=(
+                        "Checksum-bound PostgreSQL custom archive restored into an "
+                        "isolated database with the approved selective table set"
+                    ),
+                ),
+            ),
+            transaction=TransactionContract(
+                mode=TransactionMode.READ_ONLY,
+                boundary=(
+                    "One repeatable-read, PostgreSQL read-only source transaction "
+                    "validates and extracts the complete archive cohort. Selfcare "
+                    "staging transactions remain owned separately by "
+                    "network.fiber_source_staging."
+                ),
+                locking=(
+                    "The restored source is immutable and mounted read-only; no "
+                    "source or Selfcare row lock is taken by this resolver."
+                ),
+                idempotency=(
+                    "Identical archive bytes and restored rows produce identical "
+                    "ordered KML bytes, feature hashes, manifests, and batch plans."
+                ),
+                retries=(
+                    "Read or schema failures write nothing and may be retried only "
+                    "against the same confirmed archive digest."
+                ),
+            ),
+            errors=ErrorContract(
+                domain_codes=(
+                    "network.crm_map_source.invalid_archive_digest",
+                    "network.crm_map_source.unsafe_source_database",
+                    "network.crm_map_source.missing_archive_tables",
+                    "network.crm_map_source.missing_archive_columns",
+                    "network.crm_map_source.invalid_batch_size",
+                ),
+                mapping_owner="scripts.network.stage_crm_network_map",
+                fail_closed_on=(
+                    "archive digest mismatch",
+                    "non-isolated source database",
+                    "missing source schema",
+                    "invalid or missing geometry",
+                ),
+            ),
+            migration=MigrationContract(
+                state=AuthorityMigrationState.NATIVE,
+                new_owner="network.crm_map_source",
+                verification=(
+                    "Archive checksum, restore schema, active-row counts, geometry, "
+                    "global match classifications, and batch manifests agree."
+                ),
+                cutover_gate=(
+                    "No canonical cutover is owned here; reviewed identity and "
+                    "connectivity owners must independently pass their gates."
+                ),
+                fallback_retirement=(
+                    "One-off KML generation and runtime profile mutation are not "
+                    "approved fallbacks and cannot be used after this reader ships."
+                ),
+            ),
+            steward="network operations",
+            design_refs=("docs/runbooks/CRM_NETWORK_MAP_MIGRATION.md",),
+            test_refs=(
+                "tests/test_crm_network_map_source.py",
+                "tests/architecture/test_fiber_kmz_import_boundary.py",
+            ),
+        ),
+    ),
+    SOTService(
         name="network.fiber_source_staging",
         module="app.services.network.fiber_topology_staging",
         owns=(
@@ -28,7 +129,7 @@ SERVICES: tuple[SOTService, ...] = (
             "normalized staged fiber source facts",
             "non-authoritative duplicate and canonical-match suggestions",
         ),
-        depends_on=("gis.spatial_sync",),
+        depends_on=("gis.spatial_sync", "network.crm_map_source"),
         notes=(
             "Staged map rows are observations with provenance. Match "
             "suggestions never mutate or retire canonical assets."

@@ -49,6 +49,7 @@ class FiberSourceProfile:
     external_id_key: str
     expected_geometry_type: str
     display_name_keys: tuple[str, ...]
+    source_system: str = SOURCE_SYSTEM
 
 
 SOURCE_PROFILES: dict[str, FiberSourceProfile] = {
@@ -99,6 +100,51 @@ SOURCE_PROFILES: dict[str, FiberSourceProfile] = {
         external_id_key="poleid",
         expected_geometry_type="Point",
         display_name_keys=("name",),
+    ),
+    "crm_fdh_cabinets": FiberSourceProfile(
+        name="crm_fdh_cabinets",
+        default_filename="crm_fdh_cabinets.kml",
+        asset_type="fdh_cabinet",
+        external_id_key="crm_id",
+        expected_geometry_type="Point",
+        display_name_keys=("name", "code", "crm_id"),
+        source_system="dotmac_crm_fiber_map",
+    ),
+    "crm_access_points": FiberSourceProfile(
+        name="crm_access_points",
+        default_filename="crm_access_points.kml",
+        asset_type="fiber_access_point",
+        external_id_key="crm_id",
+        expected_geometry_type="Point",
+        display_name_keys=("name", "code", "crm_id"),
+        source_system="dotmac_crm_fiber_map",
+    ),
+    "crm_splice_closures": FiberSourceProfile(
+        name="crm_splice_closures",
+        default_filename="crm_splice_closures.kml",
+        asset_type="splice_closure",
+        external_id_key="crm_id",
+        expected_geometry_type="Point",
+        display_name_keys=("name", "crm_id"),
+        source_system="dotmac_crm_fiber_map",
+    ),
+    "crm_fiber_segments": FiberSourceProfile(
+        name="crm_fiber_segments",
+        default_filename="crm_fiber_segments.kml",
+        asset_type="fiber_segment",
+        external_id_key="crm_id",
+        expected_geometry_type="LineString",
+        display_name_keys=("name", "crm_id"),
+        source_system="dotmac_crm_fiber_map",
+    ),
+    "crm_service_buildings": FiberSourceProfile(
+        name="crm_service_buildings",
+        default_filename="crm_service_buildings.kml",
+        asset_type="service_building",
+        external_id_key="crm_id",
+        expected_geometry_type="Point",
+        display_name_keys=("name", "code", "crm_id"),
+        source_system="dotmac_crm_fiber_map",
     ),
 }
 
@@ -454,7 +500,7 @@ def _prior_features(
             FiberTopologySourceBatch.id == FiberTopologyStagedFeature.batch_id,
         )
         .where(
-            FiberTopologySourceBatch.source_system == SOURCE_SYSTEM,
+            FiberTopologySourceBatch.source_system == profile.source_system,
             FiberTopologySourceBatch.profile == profile.name,
             FiberTopologyStagedFeature.asset_type == profile.asset_type,
             FiberTopologyStagedFeature.external_id.is_not(None),
@@ -591,7 +637,7 @@ def preview_fiber_source(
     )
     plans = _plan_features(db, profile, parsed)
     return FiberSourcePreview(
-        source_system=SOURCE_SYSTEM,
+        source_system=profile.source_system,
         profile=profile,
         source_name=source_path.name,
         file_sha256=_sha256_bytes(raw),
@@ -617,52 +663,76 @@ def _stage_result(batch: FiberTopologySourceBatch, *, created: bool):
     )
 
 
-def stage_fiber_source(
+def _manifest_sha256(plans: tuple[FiberFeatureMatchPlan, ...]) -> str:
+    return _sha256_json(
+        sorted(
+            [
+                {
+                    "external_id": plan.feature.external_id,
+                    "content_sha256": plan.feature.content_sha256,
+                }
+                for plan in plans
+            ],
+            key=lambda row: (
+                _normalized_key(row["external_id"]),
+                row["content_sha256"],
+            ),
+        )
+    )
+
+
+def _persist_preview(
     db: Session,
-    path: str | Path,
-    profile_name: str,
+    preview: FiberSourcePreview,
     *,
+    plans: tuple[FiberFeatureMatchPlan, ...],
+    source_name: str,
     created_by: str,
+    source_metadata: dict | None = None,
 ) -> FiberSourceStageResult:
-    """Persist an immutable source snapshot; never mutate canonical assets."""
-    actor = created_by.strip()
-    if not actor:
-        raise ValueError("created_by is required for staged topology evidence")
-    preview = preview_fiber_source(db, path, profile_name)
+    manifest_sha256 = _manifest_sha256(plans)
     existing = db.scalar(
         select(FiberTopologySourceBatch).where(
             FiberTopologySourceBatch.source_system == preview.source_system,
             FiberTopologySourceBatch.profile == preview.profile.name,
-            FiberTopologySourceBatch.manifest_sha256 == preview.manifest_sha256,
+            FiberTopologySourceBatch.manifest_sha256 == manifest_sha256,
         )
     )
     if existing is not None:
         return _stage_result(existing, created=False)
 
+    status_counts = Counter(plan.match_status for plan in plans)
+    blocker_count = status_counts.get("blocked", 0)
+    candidate_count = sum(
+        status_counts.get(status, 0)
+        for status in ("exact_external", "candidate", "ambiguous")
+    )
+    metadata = {
+        "normalization_version": NORMALIZATION_VERSION,
+        "kml_entry_name": preview.kml_entry_name,
+        "expected_geometry_type": preview.profile.expected_geometry_type,
+        **(source_metadata or {}),
+    }
     batch = FiberTopologySourceBatch(
         source_system=preview.source_system,
         profile=preview.profile.name,
-        source_name=preview.source_name,
+        source_name=source_name,
         asset_type=preview.profile.asset_type,
         external_id_key=preview.profile.external_id_key,
         file_sha256=preview.file_sha256,
-        manifest_sha256=preview.manifest_sha256,
-        status="blocked" if preview.blocker_count else "staged",
-        feature_count=preview.feature_count,
-        blocker_count=preview.blocker_count,
-        candidate_count=preview.candidate_count,
-        unchanged_count=preview.status_counts.get("unchanged", 0),
-        new_count=preview.status_counts.get("new", 0),
-        source_metadata={
-            "normalization_version": NORMALIZATION_VERSION,
-            "kml_entry_name": preview.kml_entry_name,
-            "expected_geometry_type": preview.profile.expected_geometry_type,
-        },
-        created_by=actor,
+        manifest_sha256=manifest_sha256,
+        status="blocked" if blocker_count else "staged",
+        feature_count=len(plans),
+        blocker_count=blocker_count,
+        candidate_count=candidate_count,
+        unchanged_count=status_counts.get("unchanged", 0),
+        new_count=status_counts.get("new", 0),
+        source_metadata=metadata,
+        created_by=created_by,
     )
     db.add(batch)
     db.flush()
-    for plan in preview.features:
+    for plan in plans:
         feature = plan.feature
         db.add(
             FiberTopologyStagedFeature(
@@ -693,7 +763,7 @@ def stage_fiber_source(
             select(FiberTopologySourceBatch).where(
                 FiberTopologySourceBatch.source_system == preview.source_system,
                 FiberTopologySourceBatch.profile == preview.profile.name,
-                FiberTopologySourceBatch.manifest_sha256 == preview.manifest_sha256,
+                FiberTopologySourceBatch.manifest_sha256 == manifest_sha256,
             )
         )
         if existing is None:
@@ -701,6 +771,59 @@ def stage_fiber_source(
         return _stage_result(existing, created=False)
     db.refresh(batch)
     return _stage_result(batch, created=True)
+
+
+def stage_fiber_preview_batch(
+    db: Session,
+    preview: FiberSourcePreview,
+    *,
+    start: int,
+    stop: int,
+    source_name: str,
+    created_by: str,
+    source_metadata: dict | None = None,
+) -> FiberSourceStageResult:
+    """Persist one bounded slice using the full-source match classification."""
+
+    actor = created_by.strip()
+    if not actor:
+        raise ValueError("created_by is required for staged topology evidence")
+    if start < 0 or stop <= start or stop > preview.feature_count:
+        raise ValueError("preview batch bounds are invalid")
+    return _persist_preview(
+        db,
+        preview,
+        plans=preview.features[start:stop],
+        source_name=source_name,
+        created_by=actor,
+        source_metadata={
+            "full_manifest_sha256": preview.manifest_sha256,
+            "batch_start": start + 1,
+            "batch_stop": stop,
+            **(source_metadata or {}),
+        },
+    )
+
+
+def stage_fiber_source(
+    db: Session,
+    path: str | Path,
+    profile_name: str,
+    *,
+    created_by: str,
+) -> FiberSourceStageResult:
+    """Persist an immutable source snapshot; never mutate canonical assets."""
+    actor = created_by.strip()
+    if not actor:
+        raise ValueError("created_by is required for staged topology evidence")
+    preview = preview_fiber_source(db, path, profile_name)
+    return _persist_preview(
+        db,
+        preview,
+        plans=preview.features,
+        source_name=preview.source_name,
+        created_by=actor,
+    )
 
 
 __all__ = [
@@ -711,5 +834,6 @@ __all__ = [
     "SOURCE_PROFILES",
     "preview_fiber_source",
     "source_profile",
+    "stage_fiber_preview_batch",
     "stage_fiber_source",
 ]

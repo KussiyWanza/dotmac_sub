@@ -89,6 +89,7 @@ SCHEDULER_BOOLEAN_SETTING_KEYS = frozenset(
         (SettingDomain.billing, "stale_overdue_lock_detect_enabled"),
         (SettingDomain.catalog, "nas_backup_retention_enabled"),
         (SettingDomain.comms, "oauth_token_refresh_enabled"),
+        (SettingDomain.comms, "inbox_queue_notification_processor_enabled"),
         (SettingDomain.network_monitoring, "infra_availability_prune_enabled"),
         (SettingDomain.network_monitoring, "infra_availability_snapshot_enabled"),
         (SettingDomain.notification, "ncc_report_email_enabled"),
@@ -120,6 +121,8 @@ SCHEDULER_ENV_BOOTSTRAP_SETTING_KEYS = frozenset(
         (SettingDomain.collections, "billing_notifications_interval_seconds"),
         (SettingDomain.collections, "dunning_interval_seconds"),
         (SettingDomain.comms, "campaign_processing_interval_seconds"),
+        (SettingDomain.comms, "ai_intake_processing_interval_seconds"),
+        (SettingDomain.comms, "inbox_queue_notification_scan_interval_seconds"),
         (SettingDomain.gis, "sync_interval_minutes"),
         (
             SettingDomain.integration,
@@ -3841,6 +3844,44 @@ SETTINGS_SPECS: list[SettingSpec] = [
         default=30,
         min_value=1,
     ),
+    SettingSpec(
+        domain=SettingDomain.comms,
+        key="inbox_agent_default_max_concurrent_conversations",
+        env_var="INBOX_AGENT_DEFAULT_MAX_CONCURRENT_CONVERSATIONS",
+        value_type=SettingValueType.integer,
+        default=10,
+        min_value=1,
+        max_value=100,
+        label="Default active Inbox conversations per agent",
+    ),
+    SettingSpec(
+        domain=SettingDomain.comms,
+        key="ai_intake_processing_interval_seconds",
+        env_var="AI_INTAKE_PROCESSING_INTERVAL_SECONDS",
+        value_type=SettingValueType.integer,
+        default=60,
+        min_value=10,
+        max_value=3600,
+        label="AI intake session processing interval",
+    ),
+    SettingSpec(
+        domain=SettingDomain.comms,
+        key="inbox_queue_notification_processor_enabled",
+        env_var="INBOX_QUEUE_NOTIFICATION_PROCESSOR_ENABLED",
+        value_type=SettingValueType.boolean,
+        default=True,
+        label="Team Inbox queue-notification processor enabled",
+    ),
+    SettingSpec(
+        domain=SettingDomain.comms,
+        key="inbox_queue_notification_scan_interval_seconds",
+        env_var="INBOX_QUEUE_NOTIFICATION_SCAN_INTERVAL_SECONDS",
+        value_type=SettingValueType.integer,
+        default=60,
+        min_value=10,
+        max_value=3600,
+        label="Team Inbox queue-notification due-work scan interval",
+    ),
     # ============== Notification Domain: Email Settings ==============
     SettingSpec(
         domain=SettingDomain.notification,
@@ -4384,6 +4425,33 @@ SETTINGS_SPECS: list[SettingSpec] = [
         value_type=SettingValueType.boolean,
         default=False,
         label="AI inbox reply drafting and text polish enabled",
+    ),
+    SettingSpec(
+        domain=SettingDomain.integration,
+        key="inbox_ai_polish_business_voice",
+        env_var=None,
+        value_type=SettingValueType.string,
+        default=(
+            "Business casual, empathetic, smart and concise. Use clear English "
+            "suitable for Nigerian ISP customers without forced slang. Stay calm "
+            "during faults and complaints, direct during urgent incidents, patient "
+            "when customers are confused, and warm when customers are appreciative. "
+            "Never sound dismissive or defensive."
+        ),
+        label="Team Inbox AI polish business voice",
+    ),
+    SettingSpec(
+        domain=SettingDomain.integration,
+        key="inbox_ai_polish_channel_guidance",
+        env_var=None,
+        value_type=SettingValueType.string,
+        default=(
+            "WhatsApp, Messenger and Instagram DMs should be concise and natural. "
+            "Email should be structured, professional and complete. Public "
+            "comments should be brief, privacy-safe, and move account-specific "
+            "help to DM or an approved private support channel."
+        ),
+        label="Team Inbox AI polish channel guidance",
     ),
     SettingSpec(
         domain=SettingDomain.integration,

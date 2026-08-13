@@ -127,7 +127,33 @@ def test_assign_conversation_escalates_to_team_and_online_agent(db_session):
     assert event.decision_mode is InboxRoutingDecisionMode.automatic
     assert event.presence_status == InboxAgentPresenceStatus.online.value
     assert event.active_conversation_count == 0
-    assert event.max_concurrent_conversations == 3
+    assert event.max_concurrent_conversations == 10
+
+
+def test_auto_assignment_uses_durable_round_robin_cursor(db_session):
+    team = _team(db_session, "Round Robin")
+    first_agent = _member(db_session, team)
+    second_agent = _member(db_session, team)
+    first = _conversation(db_session)
+    second = _conversation(db_session)
+    db_session.commit()
+
+    first_result = team_inbox_assignment.assign_conversation_to_available_agent(
+        db_session,
+        conversation=first,
+        service_team_id=team.id,
+    )
+    second_result = team_inbox_assignment.assign_conversation_to_available_agent(
+        db_session,
+        conversation=second,
+        service_team_id=team.id,
+    )
+    db_session.commit()
+
+    assert {first_result.assigned_person_id, second_result.assigned_person_id} == {
+        str(first_agent),
+        str(second_agent),
+    }
 
 
 def test_assign_conversation_to_me_does_not_require_team_membership(db_session):

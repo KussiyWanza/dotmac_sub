@@ -39,8 +39,10 @@ combined Inbox/Support workspace.
 | Lifecycle audit timeline and drift | `communications.team_inbox_audit_projection` | Combines immutable evidence, exposes coverage, and reports current-state drift |
 | Operator read/unread state | `communications.team_inbox_operator_state` | Owns per-person monotonic read cursors and unread repair |
 | Outbound communication intent | `communications.team_inbox_outbound_intents` | Stages the intent, notification outbox record, and Inbox attempt together |
+| Meta free-form reply window | `communications.team_inbox_reply_window` | Determines WhatsApp, Facebook Messenger, and Instagram DM free-form reply eligibility from qualifying inbound customer message chronology |
 | Provider receipts | `communications.team_inbox_delivery_receipts` | Applies timestamp-monotonic sent/delivered/read/failed projections |
 | Operator mutations | `communications.team_inbox_commands` | Coordinates one typed owner transaction for replies and collaboration actions |
+| Composer AI polish | `communications.team_inbox_ai_polish` | Coordinates review-only, context-aware polishing of unsent staff drafts through the existing Team Inbox projection and AI generation owner |
 | Visitor chat mutations | `communications.team_inbox_widget` | Owns authenticated portal and anonymous fiber-site widget session, message, read, and satisfaction commands; anonymous identity is exact-match or Party-backed prospect with ambiguity held for review |
 | List/detail/metrics/actions, media, and location presentation | `communications.team_inbox_projection` | Normalizes filters, sort and pagination, computes KPIs, unread and action eligibility, resolves safe inline-image versus download-only media presentation, and maps validated structured coordinates to Google Maps links |
 | Repair jobs | `communications.team_inbox_maintenance` | Rebuilds media worklists, retries failed intents, and applies stale-conversation policy |
@@ -51,6 +53,10 @@ combined Inbox/Support workspace.
 Campaign materialization remains the flush-only
 `communications.team_inbox_campaigns` participant under the campaign and
 outbound-intent owners.
+
+The Inbox **All** status filter is the active operational queue and excludes
+resolved conversations. The explicit **Done** filter is the resolved-history
+view.
 
 ## Inbound flow and idempotency
 
@@ -113,6 +119,24 @@ durably settles invalid or already-assigned entries. The agent projection
 derives current FIFO rank and an estimated wait from that ledger and the live
 capacity snapshot; it never makes a routing decision.
 
+Automatic assignment uses `inbox_team_round_robin_cursors`, one durable cursor
+per service team. The routing owner locks the team and cursor, builds the
+eligible online candidate list, skips inactive/offline/full agents, advances
+the cursor only inside the assignment transaction, and records routing evidence
+with candidate capacity details. The default capacity is ten active
+conversations per agent unless `InboxAgentPresence.max_concurrent_conversations`
+overrides it. Capacity counts active human assignments on `open`, human-owned
+`pending`, and `snoozed` conversations while ownership remains active. It
+excludes resolved conversations and unassigned AI-pending conversations.
+
+Queue communication is also owned by Team Inbox routing. `inbox_queue_notifications`
+records initial position notices, movement updates, fifteen-minute unchanged
+heartbeats, handoff notices, dedupe keys, delivery outcome and outbound message
+links. Customer-visible queue messages are sent only through Team Inbox
+outbound intents and only for WhatsApp, Facebook Messenger and Instagram DM.
+Queue messages never invent estimated wait times. Promotion, transfer,
+resolution, cancellation or assignment stops further queue updates.
+
 ## Outbound flow
 
 An operator command locks the active conversation and records a communication
@@ -121,6 +145,43 @@ in one owner transaction. Dispatch occurs after commit through the canonical
 notification delivery point. SMTP, WhatsApp, and social integrations translate
 the intent and later return normalized receipt observations; they cannot change
 conversation or ticket lifecycle state.
+
+AI Polish is outside outbound delivery. It reads the bounded Team Inbox reply
+projection, labels customer and agent excerpts as untrusted quoted content,
+applies configurable support voice and protected safety instructions, and
+returns only a staff-reviewed composer suggestion. It excludes private notes,
+DOB, gender, credentials, delivery receipts and audit events. It may infer a
+temporary mood/tone for the current request, but that metadata is not written to
+the conversation or customer profile. Accepting a suggestion updates only the
+unsent browser composer; sending remains owned by `communications.team_inbox_commands`.
+
+For operator replies, the committed outcome exposes the exact notification
+UUID to the HTTP transport. The adapter schedules an after-response single-row
+delivery task on the dedicated `notifications` worker queue, so broker latency
+does not hold the composer response open. The periodic notification runner
+remains the recovery sweep when broker publication or a worker is unavailable.
+Immediate tasks and sweeps both lock and claim the exact
+eligible outbox row before provider delivery, so concurrent wake-ups are safe
+no-ops rather than duplicate sends. Delivery changes publish only bounded
+message/conversation/status invalidations after commit; the Inbox refetches the
+authoritative projection and never treats realtime as delivery evidence.
+
+For WhatsApp, Facebook Messenger, and Instagram DM free-form replies,
+`communications.team_inbox_reply_window` is the backend policy owner. It derives
+the open window from the latest qualifying inbound customer message on the
+conversation chronology, never from staff replies, private notes, audit events,
+receipts, scheduled attempts, AI drafts, or failed outbound rows. The outbound
+intent owner rechecks the policy immediately before staging a provider-facing
+free-form send. Approved WhatsApp template sends use the existing template
+metadata path and do not reopen the free-form window unless a subsequent
+qualifying inbound customer message is recorded.
+
+Provider reply-window state is calculated, not stored as
+`InboxConversation.status`. The queue projection may filter and badge Meta
+conversations whose calculated state is `expired`; conversations with no
+reliable qualifying inbound timestamp remain `unavailable` and are not included
+in that filter. Workflow states such as open, pending, snoozed, and resolved
+remain owned only by `communications.team_inbox_status`.
 
 Operator-initiated conversations use the same command boundary. The opening
 message retains approved WhatsApp template identity and submitted provider
@@ -194,6 +255,7 @@ queue interval, or assignment ending timestamp. See
 | Operator unread | Message chronology plus per-person read cursor | operator-state owner | Set-based grouped queries recompute the projection; `rebuild_operator_read_state` removes impossible cross-conversation cursors |
 | Queue metrics and response cohorts | Conversation lifecycle, ordered message chronology, agent reply provenance/delivery, ticket handoff, assignment, and read state | projection query owner | Recompute on every query; no independent flag or counter is authoritative |
 | Customer context drawer | Exact Party/Subscriber/Lead links plus permission-scoped owner queries | contact-context query owner | Recompute on drawer load; per-section failures remain explicit and retryable |
+| Meta free-form reply-window eligibility | Conversation channel plus ordered qualifying inbound customer messages | reply-window policy owner | Recompute on every send attempt and detail projection; a new qualifying inbound customer message reopens the free-form path |
 | Realtime envelope | Current committed Inbox projection | realtime transport | `rebuild_conversation_projection` republishes a snapshot; clients refetch |
 | Media and failed worklists | Authoritative message/intent metadata | maintenance owner | Idempotent scheduled maintenance commands |
 | Structured location card | Validated latitude/longitude and optional name/address on authoritative message attachment metadata | projection query owner | Recompute on every query; an invalid or legacy coordinate-less location is unavailable and never receives a media-content URL. `communications.team_inbox_maintenance.repair_whatsapp_locations` can restore an explicitly scoped historical message only when a processed `integration.inbox` receipt names that exact message and retains valid structured coordinates |
@@ -214,6 +276,17 @@ stale. Realtime has no replay authority.
   definition, normalized filters, canonical URL, page bounds, KPIs, unread
   state, detail composition, action eligibility, and the typed browser
   presentation for authorized media content and structured locations.
+- Detail projection includes owner-provided Meta reply-window state. Templates
+  render countdown and expired-state actions from that projection only; browser
+  timers are presentation helpers and do not authorize a send.
+- Private notes are internal messages written by the operator command owner.
+  Mention metadata stores stable system-user identifiers, and internal mention
+  notifications use the existing notification owner with deterministic dedupe
+  keys. Private notes and mentions never create provider delivery intents.
+- Lifecycle activity appears as subtle inline system timeline entries ordered by
+  occurrence time with messages. The template must distinguish system entries
+  from customer, agent, and private-note messages and must not delete or rewrite
+  historical audit evidence to change presentation.
 - Media presentation uses the resolved response MIME type, not a filename or
   provider claim. JPEG, PNG, GIF, WebP, and AVIF may render inline; SVG,
   unknown, and non-image content remains download-only. The HTTP adapter maps
@@ -240,6 +313,10 @@ stale. Realtime has no replay authority.
 - Filters: search, status, channel, team, assignee, Unreplied, Needs Attention,
   AI handling, ticket handoff, activity window, contact resolution, priority,
   mute, snooze, open, unassigned, and unread.
+- Pagination uses the projection owner's exact filtered total and compact page
+  sequence. Conversation drill-down URLs preserve the active filters, sort,
+  page size, and page number; reply refreshes and non-HTMX mutation fallbacks
+  return to that same queue location rather than resetting to page one.
 - Advanced Service Team conditions use the shared JSON filter grammar, but the
   Inbox projection owns their typed allow-list and relationship semantics. The
   only advanced field is `InboxConversation.service_team_id`; `=`, `!=`, `in`,
@@ -254,8 +331,10 @@ stale. Realtime has no replay authority.
   exchange. `Needs Attention` means a customer message was followed by a
   successful human-agent reply and then a later customer follow-up without a
   subsequent successful human-agent reply.
-- A successful reply has an agent provenance identifier and a current delivery
-  state of queued, accepted, sent, delivered, read, or retried. Failed,
+- A submitted reply has an agent provenance identifier and a current delivery
+  state of queued, sending, accepted, sent, delivered, read, or retried. Only
+  provider-accepted `accepted`, `sent`, `delivered`, or `read` states establish
+  a successful agent delivery. Queued, sending, retried, failed,
   scheduled, AI-intake, and explicitly no-response-required messages do not
   establish the prior agent reply.
 - Outbound message bubbles resolve their saved `sent_by_person_id` against the
@@ -312,6 +391,15 @@ stale. Realtime has no replay authority.
   outcomes without independently deciding customer/contact identity or
   catalogue availability. See
   `docs/designs/INBOX_PLAN_CATALOGUE_SHARING.md`.
+- Pending incomplete-task assignment gate: conversational AI routing keeps the
+  existing Team Inbox assignment eligibility boundary and does not query
+  project, provisioning, CRM, or scheduling task tables directly. The blocking
+  rule still needs an approved source-of-truth decision naming the task domain
+  that owns incomplete work, whether the restriction is global or team-scoped,
+  the exact statuses that block assignment, whether the gate is settings-backed,
+  and the typed eligibility query that task owner will expose. Until that
+  decision is recorded, automatic assignment is limited to the existing online,
+  active-team-membership and conversation-capacity checks.
 
 ## Schema and migration
 

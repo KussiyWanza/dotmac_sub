@@ -189,18 +189,20 @@
 </div>
 {% else %}
 {% set outbound = dir == 'outbound' %}
+{% set ai_message = outbound and (metadata.get('sender_type') == 'ai' or metadata.get('author_type') == 'ai') %}
 {% set outbound_sender = message.sender if outbound and message.sender else none %}
-{% set outbound_sender_name = outbound_sender.display_name if outbound_sender else "Support agent" %}
-{% set outbound_sender_initials = outbound_sender.initials if outbound_sender else "AG" %}
+{% set outbound_sender_name = metadata.get('ai_display_name') if ai_message else (outbound_sender.display_name if outbound_sender else "Support agent") %}
+{% set outbound_sender_initials = "AI" if ai_message else (outbound_sender.initials if outbound_sender else "AG") %}
 <div class="flex items-end gap-2 {% if outbound %}justify-end{% endif %}">
     {% if not outbound %}<div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-slate-200 text-[10px] font-bold text-slate-600 dark:bg-slate-800 dark:text-slate-200">{{ (message.from_address or 'CU')[:2] | upper }}</div>{% endif %}
     <div class="max-w-[80%] min-w-0">
         <div class="mb-1 flex items-center gap-2 {% if outbound %}justify-end{% endif %}">
             <span class="text-[11px] font-medium text-slate-500 dark:text-slate-400">{{ outbound_sender_name if outbound else (message.from_address or "Customer") }}</span>
+            {% if ai_message %}<span class="rounded border border-cyan-300 bg-cyan-50 px-1.5 py-0.5 text-[10px] font-bold uppercase text-cyan-800 dark:border-cyan-700 dark:bg-cyan-950/40 dark:text-cyan-200" aria-label="AI generated message">AI</span>{% endif %}
             <time class="text-[11px] tabular-nums text-slate-400 dark:text-slate-500">{{ ts(message.sent_at or message.received_at or message.created_at) }}</time>
         </div>
         <div class="rounded-2xl px-3.5 py-2.5 text-[13px] leading-relaxed
-                    {% if outbound %}rounded-br-md border border-amber-200 bg-amber-50 text-slate-900 dark:border-amber-800/60 dark:bg-amber-950/25 dark:text-slate-100{% else %}rounded-bl-md border border-slate-200 bg-slate-100 text-slate-800 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100{% endif %}">
+                    {% if ai_message %}rounded-br-md border border-cyan-300 bg-cyan-50 text-slate-900 ring-1 ring-cyan-100 dark:border-cyan-700 dark:bg-cyan-950/30 dark:text-slate-100 dark:ring-cyan-900/40{% elif outbound %}rounded-br-md border border-amber-200 bg-amber-50 text-slate-900 dark:border-amber-800/60 dark:bg-amber-950/25 dark:text-slate-100{% else %}rounded-bl-md border border-slate-200 bg-slate-100 text-slate-800 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100{% endif %}">
             {% if metadata.get('reply_to') %}
             {% set reply = metadata.get('reply_to') %}
             <div class="mb-2 rounded-lg border-l-4 border-amber-400 bg-white/70 px-2.5 py-2 text-[11px] text-slate-600 dark:bg-slate-900/50 dark:text-slate-300">
@@ -257,7 +259,7 @@
         <div class="mt-1 flex items-center gap-2 {% if outbound %}justify-end{% endif %}">
             {% if outbound %}
             {% set delivery = metadata.get('delivery_status') or 'sent' %}
-            <span class="text-[10px] font-medium {% if delivery == 'failed' %}text-rose-600{% else %}text-slate-400{% endif %}">{{ delivery | title }}{% if metadata.get('read_at') %} · Read{% endif %}</span>
+            <span data-inbox-delivery-status="{{ message.id }}" class="text-[10px] font-medium {% if delivery == 'failed' %}text-rose-600{% else %}text-slate-400{% endif %}">{{ delivery | title }}{% if metadata.get('read_at') %} · Read{% endif %}</span>
             {% endif %}
             <button type="button"
                     @click.prevent.stop='$dispatch("inbox-quote", {{ {"id": message.id, "author": (outbound_sender_name if outbound else (message.from_address or "Customer")), "excerpt": (message.body or "")[:120]} | tojson }})'
@@ -278,7 +280,7 @@
         </div>
         {% endif %}
     </div>
-    {% if outbound %}<div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-amber-100 text-[10px] font-bold text-amber-800 dark:bg-amber-900/40 dark:text-amber-200" title="{{ outbound_sender_name }}" aria-label="Sent by {{ outbound_sender_name }}">{{ outbound_sender_initials }}</div>{% endif %}
+    {% if outbound %}<div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl {% if ai_message %}bg-cyan-100 text-cyan-800 dark:bg-cyan-900/50 dark:text-cyan-100{% else %}bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200{% endif %} text-[10px] font-bold" title="{{ outbound_sender_name }}" aria-label="Sent by {{ outbound_sender_name }}">{{ outbound_sender_initials }}</div>{% endif %}
 </div>
 {% endif %}
 {% endmacro %}

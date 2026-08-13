@@ -39,6 +39,9 @@ notifications itself.
   prepaid subscription before reserving idempotency evidence or moving money.
   Those documents require the reviewed prepaid proforma adoption and draft
   reconciliation workflow.
+- The invoice-detail projection obtains generic-conversion eligibility from this
+  owner. It never renders a prepaid proforma as convertible; it instead shows
+  the owner-provided reconciliation guidance.
 - A duplicate conversion request replays the first result. It cannot overwrite a
   concurrent or already committed `paid` status with `issued`.
 - `invoice_created` for a draft is internal evidence and does not request a

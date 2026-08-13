@@ -96,6 +96,10 @@ class DataCleaningEligibilityReason(StrEnum):
     support_team_unavailable = "support_team_unavailable"
     conversation_team_not_set = "conversation_team_not_set"
     conversation_team_mismatch = "conversation_team_mismatch"
+    subscriber_not_linked = "subscriber_not_linked"
+    subscriber_ineligible = "subscriber_ineligible"
+    no_missing_profile_fields = "no_missing_profile_fields"
+    collection_disabled = "collection_disabled"
     invalid_configuration = "invalid_configuration"
 
 

@@ -278,6 +278,23 @@ The checked-in six-source preview resolves all expected 4,681 rows with stable
 IDs and zero structural/coordinate blockers. Duplicate names and geometries are
 retained as review candidates rather than silently merged.
 
+### CRM Network Map archive adapter
+
+`network.crm_map_source` is the read-only adapter for the checksum-bound CRM
+Network Map PostgreSQL archive. It accepts only an isolated `test`/`restore`
+database, validates the exact selective schema, normalizes active mappable FDH,
+access-point, splice-closure, fibre-segment, and service-building observations,
+and produces deterministic full-cohort classifications plus bounded staging
+inputs. `network.fiber_source_staging` remains the only evidence writer.
+
+The adapter preserves the established `dotmac_crm_fiber_map` source identity so
+new archives extend existing lineage instead of opening a parallel source. It
+reports inactive rows, missing geometry, ambiguous matches, empty dependency
+tables, and OLT counts explicitly. OLT identity remains owned by Selfcare
+network inventory and is comparison-only here. The complete restore, dry-run,
+batch, review, backup, and stop rules are in
+`docs/runbooks/CRM_NETWORK_MAP_MIGRATION.md`.
+
 ## Reviewed point-asset identity boundary
 
 Migration `334_fiber_topology_identity_decisions` adds the reviewed boundary

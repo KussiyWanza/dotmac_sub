@@ -2937,22 +2937,42 @@ def export_customers(
     request: Request,
     ids: str = Query("all"),
     search: str | None = None,
+    status: str | None = None,
     customer_type: str | None = None,
+    nas_id: str | None = None,
+    pop_site_id: str | None = None,
+    infrastructure_type: str | None = None,
+    infrastructure_id: str | None = None,
+    sort: Literal["created_at", "name", "status"] = Query("created_at"),
+    direction: Literal["asc", "desc"] = Query("desc", alias="dir"),
     db: Session = Depends(get_db),
 ):
     """Export customers to CSV."""
-    content, filename = web_customer_actions_service.export_customers_csv(
-        db=db,
-        ids=ids,
-        search=search,
-        customer_type=customer_type,
+    try:
+        export_query = web_customer_lists_service.build_customer_export_query(
+            ids=ids,
+            search=search,
+            status=status,
+            customer_type=customer_type,
+            nas_id=nas_id,
+            pop_site_id=pop_site_id,
+            infrastructure_type=infrastructure_type,
+            infrastructure_id=infrastructure_id,
+            sort_by=sort,
+            sort_dir=direction,
+        )
+    except web_customer_lists_service.CustomerExportQueryError as exc:
+        raise HTTPException(status_code=422, detail=exc.message) from exc
+    export = web_customer_lists_service.build_customer_csv_export(
+        db,
+        export_query=export_query,
     )
 
     return Response(
-        content=content,
+        content=export.content,
         media_type="text/csv",
         headers={
-            "Content-Disposition": f"attachment; filename={filename}",
+            "Content-Disposition": f"attachment; filename={export.filename}",
         },
     )
 

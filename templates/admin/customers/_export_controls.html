@@ -1,0 +1,80 @@
+<div class="relative inline-flex" @keydown.escape.stop="exportMenuOpen = false">
+    <button type="button"
+            @click="exportMenuOpen = !exportMenuOpen; exportError = ''"
+            :aria-expanded="exportMenuOpen.toString()"
+            aria-haspopup="dialog"
+            aria-controls="customer-export-options"
+            class="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700">
+        <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
+        Export
+        <svg class="h-4 w-4 text-slate-400 transition-transform" :class="{ 'rotate-180': exportMenuOpen }" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+    </button>
+
+    <div x-show="exportMenuOpen"
+         id="customer-export-options"
+         x-cloak
+         x-transition
+         @click.outside="exportMenuOpen = false"
+         class="absolute right-0 top-full z-50 mt-2 w-80 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl dark:border-slate-700 dark:bg-slate-900"
+         role="dialog"
+         aria-labelledby="customer-export-title"
+         :aria-busy="exportLoading ? 'true' : 'false'">
+        <div class="border-b border-slate-100 px-4 py-3 dark:border-slate-800">
+            <p id="customer-export-title" class="text-sm font-semibold text-slate-900 dark:text-white">Choose export columns</p>
+            <p class="mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400">Select the customer details to include in one CSV file.</p>
+        </div>
+
+        <fieldset class="max-h-80 space-y-1 overflow-y-auto p-2">
+            <legend class="sr-only">Customer export columns</legend>
+            <template x-for="option in exportOptions" :key="option.sourceColumn">
+                <label class="flex min-h-11 cursor-pointer items-center gap-3 rounded-lg px-3 py-2 transition hover:bg-amber-50 dark:hover:bg-slate-800">
+                    <input type="checkbox"
+                           :checked="isExportOptionSelected(option.sourceColumn)"
+                           @change="toggleExportOption(option.sourceColumn, $event.target.checked)"
+                           :disabled="Boolean(exportLoading)"
+                           class="h-4 w-4 shrink-0 rounded border-slate-300 text-amber-600 focus:ring-amber-500 dark:border-slate-600 dark:bg-slate-800 dark:ring-offset-slate-900">
+                    <span class="min-w-0">
+                        <span class="block text-sm font-semibold text-slate-800 dark:text-slate-100" x-text="option.label"></span>
+                        <span class="block text-xs text-slate-500 dark:text-slate-400" x-text="option.description"></span>
+                    </span>
+                </label>
+            </template>
+
+            <div class="mx-3 mb-1 mt-2 border-t border-slate-100 pt-3 dark:border-slate-800">
+                <p class="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Advanced</p>
+                <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Analytical, service, and network fields</p>
+            </div>
+
+            <template x-for="option in advancedExportOptions" :key="option.sourceColumn">
+                <label class="flex min-h-11 cursor-pointer items-center gap-3 rounded-lg px-3 py-2 transition hover:bg-amber-50 dark:hover:bg-slate-800">
+                    <input type="checkbox"
+                           :checked="isExportOptionSelected(option.sourceColumn)"
+                           @change="toggleExportOption(option.sourceColumn, $event.target.checked)"
+                           :disabled="Boolean(exportLoading)"
+                           class="h-4 w-4 shrink-0 rounded border-slate-300 text-amber-600 focus:ring-amber-500 dark:border-slate-600 dark:bg-slate-800 dark:ring-offset-slate-900">
+                    <span class="min-w-0">
+                        <span class="block text-sm font-semibold text-slate-800 dark:text-slate-100" x-text="option.label"></span>
+                        <span class="block text-xs text-slate-500 dark:text-slate-400" x-text="option.description"></span>
+                    </span>
+                </label>
+            </template>
+        </fieldset>
+
+        <div x-show="exportError"
+             x-cloak
+             class="mx-3 mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:border-rose-900/60 dark:bg-rose-950/40 dark:text-rose-300"
+             role="alert"
+             x-text="exportError"></div>
+
+        <div class="flex items-center justify-between gap-3 border-t border-slate-100 px-4 py-3 dark:border-slate-800">
+            <span class="text-xs text-slate-500 dark:text-slate-400" aria-live="polite" x-text="exportSelectionSummary()"></span>
+            <button type="button"
+                    @click="exportSelectedCustomers()"
+                    :disabled="selectedExportColumns.length === 0 || exportLoading"
+                    class="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-amber-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-amber-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:focus-visible:ring-offset-slate-900">
+                <svg x-show="exportLoading" x-cloak class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle class="opacity-25" cx="12" cy="12" r="9" stroke="currentColor" stroke-width="3"/><path class="opacity-90" fill="currentColor" d="M12 3a9 9 0 019 9h-3a6 6 0 00-6-6V3z"/></svg>
+                <span x-text="exportLoading ? 'Preparing…' : 'Export'"></span>
+            </button>
+        </div>
+    </div>
+</div>

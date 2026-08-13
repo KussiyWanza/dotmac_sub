@@ -14,6 +14,7 @@ from app.models.network import FdhCabinet, FiberAccessPoint
 from app.services.network.fiber_topology_staging import (
     SOURCE_PROFILES,
     preview_fiber_source,
+    stage_fiber_preview_batch,
     stage_fiber_source,
 )
 
@@ -268,6 +269,62 @@ def test_changed_stable_identity_requires_review_and_preserves_lineage(
         .first()
     )
     assert staged.prior_feature_id == first_feature.id
+
+
+def test_bounded_stage_preserves_full_source_duplicate_classification(
+    db_session, tmp_path
+):
+    path = _write_kmz(
+        tmp_path,
+        "crm-cabinets.kmz",
+        [
+            _placemark(
+                name="Shared name",
+                properties={"crm_id": "CRM-1", "name": "Shared name"},
+                geometry_type="Point",
+                coordinates="7.1,9.0",
+            ),
+            _placemark(
+                name="Shared name",
+                properties={"crm_id": "CRM-2", "name": "Shared name"},
+                geometry_type="Point",
+                coordinates="7.2,9.1",
+            ),
+        ],
+    )
+    preview = preview_fiber_source(db_session, path, "crm_fdh_cabinets")
+    assert preview.status_counts == {"candidate": 2}
+
+    first = stage_fiber_preview_batch(
+        db_session,
+        preview,
+        start=0,
+        stop=1,
+        source_name="crm_fdh_cabinets-00001.kml",
+        created_by="pytest",
+        source_metadata={"source_archive_sha256": "a" * 64},
+    )
+    second = stage_fiber_preview_batch(
+        db_session,
+        preview,
+        start=1,
+        stop=2,
+        source_name="crm_fdh_cabinets-00002.kml",
+        created_by="pytest",
+        source_metadata={"source_archive_sha256": "a" * 64},
+    )
+
+    assert first.created is True
+    assert second.created is True
+    assert first.candidate_count == second.candidate_count == 1
+    assert {
+        feature.match_status
+        for feature in db_session.query(FiberTopologyStagedFeature).all()
+    } == {"candidate"}
+    assert {
+        batch.source_metadata["full_manifest_sha256"]
+        for batch in db_session.query(FiberTopologySourceBatch).all()
+    } == {preview.manifest_sha256}
 
 
 @pytest.mark.parametrize(

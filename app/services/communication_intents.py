@@ -450,6 +450,21 @@ def record_delivery_outcome(db: Session, notification: Notification) -> None:
         message.metadata_ = metadata
         if notification.status == NotificationStatus.delivered:
             message.sent_at = notification.sent_at or datetime.now(UTC)
+        # Realtime is an invalidation transport only. Publish the bounded
+        # committed identity/status facts after this transaction completes;
+        # the browser refetches the authoritative message projection on gaps.
+        from app.services import team_inbox_realtime
+
+        team_inbox_realtime.publish_conversation_event(
+            db,
+            str(message.conversation_id),
+            event_type=team_inbox_realtime.EventType.MESSAGE_STATUS_CHANGED,
+            payload={
+                "conversation_id": str(message.conversation_id),
+                "message_id": str(message.id),
+                "delivery_status": notification.status.value,
+            },
+        )
 
     campaign_recipient = (
         db.query(CampaignRecipient)

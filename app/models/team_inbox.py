@@ -1315,6 +1315,85 @@ class InboxConversationQueueEntry(Base):
     service_team = relationship("ServiceTeam")
 
 
+class InboxTeamRoundRobinCursor(Base):
+    """Durable per-team rotation state for automatic Inbox assignment."""
+
+    __tablename__ = "inbox_team_round_robin_cursors"
+    __table_args__ = (
+        UniqueConstraint("service_team_id", name="uq_inbox_rr_cursor_team"),
+        Index("ix_inbox_rr_cursor_updated", "updated_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    service_team_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("service_teams.id"), nullable=False
+    )
+    last_assigned_person_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True)
+    )
+    rotation_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    metadata_: Mapped[dict | None] = mapped_column(
+        "metadata", MutableDict.as_mutable(JSON())
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+        nullable=False,
+    )
+
+    service_team = relationship("ServiceTeam")
+
+
+class InboxQueueNotification(Base):
+    """Durable evidence for customer-visible FIFO queue notices."""
+
+    __tablename__ = "inbox_queue_notifications"
+    __table_args__ = (
+        UniqueConstraint("dedupe_key", name="uq_inbox_queue_notification_dedupe"),
+        Index("ix_inbox_queue_notifications_entry", "queue_entry_id", "sent_at"),
+        Index("ix_inbox_queue_notifications_due", "status", "next_due_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    queue_entry_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("inbox_conversation_queue_entries.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("inbox_conversations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    notification_kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    queue_position: Mapped[int | None] = mapped_column(Integer)
+    outbound_message_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    status: Mapped[str] = mapped_column(String(40), nullable=False)
+    dedupe_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    metadata_: Mapped[dict | None] = mapped_column(
+        "metadata", MutableDict.as_mutable(JSON())
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+        nullable=False,
+    )
+
+
 class InboxReplyReminder(Base):
     """Durable per-assignment reminder schedule and repeat evidence."""
 

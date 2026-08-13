@@ -135,6 +135,9 @@ def create_and_submit_field_material_request(
             db,
             CreateStaffMaterialRequest(
                 context=_context(auth, payload.client_ref),
+                requester_person_id=UUID(
+                    str(auth.get("person_id") or auth["principal_id"])
+                ),
                 work_order_id=None,
                 work_order_public_id=payload.work_order_id,
                 request_id=payload.client_ref,
