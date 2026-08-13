@@ -55,6 +55,7 @@ DOMAIN = DomainSOT(
             module="app.services.catalog.plan_family_catalogues",
             owns=(
                 "approved plan-family catalogue publication",
+                "configured plan-family catalogue vocabulary",
                 "current and historical public catalogue resolution",
             ),
             depends_on=(
@@ -82,6 +83,15 @@ DOMAIN = DomainSOT(
                         canonical_writer="service_intent.plan_family_catalogues",
                     ),
                     ConcernContract(
+                        name="configured plan-family catalogue vocabulary",
+                        role=OwnerRole.AUTHORITATIVE_RECORD,
+                        input_names=(
+                            "authenticated catalogue vocabulary command",
+                            "approved catalogue version records",
+                        ),
+                        canonical_writer="service_intent.plan_family_catalogues",
+                    ),
+                    ConcernContract(
                         name="current and historical public catalogue resolution",
                         role=OwnerRole.RESOLVER,
                         input_names=(
@@ -105,6 +115,15 @@ DOMAIN = DomainSOT(
                         owner="control.settings_spec",
                         kind=AuthorityKind.CONTROL_INPUT,
                         source="Catalog plan_families setting with built-in defaults.",
+                    ),
+                    AuthorityInput(
+                        name="authenticated catalogue vocabulary command",
+                        owner="auth.permission_gate",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "Typed complete plan-family vocabulary, staff principal, "
+                            "reason, correlation, and idempotency key."
+                        ),
                     ),
                     AuthorityInput(
                         name="validated catalogue PDF storage record",
@@ -136,7 +155,8 @@ DOMAIN = DomainSOT(
                     ),
                     locking=(
                         "Publication locks every existing version for the selected family; "
-                        "a partial unique index permits only one published version."
+                        "a partial unique index permits only one published version. "
+                        "Vocabulary updates retain every family with a published catalogue."
                     ),
                     idempotency=(
                         "A retry with the current PDF SHA-256 returns that version; "
@@ -155,6 +175,9 @@ DOMAIN = DomainSOT(
                         "service_intent.plan_family_catalogues.nested_owner_command",
                         "service_intent.plan_family_catalogues.nested_transaction_completion",
                         "service_intent.plan_family_catalogues.invalid_plan_family",
+                        "service_intent.plan_family_catalogues.plan_family_required",
+                        "service_intent.plan_family_catalogues.duplicate_plan_family",
+                        "service_intent.plan_family_catalogues.published_plan_family_removal",
                         "service_intent.plan_family_catalogues.display_name_required",
                         "service_intent.plan_family_catalogues.display_name_too_long",
                         "service_intent.plan_family_catalogues.file_required",

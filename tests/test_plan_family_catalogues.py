@@ -5,11 +5,15 @@ from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 from sqlalchemy import event
+from sqlalchemy.dialects import postgresql
 
 from app.models.plan_family_catalogue import PlanFamilyCatalogue
 from app.models.system_user import SystemUser
 from app.models.team_inbox import InboxConversation
-from app.schemas.plan_family_catalogue import PublishPlanFamilyCatalogueCommand
+from app.schemas.plan_family_catalogue import (
+    ConfigurePlanFamilyCataloguesCommand,
+    PublishPlanFamilyCatalogueCommand,
+)
 from app.services.catalog import plan_family_catalogues
 from app.services.file_storage import (
     FileValidationError,
@@ -48,6 +52,21 @@ def _command(user_id: UUID, *, payload: bytes) -> PublishPlanFamilyCatalogueComm
         original_filename="home-flex.pdf",
         content_type="application/pdf",
         file_bytes=payload,
+        actor_system_user_id=user_id,
+    )
+
+
+def _configure_command(
+    user_id: UUID, *plan_families: str
+) -> ConfigurePlanFamilyCataloguesCommand:
+    return ConfigurePlanFamilyCataloguesCommand(
+        context=CommandContext.system(
+            actor=f"system_user:{user_id}",
+            scope="catalog:write",
+            reason="pytest catalogue family configuration",
+            idempotency_key=f"catalogue-families:{uuid4()}",
+        ),
+        plan_families=plan_families,
         actor_system_user_id=user_id,
     )
 
@@ -107,6 +126,28 @@ def test_publish_replays_same_pdf_and_supersedes_changed_pdf(db_session, monkeyp
     assert options["home_flex"].is_shareable is True
 
 
+def test_configure_plan_families_adds_a_new_catalogue_work_item(
+    db_session, monkeypatch
+):
+    user = _staff(db_session)
+    monkeypatch.setattr(
+        plan_family_catalogues, "stage_audit_event", lambda *_a, **_k: None
+    )
+
+    outcome = plan_family_catalogues.configure_plan_families(
+        db_session,
+        _configure_command(user, "unlimited", "enterprise_plus"),
+    )
+
+    assert outcome.plan_families == ("unlimited", "enterprise_plus")
+    options = plan_family_catalogues.list_catalogue_options(db_session)
+    assert [option.plan_family for option in options] == [
+        "unlimited",
+        "enterprise_plus",
+    ]
+    assert all(option.catalogue_id is None for option in options)
+
+
 def test_publish_uploads_object_before_its_first_database_query(
     db_session, monkeypatch
 ):
@@ -147,6 +188,14 @@ def test_publish_uploads_object_before_its_first_database_query(
         event.remove(
             db_session.bind, "before_cursor_execute", assert_upload_precedes_sql
         )
+
+
+def test_publication_lock_excludes_optional_stored_file_join():
+    statement = plan_family_catalogues._publication_rows_statement("home_flex")
+
+    sql = str(statement.compile(dialect=postgresql.dialect()))
+
+    assert "FOR UPDATE OF plan_family_catalogues" in sql
 
 
 def test_public_resolution_keeps_superseded_links_but_denies_withdrawn(

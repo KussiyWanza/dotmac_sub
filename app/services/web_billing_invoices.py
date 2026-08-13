@@ -840,6 +840,9 @@ def load_invoice_detail_data(
         "activities": build_invoice_activities(db, invoice_id=invoice_id),
         "pdf_export": pdf_export,
         "is_proforma": is_proforma_invoice(invoice),
+        "proforma_conversion_capability": (
+            invoice_draft_authoring.proforma_conversion_capability(db, invoice=invoice)
+        ),
         "invoice_bank_details": invoice_bank_details_service.get_invoice_bank_details(
             db, currency=invoice.currency
         ),

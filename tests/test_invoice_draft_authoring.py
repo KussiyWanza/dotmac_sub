@@ -268,6 +268,36 @@ def test_funded_prepaid_proforma_requires_reviewed_reconciliation(
     assert allocations == []
 
 
+def test_prepaid_proforma_conversion_capability_hides_generic_action(
+    db_session,
+    subscriber,
+) -> None:
+    subscriber.billing_mode = BillingMode.prepaid
+    command = replace(
+        _create_command(subscriber),
+        invoice_number="PF-PREPAID-CAPABILITY",
+        is_proforma=True,
+    )
+    db_session.commit()
+    created = invoice_draft_authoring.create_invoice_draft(
+        db_session,
+        command,
+        context=_context("prepaid-proforma-capability"),
+    )
+    invoice = db_session.get(Invoice, created.invoice_id)
+
+    assert invoice is not None
+    capability = invoice_draft_authoring.proforma_conversion_capability(
+        db_session, invoice=invoice
+    )
+
+    assert capability.allowed is False
+    assert capability.reason == (
+        "Prepaid proformas are handled through the reviewed prepaid draft "
+        "reconciliation workflow after verified funding."
+    )
+
+
 def test_create_draft_omits_vat_for_exempt_customer(
     db_session,
     subscriber,
