@@ -27,7 +27,7 @@ from app.services.owner_commands import (
 OWNER = "customer.profile_cleanup"
 _PROFILE_CLEANUP_COMMAND = OwnerCommandDefinition(
     owner=OWNER,
-    concern="governed NCC customer profile cleanup",
+    concern="governed subscriber DOB and gender cleanup command",
     name="execute_customer_profile_cleanup_command",
 )
 
