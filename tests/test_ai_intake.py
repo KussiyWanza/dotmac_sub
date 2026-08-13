@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
@@ -69,7 +70,7 @@ def _config(db_session, **overrides) -> AiIntakeConfig:
     values.update(overrides)
     if values["is_enabled"] and "fallback_team_id" not in overrides:
         fallback = ServiceTeam(
-            name=f"AI Intake Fallback {len(db_session.new)}",
+            name=f"AI Intake Fallback {uuid4()}",
             team_type="support",
             is_active=True,
         )
