@@ -31,6 +31,12 @@ Overridden work reaches production without staging having run it, so reconcile
 5. Dispatch `Build release candidate once` on `dev`, supplying that full dev
    SHA as `candidate_sha`. The workflow refuses a stale SHA or non-green source,
    builds the application once on GitHub, and records its immutable OCI digest.
+   The build also derives `/app/product-manifest.json` from the image's exact
+   `SUB_ASSEMBLY` and `VERSION`. The OCI digest therefore binds the canonical
+   manifest bytes. The workflow pulls that exact digest, verifies the embedded
+   document inside the image, and publishes `candidate.json` schema v2 plus
+   `product-manifest.json`; the typed candidate record carries the manifest's
+   `product_manifest_digest`.
 6. Let `Deploy dev to staging` deploy that exact digest, then complete staging
    acceptance against `http://10.120.121.20:8001`. **That acceptance covers
    application behaviour only — it does not exercise network equipment.** See
@@ -58,6 +64,11 @@ application image. If the rolling version-bump pull request remains open, the
 production promotion still authorizes and deploys the immutable digest; the
 existing semver tag is not moved when it already points at an older digest, and
 only `latest` is advanced to the authorized production digest.
+
+Schema-v1 release evidence predates the product-manifest identity and is not
+accepted by the schema-v2 readers. Do not combine evidence from the two schema
+versions or retrofit a manifest onto an old candidate: select the current green
+`dev` SHA and build a new candidate once.
 
 ## Release Freeze
 

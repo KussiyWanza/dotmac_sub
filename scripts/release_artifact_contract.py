@@ -23,6 +23,7 @@ class ReleaseContractErrorCode(str, Enum):
     INVALID_GIT_COMMIT_SHA = "release_contract.invalid_git_commit_sha"
     INVALID_GIT_TREE_SHA = "release_contract.invalid_git_tree_sha"
     INVALID_IMAGE_DIGEST = "release_contract.invalid_image_digest"
+    INVALID_PRODUCT_MANIFEST_DIGEST = "release_contract.invalid_product_manifest_digest"
     INVALID_WORKFLOW_RUN_ID = "release_contract.invalid_workflow_run_id"
     INVALID_DEPLOYMENT_ID = "release_contract.invalid_deployment_id"
     INVALID_MIGRATION_GRAPH_DIGEST = "release_contract.invalid_migration_graph_digest"
@@ -111,6 +112,20 @@ class OCIImageDigest:
 
 
 @dataclass(frozen=True, slots=True)
+class ProductManifestDigest:
+    """Digest of the canonical manifest embedded in one application image."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        _require_sha256_digest(
+            self.value,
+            field="product manifest digest",
+            code=ReleaseContractErrorCode.INVALID_PRODUCT_MANIFEST_DIGEST,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class WorkflowRunId:
     """GitHub Actions workflow-run evidence identifier."""
 
@@ -164,6 +179,7 @@ class ReleaseArtifactEvidence:
     source_revision: GitCommitSha
     source_tree: GitTreeSha
     image_digest: OCIImageDigest
+    product_manifest_digest: ProductManifestDigest
     build_run_id: WorkflowRunId
     source_ci_conclusion: EvidenceConclusion
 

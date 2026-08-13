@@ -23,7 +23,7 @@ What this file proves, with zero skips:
 - the Sub app builds with the kernel installed, and every ``dotmac_kernel``
   module in its import graph is one the ledger allowlist admits OR one the
   kernel reaches for itself (``TRANSITIVE_KERNEL_MODULES``, a reviewed
-  snapshot — eighteen of them, which is worth knowing) — and no kernel
+  snapshot — nineteen of them, which is worth knowing) — and no kernel
   middleware is mounted, no kernel route endpoint is served, and the top-level
   route prefix set is exactly the reviewed pin.
 
@@ -56,7 +56,9 @@ PYPROJECT = PROJECT_ROOT / "pyproject.toml"
 
 #: The reviewed kernel pin. Changing it is a ledger amendment
 #: (docs/PLATFORM_ADOPTION_LEDGER.md), never a lockfile side effect.
-KERNEL_PIN = "0.1.0a42"
+KERNEL_PIN = "0.1.0a50"
+KERNEL_WHEEL_SHA256 = "3030954c84c8ed4caae877412df4c1f3db0b2e4dd94895f1bd9a3a954fa77371"
+KERNEL_SDIST_SHA256 = "87c0df99a33f4d4b79f3e22842166524b3dec9f077af7ad5757e6fb3600274f7"
 
 #: The private index source name pyproject must route the kernel through.
 KERNEL_SOURCE = "forgejo"
@@ -64,7 +66,7 @@ KERNEL_SOURCE = "forgejo"
 #: What the kernel loads FOR ITS OWN USE once `app/` imports the settings
 #: resolver, measured rather than assumed — and larger than anyone expected.
 #:
-#: Consuming one kernel subsystem pulls eighteen more modules into the process,
+#: Consuming one kernel subsystem pulls nineteen more modules into the process,
 #: including `audit`, `security`, `identity`, `permissions` and `entitlements`
 #: — precisely the surfaces the adoption ledger keeps out of `app/`. Nothing in
 #: `app/` imports them and the AST guard still refuses one that tries; they are
@@ -94,6 +96,7 @@ TRANSITIVE_KERNEL_MODULES = frozenset(
         "dotmac_kernel.modules",
         "dotmac_kernel.namespaces",
         "dotmac_kernel.permissions",
+        "dotmac_kernel.product_manifest",
         "dotmac_kernel.query",
         "dotmac_kernel.security",
         "dotmac_kernel.setting_domains",
@@ -227,6 +230,26 @@ def test_pyproject_pins_kernel_exactly_from_the_named_index() -> None:
     # No credential material belongs in pyproject — URL only.
     assert "@" not in forgejo["url"].split("//", 1)[1], (
         "index URL must not embed credentials"
+    )
+
+
+def test_lock_carries_the_reviewed_kernel_release_bytes() -> None:
+    """The current pin resolves to the exact registry-verified a50 artifacts."""
+    import tomllib
+
+    with (PROJECT_ROOT / "poetry.lock").open("rb") as lock_file:
+        lock = tomllib.load(lock_file)
+    packages = [
+        package for package in lock["package"] if package["name"] == "dotmac-kernel"
+    ]
+    assert len(packages) == 1
+    assert packages[0]["version"] == KERNEL_PIN
+    hashes = {entry["file"]: entry["hash"] for entry in packages[0]["files"]}
+    assert hashes[f"dotmac_kernel-{KERNEL_PIN}-py3-none-any.whl"] == (
+        f"sha256:{KERNEL_WHEEL_SHA256}"
+    )
+    assert hashes[f"dotmac_kernel-{KERNEL_PIN}.tar.gz"] == (
+        f"sha256:{KERNEL_SDIST_SHA256}"
     )
 
 

@@ -32,9 +32,7 @@ def test_candidate_evidence_remains_historical() -> None:
     assert sub["released_kernel_pin"] == "0.1.0a40"
 
 
-def test_released_artifact_is_the_exact_sub_pin_and_lock() -> None:
-    import tomllib
-
+def test_released_artifact_preserves_the_exact_historical_a42_evidence() -> None:
     release = _release()
     kernel = release["kernel"]
     sub = release["sub"]
@@ -56,25 +54,6 @@ def test_released_artifact_is_the_exact_sub_pin_and_lock() -> None:
     assert rehearsal["integration_tests_passed"] == 103
     assert rehearsal["exit_code"] == 0
     assert rehearsal["disposable_resources_removed"] is True
-
-    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert "dotmac-kernel==0.1.0a42" in pyproject
-    assert "dotmac-kernel==0.1.0a40" not in pyproject
-
-    with (ROOT / "poetry.lock").open("rb") as fh:
-        lock = tomllib.load(fh)
-    locked = [
-        package for package in lock["package"] if package["name"] == "dotmac-kernel"
-    ]
-    assert len(locked) == 1
-    assert locked[0]["version"] == kernel["version"]
-    hashes = {entry["file"]: entry["hash"] for entry in locked[0]["files"]}
-    assert hashes[f"dotmac_kernel-{kernel['version']}-py3-none-any.whl"] == (
-        f"sha256:{kernel['wheel_sha256']}"
-    )
-    assert hashes[f"dotmac_kernel-{kernel['version']}.tar.gz"] == (
-        f"sha256:{kernel['sdist_sha256']}"
-    )
 
 
 def test_runbook_preserves_the_expansion_and_release_boundaries() -> None:

@@ -41,6 +41,13 @@ RUN --mount=type=secret,id=forgejo_token \
 
 COPY . .
 
+# A release carries its own canonical capability declaration. The document is
+# generated from SUB_ASSEMBLY through the published kernel contract; because it
+# is in this layer, the final OCI digest transitively binds its exact bytes.
+RUN python -m scripts.product_manifest emit \
+    --version-file VERSION \
+    --output /app/product-manifest.json
+
 EXPOSE 8001
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]
