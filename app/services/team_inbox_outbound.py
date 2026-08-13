@@ -76,6 +76,10 @@ class AiIntakeFollowUpPayload:
     inbound_message_id: UUID
     config_id: UUID
     follow_up_count: int
+    session_id: UUID | None = None
+    policy_id: UUID | None = None
+    policy_version_id: UUID | None = None
+    display_name: str = "Dotmac Virtual Assistant"
 
 
 @dataclass(frozen=True)
@@ -229,6 +233,12 @@ def _queue_outbox_reply(
         db.add(message)
     conversation.last_message_at = queued_at
     db.flush()
+    author_name = str(
+        intent_metadata.get("author_name")
+        or intent_metadata.get("ai_display_name")
+        or "Support"
+    )
+    sender_type = str(intent_metadata.get("sender_type") or "agent")
     team_inbox_realtime.publish_conversation_event(
         db,
         str(conversation.id),
@@ -240,9 +250,9 @@ def _queue_outbox_reply(
             direction=message.direction,
             channel_type=message.channel_type,
             created_at=message.created_at,
-            author_name="Support",
+            author_name=author_name,
             extra={
-                "sender_type": "agent",
+                "sender_type": sender_type,
                 "from_customer": False,
                 "delivery_status": "queued",
             },
@@ -598,6 +608,22 @@ def send_inbox_reply(
             conversation_id=str(conversation.id),
             reason="Resolved conversations cannot be replied to",
         )
+    if payload.sent_by_person_id is not None:
+        try:
+            from app.services import ai_conversation_intake
+
+            session = ai_conversation_intake.active_session_for_conversation(
+                db, conversation.id
+            )
+            if session is not None:
+                ai_conversation_intake.complete_session(
+                    session, state="stopped_human_takeover"
+                )
+                ai_conversation_intake.mark_conversation_ai_metadata(
+                    conversation, session=session, active=False
+                )
+        except Exception:
+            pass
 
     if conversation.channel_type == InboxChannelType.whatsapp.value:
         return _send_whatsapp_reply(
@@ -740,13 +766,75 @@ def send_ai_intake_follow_up(
             body_html=payload.question,
             body_text=payload.question,
             metadata={
+                "sender_type": "ai",
+                "author_type": "ai",
+                "automation_kind": "ai_intake",
+                "ai_display_name": payload.display_name,
+                "ai_intake_session_id": str(payload.session_id)
+                if payload.session_id
+                else None,
+                "ai_intake_policy_id": str(payload.policy_id)
+                if payload.policy_id
+                else None,
+                "ai_intake_policy_version_id": str(payload.policy_version_id)
+                if payload.policy_version_id
+                else None,
+                "ai_message_purpose": "clarification",
                 "ai_intake_follow_up": True,
                 "ai_intake_config_id": str(payload.config_id),
                 "ai_intake_inbound_message_id": str(payload.inbound_message_id),
                 "ai_intake_follow_up_count": payload.follow_up_count,
-                "author_name": "Support",
+                "author_name": payload.display_name,
             },
             dedupe_key=f"ai-intake-follow-up:{payload.inbound_message_id}",
+        ),
+        now=now,
+    )
+
+
+def send_ai_intake_message(
+    db: Session,
+    *,
+    conversation: InboxConversation,
+    body_text: str,
+    metadata: dict[str, Any],
+    dedupe_key: str,
+    now: datetime | None = None,
+) -> InboxReplyResult:
+    """Queue a customer-visible AI intake message through Team Inbox outbound."""
+
+    if conversation.channel_type not in {
+        InboxChannelType.whatsapp.value,
+        *_META_DM_CHANNELS,
+    }:
+        return InboxReplyResult(
+            kind="unsupported_channel",
+            conversation_id=str(conversation.id),
+            reason="AI intake delivery is unsupported on this channel",
+        )
+    clean_body = " ".join(str(body_text or "").split())
+    if not clean_body:
+        return InboxReplyResult(
+            kind="empty_body",
+            conversation_id=str(conversation.id),
+            reason="AI intake message body is required",
+        )
+    return send_inbox_reply(
+        db,
+        conversation=conversation,
+        payload=InboxReplyPayload(
+            body_html=clean_body,
+            body_text=clean_body,
+            metadata={
+                **metadata,
+                "sender_type": "ai",
+                "author_type": "ai",
+                "automation_kind": metadata.get("automation_kind") or "ai_intake",
+                "author_name": metadata.get("author_name")
+                or metadata.get("ai_display_name")
+                or "Dotmac Virtual Assistant",
+            },
+            dedupe_key=dedupe_key,
         ),
         now=now,
     )

@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 from app.models.ai_intake import AiIntakeConfig
 from app.models.audit import AuditActorType
 from app.models.service_team import ServiceTeam
+from app.models.subscriber import Subscriber
 from app.schemas.ai_intake import (
     CUSTOMER_TYPE_FOLLOW_UP_QUESTION,
     GENERIC_FOLLOW_UP_QUESTION,
@@ -52,6 +53,10 @@ from app.services.owner_commands import (
     OwnerCommandDefinition,
     execute_owner_command,
 )
+from app.services.subscriber_profile_cleanup import (
+    is_direct_residential_customer,
+    missing_cleanup_fields,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,20 +72,6 @@ SUPPORTED_CHANNELS = frozenset({"whatsapp", "facebook_messenger", "instagram_dm"
 MAX_RECENT_MESSAGES = 3
 MAX_CONTEXT_CHARS = 1200
 MAX_INSTRUCTIONS_CHARS = 2000
-
-_DEFAULT_DEPARTMENT_BY_INTENT: dict[AiIntakeIntent, str] = {
-    AiIntakeIntent.technical_support: "technical_support",
-    AiIntakeIntent.billing_issue: "helpdesk",
-    AiIntakeIntent.payment_confirmation: "helpdesk",
-    AiIntakeIntent.subscription_renewal: "helpdesk",
-    AiIntakeIntent.plan_change: "helpdesk",
-    AiIntakeIntent.coverage_request: "helpdesk",
-    AiIntakeIntent.new_connection: "helpdesk",
-    AiIntakeIntent.account_access: "helpdesk",
-    AiIntakeIntent.complaint: "helpdesk",
-    AiIntakeIntent.general_enquiry: "helpdesk",
-    AiIntakeIntent.unknown: "helpdesk",
-}
 
 _CATEGORIES_BY_INTENT: dict[AiIntakeIntent, frozenset[AiIntakeCategory]] = {
     AiIntakeIntent.technical_support: frozenset(
@@ -184,6 +175,13 @@ class AiIntakeConfigMetadataOutcome:
     account_id: str | None = None
     notes: str | None = None
     data_cleaning_support_team_id: UUID | None = None
+    display_name: str | None = None
+    welcome_message: str | None = None
+    business_tone: str | None = None
+    approved_isp_information: str | None = None
+    queue_templates: dict | None = None
+    data_cleanup_policy: dict | None = None
+    data_cleanup_enabled: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -258,7 +256,7 @@ def _config_outcome(
         mappings.append(
             AiIntakeDepartmentMappingOutcome(
                 intent=intent,
-                department=_normalize_key(item.get("department")) or "helpdesk",
+                department=_normalize_key(item.get("department")) or intent.value,
                 service_team_id=service_team_id,
             )
         )
@@ -294,6 +292,39 @@ def _config_outcome(
                 str(raw_metadata.get("notes")) if raw_metadata.get("notes") else None
             ),
             data_cleaning_support_team_id=data_cleaning_support_team_id,
+            display_name=(
+                str(raw_metadata.get("display_name"))
+                if raw_metadata.get("display_name")
+                else None
+            ),
+            welcome_message=(
+                str(raw_metadata.get("welcome_message"))
+                if raw_metadata.get("welcome_message")
+                else None
+            ),
+            business_tone=(
+                str(raw_metadata.get("business_tone"))
+                if raw_metadata.get("business_tone")
+                else None
+            ),
+            approved_isp_information=(
+                str(raw_metadata.get("approved_isp_information"))
+                if raw_metadata.get("approved_isp_information")
+                else None
+            ),
+            queue_templates=(
+                raw_metadata.get("queue_templates")
+                if isinstance(raw_metadata.get("queue_templates"), dict)
+                else None
+            ),
+            data_cleanup_policy=(
+                raw_metadata.get("data_cleanup_policy")
+                if isinstance(raw_metadata.get("data_cleanup_policy"), dict)
+                else None
+            ),
+            data_cleanup_enabled=bool(
+                raw_metadata.get("data_cleanup_enabled") or False
+            ),
         ),
         created_at=row.created_at,
         updated_at=row.updated_at,
@@ -311,6 +342,15 @@ def upsert_config(
     def operation() -> AiIntakeConfigOutcome:
         actor_type, actor_id = _command_actor(command.context)
         policy = command.policy
+        if policy.is_enabled:
+            if policy.scope_key.strip().lower() in {"global", "default", "any"}:
+                raise AiIntakeConfigurationError(
+                    "AI intake activation requires an explicit provider/account scope"
+                )
+            if policy.fallback_team_id is None:
+                raise AiIntakeConfigurationError(
+                    "AI intake activation requires an active fallback team"
+                )
         if policy.fallback_team_id is not None:
             team = db.get(ServiceTeam, policy.fallback_team_id)
             if team is None or not team.is_active:
@@ -480,10 +520,6 @@ def _scope_candidates(request: AiIntakeRequest) -> tuple[str, ...]:
         f"{provider}:{scope}",
         f"{channel}:{scope}",
         scope,
-        f"{provider}:default",
-        f"{channel}:default",
-        "default",
-        "global",
     )
     return tuple(dict.fromkeys(values))
 
@@ -535,9 +571,9 @@ def _resolved_config(row: AiIntakeConfig) -> ResolvedAiIntakeConfig:
             "confidence threshold must be between zero and one"
         )
     max_turns = int(row.max_clarification_turns)
-    if max_turns not in {0, 1}:
+    if not 0 <= max_turns <= 5:
         raise AiIntakeConfigurationError(
-            "AI intake supports at most one clarification turn"
+            "AI intake supports between zero and five clarification turns"
         )
     escalation_minutes = int(row.escalate_after_minutes)
     if escalation_minutes < 1:
@@ -574,6 +610,26 @@ def _resolved_config(row: AiIntakeConfig) -> ResolvedAiIntakeConfig:
     )
 
 
+def _validate_runtime_config(db: Session, config: ResolvedAiIntakeConfig) -> None:
+    if not config.is_enabled:
+        return
+    if config.fallback_team_id is None:
+        raise AiIntakeConfigurationError(
+            "AI intake activation requires an active fallback team"
+        )
+    fallback = db.get(ServiceTeam, config.fallback_team_id)
+    if fallback is None or not fallback.is_active:
+        raise AiIntakeConfigurationError("AI intake fallback team must be active")
+    for mapping in config.department_mappings:
+        if mapping.service_team_id is None:
+            continue
+        team = db.get(ServiceTeam, mapping.service_team_id)
+        if team is None or not team.is_active:
+            raise AiIntakeConfigurationError(
+                "AI intake department mapping team must be active"
+            )
+
+
 def resolve_config(
     db: Session, request: AiIntakeRequest
 ) -> ResolvedAiIntakeConfig | None:
@@ -596,7 +652,9 @@ def resolve_config(
             0 if _normalize_key(row.channel_type) == channel else 1,
         )
     )
-    return _resolved_config(matching[0])
+    config = _resolved_config(matching[0])
+    _validate_runtime_config(db, config)
+    return config
 
 
 def evaluate_data_cleaning_eligibility(
@@ -605,12 +663,7 @@ def evaluate_data_cleaning_eligibility(
     request: AiIntakeRequest,
     primary_service_team_id: UUID | None,
 ) -> DataCleaningEligibility:
-    """Evaluate only the configured-team gate for the future cleaning flow.
-
-    This deliberately performs no contact reads, subscriber lookups, dialogue,
-    identity proofing, or customer-data writes. Team identity is an exact UUID
-    comparison; names and legacy ``team_type`` values are never interpreted.
-    """
+    """Evaluate governed NCC profile cleanup eligibility without writes."""
 
     channel = _normalize_key(request.channel_type)
     if channel not in SUPPORTED_CHANNELS:
@@ -640,6 +693,50 @@ def evaluate_data_cleaning_eligibility(
         return DataCleaningEligibility(
             eligible=False,
             reason=DataCleaningEligibilityReason.routing_disabled,
+            config_id=config.id,
+        )
+    config_metadata = {}
+    row = db.get(AiIntakeConfig, config.id)
+    if row is not None and isinstance(row.metadata_, dict):
+        config_metadata = dict(row.metadata_)
+    if not bool(config_metadata.get("data_cleanup_enabled") or False):
+        return DataCleaningEligibility(
+            eligible=False,
+            reason=DataCleaningEligibilityReason.collection_disabled,
+            config_id=config.id,
+        )
+    if request.conversation_id is None:
+        return DataCleaningEligibility(
+            eligible=False,
+            reason=DataCleaningEligibilityReason.subscriber_not_linked,
+            config_id=config.id,
+        )
+    from app.models.team_inbox import InboxConversation
+
+    conversation = db.get(InboxConversation, request.conversation_id)
+    if conversation is None or conversation.subscriber_id is None:
+        return DataCleaningEligibility(
+            eligible=False,
+            reason=DataCleaningEligibilityReason.subscriber_not_linked,
+            config_id=config.id,
+        )
+    subscriber = db.get(Subscriber, conversation.subscriber_id)
+    if subscriber is None:
+        return DataCleaningEligibility(
+            eligible=False,
+            reason=DataCleaningEligibilityReason.subscriber_not_linked,
+            config_id=config.id,
+        )
+    if not is_direct_residential_customer(subscriber):
+        return DataCleaningEligibility(
+            eligible=False,
+            reason=DataCleaningEligibilityReason.subscriber_ineligible,
+            config_id=config.id,
+        )
+    if not missing_cleanup_fields(subscriber):
+        return DataCleaningEligibility(
+            eligible=False,
+            reason=DataCleaningEligibilityReason.no_missing_profile_fields,
             config_id=config.id,
         )
     support_team_id = config.data_cleaning_support_team_id
@@ -743,7 +840,7 @@ def _department_for(
     for mapping in config.department_mappings:
         if mapping.intent is intent:
             return mapping.department, mapping.service_team_id
-    return _DEFAULT_DEPARTMENT_BY_INTENT[intent], None
+    return intent.value, None
 
 
 def _safe_classification(
@@ -835,8 +932,8 @@ def _skipped_outcome(
     )
 
 
-def classify_message(db: Session, request: AiIntakeRequest) -> AiIntakeOutcome:
-    """Classify one eligible inbound message and fail safely to routing metadata."""
+def prepare_async_intake(db: Session, request: AiIntakeRequest) -> AiIntakeOutcome:
+    """Resolve intake eligibility without calling the LLM provider."""
 
     started = time.monotonic()
     channel = _normalize_key(request.channel_type)
@@ -845,6 +942,18 @@ def classify_message(db: Session, request: AiIntakeRequest) -> AiIntakeOutcome:
             started=started,
             channel=channel,
             reason=AiIntakeReason.unsupported_channel,
+        )
+    if request.has_active_assignment:
+        return _skipped_outcome(
+            started=started,
+            channel=channel,
+            reason=AiIntakeReason.active_owner,
+        )
+    if not request.created_conversation and not request.awaiting_follow_up:
+        return _skipped_outcome(
+            started=started,
+            channel=channel,
+            reason=AiIntakeReason.existing_conversation,
         )
     try:
         config = resolve_config(db, request)
@@ -889,21 +998,81 @@ def classify_message(db: Session, request: AiIntakeRequest) -> AiIntakeOutcome:
             reason=AiIntakeReason.campaign_excluded,
             config=config,
         )
+    return _outcome(
+        started=started,
+        status=AiIntakeStatus.classifying,
+        reason=AiIntakeReason.classified,
+        config=config,
+        follow_up_count=request.follow_up_count,
+    )
+
+
+def classify_message(db: Session, request: AiIntakeRequest) -> AiIntakeOutcome:
+    """Classify one eligible inbound message and fail safely to routing metadata."""
+
+    started = time.monotonic()
+    channel = _normalize_key(request.channel_type)
+    if channel not in SUPPORTED_CHANNELS:
+        return _skipped_outcome(
+            started=started,
+            channel=channel,
+            reason=AiIntakeReason.unsupported_channel,
+        )
     if request.has_active_assignment:
         return _skipped_outcome(
             started=started,
             channel=channel,
             reason=AiIntakeReason.active_owner,
-            config=config,
         )
     if not request.created_conversation and not request.awaiting_follow_up:
         return _skipped_outcome(
             started=started,
             channel=channel,
             reason=AiIntakeReason.existing_conversation,
+        )
+    try:
+        config = resolve_config(db, request)
+    except Exception as exc:
+        logger.warning(
+            "ai intake configuration resolution failed",
+            extra={
+                "event": "ai_intake_invalid_configuration",
+                "channel": channel,
+                "error_type": type(exc).__name__,
+            },
+        )
+        return _outcome(
+            started=started,
+            status=AiIntakeStatus.failed,
+            reason=AiIntakeReason.invalid_configuration,
+        )
+    if config is None:
+        return _skipped_outcome(
+            started=started,
+            channel=channel,
+            reason=AiIntakeReason.no_matching_config,
+        )
+    if not config.is_enabled:
+        return _skipped_outcome(
+            started=started,
+            channel=channel,
+            reason=AiIntakeReason.disabled,
             config=config,
         )
-
+    if not request.routing_allows_ai:
+        return _skipped_outcome(
+            started=started,
+            channel=channel,
+            reason=AiIntakeReason.routing_disabled,
+            config=config,
+        )
+    if config.exclude_campaign_attribution and request.campaign_attributed:
+        return _skipped_outcome(
+            started=started,
+            channel=channel,
+            reason=AiIntakeReason.campaign_excluded,
+            config=config,
+        )
     logger.info(
         "ai intake classification started",
         extra={

@@ -144,20 +144,33 @@ replacing intake metadata. This prevents concurrent webhooks, or a webhook and
 the recovery task, from losing the follow-up count, fallback deadline, or
 delivery evidence.
 
-The contact-data cleaning scaffold stores only a conversation-level
-`ai_data_cleaning` state. Its enum begins at `idle` and records
-`identify_pending` only when AI intake is enabled for the channel and the
-conversation's existing `primary_service_team_id` exactly equals the configured
-`data_cleaning_support_team_id`. It never infers Support from a team name or
-legacy `team_type`, and it performs no subscriber lookup, contact read/write,
-identity proofing, or AI dialogue.
+The conversational intake extension stores durable lifecycle in
+`ai_intake_sessions`. `ai_intake_configs` remains the compatibility row used by
+existing routes, but customer-visible AI messages attach to immutable
+`ai_intake_policy_versions` so the display name, welcome message, editable
+business instructions, approved ISP information, queue templates and data
+cleanup policy are auditable after activation. Protected system, security,
+privacy and ownership instructions stay code-owned and are not editable by
+normal administrators.
 
-Schema tension remains unresolved: `uq_ai_intake_configs_scope_key` permits only
-one `AiIntakeConfig` row per `scope_key`, regardless of channel or future flow.
-The classifier and data-cleaning scaffold therefore currently share one row and
-one enablement lifecycle. Before data cleaning gains dialogue or independent
-controls, the configuration identity must be redesigned explicitly rather than
-creating a parallel settings owner.
+The authoritative AI session state machine is:
+
+`eligible -> welcome_pending -> collecting_intent -> awaiting_customer ->
+classified -> handoff_requested -> completed`
+
+Terminal states are `completed`, `stopped_human_takeover`,
+`fallback_escalated`, `expired`, `failed` and `ineligible`. `queued` and
+`assigned` are not AI states; they are Team Inbox routing outcomes and may
+appear only as derived audit metadata.
+
+The contact-data cleaning flow is independent and disabled by default for
+production collection. AI may collect candidate values only when the
+conversation is reliably linked to a directly managed residential
+`user_type=customer` subscriber missing gender, date of birth, or both. AI never
+updates subscriber rows. `customer.profile_commands` validates and saves
+through a typed command, rechecks eligibility under lock, refuses reseller or
+ambiguous identities, prevents overwriting existing values, and appends
+`subscriber_field_verifications` evidence without storing DOB in AI metadata.
 
 Destination-team resolution remains owned by Team Inbox routing. The queue
 service remains the only owner of enqueueing and permanent queue numbers, and
@@ -185,12 +198,17 @@ default-off controls and never send automatically.
   `ai.generation` control. It may answer manager questions from a bounded
   Team Inbox conversation or recent-queue projection, but it cannot assign,
   reply, close, refund, profile-update, or otherwise mutate a domain row.
+- **Conversational AI intake.** WhatsApp, Facebook Messenger and Instagram DM
+  may enter `pending` UI state with an active `ai_intake_sessions` row. The AI
+  sends through Team Inbox outbound only, uses `sender_type=ai` identity
+  metadata, classifies intent, and requests handoff. Team Inbox remains the
+  owner of routing, queueing, assignment and provider delivery.
 
 ## Open work
 
-- **`ai_handling`.** The inbox conversation flag is read by the queue filter,
-  the projection counter and the admin surface, and written by nothing. It
-  needs an owner or removal; the AI chat-support work should settle which.
+- **`ai_handling` projection repair.** `ai_intake_sessions` now owns the AI
+  lifecycle. The conversation metadata flag is a rebuildable UI/filter
+  projection and should gain a focused repair command if drift is observed.
 - **Confidence floor.** `confidence_score` is captured on every insight and
   never used to decide whether to surface one.
 - **Typed contracts for `ai.insights` and `ai.generation`.** `ai.gateway` is

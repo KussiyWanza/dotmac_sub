@@ -234,6 +234,9 @@ DOMAIN = DomainSOT(
             module="app.services.ai_intake",
             owns=(
                 "AI conversational intake configuration lifecycle",
+                "AI conversational intake policy-version lifecycle",
+                "AI conversational intake session lifecycle",
+                "AI generation attempt evidence",
                 "customer-message intake eligibility policy",
                 "bounded customer-message intent classification",
                 "customer contact-data cleaning eligibility policy",
@@ -246,15 +249,16 @@ DOMAIN = DomainSOT(
                 "events.dispatcher",
             ),
             notes=(
-                "AiIntakeConfig is the only runtime policy source. The owner "
-                "classifies WhatsApp, Facebook Messenger, and Instagram only, "
-                "returns validated destination-team metadata and one controlled "
-                "follow-up candidate; the Team Inbox outbound owner alone delivers "
-                "it. Intake never writes queue position or chooses an agent. "
-                "The reserved data-cleaning gate compares exact configured and "
-                "conversation team UUIDs and performs no customer-data access. Classification "
-                "is a read-only participant in the Inbox coordinator transaction; "
-                "configuration writes enter execute_owner_command once."
+                "AiIntakeConfig remains the compatibility runtime policy source, "
+                "while AiIntakePolicyVersion snapshots customer-visible prompt "
+                "content for conversational intake. The owner classifies WhatsApp, "
+                "Facebook Messenger, and Instagram DM only, records session and "
+                "generation evidence, and returns validated destination-team "
+                "metadata. Team Inbox outbound alone delivers customer messages, "
+                "and Team Inbox routing alone owns queue position and agent "
+                "selection. Data-cleaning eligibility reads only the exact linked "
+                "Subscriber and direct residential-customer facts; saving is owned "
+                "by customer.profile_commands."
             ),
             contract=ServiceContract(
                 concerns=(
@@ -264,6 +268,33 @@ DOMAIN = DomainSOT(
                         input_names=(
                             "reviewed AI intake configuration command",
                             "active fallback and mapped service teams",
+                        ),
+                        canonical_writer="ai.intake",
+                    ),
+                    ConcernContract(
+                        name="AI conversational intake policy-version lifecycle",
+                        role=OwnerRole.AUTHORITATIVE_RECORD,
+                        input_names=(
+                            "reviewed AI intake configuration command",
+                            "active fallback and mapped service teams",
+                        ),
+                        canonical_writer="ai.intake",
+                    ),
+                    ConcernContract(
+                        name="AI conversational intake session lifecycle",
+                        role=OwnerRole.AUTHORITATIVE_RECORD,
+                        input_names=(
+                            "enabled matching AI intake configuration",
+                            "normalized inbound conversation state",
+                        ),
+                        canonical_writer="ai.intake",
+                    ),
+                    ConcernContract(
+                        name="AI generation attempt evidence",
+                        role=OwnerRole.AUTHORITATIVE_RECORD,
+                        input_names=(
+                            "bounded redacted inbound message projection",
+                            "observed provider classification response",
                         ),
                         canonical_writer="ai.intake",
                     ),

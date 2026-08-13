@@ -539,13 +539,17 @@ DOMAIN = DomainSOT(
                 "admin customer profile edits",
                 "person-to-business customer conversion",
                 "approved legacy Subscriber name corrections",
+                "governed NCC DOB/gender profile cleanup writes",
             ),
             depends_on=("customer.identity_scope",),
             notes=(
                 "Business conversion is an explicit command. Generic "
                 "person edits and form category controls must not change "
                 "the customer account type. Approved legacy Subscriber "
-                "name corrections remain here until explicit Party cutover."
+                "name corrections remain here until explicit Party cutover. "
+                "AI-collected DOB/gender candidates are validated and saved "
+                "only through this owner after direct residential-customer "
+                "eligibility is rechecked."
             ),
         ),
         SOTService(
