@@ -54,6 +54,13 @@ def test_prepaid_draft_reconciliation_has_one_contracted_owner():
     )
     assert missing_invoice_repair.role is OwnerRole.RECONCILER
     assert missing_invoice_repair.canonical_writer == service.name
+    opening_settlement = next(
+        item
+        for item in service.contract.concerns
+        if item.name == "reviewed pre-opening invoice settlement correction"
+    )
+    assert opening_settlement.role is OwnerRole.RECONCILER
+    assert opening_settlement.canonical_writer == service.name
 
 
 def test_funding_change_checks_draft_before_invoice_less_renewal():
@@ -138,12 +145,18 @@ def test_reconciliation_cli_is_dry_run_first():
         'parser.add_argument("--repair-missing-paid-invoice", action="store_true")'
         in source
     )
+    assert (
+        'parser.add_argument("--repair-opening-settlement", action="store_true")'
+        in source
+    )
     assert "preview_funded_prepaid_proforma_adoption(" in source
     assert "adopt_funded_prepaid_proforma(" in source
     assert "preview_historical_paid_prepaid_invoice_repair(" in source
     assert "repair_historical_paid_prepaid_invoice(" in source
     assert "preview_missing_paid_prepaid_invoice_repair(" in source
     assert "create_reviewed_paid_prepaid_invoice(" in source
+    assert "preview_opening_settlement_correction(" in source
+    assert "reconcile_opening_settlement_correction(" in source
 
 
 def test_admin_invoice_adapter_calls_only_the_authoritative_reconciler():

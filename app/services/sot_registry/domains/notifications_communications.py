@@ -30,6 +30,7 @@ def _team_inbox_contract(
     event_types: tuple[str, ...] = (),
     projections: tuple[str, ...] = (),
     domain_error_codes: tuple[str, ...] = (),
+    retryable_codes: tuple[str, ...] = (),
     mapping_owner: str = "Team Inbox transport and web adapters",
     design_refs: tuple[str, ...] | None = None,
     test_refs: tuple[str, ...] | None = None,
@@ -101,7 +102,7 @@ def _team_inbox_contract(
                 *boundary_codes,
             ),
             mapping_owner=mapping_owner,
-            retryable_codes=(),
+            retryable_codes=retryable_codes,
             fail_closed_on=(
                 "unverified provider provenance",
                 "ambiguous contact identity",
@@ -2158,6 +2159,12 @@ DOMAIN = DomainSOT(
                     ),
                 ),
                 transaction_mode=TransactionMode.COORDINATOR_MANAGED,
+                domain_error_codes=(
+                    "communications.team_inbox_commands.conversation_busy",
+                ),
+                retryable_codes=(
+                    "communications.team_inbox_commands.conversation_busy",
+                ),
             ),
         ),
         SOTService(
