@@ -331,6 +331,7 @@
               class="space-y-2"
               data-reply-form>
             {% include "components/forms/csrf_input.html" %}
+            <input type="hidden" name="next_url" value="{{ queue_return_url | default('/admin/inbox') }}">
             <input type="hidden" name="idempotency_key" :value="idempotencyKey">
             <input type="hidden" name="reply_to_message_id" :value="replyTo ? replyTo.id : ''">
             {# Provenance for the reply owner: macro execution, template audit,

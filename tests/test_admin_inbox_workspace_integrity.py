@@ -156,6 +156,15 @@ def test_reply_submission_refreshes_inbox_fragments_without_page_navigation():
     assert "admin-inbox.js?v=20260811a" in INDEX
 
 
+def test_conversation_drilldown_and_reply_fallback_preserve_queue_page_state():
+    assert "conversation_queue_item(row, list_query" in QUEUE
+    assert "conversation_url = list_query.url('/admin/inbox')" in QUEUE
+    assert 'hx-push-url="{{ conversation_url }}"' in QUEUE
+    assert "conversation_queue_item(row, list_query" in SIDEBAR
+    assert 'name="next_url"' in CONVERSATION
+    assert "queue_return_url | default('/admin/inbox')" in CONVERSATION
+
+
 def test_macro_menu_dispatches_identity_not_just_text():
     assert '"macroId"' in CONVERSATION
 

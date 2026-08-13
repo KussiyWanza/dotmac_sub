@@ -240,6 +240,10 @@ stale. Realtime has no replay authority.
 - Filters: search, status, channel, team, assignee, Unreplied, Needs Attention,
   AI handling, ticket handoff, activity window, contact resolution, priority,
   mute, snooze, open, unassigned, and unread.
+- Pagination uses the projection owner's exact filtered total and compact page
+  sequence. Conversation drill-down URLs preserve the active filters, sort,
+  page size, and page number; reply refreshes and non-HTMX mutation fallbacks
+  return to that same queue location rather than resetting to page one.
 - Advanced Service Team conditions use the shared JSON filter grammar, but the
   Inbox projection owns their typed allow-list and relationship semantics. The
   only advanced field is `InboxConversation.service_team_id`; `=`, `!=`, `in`,

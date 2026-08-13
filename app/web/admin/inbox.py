@@ -287,7 +287,9 @@ def team_inbox_queue(
                     if is_list_fragment_request
                     else team_inbox_projection.InboxQueueComposition.full_workspace
                 ),
-                include_total_count=False,
+                # Numbered pagination requires exact filtered bounds from the
+                # projection owner, including a truthful final-page link.
+                include_total_count=True,
             ),
         )
     except team_inbox_filters.InboxFilterError as exc:
@@ -310,6 +312,7 @@ def team_inbox_queue(
             "per_page": projection.page_meta.per_page,
             "has_previous": projection.page_meta.has_previous,
             "has_next": projection.page_meta.has_next,
+            "queue_return_url": _inbox_queue_return_url(request),
             "search": projection.list_query.search or "",
             "status": projection.status,
             "channel_type": projection.channel_type,
@@ -529,12 +532,12 @@ def _detail_redirect(
         query_items = [
             (key, value)
             for key, value in parse_qsl(parsed.query, keep_blank_values=True)
-            if key not in {"c", "status", "message"}
+            if key not in {"c", "conversation_id", "notice_status", "message"}
         ]
         query_items.extend(
             (
                 ("c", str(conversation_id)),
-                ("status", status),
+                ("notice_status", status),
                 ("message", message),
             )
         )
@@ -544,11 +547,25 @@ def _detail_redirect(
         )
     return RedirectResponse(
         url=(
-            f"/admin/inbox?c={conversation_id}&status={quote_plus(status)}"
+            f"/admin/inbox?c={conversation_id}&notice_status={quote_plus(status)}"
             f"&message={quote_plus(message)}"
         ),
         status_code=303,
     )
+
+
+def _inbox_queue_return_url(request: Request) -> str:
+    """Return the current local Inbox queue URL for mutation fallbacks."""
+
+    candidates = (
+        getattr(request, "headers", {}).get("hx-current-url"),
+        str(getattr(request, "url", "")),
+    )
+    for candidate in candidates:
+        parsed = urlsplit(str(candidate or "").strip())
+        if parsed.path == "/admin/inbox":
+            return urlunsplit(("", "", parsed.path, parsed.query, ""))
+    return "/admin/inbox"
 
 
 def _reply_presentation_response(
@@ -725,7 +742,10 @@ def team_inbox_detail(
         # statistics. Rebuilding that full-page context here delays the thread
         # swap (and therefore leaves the opening loader visible) without giving
         # this partial any values that it consumes.
-        context: dict[str, object] = {"request": request}
+        context: dict[str, object] = {
+            "request": request,
+            "queue_return_url": _inbox_queue_return_url(request),
+        }
         context.update(view)
         return templates.TemplateResponse("admin/inbox/_conversation.html", context)
     return RedirectResponse(url=f"/admin/inbox?c={conversation_id}", status_code=303)
