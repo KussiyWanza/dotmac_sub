@@ -12,6 +12,24 @@ import 'database.dart';
 /// Pluggable clock/delay so throttle behavior is testable without real time.
 typedef DelayFn = Future<void> Function(Duration duration);
 
+class OfflineRequestHistoryEntry {
+  const OfflineRequestHistoryEntry({
+    required this.clientRef,
+    required this.kind,
+    required this.status,
+    required this.payload,
+    required this.createdAt,
+    this.lastError,
+  });
+
+  final String clientRef;
+  final String kind;
+  final String status;
+  final Map<String, dynamic> payload;
+  final DateTime createdAt;
+  final String? lastError;
+}
+
 /// Maps an outbox entry kind to its API call.
 class OutboxRouting {
   static (String method, String path) route(
@@ -222,6 +240,30 @@ class SyncService {
   Future<OutboxEntry?> outboxEntry(String clientRef) => (db.select(
     db.outboxEntries,
   )..where((row) => row.clientRef.equals(clientRef))).getSingleOrNull();
+
+  Future<List<OfflineRequestHistoryEntry>> offlineRequestHistory(
+    String kind,
+  ) async {
+    final rows =
+        await (db.select(db.outboxEntries)
+              ..where(
+                (row) =>
+                    row.kind.equals(kind) & row.status.isNotValue('sent'),
+              )
+              ..orderBy([(row) => OrderingTerm.desc(row.createdAt)]))
+            .get();
+    return [
+      for (final row in rows)
+        OfflineRequestHistoryEntry(
+          clientRef: row.clientRef,
+          kind: row.kind,
+          status: row.status,
+          payload: (jsonDecode(row.payloadJson) as Map).cast<String, dynamic>(),
+          createdAt: row.createdAt,
+          lastError: row.lastError,
+        ),
+    ];
+  }
 
   Future<List<PendingPhoto>> pendingPhotosForJob(String workOrderId) =>
       (db.select(

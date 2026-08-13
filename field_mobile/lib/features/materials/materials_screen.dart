@@ -155,6 +155,7 @@ class _MaterialRequestTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isLocal = request.status == 'queued' || request.status == 'sync failed';
     final date = request.createdAt == null
         ? null
         : DateFormat('d MMM, HH:mm').format(request.createdAt!.toLocal());
@@ -176,8 +177,8 @@ class _MaterialRequestTile extends StatelessWidget {
             if (date != null) Text(date),
           ],
         ),
-        trailing: const Icon(Icons.chevron_right),
-        onTap: () => context.push('/materials/${request.id}'),
+        trailing: isLocal ? null : const Icon(Icons.chevron_right),
+        onTap: isLocal ? null : () => context.push('/materials/${request.id}'),
       ),
     );
   }

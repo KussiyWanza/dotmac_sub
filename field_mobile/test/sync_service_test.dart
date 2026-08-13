@@ -405,6 +405,58 @@ void main() {
     expect(sent?['items'], payload['items']);
   });
 
+  test('offline request history shows pending and failed requests', () async {
+    await sync.enqueue(
+      kind: 'expense_request',
+      clientRef: 'expense-visible-ref',
+      payload: {'purpose': 'Fuel', 'items': []},
+    );
+    await sync.enqueue(
+      kind: 'material_request',
+      clientRef: 'material-visible-ref',
+      payload: {'priority': 'high', 'items': []},
+    );
+
+    var expenses = await sync.offlineRequestHistory('expense_request');
+    expect(expenses, hasLength(1));
+    expect(expenses.single.clientRef, 'expense-visible-ref');
+    expect(expenses.single.status, 'pending');
+    expect(expenses.single.payload['purpose'], 'Fuel');
+
+    final expenseRow = await sync.outboxEntry('expense-visible-ref');
+    await (db.update(db.outboxEntries)
+          ..where((row) => row.clientRef.equals('expense-visible-ref')))
+        .write(
+          const OutboxEntriesCompanion(
+            status: Value('conflict'),
+            lastError: Value('Server rejected request'),
+          ),
+        );
+    expect(expenseRow, isNotNull);
+    expenses = await sync.offlineRequestHistory('expense_request');
+    expect(expenses.single.status, 'conflict');
+    expect(expenses.single.lastError, 'Server rejected request');
+    expect(
+      await sync.offlineRequestHistory('material_request'),
+      hasLength(1),
+    );
+  });
+
+  test('successful request sync removes the local queued projection', () async {
+    adapter.on('POST', '/api/v1/field/expense-requests/submit', (options) {
+      return (201, {'id': 'server-expense-id', 'status': 'submitted'});
+    });
+    await sync.enqueue(
+      kind: 'expense_request',
+      clientRef: 'expense-synced-ref',
+      payload: {'purpose': 'Fuel', 'items': []},
+    );
+
+    expect(await sync.offlineRequestHistory('expense_request'), hasLength(1));
+    expect(await sync.flushOutbox(), 1);
+    expect(await sync.offlineRequestHistory('expense_request'), isEmpty);
+  });
+
   test(
     'material request outbox entry routes to the field material endpoint',
     () async {

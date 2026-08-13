@@ -1,6 +1,8 @@
+import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../auth/auth_state.dart';
+import '../execution/execution_controller.dart';
 import 'material_models.dart';
 
 class MaterialsRepository {
@@ -39,14 +41,20 @@ class MaterialsRepository {
   }
 
   Future<List<MaterialRequest>> fetchRequests() async {
-    final response = await _ref
-        .read(apiClientProvider)
-        .dio
-        .get(
-          '/api/v1/field/material-requests',
-          queryParameters: {'limit': 100},
-        );
-    return _items(response.data).map(MaterialRequest.fromJson).toList();
+    final local = await _offlineMaterialRequests(_ref);
+    try {
+      final response = await _ref
+          .read(apiClientProvider)
+          .dio
+          .get(
+            '/api/v1/field/material-requests',
+            queryParameters: {'limit': 100},
+          );
+      return [...local, ..._items(response.data).map(MaterialRequest.fromJson)];
+    } on DioException {
+      if (local.isNotEmpty) return local;
+      rethrow;
+    }
   }
 
   Future<MaterialRequest> fetchRequest(String id) async {
@@ -111,6 +119,28 @@ class MaterialsRepository {
     return MaterialRequest.fromJson(
       (response.data as Map).cast<String, dynamic>(),
     );
+  }
+}
+
+Future<List<MaterialRequest>> _offlineMaterialRequests(Ref ref) async {
+  try {
+    final entries = await ref
+        .read(syncServiceProvider)
+        .offlineRequestHistory('material_request');
+    return [
+      for (final entry in entries)
+        MaterialRequest.fromJson({
+          ...entry.payload,
+          'id': entry.clientRef,
+          'number': 'Queued materials',
+          'status': entry.status == 'conflict' ? 'sync failed' : 'queued',
+          'client_ref': entry.clientRef,
+          'created_at': entry.createdAt.toIso8601String(),
+          'rejection_reason': entry.lastError,
+        }),
+    ];
+  } on UnimplementedError {
+    return const [];
   }
 }
 
