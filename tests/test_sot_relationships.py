@@ -252,6 +252,7 @@ def test_domain_sot_relationships_encode_cross_domain_dependencies():
     )
     assert sot_relationships.dependencies_for("network.fiber_source_staging") == (
         "gis.spatial_sync",
+        "network.crm_map_source",
     )
     assert sot_relationships.dependencies_for("network.fiber_plant_integrity") == (
         "network.fiber_topology",

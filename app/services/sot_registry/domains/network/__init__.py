@@ -52,6 +52,7 @@ DOMAIN = DomainSOT(
         "scripts.network.review_fiber_topology_identity",
         "scripts.network.review_fiber_topology_connectivity",
         "scripts.network.review_forwarding_topology",
+        "scripts.network.stage_crm_network_map",
         "scripts.network.stage_fiber_topology_kmz",
         "app.web.admin.network_*",
         "app.web.customer.connection",
