@@ -215,6 +215,13 @@ def test_lead_form_is_hidden_for_customer_contacts_and_resolved_threads(
     assert contact.eligible is False
     assert "customer contact" in contact.reason
 
+    display = lead_intake.manual_invitation_eligibility(
+        db_session,
+        conversation.id,
+        verify_customer_identity=False,
+    )
+    assert display.eligible is True
+
     conversation.status = "resolved"
     db_session.commit()
     resolved = lead_intake.manual_invitation_eligibility(db_session, conversation.id)
