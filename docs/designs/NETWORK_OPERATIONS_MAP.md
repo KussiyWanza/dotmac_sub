@@ -40,6 +40,23 @@ The endpoint requires `network:map:read`; the dispatch route retains only
 `operations:dispatch:read` and omits plant controls for viewers without the
 additional permission.
 
+## Isolated Network Map V2
+
+`GET /admin/network/map-v2` is a read-only parity preview with its own template,
+frontend entry point, and focused tests. It uses the same `network:map:read`
+permission and composes `NetworkMapProjection` with `NetworkMapPlantProjection`;
+the established `/admin/network/map` route and template are unchanged.
+
+V2 adds approved OLT and service-building overlays, loaded/visible counts,
+layer presets, measurement, nearest-loaded-FDH inspection, segment deep links,
+and explicit termination-point status. Fibre lines still come only from stored,
+validated route geometry. Endpoint proximity never creates connectivity, and a
+segment without projected route geometry is labelled incomplete without a
+fallback line. Base stations and live technicians remain explicitly unavailable
+until their authoritative projection and permission composition are approved.
+The verified comparison and remaining data/architecture gaps are documented in
+`docs/designs/NETWORK_MAP_V2_PARITY.md`.
+
 The equipment projection carries the CRM-parity fields that support dispatch
 inspection: FDH splitter counts; closure splice and tray counts; access-point
 type and placement; service-building street and city; and cable type, fiber
