@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Final
 
 from dotmac_ui.assets import ASSET_NAMESPACE, static_dir, stylesheet_url
+from dotmac_ui.components import template_dir
 from dotmac_ui.contract import THEME_ATTRIBUTE, UI_CONTRACT_VERSION
 
 #: Mounted ahead of Sub's catch-all ``/static`` so the installed artifact is
@@ -29,6 +30,7 @@ from dotmac_ui.contract import THEME_ATTRIBUTE, UI_CONTRACT_VERSION
 #: — the package is the one writer of its own asset.
 UI_ASSET_MOUNT: Final[str] = f"/static/{ASSET_NAMESPACE}"
 UI_ASSET_DIRECTORY: Final[Path] = static_dir() / ASSET_NAMESPACE
+UI_TEMPLATE_DIRECTORY: Final[Path] = template_dir()
 
 #: Carries the package's content digest, so it is cache-safe as published. Do
 #: not append a Sub cache-busting query string to it.
@@ -52,6 +54,7 @@ __all__ = [
     "UI_ASSET_DIRECTORY",
     "UI_ASSET_MOUNT",
     "UI_STYLESHEET_URL",
+    "UI_TEMPLATE_DIRECTORY",
     "UI_THEME_ATTRIBUTE",
     "template_globals",
 ]

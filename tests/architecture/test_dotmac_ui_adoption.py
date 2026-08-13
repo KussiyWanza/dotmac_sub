@@ -20,17 +20,20 @@ a shared design system shared rather than a fourth copy of one:
 
 from __future__ import annotations
 
+import importlib.metadata
 import re
 import tomllib
 from pathlib import Path
 
 import pytest
+from fastapi.templating import Jinja2Templates
+from jinja2 import Environment, FileSystemLoader, TemplateNotFound
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BASE_TEMPLATE = REPO_ROOT / "templates" / "base.html"
 HEAD_PARTIAL = REPO_ROOT / "templates" / "_dotmac_ui_head.html"
 
-EXPECTED_PIN = "0.1.0a3"
+EXPECTED_PIN = "0.1.0a7"
 INDEX_NAME = "forgejo"
 
 
@@ -61,6 +64,21 @@ def test_dotmac_ui_is_pinned_exactly_and_from_the_private_index() -> None:
     )
 
 
+def test_installed_release_publishes_the_empty_state_contract() -> None:
+    import dotmac_ui
+
+    assert importlib.metadata.version("dotmac-ui") == EXPECTED_PIN
+    assert dotmac_ui.__version__ == EXPECTED_PIN
+    assert dotmac_ui.EMPTY_STATE.template == "dotmac_ui/components/empty_state.html"
+    assert dotmac_ui.EMPTY_STATE.parameters == (
+        "title",
+        "message",
+        "action_label",
+        "action_url",
+    )
+    assert dotmac_ui.EMPTY_STATE.classes <= dotmac_ui.PUBLISHED_COMPONENT_CLASSES
+
+
 def test_the_compiled_asset_is_served_from_the_installed_distribution() -> None:
     """No copy of the package's CSS may be committed to this repository."""
     strays = [
@@ -74,6 +92,60 @@ def test_the_compiled_asset_is_served_from_the_installed_distribution() -> None:
         "one writer of its own asset; Sub mounts the installed directory "
         "instead (see app/ui.py)."
     )
+
+    import dotmac_ui
+
+    assert ".dmui-empty-state" in dotmac_ui.stylesheet_path().read_text(
+        encoding="utf-8"
+    )
+
+
+def test_every_jinja_environment_resolves_the_packaged_component() -> None:
+    import dotmac_ui
+
+    from app.ui import UI_TEMPLATE_DIRECTORY
+    from app.web.brand_globals import install_brand_jinja_global
+
+    install_brand_jinja_global()
+
+    from app.web.templates import templates
+
+    assert UI_TEMPLATE_DIRECTORY == dotmac_ui.template_dir()
+    packaged = templates.env.get_template(dotmac_ui.EMPTY_STATE.template)
+    assert packaged.name == dotmac_ui.EMPTY_STATE.template
+
+    rendered = templates.env.get_template("components/data/empty_state.html").render(
+        title="No permissions found",
+        message="Create a permission to start defining access.",
+    )
+    assert 'class="dmui-empty-state"' in rendered
+    assert 'class="dmui-empty-state__title"' in rendered
+    assert "No permissions found" in rendered
+    assert "flex h-16 w-16" not in rendered
+    assert "| safe" not in (
+        REPO_ROOT / "templates" / "components" / "data" / "empty_state.html"
+    ).read_text(encoding="utf-8")
+
+    future_route_templates = Jinja2Templates(directory=REPO_ROOT / "templates")
+    assert (
+        future_route_templates.env.get_template(dotmac_ui.EMPTY_STATE.template).name
+        == dotmac_ui.EMPTY_STATE.template
+    )
+
+
+def test_component_loader_guard_is_red_sensitive() -> None:
+    local_only = Environment(
+        loader=FileSystemLoader(REPO_ROOT / "templates"), autoescape=True
+    )
+
+    with pytest.raises(TemplateNotFound, match="dotmac_ui/components/empty_state"):
+        local_only.get_template("components/data/empty_state.html").render(
+            title="Nothing here"
+        )
+
+
+def test_ui_package_templates_are_not_vendored_into_sub() -> None:
+    assert not (REPO_ROOT / "templates" / "dotmac_ui").exists()
 
 
 def test_the_package_mount_precedes_subs_catch_all_static_mount() -> None:

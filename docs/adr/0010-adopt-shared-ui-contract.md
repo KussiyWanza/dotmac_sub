@@ -115,3 +115,37 @@ adoption task.
   as an active consumer of a design system it abandoned in February.
 - The starter's inventory and its recorded step order need updating with
   finding 1 before steps 3 and 4 run.
+
+## Amendment — 2026-08-13: adopt the published empty-state component
+
+Sub now pins `dotmac-ui==0.1.0a7`, still on UI contract 1. This extends the
+already-adopted token/static contract to the package's inert, namespaced Jinja
+component data. It does not change Sub's product palette, theme choice, domain
+status meanings or action eligibility.
+
+Sub has many `Jinja2Templates` instances. `app.web.brand_globals` is already the
+one initializer applied before lazy web-router imports and backfilled onto
+earlier instances, so it now composes `dotmac_ui.template_dir()` after each
+product loader as well as attaching the existing globals. A package-only test
+or a new hand-built `ChoiceLoader` would not prove Sub's actual route loaders
+can resolve an import.
+
+The byte-identical local `templates/components/data/empty_state.html` markup is
+retired. Its six live table callers keep their include path temporarily, but
+that file is now a thin argument adapter over
+`dotmac_ui/components/empty_state.html`; it emits no Sub-owned component markup,
+accepts no caller-supplied SVG and uses no `safe` filter. New callers import the
+package macro directly.
+
+`templates/components/ui/macros.html::empty_state` is deliberately not changed
+in this slice. It owns a different table-row contract (`colspan` and the `<tr>`
+wrapper), accepts product icon/accent inputs, and has a much broader caller
+surface. Similar purpose is not the same published signature; reconciling that
+path requires its own inventory and migration rather than silently narrowing
+every caller to make this adoption look larger.
+
+The architecture guard verifies the released a7 contract and CSS, resolves the
+package template through a real Sub `Jinja2Templates` instance, renders the
+compatibility include, rejects vendored package templates, and includes a
+sensitivity environment that fails with `TemplateNotFound` when the package
+loader layer is omitted.

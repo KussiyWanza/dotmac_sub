@@ -152,6 +152,16 @@ role NAMES but not its values — are in
 [`docs/adr/0010-adopt-shared-ui-contract.md`](adr/0010-adopt-shared-ui-contract.md).
 Guarded by `tests/architecture/test_dotmac_ui_adoption.py`.
 
+**2026-08-13 — `dotmac-ui` `0.1.0a3` → `0.1.0a7`.** UI contract 1 remains
+compatible. The new consumed surface is inert, namespaced Jinja package data
+plus its compiled `.dmui-empty-state*` CSS; no kernel, model, migration or
+runtime dependency is introduced. Sub composes the published template root
+into every live `Jinja2Templates` environment through its existing central
+initializer. The six live callers of the byte-identical local include now emit
+package-owned markup through a thin compatibility adapter; Sub's richer table
+macro remains a separate, explicitly unreconciled contract. ADR-0010's dated
+amendment records the boundary and verification.
+
 **2026-08-11 — `0.1.0a27` → `0.1.0a40`.** This is the contract pin and
 lineage rehearsal the gate needs, not migration composition or identity
 adoption. Sub cannot rehearse a migration lineage it does not have, so the pin
