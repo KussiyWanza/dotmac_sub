@@ -1458,11 +1458,7 @@ def _social_post_identifier(
 def _provider_comment_id(
     message: team_inbox_read.InboxTimelineMessage,
 ) -> str | None:
-    return (
-        str(message.external_message_id).strip()
-        if getattr(message, "external_message_id", None)
-        else None
-    ) or _metadata_text(
+    return _metadata_text(
         message.metadata,
         "provider_comment_id",
         "comment_id",
