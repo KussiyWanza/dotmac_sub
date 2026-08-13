@@ -631,6 +631,7 @@ SERVICES: tuple[SOTService, ...] = (
                     name="customer-to-dedicated-Quote-Lead resolution",
                     role=OwnerRole.COMMAND_WRITER,
                     input_names=("canonical customer account state",),
+                    canonical_writer="sales.customer_quote_linkage",
                 ),
             ),
             authoritative_inputs=(
@@ -655,6 +656,19 @@ SERVICES: tuple[SOTService, ...] = (
                 ),
                 mapping_owner="admin sales Quote form adapter",
                 fail_closed_on=("inactive customer or missing reviewed Party binding",),
+            ),
+            events=EventContract(
+                event_types=("quote.created",),
+                schema_version=1,
+                delivery_owner="events.dispatcher",
+                compatibility=(
+                    "The enclosing quote-authoring coordinator stages quote.created "
+                    "with the resolved Lead and existing Subscriber identifiers."
+                ),
+                replay=(
+                    "The unique customer linkage and enclosing Quote submission "
+                    "fingerprint suppress duplicate linkage and event evidence."
+                ),
             ),
             migration=MigrationContract(
                 state=AuthorityMigrationState.NATIVE,
