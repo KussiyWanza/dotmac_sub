@@ -1,10 +1,10 @@
-"""Predecessor-to-526 proof for the additive kernel audit R1 shape.
+"""Deployed-524-to-526 proof for the additive kernel audit R1 shape.
 
 The squashed bootstrap constructs current model metadata even when Alembic is
-stopped before the additive audit revision. This test therefore runs the real
-chain to its current predecessor, removes exactly the three R1 columns to
-reconstruct the deployed predecessor shape, seeds a historical row, and then
-runs the real 526 upgrade. SQLite or ``create_all``
+stopped at 524. This test therefore runs the real chain to 524, removes exactly
+the three R1 columns to reconstruct the deployed predecessor shape, seeds a
+historical row, and then runs the real chain through Inbox 525 and audit 526.
+SQLite or ``create_all``
 would not prove the two-step PostgreSQL default behavior or JSONB shape.
 """
 
@@ -30,7 +30,7 @@ from app.models.audit import AuditActorType, AuditEvent
 from app.schemas.audit import AuditEventCreate
 from app.services.audit import audit_events
 
-PREDECESSOR = "525_inbox_self_assign_permission"
+PREDECESSOR = "524_network_map_v2_asset_proposals"
 REVISION = "526_audit_events_kernel_r1"
 
 

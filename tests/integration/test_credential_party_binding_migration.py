@@ -1,4 +1,4 @@
-"""Fresh and predecessor-shape PostgreSQL proofs for migration 527."""
+"""Fresh and deployed-526 PostgreSQL proofs for migration 527."""
 
 from __future__ import annotations
 

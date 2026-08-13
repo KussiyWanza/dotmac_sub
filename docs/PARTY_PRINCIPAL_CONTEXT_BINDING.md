@@ -1,6 +1,6 @@
 # Party Principal and Organization-Context Binding
 
-Status: migrations 353 and 525 provide additive principal and credential
+Status: migrations 353 and 527 provide additive principal and credential
 projection foundations; no credential data backfill, authentication reader
 cutover, RLS, or compatibility retirement.
 
@@ -26,7 +26,7 @@ One Person may therefore have a SystemUser principal, a reseller principal, a
 vendor context, a customer account, and linked-contact relationships without
 duplicating identity or combining permissions implicitly.
 
-## Migration 525: credential authentication projection
+## Migration 527: credential authentication projection
 
 `party.credential_authentication_projection` owns the additive projection from
 one `UserCredential` to the Person Party it authenticates, the installed
@@ -65,7 +65,7 @@ legacy principal readiness and completion/correctness of the new projection.
 Neither number is allowed to stand in for the other. The report is aggregate
 and PII-free.
 
-Migration 525 performs no population change. Staff and subscriber adoption
+Migration 527 performs no population change. Staff and subscriber adoption
 remain separate approval-bound work: the existing Subscriber executor cannot
 bind SystemUsers, and no command infers identity from email, name, username, or
 other contact values.
@@ -261,7 +261,7 @@ Runtime cutover requires all of the following:
 For credentials specifically, cutover additionally requires every credential
 to carry a complete projection, zero undeclared-mechanism/provider/Person/tuple
 drift cohorts, shadow login parity, and a production-derived rehearsal proving
-the tenant GUC and forced-RLS session contract. Migration 525 does not enable
+the tenant GUC and forced-RLS session contract. Migration 527 does not enable
 RLS because doing so before that session contract would turn a loud migration
 failure into fail-silent empty reads.
 

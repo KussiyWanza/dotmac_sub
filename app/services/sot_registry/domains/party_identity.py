@@ -305,7 +305,7 @@ DOMAIN = DomainSOT(
                 "observability.audit_log",
             ),
             notes=(
-                "Migration 525 is additive. This owner locks and projects one "
+                "Migration 527 is additive. This owner locks and projects one "
                 "credential to a Person Party, exact installed verifier binding, "
                 "operator tenant and reviewed evidence. Legacy principal foreign "
                 "keys remain login authority until a later reader cutover."
@@ -361,7 +361,7 @@ DOMAIN = DomainSOT(
                         owner="party.credential_authentication_projection",
                         kind=AuthorityKind.CONTROL_INPUT,
                         source=(
-                            "Migration 525 deterministic binding key, mechanism and "
+                            "Migration 527 deterministic binding key, mechanism and "
                             "operator-facing label; no credential material"
                         ),
                     ),
