@@ -155,7 +155,8 @@ class _MaterialRequestTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isLocal = request.status == 'queued' || request.status == 'sync failed';
+    final isLocal =
+        request.status == 'queued' || request.status == 'sync failed';
     final date = request.createdAt == null
         ? null
         : DateFormat('d MMM, HH:mm').format(request.createdAt!.toLocal());

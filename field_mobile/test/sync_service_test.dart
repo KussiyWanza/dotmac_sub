@@ -424,22 +424,19 @@ void main() {
     expect(expenses.single.payload['purpose'], 'Fuel');
 
     final expenseRow = await sync.outboxEntry('expense-visible-ref');
-    await (db.update(db.outboxEntries)
-          ..where((row) => row.clientRef.equals('expense-visible-ref')))
-        .write(
-          const OutboxEntriesCompanion(
-            status: Value('conflict'),
-            lastError: Value('Server rejected request'),
-          ),
-        );
+    await (db.update(
+      db.outboxEntries,
+    )..where((row) => row.clientRef.equals('expense-visible-ref'))).write(
+      const OutboxEntriesCompanion(
+        status: Value('conflict'),
+        lastError: Value('Server rejected request'),
+      ),
+    );
     expect(expenseRow, isNotNull);
     expenses = await sync.offlineRequestHistory('expense_request');
     expect(expenses.single.status, 'conflict');
     expect(expenses.single.lastError, 'Server rejected request');
-    expect(
-      await sync.offlineRequestHistory('material_request'),
-      hasLength(1),
-    );
+    expect(await sync.offlineRequestHistory('material_request'), hasLength(1));
   });
 
   test('successful request sync removes the local queued projection', () async {

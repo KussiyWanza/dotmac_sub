@@ -247,8 +247,7 @@ class SyncService {
     final rows =
         await (db.select(db.outboxEntries)
               ..where(
-                (row) =>
-                    row.kind.equals(kind) & row.status.isNotValue('sent'),
+                (row) => row.kind.equals(kind) & row.status.isNotValue('sent'),
               )
               ..orderBy([(row) => OrderingTerm.desc(row.createdAt)]))
             .get();
