@@ -19,7 +19,7 @@
 {% endmacro %}
 
 {% macro render_comment(node, selected_id, can_reply) %}
-<article class="group flex gap-3" data-provider-comment-id="{{ node.provider_comment_id or '' }}">
+<article class="group flex gap-3">
     {{ avatar(node.author_name, node.author_avatar_url, node.message.channel_type, "h-8 w-8") }}
     <div class="min-w-0 flex-1">
         <div class="flex items-start justify-between gap-3">
