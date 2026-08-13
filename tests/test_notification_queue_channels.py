@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 from app.models.domain_settings import DomainSetting, SettingDomain
 from app.models.notification import (
@@ -128,9 +129,7 @@ def test_deliver_notification_queue_handles_sms_and_whatsapp(db_session, monkeyp
     assert wa.status == NotificationStatus.delivered
 
 
-def test_immediate_delivery_is_bounded_to_exact_notification(
-    db_session, monkeypatch
-):
+def test_immediate_delivery_is_bounded_to_exact_notification(db_session, monkeypatch):
     selected = _queued_notification(
         channel=NotificationChannel.sms,
         recipient="+2348000000001",
@@ -310,6 +309,7 @@ def test_deliver_notification_queue_processes_push_channel(db_session, monkeypat
         recipient="subscriber",
         body="Usage alert",
     )
+    push.subscriber_id = uuid4()
     db_session.add(push)
     db_session.commit()
 
@@ -322,6 +322,33 @@ def test_deliver_notification_queue_processes_push_channel(db_session, monkeypat
     db_session.refresh(push)
     assert delivered == 1
     assert push.status == NotificationStatus.delivered
+
+
+def test_push_delivery_fails_closed_without_subscriber_identity(
+    db_session, monkeypatch
+):
+    push = _queued_notification(
+        channel=NotificationChannel.push,
+        recipient="subscriber",
+        body="Usage alert",
+    )
+    db_session.add(push)
+    db_session.commit()
+    monkeypatch.setattr(
+        "app.tasks.notifications.push_service.send_push",
+        lambda **_: (_ for _ in ()).throw(AssertionError("transport called")),
+    )
+
+    stats = _deliver_notification_queue_stats(
+        db_session,
+        batch_size=1,
+        notification_id=push.id,
+    )
+
+    db_session.refresh(push)
+    assert stats["retried"] == 1
+    assert push.status == NotificationStatus.failed
+    assert push.last_error == "push_missing_subscriber"
 
 
 def test_deliver_notification_queue_expires_stale_notifications(

@@ -2068,7 +2068,7 @@ DOMAIN = DomainSOT(
                 "to the web transport, which schedules an after-response task on the "
                 "dedicated notifications queue. The periodic delivery runner remains "
                 "the durable recovery sweep; each worker locks and claims the exact "
-                "eligible row before provider delivery.",
+                "eligible row before provider delivery."
             ),
         ),
         SOTService(

@@ -246,11 +246,7 @@ def _deliver_notification_queue_stats(
     # The periodic sweep owns global expiry. An immediate single-row wake-up
     # must remain bounded to the notification the committed Inbox command
     # returned.
-    expired = (
-        0
-        if notification_id is not None
-        else _expire_stale_notifications(db, now)
-    )
+    expired = 0 if notification_id is not None else _expire_stale_notifications(db, now)
 
     candidate_query = _eligible_notification_query(
         db,
@@ -779,13 +775,17 @@ def _deliver_notification_queue_stats(
                         metadata["provider_message_id"] = provider_reply_id
                         message.metadata_ = metadata
             elif notification.channel == NotificationChannel.push:
-                success = push_service.send_push(
-                    db=db,
-                    subscriber_id=notification.subscriber_id,
-                    title=subject,
-                    body=body,
-                    notification_id=str(notification.id),
-                )
+                if notification.subscriber_id is None:
+                    success = False
+                    notification.last_error = "push_missing_subscriber"
+                else:
+                    success = push_service.send_push(
+                        db=db,
+                        subscriber_id=str(notification.subscriber_id),
+                        title=subject,
+                        body=body,
+                        notification_id=str(notification.id),
+                    )
             else:
                 success = False
                 notification.last_error = (

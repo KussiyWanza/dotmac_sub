@@ -59,9 +59,7 @@ celery_app.conf.task_routes = {
     # identity work. The periodic runner is the durable recovery sweep; exact
     # post-commit wake-ups use the same isolated consumer.
     "app.tasks.notifications.deliver_notification": {"queue": "notifications"},
-    "app.tasks.notifications.deliver_notification_queue": {
-        "queue": "notifications"
-    },
+    "app.tasks.notifications.deliver_notification_queue": {"queue": "notifications"},
     "app.tasks.tr069.sync_all_acs_devices": {"queue": "acs"},
     "app.tasks.tr069.reconcile_command_outcomes": {"queue": "acs"},
     "app.tasks.tr069.execute_network_operation_job": {"queue": "acs"},

@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 TASK_SOURCE = Path("app/tasks/notifications.py").read_text()
 ROUTE_SOURCE = Path("app/web/admin/inbox.py").read_text()
 COMMAND_SOURCE = Path("app/services/team_inbox_commands.py").read_text()
