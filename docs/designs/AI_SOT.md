@@ -171,11 +171,14 @@ default-off controls and never send automatically.
 
 ## Implemented extensions
 
-- **Inbox reply draft and sentence polish.** The Team Inbox owner builds a
-  bounded projection and the `inbox_analyst` advisor declares
-  `customer_content`. Drafts and polish suggestions land in
-  `AIInsight.structured_output`; neither action sends. An agent must accept or
-  insert the text, and sending still calls `team_inbox_commands.reply()`.
+- **Inbox reply draft and context-aware sentence polish.** The Team Inbox owner
+  builds a bounded projection and the `inbox_analyst` / `inbox_sentence_polish`
+  advisors declare `customer_content`. `communications.team_inbox_ai_polish`
+  coordinates object-level access, private-note exclusion, temporary mood/tone
+  metadata, protected-fact preservation checks and unsupported-promise warnings.
+  Drafts and polish suggestions land in `AIInsight.structured_output` under the
+  existing one-hour polish retention; neither action sends. An agent must accept
+  or insert the text, and sending still calls `team_inbox_commands.reply()`.
 - **Voice transcription.** `ai.voice_transcription` is a separate
   zero-retention provider transport governed by
   `docs/designs/VOICE_TRANSCRIPTION_DATA_PROTECTION.md`. It writes no AI or

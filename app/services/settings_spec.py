@@ -4387,6 +4387,33 @@ SETTINGS_SPECS: list[SettingSpec] = [
     ),
     SettingSpec(
         domain=SettingDomain.integration,
+        key="inbox_ai_polish_business_voice",
+        env_var=None,
+        value_type=SettingValueType.string,
+        default=(
+            "Business casual, empathetic, smart and concise. Use clear English "
+            "suitable for Nigerian ISP customers without forced slang. Stay calm "
+            "during faults and complaints, direct during urgent incidents, patient "
+            "when customers are confused, and warm when customers are appreciative. "
+            "Never sound dismissive or defensive."
+        ),
+        label="Team Inbox AI polish business voice",
+    ),
+    SettingSpec(
+        domain=SettingDomain.integration,
+        key="inbox_ai_polish_channel_guidance",
+        env_var=None,
+        value_type=SettingValueType.string,
+        default=(
+            "WhatsApp, Messenger and Instagram DMs should be concise and natural. "
+            "Email should be structured, professional and complete. Public "
+            "comments should be brief, privacy-safe, and move account-specific "
+            "help to DM or an approved private support channel."
+        ),
+        label="Team Inbox AI polish channel guidance",
+    ),
+    SettingSpec(
+        domain=SettingDomain.integration,
         key="voice_transcription_enabled",
         env_var="VOICE_TRANSCRIPTION_ENABLED",
         value_type=SettingValueType.boolean,

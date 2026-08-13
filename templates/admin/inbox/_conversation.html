@@ -351,10 +351,33 @@
                 </div>
             </div>
             <p data-voice-status class="sr-only" role="status" aria-live="polite"></p>
+            <div x-show="polishError" x-cloak class="rounded-xl border border-rose-200 bg-rose-50/70 p-3 text-xs text-rose-800 dark:border-rose-800 dark:bg-rose-950/20 dark:text-rose-100">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                    <p class="font-semibold">AI polish unavailable</p>
+                    <button type="button" @click="polishDraft()" :disabled="polishLoading || !draft.trim()" class="min-h-8 rounded-lg border border-rose-300 px-2 font-semibold disabled:opacity-50 dark:border-rose-700">Retry</button>
+                </div>
+                <p class="mt-1" x-text="polishError"></p>
+            </div>
             <div x-show="polishSuggestion" x-cloak class="rounded-xl border border-violet-200 bg-violet-50/60 p-3 text-xs dark:border-violet-800 dark:bg-violet-950/20">
-                <p class="font-semibold text-violet-900 dark:text-violet-100">Review polished text</p>
-                <p class="mt-1 whitespace-pre-wrap text-slate-700 dark:text-slate-200" x-text="polishSuggestion?.suggested_text"></p>
-                <button type="button" @click="acceptPolish(polishSuggestion?.suggested_text)" class="mt-2 min-h-9 rounded-lg bg-violet-600 px-3 font-semibold text-white">Use suggestion</button>
+                <div class="flex flex-wrap items-start justify-between gap-2">
+                    <div>
+                        <p class="font-semibold text-violet-900 dark:text-violet-100">Review polished text</p>
+                        <p class="mt-1 text-[11px] text-slate-600 dark:text-slate-300"><span class="font-semibold">Mood:</span> <span x-text="polishSuggestion?.detected_mood || 'uncertain'"></span> · <span class="font-semibold">Tone:</span> <span x-text="polishSuggestion?.recommended_tone || 'neutral and helpful'"></span></p>
+                    </div>
+                    <button type="button" @click="dismissPolish()" class="min-h-8 rounded-lg px-2 font-semibold text-slate-500 hover:bg-white/70 dark:hover:bg-slate-900">Dismiss</button>
+                </div>
+                <p class="mt-1 text-[11px] text-slate-600 dark:text-slate-300" x-text="polishSuggestion?.reason"></p>
+                <div x-show="polishSuggestion?.warnings?.length" class="mt-2 space-y-1 rounded-lg border border-amber-200 bg-amber-50 p-2 text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100">
+                    <template x-for="warning in polishSuggestion?.warnings || []" :key="warning.code + warning.message">
+                        <p x-text="warning.message"></p>
+                    </template>
+                </div>
+                <p x-show="polishSuggestion && polishSuggestion.facts_preserved === false" class="mt-2 rounded-lg border border-amber-200 bg-amber-50 p-2 font-semibold text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100">Protected facts may have changed. The original draft is preserved.</p>
+                <p class="mt-2 whitespace-pre-wrap text-slate-700 dark:text-slate-200" x-text="polishSuggestion?.suggestion || polishSuggestion?.suggested_text"></p>
+                <div class="mt-2 flex flex-wrap gap-2">
+                    <button type="button" @click="acceptPolish(polishSuggestion?.suggestion || polishSuggestion?.suggested_text)" class="min-h-9 rounded-lg bg-violet-600 px-3 font-semibold text-white">Use suggestion</button>
+                    <button type="button" @click="restorePolishDraft()" class="min-h-9 rounded-lg border border-slate-300 px-3 font-semibold text-slate-600 hover:bg-white/70 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-900">Restore original</button>
+                </div>
             </div>
             <div x-show="files.length" x-cloak class="flex flex-wrap gap-2">
                 <template x-for="(file, index) in files" :key="file.name + index"><span class="inline-flex items-center gap-1.5 rounded-lg bg-slate-100 px-2.5 py-1.5 text-xs text-slate-600 dark:bg-slate-800 dark:text-slate-300"><span x-text="file.name"></span><span x-show="file.uploading" class="text-amber-600">uploading…</span><button type="button" @click="removeFile(index)" class="h-6 w-6 rounded" aria-label="Remove attachment">✕</button></span></template>

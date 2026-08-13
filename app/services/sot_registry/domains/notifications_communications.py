@@ -2547,6 +2547,73 @@ DOMAIN = DomainSOT(
             ),
         ),
         SOTService(
+            name="communications.team_inbox_ai_polish",
+            module="app.services.team_inbox_ai_polish",
+            owns=("context-aware Inbox composer polish advisory coordination",),
+            depends_on=(
+                "communications.team_inbox_projection",
+                "communications.team_inbox_threads",
+                "communications.team_inbox_routing",
+                "ai.generation",
+            ),
+            contract=_team_inbox_contract(
+                service_name="communications.team_inbox_ai_polish",
+                concerns=(
+                    (
+                        "context-aware Inbox composer polish advisory coordination",
+                        OwnerRole.APPLICATION_COORDINATOR,
+                    ),
+                ),
+                inputs=(
+                    AuthorityInput(
+                        name="bounded Team Inbox reply context",
+                        owner="communications.team_inbox_projection",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source=(
+                            "Private-note-excluding recent customer and agent messages, "
+                            "conversation metadata, labels, assignment display, and linked "
+                            "ticket context from build_ai_reply_projection."
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical conversation identity",
+                        owner="communications.team_inbox_threads",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="Active customer-facing InboxConversation channel and lifecycle.",
+                    ),
+                    AuthorityInput(
+                        name="conversation access facts",
+                        owner="communications.team_inbox_routing",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="Active assignment, service-team links, and active team membership.",
+                    ),
+                    AuthorityInput(
+                        name="AI advisory generation control",
+                        owner="ai.generation",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source="Existing AI engine, gateway, redaction, and AIInsight evidence path.",
+                    ),
+                ),
+                transaction_mode=TransactionMode.COORDINATOR_MANAGED,
+                domain_error_codes=(
+                    "communications.team_inbox_ai_polish.access_denied",
+                    "communications.team_inbox_ai_polish.unsupported_channel",
+                    "communications.team_inbox_ai_polish.ai_unavailable",
+                    "communications.team_inbox_ai_polish.invalid_ai_response",
+                ),
+                projections=("Temporary staff-facing composer polish suggestion",),
+                design_refs=(
+                    "docs/designs/AI_SOT.md",
+                    "docs/designs/TEAM_INBOX_SOURCE_OF_TRUTH.md",
+                    "docs/designs/TEAM_INBOX_AI_POLISH.md",
+                ),
+                test_refs=(
+                    "tests/test_team_inbox_ai_polish.py",
+                    "tests/test_admin_inbox_implemented_features.py",
+                ),
+            ),
+        ),
+        SOTService(
             name="communications.team_inbox_maintenance",
             module="app.services.team_inbox_maintenance",
             owns=("scheduled Inbox projection maintenance and repair",),

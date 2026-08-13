@@ -35,6 +35,11 @@ def test_inbox_ai_advisors_are_customer_content_and_never_auto_send():
     assert polish.input_sensitivity is InputSensitivity.CUSTOMER_CONTENT
     assert "insertAiDraft()" in CONVERSATION
     assert "acceptPolish(" in CONVERSATION
+    assert "polishSuggestion?.detected_mood" in CONVERSATION
+    assert "polishSuggestion?.recommended_tone" in CONVERSATION
+    assert "polishSuggestion?.warnings" in CONVERSATION
+    assert "restorePolishDraft()" in INBOX_JAVASCRIPT
+    assert "dismissPolish()" in INBOX_JAVASCRIPT
     assert "draftWithAI()" in INBOX_JAVASCRIPT
 
 
