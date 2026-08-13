@@ -87,10 +87,17 @@ def _attach_globals(templates: Jinja2Templates) -> None:
         ticket_status_presentation,
         work_order_status_presentation,
     )
+    from app.ui import template_globals as dotmac_ui_globals
     from app.web.customer.branding import (
         _format_portal_date,
         _format_portal_datetime,
     )
+
+    # The shared UI contract's asset URL and theme hook. Full-page templates
+    # consume these through templates/_dotmac_ui_head.html rather than
+    # hardcoding a path — see app/ui.py for why the seam is a single module.
+    for name, value in dotmac_ui_globals().items():
+        templates.env.globals.setdefault(name, value)
 
     # UI action gating: templates hide actions the principal cannot perform.
     # Reads the permission set require_permission cached on the request (no DB);

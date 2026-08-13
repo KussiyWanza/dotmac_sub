@@ -15,13 +15,13 @@
 #   DEMO_USERNAME=tech@example.com DEMO_PASSWORD=secret tool/screenshots.sh -d <device-id>
 #
 # Optional:
-#   API_BASE_URL=https://staging.crm.dotmac.io   # defaults to prod
+#   API_BASE_URL=https://selfcare.dotmac.io   # defaults to this production host
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 : "${DEMO_USERNAME:?set DEMO_USERNAME (technician demo login)}"
 : "${DEMO_PASSWORD:?set DEMO_PASSWORD}"
-API_BASE_URL="${API_BASE_URL:-https://crm.dotmac.io}"
+API_BASE_URL="${API_BASE_URL:-https://selfcare.dotmac.io}"
 
 flutter drive \
   --driver=test_driver/screenshot_driver.dart \

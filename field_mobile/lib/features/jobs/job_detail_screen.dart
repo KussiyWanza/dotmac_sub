@@ -83,7 +83,20 @@ class _JobDetailViewState extends ConsumerState<_JobDetailView> {
   Widget build(BuildContext context) {
     final detail = widget.detail;
     final job = detail.job;
-    final actions = workActionsFor(job.status);
+    final recordedEvents = detail.history
+        .map((entry) => entry['event']?.toString())
+        .whereType<String>()
+        .toSet();
+    final actions = switch (job.status) {
+      'scheduled' ||
+      'dispatched' when !recordedEvents.contains('en_route') => ['en_route'],
+      'scheduled' ||
+      'dispatched' when !recordedEvents.contains('arrived') => ['arrived'],
+      'scheduled' || 'dispatched' => ['start'],
+      'in_progress' => ['pause', 'complete'],
+      'paused' => ['resume'],
+      _ => const <String>[],
+    };
     final travelActions = actions
         .where((action) => action == 'en_route' || action == 'arrived')
         .toList();
@@ -451,22 +464,25 @@ class _JobDetailViewState extends ConsumerState<_JobDetailView> {
       _isInternalNote = true;
       _noteError = '';
     });
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted) return;
-      final composerContext = _noteComposerKey.currentContext;
-      if (composerContext != null) {
-        Scrollable.ensureVisible(
-          composerContext,
+      _noteFocusNode.requestFocus();
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      if (!mounted) return;
+      final fieldContext = _noteFocusNode.context;
+      if (fieldContext != null && fieldContext.mounted) {
+        await Scrollable.ensureVisible(
+          fieldContext,
           duration: const Duration(milliseconds: 250),
           curve: Curves.easeOutCubic,
           alignment: 0.1,
         );
       }
-      _noteFocusNode.requestFocus();
     });
   }
 
   Future<void> _runWorkAction(String jobId, String action) async {
+    String? travelEventId;
     if (action == 'complete') {
       await Navigator.of(context).push(
         MaterialPageRoute(
@@ -482,7 +498,7 @@ class _JobDetailViewState extends ConsumerState<_JobDetailView> {
       final destination = await _pickDestination(jobId);
       if (destination == null) return;
       _activeDestination = destination;
-      await ref
+      travelEventId = await ref
           .read(executionControllerProvider.notifier)
           .transition(
             jobId,
@@ -493,7 +509,7 @@ class _JobDetailViewState extends ConsumerState<_JobDetailView> {
       final destination = _activeDestination ?? await _pickDestination(jobId);
       if (destination == null) return;
       _activeDestination = destination;
-      await ref
+      travelEventId = await ref
           .read(executionControllerProvider.notifier)
           .transition(
             jobId,
@@ -507,6 +523,20 @@ class _JobDetailViewState extends ConsumerState<_JobDetailView> {
     }
     if (!mounted) return;
     ref.invalidate(jobDetailProvider(jobId));
+    if (travelEventId != null) {
+      final entry = await ref
+          .read(syncServiceProvider)
+          .outboxEntry(travelEventId);
+      if (!mounted) return;
+      final message = entry?.status == 'conflict'
+          ? entry?.lastError ?? 'The server rejected this action.'
+          : entry?.status == 'pending'
+          ? '${actionLabel(action)} queued for sync'
+          : '${actionLabel(action)} recorded';
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(message)));
+    }
   }
 
   Future<JobDestination?> _pickDestination(String jobId) async {

@@ -7,7 +7,7 @@ import 'package:integration_test/integration_test.dart';
 
 /// App Store / Play Store screenshot harness.
 ///
-/// Drives a real login against the configured backend (default crm.dotmac.io)
+/// Drives a real login against the configured backend (default selfcare.dotmac.io)
 /// and captures each primary tab. Run via `tool/screenshots.sh`, which supplies
 /// the demo credentials and selects the device. Requires a working technician
 /// demo account, passed as dart-defines:

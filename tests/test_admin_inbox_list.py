@@ -149,3 +149,48 @@ def test_explicit_open_only_still_excludes_resolved_history(db_session):
     )
 
     assert [row.id for row in result.rows] == [str(active.id)]
+
+
+def test_list_conversations_can_skip_exact_total_count(db_session):
+    now = datetime(2026, 7, 19, 12, 0, tzinfo=UTC)
+    newest = _conv(db_session, priority=1, last_message_at=now, thread="newest")
+    middle = _conv(
+        db_session,
+        priority=1,
+        last_message_at=now - timedelta(minutes=1),
+        thread="middle",
+    )
+    _conv(
+        db_session,
+        priority=1,
+        last_message_at=now - timedelta(minutes=2),
+        thread="oldest",
+    )
+    db_session.commit()
+
+    result = team_inbox_read.list_conversations(
+        db_session,
+        order_by="last_message_at",
+        order_dir="desc",
+        limit=2,
+        include_total_count=False,
+    )
+
+    assert [row.id for row in result.items] == [str(newest.id), str(middle.id)]
+    assert result.count == 3
+
+
+def test_list_conversations_counts_when_bounded_page_is_out_of_range(db_session):
+    now = datetime(2026, 7, 19, 12, 0, tzinfo=UTC)
+    _conv(db_session, priority=1, last_message_at=now, thread="only")
+    db_session.commit()
+
+    result = team_inbox_read.list_conversations(
+        db_session,
+        limit=25,
+        offset=250,
+        include_total_count=False,
+    )
+
+    assert result.items == []
+    assert result.count == 1

@@ -70,8 +70,10 @@ def test_crm_replication_surfaces_exclude_customer_placeholder_data():
     assert "data-social-comment-thread" in COMMENT_THREAD
     assert 'action="/admin/inbox/{{ timeline.id }}/reply"' in COMMENT_THREAD
     assert 'name="whatsapp_template_components"' in OVERLAYS
+    assert 'name="subscriber_id"' in OVERLAYS
     assert "newConversation.templateFields" in OVERLAYS
     assert "whatsapp-contacts" in JAVASCRIPT
+    assert "contact.subscriber_id" in JAVASCRIPT
 
     assert "inbox-ticket-panel" in TICKET_PANEL
     assert ':action="`/admin/inbox/${selectedId}/tickets`"' in TICKET_PANEL
@@ -151,7 +153,7 @@ def test_reply_submission_refreshes_inbox_fragments_without_page_navigation():
     assert 'workspace?.refreshConversationList?.("reply")' in JAVASCRIPT
     assert 'this.draft = ""' in JAVASCRIPT
     assert "window.location.reload" not in JAVASCRIPT
-    assert "admin-inbox.js?v=20260809a" in INDEX
+    assert "admin-inbox.js?v=20260811a" in INDEX
 
 
 def test_macro_menu_dispatches_identity_not_just_text():
@@ -334,8 +336,28 @@ def test_sidebar_filters_replace_stale_requests_and_expose_busy_state():
     assert "if (this.filterLoading) return" in JAVASCRIPT
     assert 'document.body.addEventListener("htmx:sendAbort", release)' in JAVASCRIPT
     assert "InboxQueueComposition.sidebar" in ROUTES
-    assert "if can_manage_inbox and not is_list_fragment_request" in ROUTES
+    assert "manager_dashboard = None" in ROUTES
+    assert 'hx-get="/admin/inbox/manager-dashboard"' in SIDEBAR
+    assert "def team_inbox_manager_dashboard(" in ROUTES
     assert 'htmx_target == "inbox-conversation-queue"' in ROUTES
+
+
+def test_conversation_click_shows_loading_without_hiding_list_until_swap():
+    select_start = JAVASCRIPT.index("selectConversation(id) {")
+    select_end = JAVASCRIPT.index("updateSelectedHighlight()", select_start)
+    select_block = JAVASCRIPT[select_start:select_end]
+    assert "this.selectedId = id;" in select_block
+    assert "this.conversationOpening = true;" in select_block
+    assert 'setAttribute("data-triage-mode", "detail")' not in select_block
+
+    swap_start = JAVASCRIPT.index('if (target.id === "triage-detail")')
+    swap_end = JAVASCRIPT.index(
+        'if (\n            target.id === "inbox-sidebar-content"', swap_start
+    )
+    swap_block = JAVASCRIPT[swap_start:swap_end]
+    assert 'this.mode = "detail";' in swap_block
+    assert "this.conversationOpening = false;" in swap_block
+    assert 'setAttribute("data-triage-mode", "detail")' in swap_block
 
 
 def test_sidebar_resize_handle_has_exact_shape_states_and_tooltip():
@@ -620,7 +642,7 @@ def test_empty_state_and_inbox_pagination_are_scoped_to_the_queue():
     ):
         assert contract in SIDEBAR
     for contract in (
-        '@click.prevent="navigatePage(',
+        "@click.prevent='navigatePage(",
         "border border-slate-200 bg-white",
         "hover:bg-slate-50",
         "Page {{ page_meta.page }}",
@@ -628,6 +650,7 @@ def test_empty_state_and_inbox_pagination_are_scoped_to_the_queue():
         ">Next</a>",
     ):
         assert contract in QUEUE
+    assert '@click.prevent="navigatePage(' not in QUEUE
     assert "Rows per page" not in QUEUE
 
 

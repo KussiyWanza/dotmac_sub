@@ -297,6 +297,7 @@ def team_inbox_queue(
                     if is_list_fragment_request
                     else team_inbox_projection.InboxQueueComposition.full_workspace
                 ),
+                include_total_count=False,
             ),
         )
     except team_inbox_filters.InboxFilterError as exc:
@@ -304,15 +305,7 @@ def team_inbox_queue(
     if projection.canonical_url is not None:
         return RedirectResponse(url=projection.canonical_url, status_code=307)
     can_manage_inbox = can(request, "support:ticket:update")
-    manager_dashboard = (
-        team_inbox_projection.build_manager_dashboard_projection(
-            db,
-            queue_metrics=projection.queue_metrics,
-            needs_attention=projection.assignment_counts.needs_attention,
-        )
-        if can_manage_inbox and not is_list_fragment_request
-        else None
-    )
+    manager_dashboard = None
     context = _ctx(request, db)
     context.update(
         {
@@ -347,11 +340,6 @@ def team_inbox_queue(
             "activity_from": projection.activity_from,
             "activity_to": projection.activity_to,
             "service_team_options": projection.service_team_options,
-            "actor_service_team_options": (
-                team_inbox_projection.list_actor_service_team_options(
-                    db, actor_person_id
-                )
-            ),
             "agent_options": projection.agent_options,
             "agent_presence": projection.agent_presence,
             "assignment_counts": projection.assignment_counts,
@@ -395,6 +383,7 @@ def team_inbox_queue(
                 "action_eligibility": projection.selected.action_eligibility,
                 "is_unread": projection.selected.is_unread,
                 "priority_options": projection.selected.priority_options,
+                "activity_events": projection.selected.activity_events,
             }
         )
     if is_list_fragment_request:
@@ -459,6 +448,31 @@ def team_inbox_social_comments(
 
 
 @router.get(
+    "/manager-dashboard",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("support:ticket:read"))],
+)
+def team_inbox_manager_dashboard(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    queue_metrics = team_inbox_operations.queue_metrics(db)
+    manager_dashboard = team_inbox_projection.build_manager_dashboard_projection(
+        db,
+        queue_metrics=queue_metrics,
+        needs_attention=team_inbox_read.needs_attention_conversation_count(db),
+    )
+    context = _ctx(request, db)
+    context.update(
+        {
+            "can_manage_inbox": True,
+            "manager_dashboard": manager_dashboard,
+        }
+    )
+    return templates.TemplateResponse("admin/inbox/_manager_dashboard.html", context)
+
+
+@router.get(
     "/whatsapp-contacts",
     dependencies=[Depends(require_permission("support:ticket:read"))],
 )
@@ -477,6 +491,10 @@ def team_inbox_whatsapp_contacts(
                 "id": contact.id,
                 "name": contact.name,
                 "whatsapp_address": contact.whatsapp_address,
+                "party_id": str(contact.party_id) if contact.party_id else None,
+                "subscriber_id": (
+                    str(contact.subscriber_id) if contact.subscriber_id else None
+                ),
             }
             for contact in contacts
         ]
@@ -675,6 +693,8 @@ def team_inbox_detail(
         db,
         conversation_id=conversation_id,
         actor_person_id=actor_person_id,
+        include_contact_candidates=False,
+        include_label_usage_counts=False,
     )
     view = (
         {
@@ -695,13 +715,9 @@ def team_inbox_detail(
                 else ""
             ),
             "priority_options": projection.priority_options,
+            "activity_events": projection.activity_events,
             "agent_options": team_inbox_projection.list_agent_options(db),
             "service_team_options": team_inbox_projection.list_service_team_options(db),
-            "actor_service_team_options": (
-                team_inbox_projection.list_actor_service_team_options(
-                    db, actor_person_id
-                )
-            ),
             "can_manage_leads": can(request, "crm:lead:write"),
         }
         if projection is not None
@@ -715,7 +731,11 @@ def team_inbox_detail(
     # HTMX list clicks swap the thread+context partial into #triage-detail;
     # a full navigation lands in the workspace with the conversation preselected.
     if request.headers.get("hx-request"):
-        context = _ctx(request, db)
+        # The workspace page already owns the global navigation and its sidebar
+        # statistics. Rebuilding that full-page context here delays the thread
+        # swap (and therefore leaves the opening loader visible) without giving
+        # this partial any values that it consumes.
+        context: dict[str, object] = {"request": request}
         context.update(view)
         return templates.TemplateResponse("admin/inbox/_conversation.html", context)
     return RedirectResponse(url=f"/admin/inbox?c={conversation_id}", status_code=303)
@@ -1197,6 +1217,10 @@ def team_inbox_reply(
         if outcome.kind == "scheduled"
         else f"Reply queued from {outcome.sender}."
         if outcome.kind == "queued"
+        else f"Reply delivery is retrying from {outcome.sender}. Watch the thread delivery status."
+        if outcome.kind == "retried"
+        else f"Reply could not be delivered from {outcome.sender}: provider rejected it."
+        if outcome.kind == "failed"
         else f"Reply sent from {outcome.sender}."
     )
     if _is_htmx_request(request):
@@ -1833,6 +1857,39 @@ def team_inbox_bulk_action(
         )
     return RedirectResponse(
         url=f"/admin/inbox?status=success&message={quote_plus(outcome.message)}",
+        status_code=303,
+    )
+
+
+@router.post(
+    "/{conversation_id}/assign-to-me",
+    dependencies=[Depends(require_permission("support:inbox:self_assign"))],
+)
+def team_inbox_assign_to_me(
+    conversation_id: UUID,
+    request: Request,
+    service_team_id: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
+    actor_person_id = _actor_uuid_from_request(request)
+    _prepare_mutation(db)
+    try:
+        outcome = team_inbox_commands.assign_conversation_to_me(
+            db,
+            conversation_id=conversation_id,
+            service_team_id=_query_text(service_team_id),
+            actor_person_id=actor_person_id,
+        )
+    except (
+        team_inbox_commands.InboxCommandError,
+        team_inbox_operations.InboxOperationError,
+    ) as exc:
+        return RedirectResponse(
+            url=f"/admin/inbox?status=error&message={quote_plus(str(exc))}",
+            status_code=303,
+        )
+    return RedirectResponse(
+        url=f"/admin/inbox?c={conversation_id}&status=success&message={quote_plus(outcome.message)}",
         status_code=303,
     )
 
@@ -2754,6 +2811,12 @@ async def team_inbox_stage_attachments(
         )
     except team_inbox_commands.ConversationNotFoundError:
         return JSONResponse({"error": "Conversation not found."}, status_code=404)
+    except team_inbox_commands.ConversationBusyError as exc:
+        return JSONResponse(
+            {"error": str(exc)},
+            status_code=409,
+            headers={"Retry-After": "2"},
+        )
     except (team_inbox_media.MediaUploadError, ValueError) as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
     return JSONResponse({"attachment_ids": staged})
@@ -2936,6 +2999,7 @@ async def team_inbox_start_conversation(
     service_team_id: str | None = Form(default=None),
     contact_name: str | None = Form(default=None),
     contact_id: str | None = Form(default=None),
+    subscriber_id: str | None = Form(default=None),
     contact_country_code: str | None = Form(default=None),
     template_id: str | None = Form(default=None),
     template_values: str | None = Form(default=None),
@@ -2961,6 +3025,7 @@ async def team_inbox_start_conversation(
             actor_person_id=_actor_id_from_request(request),
             contact_name=_query_text(contact_name),
             contact_party_id=_query_text(contact_id),
+            legacy_contact_subscriber_id=_query_text(subscriber_id),
             contact_country_code=_query_text(contact_country_code),
             template_id=_query_text(template_id),
             template_values=tuple(

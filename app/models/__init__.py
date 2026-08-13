@@ -19,6 +19,8 @@ from app.models.analytics import (  # noqa: F401
 from app.models.audit import AuditActorType, AuditEvent  # noqa: F401
 from app.models.auth import (  # noqa: F401
     ApiKey,
+    AuthenticationBinding,
+    AuthenticationBindingIdentityError,
     MFAMethod,
     MFARecoveryCode,
     Session,
@@ -535,6 +537,9 @@ from app.models.network import (  # noqa: F401
     WanMode,
     WanServiceType,
 )
+from app.models.network_map_asset_change import (  # noqa: F401
+    NetworkMapAssetChangeProposal,
+)
 from app.models.network_monitoring import (  # noqa: F401
     Alert,
     AlertEvent,
@@ -620,6 +625,11 @@ from app.models.ont_commissioning import (  # noqa: F401
     OntCommissioningState,
 )
 from app.models.ont_observation import OntObservation  # noqa: F401
+from app.models.ont_service_configuration import (  # noqa: F401
+    OntServiceConfigurationHead,
+    OntServiceConfigurationPhase,
+    OntServiceConfigurationRevision,
+)
 from app.models.ont_topology_observation import (  # noqa: F401
     OntTopologyObservationEvidence,
 )

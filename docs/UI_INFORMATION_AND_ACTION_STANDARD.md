@@ -381,3 +381,31 @@ implementation.
   never selects identity, pipeline defaults, or duplicate-prevention policy.
 - Successful actions return to the exact originating conversation and trigger
   a fresh drawer query; read failure never replays the mutation.
+
+## ONT Configure Page Contract
+
+- Audience and task: authorized network staff submit one customer-service
+  configuration section for an exact active ONT assignment and follow its
+  asynchronous delivery through verified readback.
+- Authority: `network.ont_service_configuration` owns lifecycle, revision,
+  operation projection, failure/waiting reason, and next action. Assignment,
+  WAN intent, PPP credential, delivery authorization, reconciler, operation,
+  and dispatch owners retain their narrower contracts.
+- Mutation: the POST adapter parses transport values into the typed command and
+  maps its outcome. It performs no device call, reconcile call, task publish,
+  business commit, status clearing, or action-eligibility decision.
+- First viewport: exact assignment, configuration revision, operation ID,
+  delivery phase, last verified observation, precise reason, and one
+  owner-supplied next action.
+- State semantics: saved, queued, applying, readback-pending, verified, failed,
+  superseded, and retired are distinct. Saved or broker-delivered is never
+  described as device configured.
+- VLAN and credentials: show effective customer VLAN with provenance. PPPoE
+  username is masked and identified as derived from the subscriber access
+  credential; no PPPoE password input or display is permitted.
+- Evidence: the current panel consumes only events bound to the active
+  configuration head/revision. Unbound legacy and retired-assignment evidence
+  is shown separately and cannot affect current action eligibility.
+- Responsive behavior: desktop and mobile keep assignment, revision,
+  operation, phase, reason, and action visible; HTMX refreshes the same owner
+  projection rather than inferring progress in the browser.

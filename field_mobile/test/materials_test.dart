@@ -117,13 +117,12 @@ void main() {
   });
 
   test('createRequest posts request payload with items', () async {
-    adapter.on('POST', '/api/v1/field/material-requests', (options) {
+    adapter.on('POST', '/api/v1/field/material-requests/submit', (options) {
       final data = (options.data as Map).cast<String, dynamic>();
       expect(data['priority'], 'high');
+      expect(data['client_ref'], 'material-client-ref-1');
       expect(data['work_order_id'], 'wo-1');
-      expect(data['source_location_id'], 'warehouse-1');
-      expect(data['destination_location_id'], 'van-2');
-      expect(data['submit'], isTrue);
+      expect(data['source_warehouse_code'], 'WH-MAIN');
       expect(data['items'], [
         {'item_id': 'item-1', 'quantity': 2},
       ]);
@@ -150,8 +149,10 @@ void main() {
         .read(materialsRepositoryProvider)
         .createRequest(
           priority: 'high',
+          clientRef: 'material-client-ref-1',
           workOrderId: 'wo-1',
           sourceLocationId: 'warehouse-1',
+          sourceWarehouseCode: 'WH-MAIN',
           destinationLocationId: 'van-2',
           items: [
             const MaterialRequestItemDraft(

@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
 from sqlalchemy import or_
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.models.audit import AuditActorType
@@ -102,6 +103,14 @@ class InboxCommandError(DomainError, ValueError):
 class ConversationNotFoundError(InboxCommandError):
     def __init__(self, message: str = "Conversation not found.") -> None:
         super().__init__(message, suffix="conversation_not_found")
+
+
+class ConversationBusyError(InboxCommandError):
+    def __init__(self) -> None:
+        super().__init__(
+            "Conversation is busy. Please retry the upload.",
+            suffix="conversation_busy",
+        )
 
 
 class MessageNotFoundError(InboxCommandError):
@@ -951,6 +960,57 @@ def bulk_action(
         updated = result.get("updated")
         count = len(updated) if isinstance(updated, list) else 0
         return BulkActionOutcome(message=f"{verb} {count} {noun}.")
+
+    return _commit(db, execute)
+
+
+def assign_conversation_to_me(
+    db: Session,
+    *,
+    conversation_id: str | UUID,
+    service_team_id: str | UUID | None = None,
+    actor_person_id: str | UUID | None = None,
+) -> BulkActionOutcome:
+    actor_uuid = coerce_uuid(actor_person_id)
+    conversation_uuid = coerce_uuid(conversation_id)
+    if actor_uuid is None:
+        raise InboxCommandError("Authenticated staff user required.")
+    if conversation_uuid is None:
+        raise InboxCommandError("Conversation not found.")
+
+    def execute() -> BulkActionOutcome:
+        conversation = db.get(InboxConversation, conversation_uuid)
+        if conversation is None or not conversation.is_active:
+            raise InboxCommandError("Conversation not found.")
+        team_uuid = (
+            coerce_uuid(service_team_id)
+            or conversation.primary_service_team_id
+            or coerce_uuid(team_inbox_routing.default_service_team_id(db))
+        )
+        if team_uuid is None:
+            raise InboxCommandError("Choose a service team before assigning.")
+        result = team_inbox_operations.bulk_escalate(
+            db,
+            conversation_ids=[conversation_uuid],
+            service_team_id=team_uuid,
+            assigned_person_id=actor_uuid,
+            auto_assign=False,
+            actor_person_id=actor_uuid,
+            reason="Assign to me",
+            require_team_membership=False,
+        )
+        updated = result.get("updated")
+        if isinstance(updated, list) and updated:
+            return BulkActionOutcome(message="Assigned conversation to you.")
+        skipped = result.get("skipped")
+        reason = None
+        if isinstance(skipped, list) and skipped:
+            first = skipped[0]
+            if isinstance(first, dict):
+                reason = first.get("reason")
+        raise InboxCommandError(
+            f"Could not assign conversation: {reason or 'assignment rejected'}"
+        )
 
     return _commit(db, execute)
 
@@ -1968,7 +2028,13 @@ def stage_attachments(
             staged.append(str(asset.id))
         return staged
 
-    return _commit(db, action)
+    try:
+        return _commit(db, action)
+    except OperationalError as exc:
+        text = str(getattr(exc, "orig", exc)).lower()
+        if "lock timeout" in text or "locknotavailable" in text:
+            raise ConversationBusyError from exc
+        raise
 
 
 @dataclass(frozen=True)
@@ -1988,6 +2054,7 @@ def start_conversation(
     subject: str | None = None,
     service_team_id: str | UUID | None = None,
     subscriber_id: str | UUID | None = None,
+    legacy_contact_subscriber_id: str | UUID | None = None,
     actor_person_id: str | UUID | None = None,
     attachment_ids: Sequence[str] | None = None,
     contact_name: str | None = None,
@@ -2047,6 +2114,32 @@ def start_conversation(
                 resolved_contact_address,
                 contact_country_code,
             )
+            if legacy_contact_subscriber_id is not None:
+                from app.models.subscriber import Subscriber, SubscriberStatus
+                from app.services.customer_identity_normalization import (
+                    normalize_phone_identifier,
+                )
+
+                subscriber_uuid = coerce_uuid(legacy_contact_subscriber_id)
+                contact_subscriber = (
+                    db.query(Subscriber)
+                    .filter(Subscriber.id == subscriber_uuid)
+                    .filter(Subscriber.party_id.is_(None))
+                    .filter(Subscriber.is_active.is_(True))
+                    .filter(Subscriber.status == SubscriberStatus.active)
+                    .one_or_none()
+                    if subscriber_uuid is not None
+                    else None
+                )
+                if (
+                    contact_subscriber is None
+                    or normalize_phone_identifier(contact_subscriber.phone)
+                    != resolved_contact_address
+                ):
+                    raise InboxCommandError(
+                        "Selected customer no longer matches this WhatsApp number."
+                    )
+                resolved_subscriber_id = contact_subscriber.id
             clean_provider_template_name = str(whatsapp_template_name or "").strip()
             clean_provider_template_language = str(
                 whatsapp_template_language or ""
@@ -2334,6 +2427,9 @@ def email_transcript(
     a recipient restriction is a policy decision the recorded evidence is meant
     to inform.
     """
+
+    if actor_type is not AuditActorType.system and actor_person_id is None:
+        raise InboxCommandError("An audit actor is required to export a transcript.")
 
     def action() -> str:
         conversation = _active_conversation(db, conversation_id)

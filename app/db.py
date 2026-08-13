@@ -67,8 +67,8 @@ _engine = get_engine()
 
 SessionLocal = sessionmaker(bind=_engine, autoflush=False, autocommit=False)
 
-# Register transaction-span observation for every web/task session, including
-# code paths that do not otherwise import the after-commit helper module.
+# Register operator-tenant scope and transaction-span observation for every
+# web/task/script session, including paths that never use the web dependency.
 from app.services.session_hooks import install_session_hooks  # noqa: E402
 
 install_session_hooks()

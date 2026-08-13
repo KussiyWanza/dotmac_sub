@@ -54,6 +54,20 @@ def test_shared_renderer_exposes_accessible_contract_semantics() -> None:
     assert "/static/css/design-system.css?v=20260714a" in base
 
 
+def test_action_form_imports_keep_request_context() -> None:
+    for path in (ROOT / "templates").rglob("*.html"):
+        template = path.read_text(encoding="utf-8")
+        if (
+            'from "components/forms/action_form.html" import action_form'
+            not in template
+        ):
+            continue
+        assert (
+            'from "components/forms/action_form.html" import action_form with context'
+            in template
+        ), f"{path.relative_to(ROOT)} must import action_form with context"
+
+
 def test_payment_proof_projection_delegates_eligibility_to_command_owner() -> None:
     web_projection = _read("app/services/web_billing_payment_proofs.py")
     command_owner = _read("app/services/payment_proofs.py")

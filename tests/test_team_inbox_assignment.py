@@ -14,7 +14,7 @@ from app.models.team_inbox import (
     InboxRoutingEventType,
     InboxTeamRole,
 )
-from app.services import team_inbox_assignment
+from app.services import team_inbox_assignment, team_inbox_commands
 from tests.staff_identity_fixtures import add_bound_staff_user
 
 
@@ -128,6 +128,44 @@ def test_assign_conversation_escalates_to_team_and_online_agent(db_session):
     assert event.presence_status == InboxAgentPresenceStatus.online.value
     assert event.active_conversation_count == 0
     assert event.max_concurrent_conversations == 3
+
+
+def test_assign_conversation_to_me_does_not_require_team_membership(db_session):
+    team = _team(db_session, "Support")
+    user, _person = add_bound_staff_user(db_session)
+    conversation = _conversation(db_session)
+    conversation.primary_service_team_id = team.id
+    db_session.commit()
+
+    outcome = team_inbox_commands.assign_conversation_to_me(
+        db_session,
+        conversation_id=conversation.id,
+        actor_person_id=user.id,
+    )
+    db_session.commit()
+
+    assignment = db_session.query(InboxConversationAssignment).one()
+    assert outcome.message == "Assigned conversation to you."
+    assert assignment.person_id == user.id
+    assert assignment.service_team_id == team.id
+    assert assignment.is_active is True
+
+
+def test_direct_agent_assignment_still_requires_team_membership(db_session):
+    team = _team(db_session, "Support")
+    user, _person = add_bound_staff_user(db_session)
+    conversation = _conversation(db_session)
+    db_session.commit()
+
+    result = team_inbox_assignment.assign_conversation_to_agent(
+        db_session,
+        conversation=conversation,
+        service_team_id=team.id,
+        person_id=user.id,
+    )
+
+    assert result.kind == "invalid_agent"
+    assert result.reason == "person_id must be an active member of the target team"
 
 
 def test_assign_conversation_queues_when_no_agent_available(db_session):

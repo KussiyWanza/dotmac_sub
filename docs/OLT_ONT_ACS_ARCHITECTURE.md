@@ -178,6 +178,13 @@ Main modules: `app/services/network/olt_polling.py`, `app/services/network/olt_p
 └─────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
+The TR-069 Inform handler owns each CPE's exact GenieACS device identifier.
+Reconciliation reads that persisted identifier before any serial search, so a
+Huawei serial rendered as `HWTC...` by the OLT still targets the same ACS
+document when the ONT reports the equivalent `48575443...` hexadecimal serial.
+Serial search is only a discovery or stale-identity fallback; it never
+overrides a conflicting persisted identity or authorizes a guessed device.
+
 ## Adapter Registry
 
 ```

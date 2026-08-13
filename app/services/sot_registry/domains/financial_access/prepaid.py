@@ -2190,6 +2190,7 @@ SERVICES: tuple[SOTService, ...] = (
             "funded onboarding proforma documentary adoption",
             "historical paid prepaid invoice identity and coverage repair",
             "reviewed missing prepaid paid-invoice repair",
+            "reviewed pre-opening invoice settlement correction",
             "stranded prepaid draft classification",
             "stranded prepaid draft invoice reconciliation",
             "reviewed opening funding invoice consumption",
@@ -2204,6 +2205,8 @@ SERVICES: tuple[SOTService, ...] = (
             "financial.payments",
             "financial.prepaid_funding_reconstruction",
             "financial.prepaid_service_renewals",
+            "financial.customer_subledger",
+            "financial.customer_subledger_opening_positions",
             "communications.staff_notifications",
             "observability.audit_log",
         ),
@@ -2219,8 +2222,9 @@ SERVICES: tuple[SOTService, ...] = (
             "facts crossing its position timestamp; pre-boundary mirror rows "
             "are absorbed by the signed opening and cannot be reused or "
             "quarantined again. "
-            "Automatic funding changes create a durable operator exception "
-            "instead of silently leaving an authoritatively funded draft. "
+            "Automatic funding changes settle one fully funded draft from "
+            "native payments plus unconsumed approved opening funding; the "
+            "fingerprinted consumption prevents that balance being reused. "
             "The admin invoice adapter presents the same exact classifier "
             "output and submits an actor-bound, signed, fingerprinted review "
             "to this owner; it does not maintain a second settlement path. "
@@ -2248,6 +2252,13 @@ SERVICES: tuple[SOTService, ...] = (
             "those fingerprinted facts remain exact and no competing document "
             "or coverage exists; fully payment-backed repair does not depend "
             "on or alter the migrated opening baseline."
+            " A separate pre-opening settlement correction accepts only an "
+            "invoice exactly reconstructed into an approved customer opening, "
+            "one later active allocation, and its exact unreversed two-lane "
+            "customer-subledger posting. It appends ledger and posting "
+            "reversals, retires the allocation projection, records the full "
+            "invoice against approved opening funding, and settles the "
+            "document with zero customer-position delta."
         ),
         contract=ServiceContract(
             concerns=(
@@ -2288,6 +2299,19 @@ SERVICES: tuple[SOTService, ...] = (
                         "canonical prepaid subscription contract",
                         "canonical payment-backed account credit",
                         "canonical paid invoice allocation evidence",
+                        "invoice and payment participant protocols",
+                    ),
+                    canonical_writer="financial.prepaid_draft_reconciliation",
+                ),
+                ConcernContract(
+                    name="reviewed pre-opening invoice settlement correction",
+                    role=OwnerRole.RECONCILER,
+                    input_names=(
+                        "reviewed reconciliation command",
+                        "canonical paid invoice allocation evidence",
+                        "reviewed opening funding",
+                        "approved customer subledger opening",
+                        "canonical customer subledger posting",
                         "invoice and payment participant protocols",
                     ),
                     canonical_writer="financial.prepaid_draft_reconciliation",
@@ -2426,6 +2450,26 @@ SERVICES: tuple[SOTService, ...] = (
                     ),
                 ),
                 AuthorityInput(
+                    name="approved customer subledger opening",
+                    owner="financial.customer_subledger_opening_positions",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source=(
+                        "immutable account, currency, baseline link, approved "
+                        "legacy position, exact opening delta, finance review, "
+                        "and occurrence instant"
+                    ),
+                ),
+                AuthorityInput(
+                    name="canonical customer subledger posting",
+                    owner="financial.customer_subledger",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source=(
+                        "exact authoritative payment-allocation group, its two "
+                        "typed credit-consumed and receivable-settled effects, "
+                        "and immutable linked reversal protocol"
+                    ),
+                ),
+                AuthorityInput(
                     name="canonical funded service entitlement",
                     owner="financial.prepaid_service_renewals",
                     kind=AuthorityKind.AUTHORITATIVE_RECORD,
@@ -2496,6 +2540,12 @@ SERVICES: tuple[SOTService, ...] = (
                     "the preview, and commits document construction, issue, "
                     "exact allocation, entitlement, reviewed anchor projection, "
                     "audit, event, metadata, and idempotency evidence together. The "
+                    "pre-opening correction locks the account, invoice, allocation, "
+                    "opening baseline and posting group, then atomically appends "
+                    "ledger reversals, opening-consumption evidence and a linked "
+                    "customer-posting reversal before recomputing the document; "
+                    "it intentionally emits no funding-change event because its "
+                    "economic delta is zero. The "
                     "funding-change caller uses the same flush-only classifier "
                     "inside its existing transaction."
                 ),
@@ -2561,6 +2611,10 @@ SERVICES: tuple[SOTService, ...] = (
                     "a missing-invoice repair with changed contract tax, dates, "
                     "payment capacity, expected remaining credit, competing "
                     "document, or overlapping entitlement",
+                    "a pre-opening correction whose invoice is not exactly "
+                    "reconstructed in the approved opening, whose allocation "
+                    "or two-lane posting changed, or whose confirmed balance "
+                    "does not match the reviewed expectation",
                     "partial or ambiguous entitlement overlap",
                     "stale preview, changed payment capacity, participant "
                     "remainder mismatch, or already consumed opening funding",
@@ -2683,6 +2737,7 @@ SERVICES: tuple[SOTService, ...] = (
             ),
             test_refs=(
                 "tests/test_prepaid_draft_reconciliation.py",
+                "tests/test_opening_settlement_correction.py",
                 "tests/test_web_prepaid_draft_reconciliation.py",
                 "tests/test_prepaid_service_renewals.py",
                 "tests/test_subscription_lifecycle_commands.py",

@@ -66,7 +66,6 @@ from app.services.web_network_ont_actions.credentials import (
 # Database configuration
 from app.services.web_network_ont_actions.db_config import (
     set_voip_enabled,
-    update_ont_config,
 )
 
 # Device actions
@@ -198,5 +197,4 @@ __all__ = [
     "reconcile_operational_state",
     # Database config
     "set_voip_enabled",
-    "update_ont_config",
 ]

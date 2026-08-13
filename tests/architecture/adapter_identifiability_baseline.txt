@@ -66,7 +66,7 @@ app/services/web_network_vlans.py 10
 app/services/web_network_zones.py 12
 app/services/web_provisioning_bulk_activate.py 7
 app/services/web_provisioning_migration.py 6
-app/services/web_reports.py 7
+app/services/web_reports.py 6
 app/services/web_reports_extended.py 10
 app/services/web_reseller_auth.py 2
 app/services/web_reseller_routes.py 1

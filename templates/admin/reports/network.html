@@ -31,6 +31,26 @@
         {% endif %}
     </div>
 
+    <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-800">
+            <p class="text-sm text-slate-500 dark:text-slate-400">PON Capacity</p>
+            <p class="mt-2 text-2xl font-bold text-slate-900 dark:text-white">{{ total_onts | default(0) }} / {{ pon_capacity | default(0) }}</p>
+            <p class="text-xs text-slate-500">{{ "%.1f" | format(pon_utilization | default(0)) }}% utilized</p>
+        </div>
+        <div class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-800">
+            <p class="text-sm text-slate-500 dark:text-slate-400">Fiber Strands Available</p>
+            <p class="mt-2 text-2xl font-bold text-slate-900 dark:text-white">{{ available_fiber_strands | default(0) }} / {{ total_fiber_strands | default(0) }}</p>
+        </div>
+        <div class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-800">
+            <p class="text-sm text-slate-500 dark:text-slate-400">Active FDHs</p>
+            <p class="mt-2 text-2xl font-bold text-slate-900 dark:text-white">{{ total_fdh | default(0) }}</p>
+        </div>
+        <div class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-800">
+            <p class="text-sm text-slate-500 dark:text-slate-400">Splitter Output Capacity</p>
+            <p class="mt-2 text-2xl font-bold text-slate-900 dark:text-white">{{ splitter_capacity | default(0) }}</p>
+        </div>
+    </div>
+
     <!-- Summary Cards -->
     <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <div class="rounded-xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-800">
@@ -124,7 +144,7 @@
                             </div>
                             <div>
                                 <p class="text-sm font-medium text-slate-900 dark:text-white">{{ olt.name or olt.serial_number }}</p>
-                                <p class="text-xs text-slate-500 dark:text-slate-400">{{ olt.management_ip or 'No IP' }}</p>
+                                <p class="text-xs text-slate-500 dark:text-slate-400">{{ olt.mgmt_ip or 'No IP' }}</p>
                             </div>
                         </div>
                         {% if olt.is_active %}
@@ -196,12 +216,12 @@
                         <tr>
                             <td class="px-4 py-3 text-sm text-slate-900 dark:text-white">{{ ont.model or 'Unknown' }}</td>
                             <td class="px-4 py-3 text-sm font-mono text-slate-500 dark:text-slate-400">{{ ont.serial_number }}</td>
-                            <td class="px-4 py-3 text-sm text-slate-500 dark:text-slate-400">{{ ont.olt.name if ont.olt else '-' }}</td>
+                            <td class="px-4 py-3 text-sm text-slate-500 dark:text-slate-400">{{ ont.olt_name or '-' }}</td>
                             <td class="px-4 py-3">
-                                {% if ont.is_active %}
-                                {{ status_badge("Active", "active", size="sm") }}
+                                {% if ont.is_online %}
+                                {{ status_badge("Online", "online", size="sm") }}
                                 {% else %}
-                                {{ status_badge("Inactive", "inactive", size="sm") }}
+                                {{ status_badge("Offline", "offline", size="sm") }}
                                 {% endif %}
                             </td>
                         </tr>

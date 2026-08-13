@@ -26,6 +26,62 @@ once through `to_template_context()`. The template does not query models,
 inspect accounting rows, derive connectivity, map raw state to semantic colors,
 or generate customer relationship URLs from imported identifiers.
 
+## Dispatch plant subset
+
+`ui.network_map_projection` also owns `NetworkMapPlantProjection`, the
+read-only GeoJSON subset served by `GET /admin/network/map/plant-data` for the
+dispatch live map. It reads only plant identity, geometry, and cached device
+state: PoP/BTS sites, network devices, OLTs positioned through their matched
+network-device and PoP relation, FDHs, closures, access points, service
+buildings, and feeder/distribution/drop routes. Customers, ONTs, subscriptions,
+and session resolution are explicitly outside this query. Active OLTs without a
+matched, mapped network device are omitted and reported as `unmatched_olts`.
+The endpoint requires `network:map:read`; the dispatch route retains only
+`operations:dispatch:read` and omits plant controls for viewers without the
+additional permission.
+
+## Isolated Network Map V2
+
+`GET /admin/network/map-v2` is a read-only parity preview with its own template,
+frontend entry point, and focused tests. It uses the same `network:map:read`
+permission and composes `NetworkMapProjection` with `NetworkMapPlantProjection`;
+the established `/admin/network/map` route and template are unchanged.
+
+V2 adds approved OLT and service-building overlays, loaded/visible counts,
+layer presets, measurement, nearest-loaded-FDH inspection, segment deep links,
+and explicit termination-point status. Fibre lines still come only from stored,
+validated route geometry. Endpoint proximity never creates connectivity, and a
+segment without projected route geometry is labelled incomplete without a
+fallback line. Base stations and live technicians remain explicitly unavailable
+until their authoritative projection and permission composition are approved.
+The verified comparison and remaining data/architecture gaps are documented in
+`docs/designs/NETWORK_MAP_V2_PARITY.md`.
+
+The equipment projection carries the CRM-parity fields that support dispatch
+inspection: FDH splitter counts; closure splice and tray counts; access-point
+type and placement; service-building street and city; and cable type, fiber
+count, length, and operator notes where present. Child counts are grouped by
+asset type and OLT identities are loaded in one batch; the projection never
+performs per-feature relationship queries.
+
+Two CRM behaviors are intentionally not copied. Selfcare OLT records do not own
+coordinates, so a marker exists only when the authoritative active
+`NetworkDevice -> PopSite` relationship positions it. Selfcare's active-segment
+database contract requires distinct termination points, a positive fiber count,
+and persisted route geometry. The map therefore renders that validated
+LineString and never substitutes a straight line between termination-point
+coordinates. Those omissions are drift signals, not permission to infer a
+location or route.
+
+## Technician movement context
+
+The dispatch live-map technician action carries the clicked canonical
+`TechnicianProfile.id` as `technician_id`. The movement page preserves that UUID
+in its server-rendered context and every feed reload, including browser refresh
+and direct navigation. A work-order filter is optional and never substitutes a
+generic technician cohort. Unknown UUIDs return an empty typed history; malformed
+UUIDs are rejected at the adapter boundary without entering the movement query.
+
 ## Page contract
 
 - Screen: `admin.network.operations_map`; incident/NOC investigation page.
@@ -96,6 +152,8 @@ Retired in this slice:
 
 Verification is provided by
 `tests/test_customer_network_operations_map.py`,
+`tests/test_network_map_plant_projection.py`,
+`tests/integration/test_network_map_plant_projection.py`,
 `tests/test_network_map_support_structures.py`, and
 `tests/architecture/test_network_map_projection_boundary.py`, plus the existing
 network-map, device-state, template compilation, and repository architecture

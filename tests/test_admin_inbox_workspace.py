@@ -121,7 +121,10 @@ def test_workspace_exposes_responsive_realtime_and_accessible_controls():
     assert "Only online agents receive auto-assigned inbox conversations." in sidebar
     assert "conversation_id" in sidebar
     assert "Advanced team conditions" in sidebar
-    assert "actor_service_team_options" in conversation
+    assert "support:inbox:self_assign" in conversation
+    assert "service_team_options | default(())" in conversation
+    assert "/admin/inbox/{{ timeline.id }}/assign-to-me" in conversation
+    assert 'action="/admin/inbox/bulk"' not in conversation
     assert 'aria-label="Team for assignment to me"' in conversation
     assert 'name="service_team_id" required' in conversation
     assert "inboxTeamFilterBuilder" in javascript
@@ -131,6 +134,10 @@ def test_workspace_exposes_responsive_realtime_and_accessible_controls():
     assert "idempotency_key" in conversation
     assert "import message_bubble with context" in conversation
     triage = Path("templates/components/ui/triage.html").read_text()
+    assert "att.mime_type.startswith('video/')" in triage
+    assert "att.mime_type.startswith('audio/')" in triage
+    assert "<video" in triage
+    assert "<audio" in triage
     assert 'set priority_label = "Urgent"' in triage
     assert "assignee.initials" in triage
     assert "title=\"{{ assignee.name or 'Assigned agent' }}\"" in triage
@@ -139,6 +146,12 @@ def test_workspace_exposes_responsive_realtime_and_accessible_controls():
     assert "outbound_sender.initials" in triage
     assert 'aria-label="Sent by {{ outbound_sender_name }}"' in triage
     assert ">AG</div>" not in triage
+    assert "att.location.map_url" in triage
+    assert "att.location.latitude" in triage
+    assert "att.location.longitude" in triage
+    assert "https://www.google.com/maps/search/?api=1&query=" in triage
+    assert "Open in Google Maps" in triage
+    assert 'rel="noopener noreferrer"' in triage
     assert "dotmac.inbox.draft." in javascript
     assert "newMessagesAvailable" in javascript
     assert "data.agent_name" in javascript
@@ -156,6 +169,11 @@ def test_workspace_exposes_responsive_realtime_and_accessible_controls():
     assert "event.detail.shouldSwap = false" in javascript
     assert "if (this.filterLoading) return" in javascript
     assert 'document.body.addEventListener("htmx:sendAbort", release)' in javascript
+    assert (
+        "SAFE_INLINE_VIDEO_CONTENT_TYPES"
+        in Path("app/services/team_inbox_projection.py").read_text()
+    )
+    assert "video/mp4" in Path("app/services/team_inbox_projection.py").read_text()
 
 
 def test_projection_supplies_live_agent_and_assignment_options(db_session):

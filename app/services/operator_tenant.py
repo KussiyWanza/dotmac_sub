@@ -27,6 +27,8 @@ from __future__ import annotations
 from uuid import UUID
 
 from dotmac_kernel.models import Tenant
+from sqlalchemy import text
+from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session
 
 #: Deterministic so the migration that backfills `domain_settings` and the
@@ -51,6 +53,42 @@ class OperatorTenantMissingError(RuntimeError):
     nothing. Provisioning runs at startup, so this means a caller ran before
     startup completed or against a database that never migrated.
     """
+
+
+class OperatorTenantScopeError(RuntimeError):
+    """The database refused or changed the operator-tenant transaction scope."""
+
+
+def apply_operator_tenant_transaction_scope(connection: Connection) -> None:
+    """Install Sub's one tenant as the current PostgreSQL transaction scope.
+
+    Sub is a single-operator topology, so every application transaction has the
+    same tenant.  ``set_config(..., true)`` is PostgreSQL's parameterisable
+    equivalent of ``SET LOCAL``: the value is discarded by commit or rollback
+    and therefore cannot leak to the next borrower of a pooled connection.
+
+    This owner is called from SQLAlchemy's root ``after_begin`` event rather
+    than only from the web dependency.  Tasks, workers, CLIs, one-off scripts
+    and deferred callbacks all construct sessions outside the request cycle;
+    missing any one of them would make FORCE RLS fail silently with empty reads.
+
+    SQLite remains a logic-test surface and has no GUC equivalent.  PostgreSQL
+    failures are deliberately allowed to abort the caller's first statement:
+    continuing unscoped would be indistinguishable from a tenant with no data.
+    """
+
+    if connection.dialect.name != "postgresql":
+        return
+
+    expected = str(OPERATOR_TENANT_ID)
+    installed = connection.scalar(
+        text("SELECT set_config('app.current_tenant', :tenant_id, true)"),
+        {"tenant_id": expected},
+    )
+    if installed != expected:
+        raise OperatorTenantScopeError(
+            "PostgreSQL did not install the operator tenant transaction scope"
+        )
 
 
 def provision_operator_tenant(db: Session) -> Tenant:

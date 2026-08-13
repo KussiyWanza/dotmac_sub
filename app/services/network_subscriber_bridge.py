@@ -32,6 +32,7 @@ from app.models.subscriber import (
     SubscriberStatus,
     UserType,
 )
+from app.services.owner_commands import execute_owner_savepoint, owner_command_active
 from app.validators import network as network_validators
 
 logger = logging.getLogger(__name__)
@@ -156,6 +157,41 @@ class DefaultSubscriberValidator:
             )
         return subscription.id, subscription.subscriber_id
 
+    def validate_active_assignment_subscription(
+        self,
+        db: Session,
+        *,
+        subscription_id: object,
+        subscriber_id: object,
+    ) -> tuple[object, object]:
+        """Validate active subscription and subscriber state for network commands."""
+        subscription_stmt = select(Subscription).where(
+            Subscription.id == subscription_id
+        )
+        subscriber_stmt = select(Subscriber).where(Subscriber.id == subscriber_id)
+        subscription = db.scalar(subscription_stmt.with_for_update())
+        if subscription is None:
+            raise HTTPException(status_code=404, detail="Subscription not found")
+        subscriber = db.scalar(subscriber_stmt.with_for_update())
+        if subscriber is None:
+            raise HTTPException(status_code=404, detail="Subscriber not found")
+        if subscription.subscriber_id != subscriber.id:
+            raise HTTPException(
+                status_code=409,
+                detail="Subscription does not belong to the selected subscriber",
+            )
+        if subscription.status != SubscriptionStatus.active:
+            raise HTTPException(
+                status_code=409,
+                detail="Subscription must be active for ONT reassignment",
+            )
+        if subscriber.status != SubscriberStatus.active:
+            raise HTTPException(
+                status_code=409,
+                detail="Subscriber must be active for ONT reassignment",
+            )
+        return subscription.id, subscriber.id
+
     def apply_subscription_device_intent(
         self,
         db: Session,
@@ -266,7 +302,7 @@ class DefaultSubscriberValidator:
         if subscriber is not None:
             return subscriber
 
-        subscriber = Subscriber(
+        new_subscriber = Subscriber(
             first_name="Network",
             last_name="Inventory",
             display_name="Network Inventory",
@@ -276,11 +312,19 @@ class DefaultSubscriberValidator:
             is_active=True,
             billing_enabled=False,
         )
+
+        def create_inventory_subscriber() -> Subscriber:
+            db.add(new_subscriber)
+            db.flush()
+            return new_subscriber
+
         try:
+            if owner_command_active(db):
+                return execute_owner_savepoint(db, create_inventory_subscriber)
             with db.begin_nested():
-                db.add(subscriber)
+                db.add(new_subscriber)
                 db.flush()
-            return subscriber
+            return new_subscriber
         except IntegrityError:
             subscriber = (
                 db.query(Subscriber)

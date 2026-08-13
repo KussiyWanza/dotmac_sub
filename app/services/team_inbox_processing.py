@@ -38,6 +38,56 @@ _PROCESS_OBSERVATION = OwnerCommandDefinition(
 )
 
 
+def _attachment_observation(
+    item: dict[str, object],
+) -> team_inbox_observations.InboundAttachmentObservation:
+    location_data = item.get("location")
+    location = (
+        team_inbox_observations.inbound_location_observation(
+            latitude=location_data.get("latitude"),
+            longitude=location_data.get("longitude"),
+            name=location_data.get("name"),
+            address=location_data.get("address"),
+        )
+        if isinstance(location_data, dict)
+        else None
+    )
+    return team_inbox_observations.InboundAttachmentObservation(
+        asset_type=str(item.get("asset_type") or "file"),
+        file_name=str(item["file_name"]) if item.get("file_name") else None,
+        mime_type=str(item["mime_type"]) if item.get("mime_type") else None,
+        provider_media_id=(
+            str(item["provider_media_id"]) if item.get("provider_media_id") else None
+        ),
+        source_url=str(item["source_url"]) if item.get("source_url") else None,
+        caption=str(item["caption"]) if item.get("caption") else None,
+        file_size=(
+            int(str(item["file_size"])) if item.get("file_size") is not None else None
+        ),
+        download_status=(
+            str(item["download_status"]) if item.get("download_status") else None
+        ),
+        location=location,
+    )
+
+
+def _attachment_metadata(
+    item: team_inbox_observations.InboundAttachmentObservation,
+) -> dict[str, object]:
+    return {
+        "type": item.asset_type,
+        "filename": item.file_name,
+        "mime_type": item.mime_type,
+        "id": item.provider_media_id,
+        "url": item.source_url,
+        "source_url": item.source_url,
+        "caption": item.caption,
+        "file_size": item.file_size,
+        "download_status": item.download_status,
+        "location": item.location.to_metadata() if item.location else None,
+    }
+
+
 def _message_payload(
     row: InboxProviderObservation,
 ) -> team_inbox_observations.InboundMessageObservation:
@@ -132,26 +182,7 @@ def _message_payload(
             else None
         ),
         attachments=tuple(
-            team_inbox_observations.InboundAttachmentObservation(
-                asset_type=str(item.get("asset_type") or "file"),
-                file_name=str(item["file_name"]) if item.get("file_name") else None,
-                mime_type=str(item["mime_type"]) if item.get("mime_type") else None,
-                provider_media_id=(
-                    str(item["provider_media_id"])
-                    if item.get("provider_media_id")
-                    else None
-                ),
-                source_url=str(item["source_url"]) if item.get("source_url") else None,
-                caption=str(item["caption"]) if item.get("caption") else None,
-                file_size=int(item["file_size"])
-                if item.get("file_size") is not None
-                else None,
-                download_status=(
-                    str(item["download_status"])
-                    if item.get("download_status")
-                    else None
-                ),
-            )
+            _attachment_observation(item)
             for item in attachments
             if isinstance(item, dict)
         ),
@@ -246,15 +277,7 @@ def process_provider_observation(
                             # beside the claim it would be used to judge.
                             "authentication": payload.authentication,
                             "attachments": [
-                                {
-                                    "type": item.asset_type,
-                                    "filename": item.file_name,
-                                    "mime_type": item.mime_type,
-                                    "id": item.provider_media_id,
-                                    "url": item.source_url,
-                                    "caption": item.caption,
-                                    "file_size": item.file_size,
-                                }
+                                _attachment_metadata(item)
                                 for item in payload.attachments
                             ],
                         },
@@ -302,17 +325,7 @@ def process_provider_observation(
                             "observation_id": str(row.id),
                             "campaign_attributed": payload.campaign_attributed,
                             "attachments": [
-                                {
-                                    "type": item.asset_type,
-                                    "filename": item.file_name,
-                                    "mime_type": item.mime_type,
-                                    "id": item.provider_media_id,
-                                    "url": item.source_url,
-                                    "source_url": item.source_url,
-                                    "caption": item.caption,
-                                    "file_size": item.file_size,
-                                    "download_status": item.download_status,
-                                }
+                                _attachment_metadata(item)
                                 for item in payload.attachments
                             ],
                         },

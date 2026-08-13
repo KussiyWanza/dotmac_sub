@@ -1,0 +1,17 @@
+{% extends "admin/network/map.html" %}
+
+{% block title %}Network Map V2 - Admin{% endblock %}
+
+{% block head %}
+{{ super() }}
+<script src="/static/js/admin/network_map_v2.js"></script>
+{% endblock %}
+
+{% block content %}
+{{ super() }}
+<script id="network-map-v2-data" type="application/json">{{ {
+    "base_features": map_data.features,
+    "overlay": network_map_v2,
+    "governance": network_map_v2_governance
+} | tojson }}</script>
+{% endblock %}

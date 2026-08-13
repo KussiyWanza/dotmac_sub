@@ -223,6 +223,7 @@
       typingTimer: null,
       inFlight: new Set(),
       filterLoading: false,
+      conversationOpening: false,
       activeFilterXhr: null,
       pendingStatusFilter: null,
       listRequestSequence: 0,
@@ -234,6 +235,7 @@
         channel: "email",
         contactName: "",
         contactId: "",
+        subscriberId: "",
         contactQuery: "",
         contactResults: [],
         contactLoading: false,
@@ -409,6 +411,10 @@
             }
             return;
           }
+          if (target === "triage-detail") {
+            this.conversationOpening = true;
+            event.detail.xhr.__inboxConversationRequest = true;
+          }
           const key = `${event.detail?.requestConfig?.verb || "GET"}:${path}:${target}`;
           if (this.inFlight.has(key)) {
             event.preventDefault();
@@ -432,6 +438,10 @@
           if (failed && sequence === this.listRequestSequence) {
             this.listRequestError = "Could not update conversations. Try again.";
             history.replaceState({}, "", this.lastSuccessfulListUrl);
+          }
+          if (event.detail?.xhr?.__inboxConversationRequest && failed) {
+            this.conversationOpening = false;
+            this.showToast("Could not open conversation. Try again.");
           }
           const key = event.detail?.xhr?.__inboxRequestKey;
           if (key) this.inFlight.delete(key);
@@ -458,6 +468,7 @@
           if (!target) return;
           if (target.id === "triage-detail") {
             this.mode = "detail";
+            this.conversationOpening = false;
             document
               .querySelector("[data-triage-shell]")
               ?.setAttribute("data-triage-mode", "detail");
@@ -598,12 +609,9 @@
         returnUrl.searchParams.set("c", id);
         window.__inboxReturnUrl = `${returnUrl.pathname}${returnUrl.search}`;
         this.selectedId = id;
-        this.mode = "detail";
+        this.conversationOpening = true;
         this.newMessagesAvailable = false;
         this.clearTypingPresence();
-        document
-          .querySelector("[data-triage-shell]")
-          ?.setAttribute("data-triage-mode", "detail");
         this.updateSelectedHighlight();
       },
 
@@ -907,6 +915,7 @@
       },
       newConversationChannelChanged() {
         this.newConversation.contactId = "";
+        this.newConversation.subscriberId = "";
         this.newConversation.contactResults = [];
         this.newConversation.contactError = "";
         if (this.newConversation.channel === "whatsapp") {
@@ -916,6 +925,7 @@
       async searchWhatsAppContacts() {
         const term = this.newConversation.contactQuery.trim();
         this.newConversation.contactId = "";
+        this.newConversation.subscriberId = "";
         this.newConversation.contactName = term;
         if (term.length < 2) {
           this.newConversation.contactResults = [];
@@ -939,7 +949,8 @@
         }
       },
       selectWhatsAppContact(contact) {
-        this.newConversation.contactId = contact.id || "";
+        this.newConversation.contactId = contact.party_id || "";
+        this.newConversation.subscriberId = contact.subscriber_id || "";
         this.newConversation.contactName = contact.name || "";
         this.newConversation.contactQuery = contact.name || "";
         this.newConversation.recipient = contact.whatsapp_address || "";
@@ -947,6 +958,7 @@
       },
       clearWhatsAppContactSelection() {
         this.newConversation.contactId = "";
+        this.newConversation.subscriberId = "";
       },
       async loadWhatsAppTemplates() {
         if (this.newConversation.templateLoading) return;
@@ -1749,7 +1761,17 @@
         this.replyTo = null;
       },
       setReply(detail) {
-        this.replyTo = detail || null;
+        const id = String(detail?.id || "").trim();
+        if (!id) {
+          this.workspace()?.showToast?.("Could not quote that message. Reload the conversation and try again.");
+          return;
+        }
+        this.replyTo = {
+          id,
+          author: String(detail?.author || "Customer"),
+          excerpt: String(detail?.excerpt || "").slice(0, 160),
+        };
+        this.workspace()?.showToast?.("Quoted message selected.");
         this.$nextTick(() => this.$refs.textarea?.focus());
       },
       submitFromKeyboard(event) {
@@ -1823,6 +1845,10 @@
           '[name="idempotency_key"]',
         );
         if (keyInput) keyInput.value = this.idempotencyKey;
+        const replyInput = event.currentTarget.querySelector(
+          '[name="reply_to_message_id"]',
+        );
+        if (replyInput) replyInput.value = this.replyTo?.id || "";
         this.sending = true;
         this.workspace()?.publishTyping?.(this.conversationId, false);
       },

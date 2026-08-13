@@ -3,7 +3,20 @@
 from __future__ import annotations
 
 from app.services.sot_manifest import (
+    AuthorityInput,
+    AuthorityKind,
+    AuthorityMigrationState,
+    ConcernContract,
+    ErrorContract,
+    EventContract,
+    MigrationContract,
+    OwnerRole,
+    ProjectionContract,
+    ServiceContract,
     SOTService,
+    TransactionContract,
+    TransactionMode,
+    owner_command_boundary_error_codes,
 )
 
 SERVICES: tuple[SOTService, ...] = (
@@ -46,6 +59,168 @@ SERVICES: tuple[SOTService, ...] = (
             "subscription bridge. MAC, name, address, work-order, map, "
             "and registration inference cannot select identity. Existing "
             "disagreements fail closed into reviewed repair."
+        ),
+        contract=ServiceContract(
+            concerns=(
+                ConcernContract(
+                    name="normal explicit ONT-to-subscription assignments",
+                    role=OwnerRole.COMMAND_WRITER,
+                    input_names=(
+                        "canonical ONT inventory identity",
+                        "active subscriber account",
+                        "active subscription lifecycle",
+                        "active ONT service assignment",
+                    ),
+                    canonical_writer="network.ont_assignment_commands",
+                ),
+                ConcernContract(
+                    name="normal assignment release transitions",
+                    role=OwnerRole.COMMAND_WRITER,
+                    input_names=(
+                        "canonical ONT inventory identity",
+                        "active ONT service assignment",
+                    ),
+                    canonical_writer="network.ont_assignment_commands",
+                ),
+                ConcernContract(
+                    name="verified physical PON move projections",
+                    role=OwnerRole.PROJECTION_WRITER,
+                    input_names=(
+                        "canonical ONT inventory identity",
+                        "modeled PON and OLT identity",
+                        "active ONT service assignment",
+                    ),
+                    canonical_writer="network.ont_assignment_commands",
+                ),
+                ConcernContract(
+                    name="exact normal assignment audit results",
+                    role=OwnerRole.PROJECTION_WRITER,
+                    input_names=(
+                        "canonical ONT inventory identity",
+                        "active ONT service assignment",
+                    ),
+                    canonical_writer="network.ont_assignment_commands",
+                ),
+            ),
+            authoritative_inputs=(
+                AuthorityInput(
+                    name="canonical ONT inventory identity",
+                    owner="network.identity",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source="OntUnit exact serial, MAC, active state, OLT, and PON identity",
+                ),
+                AuthorityInput(
+                    name="modeled PON and OLT identity",
+                    owner="network.ont_topology_observations",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source="PonPort and OLTDevice modeled identity accepted by topology owners",
+                ),
+                AuthorityInput(
+                    name="active subscriber account",
+                    owner="customer.accounts",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source="Subscriber active lifecycle state",
+                ),
+                AuthorityInput(
+                    name="active subscription lifecycle",
+                    owner="access.subscription_lifecycle",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source="Subscription owner and active lifecycle state",
+                ),
+                AuthorityInput(
+                    name="active ONT service assignment",
+                    owner="network.ont_assignment_commands",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source="OntAssignment active row and assignment history",
+                ),
+            ),
+            transaction=TransactionContract(
+                mode=TransactionMode.OWNER_MANAGED,
+                boundary=(
+                    "Public typed commands enter execute_owner_command once; "
+                    "nested assignment/release helpers use flush and the owner "
+                    "boundary commits or rolls back the complete transition."
+                ),
+                locking=(
+                    "Lock subscriber, subscription, current assignment, current "
+                    "ONT, target ONT, and active assignment rows before deciding."
+                ),
+                idempotency=(
+                    "Repeated identical reassignment returns the existing target "
+                    "assignment when the supplied current assignment was already "
+                    "released by the same transition."
+                ),
+                retries="Fail closed on stale or ambiguous state; callers may retry after refresh.",
+            ),
+            errors=ErrorContract(
+                domain_codes=(
+                    *owner_command_boundary_error_codes(
+                        "network.ont_assignment_commands"
+                    ),
+                    "network.ont_assignment_commands.invalid_identity",
+                    "network.ont_assignment_commands.not_found",
+                    "network.ont_assignment_commands.conflict",
+                    "network.ont_assignment_commands.stale_assignment",
+                ),
+                mapping_owner="web/API adapters",
+                fail_closed_on=(
+                    "missing subscriber, inactive subscription, stale assignment, "
+                    "assigned target ONT, missing OLT/PON identity",
+                ),
+            ),
+            events=EventContract(
+                event_types=(
+                    "network.ont_assignment.assigned",
+                    "network.ont_assignment.released",
+                    "network.ont_assignment.reassigned",
+                ),
+                schema_version=1,
+                delivery_owner="events.dispatcher",
+                compatibility="Audit metadata preserves exact result evidence for current consumers.",
+                replay="Commands are idempotent for unchanged exact input; outbox/audit replay is evidence-only.",
+            ),
+            projections=(
+                ProjectionContract(
+                    name="verified physical PON move projections",
+                    input_names=(
+                        "canonical ONT inventory identity",
+                        "modeled PON and OLT identity",
+                        "active ONT service assignment",
+                    ),
+                    writer="network.ont_assignment_commands",
+                    freshness="Current at owner-command commit.",
+                    stale_behavior="Stale supplied assignment identity fails closed.",
+                    drift_signal="Assignment cutover audit and access-path gaps.",
+                    rebuild_operation="Repeat exact command or use reviewed identity repair for conflicts.",
+                    repair_owner="network.ont_assignment_commands",
+                ),
+                ProjectionContract(
+                    name="exact normal assignment audit results",
+                    input_names=(
+                        "canonical ONT inventory identity",
+                        "active ONT service assignment",
+                    ),
+                    writer="network.ont_assignment_commands",
+                    freshness="Transactionally staged with assignment transition.",
+                    stale_behavior="Missing evidence is detected by audit review.",
+                    drift_signal="Audit result mismatch against active assignment state.",
+                    rebuild_operation="Replay idempotent command or reviewed repair.",
+                    repair_owner="network.ont_assignment_commands",
+                ),
+            ),
+            migration=MigrationContract(
+                state=AuthorityMigrationState.NATIVE,
+                new_owner="network.ont_assignment_commands",
+            ),
+            steward="network operations",
+            design_refs=(
+                "docs/SOT_RELATIONSHIP_MAP.md",
+                "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+            ),
+            test_refs=(
+                "tests/test_ont_assignment_commands.py",
+                "tests/architecture/test_ont_reassignment_boundary.py",
+            ),
         ),
     ),
     SOTService(

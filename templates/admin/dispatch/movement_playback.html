@@ -29,6 +29,9 @@
                 <h1 class="mt-1 text-2xl font-bold text-slate-900 dark:text-white">Movement Playback</h1>
                 <p class="mt-0.5 text-sm text-slate-500 dark:text-slate-400">Replay a work order's technician travel path</p>
             </div>
+            {% if selected_technician_id %}
+            <div class="text-xs text-slate-500 dark:text-slate-400">Technician: <span class="font-mono">{{ selected_technician_id }}</span></div>
+            {% endif %}
         </div>
     </div>
 
@@ -69,6 +72,7 @@
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script>
 (function() {
+    const selectedTechnicianId = {{ selected_technician_id | tojson }};
     const map = L.map('playback-map').setView([6.5244, 3.3792], 11);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
@@ -139,8 +143,11 @@
     function load() {
         stopPlay();
         const wo = document.getElementById('work-order').value;
-        if (!wo) return;
-        fetch('/admin/dispatch/movement-playback/feed?work_order=' + encodeURIComponent(wo), { headers: { 'Accept': 'application/json' } })
+        if (!wo && !selectedTechnicianId) return;
+        const params = new URLSearchParams();
+        if (wo) params.set('work_order', wo);
+        if (selectedTechnicianId) params.set('technician_id', selectedTechnicianId);
+        fetch('/admin/dispatch/movement-playback/feed?' + params.toString(), { headers: { 'Accept': 'application/json' } })
             .then(function(r) { return r.ok ? r.json() : Promise.reject(r.status); })
             .then(function(data) {
                 points = (data && data.points) || [];
@@ -165,7 +172,7 @@
     document.getElementById('btn-load').addEventListener('click', load);
     document.getElementById('btn-play').addEventListener('click', togglePlay);
     document.getElementById('scrubber').addEventListener('input', function(e) { stopPlay(); setIndex(Number(e.target.value)); });
-    if (document.getElementById('work-order').value) load();
+    if (document.getElementById('work-order').value || selectedTechnicianId) load();
 })();
 </script>
 {% endblock %}

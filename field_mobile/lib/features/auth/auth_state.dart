@@ -6,7 +6,7 @@ import 'auth_repository.dart';
 
 const defaultBaseUrl = String.fromEnvironment(
   'API_BASE_URL',
-  defaultValue: 'https://sub.dotmac.io',
+  defaultValue: 'https://selfcare.dotmac.io',
 );
 
 final tokenStoreProvider = Provider<TokenStore>((ref) => SecureTokenStore());

@@ -121,8 +121,21 @@ def test_downgrade_is_a_no_op_so_the_chain_stays_unwindable(monkeypatch) -> None
     assert executed == []
 
 
-def test_the_archive_location_is_recorded_for_recovery() -> None:
+def test_the_archive_is_identified_by_checksum_not_by_a_path() -> None:
+    """The archive is held off Dotmac infrastructure, so no path can be right.
+
+    Its checksum is what lets a returned copy be proven to be that archive.
+    A stored path would be a recovery pointer that has quietly stopped
+    resolving -- the failure mode that produced the predecessor to this
+    revision, which asserted an emptiness that had stopped being true.
+    """
+
     source = _MIGRATION_PATH.read_text(encoding="utf-8")
-    assert "db-archives/splynx_staging_2026-08-11.dump" in source
+
     assert "20b2e815e0da4006d3b501a7fea4c36b0645fdae1fb0e3c81fd7e18c0980e2fd" in source
+    assert "splynx_staging_2026-08-11.dump" in source
     assert "pg_restore -n splynx_staging" in source
+
+    # No bucket, host, or filesystem location may be recorded as the archive's home.
+    for stale_pointer in ("db-archives/", "dotmac-private", "minio", "/root/"):
+        assert stale_pointer not in source

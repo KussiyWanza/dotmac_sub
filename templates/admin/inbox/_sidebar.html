@@ -58,7 +58,11 @@
             </span>
             {% if can_manage_inbox %}
             <span class="group relative">
-                <button type="button" @click="toggleManagerDashboard()"
+                <button type="button"
+                        hx-get="/admin/inbox/manager-dashboard"
+                        hx-target="#inbox-manager-dashboard-slot"
+                        hx-swap="innerHTML"
+                        @click="toggleManagerDashboard()"
                         class="inline-flex h-9 w-9 items-center justify-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
                         :class="managerDashboardOpen ? 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300' : 'text-slate-500 hover:bg-slate-100 hover:text-slate-700 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-200'"
                         :aria-pressed="managerDashboardOpen.toString()"

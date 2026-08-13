@@ -250,6 +250,7 @@
                 <label class="block text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Status</label>
                 <div class="mt-1 flex gap-2">
                     <select name="status" class="flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+                        {% if unavailable_status_presentation %}<option value="{{ unavailable_status_presentation.value }}" selected hidden>{{ unavailable_status_presentation.label }} (current)</option>{% endif %}
                         {% for s in all_statuses %}
                         <option value="{{ s }}" {% if s == current_status %}selected{% endif %}>{{ s | replace('_', ' ') | title }}</option>
                         {% endfor %}

@@ -6,6 +6,7 @@ import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import select
@@ -22,6 +23,24 @@ _PROVISIONING_CORRELATION_KEY: ContextVar[str | None] = ContextVar(
     "provisioning_correlation_key",
     default=None,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class ProvisioningLifecycleIdentity:
+    """Exact assignment/configuration/operation identity for new evidence."""
+
+    assignment_id: uuid.UUID
+    configuration_head_id: uuid.UUID
+    configuration_revision: int
+    operation_id: uuid.UUID
+
+
+@dataclass(frozen=True, slots=True)
+class ProvisioningLifecycleScope:
+    """Read scope for all evidence in one exact configuration revision."""
+
+    configuration_head_id: uuid.UUID
+    configuration_revision: int
 
 
 @contextmanager
@@ -60,6 +79,7 @@ def record_ont_provisioning_event(
     event_data: dict[str, Any] | None = None,
     compensation_applied: bool = False,
     correlation_key: str | None = None,
+    lifecycle: ProvisioningLifecycleIdentity | None = None,
 ) -> OntProvisioningEvent:
     """Append one immutable provisioning event for an ONT step result."""
     data = dict(result.data or {})
@@ -81,6 +101,14 @@ def record_ont_provisioning_event(
         event_data=data or None,
         compensation_applied=compensation_applied,
         correlation_key=effective_correlation_key,
+        assignment_id=lifecycle.assignment_id if lifecycle is not None else None,
+        configuration_head_id=(
+            lifecycle.configuration_head_id if lifecycle is not None else None
+        ),
+        configuration_revision=(
+            lifecycle.configuration_revision if lifecycle is not None else None
+        ),
+        operation_id=lifecycle.operation_id if lifecycle is not None else None,
     )
     db.add(event)
     return event
@@ -91,13 +119,19 @@ def list_ont_provisioning_events(
     ont_id: str | uuid.UUID,
     *,
     limit: int = 100,
+    lifecycle_scope: ProvisioningLifecycleScope | None = None,
 ) -> list[OntProvisioningEvent]:
-    """Return recent provisioning events for an ONT, newest first."""
+    """Return recent events, optionally restricted to one exact lifecycle."""
     ont_uuid = ont_id if isinstance(ont_id, uuid.UUID) else uuid.UUID(str(ont_id))
-    stmt = (
-        select(OntProvisioningEvent)
-        .where(OntProvisioningEvent.ont_unit_id == ont_uuid)
-        .order_by(OntProvisioningEvent.created_at.desc())
-        .limit(limit)
+    stmt = select(OntProvisioningEvent).where(
+        OntProvisioningEvent.ont_unit_id == ont_uuid
     )
+    if lifecycle_scope is not None:
+        stmt = stmt.where(
+            OntProvisioningEvent.configuration_head_id
+            == lifecycle_scope.configuration_head_id,
+            OntProvisioningEvent.configuration_revision
+            == lifecycle_scope.configuration_revision,
+        )
+    stmt = stmt.order_by(OntProvisioningEvent.created_at.desc()).limit(limit)
     return list(db.scalars(stmt))

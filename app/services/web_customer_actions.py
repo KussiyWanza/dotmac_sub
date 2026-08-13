@@ -40,7 +40,6 @@ from app.models.subscriber import (
     SubscriberChannel,
     SubscriberStatus,
 )
-from app.schemas.audit import AuditEventCreate
 from app.schemas.notification import NotificationCreate
 from app.schemas.subscriber import (
     AddressCreate,
@@ -49,7 +48,6 @@ from app.schemas.subscriber import (
     SubscriberUpdate,
 )
 from app.services import account_status_commands, customer_portal
-from app.services import audit as audit_service
 from app.services import catalog as catalog_service
 from app.services import notification as notification_service
 from app.services import radius as radius_service
@@ -61,6 +59,7 @@ from app.services.account_billing_approval import (
     change_account_billing_approval,
 )
 from app.services.account_lifecycle import compute_account_status, derive_account_status
+from app.services.audit_adapter import record_audit_event, stage_audit_event
 from app.services.branding_config import get_brand
 from app.services.bulk_actions import (
     BulkSelection,
@@ -2509,7 +2508,8 @@ def create_impersonation_session(
             str(auth.get("subscriber_id") or auth.get("person_id") or "") or None
         )
 
-    audit_payload = AuditEventCreate(
+    record_audit_event(
+        db,
         actor_type=AuditActorType.user,
         actor_id=actor_id_value,
         action="impersonate",
@@ -2519,7 +2519,7 @@ def create_impersonation_session(
         is_success=True,
         ip_address=request.client.host if request.client else None,
         user_agent=request.headers.get("user-agent"),
-        metadata_={
+        metadata={
             "customer_type": customer_type,
             "customer_id": customer_id,
             "subscription_id": str(selected_subscription_id)
@@ -2527,7 +2527,6 @@ def create_impersonation_session(
             else None,
         },
     )
-    audit_service.audit_events.create(db=db, payload=audit_payload)
     return session_token
 
 
@@ -3546,7 +3545,9 @@ def approve_subscriber_name_correction(
     subscriber.first_name = payload.first_name or subscriber.first_name
     subscriber.last_name = payload.last_name or subscriber.last_name
     subscriber.display_name = payload.display_name
-    audit_payload = AuditEventCreate(
+    audit_writer = record_audit_event if commit else stage_audit_event
+    audit_writer(
+        db,
         actor_type=AuditActorType.user if actor_id else AuditActorType.service,
         actor_id=actor_id or "customer.profile_commands",
         action="subscriber_name_correction_applied",
@@ -3554,7 +3555,7 @@ def approve_subscriber_name_correction(
         entity_id=str(subscriber.id),
         status_code=200,
         is_success=True,
-        metadata_={
+        metadata={
             "source": "customer.profile_commands",
             "expected_current_fingerprint": expected_current_fingerprint,
             "manifest_digest": manifest_digest,
@@ -3571,10 +3572,6 @@ def approve_subscriber_name_correction(
             "reason": reason,
         },
     )
-    if commit:
-        audit_service.audit_events.create(db=db, payload=audit_payload)
-    else:
-        audit_service.audit_events.stage(db=db, payload=audit_payload)
     if commit:
         db.commit()
         db.refresh(subscriber)

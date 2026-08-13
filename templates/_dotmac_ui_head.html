@@ -1,0 +1,13 @@
+{#
+  The shared Dotmac UI contract's stylesheet.
+
+  Loaded FIRST, before Sub's own main.css / design-system.css / branding
+  theme.css, so those keep overriding it — this adoption changes no pixel on
+  its own. The package owns the content digest in this URL; do not append a
+  Sub cache-busting query string.
+
+  No theme bootstrap belongs here: dotmac-ui emits its dark values under
+  `.dark` as well as its own attribute, so base.html's existing pre-paint
+  script already drives these tokens. See app/ui.py.
+#}
+<link rel="stylesheet" href="{{ dotmac_ui_stylesheet_url }}" />

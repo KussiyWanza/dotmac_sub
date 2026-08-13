@@ -100,6 +100,7 @@ class CreateStaffMaterialRequest:
     fulfillment_channel: MaterialRequestFulfillmentChannel = (
         MaterialRequestFulfillmentChannel.ERP
     )
+    work_order_public_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,12 +180,6 @@ class MaterialRequestWorkOrderOption:
 
 
 @dataclass(frozen=True, slots=True)
-class MaterialRequestInventoryOption:
-    id: UUID
-    label: str
-
-
-@dataclass(frozen=True, slots=True)
 class MaterialRequestWarehouseOption:
     code: str
     label: str
@@ -193,7 +188,7 @@ class MaterialRequestWarehouseOption:
 @dataclass(frozen=True, slots=True)
 class MaterialRequestFormOptions:
     work_orders: tuple[MaterialRequestWorkOrderOption, ...]
-    inventory_items: tuple[MaterialRequestInventoryOption, ...]
+    has_eligible_inventory_items: bool
     warehouses: tuple[MaterialRequestWarehouseOption, ...]
     context_label: str
 
@@ -233,7 +228,7 @@ _MATERIAL_CREATE_COMMAND = OwnerCommandDefinition(
 )
 _MATERIAL_OBSERVATION_COMMAND = OwnerCommandDefinition(
     owner="operations.material_dependencies",
-    concern="ERP material issuance observation",
+    concern="ERP material status observation",
     name="observe_erp_material_status",
 )
 
@@ -482,25 +477,20 @@ def staff_material_request_form_options(
                 technician_label="Optional context",
             )
         )
-    inventory_rows = (
-        db.query(FieldInventoryItem)
+    has_eligible_inventory_items = (
+        db.query(FieldInventoryItem.id)
         .filter(
             FieldInventoryItem.is_active.is_(True),
             FieldInventoryItem.source_is_active.is_(True),
             FieldInventoryItem.field_request_eligible.is_(True),
         )
-        .order_by(FieldInventoryItem.name.asc())
-        .all()
+        .limit(1)
+        .first()
+        is not None
     )
     return MaterialRequestFormOptions(
         work_orders=tuple(work_orders),
-        inventory_items=tuple(
-            MaterialRequestInventoryOption(
-                id=row.id,
-                label=f"{row.name} ({row.sku})" if row.sku else row.name,
-            )
-            for row in inventory_rows
-        ),
+        has_eligible_inventory_items=has_eligible_inventory_items,
         warehouses=tuple(
             MaterialRequestWarehouseOption(
                 code=row.code,
@@ -541,6 +531,7 @@ def _command_fingerprint(command: CreateStaffMaterialRequest) -> str:
     scope = command.scope or MaterialRequestScope()
     payload = {
         "work_order_id": str(command.work_order_id) if command.work_order_id else None,
+        "work_order_public_id": command.work_order_public_id,
         "ticket_id": str(scope.ticket_id) if scope.ticket_id else None,
         "project_id": str(scope.project_id) if scope.project_id else None,
         "project_task_id": str(scope.project_task_id)
@@ -633,7 +624,18 @@ def _resolved_context(
     work_order = (
         db.get(WorkOrder, command.work_order_id) if command.work_order_id else None
     )
-    if command.work_order_id and (work_order is None or not work_order.is_active):
+    if work_order is None and command.work_order_public_id:
+        work_order = db.execute(
+            select(WorkOrder)
+            .where(
+                WorkOrder.public_id == command.work_order_public_id,
+                WorkOrder.is_active.is_(True),
+            )
+            .with_for_update()
+        ).scalar_one_or_none()
+    if (command.work_order_id or command.work_order_public_id) and (
+        work_order is None or not work_order.is_active
+    ):
         raise _material_error("work_order_not_found", "Work order was not found.")
     if work_order is not None:
         project_id = project_id or work_order.project_id
@@ -1010,7 +1012,7 @@ def observe_erp_material_status(
 def serialize_material_request(request: FieldMaterialRequest) -> dict:
     return {
         "id": request.id,
-        "crm_work_order_id": (
+        "work_order_id": (
             request.work_order_mirror.public_id if request.work_order_mirror else None
         ),
         "crm_material_request_id": request.crm_material_request_id,
@@ -1344,7 +1346,6 @@ class FieldMaterialRequests:
                 "approved",
                 "accepted_by_erp",
                 "pending_stock",
-                "issued",
             }:
                 request.status = "issued"
                 request.issued_at = request.issued_at or datetime.now(UTC)

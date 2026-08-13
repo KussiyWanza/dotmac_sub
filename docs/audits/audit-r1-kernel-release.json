@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "status": "released_pinned_and_rehearsed",
+  "released_at": "2026-08-12",
+  "kernel": {
+    "repository": "dotmac_starter_mt",
+    "source_commit": "048662dbd944aca95b2e89f133b0c864c3fd5a59",
+    "version": "0.1.0a42",
+    "tag": "dotmac-kernel-v0.1.0a42",
+    "release_workflow_run": 31592573094,
+    "wheel_sha256": "0678241f808b564cafd218fc86d45a096f685568aace90868a70b71c5d907106",
+    "sdist_sha256": "8658e05d78ecf2579187588f2af96c9f084bcfe977fcafd7f518248097ac25cb"
+  },
+  "sub": {
+    "branch": "integration/kernel-adoption",
+    "base_commit": "37912c5111776daf6bc14ec3079302345a12c8a2",
+    "implementation_commit": "0bdb4f2913d03418f6ce76955ec69fa5cecd47e2",
+    "migration": "524_audit_events_kernel_r1",
+    "released_kernel_pin": "0.1.0a42"
+  },
+  "rehearsal": {
+    "rehearsed_at": "2026-08-12",
+    "host": "observe",
+    "database": "PostgreSQL 16 with PostGIS 3.4",
+    "installed_kernel_version": "0.1.0a42",
+    "migration_head": "524_audit_events_kernel_r1",
+    "integration_tests_collected": 103,
+    "integration_tests_passed": 103,
+    "exit_code": 0,
+    "disposable_resources_removed": true
+  },
+  "proves": [
+    "the protected kernel release workflow published and registry-verified a42 from the recorded source commit",
+    "the release tag resolves to the recorded source commit",
+    "Sub pins the exact released version in every dependency declaration",
+    "Sub's lock records the published wheel and sdist digests",
+    "Sub's complete migration chain reaches head 524 against PostgreSQL 16 with the released a42 wheel installed",
+    "all 103 Postgres-backed integration tests pass against that migrated schema and released wheel"
+  ],
+  "does_not_prove": [
+    "that kernel revision 0001 can compose onto Sub's schema",
+    "that an audit authority cutover has occurred",
+    "that Sub has been merged or deployed"
+  ],
+  "next_gate": "Require all protected pull-request checks to pass before merge."
+}

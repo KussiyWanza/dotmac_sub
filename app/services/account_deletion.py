@@ -21,9 +21,8 @@ from sqlalchemy.orm import Session
 
 from app.models.audit import AuditActorType
 from app.models.subscriber import Subscriber, SubscriberStatus
-from app.schemas.audit import AuditEventCreate
-from app.services import audit as audit_service
 from app.services.account_lifecycle import transition_account_status
+from app.services.audit_adapter import record_audit_event
 
 logger = logging.getLogger(__name__)
 
@@ -69,18 +68,16 @@ def request_deletion(
     db.commit()
 
     try:
-        audit_service.audit_events.record(
+        record_audit_event(
             db,
-            AuditEventCreate(
-                actor_type=AuditActorType.user,
-                actor_id=str(subscriber_id),
-                action="account_deletion_requested",
-                entity_type="subscriber",
-                entity_id=str(subscriber_id),
-                status_code=200,
-                is_success=True,
-                metadata_={"reason": clean_reason, "already_canceled": already},
-            ),
+            actor_type=AuditActorType.user,
+            actor_id=str(subscriber_id),
+            action="account_deletion_requested",
+            entity_type="subscriber",
+            entity_id=str(subscriber_id),
+            status_code=200,
+            is_success=True,
+            metadata={"reason": clean_reason, "already_canceled": already},
             defer_until_commit=False,
         )
     except Exception:  # noqa: BLE001 - audit must never block the request

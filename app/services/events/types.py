@@ -239,6 +239,9 @@ class EventType(enum.Enum):
     device_projection_reconciled = "device_projection.reconciled"
     session_started = "session.started"
     session_ended = "session.ended"
+    network_map_asset_change_proposed = "network_map_asset_change.proposed"
+    network_map_asset_change_applied = "network_map_asset_change.applied"
+    network_map_asset_change_rejected = "network_map_asset_change.rejected"
 
     # OLT events (3)
     olt_created = "olt.created"
@@ -253,6 +256,9 @@ class EventType(enum.Enum):
     ont_signal_degraded = "ont.signal_degraded"
     ont_signal_delta = "ont.signal_delta"
     ont_config_updated = "ont.config_updated"
+    ont_service_configuration_queued = "ont.service_configuration.queued"
+    ont_service_configuration_phase_changed = "ont.service_configuration.phase_changed"
+    ont_service_configuration_retired = "ont.service_configuration.retired"
     ont_moved = "ont.moved"
     ont_feature_toggled = "ont.feature_toggled"
     ont_ddm_alert = "ont.ddm_alert"

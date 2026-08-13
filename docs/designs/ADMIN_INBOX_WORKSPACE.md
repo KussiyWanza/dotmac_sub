@@ -202,6 +202,20 @@ and Instagram comment conversations. It is recomputed by
 status, snooze, activation, or ticket changes are reflected on refetch without
 a persisted UI flag.
 
+WhatsApp structured locations retain their validated latitude and longitude,
+with the provider's optional place name and address. The message timeline shows
+a location card whose explicit action opens those coordinates in Google Maps.
+Locations are not downloadable media: a legacy or malformed record without
+valid coordinates is displayed as unavailable and never links to the Inbox
+media-content route.
+
+For a historical WhatsApp location that arrived before structured coordinates
+were preserved, an operator can invoke the manual
+`app.tasks.team_inbox.repair_whatsapp_locations` task with the exact
+conversation UUID. The maintenance owner accepts only the verified raw webhook
+receipt whose stored consequence names the same message, making the repair
+bounded, auditable, and safe to repeat.
+
 ## Loading and failure behaviour
 
 - List, thread, and contact context load independently.

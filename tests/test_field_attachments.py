@@ -159,7 +159,7 @@ def test_upload_attachment_list_content_delete_and_job_detail(db_session, fake_u
     )
 
     assert attachment["file_name"] == "drop.jpg"
-    assert attachment["crm_work_order_id"] == "wo-attach-detail"
+    assert attachment["work_order_id"] == "wo-attach-detail"
     assert attachment["download_path"].endswith("/content")
     stored = db_session.query(FieldAttachment).one()
     assert stored.work_order_mirror_id == work_order.id
@@ -294,11 +294,12 @@ def test_attachment_api(db_session, fake_uploads):
 
     upload = client.post(
         "/api/v1/field/attachments",
-        data={"kind": "photo", "crm_work_order_id": "wo-attach-api"},
+        data={"kind": "photo", "work_order_id": "wo-attach-api"},
         files={"file": ("drop.jpg", b"image-bytes", "image/jpeg")},
     )
 
     assert upload.status_code == 201
+    assert upload.json()["work_order_id"] == "wo-attach-api"
     attachment_id = upload.json()["id"]
     assert (
         upload.json()["download_path"]

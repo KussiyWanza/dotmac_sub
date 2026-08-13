@@ -11,10 +11,11 @@ from enum import StrEnum
 from html import unescape
 from uuid import UUID
 
-from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy import func, or_
+from sqlalchemy.orm import Session, aliased
 
 from app.models.service_team import ServiceTeamMember
+from app.models.subscriber import Subscriber, SubscriberStatus
 from app.models.support import canonical_ticket_status_value
 from app.models.system_user import SystemUser
 from app.models.team_inbox import (
@@ -23,8 +24,11 @@ from app.models.team_inbox import (
     InboxChannelType,
     InboxConversation,
     InboxConversationAssignment,
+    InboxConversationReadState,
     InboxConversationStatus,
     InboxConversationTeam,
+    InboxRoutingEvent,
+    InboxStatusTransitionEvent,
 )
 from app.services import (
     conversation_ticket_handoff,
@@ -58,6 +62,24 @@ SAFE_INLINE_IMAGE_CONTENT_TYPES: frozenset[str] = frozenset(
         "image/webp",
     }
 )
+SAFE_INLINE_AUDIO_CONTENT_TYPES: frozenset[str] = frozenset(
+    {
+        "audio/aac",
+        "audio/mpeg",
+        "audio/mp4",
+        "audio/ogg",
+        "audio/wav",
+        "audio/webm",
+    }
+)
+SAFE_INLINE_VIDEO_CONTENT_TYPES: frozenset[str] = frozenset(
+    {
+        "video/mp4",
+        "video/ogg",
+        "video/quicktime",
+        "video/webm",
+    }
+)
 
 
 class InboxMediaBrowserPresentation(StrEnum):
@@ -81,18 +103,38 @@ def get_media_content_projection(
     asset_id: UUID,
 ) -> InboxMediaContentProjection:
     media_content = team_inbox_media.stream_asset_content(db, asset_id)
+    if isinstance(media_content, tuple):
+        asset, stream = media_content
+        content_type = (
+            stream.content_type or asset.mime_type or "application/octet-stream"
+        )
+        file_name = asset.file_name or f"inbox-media-{asset.id}"
+        content_length = stream.content_length
+        chunks = stream.chunks
+        resolved_asset_id = asset.id
+    else:
+        content_type = media_content.content_type
+        file_name = media_content.file_name
+        content_length = media_content.stream.content_length
+        chunks = media_content.stream.chunks
+        resolved_asset_id = media_content.asset_id
+    inline_types = (
+        SAFE_INLINE_IMAGE_CONTENT_TYPES
+        | SAFE_INLINE_AUDIO_CONTENT_TYPES
+        | SAFE_INLINE_VIDEO_CONTENT_TYPES
+    )
     presentation = (
         InboxMediaBrowserPresentation.inline
-        if media_content.content_type in SAFE_INLINE_IMAGE_CONTENT_TYPES
+        if content_type in inline_types
         else InboxMediaBrowserPresentation.attachment
     )
     return InboxMediaContentProjection(
-        asset_id=media_content.asset_id,
-        file_name=media_content.file_name,
-        content_type=media_content.content_type,
-        content_length=media_content.stream.content_length,
+        asset_id=resolved_asset_id,
+        file_name=file_name,
+        content_type=content_type,
+        content_length=content_length,
         presentation=presentation,
-        chunks=media_content.stream.chunks,
+        chunks=chunks,
     )
 
 
@@ -181,6 +223,7 @@ class InboxQueueRequest:
     selected_conversation_id: str | UUID | None = None
     actor_person_id: UUID | None = None
     composition: InboxQueueComposition = InboxQueueComposition.full_workspace
+    include_total_count: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,6 +244,8 @@ class WhatsAppContactOption:
     id: str
     name: str
     whatsapp_address: str
+    party_id: UUID | None
+    subscriber_id: UUID | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,6 +295,16 @@ SOCIAL_COMMENT_LIST_DEFINITION = ListDefinition(
 
 
 @dataclass(frozen=True, slots=True)
+class InboxLifecycleEvent:
+    kind: str
+    label: str
+    actor_name: str
+    actor_email: str | None
+    occurred_at: datetime | None
+    detail: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class InboxConversationProjection:
     timeline: team_inbox_read.InboxConversationTimeline
     subscriber_summary: Mapping[str, object] | None
@@ -262,6 +317,7 @@ class InboxConversationProjection:
     action_eligibility: InboxActionEligibility
     is_unread: bool
     priority_options: tuple[InboxPriorityOption, ...]
+    activity_events: tuple[InboxLifecycleEvent, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -678,15 +734,10 @@ def _assignment_counts(
     actor_person_id: UUID | None,
     queue_metrics: team_inbox_operations.InboxQueueMetrics,
 ) -> InboxAssignmentCounts:
-    all_count = team_inbox_read.list_conversations(db, limit=1).count
-    assigned_to_me = (
-        team_inbox_read.list_conversations(
-            db,
-            assigned_person_id=actor_person_id,
-            limit=1,
-        ).count
-        if actor_person_id is not None
-        else 0
+    all_count = team_inbox_read.queue_conversation_count(db)
+    assigned_to_me = team_inbox_read.assigned_conversation_count(
+        db,
+        assigned_person_id=actor_person_id,
     )
     my_team = 0
     my_team_ids: tuple[str, ...] = ()
@@ -735,11 +786,7 @@ def _assignment_counts(
         my_team_ids=my_team_ids,
         unassigned=queue_metrics.unassigned_open,
         unreplied=queue_metrics.needs_response,
-        needs_attention=team_inbox_read.list_conversations(
-            db,
-            needs_attention=True,
-            limit=1,
-        ).count,
+        needs_attention=team_inbox_read.needs_attention_conversation_count(db),
     )
 
 
@@ -792,11 +839,129 @@ def contact_link_candidates(
     )
 
 
+def _actor_label(
+    user: SystemUser | None, fallback: str = "System"
+) -> tuple[str, str | None]:
+    if user is None:
+        return fallback, None
+    name = (
+        getattr(user, "display_name", None)
+        or getattr(user, "full_name", None)
+        or getattr(user, "email", None)
+        or "System"
+    ).strip()
+    return name or fallback, getattr(user, "email", None)
+
+
+def _conversation_activity(
+    db: Session,
+    conversation_id: UUID,
+    *,
+    limit: int = 8,
+) -> tuple[InboxLifecycleEvent, ...]:
+    events: list[InboxLifecycleEvent] = []
+
+    status_rows = (
+        db.query(InboxStatusTransitionEvent, SystemUser)
+        .outerjoin(
+            SystemUser, SystemUser.id == InboxStatusTransitionEvent.actor_person_id
+        )
+        .filter(InboxStatusTransitionEvent.conversation_id == conversation_id)
+        .order_by(InboxStatusTransitionEvent.occurred_at.desc())
+        .limit(limit)
+        .all()
+    )
+    for event, actor in status_rows:
+        actor_name, actor_email = _actor_label(actor)
+        status = getattr(event.status, "value", None) or str(event.status or "")
+        label = (
+            "Resolved"
+            if status == InboxConversationStatus.resolved.value
+            else "Reopened"
+            if status == InboxConversationStatus.open.value
+            else f"Status changed to {status or 'unknown'}"
+        )
+        events.append(
+            InboxLifecycleEvent(
+                kind="status",
+                label=label,
+                actor_name=actor_name,
+                actor_email=actor_email,
+                occurred_at=event.occurred_at,
+                detail=event.reason_code,
+            )
+        )
+
+    routing_actor = aliased(SystemUser)
+    routing_assignee = aliased(SystemUser)
+    routing_rows = (
+        db.query(InboxRoutingEvent, routing_actor, routing_assignee)
+        .outerjoin(routing_actor, routing_actor.id == InboxRoutingEvent.actor_person_id)
+        .outerjoin(
+            routing_assignee,
+            routing_assignee.id == InboxRoutingEvent.person_id,
+        )
+        .filter(InboxRoutingEvent.conversation_id == conversation_id)
+        .order_by(InboxRoutingEvent.occurred_at.desc())
+        .limit(limit)
+        .all()
+    )
+    for event, actor, assignee in routing_rows:
+        actor_name, actor_email = _actor_label(actor)
+        assignee_name, _ = _actor_label(assignee, fallback="Unassigned")
+        if event.person_id:
+            label = f"Assigned to {assignee_name}"
+        else:
+            label = "Assignment changed"
+        events.append(
+            InboxLifecycleEvent(
+                kind="assignment",
+                label=label,
+                actor_name=actor_name,
+                actor_email=actor_email,
+                occurred_at=event.occurred_at,
+                detail=event.reason_code,
+            )
+        )
+
+    read_rows = (
+        db.query(InboxConversationReadState, SystemUser)
+        .join(SystemUser, SystemUser.id == InboxConversationReadState.person_id)
+        .filter(
+            InboxConversationReadState.conversation_id == conversation_id,
+            InboxConversationReadState.last_read_at.isnot(None),
+        )
+        .order_by(InboxConversationReadState.last_read_at.desc())
+        .limit(limit)
+        .all()
+    )
+    for read_state, actor in read_rows:
+        actor_name, actor_email = _actor_label(actor)
+        events.append(
+            InboxLifecycleEvent(
+                kind="read",
+                label="Opened",
+                actor_name=actor_name,
+                actor_email=actor_email,
+                occurred_at=read_state.last_read_at,
+            )
+        )
+
+    events.sort(
+        key=lambda item: item.occurred_at or datetime.min.replace(tzinfo=UTC),
+        reverse=True,
+    )
+    return tuple(events[:limit])
+
+
 def get_conversation_projection(
     db: Session,
     *,
     conversation_id: UUID,
     actor_person_id: UUID | None,
+    include_contact_candidates: bool = True,
+    include_catalogue_options: bool = True,
+    include_label_usage_counts: bool = False,
 ) -> InboxConversationProjection | None:
     timeline = team_inbox_read.get_conversation_timeline(db, conversation_id)
     if timeline is None:
@@ -804,12 +969,24 @@ def get_conversation_projection(
     is_resolved = timeline.status == InboxConversationStatus.resolved.value
     outbound_unsupported = timeline.channel_type == InboxChannelType.website_fiber.value
     summary = subscriber_summary.subscriber_summary(db, timeline.subscriber_id)
-    lead_eligibility = lead_intake.manual_invitation_eligibility(db, conversation_id)
+    lead_eligibility = lead_intake.manual_invitation_eligibility(
+        db,
+        conversation_id,
+        verify_customer_identity=False,
+    )
     return InboxConversationProjection(
         timeline=timeline,
         subscriber_summary=summary,
-        contact_link_candidates=contact_link_candidates(db, timeline),
-        label_options=tuple(team_inbox_operations.list_labels(db)),
+        contact_link_candidates=(
+            contact_link_candidates(db, timeline)
+            if include_contact_candidates
+            else ContactLinkCandidateSet(subscribers=(), resellers=(), organizations=())
+        ),
+        label_options=tuple(
+            team_inbox_operations.list_labels(
+                db, include_usage_counts=include_label_usage_counts
+            )
+        ),
         conversation_labels=tuple(
             team_inbox_operations.conversation_labels(db, conversation_id)
         ),
@@ -819,7 +996,11 @@ def get_conversation_projection(
         template_options=tuple(
             team_inbox_operations.list_templates(db, channel_type=timeline.channel_type)
         ),
-        catalogue_options=plan_family_catalogues.list_catalogue_options(db),
+        catalogue_options=(
+            plan_family_catalogues.list_catalogue_options(db)
+            if include_catalogue_options
+            else ()
+        ),
         action_eligibility=InboxActionEligibility(
             can_reply=not is_resolved and not outbound_unsupported,
             can_resolve=not is_resolved,
@@ -848,6 +1029,7 @@ def get_conversation_projection(
             else False
         ),
         priority_options=INBOX_PRIORITY_OPTIONS,
+        activity_events=_conversation_activity(db, conversation_id),
     )
 
 
@@ -857,9 +1039,15 @@ def list_whatsapp_contacts(
     search: str,
     limit: int = 20,
 ) -> tuple[WhatsAppContactOption, ...]:
-    """Search canonical active Party contact points for WhatsApp reachability."""
+    """Search canonical contacts plus unbound active legacy subscribers.
+
+    Canonical Party reachability always wins. The legacy branch is a bounded
+    compatibility reader for accounts awaiting the reviewed Party backfill;
+    it never creates identity or guesses between subscribers sharing a number.
+    """
 
     from app.models.party import Party, PartyContactPoint, PartyIdentityStatus
+    from app.services.customer_identity_normalization import normalize_phone_identifier
 
     term = str(search or "").strip()
     if len(term) < 2:
@@ -896,6 +1084,7 @@ def list_whatsapp_contacts(
     for party, point in rows:
         current = by_party.setdefault(party.id, (party, []))
         current[1].append(point)
+    requested_limit = max(1, min(int(limit), 20))
     options: list[WhatsAppContactOption] = []
     channel_rank = {"whatsapp": 0, "phone": 1, "sms": 2}
     for party, points in by_party.values():
@@ -910,14 +1099,89 @@ def list_whatsapp_contacts(
         address = str(selected.normalized_value or selected.display_value or "").strip()
         if not address:
             continue
+        normalized_address = normalize_phone_identifier(address)
+        if normalized_address is None:
+            continue
         options.append(
             WhatsAppContactOption(
                 id=str(party.id),
                 name=party.display_name,
-                whatsapp_address=address,
+                whatsapp_address=normalized_address,
+                party_id=party.id,
+                subscriber_id=None,
             )
         )
-    return tuple(options[: max(1, min(int(limit), 20))])
+    address_counts = Counter(option.whatsapp_address for option in options)
+    canonical_addresses = set(address_counts)
+    options = [
+        option for option in options if address_counts[option.whatsapp_address] == 1
+    ]
+
+    phone_term = normalize_phone_identifier(term)
+    phone_variants: set[str] = {re.sub(r"\D", "", term)}
+    if phone_term is not None:
+        digits = phone_term.removeprefix("+")
+        phone_variants.add(digits)
+        if digits.startswith("234") and len(digits) > 3:
+            phone_variants.add(f"0{digits[3:]}")
+    legacy_filters = [
+        Subscriber.display_name.ilike(like),
+        Subscriber.first_name.ilike(like),
+        Subscriber.last_name.ilike(like),
+    ]
+    normalized_legacy_phone = func.replace(
+        func.replace(
+            func.replace(
+                func.replace(func.replace(Subscriber.phone, "+", ""), " ", ""),
+                "-",
+                "",
+            ),
+            "(",
+            "",
+        ),
+        ")",
+        "",
+    )
+    legacy_filters.extend(
+        normalized_legacy_phone.ilike(f"%{value}%")
+        for value in sorted(phone_variants)
+        if value
+    )
+    legacy_rows = (
+        db.query(Subscriber)
+        .filter(Subscriber.party_id.is_(None))
+        .filter(Subscriber.is_active.is_(True))
+        .filter(Subscriber.status == SubscriberStatus.active)
+        .filter(or_(*legacy_filters))
+        .order_by(func.lower(Subscriber.display_name).asc(), Subscriber.id.asc())
+        .limit(requested_limit * 4)
+        .all()
+    )
+    legacy_by_address: dict[str, list[Subscriber]] = {}
+    for subscriber in legacy_rows:
+        normalized_address = normalize_phone_identifier(subscriber.phone)
+        if normalized_address is None or normalized_address in canonical_addresses:
+            continue
+        legacy_by_address.setdefault(normalized_address, []).append(subscriber)
+    for address, subscribers in legacy_by_address.items():
+        if len(subscribers) != 1:
+            continue
+        subscriber = subscribers[0]
+        name = str(subscriber.display_name or "").strip() or " ".join(
+            part
+            for part in (subscriber.first_name.strip(), subscriber.last_name.strip())
+            if part
+        )
+        options.append(
+            WhatsAppContactOption(
+                id=f"subscriber:{subscriber.id}",
+                name=name,
+                whatsapp_address=address,
+                party_id=None,
+                subscriber_id=subscriber.id,
+            )
+        )
+    return tuple(options[:requested_limit])
 
 
 def _plain_ai_message_body(value: object | None) -> str:
@@ -1325,6 +1589,7 @@ def build_queue_projection(
             order_dir=query.sort_dir,
             limit=query.per_page,
             offset=query.offset,
+            include_total_count=request.include_total_count,
         )
 
     result = fetch(requested_query)
@@ -1372,6 +1637,7 @@ def build_queue_projection(
             db,
             conversation_id=selected_id,
             actor_person_id=request.actor_person_id,
+            include_contact_candidates=False,
         )
         if (
             selected_id is not None

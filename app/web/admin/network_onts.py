@@ -2,6 +2,7 @@
 
 import json
 import logging
+import uuid
 from typing import Any, cast
 
 logger = logging.getLogger(__name__)
@@ -14,9 +15,10 @@ from fastapi.responses import (
 )
 from sqlalchemy.orm import Session
 
-from app.db import get_db
+from app.db import finish_read_transaction, get_db
 from app.models.network import OntAuthorizationStatus
 from app.services import network as network_service
+from app.services import web_admin as web_admin_service
 from app.services import web_network_core_devices as web_network_core_devices_service
 from app.services import web_network_ont_actions as web_network_ont_actions_service
 from app.services import web_network_onts as web_network_onts_service
@@ -24,8 +26,24 @@ from app.services import web_network_operations as web_network_operations_servic
 from app.services import web_network_service_ports as web_network_service_ports_service
 from app.services.audit_helpers import build_audit_activities
 from app.services.auth_dependencies import has_permission, require_permission
+from app.services.domain_errors import DomainError
 from app.services.network import ont_web_forms as ont_web_forms_service
 from app.services.network.action_logging import log_network_action_result
+from app.services.network.ont_service_configuration import (
+    AdvancedConfigurationChange,
+    ConfigureOntServiceCommand,
+    LanConfigurationChange,
+    ManagementConfigurationChange,
+    OntConfigurationChange,
+    OntConfigurationSection,
+    RetryOntServiceConfigurationCommand,
+    WanConfigurationChange,
+    WifiConfigurationChange,
+    configure_ont_service,
+    get_ont_service_configuration_projection,
+    retry_ont_service_configuration,
+)
+from app.services.owner_commands import CommandContext
 from app.web.request_parsing import parse_form_data_sync
 from app.web.templates import templates
 
@@ -107,6 +125,42 @@ def _configure_push_scope_sections(
         push_scope_value in {"management", "mgmt"},
         push_scope_value == "wifi",
     )
+
+
+def _ont_configuration_command_context(
+    request: Request,
+    *,
+    reason: str,
+    idempotency_key: str,
+) -> CommandContext:
+    command_id = uuid.uuid4()
+    request_id = str(getattr(request.state, "request_id", "") or "").strip()
+    try:
+        correlation_id = uuid.UUID(request_id)
+    except ValueError:
+        correlation_id = command_id
+    auth = getattr(request.state, "auth", {}) or {}
+    principal_type = str(auth.get("principal_type") or "user")
+    actor_id = web_admin_service.get_actor_id(request) or "unknown"
+    return CommandContext(
+        command_id=command_id,
+        correlation_id=correlation_id,
+        actor=f"{principal_type}:{actor_id}",
+        scope="network:ont:write",
+        reason=reason,
+        idempotency_key=idempotency_key,
+    )
+
+
+def _ont_configuration_form_context(db: Session, ont_id: str) -> dict[str, object]:
+    parsed_ont_id = uuid.UUID(ont_id)
+    context = web_network_ont_actions_service.configure_form_context(db, ont_id)
+    context["configuration_lifecycle"] = get_ont_service_configuration_projection(
+        db, ont_unit_id=parsed_ont_id
+    )
+    context["config_idempotency_key"] = str(uuid.uuid4())
+    context["retry_idempotency_key"] = str(uuid.uuid4())
+    return context
 
 
 def _log_ont_action_result(
@@ -607,7 +661,10 @@ def ont_configure_form(
 ) -> HTMLResponse:
     """HTMX partial: Configure form populated from resolved ONT desired config."""
     context = _base_context(request, db, active_page="onts")
-    context.update(web_network_ont_actions_service.configure_form_context(db, ont_id))
+    try:
+        context.update(_ont_configuration_form_context(db, ont_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid ONT identifier.") from exc
     return templates.TemplateResponse(
         "admin/network/onts/_configure_form.html", context
     )
@@ -627,8 +684,6 @@ def ont_configure_submit(
     wan_static_subnet: str = Form(default=""),
     wan_static_gateway: str = Form(default=""),
     wan_static_dns: str = Form(default=""),
-    pppoe_username: str = Form(default=""),
-    pppoe_password: str = Form(default=""),
     mgmt_ip_mode: str = Form(default=""),
     mgmt_ip_address: str = Form(default=""),
     mgmt_remote_access: bool = Form(default=False),
@@ -647,11 +702,11 @@ def ont_configure_submit(
     voip_wcd_index: str = Form(default=""),
     mgmt_service_port_index: str = Form(default=""),
     wan_service_port_index: str = Form(default=""),
-    push_to_device: bool = Form(default=False),
     push_scope: str = Form(default="management"),
+    idempotency_key: str = Form(...),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
-    """Handle ONT configure form submission."""
+    """Parse one section and delegate admission to the typed coordinator."""
     push_wan, push_lan, push_mgmt, push_wifi = _configure_push_scope_sections(
         push_scope
     )
@@ -708,73 +763,185 @@ def ont_configure_submit(
         _parse_index_override(mgmt_service_port_index) if push_advanced else None
     )
     wan_sp_value = (
-        _parse_index_override(wan_service_port_index) if push_advanced else None
+        _parse_index_override(wan_service_port_index)
+        if (push_wan or push_advanced)
+        else None
     )
-    result = web_network_ont_actions_service.update_ont_config(
-        db,
-        ont_id,
-        # Empty select values are explicit "inherit/default" choices. Passing
-        # the empty string lets the owner clear an existing ONT override;
-        # ``None`` remains reserved for sections the operator did not submit.
-        wan_mode=wan_mode if push_wan else None,
-        ip_protocol=ip_protocol if push_wan else None,
-        wan_static_ip=(wan_static_ip or None) if push_wan else None,
-        wan_static_subnet=(wan_static_subnet or None) if push_wan else None,
-        wan_static_gateway=(wan_static_gateway or None) if push_wan else None,
-        wan_static_dns=(wan_static_dns or None) if push_wan else None,
-        pppoe_username=(pppoe_username or None) if push_wan else None,
-        pppoe_password=(pppoe_password or None) if push_wan else None,
-        mgmt_ip_mode=(mgmt_ip_mode or None) if push_mgmt else None,
-        mgmt_ip_address=mgmt_ip_address if push_mgmt else None,
-        mgmt_remote_access=mgmt_remote_access if push_mgmt else None,
-        lan_gateway_ip=(lan_gateway_ip or None) if push_lan else None,
-        lan_subnet_mask=lan_subnet_mask if push_lan else None,
-        lan_dhcp_enabled=lan_dhcp_enabled if push_lan else None,
-        lan_dhcp_start=(lan_dhcp_start or None) if push_lan else None,
-        lan_dhcp_end=(lan_dhcp_end or None) if push_lan else None,
-        wifi_enabled=wifi_enabled if push_wifi else None,
-        wifi_ssid=(wifi_ssid or None) if push_wifi else None,
-        wifi_channel=wifi_channel if push_wifi else None,
-        wifi_security_mode=wifi_security_mode if push_wifi else None,
-        wifi_password=(wifi_password or None) if push_wifi else None,
-        pppoe_wcd_index=pppoe_wcd_value,
-        mgmt_wcd_index=mgmt_wcd_value,
-        voip_wcd_index=voip_wcd_value,
-        mgmt_service_port_index=mgmt_sp_value,
-        wan_service_port_index=wan_sp_value,
-        push_to_device=push_to_device,
-        push_wan=push_wan,
-        push_lan=push_lan,
-        push_mgmt=push_mgmt,
-        push_wifi=push_wifi,
-        request=request,
-    )
+
+    change: OntConfigurationChange
+    if push_wan:
+        section = OntConfigurationSection.wan
+        change = WanConfigurationChange(
+            mode=wan_mode,
+            ip_protocol=ip_protocol,
+            static_ip=wan_static_ip or None,
+            static_subnet=wan_static_subnet or None,
+            static_gateway=wan_static_gateway or None,
+            static_dns=wan_static_dns or None,
+            pppoe_wcd_index=pppoe_wcd_value,
+            wan_service_port_index=wan_sp_value,
+        )
+    elif push_lan:
+        section = OntConfigurationSection.lan
+        change = LanConfigurationChange(
+            gateway_ip=lan_gateway_ip or None,
+            subnet_mask=lan_subnet_mask or None,
+            dhcp_enabled=lan_dhcp_enabled,
+            dhcp_start=lan_dhcp_start or None,
+            dhcp_end=lan_dhcp_end or None,
+        )
+    elif push_mgmt:
+        section = OntConfigurationSection.management
+        change = ManagementConfigurationChange(
+            ip_mode=mgmt_ip_mode or None,
+            ip_address=mgmt_ip_address or None,
+            remote_access=mgmt_remote_access,
+            wcd_index=mgmt_wcd_value,
+        )
+    elif push_wifi:
+        section = OntConfigurationSection.wifi
+        change = WifiConfigurationChange(
+            enabled=wifi_enabled,
+            ssid=wifi_ssid or None,
+            channel=wifi_channel or None,
+            security_mode=wifi_security_mode or None,
+            password=wifi_password or None,
+        )
+    else:
+        section = OntConfigurationSection.advanced
+        change = AdvancedConfigurationChange(
+            pppoe_wcd_index=pppoe_wcd_value,
+            management_wcd_index=mgmt_wcd_value,
+            voip_wcd_index=voip_wcd_value,
+            management_service_port_index=mgmt_sp_value,
+            wan_service_port_index=wan_sp_value,
+        )
+
+    auth = getattr(request.state, "auth", {}) or {}
+    permission_granted = bool(auth) and has_permission(auth, db, "network:ont:write")
+    finish_read_transaction(db)
+    result = None
+    error: DomainError | None = None
+    try:
+        result = configure_ont_service(
+            db,
+            ConfigureOntServiceCommand(
+                context=_ont_configuration_command_context(
+                    request,
+                    reason=f"Configure ONT {section.value} service settings",
+                    idempotency_key=idempotency_key,
+                ),
+                ont_unit_id=uuid.UUID(ont_id),
+                permission_granted=permission_granted,
+                section=section,
+                change=change,
+            ),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid ONT identifier.") from exc
+    except DomainError as exc:
+        error = exc
+
+    if result is not None:
+        result_message = result.message
+    else:
+        assert error is not None
+        result_message = error.message
 
     _log_ont_action_result(
         request=request,
         ont_id=ont_id,
         action="Configure ONT",
-        ok=result.success,
-        message=result.message,
-        metadata={"push_to_device": push_to_device, "push_scope": push_scope},
+        ok=result is not None,
+        message=result_message,
+        metadata={
+            "push_scope": push_scope,
+            "operation_id": str(result.operation_id) if result is not None else None,
+            "error_code": error.code if error is not None else None,
+        },
     )
 
-    # Return updated form with success/error message
     context = _base_context(request, db, active_page="onts")
-    context.update(web_network_ont_actions_service.configure_form_context(db, ont_id))
-    context["config_result"] = result
+    context.update(_ont_configuration_form_context(db, ont_id))
+    if result is not None:
+        context["config_result"] = result
+    if error is not None:
+        context["config_error"] = error
 
     response = templates.TemplateResponse(
         "admin/network/onts/_configure_form.html", context
     )
     response.headers.update(
         _toast_headers(
-            result.message,
-            (
-                "warning"
-                if result.waiting
-                else ("success" if result.success else "error")
+            result_message,
+            "success" if result is not None else "error",
+        )
+    )
+    return response
+
+
+@router.post(
+    "/onts/{ont_id}/configure/retry",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("network:ont:write"))],
+)
+def ont_configure_retry(
+    request: Request,
+    ont_id: str,
+    configuration_head_id: str = Form(...),
+    configuration_revision: int = Form(..., ge=1),
+    idempotency_key: str = Form(...),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    """Queue a reviewed repair attempt for the exact failed revision."""
+
+    auth = getattr(request.state, "auth", {}) or {}
+    permission_granted = bool(auth) and has_permission(auth, db, "network:ont:write")
+    finish_read_transaction(db)
+    result = None
+    error: DomainError | None = None
+    try:
+        if not permission_granted:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        result = retry_ont_service_configuration(
+            db,
+            RetryOntServiceConfigurationCommand(
+                context=_ont_configuration_command_context(
+                    request,
+                    reason="Retry current failed ONT service configuration",
+                    idempotency_key=idempotency_key,
+                ),
+                ont_unit_id=uuid.UUID(ont_id),
+                expected_head_id=uuid.UUID(configuration_head_id),
+                expected_revision=configuration_revision,
             ),
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail="Invalid lifecycle identifier."
+        ) from exc
+    except DomainError as exc:
+        error = exc
+
+    if result is not None:
+        result_message = result.message
+    else:
+        assert error is not None
+        result_message = error.message
+
+    context = _base_context(request, db, active_page="onts")
+    context.update(_ont_configuration_form_context(db, ont_id))
+    if result is not None:
+        context["config_result"] = result
+    if error is not None:
+        context["config_error"] = error
+    response = templates.TemplateResponse(
+        "admin/network/onts/_configure_form.html", context
+    )
+    response.headers.update(
+        _toast_headers(
+            result_message,
+            "success" if result is not None else "error",
         )
     )
     return response

@@ -377,6 +377,22 @@ class DialerCredentialAuthorityResult:
         return self.authority is not None and self.refusal is None
 
 
+@dataclass(frozen=True, slots=True)
+class ProjectCpeDialerCredential:
+    """Exact-service participant input for a configuration coordinator."""
+
+    ont_unit_id: UUID
+    subscription_id: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectCpeDialerCredentialOutcome:
+    ont_unit_id: UUID
+    subscription_id: UUID
+    credential_fingerprint: str
+    masked_username: str
+
+
 def authoritative_dialer_fingerprint(
     db: Session,
     *,
@@ -447,6 +463,73 @@ def projected_dialer_fingerprint(ont: Any) -> str | None:
     )
     text = str(value or "").strip()
     return text or None
+
+
+def _masked_username(value: str) -> str:
+    """Return useful provenance without exposing a full subscriber identity."""
+
+    local, separator, realm = value.partition("@")
+    if not local:
+        return "***"
+    visible = local[:2]
+    masked_local = f"{visible}{'*' * max(3, len(local) - len(visible))}"
+    return f"{masked_local}{separator}{realm}" if separator else masked_local
+
+
+def project_cpe_dialer_credential_for_configuration(
+    db: Session,
+    command: ProjectCpeDialerCredential,
+) -> ProjectCpeDialerCredentialOutcome:
+    """Flush-only projection from the exact authoritative access credential."""
+
+    allowed, reason = termination_intent(db, command.ont_unit_id)
+    if not allowed:
+        raise ValueError(f"PPPoE termination intent is not active: {reason}")
+    credentials, ambiguous = _authoritative_credentials(
+        db, [command.subscription_id], for_update=True
+    )
+    if command.subscription_id in ambiguous:
+        raise ValueError("The subscription has ambiguous active access credentials")
+    credential = credentials.get(command.subscription_id)
+    if credential is None:
+        raise ValueError("The subscription has no active access credential")
+    username = (credential.username or "").strip()
+    secret = _safe_decrypt(credential.secret_hash)
+    fingerprint = dialer_fingerprint(username, secret)
+    if not username or secret is None or fingerprint is None:
+        raise ValueError("The authoritative access credential is not deliverable")
+    _project(
+        db,
+        ont_id=command.ont_unit_id,
+        username=username,
+        secret=secret,
+        fingerprint=fingerprint,
+    )
+    return ProjectCpeDialerCredentialOutcome(
+        ont_unit_id=command.ont_unit_id,
+        subscription_id=command.subscription_id,
+        credential_fingerprint=fingerprint,
+        masked_username=_masked_username(username),
+    )
+
+
+def clear_cpe_dialer_projection_for_non_ppp(db: Session, *, ont_unit_id: UUID) -> None:
+    """Flush-only retirement of the dialer projection when WAN is not PPPoE."""
+
+    ont = db.get(OntUnit, ont_unit_id)
+    if ont is None:
+        raise ValueError("ONT not found for dialer projection retirement")
+    set_desired_config_values(
+        ont,
+        {
+            "wan.pppoe_username": None,
+            "wan.pppoe_password": None,
+            _FINGERPRINT_KEY: None,
+            _FINGERPRINT_AT_KEY: None,
+        },
+    )
+    db.add(ont)
+    db.flush()
 
 
 def reconcile_cpe_dialer_credentials(
@@ -702,6 +785,10 @@ __all__ = (
     "DialerCredentialDrift",
     "DialerCredentialReconcileStats",
     "DialerFingerprintUnavailable",
+    "ProjectCpeDialerCredential",
+    "ProjectCpeDialerCredentialOutcome",
+    "clear_cpe_dialer_projection_for_non_ppp",
     "dialer_fingerprint",
+    "project_cpe_dialer_credential_for_configuration",
     "reconcile_cpe_dialer_credentials",
 )

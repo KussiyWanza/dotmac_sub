@@ -109,6 +109,7 @@ def invoice_detail(
     request: Request,
     invoice_id: UUID,
     pdf_notice: str | None = Query(None),
+    notice: str | None = Query(None),
     db: Session = Depends(get_db),
 ):
     detail_data = web_billing_invoices_service.load_invoice_detail_data(
@@ -130,9 +131,34 @@ def invoice_detail(
             "request": request,
             **detail_data,
             "pdf_notice": pdf_notice,
+            "notice": notice,
             "current_user": get_current_user(request),
             "sidebar_stats": get_sidebar_stats(db),
         },
+    )
+
+
+@router.post(
+    "/invoices/{invoice_id:uuid}/issue",
+    dependencies=[Depends(require_permission("billing:invoice:update"))],
+)
+def invoice_issue_from_detail(invoice_id: UUID, db: Session = Depends(get_db)):
+    try:
+        web_billing_invoices_service.issue_invoice_from_detail(
+            db,
+            invoice_id=invoice_id,
+        )
+    except HTTPException as exc:
+        return RedirectResponse(
+            url=(
+                f"/admin/billing/invoices/{invoice_id}"
+                f"?error={quote_plus(str(exc.detail))}"
+            ),
+            status_code=303,
+        )
+    return RedirectResponse(
+        url=f"/admin/billing/invoices/{invoice_id}?notice=Invoice+issued",
+        status_code=303,
     )
 
 

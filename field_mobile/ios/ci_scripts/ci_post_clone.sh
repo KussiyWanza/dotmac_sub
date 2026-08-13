@@ -42,10 +42,10 @@ dart run build_runner build --delete-conflicting-outputs
 
 # Generates ios/Flutter/Generated.xcconfig, the App/Flutter frameworks, the
 # plugin registrant, and resolves pods/SwiftPM — everything Xcode Cloud's
-# xcodebuild needs. API_BASE_URL defaults to sub production so TestFlight builds
+# xcodebuild needs. API_BASE_URL defaults to selfcare production so TestFlight builds
 # point at the live backend; override via an Xcode Cloud environment variable.
 flutter build ios --release --no-codesign \
-  --dart-define=API_BASE_URL="${API_BASE_URL:-https://sub.dotmac.io}" \
+  --dart-define=API_BASE_URL="${API_BASE_URL:-https://selfcare.dotmac.io}" \
   --dart-define=SENTRY_DSN="${SENTRY_DSN:-}"
 
 # --- FCM push (operator-gated) -------------------------------------------------

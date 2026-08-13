@@ -220,6 +220,12 @@ def _execute(db, item: dict[str, Any]) -> dict[str, Any]:
             ),
             idempotency_key=f"billing-remediation-credit-{line.id}",
             commit=False,
+            # Remediation must stay reversible: rollback_remediation undoes this
+            # by voiding the note, and a note cannot be voided once applied —
+            # there is no un-apply path. So this credit is held deliberately
+            # rather than settling the invoice at issue, and the rollback
+            # contract keeps working.
+            apply_on_issue=False,
         ).credit_note
         return {"credit_note_id": str(cn.id), "credit_amount": str(amount)}
     raise ValueError(f"non-write action reached _execute: {item['action']}")

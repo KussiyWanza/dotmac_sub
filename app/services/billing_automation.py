@@ -1251,6 +1251,7 @@ def _log_billing_run_audit(
 ) -> None:
     """Log billing run results to audit log."""
     from app.models.audit import AuditActorType, AuditEvent
+    from app.services.audit_adapter import stage_audit_event
 
     run_id = None
     if run:
@@ -1295,7 +1296,8 @@ def _log_billing_run_audit(
     if existing is not None:
         return
 
-    audit_event = AuditEvent(
+    stage_audit_event(
+        db,
         actor_type=(
             AuditActorType.user if run and run.requested_by else AuditActorType.system
         ),
@@ -1306,9 +1308,8 @@ def _log_billing_run_audit(
         entity_type="billing_run",
         entity_id=run_id,
         is_success=status == "success",
-        metadata_=metadata,
+        metadata=metadata,
     )
-    db.add(audit_event)
 
 
 def reconcile_billing_run_audit(db: Session, run_id: UUID) -> bool:

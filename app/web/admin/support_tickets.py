@@ -433,7 +433,11 @@ def ticket_create(
         return templates.TemplateResponse(
             "admin/support/tickets/new.html", context, status_code=409
         )
-    except (ValidationError, ValueError) as exc:
+    except (
+        ValidationError,
+        ValueError,
+        support_web_service.WebSupportTicketInputError,
+    ) as exc:
         # Re-render the form with a clean message instead of a 500 (e.g. a
         # blank/whitespace-only title that fails schema validation).
         db.rollback()
@@ -499,6 +503,7 @@ def ticket_detail(request: Request, ticket_lookup: str, db: Session = Depends(ge
     )
     context["handoff_notice"] = request.query_params.get("handoff_notice")
     context["handoff_error"] = request.query_params.get("handoff_error")
+    context["action_error"] = request.query_params.get("action_error")
     return templates.TemplateResponse("admin/support/tickets/detail.html", context)
 
 
@@ -651,30 +656,36 @@ def ticket_edit(
     assignee_person_ids: list[str] = Form(default=[]),
     db: Session = Depends(get_db),
 ):
-    support_web_service.update_ticket_from_form(
-        db,
-        request=request,
-        ticket_id=str(ticket_id),
-        actor_id=_actor_id(request),
-        title=title,
-        description=description,
-        publish_description=publish_description,
-        subscriber_id=subscriber_id,
-        customer_account_id=customer_account_id,
-        customer_person_id=customer_person_id,
-        region=region,
-        status=status,
-        priority=priority,
-        channel=channel,
-        ticket_type=ticket_type,
-        due_at=due_at,
-        tags=tags,
-        technician_person_id=technician_person_id,
-        ticket_manager_person_id=ticket_manager_person_id,
-        site_coordinator_person_id=site_coordinator_person_id,
-        service_team_id=service_team_id,
-        assignee_person_ids=assignee_person_ids,
-    )
+    try:
+        support_web_service.update_ticket_from_form(
+            db,
+            request=request,
+            ticket_id=str(ticket_id),
+            actor_id=_actor_id(request),
+            title=title,
+            description=description,
+            publish_description=publish_description,
+            subscriber_id=subscriber_id,
+            customer_account_id=customer_account_id,
+            customer_person_id=customer_person_id,
+            region=region,
+            status=status,
+            priority=priority,
+            channel=channel,
+            ticket_type=ticket_type,
+            due_at=due_at,
+            tags=tags,
+            technician_person_id=technician_person_id,
+            ticket_manager_person_id=ticket_manager_person_id,
+            site_coordinator_person_id=site_coordinator_person_id,
+            service_team_id=service_team_id,
+            assignee_person_ids=assignee_person_ids,
+        )
+    except support_web_service.WebSupportTicketInputError as exc:
+        query = urlencode({"action_error": exc.message})
+        return RedirectResponse(
+            url=f"/admin/support/tickets/{ticket_id}?{query}", status_code=303
+        )
     return RedirectResponse(url=f"/admin/support/tickets/{ticket_id}", status_code=303)
 
 
@@ -844,13 +855,19 @@ def ticket_quick_status(
     status: str = Form(...),
     db: Session = Depends(get_db),
 ):
-    support_web_service.quick_update_ticket(
-        db,
-        request=request,
-        ticket_id=str(ticket_id),
-        actor_id=_actor_id(request),
-        fields={"status": status},
-    )
+    try:
+        support_web_service.quick_update_ticket(
+            db,
+            request=request,
+            ticket_id=str(ticket_id),
+            actor_id=_actor_id(request),
+            fields={"status": status},
+        )
+    except support_web_service.WebSupportTicketInputError as exc:
+        query = urlencode({"action_error": exc.message})
+        return RedirectResponse(
+            url=f"/admin/support/tickets/{ticket_id}?{query}", status_code=303
+        )
     return RedirectResponse(url=f"/admin/support/tickets/{ticket_id}", status_code=303)
 
 

@@ -12,7 +12,7 @@ before they can actually ship. Nothing else in the app blocks release.
 App identifiers:
 - Android `applicationId`: `io.dotmac.field`
 - iOS bundle id: `io.dotmac.field`
-- API base defaults to `https://crm.dotmac.io` (override with `--dart-define=API_BASE_URL=...`)
+- API base defaults to `https://selfcare.dotmac.io` (override with `--dart-define=API_BASE_URL=...`)
 
 ---
 
@@ -76,7 +76,7 @@ Add these as Xcode Cloud environment variables (secret):
 | Variable | Value |
 |---|---|
 | `GOOGLE_SERVICE_INFO_PLIST_B64` | `base64 -i GoogleService-Info.plist` |
-| `API_BASE_URL` | override backend (defaults to prod) |
+| `API_BASE_URL` | override backend (defaults to `https://selfcare.dotmac.io`) |
 | `SENTRY_DSN` | crash reporting |
 
 When `GOOGLE_SERVICE_INFO_PLIST_B64` is set, `ci_post_clone.sh` materializes the
