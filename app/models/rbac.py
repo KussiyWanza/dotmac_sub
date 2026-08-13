@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -19,21 +20,54 @@ from app.db import Base
 
 class Role(Base):
     __tablename__ = "roles"
-    __table_args__ = (UniqueConstraint("name", name="uq_roles_name"),)
+    __table_args__ = (
+        UniqueConstraint("name", name="uq_roles_name"),
+        # Migration 528. The kernel identity is `(tenant_id, slug)`; both halves
+        # are present or both absent, because a role identified in only one half
+        # is unaddressable rather than half-adopted.
+        CheckConstraint(
+            "(tenant_id IS NULL AND slug IS NULL) OR "
+            "(tenant_id IS NOT NULL AND slug IS NOT NULL AND "
+            "length(trim(slug)) > 0 AND lower(slug) = slug)",
+            name="ck_roles_kernel_identity_projection",
+        ),
+        UniqueConstraint("tenant_id", "slug", name="uq_roles_tenant_slug"),
+        # Kernel a42 requires this parent key for tenant-safe composite FKs from
+        # PartyRoleGrant. Keep it nullable through R1; PostgreSQL permits the
+        # legacy `(NULL, id)` population while still exposing the exact target
+        # key the later lineage adoption needs.
+        UniqueConstraint("tenant_id", "id", name="uq_roles_tenant_id_id"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    # Kernel a42 permits 120 characters. The catalog owner deliberately keeps
+    # its established 80-character command policy during R1; widening storage
+    # here makes the hosted table structurally compatible without changing
+    # product-facing authorization identity.
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    # Migration 528, nullable through R1. No model-level ForeignKey: `tenants`
+    # is declared in the kernel's MetaData rather than `app.db.Base`, so the
+    # string target would not resolve here. The FK is created by the migration —
+    # the same split 527 uses for `user_credentials.tenant_id`.
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), index=True)
+    #: The kernel's role key, 63 chars against Sub's established 80-character
+    #: role-name command limit. Derived and written only by `auth.rbac_catalog`,
+    #: alongside `name` and never instead of it.
+    slug: Mapped[str | None] = mapped_column(String(63))
     description: Mapped[str | None] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        server_default=func.now(),
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),
+        server_default=func.now(),
         onupdate=lambda: datetime.now(UTC),
     )
 
