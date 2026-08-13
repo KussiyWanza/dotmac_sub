@@ -225,6 +225,7 @@ class _CompletionWizardState extends ConsumerState<CompletionWizard> {
         padding: const EdgeInsets.all(16),
         child: switch (_step) {
           0 => _ChecklistStep(
+            requirements: completion.requirements,
             done: completion.checklistDone,
             onChanged: (value) =>
                 _update((s) => s.copyWith(checklistDone: value)),
@@ -341,8 +342,13 @@ class _CompletionWizardState extends ConsumerState<CompletionWizard> {
 }
 
 class _ChecklistStep extends StatelessWidget {
-  const _ChecklistStep({required this.done, required this.onChanged});
+  const _ChecklistStep({
+    required this.requirements,
+    required this.done,
+    required this.onChanged,
+  });
 
+  final JobCompletionRequirements requirements;
   final bool done;
   final ValueChanged<bool> onChanged;
 
@@ -350,6 +356,42 @@ class _ChecklistStep extends StatelessWidget {
   Widget build(BuildContext context) {
     return ListView(
       children: [
+        Text(
+          'Before you finish',
+          style: Theme.of(context).textTheme.titleMedium,
+        ),
+        const SizedBox(height: 8),
+        Card(
+          key: const Key('completion-prerequisites'),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Required evidence',
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+                const SizedBox(height: 8),
+                _Prerequisite(
+                  required: requirements.minimumPhotoCount > 0,
+                  label: requirements.minimumPhotoCount > 0
+                      ? 'At least ${requirements.minimumPhotoCount} work photo${requirements.minimumPhotoCount == 1 ? '' : 's'}'
+                      : 'Work photos are optional',
+                ),
+                _Prerequisite(
+                  required: requirements.customerSignoffRequired,
+                  label: requirements.customerSignoffRequired
+                      ? requirements.signatureUnavailableReasonAllowed
+                            ? 'Customer signature, or an explanation when unavailable'
+                            : 'Customer signature'
+                      : 'Customer sign-off is optional',
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
         Text(
           'Quality checklist',
           style: Theme.of(context).textTheme.titleMedium,
@@ -367,6 +409,29 @@ class _ChecklistStep extends StatelessWidget {
       ],
     );
   }
+}
+
+class _Prerequisite extends StatelessWidget {
+  const _Prerequisite({required this.required, required this.label});
+
+  final bool required;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 4),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(
+          required ? Icons.check_circle_outline : Icons.info_outline,
+          size: 20,
+        ),
+        const SizedBox(width: 8),
+        Expanded(child: Text(label)),
+      ],
+    ),
+  );
 }
 
 class _EvidenceStep extends StatelessWidget {

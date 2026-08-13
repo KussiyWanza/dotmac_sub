@@ -465,8 +465,11 @@ class SyncService {
     if (data is String && data.trim().isNotEmpty) return data.trim();
     if (data != null) return data.toString();
     final status = error.response?.statusCode;
+    if (status == 422) {
+      return 'The server rejected this request. Refresh the job and check all completion prerequisites.';
+    }
     if (status != null) return 'Request rejected with HTTP $status';
-    return error.message ?? 'request failed';
+    return 'Could not reach the server. Check your connection and try again.';
   }
 
   Future<void> _mark(OutboxEntry entry, String status, {String? error}) async {

@@ -401,6 +401,10 @@ void main() {
       _wrap(const CompletionWizard(jobId: 'wo-1', requirements: requirements)),
     );
 
+    expect(find.byKey(const Key('completion-prerequisites')), findsOneWidget);
+    expect(find.text('Work photos are optional'), findsOneWidget);
+    expect(find.text('Customer sign-off is optional'), findsOneWidget);
+
     await tester.tap(find.byKey(const Key('wizard-next')));
     await tester.pump();
     expect(find.text('Photos: 0 · optional'), findsOneWidget);
