@@ -561,6 +561,7 @@ def assign_conversation_to_agent(
     source_id: str | None = None,
     decision_mode: InboxRoutingDecisionMode = InboxRoutingDecisionMode.manual,
     decision_evidence: InboxAgentCandidate | None = None,
+    require_team_membership: bool = True,
 ) -> InboxAssignmentResult:
     team_uuid = _coerce_uuid(service_team_id)
     person_uuid = _coerce_uuid(person_id)
@@ -587,24 +588,38 @@ def assign_conversation_to_agent(
             reason="service_team_id must reference an active team",
         )
 
-    member = (
-        db.query(ServiceTeamMember)
-        .join(
-            SystemUser,
-            SystemUser.person_party_id == ServiceTeamMember.person_id,
+    if require_team_membership:
+        member = (
+            db.query(ServiceTeamMember)
+            .join(
+                SystemUser,
+                SystemUser.person_party_id == ServiceTeamMember.person_id,
+            )
+            .filter(ServiceTeamMember.team_id == team_uuid)
+            .filter(ServiceTeamMember.is_active.is_(True))
+            .filter(SystemUser.id == person_uuid)
+            .filter(SystemUser.is_active.is_(True))
+            .one_or_none()
         )
-        .filter(ServiceTeamMember.team_id == team_uuid)
-        .filter(ServiceTeamMember.is_active.is_(True))
-        .filter(SystemUser.id == person_uuid)
-        .filter(SystemUser.is_active.is_(True))
-        .one_or_none()
-    )
-    if member is None:
-        return InboxAssignmentResult(
-            kind="invalid_agent",
-            service_team_id=str(team_uuid),
-            reason="person_id must be an active member of the target team",
+        if member is None:
+            return InboxAssignmentResult(
+                kind="invalid_agent",
+                service_team_id=str(team_uuid),
+                reason="person_id must be an active member of the target team",
+            )
+    else:
+        person_is_active = (
+            db.query(SystemUser.id)
+            .filter(SystemUser.id == person_uuid)
+            .filter(SystemUser.is_active.is_(True))
+            .scalar()
         )
+        if person_is_active is None:
+            return InboxAssignmentResult(
+                kind="invalid_agent",
+                service_team_id=str(team_uuid),
+                reason="person_id must reference an active staff user",
+            )
 
     previous_assignment = _active_assignment(db, conversation)
     set_conversation_owner_team(

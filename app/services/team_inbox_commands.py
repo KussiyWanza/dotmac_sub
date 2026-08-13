@@ -955,6 +955,57 @@ def bulk_action(
     return _commit(db, execute)
 
 
+def assign_conversation_to_me(
+    db: Session,
+    *,
+    conversation_id: str | UUID,
+    service_team_id: str | UUID | None = None,
+    actor_person_id: str | UUID | None = None,
+) -> BulkActionOutcome:
+    actor_uuid = coerce_uuid(actor_person_id)
+    conversation_uuid = coerce_uuid(conversation_id)
+    if actor_uuid is None:
+        raise InboxCommandError("Authenticated staff user required.")
+    if conversation_uuid is None:
+        raise InboxCommandError("Conversation not found.")
+
+    def execute() -> BulkActionOutcome:
+        conversation = db.get(InboxConversation, conversation_uuid)
+        if conversation is None or not conversation.is_active:
+            raise InboxCommandError("Conversation not found.")
+        team_uuid = (
+            coerce_uuid(service_team_id)
+            or conversation.primary_service_team_id
+            or coerce_uuid(team_inbox_routing.default_service_team_id(db))
+        )
+        if team_uuid is None:
+            raise InboxCommandError("Choose a service team before assigning.")
+        result = team_inbox_operations.bulk_escalate(
+            db,
+            conversation_ids=[conversation_uuid],
+            service_team_id=team_uuid,
+            assigned_person_id=actor_uuid,
+            auto_assign=False,
+            actor_person_id=actor_uuid,
+            reason="Assign to me",
+            require_team_membership=False,
+        )
+        updated = result.get("updated")
+        if isinstance(updated, list) and updated:
+            return BulkActionOutcome(message="Assigned conversation to you.")
+        skipped = result.get("skipped")
+        reason = None
+        if isinstance(skipped, list) and skipped:
+            first = skipped[0]
+            if isinstance(first, dict):
+                reason = first.get("reason")
+        raise InboxCommandError(
+            f"Could not assign conversation: {reason or 'assignment rejected'}"
+        )
+
+    return _commit(db, execute)
+
+
 def link_contact(
     db: Session,
     *,

@@ -62,6 +62,24 @@ SAFE_INLINE_IMAGE_CONTENT_TYPES: frozenset[str] = frozenset(
         "image/webp",
     }
 )
+SAFE_INLINE_AUDIO_CONTENT_TYPES: frozenset[str] = frozenset(
+    {
+        "audio/aac",
+        "audio/mpeg",
+        "audio/mp4",
+        "audio/ogg",
+        "audio/wav",
+        "audio/webm",
+    }
+)
+SAFE_INLINE_VIDEO_CONTENT_TYPES: frozenset[str] = frozenset(
+    {
+        "video/mp4",
+        "video/ogg",
+        "video/quicktime",
+        "video/webm",
+    }
+)
 
 
 class InboxMediaBrowserPresentation(StrEnum):
@@ -100,9 +118,14 @@ def get_media_content_projection(
         content_length = media_content.stream.content_length
         chunks = media_content.stream.chunks
         resolved_asset_id = media_content.asset_id
+    inline_types = (
+        SAFE_INLINE_IMAGE_CONTENT_TYPES
+        | SAFE_INLINE_AUDIO_CONTENT_TYPES
+        | SAFE_INLINE_VIDEO_CONTENT_TYPES
+    )
     presentation = (
         InboxMediaBrowserPresentation.inline
-        if content_type in SAFE_INLINE_IMAGE_CONTENT_TYPES
+        if content_type in inline_types
         else InboxMediaBrowserPresentation.attachment
     )
     return InboxMediaContentProjection(
@@ -200,6 +223,7 @@ class InboxQueueRequest:
     selected_conversation_id: str | UUID | None = None
     actor_person_id: UUID | None = None
     composition: InboxQueueComposition = InboxQueueComposition.full_workspace
+    include_total_count: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -945,7 +969,11 @@ def get_conversation_projection(
     is_resolved = timeline.status == InboxConversationStatus.resolved.value
     outbound_unsupported = timeline.channel_type == InboxChannelType.website_fiber.value
     summary = subscriber_summary.subscriber_summary(db, timeline.subscriber_id)
-    lead_eligibility = lead_intake.manual_invitation_eligibility(db, conversation_id)
+    lead_eligibility = lead_intake.manual_invitation_eligibility(
+        db,
+        conversation_id,
+        verify_customer_identity=False,
+    )
     return InboxConversationProjection(
         timeline=timeline,
         subscriber_summary=summary,
@@ -1556,6 +1584,7 @@ def build_queue_projection(
             order_dir=query.sort_dir,
             limit=query.per_page,
             offset=query.offset,
+            include_total_count=request.include_total_count,
         )
 
     result = fetch(requested_query)

@@ -103,6 +103,9 @@ SALES_LEAD_GATED_POSTS = {
     "/{conversation_id}/lead-intake/issue",
     "/{conversation_id}/lead-intake/{invitation_id}/revoke",
 }
+SELF_ASSIGN_ROUTES = {
+    ("POST", "/{conversation_id}/assign-to-me"): "support:inbox:self_assign",
+}
 
 
 def test_mutating_routes_require_update_and_reads_require_read():
@@ -111,6 +114,8 @@ def test_mutating_routes_require_update_and_reads_require_read():
         route_key = (method, path)
         if route_key in MANAGER_AI_ROUTES:
             expected = MANAGER_AI_ROUTES[route_key]
+        elif route_key in SELF_ASSIGN_ROUTES:
+            expected = SELF_ASSIGN_ROUTES[route_key]
         elif method == "GET":
             expected = "support:ticket:read"
         elif path in READ_GATED_POSTS:
@@ -133,6 +138,12 @@ def test_manager_ai_routes_use_their_own_permission():
     assert MANAGER_AI_ROUTES == {
         ("GET", "/manager-ai"): "support:inbox_ai:read",
         ("POST", "/manager-ai"): "support:inbox_ai:read",
+    }
+
+
+def test_self_assign_route_uses_its_own_permission():
+    assert SELF_ASSIGN_ROUTES == {
+        ("POST", "/{conversation_id}/assign-to-me"): "support:inbox:self_assign",
     }
 
 
