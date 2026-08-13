@@ -168,16 +168,22 @@ def test_material_history_survives_completion_and_reassignment(db_session):
     own_history = field_material_requests.list_mine(db_session, _auth(user))
     assert [row["id"] for row in own_history] == [created["id"]]
     assert field_material_requests.list_mine(db_session, _auth(other)) == []
-    assert created["requested_by_technician_id"] == profile.id
-    assert field_material_requests.get(
-        db_session, _auth(user), str(created["id"])
-    )["id"] == created["id"]
+    stored = db_session.get(FieldMaterialRequest, created["id"])
+    assert stored is not None
+    assert stored.requested_by_technician_id == profile.id
+    assert (
+        field_material_requests.get(db_session, _auth(user), str(created["id"]))["id"]
+        == created["id"]
+    )
     with pytest.raises(HTTPException) as other_detail:
         field_material_requests.get(db_session, _auth(other), str(created["id"]))
     assert other_detail.value.status_code == 404
-    assert field_material_requests.submit(
-        db_session, _auth(user), str(created["id"])
-    )["status"] == "submitted"
+    assert (
+        field_material_requests.submit(db_session, _auth(user), str(created["id"]))[
+            "status"
+        ]
+        == "submitted"
+    )
 
 
 def test_material_history_supports_person_and_legacy_user_ownership(db_session):
@@ -209,16 +215,20 @@ def test_material_history_supports_person_and_legacy_user_ownership(db_session):
     row.requested_by_technician_id = None
     row.requested_by_system_user_id = None
     db_session.commit()
-    assert [item["id"] for item in field_material_requests.list_mine(
-        db_session, {**_auth(user), "person_id": str(permanent_person_id)}
-    )] == [created["id"]]
+    assert [
+        item["id"]
+        for item in field_material_requests.list_mine(
+            db_session, {**_auth(user), "person_id": str(permanent_person_id)}
+        )
+    ] == [created["id"]]
 
     row.requested_by_person_id = uuid4()
     row.requested_by_system_user_id = user.id
     db_session.commit()
-    assert [item["id"] for item in field_material_requests.list_mine(
-        db_session, _auth(user)
-    )] == [created["id"]]
+    assert [
+        item["id"]
+        for item in field_material_requests.list_mine(db_session, _auth(user))
+    ] == [created["id"]]
     assert field_material_requests.list_mine(db_session, _auth(other)) == []
 
 

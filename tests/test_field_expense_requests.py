@@ -235,24 +235,32 @@ def test_expense_history_survives_completion_and_reassignment(db_session):
     own_history = field_expense_requests.list_mine(db_session, _auth(user))
     assert [row["id"] for row in own_history] == [created["id"]]
     assert field_expense_requests.list_mine(db_session, _auth(other)) == []
-    assert created["requested_by_technician_id"] == profile.id
-    assert field_expense_requests.get(
-        db_session, _auth(user), str(created["id"])
-    )["id"] == created["id"]
+    stored = db_session.get(FieldExpenseRequest, created["id"])
+    assert stored is not None
+    assert stored.requested_by_technician_id == profile.id
+    assert (
+        field_expense_requests.get(db_session, _auth(user), str(created["id"]))["id"]
+        == created["id"]
+    )
     with pytest.raises(HTTPException) as other_detail:
         field_expense_requests.get(db_session, _auth(other), str(created["id"]))
     assert other_detail.value.status_code == 404
-    assert field_expense_requests.cancel(
-        db_session, _auth(user), str(created["id"])
-    )["status"] == "canceled"
+    assert (
+        field_expense_requests.cancel(db_session, _auth(user), str(created["id"]))[
+            "status"
+        ]
+        == "canceled"
+    )
 
 
 def test_expense_history_supports_person_and_legacy_user_ownership(db_session):
     user = _user(db_session)
     profile = _profile(db_session, user)
     other = _user(db_session, "OtherIdentity")
-    other_profile = _profile(
-        db_session, other, crm_person_id="other-expense-identity-tech"
+    _profile(db_session, other, crm_person_id="other-expense-identity-tech")
+    decoy = _user(db_session, "DecoyIdentity")
+    decoy_profile = _profile(
+        db_session, decoy, crm_person_id="decoy-expense-identity-tech"
     )
     subscriber = _subscriber(db_session)
     work_order = _work_order(
@@ -277,19 +285,22 @@ def test_expense_history_supports_person_and_legacy_user_ownership(db_session):
     permanent_person_id = uuid4()
     profile.person_id = permanent_person_id
     row.requested_by_person_id = permanent_person_id
-    row.requested_by_technician_id = other_profile.id
+    row.requested_by_technician_id = decoy_profile.id
     row.requested_by_system_user_id = None
     db_session.commit()
-    assert [item["id"] for item in field_expense_requests.list_mine(
-        db_session, {**_auth(user), "person_id": str(permanent_person_id)}
-    )] == [created["id"]]
+    assert [
+        item["id"]
+        for item in field_expense_requests.list_mine(
+            db_session, {**_auth(user), "person_id": str(permanent_person_id)}
+        )
+    ] == [created["id"]]
 
     row.requested_by_person_id = uuid4()
     row.requested_by_system_user_id = user.id
     db_session.commit()
-    assert [item["id"] for item in field_expense_requests.list_mine(
-        db_session, _auth(user)
-    )] == [created["id"]]
+    assert [
+        item["id"] for item in field_expense_requests.list_mine(db_session, _auth(user))
+    ] == [created["id"]]
     assert field_expense_requests.list_mine(db_session, _auth(other)) == []
 
 
