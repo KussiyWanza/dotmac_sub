@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
 from ipaddress import IPv4Address as ParsedIPv4Address
 from typing import Any, Literal, cast
@@ -145,6 +148,101 @@ class CustomerListPage:
     query: Query
     list_query: ListQuery
     page_meta: PageMeta
+
+
+class CustomerExportErrorCode(StrEnum):
+    INVALID_FILTERS = "ui.customer_list_projection.invalid_filters"
+    INVALID_TARGET = "ui.customer_list_projection.invalid_target"
+    EMPTY_TARGET = "ui.customer_list_projection.empty_target"
+
+
+class CustomerExportQueryError(Exception):
+    """Stable validation error for the customer-export query boundary."""
+
+    def __init__(self, code: CustomerExportErrorCode, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+@dataclass(frozen=True, slots=True)
+class CustomerExportTarget:
+    customer_type: Literal["person", "business"]
+    customer_id: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class CustomerExportQuery:
+    """Typed complete-export scope over the canonical customer list query."""
+
+    list_query: ListQuery
+    targets: tuple[CustomerExportTarget, ...] | None
+
+
+@dataclass(frozen=True, slots=True)
+class CustomerExportRow:
+    customer_id: str
+    customer_type: str
+    name: str
+    email: str
+    phone: str
+    account_status: str
+    created_at: str
+    account_number: str
+    subscriber_number: str
+    subscription_plans: str
+    service_statuses: str
+    pppoe_usernames: str
+    service_ip_addresses: str
+    nas_devices: str
+    locations: str
+    contact_completeness: str
+
+    def values(self) -> tuple[str, ...]:
+        return (
+            self.customer_id,
+            self.customer_type,
+            self.name,
+            self.email,
+            self.phone,
+            self.account_status,
+            self.created_at,
+            self.account_number,
+            self.subscriber_number,
+            self.subscription_plans,
+            self.service_statuses,
+            self.pppoe_usernames,
+            self.service_ip_addresses,
+            self.nas_devices,
+            self.locations,
+            self.contact_completeness,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CustomerCsvExport:
+    content: str
+    filename: str
+
+
+CUSTOMER_EXPORT_HEADERS: tuple[str, ...] = (
+    "id",
+    "type",
+    "name",
+    "email",
+    "phone",
+    "is_active",
+    "created_at",
+    "account_number",
+    "subscriber_number",
+    "subscription_plans",
+    "service_statuses",
+    "pppoe_usernames",
+    "service_ip_addresses",
+    "nas_devices",
+    "locations",
+    "contact_completeness",
+)
 
 
 def _customer_user_clause():
@@ -972,6 +1070,7 @@ def customer_scope_query(
             selectinload(Subscriber.subscriptions)
             .selectinload(Subscription.provisioning_nas_device)
             .selectinload(NasDevice.pop_site),
+            selectinload(Subscriber.subscriptions).selectinload(Subscription.offer),
             selectinload(Subscriber.ip_assignments).selectinload(
                 IPAssignment.ipv4_address
             ),
@@ -1078,6 +1177,273 @@ def list_customers_for_scope(
         )
         .order_by(Subscriber.created_at.desc())
         .all()
+    )
+
+
+def build_customer_export_query(
+    *,
+    ids: str,
+    search: str | None,
+    status: str | None,
+    customer_type: str | None,
+    nas_id: str | None,
+    pop_site_id: str | None,
+    infrastructure_type: str | None,
+    infrastructure_id: str | None,
+    sort_by: CustomerListSort,
+    sort_dir: SortDirection,
+) -> CustomerExportQuery:
+    """Normalize the export request onto the canonical customer-list scope."""
+
+    try:
+        list_query = build_customer_list_query(
+            search=search,
+            status=status,
+            customer_type=customer_type,
+            nas_id=nas_id,
+            pop_site_id=pop_site_id,
+            infrastructure_type=infrastructure_type,
+            infrastructure_id=infrastructure_id,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
+            page=1,
+            per_page=25,
+        )
+    except ValueError as exc:
+        raise CustomerExportQueryError(
+            CustomerExportErrorCode.INVALID_FILTERS, str(exc)
+        ) from exc
+
+    normalized_ids = str(ids).strip()
+    if normalized_ids == "all":
+        return CustomerExportQuery(list_query=list_query, targets=None)
+    if not normalized_ids:
+        raise CustomerExportQueryError(
+            CustomerExportErrorCode.EMPTY_TARGET,
+            "Select at least one customer to export.",
+        )
+
+    targets: list[CustomerExportTarget] = []
+    seen: set[UUID] = set()
+    for raw_target in normalized_ids.split(","):
+        customer_kind, separator, raw_id = raw_target.strip().partition(":")
+        if separator != ":" or customer_kind not in {"person", "business"}:
+            raise CustomerExportQueryError(
+                CustomerExportErrorCode.INVALID_TARGET,
+                "Each selected customer must use person:<id> or business:<id>.",
+            )
+        try:
+            customer_id = UUID(raw_id)
+        except ValueError as exc:
+            raise CustomerExportQueryError(
+                CustomerExportErrorCode.INVALID_TARGET,
+                "Selected customer IDs must be valid UUIDs.",
+            ) from exc
+        if customer_id in seen:
+            continue
+        seen.add(customer_id)
+        targets.append(
+            CustomerExportTarget(
+                customer_type=cast(Literal["person", "business"], customer_kind),
+                customer_id=customer_id,
+            )
+        )
+    if not targets:
+        raise CustomerExportQueryError(
+            CustomerExportErrorCode.EMPTY_TARGET,
+            "Select at least one customer to export.",
+        )
+    return CustomerExportQuery(list_query=list_query, targets=tuple(targets))
+
+
+def _joined_export_values(values: list[str | None]) -> str:
+    unique: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = str(value or "").strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        unique.append(normalized)
+    return " | ".join(unique)
+
+
+def _csv_safe_export_value(value: str) -> str:
+    """Prevent customer-controlled values from becoming spreadsheet formulas."""
+
+    return f"'{value}" if value.lstrip().startswith(("=", "+", "-", "@")) else value
+
+
+def _customer_contact_completeness(customer: Subscriber) -> str:
+    has_email = bool(str(customer.email or "").strip())
+    has_phone = bool(str(customer.phone or "").strip())
+    if has_email and has_phone:
+        return "Email and phone"
+    if has_email:
+        return "Email only"
+    if has_phone:
+        return "Phone only"
+    return "No email or phone"
+
+
+def _customer_export_row(
+    customer: Subscriber,
+    *,
+    customer_location: str | None,
+) -> CustomerExportRow:
+    subscriptions = sorted(
+        customer.subscriptions or (),
+        key=lambda subscription: (
+            subscription.created_at or datetime.min.replace(tzinfo=UTC),
+            str(subscription.id),
+        ),
+    )
+    subscription_plans = _joined_export_values(
+        [
+            str(subscription.offer.name or "")
+            if subscription.offer
+            else str(subscription.service_description or "")
+            for subscription in subscriptions
+        ]
+    )
+    service_statuses = _joined_export_values(
+        [
+            subscription.status.value
+            if isinstance(subscription.status, SubscriptionStatus)
+            else str(subscription.status or "")
+            for subscription in subscriptions
+        ]
+    )
+    pppoe_usernames = _joined_export_values(
+        [subscription.login for subscription in subscriptions]
+    )
+    service_ip_addresses = _joined_export_values(
+        [subscription.ipv4_address for subscription in subscriptions]
+        + [
+            assignment.ipv4_address.address
+            for assignment in (customer.ip_assignments or ())
+            if assignment.is_active and assignment.ipv4_address
+        ]
+        + [
+            assignment.static_ip
+            for assignment in (customer.ont_assignments or ())
+            if assignment.active
+        ]
+    )
+    nas_devices = _joined_export_values(
+        [
+            subscription.provisioning_nas_device.name
+            if subscription.provisioning_nas_device
+            else None
+            for subscription in subscriptions
+        ]
+    )
+    locations = _joined_export_values(
+        [customer_location]
+        + [
+            subscription.provisioning_nas_device.pop_site.name
+            if subscription.provisioning_nas_device
+            and subscription.provisioning_nas_device.pop_site
+            else None
+            for subscription in subscriptions
+        ]
+    )
+    name = customer.company_name or customer.display_name or customer.full_name
+    return CustomerExportRow(
+        customer_id=str(customer.id),
+        customer_type="business" if customer.is_business else "person",
+        name=str(name or "").strip(),
+        email=str(customer.email or ""),
+        phone=str(customer.phone or ""),
+        account_status="Active" if customer.is_active else "Inactive",
+        created_at=(
+            customer.created_at.strftime("%Y-%m-%d %H:%M:%S")
+            if customer.created_at
+            else ""
+        ),
+        account_number=str(customer.account_number or ""),
+        subscriber_number=str(customer.subscriber_number or ""),
+        subscription_plans=subscription_plans,
+        service_statuses=service_statuses,
+        pppoe_usernames=pppoe_usernames,
+        service_ip_addresses=service_ip_addresses,
+        nas_devices=nas_devices,
+        locations=locations,
+        contact_completeness=_customer_contact_completeness(customer),
+    )
+
+
+def build_customer_csv_export(
+    db: Session,
+    *,
+    export_query: CustomerExportQuery,
+) -> CustomerCsvExport:
+    """Build the complete customer CSV from the canonical list projection scope."""
+
+    list_query = export_query.list_query
+    query = customer_scope_query(
+        db,
+        search=list_query.search,
+        status=list_query.filter_value("status"),
+        customer_type=list_query.filter_value("customer_type"),
+        nas_id=list_query.filter_value("nas_id"),
+        pop_site_id=list_query.filter_value("pop_site_id"),
+        infrastructure_type=list_query.filter_value("infrastructure_type"),
+        infrastructure_id=list_query.filter_value("infrastructure_id"),
+        include_related=True,
+    )
+    if export_query.targets is None:
+        customers = _apply_customer_sort(query, list_query).all()
+    else:
+        target_ids = tuple(target.customer_id for target in export_query.targets)
+        customer_by_id = {
+            customer.id: customer
+            for customer in query.filter(Subscriber.id.in_(target_ids)).all()
+        }
+        customers = [
+            customer_by_id[target.customer_id]
+            for target in export_query.targets
+            if target.customer_id in customer_by_id
+            and (
+                "business"
+                if customer_by_id[target.customer_id].is_business
+                else "person"
+            )
+            == target.customer_type
+        ]
+
+    location_ids = {
+        customer.pop_site_id
+        for customer in customers
+        if customer.pop_site_id is not None
+    }
+    location_names = (
+        {
+            location.id: location.name
+            for location in db.query(PopSite).filter(PopSite.id.in_(location_ids)).all()
+        }
+        if location_ids
+        else {}
+    )
+    rows = tuple(
+        _customer_export_row(
+            customer,
+            customer_location=location_names.get(customer.pop_site_id),
+        )
+        for customer in customers
+    )
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(CUSTOMER_EXPORT_HEADERS)
+    writer.writerows(
+        tuple(_csv_safe_export_value(value) for value in row.values()) for row in rows
+    )
+    content = output.getvalue()
+    output.close()
+    return CustomerCsvExport(
+        content=content,
+        filename=f"customers_export_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}.csv",
     )
 
 

@@ -86,6 +86,12 @@ Dotmac UI standard, interaction behavior follows Carbon's data-table/filter/
 pagination patterns and WCAG 2.2 AA is the accessibility floor. This governs
 behavior and accessibility, not the product's visual theme.
 
+The customer CSV export consumes the same canonical list scope and stable sort.
+The default full export contains identity, contact, account, subscription,
+service-access, IP, NAS, POP, and contact-completeness columns. The admin export
+menu may project any selected subset of those columns in the browser, but it
+must not scrape the paginated table or derive additional domain state.
+
 ### Portal Account Health contract
 
 Customer dashboard, customer service detail, reseller account detail, and the
