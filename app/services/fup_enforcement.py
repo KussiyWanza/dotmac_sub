@@ -233,6 +233,25 @@ def _current_quota_bucket(
     )
 
 
+def _requires_quota_bucket(db: Session, offer_id) -> bool:
+    """Does this offer have any rule that measures against the billing bucket?
+
+    Only ``monthly`` rules do. Treating the bucket as universally required
+    conflated "we cannot measure this rule" with "this subscription is not
+    metered for billing".
+    """
+    from app.services.fup import FupPolicies
+    from app.services.fup_usage import period_value
+
+    policy = FupPolicies.get_by_offer(db, str(offer_id))
+    if policy is None:
+        return True
+    active = [rule for rule in policy.rules if rule.is_active]
+    if not active:
+        return True
+    return any(period_value(rule.consumption_period) == "monthly" for rule in active)
+
+
 def _sweep_policy(db: Session) -> tuple[bool, float, bool]:
     from app.services.usage import _parse_warning_thresholds
 
@@ -300,9 +319,22 @@ def _evaluate_subscription(
         return FupSubscriptionOutcome(reset=int(bool(result.get("lifted"))))
 
     bucket = _current_quota_bucket(db, subscription.id, command.evaluated_at)
-    if bucket is None:
+    if bucket is None and _requires_quota_bucket(db, subscription.offer_id):
+        # A monthly rule measures against the billing bucket, so without one
+        # there is nothing to compare and skipping is correct.
         return FupSubscriptionOutcome()
-    current_usage = float(bucket.used_gb or 0)
+    if bucket is None:
+        # Sub-monthly rules read the windowed usage reader instead, and quota
+        # buckets only exist for offers carrying a usage allowance
+        # (usage.meter_active_subscriptions). home_flex deliberately has none —
+        # the allowance is a BILLING object and FUP is enforcement (§1) — so
+        # requiring a bucket here silently disabled every daily ladder on the
+        # family that most needs one, however carefully it was configured.
+        logger.debug(
+            "FUP evaluating sub %s with no quota bucket; sub-monthly rules only",
+            subscription.id,
+        )
+    current_usage = float(bucket.used_gb or 0) if bucket is not None else 0.0
     usage_by_period = build_usage_by_period(
         db,
         subscription,
@@ -311,13 +343,53 @@ def _evaluate_subscription(
         current_usage,
     )
     prior_status = state.action_status.value if state else "none"
+    # Time-of-day windows are wall-clock facts about the customer's night, and
+    # the daily consumption windows above are already aligned to this same
+    # local midnight. Passing it keeps both halves of a "free night" on one
+    # clock.
+    from app.services.usage_summary import _subscriber_tz
+
+    subscriber_tz = _subscriber_tz(db, str(subscription.subscriber_id))
     results = evaluate_rules(
         db,
         str(subscription.offer_id),
         current_usage_gb=current_usage,
         current_time=command.evaluated_at,
         usage_by_period=usage_by_period,
+        tz=subscriber_tz,
     )
+    # A free overnight window has to LIFT the throttle, not merely stop
+    # re-applying it. cap_resets_at (above) is the period boundary — for a
+    # daily rule, local midnight — so without this a rule whose window closes
+    # at 22:00 would leave the subscriber throttled for the first two hours of
+    # the night it was told were free.
+    #
+    # Deliberately narrow: it releases only when the rule that CAUSED the
+    # current enforcement is itself outside its time window right now. It does
+    # not release because a threshold stopped being met (that is what
+    # cap_resets_at owns) and it cannot release on a blind usage reading,
+    # because a time_skip is decided from the clock alone.
+    if state is not None and state.active_rule_id is not None:
+        active_rule_id = str(state.active_rule_id)
+        outside_window = any(
+            row.get("rule_id") == active_rule_id and row.get("status") == "time_skip"
+            for row in results
+        )
+        if outside_window and prior_status in {"throttled", "blocked"}:
+            from app.services.enforcement import lift_fup_enforcement
+
+            result = lift_fup_enforcement(
+                db,
+                str(subscription.id),
+                evaluated_at=command.evaluated_at,
+            )
+            logger.info(
+                "FUP enforcement lifted for sub %s: rule %s is outside its time window",
+                subscription.id,
+                active_rule_id,
+            )
+            return FupSubscriptionOutcome(reset=int(bool(result.get("lifted"))))
+
     no_data_count = sum(1 for row in results if row.get("usage_source") == "no_data")
     for row in results:
         if row.get("usage_source") == "no_data":
@@ -334,9 +406,37 @@ def _evaluate_subscription(
     triggered = [row for row in results if row.get("triggered")]
     if triggered:
         for rule_result in reversed(triggered):
+            # A sub-monthly rule carries its own window_end; the billing period
+            # is only the fallback, and there may be no bucket at all.
             cap_resets_at = rule_result.get("window_end") or (
-                bucket.period_end.isoformat() if bucket.period_end else None
+                bucket.period_end.isoformat()
+                if bucket is not None and bucket.period_end
+                else None
             )
+            # Report the usage of the window this rule was MEASURED against,
+            # not the monthly bucket. A daily rule breaches on its own window,
+            # and `current_usage` is the monthly figure — 0.0 for the families
+            # that carry no quota bucket at all (home_flex). Using it here made
+            # a real daily breach tell the customer, the event stream, and the
+            # audit trail "0 GB exhausted". evaluate_rules already resolved the
+            # right number per rule and falls back to the monthly value for
+            # monthly rules, so this is correct for every consumption period.
+            #
+            # A measured 0.0 is valid evidence; a MISSING measurement is not.
+            # `or 0.0` conflated them, which is the same substitution of a
+            # plausible zero for an unknown that this block exists to fix.
+            # evaluate_rules sets the key on every triggered row, so absence is
+            # a contract breach — fail closed rather than enforce blind.
+            raw_rule_usage = rule_result.get("current_usage_gb")
+            if raw_rule_usage is None:
+                logger.error(
+                    "FUP rule %s triggered for sub %s with no measured usage; "
+                    "not enforcing on unknown evidence",
+                    rule_result.get("rule_id"),
+                    subscription.id,
+                )
+                continue
+            rule_usage = float(raw_rule_usage)
             if rule_result.get("usage_source") == "no_data":
                 continue
             action = rule_result.get("action")
@@ -352,7 +452,7 @@ def _evaluate_subscription(
                         db,
                         subscription,
                         rule_result,
-                        current_usage=current_usage,
+                        current_usage=rule_usage,
                         cap_resets_at=cap_resets_at,
                     )
                     enforced += 1
@@ -363,7 +463,7 @@ def _evaluate_subscription(
                             "kind": "blocked",
                             "rule_name": rule_result.get("name"),
                             "threshold_gb": rule_result.get("threshold_gb"),
-                            "used_gb": current_usage,
+                            "used_gb": rule_usage,
                             "cap_resets_at": cap_resets_at,
                         }
                     )
@@ -377,14 +477,20 @@ def _evaluate_subscription(
                 break
             if action == "reduce_speed":
                 if not command.throttle_profile_configured:
+                    # Observability only. The throttle a subscriber gets is
+                    # DERIVED from their own rate, so a missing global profile
+                    # is a missing fallback, not a missing throttle. Refusing
+                    # here meant a deployment that never set the global setting
+                    # enforced nothing at all, however carefully its ladders
+                    # were configured; the handler now raises if derivation
+                    # fails and there is no fallback either.
                     throttle_unconfigured += 1
-                    logger.warning(
-                        "FUP reduce_speed triggered for sub %s rule %s but no "
-                        "canonical throttle profile is configured",
+                    logger.info(
+                        "FUP reduce_speed for sub %s rule %s has no global "
+                        "fallback profile; relying on the derived profile",
                         subscription.id,
                         rule_result.get("rule_id"),
                     )
-                    break
                 if _fup_should_enforce(
                     prior_status=prior_status,
                     target_status="throttled",
@@ -396,7 +502,7 @@ def _evaluate_subscription(
                         db,
                         subscription,
                         rule_result,
-                        current_usage=current_usage,
+                        current_usage=rule_usage,
                         cap_resets_at=cap_resets_at,
                     )
                     enforced += 1
@@ -407,7 +513,7 @@ def _evaluate_subscription(
                             "kind": "throttled",
                             "rule_name": rule_result.get("name"),
                             "threshold_gb": rule_result.get("threshold_gb"),
-                            "used_gb": current_usage,
+                            "used_gb": rule_usage,
                             "cap_resets_at": cap_resets_at,
                         }
                     )
@@ -438,15 +544,21 @@ def _evaluate_subscription(
                         "kind": "notified",
                         "rule_name": rule_result.get("name"),
                         "threshold_gb": rule_result.get("threshold_gb"),
-                        "used_gb": current_usage,
+                        "used_gb": rule_usage,
                     }
                 )
                 break
     elif prior_status == "none" and command.warning_enabled:
+        # Each rule's own window usage, not the monthly bucket. evaluate_rules
+        # already divides rule_usage_gb by the threshold for exactly this
+        # comparison; using current_usage instead measured a daily rule against
+        # a month of traffic, so a daily ladder either never warned or warned
+        # on the wrong day. Rows with no measured window (usage_percent None)
+        # are skipped rather than treated as zero.
         ratios = [
-            (current_usage / row["threshold_gb"], row)
+            (row["usage_percent"] / 100.0, row)
             for row in results
-            if row.get("threshold_gb")
+            if row.get("threshold_gb") and row.get("usage_percent") is not None
         ]
         if ratios:
             ratio, nearest_rule = max(ratios, key=lambda item: item[0])
@@ -469,7 +581,12 @@ def _evaluate_subscription(
                         "kind": "approaching",
                         "rule_name": nearest_rule.get("name"),
                         "threshold_gb": nearest_rule.get("threshold_gb"),
-                        "used_gb": current_usage,
+                        # The ratio above is measured on this rule's own window,
+                        # so the GB figure quoted to the customer has to come
+                        # from the same window or the warning contradicts
+                        # itself. The row was selected BY usage_percent, so a
+                        # measured value is guaranteed present here.
+                        "used_gb": float(nearest_rule["current_usage_gb"]),
                     }
                 )
 
@@ -570,13 +687,15 @@ def _hit_fup_in_window(
 def _maybe_queue_repeat_upsell(
     session: Session,
     subscription: Subscription,
-    bucket: QuotaBucket,
+    bucket: QuotaBucket | None,
     rule_result: dict,
     pending_notifications: list[dict],
 ) -> None:
     from app.models.notification import Notification
 
-    if not bucket.period_start or not bucket.period_end:
+    # The upsell compares against prior billing cycles, so it is meaningless
+    # without a bucket to take the cycle length from.
+    if bucket is None or not bucket.period_start or not bucket.period_end:
         return
     period_len = bucket.period_end - bucket.period_start
     if period_len.total_seconds() <= 0:

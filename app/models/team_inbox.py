@@ -27,6 +27,7 @@ from app.db import Base
 class InboxChannelType(enum.Enum):
     email = "email"
     whatsapp = "whatsapp"
+    website_fiber = "website_fiber"
     facebook_messenger = "facebook_messenger"
     instagram_dm = "instagram_dm"
     facebook_comment = "facebook_comment"
@@ -883,6 +884,13 @@ class InboxMessage(Base):
     __table_args__ = (
         Index("ix_inbox_messages_conversation", "conversation_id", "created_at"),
         Index(
+            "ix_inbox_messages_unread",
+            "conversation_id",
+            "received_at",
+            sqlite_where=text("direction = 'inbound' AND received_at IS NOT NULL"),
+            postgresql_where=text("direction = 'inbound' AND received_at IS NOT NULL"),
+        ),
+        Index(
             "uq_inbox_messages_inbound_external",
             "channel_type",
             "external_message_id",
@@ -1014,6 +1022,12 @@ class InboxConversationReadState(Base):
             name="uq_inbox_conversation_read_states_person",
         ),
         Index("ix_inbox_conversation_read_states_person", "person_id", "last_read_at"),
+        Index(
+            "ix_inbox_read_states_person_conversation",
+            "person_id",
+            "conversation_id",
+            "last_read_at",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(

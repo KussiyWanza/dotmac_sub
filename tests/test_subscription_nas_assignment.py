@@ -24,6 +24,9 @@ from app.services.subscription_nas_assignment import (
     move_subscription_service_access,
     preview_subscription_service_access_move,
 )
+from app.services.web_catalog_subscription_workflows import (
+    service_access_move_available_ipv4,
+)
 
 
 def _service_access_evidence(db, offer):
@@ -154,6 +157,37 @@ def test_preview_rejects_pool_not_linked_to_target_router(
         target_ipv4=evidence["target_address"].address,
     )
     assert blocked.decision is ServiceAccessMoveDecision.target_pool_not_linked
+
+
+def test_preview_accepts_shared_pool_linked_by_nas_radius_configuration(
+    db_session,
+    catalog_offer,
+) -> None:
+    evidence = _service_access_evidence(db_session, catalog_offer)
+    target_pool = evidence["target_pool"]
+    target_nas = evidence["target_nas"]
+    target_pool.nas_device_id = None
+    target_nas.tags = [f"radius_pool:{target_pool.id}"]
+    db_session.flush()
+
+    with patch(
+        "app.services.ip_consistency_audit._external_ip_state",
+        return_value=_radius_state(evidence),
+    ):
+        preview = preview_subscription_service_access_move(
+            db_session,
+            subscription_id=evidence["subscription"].id,
+            target_nas_device_id=target_nas.id,
+            target_pool_id=target_pool.id,
+            target_ipv4=evidence["target_address"].address,
+        )
+
+    assert preview.decision is ServiceAccessMoveDecision.ready
+    assert service_access_move_available_ipv4(
+        db_session,
+        target_nas_device_id=target_nas.id,
+        target_pool_id=target_pool.id,
+    ) == (evidence["target_address"].address,)
 
 
 def test_move_commits_router_and_ipv4_without_commercial_changes(

@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.utils import getaddresses
 from typing import Any
 from urllib.parse import urlencode, urljoin, urlparse
 
@@ -28,10 +29,19 @@ from app.services.communication_intents import MAX_EMAIL_ATTACHMENT_BYTES
 from app.services.domain_settings import notification_settings
 from app.services.notification import notifications as notification_records
 from app.services.settings_spec import resolve_value
+from app.services.validation_api import validate_email_format
 
 logger = logging.getLogger(__name__)
 
 _SAFE_ATTACHMENT_FILENAME = re.compile(r"[^A-Za-z0-9._-]+")
+
+# Separators a stored recipient field may use besides the comma that
+# `getaddresses` already understands.
+_RECIPIENT_SEPARATORS = re.compile(r"[;\r\n]+")
+
+# Distinguishable terminal failure: the field held no address we could send to,
+# so this is a data defect to repair, not a transport failure to retry.
+NO_DELIVERABLE_RECIPIENT = "no_deliverable_recipient"
 
 
 @dataclass(frozen=True)
@@ -57,11 +67,67 @@ def _attachment_filename(value: str) -> str:
     return filename[:180] or "attachment.pdf"
 
 
+@dataclass(frozen=True)
+class ResolvedRecipients:
+    """How a stored recipient field splits into individual addresses."""
+
+    deliverable: tuple[str, ...]
+    rejected: tuple[str, ...]
+
+    @property
+    def header_value(self) -> str:
+        """The RFC-correct `To:` header for the addresses we will send to."""
+        return ", ".join(self.deliverable)
+
+
+def resolve_recipient_addresses(value: str | None) -> ResolvedRecipients:
+    """Split a stored recipient field into individually deliverable addresses.
+
+    `Notification.recipient` is free text, and legacy imports put more than one
+    address in the single column (`"a@x.com, b@y.com"`). Handing that whole
+    string to `sendmail` makes it one RCPT TO, which the relay rejects with SMTP
+    501 — so the notice reaches nobody, every retry fails identically, and the
+    account still gets enforced on schedule because the dunning runway counts
+    overdue days rather than delivered notices.
+
+    Splitting first means a multi-address field reaches every valid address, and
+    a field where only one part is malformed still reaches the parts that work
+    instead of failing whole.
+    """
+    raw = str(value or "")
+    if not raw.strip():
+        return ResolvedRecipients(deliverable=(), rejected=())
+
+    deliverable: list[str] = []
+    rejected: list[str] = []
+    seen: set[str] = set()
+    # `getaddresses` honours commas quoted inside a display name, so normalise
+    # only the other separators onto commas before handing it the whole list.
+    for _name, address in getaddresses([_RECIPIENT_SEPARATORS.sub(",", raw)]):
+        candidate = address.strip()
+        if not candidate:
+            continue
+        valid, _message = validate_email_format(candidate)
+        if not valid:
+            if candidate not in rejected:
+                rejected.append(candidate)
+            continue
+        # Addresses are compared case-insensitively but sent as written: the
+        # local part is case-sensitive per RFC 5321 even though no real mailbox
+        # relies on it.
+        deduped = candidate.lower()
+        if deduped in seen:
+            continue
+        seen.add(deduped)
+        deliverable.append(candidate)
+    return ResolvedRecipients(deliverable=tuple(deliverable), rejected=tuple(rejected))
+
+
 def _build_email_message(
     *,
     subject: str,
     from_header: str,
-    to_email: str,
+    to_header: str,
     body_html: str,
     body_text: str | None,
     cc_recipients: list[str],
@@ -70,7 +136,7 @@ def _build_email_message(
     msg = MIMEMultipart("mixed" if attachments else "alternative")
     msg["Subject"] = subject
     msg["From"] = from_header
-    msg["To"] = to_email
+    msg["To"] = to_header
     if cc_recipients:
         msg["Cc"] = ", ".join(cc_recipients)
 
@@ -190,6 +256,32 @@ def _setting_value(db: Session | None, key: str) -> str | None:
     return _setting_value_for_domain(db, SettingDomain.notification, key)
 
 
+def _secret_setting_value(db: Session | None, key: str) -> str | None:
+    """A secret notification setting, read through the resolver that decrypts it.
+
+    `_setting_value` reads `DomainSetting.value_text` straight off the row, and
+    a secret setting's column now holds `enc:<key_id>:<token>`. Only the kernel
+    resolver decrypts — it is the one reader that knows the row is secret and
+    holds the key — so a direct row read would hand SMTP a ciphertext string
+    and authentication would fail with a password-shaped error.
+
+    `resolve_secret` afterwards is the transition tolerance, not the mechanism:
+    a row the conversion script has not reached still holds a `bao://` reference,
+    which resolves as it always did. It passes plaintext through untouched, so
+    it becomes a no-op once no references remain and comes out with them.
+    """
+
+    from app.models.domain_settings import SettingDomain as _Domain
+    from app.services.settings_spec import resolve_value
+
+    if db is None:
+        return None
+    resolved = resolve_value(db, _Domain.notification, key)
+    if not isinstance(resolved, str) or not resolved.strip():
+        return None
+    return _resolve_secret_value(resolved)
+
+
 def _setting_value_for_domain(
     db: Session | None,
     domain: SettingDomain,
@@ -235,9 +327,8 @@ def _legacy_smtp_config(db: Session | None) -> dict:
         or "localhost",
         "port": _env_int("SMTP_PORT", 587),
         "username": username,
-        "password": _resolve_secret_value(
-            _env_value("SMTP_PASSWORD") or _setting_value(db, "smtp_password")
-        )
+        "password": _env_value("SMTP_PASSWORD")
+        or _secret_setting_value(db, "smtp_password")
         or _bao_secret("notifications", "smtp_password"),
         "use_tls": use_tls,
         "use_ssl": use_ssl,
@@ -873,6 +964,17 @@ def send_email_with_config(
     bcc_addresses: list[str] | tuple[str, ...] | None = None,
     attachments: tuple[EmailAttachment, ...] = (),
 ) -> bool:
+    resolved = resolve_recipient_addresses(to_email)
+    if not resolved.deliverable:
+        logger.error("Email not sent: no deliverable address in recipient %r", to_email)
+        return False
+    if resolved.rejected:
+        logger.warning(
+            "Skipping %d undeliverable address(es) in recipient %r",
+            len(resolved.rejected),
+            to_email,
+        )
+
     cc_recipients = list(dict.fromkeys(cc_addresses or ()))
     bcc_recipients = list(dict.fromkeys(bcc_addresses or ()))
     msg = _build_email_message(
@@ -881,7 +983,7 @@ def send_email_with_config(
             f"{config.get('from_name') or get_brand()['from_name']} "
             f"<{config.get('from_email') or get_brand()['from_email']}>"
         ),
-        to_email=to_email,
+        to_header=resolved.header_value,
         body_html=body_html,
         body_text=body_text,
         cc_recipients=cc_recipients,
@@ -909,7 +1011,7 @@ def send_email_with_config(
             server.login(username, password)
 
         envelope_recipients = list(
-            dict.fromkeys([to_email, *cc_recipients, *bcc_recipients])
+            dict.fromkeys([*resolved.deliverable, *cc_recipients, *bcc_recipients])
         )
         server.sendmail(config.get("from_email"), envelope_recipients, msg.as_string())
         server.quit()
@@ -988,12 +1090,49 @@ def send_email(
 
     config = _get_smtp_config(db, sender_key=sender_key, activity=activity)
 
+    resolved = resolve_recipient_addresses(to_email)
+    if not resolved.deliverable:
+        # A data defect, not a transport failure. Record it against the outbox
+        # row with a distinguishable reason so it is repairable and countable,
+        # and never open an SMTP connection that can only answer 501.
+        logger.error("Email not sent: no deliverable address in recipient %r", to_email)
+        if db is not None and (notification_id or track):
+            undeliverable = notification_records.record_transport_attempt(
+                db,
+                notification_id=notification_id,
+                channel=NotificationChannel.email,
+                recipient=to_email,
+                subject=subject,
+                body=None if sensitive_content else tracked_body,
+                commit=True,
+            )
+            undeliverable.status = NotificationStatus.failed
+            undeliverable.last_error = NO_DELIVERABLE_RECIPIENT
+            db.add(
+                NotificationDelivery(
+                    notification_id=undeliverable.id,
+                    provider=f"smtp:{config.get('sender_key', 'default')}",
+                    provider_message_id=None,
+                    status=DeliveryStatus.failed,
+                    response_code=NO_DELIVERABLE_RECIPIENT,
+                    response_body="Recipient field held no valid email address",
+                )
+            )
+            db.commit()
+        return False
+    if resolved.rejected:
+        logger.warning(
+            "Skipping %d undeliverable address(es) in recipient %r",
+            len(resolved.rejected),
+            to_email,
+        )
+
     cc_recipients = list(dict.fromkeys(cc_addresses or ()))
     bcc_recipients = list(dict.fromkeys(bcc_addresses or ()))
     msg = _build_email_message(
         subject=subject,
         from_header=f"{config['from_name']} <{config['from_email']}>",
-        to_email=to_email,
+        to_header=resolved.header_value,
         body_html=body_html,
         body_text=body_text,
         cc_recipients=cc_recipients,
@@ -1037,7 +1176,7 @@ def send_email(
             server.login(config["username"], config["password"])
 
         envelope_recipients = list(
-            dict.fromkeys([to_email, *cc_recipients, *bcc_recipients])
+            dict.fromkeys([*resolved.deliverable, *cc_recipients, *bcc_recipients])
         )
         server.sendmail(config["from_email"], envelope_recipients, msg.as_string())
         server.quit()

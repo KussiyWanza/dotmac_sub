@@ -326,7 +326,11 @@ class TestMacLock:
                     status=TicketStatus.open.value,
                     channel=TicketChannel.api,
                     ticket_type=unmatched_radio_queue.TICKET_TYPE,
-                    metadata_={"radio_mac": mac_compact, "occurrences": 1},
+                    metadata_={
+                        "opened_by": "unmatched_radio_queue",
+                        "radio_mac": mac_compact,
+                        "occurrences": 1,
+                    },
                 )
             )
             db.flush()

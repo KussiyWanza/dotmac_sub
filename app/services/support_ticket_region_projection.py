@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
-from sqlalchemy import literal, select, union_all
+from sqlalchemy import func, literal, select, union_all
 from sqlalchemy.orm import Session
 
 from app.models.support import Ticket
+
+
+def normalize_region_value(value: str | None) -> str:
+    """Return the case-insensitive identity used by region reads and filters."""
+
+    return str(value or "").strip().lower()
 
 
 def list_canonical_region_options(
@@ -15,15 +21,16 @@ def list_canonical_region_options(
 ) -> tuple[str, ...]:
     """Combine configured regions with current authoritative Ticket observations."""
 
-    ticket_regions = select(Ticket.region.label("region")).where(
+    normalized_ticket_region = func.lower(func.trim(Ticket.region))
+    ticket_regions = select(normalized_ticket_region.label("region")).where(
         Ticket.is_active.is_(True),
         Ticket.region.isnot(None),
-        Ticket.region != "",
+        func.trim(Ticket.region) != "",
     )
     configured_region_queries = tuple(
-        select(literal(region).label("region"))
+        select(literal(normalized).label("region"))
         for region in configured_regions
-        if region
+        if (normalized := normalize_region_value(region))
     )
     region_sources = union_all(
         ticket_regions,
@@ -50,7 +57,7 @@ def canonical_region_option(
 ) -> str | None:
     """Resolve a submitted region only when it is a current canonical option."""
 
-    candidate = str(submitted or "").strip()
+    candidate = normalize_region_value(submitted)
     if not candidate:
         return None
     return next(

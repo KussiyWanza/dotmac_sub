@@ -20,9 +20,9 @@ from app.services.sot_manifest import (
 
 SERVICES: tuple[SOTService, ...] = (
     SOTService(
-        name="billing.splynx_history_opening",
-        module="app.services.billing.splynx_history_opening",
-        owns=("complete Splynx-history customer opening target",),
+        name="billing.opening_balance_history",
+        module="app.services.billing.opening_balance_history",
+        owns=("complete opening-balance customer target",),
         depends_on=(
             "customer.accounts",
             "financial.credit_notes",
@@ -31,19 +31,19 @@ SERVICES: tuple[SOTService, ...] = (
             "financial.payments",
         ),
         notes=(
-            "Cutover-only resolver over the frozen isolated Splynx audit "
+            "Cutover-only resolver over the frozen isolated opening-balance audit "
             "restore. A complete empty transaction set is zero; missing, "
             "duplicate, malformed, or unreconciled source evidence fails the "
-            "whole cohort. It never contacts Splynx, writes money, assigns an "
+            "whole cohort. It contacts no external system, writes money, assigns an "
             "unknown balance, or remains a runtime authority after completion."
         ),
         contract=ServiceContract(
             concerns=(
                 ConcernContract(
-                    name="complete Splynx-history customer opening target",
+                    name="complete opening-balance customer target",
                     role=OwnerRole.RESOLVER,
                     input_names=(
-                        "frozen Splynx transaction-net evidence",
+                        "frozen opening-balance transaction-net evidence",
                         "canonical post-handoff native financial facts",
                         "canonical migrated customer identity",
                     ),
@@ -51,7 +51,7 @@ SERVICES: tuple[SOTService, ...] = (
             ),
             authoritative_inputs=(
                 AuthorityInput(
-                    name="frozen Splynx transaction-net evidence",
+                    name="frozen opening-balance transaction-net evidence",
                     owner="external:splynx_final_snapshot",
                     kind=AuthorityKind.EXTERNAL_OBSERVATION,
                     source=(
@@ -100,14 +100,14 @@ SERVICES: tuple[SOTService, ...] = (
             ),
             errors=ErrorContract(
                 domain_codes=(
-                    "billing.splynx_history_opening.invalid_query",
-                    "billing.splynx_history_opening.unsupported_currency",
-                    "billing.splynx_history_opening.source_snapshot_missing",
-                    "billing.splynx_history_opening.source_cohort_incomplete",
-                    "billing.splynx_history_opening.source_identity_duplicate",
-                    "billing.splynx_history_opening.source_identity_mismatch",
-                    "billing.splynx_history_opening.source_history_malformed",
-                    "billing.splynx_history_opening.source_history_unreconciled",
+                    "billing.opening_balance_history.invalid_query",
+                    "billing.opening_balance_history.unsupported_currency",
+                    "billing.opening_balance_history.source_snapshot_missing",
+                    "billing.opening_balance_history.source_cohort_incomplete",
+                    "billing.opening_balance_history.source_identity_duplicate",
+                    "billing.opening_balance_history.source_identity_mismatch",
+                    "billing.opening_balance_history.source_history_malformed",
+                    "billing.opening_balance_history.source_history_unreconciled",
                 ),
                 mapping_owner=("scripts.one_off.export_prepaid_funding_snapshot"),
                 fail_closed_on=(
@@ -123,7 +123,7 @@ SERVICES: tuple[SOTService, ...] = (
                 old_owner=(
                     "partial independent replay with permanent funding quarantine"
                 ),
-                new_owner="billing.splynx_history_opening",
+                new_owner="billing.opening_balance_history",
                 verification=(
                     "Complete/empty history, source mismatch, missing cohort, "
                     "native advancement, signed manifest, incremental opening, "
@@ -148,7 +148,7 @@ SERVICES: tuple[SOTService, ...] = (
                 "docs/SOT_RELATIONSHIP_MAP.md",
             ),
             test_refs=(
-                "tests/test_splynx_history_opening.py",
+                "tests/test_opening_balance_history.py",
                 "tests/test_billing_alignment_audit.py",
                 "tests/test_subledger_opening_positions.py",
             ),
@@ -812,13 +812,16 @@ SERVICES: tuple[SOTService, ...] = (
             "finance approvals are separate commands and are forbidden while "
             "blockers remain. Phase 3 may derive an opening target without "
             "Splynx only when account provenance proves the customer was "
-            "created after the fixed legacy handoff with no Splynx identity. "
+            "created after the fixed handoff with no carried-in identity. "
             "The zero history component and canonical native facts are "
             "fingerprinted before normal approval and capture. After "
             "authority activation, a separate single-account preview derives "
             "the immutable original cutoff and evaluates only the explicitly "
             "selected eligible native account; it cannot satisfy initial "
-            "complete-cohort cutover evidence."
+            "complete-cohort cutover evidence. A migrated-account variant accepts "
+            "only an exact original-cutoff amount plus a bounded evidence reference "
+            "and SHA-256 digest, then fingerprints current account identity and "
+            "shadow lanes before separate operator and finance approval."
         ),
         contract=ServiceContract(
             concerns=(
@@ -843,6 +846,7 @@ SERVICES: tuple[SOTService, ...] = (
                         "current postpaid billing preview",
                         "current prepaid renewal preview",
                         "verified prepaid opening targets",
+                        "reviewed migrated opening evidence",
                         "recorded customer postings",
                         "receipted owner-output deliveries",
                         "recorded shadow verification evidence",
@@ -930,6 +934,18 @@ SERVICES: tuple[SOTService, ...] = (
                     ),
                 ),
                 AuthorityInput(
+                    name="reviewed migrated opening evidence",
+                    owner="external:finance_review",
+                    kind=AuthorityKind.EXTERNAL_OBSERVATION,
+                    source=(
+                        "content-addressed controlled evidence document containing "
+                        "the selected migrated account's complete-history position "
+                        "at the immutable customer-subledger authority cutoff; the "
+                        "persisted preview binds its reference, SHA-256 digest, "
+                        "amount, retained migrated identity, and live shadow lanes"
+                    ),
+                ),
+                AuthorityInput(
                     name="recorded customer postings",
                     owner="financial.customer_subledger",
                     kind=AuthorityKind.AUTHORITATIVE_RECORD,
@@ -961,7 +977,7 @@ SERVICES: tuple[SOTService, ...] = (
                 mode=TransactionMode.OWNER_MANAGED,
                 boundary=(
                     "Each terminal consumption, complete-cohort run, explicit "
-                    "post-cutover account run, or approval enters "
+                    "post-cutover native or migrated account run, or approval enters "
                     "execute_owner_command once on a transaction-free session."
                 ),
                 locking=(
@@ -974,7 +990,9 @@ SERVICES: tuple[SOTService, ...] = (
                 idempotency=(
                     "One terminal evidence row per event and one run per "
                     "business idempotency key. The post-cutover account ID is "
-                    "part of run identity; replays return stored evidence."
+                    "part of run identity; migrated runs additionally bind the "
+                    "evidence reference, digest, cutoff, and amount; replays return "
+                    "stored evidence."
                 ),
                 retries=(
                     "Delivery and run commands are retryable. Expected new-"
@@ -992,6 +1010,7 @@ SERVICES: tuple[SOTService, ...] = (
                     "billing.shadow_verification.invalid_command_context",
                     "billing.shadow_verification.invalid_observation_window",
                     "billing.shadow_verification.invalid_run_identity",
+                    "billing.shadow_verification.invalid_reviewed_source_evidence",
                     "billing.shadow_verification.missing_idempotency_key",
                     "billing.shadow_verification.nested_owner_command",
                     "billing.shadow_verification.nested_transaction_completion",
@@ -1005,7 +1024,12 @@ SERVICES: tuple[SOTService, ...] = (
                         "billing.shadow_verification."
                         "post_cutover_scope_requires_native_account"
                     ),
+                    (
+                        "billing.shadow_verification."
+                        "post_cutover_scope_requires_migrated_account"
+                    ),
                     ("billing.shadow_verification.post_cutover_scope_unavailable"),
+                    ("billing.shadow_verification.reviewed_source_cutoff_mismatch"),
                     ("billing.shadow_verification.shadow_fact_after_authority_cutoff"),
                     "billing.shadow_verification.source_cohort_incomplete",
                     "billing.shadow_verification.stale_reviewed_preview",
@@ -1018,7 +1042,8 @@ SERVICES: tuple[SOTService, ...] = (
                     "any unresolved, ambiguous, unlinked, duplicate, gap, "
                     "overlap, or variance category",
                     "a selected account outside the native post-cutover "
-                    "completion contract or changed after preview",
+                    "completion contract, migrated evidence not bound to the "
+                    "original cutoff, or selected evidence changed after preview",
                     "finance approval without operator approval",
                 ),
             ),
@@ -1064,6 +1089,7 @@ SERVICES: tuple[SOTService, ...] = (
             design_refs=(
                 "docs/adr/0007-end-to-end-billing-target-architecture.md",
                 "docs/SOT_RELATIONSHIP_MAP.md",
+                "docs/runbooks/REVIEWED_MIGRATED_PREPAID_OPENING_REPAIR.md",
             ),
             test_refs=(
                 "tests/test_billing_shadow_pipeline.py",

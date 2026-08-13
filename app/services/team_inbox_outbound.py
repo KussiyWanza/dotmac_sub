@@ -316,8 +316,8 @@ def _send_field_job_reply(
     """Deliver a job-chat message in the app, over the conversation socket.
 
     There is no external transport and therefore no recipient address, no
-    notification and no delivery receipt to wait for: both parties are
-    authenticated in Sub and subscribed to this conversation's topic. The
+    notification and no delivery receipt to wait for: both parties hold a
+    bounded Sub session and subscribe to this conversation's topic. The
     message is sent the moment it is persisted and published.
     """
     body_text = _plain_text_reply(payload)
@@ -402,6 +402,36 @@ def _social_value(
     return ""
 
 
+def _social_comment_reply_target(
+    messages: list[InboxMessage],
+    payload: InboxReplyPayload,
+) -> InboxMessage | None:
+    reply_to = (payload.metadata or {}).get("reply_to")
+    reply_to_id = (
+        _coerce_uuid(str(reply_to.get("message_id") or ""))
+        if isinstance(reply_to, dict)
+        else None
+    )
+    if reply_to_id is not None:
+        return next(
+            (
+                message
+                for message in messages
+                if message.id == reply_to_id
+                and message.direction == InboxMessageDirection.inbound.value
+            ),
+            None,
+        )
+    return next(
+        (
+            message
+            for message in reversed(messages)
+            if message.direction == InboxMessageDirection.inbound.value
+        ),
+        None,
+    )
+
+
 def _send_social_comment_reply(
     db: Session,
     *,
@@ -434,14 +464,7 @@ def _send_social_comment_reply(
         .order_by(InboxMessage.created_at.asc())
         .all()
     )
-    inbound = next(
-        (
-            message
-            for message in reversed(messages)
-            if message.direction == InboxMessageDirection.inbound.value
-        ),
-        None,
-    )
+    inbound = _social_comment_reply_target(messages, payload)
     provider_comment_id = (
         str(inbound.external_message_id or "").strip() if inbound is not None else ""
     ) or _social_value(
@@ -612,6 +635,13 @@ def send_inbox_reply(
             conversation=conversation,
             payload=payload,
             now=now,
+        )
+
+    if conversation.channel_type == InboxChannelType.website_fiber.value:
+        return InboxReplyResult(
+            kind="unsupported_channel",
+            conversation_id=str(conversation.id),
+            reason="Outbound replies for fiber website inquiries are not configured",
         )
 
     to_email = _reply_to_address(conversation, payload.to_email)

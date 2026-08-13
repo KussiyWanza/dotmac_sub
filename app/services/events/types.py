@@ -148,6 +148,7 @@ class EventType(enum.Enum):
     addon_expiring = "usage.addon_expiring"
     fup_runtime_state_changed = "fup.runtime_state_changed"
     fup_policy_changed = "fup_policy.changed"
+    fup_throttle_profile_derived = "fup.throttle_profile_derived"
 
     # Operations - Provisioning events (3)
     provisioning_started = "provisioning.started"
@@ -238,11 +239,15 @@ class EventType(enum.Enum):
     device_projection_reconciled = "device_projection.reconciled"
     session_started = "session.started"
     session_ended = "session.ended"
+    network_map_asset_change_proposed = "network_map_asset_change.proposed"
+    network_map_asset_change_applied = "network_map_asset_change.applied"
+    network_map_asset_change_rejected = "network_map_asset_change.rejected"
 
     # OLT events (3)
     olt_created = "olt.created"
     olt_updated = "olt.updated"
     olt_deleted = "olt.deleted"
+    olt_topology_imported = "olt.topology_imported"
 
     # ONT events (5)
     ont_discovered = "ont.discovered"
@@ -251,6 +256,9 @@ class EventType(enum.Enum):
     ont_signal_degraded = "ont.signal_degraded"
     ont_signal_delta = "ont.signal_delta"
     ont_config_updated = "ont.config_updated"
+    ont_service_configuration_queued = "ont.service_configuration.queued"
+    ont_service_configuration_phase_changed = "ont.service_configuration.phase_changed"
+    ont_service_configuration_retired = "ont.service_configuration.retired"
     ont_moved = "ont.moved"
     ont_feature_toggled = "ont.feature_toggled"
     ont_ddm_alert = "ont.ddm_alert"
@@ -267,6 +275,7 @@ class EventType(enum.Enum):
     ont_commissioning_state_changed = "ont.commissioning_state_changed"
 
     # Fiber splice plans (cut sheets)
+    fiber_cost_item_changed = "fiber.cost_item_changed"
     fiber_splice_plan_issued = "fiber.splice_plan_issued"
     fiber_splice_plan_cancelled = "fiber.splice_plan_cancelled"
     fiber_splice_plan_item_executed = "fiber.splice_plan_item_executed"
@@ -344,6 +353,8 @@ class EventType(enum.Enum):
     staff_account_roles_changed = "staff_account.roles_changed"
     staff_account_activated = "staff_account.activated"
     staff_account_deactivated = "staff_account.deactivated"
+    staff_account_identity_changed = "staff_account.identity_changed"
+    staff_account_credential_reconciled = "staff_account.credential_reconciled"
     system_user_assignments_changed = "system_user.assignments_changed"
     subscriber_assignments_changed = "subscriber.assignments_changed"
 

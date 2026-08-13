@@ -237,6 +237,7 @@ def material_request_create(
     values = {
         "priority": str(form.get("priority") or "medium"),
         "source_warehouse_code": str(form.get("source_warehouse_code") or ""),
+        "fulfillment_channel": str(form.get("fulfillment_channel") or "erp"),
         "notes": str(form.get("notes") or ""),
     }
     selected_work_order_id = str(form.get("work_order_id") or "").strip()
@@ -247,7 +248,7 @@ def material_request_create(
     )
     try:
         request_id = UUID(str(form.get("request_id") or ""))
-        work_order_id = UUID(selected_work_order_id)
+        work_order_id = UUID(selected_work_order_id) if selected_work_order_id else None
         priority = material_service.MaterialRequestPriority(values["priority"])
         lines: list[material_service.MaterialRequestLineInput] = []
         for index, item_id in enumerate(item_ids):
@@ -272,9 +273,13 @@ def material_request_create(
                     scope=WRITE_PERMISSION,
                     reason="Create and submit staff material request",
                 ),
+                scope=material_scope,
                 work_order_id=work_order_id,
                 request_id=request_id,
                 priority=priority,
+                fulfillment_channel=material_service.MaterialRequestFulfillmentChannel(
+                    values["fulfillment_channel"]
+                ),
                 source_warehouse_code=values["source_warehouse_code"],
                 notes=values["notes"] or None,
                 items=tuple(lines),
@@ -328,14 +333,9 @@ def _review(
     reason: str | None,
     action: str,
 ):
-    commands = {
-        "approve": material_service.approve_material_request,
-        "reject": material_service.reject_material_request,
-        "cancel": material_service.cancel_material_request,
-    }
     try:
         db_session_adapter.release_read_transaction(db)
-        commands[action](
+        material_service.cancel_material_request(
             db,
             material_service.ReviewMaterialRequest(
                 context=_command_context(
@@ -356,50 +356,7 @@ def _review(
             error=exc.message,
             status_code=_error_status(exc),
         )
-    notices = {
-        "approve": "Request approved",
-        "reject": "Request rejected",
-        "cancel": "Request canceled",
-    }
-    return _review_redirect(request_id, notice=notices[action])
-
-
-@router.post("/{request_id}/approve", response_class=HTMLResponse)
-def material_request_approve(
-    request: Request,
-    request_id: UUID,
-    db: Session = Depends(get_db),
-    auth: dict = Depends(require_permission(WRITE_PERMISSION)),
-):
-    form = parse_form_data_sync(request)
-    return _review(
-        request,
-        db,
-        auth,
-        request_id,
-        UUID(str(form.get("request_id") or "")),
-        None,
-        "approve",
-    )
-
-
-@router.post("/{request_id}/reject", response_class=HTMLResponse)
-def material_request_reject(
-    request: Request,
-    request_id: UUID,
-    db: Session = Depends(get_db),
-    auth: dict = Depends(require_permission(WRITE_PERMISSION)),
-):
-    form = parse_form_data_sync(request)
-    return _review(
-        request,
-        db,
-        auth,
-        request_id,
-        UUID(str(form.get("request_id") or "")),
-        str(form.get("reason") or ""),
-        "reject",
-    )
+    return _review_redirect(request_id, notice="Request canceled")
 
 
 @router.post("/{request_id}/cancel", response_class=HTMLResponse)

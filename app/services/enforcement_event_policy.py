@@ -56,6 +56,24 @@ class FupEventPolicyDecision:
             )
         return self.throttle_profile_id
 
+    def throttle_fallback_profile_id(self) -> UUID | None:
+        """The globally configured profile, which is a FALLBACK and may be unset.
+
+        The throttle a subscriber actually gets is derived from their own rate
+        (``app/services/fup_throttle_profile.py``); this global profile only
+        stands in when that derivation cannot produce a rate. Requiring it up
+        front — via ``required_throttle_profile_id`` — made the fallback a
+        precondition for the primary path, so a deployment that had never set
+        it silently never throttled anyone, however carefully its ladders were
+        configured.
+        """
+        if self.action is not FupEnforcementAction.THROTTLE:
+            raise _error(
+                "invalid_throttle_decision",
+                "The resolved FUP policy is not an executable throttle decision.",
+            )
+        return self.throttle_profile_id
+
 
 def _error(suffix: str, message: str) -> AccessEventPolicyError:
     return AccessEventPolicyError(
@@ -145,9 +163,16 @@ def resolve_fup_event_policy(
         "fup_throttle_radius_profile_id",
     )
     if raw_profile_id is None or not str(raw_profile_id).strip():
-        raise _error(
-            "throttle_profile_required",
-            "FUP throttling requires a canonical RADIUS profile setting.",
+        # Absent, not fatal. This setting is the FALLBACK profile; the throttle
+        # a subscriber actually gets is derived from their own rate by
+        # app/services/fup_throttle_profile.py. Refusing the whole decision here
+        # meant a deployment that never set it enforced nothing at all. The
+        # resolver raises if derivation fails AND this fallback is missing, so
+        # the genuinely unthrottleable case still surfaces.
+        return FupEventPolicyDecision(
+            action=action,
+            throttle_profile_id=None,
+            refresh_sessions=resolve_session_refresh_policy(db).enabled,
         )
     try:
         throttle_profile_id = UUID(str(raw_profile_id).strip())

@@ -43,11 +43,15 @@ def _context() -> CommandContext:
 
 def _command(**overrides: str) -> ConfigureMetaSocialInstallationCommand:
     values = {
+        "auth_mode": "individual",
         "app_id": "app-1",
         "facebook_page_id": "page-1",
         "instagram_account_id": "ig-1",
         "graph_version": "v21.0",
         "webhook_url": "https://sub.example.test/api/v1/webhooks/meta",
+        "meta_oauth_access_token_ref": (
+            "bao://secret/integrations/meta_social#meta_oauth_access_token"
+        ),
         "facebook_page_access_token_ref": (
             "bao://secret/integrations/meta_social#facebook_page_access_token"
         ),
@@ -76,7 +80,7 @@ def _envelope(
         capability_binding_id=uuid4(),
         capability_id=meta_social_runtime.META_SOCIAL_SEND_CAPABILITY,
         connector_key="meta.social",
-        connector_version="1.0.0",
+        connector_version="1.1.0",
         manifest_digest="a" * 64,
         config_revision_id=uuid4(),
         trigger=OperationTrigger.event,
@@ -102,6 +106,7 @@ def _envelope(
 def _config() -> dict[str, object]:
     return {
         "provider": "meta_social",
+        "auth_mode": "individual",
         "app_id": "app-1",
         "facebook_page_id": "page-1",
         "facebook_auth_mode": "page_access_token",
@@ -116,6 +121,7 @@ def _secrets() -> dict[str, str]:
     return {
         "facebook_page_access_token": "test-facebook-page-token",
         "instagram_login_access_token": "test-instagram-login-token",
+        "meta_oauth_access_token": "test-meta-oauth-token",
         "webhook_signing_secret": "test-signing-secret",
         "webhook_verify_token": "test-verify-token",
     }
@@ -132,6 +138,7 @@ def test_configuration_owner_persists_refs_and_distinct_auth_modes(db_session):
     assert installation is not None
     revision = installation.current_config_revision
     assert revision is not None
+    assert revision.config_json["auth_mode"] == "individual"
     assert revision.config_json["facebook_auth_mode"] == "page_access_token"
     assert revision.config_json["instagram_auth_mode"] == "instagram_login"
     assert revision.secret_refs == {
@@ -166,6 +173,27 @@ def test_configuration_owner_rejects_plaintext_secret(db_session):
     assert db_session.query(IntegrationInstallation).count() == 0
 
 
+def test_configuration_owner_persists_shared_oauth_mode(db_session):
+    result = configure_meta_social_installation(
+        db_session,
+        _command(auth_mode="oauth"),
+        context=_context(),
+    )
+
+    installation = db_session.get(IntegrationInstallation, result.installation_id)
+    assert installation is not None
+    revision = installation.current_config_revision
+    assert revision is not None
+    assert revision.config_json["auth_mode"] == "oauth"
+    assert revision.config_json["facebook_auth_mode"] == "meta_oauth"
+    assert revision.config_json["instagram_auth_mode"] == "meta_oauth"
+    assert revision.secret_refs["meta_oauth_access_token"] == (
+        "bao://secret/integrations/meta_social#meta_oauth_access_token"
+    )
+    assert "facebook_page_access_token" not in revision.secret_refs
+    assert "instagram_login_access_token" not in revision.secret_refs
+
+
 def test_configuration_projection_never_returns_secret_references(db_session):
     configure_meta_social_installation(db_session, _command(), context=_context())
 
@@ -193,6 +221,8 @@ def test_update_preserves_existing_secret_refs_inside_owner_transaction(db_sessi
             instagram_account_id="ig-1",
             graph_version="v22.0",
             webhook_url="https://sub.example.test/api/v1/webhooks/meta",
+            auth_mode="individual",
+            meta_oauth_access_token_ref="",
             facebook_page_access_token_ref="",
             instagram_login_access_token_ref="",
             webhook_signing_secret_ref="",
@@ -227,27 +257,36 @@ def test_update_preserves_existing_secret_refs_inside_owner_transaction(db_sessi
 
 
 @pytest.mark.parametrize(
-    ("channel", "expected_host", "expected_token"),
+    ("channel", "expected_host", "expected_token", "expected_payload"),
     [
         (
             MetaSocialChannel.facebook_messenger,
             "graph.facebook.com",
             "test-facebook-page-token",
+            {
+                "recipient": {"id": "recipient-1"},
+                "message": {"text": "Hello"},
+                "messaging_type": "RESPONSE",
+            },
         ),
         (
             MetaSocialChannel.instagram_dm,
             "graph.instagram.com",
             "test-instagram-login-token",
+            {
+                "recipient": '{"id":"recipient-1"}',
+                "message": '{"text":"Hello"}',
+            },
         ),
     ],
 )
 def test_runtime_keeps_channel_hosts_and_credentials_separate(
-    monkeypatch, channel, expected_host, expected_token
+    monkeypatch, channel, expected_host, expected_token, expected_payload
 ):
-    calls: list[tuple[str, str]] = []
+    calls: list[tuple[str, str, dict[str, object]]] = []
 
     def provider_post(url, *, json, headers, timeout):
-        calls.append((url, headers["Authorization"]))
+        calls.append((url, headers["Authorization"], json))
         return httpx.Response(
             200,
             json={"message_id": f"mid-{channel.value}", "recipient_id": "r-1"},
@@ -265,7 +304,44 @@ def test_runtime_keeps_channel_hosts_and_credentials_separate(
     assert len(calls) == 1
     assert expected_host in calls[0][0]
     assert calls[0][1] == f"Bearer {expected_token}"
+    assert calls[0][2] == expected_payload
     assert result.external_receipt["provider_message_id"].startswith("mid-")
+
+
+def test_runtime_shared_oauth_uses_one_token_for_both_channels(monkeypatch):
+    calls: list[tuple[str, str]] = []
+
+    def provider_post(url, *, json, headers, timeout):
+        calls.append((url, headers["Authorization"]))
+        return httpx.Response(
+            200,
+            json={"message_id": "mid-oauth", "recipient_id": "r-1"},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(meta_social_runtime.httpx, "post", provider_post)
+    config = {**_config(), "auth_mode": "oauth"}
+    for channel in (
+        MetaSocialChannel.facebook_messenger,
+        MetaSocialChannel.instagram_dm,
+    ):
+        result = meta_social_runtime.MetaSocialRuntimeRunner().execute(
+            _envelope(channel=channel),
+            config=config,
+            secret_material=_secrets(),
+        )
+        assert result.status is OperationStatus.succeeded
+
+    assert calls == [
+        (
+            "https://graph.facebook.com/v21.0/page-1/messages",
+            "Bearer test-meta-oauth-token",
+        ),
+        (
+            "https://graph.facebook.com/v21.0/ig-1/messages",
+            "Bearer test-meta-oauth-token",
+        ),
+    ]
 
 
 def test_runtime_preview_has_no_provider_side_effect(monkeypatch):
@@ -283,7 +359,7 @@ def test_runtime_preview_has_no_provider_side_effect(monkeypatch):
 
     assert result.status is OperationStatus.succeeded
     assert result.output["sent"] is False
-    assert result.output["payload"]["message"] == {"text": "Hello"}
+    assert result.output["payload"]["message"] == '{"text":"Hello"}'
 
 
 def test_runtime_rejected_response_is_not_recorded_as_sent(monkeypatch):
@@ -370,6 +446,9 @@ def test_typed_facade_returns_sanitized_outcome(db_session, monkeypatch):
             ),
             "bao://secret/integrations/meta_social#instagram_login_access_token": (
                 "test-instagram-login-token"
+            ),
+            "bao://secret/integrations/meta_social#meta_oauth_access_token": (
+                "test-meta-oauth-token"
             ),
             "bao://secret/integrations/meta_social#webhook_signing_secret": (
                 "test-signing-secret"

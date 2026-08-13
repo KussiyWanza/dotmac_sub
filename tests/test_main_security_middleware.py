@@ -6,7 +6,11 @@ from concurrent.futures import ThreadPoolExecutor
 from starlette.requests import Request
 from starlette.responses import Response
 
-from app.main import login_rate_limit_middleware, security_headers_middleware
+from app.main import (
+    fiber_widget_cors_middleware,
+    login_rate_limit_middleware,
+    security_headers_middleware,
+)
 
 
 def _build_request(
@@ -99,3 +103,35 @@ def test_login_rate_limit_ignores_get(monkeypatch):
         request = _build_request(path="/auth/login", method="GET")
         resp = _run_async(login_rate_limit_middleware(request, _ok))
         assert resp.status_code == 200
+
+
+def test_fiber_widget_cors_allows_only_exact_fiber_origin():
+    allowed_headers = [(b"origin", b"https://fiber.dotmac.ng")]
+    request = _build_request(
+        path="/widget/fiber/session",
+        method="OPTIONS",
+        headers=allowed_headers,
+    )
+
+    response = _run_async(fiber_widget_cors_middleware(request, _ok))
+
+    assert response.status_code == 204
+    assert response.headers["Access-Control-Allow-Origin"] == (
+        "https://fiber.dotmac.ng"
+    )
+    assert "X-Visitor-Token" in response.headers["Access-Control-Allow-Headers"]
+
+
+def test_fiber_widget_cors_rejects_other_origins_before_route():
+    request = _build_request(
+        path="/widget/fiber/session",
+        method="OPTIONS",
+        headers=[(b"origin", b"https://example.com")],
+    )
+
+    async def must_not_run(_request: Request) -> Response:
+        raise AssertionError("disallowed preflight must not reach the route")
+
+    response = _run_async(fiber_widget_cors_middleware(request, must_not_run))
+
+    assert response.status_code == 403

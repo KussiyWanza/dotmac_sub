@@ -67,14 +67,21 @@ require_vars() {
     return $missing
 }
 
-put_secret() {
+patch_secret() {
     local path="$1"
     shift
     if [ "$CHECK_ONLY" -eq 1 ]; then
         echo "  [CHECK] secret/${path}"
         return 0
     fi
-    run_bao kv put "secret/${path}" "$@" >/dev/null
+    # Preserve fields managed by a different bootstrap or rotation workflow.
+    # `kv put` replaces the complete payload, while `kv patch` only updates the
+    # fields supplied here.
+    if run_bao kv get "secret/${path}" >/dev/null 2>&1; then
+        run_bao kv patch "secret/${path}" "$@" >/dev/null
+    else
+        run_bao kv put "secret/${path}" "$@" >/dev/null
+    fi
     echo "  [OK] secret/${path}"
 }
 
@@ -101,7 +108,39 @@ seed_group() {
         return 0
     fi
 
-    put_secret "$path" "$@"
+    patch_secret "$path" "$@"
+}
+
+seed_optional_group() {
+    # Material for ONE feature, mirroring `OPTIONAL_SECRET_REFS` in
+    # app/services/kernel_secret_source.py and the settings keyring in
+    # app/services/kernel_key_provider.py.
+    #
+    # Skips even under --strict, which is the whole difference from
+    # `seed_group`. A deployment that does not use prepaid reconstruction has
+    # no attestation anchor to provision, and one that has not started
+    # encrypting secret settings has no keyring; failing a bootstrap over
+    # either would make --strict useless for the deployments that need it.
+    #
+    # The application makes the same distinction at boot, and makes it the
+    # strict way: a missing PATH is "not provisioned", while an unreachable
+    # store still raises.
+    local path="$1"
+    shift
+    local required_csv="$1"
+    shift
+    local required=()
+    IFS=',' read -r -a required <<<"$required_csv"
+
+    echo "==> secret/${path} (optional)"
+    for name in "${required[@]}"; do
+        if [ -z "${!name:-}" ]; then
+            echo "  [SKIP] ${name} is unset; this material is not provisioned"
+            return 0
+        fi
+    done
+
+    patch_secret "$path" "$@"
 }
 
 seed_credential_keyring() {
@@ -173,15 +212,38 @@ done
 
 echo "==> Seeding OpenBao KV v2 (real env values only)..."
 
-seed_group auth \
-    "JWT_SECRET" \
+seed_group settings/auth \
+    "JWT_SECRET,TOTP_ENCRYPTION_KEY" \
     "jwt_secret=${JWT_SECRET:-}" \
-    "totp_encryption_key=${TOTP_ENCRYPTION_KEY:-}" \
+    "totp_encryption_key=${TOTP_ENCRYPTION_KEY:-}"
+
+seed_group settings/network \
+    "WIREGUARD_KEY_ENCRYPTION_KEY" \
     "wireguard_key_encryption_key=${WIREGUARD_KEY_ENCRYPTION_KEY:-}"
+
+seed_group settings/radius \
+    "RADIUS_AUTH_SHARED_SECRET" \
+    "auth_shared_secret=${RADIUS_AUTH_SHARED_SECRET:-}"
 
 # One-time bootstrap only. The helper refuses a seed that differs from the
 # active literal and never overwrites an existing managed key or its metadata.
 seed_credential_keyring
+
+# The trust anchor `prepaid_funding_attestation` verifies signed funding
+# manifests against. A PUBLIC key, so it needs no confidentiality — it is held
+# rather than stored as a setting because only OpenBao access may REPLACE it.
+seed_optional_group settings/billing \
+    "PREPAID_RECONSTRUCTION_ATTESTATION_PUBLIC_KEY" \
+    "prepaid_reconstruction_attestation_public_key=${PREPAID_RECONSTRUCTION_ATTESTATION_PUBLIC_KEY:-}"
+
+# The settings-encryption keyring, in the same JSON shape the kernel's
+# SETTINGS_ENCRYPTION_KEYS variable accepts:
+#   [{"key_id": "k1", "key": "<Fernet.generate_key()>", "status": "active"}]
+# `key_id` must stay stable for the life of its material — it is written into
+# every value the key encrypts. Rotation ADDS an entry and retires the old one.
+seed_optional_group settings/crypto \
+    "SETTINGS_ENCRYPTION_KEYRING" \
+    "settings_encryption_keyring=${SETTINGS_ENCRYPTION_KEYRING:-}"
 
 seed_group database \
     "DATABASE_URL,POSTGRES_PASSWORD" \

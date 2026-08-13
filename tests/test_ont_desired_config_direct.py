@@ -884,7 +884,7 @@ def test_apply_saved_service_config_skips_wan_when_wan_mode_absent(
     }
 
 
-def test_provision_wizard_context_does_not_invent_missing_desired_config_defaults(
+def test_provision_wizard_context_supplies_status_without_inventing_config_defaults(
     db_session, monkeypatch
 ):
     from types import SimpleNamespace
@@ -929,6 +929,9 @@ def test_provision_wizard_context_does_not_invent_missing_desired_config_default
     assert "Select internet deployment method" in context["provision_gate_issues"]
     assert "Enter PPPoE username" not in context["provision_gate_issues"]
     assert context["pppoe_username"] is None
+    status = context["signal_info"]["status_presentation"]
+    assert status.value == "not_working"
+    assert status.label == "Not working"
 
 
 def test_save_provision_settings_does_not_persist_tr069_profile_override(
@@ -1652,10 +1655,12 @@ def test_set_wan_config_omci_fails_before_adapter_when_dependencies_invalid(
 def test_ont_config_form_has_single_operator_path():
     from pathlib import Path
 
-    source = Path("templates/admin/network/onts/_configure_form.html").read_text()
+    source = Path("templates/admin/network/onts/_configure_form.html").read_text(
+        encoding="utf-8"
+    )
     panel = Path(
         "templates/admin/network/onts/_apply_device_config_panel.html"
-    ).read_text()
+    ).read_text(encoding="utf-8")
 
     assert "Create PPPoE WAN Service" not in source
     assert "Push PPPoE Credentials" not in source
@@ -1670,9 +1675,17 @@ def test_ont_config_form_has_single_operator_path():
     assert "x-show=\"activeConfigScope === 'wan'\"" in source
     assert "x-show=\"activeConfigScope === 'lan'\"" in source
     assert "x-show=\"activeConfigScope === 'wifi'\"" in source
-    assert "x-show=\"activeConfigScope === 'all'\"" in source
-    assert 'name="push_to_device" value="true"' in source
-    assert "Save and apply device changes" in source
+    assert "x-show=\"activeConfigScope === 'all'\"" not in source
+    assert 'value="all"' not in source
+    assert "Apply All" not in source
+    assert "Apply one section at a time" in source
+    assert 'name="push_to_device"' not in source
+    assert 'name="idempotency_key"' in source
+    assert "queues tracked delivery" in source
+    assert "Apply Mgmt" in source
+    assert "Apply WAN" in source
+    assert "Apply LAN" in source
+    assert "Apply WiFi" in source
     assert "/wan/probe" not in panel
     assert "/wan/ensure-instance" not in panel
     assert "/wan/normalize" not in panel

@@ -53,6 +53,11 @@ Common conversation actions: reply, add private note, assign, change status,
 change priority, snooze, mute, apply labels, retry a failed message, open
 contact context, and start a ticket handoff.
 
+Clicking a safe raster-image attachment opens the authorized media content in
+a new browser tab. The media projection, not the template or filename, decides
+whether the resolved MIME type is safe for inline presentation. SVG, unknown,
+and non-image content remains download-only.
+
 Operator availability action: set my Team Inbox availability to online, away,
 or offline through `communications.team_inbox_commands`. The routing owner uses
 effective availability for automatic conversation assignment; away and offline
@@ -133,6 +138,15 @@ selector is rendered only after the projection exposes a specific receiving
 account or mailbox identifier and real choices; Team must never be relabelled
 as Inbox.
 
+Advanced Service Team conditions sit behind an optional progressive-disclosure
+panel. Operators can require all conditions, require at least one condition in
+an OR group, use positive or negative team membership, or select conversations
+with or without any active team link. The browser only builds the shared JSON
+transport and preserves it in the URL and saved views. The server projection
+validates active team identifiers and owns all queue-membership semantics;
+invalid input returns a controlled adapter error rather than widening the
+queue.
+
 ## Queue below Stats and Filters
 
 Saved Views remains part of the expanded Stats and Filters disclosure. The
@@ -187,6 +201,20 @@ and Instagram comment conversations. It is recomputed by
 `communications.team_inbox_projection` on every read, so message, delivery,
 status, snooze, activation, or ticket changes are reflected on refetch without
 a persisted UI flag.
+
+WhatsApp structured locations retain their validated latitude and longitude,
+with the provider's optional place name and address. The message timeline shows
+a location card whose explicit action opens those coordinates in Google Maps.
+Locations are not downloadable media: a legacy or malformed record without
+valid coordinates is displayed as unavailable and never links to the Inbox
+media-content route.
+
+For a historical WhatsApp location that arrived before structured coordinates
+were preserved, an operator can invoke the manual
+`app.tasks.team_inbox.repair_whatsapp_locations` task with the exact
+conversation UUID. The maintenance owner accepts only the verified raw webhook
+receipt whose stored consequence names the same message, making the repair
+bounded, auditable, and safe to repeat.
 
 ## Loading and failure behaviour
 
@@ -261,7 +289,9 @@ Keyboard shortcuts are disabled while focus is in an editable control.
 ## Validation
 
 Focused tests cover direct conversation selection, search/filter URL state,
-duplicate-send prevention, draft restoration, status and assignment controls,
+advanced Service Team positive, negative, empty, AND/OR, invalid-input, and
+saved-view behavior, duplicate-send prevention, draft restoration, status and
+assignment controls,
 attachment staging, realtime activity handling, mobile navigation, dark-mode
 classes, and keyboard navigation. Repository formatter, linter, type checker,
 architecture tests, and relevant service tests remain the merge gate.

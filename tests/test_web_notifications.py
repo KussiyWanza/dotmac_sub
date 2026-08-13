@@ -42,18 +42,27 @@ def test_bulk_notification_setup_context_reports_channel_readiness(monkeypatch):
         lambda _db: [{"sender_key": "default"}],
     )
 
-    settings = {
-        "sms_enabled": "true",
+    # These tests pass a stand-in for the session, so the resolvers are stubbed
+    # rather than driven with rows. The credentials come from the ADR-0009 seam,
+    # not from a setting.
+    values = {
         "sms_provider": "twilio",
-        "sms_api_key": "sid",
-        "sms_api_secret": "token",
         "sms_from_number": "+15550000000",
     }
-
+    monkeypatch.setattr(
+        web_notifications_service.settings_spec,
+        "resolve_boolean",
+        lambda _db, _domain, key: key == "sms_enabled",
+    )
+    monkeypatch.setattr(
+        web_notifications_service.settings_spec,
+        "resolve_string",
+        lambda _db, _domain, key: values.get(key, ""),
+    )
     monkeypatch.setattr(
         web_notifications_service.sms_service,
-        "_get_setting",
-        lambda _db, key, *_args: settings.get(key),
+        "_sms_credentials",
+        lambda: ("sid", "token"),
     )
     monkeypatch.setattr(
         web_notifications_service.whatsapp_capability,
@@ -99,9 +108,9 @@ def test_bulk_notification_setup_context_reports_missing_channel_config(monkeypa
         lambda _db: [],
     )
     monkeypatch.setattr(
-        web_notifications_service.sms_service,
-        "_get_setting",
-        lambda _db, key, *_args: "false" if key == "sms_enabled" else None,
+        web_notifications_service.settings_spec,
+        "resolve_boolean",
+        lambda _db, _domain, _key: False,
     )
     monkeypatch.setattr(
         web_notifications_service.whatsapp_capability,

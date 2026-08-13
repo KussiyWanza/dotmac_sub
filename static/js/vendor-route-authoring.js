@@ -14,8 +14,14 @@
         var locateElement = document.getElementById(config.locateId);
         var undoElement = document.getElementById(config.undoId);
         var clearElement = document.getElementById(config.clearId);
+        var searchElement = document.getElementById(config.searchId);
+        var searchResultsElement = document.getElementById(config.searchResultsId);
+        var searchClearElement = document.getElementById(config.searchClearId);
+        var searchHintElement = document.getElementById(config.searchHintId);
         var map = window.L.map(mapElement).setView([9.0820, 8.6753], 6);
         var contextLayers = {};
+        var searchMarker = null;
+        var searchController = null;
 
         window.L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
             attribution:
@@ -28,6 +34,7 @@
                 var properties = feature.properties || {};
                 return (
                     properties.kind === "as_built" ||
+                    properties.kind === "closure_proposal" ||
                     String(properties.quote_id || "") === String(config.quoteId)
                 );
             },
@@ -48,9 +55,41 @@
                             dashArray: "6 6",
                         };
                     },
+                    pointToLayer: function (feature, latlng) {
+                        var properties = feature.properties || {};
+                        var colors = {
+                            pending: "#f59e0b",
+                            applied: "#10b981",
+                            rejected: "#ef4444",
+                        };
+                        return window.L.circleMarker(latlng, {
+                            radius: 7,
+                            color: "#ffffff",
+                            weight: 2,
+                            fillColor: colors[properties.status] || "#f59e0b",
+                            fillOpacity: 0.95,
+                        });
+                    },
                     onEachFeature: function (feature, layer) {
                         var properties = feature.properties || {};
                         if (properties.id) contextLayers[String(properties.id)] = layer;
+                        if (properties.kind === "closure_proposal") {
+                            var popup = document.createElement("div");
+                            var heading = document.createElement("strong");
+                            heading.textContent = properties.name || "Proposed closure";
+                            popup.appendChild(heading);
+                            popup.appendChild(document.createElement("br"));
+                            popup.appendChild(
+                                document.createTextNode(
+                                    "Status: " + String(properties.status || "pending").replaceAll("_", " "),
+                                ),
+                            );
+                            if (properties.review_notes) {
+                                popup.appendChild(document.createElement("br"));
+                                popup.appendChild(document.createTextNode("Review note: " + properties.review_notes));
+                            }
+                            layer.bindPopup(popup);
+                        }
                     },
                 },
             ).addTo(map);
@@ -140,6 +179,138 @@
             redraw();
         }
 
+        function escapeHtml(value) {
+            return String(value || "").replace(/[&<>"']/g, function (character) {
+                return {
+                    "&": "&amp;",
+                    "<": "&lt;",
+                    ">": "&gt;",
+                    '"': "&quot;",
+                    "'": "&#39;",
+                }[character];
+            });
+        }
+
+        function parseCoordinates(value) {
+            var match = String(value || "")
+                .trim()
+                .match(/^\s*(-?\d+(?:\.\d+)?)\s*[, ]\s*(-?\d+(?:\.\d+)?)\s*$/);
+            if (!match) return null;
+            var latitude = Number(match[1]);
+            var longitude = Number(match[2]);
+            if (
+                !Number.isFinite(latitude) ||
+                !Number.isFinite(longitude) ||
+                Math.abs(latitude) > 90 ||
+                Math.abs(longitude) > 180
+            ) {
+                return null;
+            }
+            return { latitude: latitude, longitude: longitude };
+        }
+
+        function focusSearchTarget(latitude, longitude, label) {
+            var latLng = [latitude, longitude];
+            if (searchMarker) map.removeLayer(searchMarker);
+            searchMarker = window.L.marker(latLng).addTo(map);
+            if (label) searchMarker.bindPopup(label).openPopup();
+            map.setView(latLng, 17);
+        }
+
+        function hideSearchResults() {
+            if (!searchResultsElement) return;
+            searchResultsElement.classList.add("hidden");
+            searchResultsElement.innerHTML = "";
+        }
+
+        function showSearchMessage(message) {
+            if (!searchResultsElement) return;
+            searchResultsElement.innerHTML =
+                '<div class="px-3 py-2 text-xs text-slate-500 dark:text-slate-400">' +
+                escapeHtml(message) +
+                "</div>";
+            searchResultsElement.classList.remove("hidden");
+        }
+
+        function renderSearchResults(items) {
+            if (!searchResultsElement) return;
+            if (!items.length) {
+                showSearchMessage("No cabinet or closure matches.");
+                return;
+            }
+            searchResultsElement.innerHTML = items
+                .map(function (item, index) {
+                    var typeLabel = String(item.type || "").replaceAll("_", " ");
+                    return (
+                        '<button type="button" class="block w-full border-b border-slate-100 px-3 py-2 text-left last:border-b-0 hover:bg-primary-50 dark:border-slate-800 dark:hover:bg-slate-800" data-search-index="' +
+                        index +
+                        '">' +
+                        '<span class="block font-semibold text-slate-800 dark:text-slate-100">' +
+                        escapeHtml(item.title || item.subtitle || "Unnamed asset") +
+                        "</span>" +
+                        '<span class="block text-xs text-slate-500 dark:text-slate-400">' +
+                        escapeHtml(typeLabel) +
+                        (item.subtitle ? " · " + escapeHtml(item.subtitle) : "") +
+                        "</span>" +
+                        "</button>"
+                    );
+                })
+                .join("");
+            searchResultsElement.classList.remove("hidden");
+            searchResultsElement._searchItems = items;
+        }
+
+        function runSearch() {
+            if (!searchElement) return;
+            var query = searchElement.value.trim();
+            if (!query) {
+                hideSearchResults();
+                if (searchHintElement) {
+                    searchHintElement.textContent =
+                        "Use decimal coordinates like 6.5244, 3.3792 or search cabinet and closure names.";
+                }
+                return;
+            }
+            var coordinates = parseCoordinates(query);
+            if (coordinates) {
+                focusSearchTarget(
+                    coordinates.latitude,
+                    coordinates.longitude,
+                    "Search location",
+                );
+                hideSearchResults();
+                if (searchHintElement) {
+                    searchHintElement.textContent =
+                        coordinates.latitude.toFixed(6) +
+                        ", " +
+                        coordinates.longitude.toFixed(6);
+                }
+                return;
+            }
+            if (query.length < 2) {
+                showSearchMessage("Type at least 2 characters.");
+                return;
+            }
+            if (searchController) searchController.abort();
+            searchController = new AbortController();
+            fetch(
+                "/api/v1/field/vendor/map-assets/search?types=fdh_cabinet,splice_closure&limit=20&q=" +
+                    encodeURIComponent(query),
+                { signal: searchController.signal },
+            )
+                .then(function (response) {
+                    if (!response.ok) throw new Error("search_failed");
+                    return response.json();
+                })
+                .then(function (items) {
+                    renderSearchResults(Array.isArray(items) ? items : []);
+                })
+                .catch(function (error) {
+                    if (error.name === "AbortError") return;
+                    showSearchMessage("Search is unavailable right now.");
+                });
+        }
+
         map.on("click", function (event) {
             addPoint(event.latlng.lat, event.latlng.lng);
         });
@@ -152,6 +323,48 @@
             lengthElement.value = "";
             redraw();
         });
+        if (searchElement) {
+            var searchTimer = null;
+            searchElement.addEventListener("input", function () {
+                clearTimeout(searchTimer);
+                searchTimer = setTimeout(runSearch, 250);
+            });
+            searchElement.addEventListener("keydown", function (event) {
+                if (event.key !== "Enter") return;
+                event.preventDefault();
+                runSearch();
+            });
+        }
+        if (searchClearElement) {
+            searchClearElement.addEventListener("click", function () {
+                if (searchElement) searchElement.value = "";
+                if (searchMarker) {
+                    map.removeLayer(searchMarker);
+                    searchMarker = null;
+                }
+                hideSearchResults();
+            });
+        }
+        if (searchResultsElement) {
+            searchResultsElement.addEventListener("click", function (event) {
+                var button = event.target.closest("[data-search-index]");
+                if (!button) return;
+                var items = searchResultsElement._searchItems || [];
+                var item = items[Number(button.dataset.searchIndex)];
+                if (!item) return;
+                var title = item.title || item.subtitle || "Map asset";
+                focusSearchTarget(item.latitude, item.longitude, title);
+                if (searchHintElement) {
+                    searchHintElement.textContent =
+                        title +
+                        " · " +
+                        Number(item.latitude).toFixed(6) +
+                        ", " +
+                        Number(item.longitude).toFixed(6);
+                }
+                hideSearchResults();
+            });
+        }
         locateElement.addEventListener("click", function () {
             if (!navigator.geolocation) {
                 setError("Location is not available on this device.");

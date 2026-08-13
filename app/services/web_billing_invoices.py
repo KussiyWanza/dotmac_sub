@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import secrets
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import TypedDict
 from uuid import UUID
@@ -16,7 +16,6 @@ from sqlalchemy.orm import Session
 
 from app.models.billing import (
     Invoice,
-    InvoiceDiscountSource,
     InvoiceDiscountType,
     InvoiceStatus,
 )
@@ -267,6 +266,28 @@ def maybe_issue_invoice(db: Session, *, invoice_id, issue_immediately: str | Non
         due_at=invoice.due_at,
         reason="admin_invoice_create",
         announce=False,
+        commit=True,
+    )
+    return transition.invoice
+
+
+def issue_invoice_from_detail(db: Session, *, invoice_id: UUID) -> Invoice:
+    """Issue a draft invoice from the admin detail page."""
+    invoice_id_text = str(invoice_id)
+    invoice = billing_service.invoices.get(db=db, invoice_id=invoice_id_text)
+    if invoice is None:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    if invoice.status != InvoiceStatus.draft:
+        raise HTTPException(status_code=409, detail="Only draft invoices can be issued")
+    transition = billing_service.invoices.issue_draft_system(
+        db,
+        invoice_id_text,
+        issued_at=datetime.now(UTC),
+        due_at=invoice.due_at,
+        reason="admin_invoice_detail_issue",
+        announce=False,
+        apply_available_credit=True,
+        require_full_available_credit=True,
         commit=True,
     )
     return transition.invoice
@@ -826,58 +847,6 @@ def load_invoice_detail_data(
             db, currency=invoice.currency
         ),
         "prepaid_draft_reconciliation_preview": (prepaid_draft_reconciliation_preview),
-    }
-
-
-def build_invoice_discounts_list_context(
-    db: Session,
-    *,
-    date_from: date | None,
-    date_to: date | None,
-    customer: str | None,
-    salesperson_id: str | None,
-    discount_type: str | None,
-    invoice_status: str | None,
-    source: str | None,
-    page: int,
-    page_size: int,
-) -> dict[str, object]:
-    selected_salesperson = UUID(salesperson_id) if salesperson_id else None
-    selected_type = InvoiceDiscountType(discount_type) if discount_type else None
-    selected_status = InvoiceStatus(invoice_status) if invoice_status else None
-    selected_source = InvoiceDiscountSource(source) if source else None
-    result = invoice_discounts.list_invoice_discount_history(
-        db,
-        invoice_discounts.InvoiceDiscountHistoryQuery(
-            date_from=date_from,
-            date_to=date_to,
-            customer=customer,
-            salesperson_id=selected_salesperson,
-            discount_type=selected_type,
-            invoice_status=selected_status,
-            source=selected_source,
-            page=page,
-            page_size=page_size,
-        ),
-    )
-    return {
-        "discounts": list(result.items),
-        "total_count": result.total_count,
-        "page": result.page,
-        "page_size": result.page_size,
-        "actors": list(invoice_discounts.invoice_discount_actor_options(db)),
-        "discount_types": list(InvoiceDiscountType),
-        "invoice_statuses": list(InvoiceStatus),
-        "discount_sources": list(InvoiceDiscountSource),
-        "filters": {
-            "date_from": date_from.isoformat() if date_from else "",
-            "date_to": date_to.isoformat() if date_to else "",
-            "customer": customer or "",
-            "salesperson_id": salesperson_id or "",
-            "discount_type": discount_type or "",
-            "invoice_status": invoice_status or "",
-            "source": source or "",
-        },
     }
 
 

@@ -484,8 +484,8 @@
                             <span class="text-lg font-bold tabular-nums text-slate-900 dark:text-white">{{ stats.customers }}</span>
                         </div>
                         <dl class="mt-3 grid grid-cols-2 gap-2">
-                            <div class="rounded-lg bg-white p-2 dark:bg-slate-800"><dt class="status-foreground status-tone-positive text-xs">Online</dt><dd class="status-foreground status-tone-positive mt-0.5 font-semibold tabular-nums">{{ stats.customers_online }}</dd></div>
-                            <div class="rounded-lg bg-white p-2 dark:bg-slate-800"><dt class="status-foreground status-tone-negative text-xs">Offline</dt><dd class="status-foreground status-tone-negative mt-0.5 font-semibold tabular-nums">{{ stats.customers_offline }}</dd></div>
+                            <div class="rounded-lg bg-white p-2 dark:bg-slate-800"><dt class="status-foreground status-tone-positive text-xs">Connected</dt><dd class="status-foreground status-tone-positive mt-0.5 font-semibold tabular-nums">{{ stats.customers_connected }}</dd></div>
+                            <div class="rounded-lg bg-white p-2 dark:bg-slate-800"><dt class="status-foreground status-tone-neutral text-xs">Not connected</dt><dd class="status-foreground status-tone-neutral mt-0.5 font-semibold tabular-nums">{{ stats.customers_not_connected }}</dd></div>
                         </dl>
                     </section>
                     {% if customer_map_count is defined and customer_count is defined and customer_map_count < customer_count %}
@@ -583,13 +583,13 @@
                         <div class="legend-color status-tone-dot status-tone-dot-positive">
                             <svg class="h-3 w-3 text-white" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" clip-rule="evenodd"/></svg>
                         </div>
-                        <span class="text-sm text-slate-700 dark:text-slate-300">Customer (Online)</span>
+                        <span class="text-sm text-slate-700 dark:text-slate-300">Customer (Connected)</span>
                     </div>
                     <div class="legend-item">
-                        <div class="legend-color status-tone-dot status-tone-dot-negative">
+                        <div class="legend-color status-tone-dot status-tone-dot-neutral">
                             <svg class="h-3 w-3 text-white" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" clip-rule="evenodd"/></svg>
                         </div>
-                        <span class="text-sm text-slate-700 dark:text-slate-300">Customer (Offline)</span>
+                        <span class="text-sm text-slate-700 dark:text-slate-300">Customer (Not connected)</span>
                     </div>
                     <hr class="border-slate-200 dark:border-slate-700 my-2">
                     <div class="legend-item">
@@ -655,8 +655,12 @@
                         <span class="text-sm text-slate-700 dark:text-slate-300">ONT Units</span>
                     </label>
                     <label class="flex items-center gap-2 cursor-pointer">
-                        <input type="checkbox" id="layer-customers" checked class="h-4 w-4 rounded border-slate-300 text-green-600 focus:ring-green-500">
-                        <span class="text-sm text-slate-700 dark:text-slate-300">Customers</span>
+                        <input type="checkbox" id="layer-customers-connected" checked class="h-4 w-4 rounded border-slate-300 text-green-600 focus:ring-green-500">
+                        <span class="text-sm text-slate-700 dark:text-slate-300">Connected customers</span>
+                    </label>
+                    <label class="flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox" id="layer-customers-not-connected" checked class="h-4 w-4 rounded border-slate-300 text-slate-600 focus:ring-slate-500">
+                        <span class="text-sm text-slate-700 dark:text-slate-300">Not connected customers</span>
                     </label>
                     <hr class="col-span-2 border-slate-200 dark:border-slate-700">
                     <label class="flex items-center gap-2 cursor-pointer">
@@ -695,14 +699,20 @@
                         <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/></svg>
                         Edit Fiber Map
                     </a>
+                    <a href="/admin/network/fiber-change-requests" class="flex items-center gap-2 text-sm text-slate-700 hover:text-amber-600 dark:text-slate-300 dark:hover:text-amber-400">
+                        <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l3.414 3.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                        Review Fiber Change Requests
+                    </a>
                     <a href="/admin/network/pop-sites" class="flex items-center gap-2 text-sm text-slate-700 hover:text-primary-600 dark:text-slate-300 dark:hover:text-primary-400">
                         <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/></svg>
                         Manage POP Sites
                     </a>
+                    {% if can(request, "customer:read") %}
                     <a href="/admin/customers" class="flex items-center gap-2 text-sm text-slate-700 hover:text-primary-600 dark:text-slate-300 dark:hover:text-primary-400">
                         <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
                         Manage Customers
                     </a>
+                    {% endif %}
                 </div>
             </div>
             <!-- Elevation Info -->
@@ -728,6 +738,7 @@
 (function() {
     // Map data from server
     const mapData = {{ map_data | tojson | safe }};
+    const canReadCustomers = {{ can(request, "customer:read") | tojson }};
 
     function escapeHtml(value) {
         return String(value ?? '')
@@ -756,7 +767,8 @@
         supportStructures: L.layerGroup().addTo(map),
         networkDevices: L.layerGroup().addTo(map),
         onts: L.layerGroup().addTo(map),
-        customers: L.layerGroup().addTo(map),
+        customersConnected: L.layerGroup().addTo(map),
+        customersNotConnected: L.layerGroup().addTo(map),
         feeder: L.layerGroup().addTo(map),
         distribution: L.layerGroup().addTo(map),
         drop: L.layerGroup().addTo(map)
@@ -860,15 +872,15 @@
             iconAnchor: [8, 8],
             popupAnchor: [0, -8]
         }),
-        customer_online: L.divIcon({
+        customer_connected: L.divIcon({
             html: '<div style="background:var(--color-semantic-positive-600);width:18px;height:18px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:2px solid white;box-shadow:0 2px 4px rgba(0,0,0,0.3)"><svg style="width:10px;height:10px;color:white" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" clip-rule="evenodd"/></svg></div>',
             className: '',
             iconSize: [18, 18],
             iconAnchor: [9, 9],
             popupAnchor: [0, -9]
         }),
-        customer_offline: L.divIcon({
-            html: '<div style="background:var(--color-semantic-negative-600);width:18px;height:18px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:2px solid white;box-shadow:0 2px 4px rgba(0,0,0,0.3)"><svg style="width:10px;height:10px;color:white" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" clip-rule="evenodd"/></svg></div>',
+        customer_not_connected: L.divIcon({
+            html: '<div style="background:var(--color-semantic-neutral-600);width:18px;height:18px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:2px solid white;box-shadow:0 2px 4px rgba(0,0,0,0.3)"><svg style="width:10px;height:10px;color:white" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" clip-rule="evenodd"/></svg></div>',
             className: '',
             iconSize: [18, 18],
             iconAnchor: [9, 9],
@@ -903,6 +915,7 @@
     // Store all features for search
     const allFeatures = [];
     const bounds = [];
+    const customerBounds = [];
 
     // Show asset detail panel
     function copyToClipboard(text) {
@@ -928,7 +941,10 @@
         let iconSvg = '';
         let typeLabel = p.type.replace(/_/g, ' ');
         let detailUrl = null;
+        let detailLabel = 'View';
         let editUrl = null;
+        let customerListUrl = null;
+        let customerListLabel = null;
 
         switch (p.type) {
             case 'pop_site':
@@ -937,6 +953,10 @@
                 typeLabel = 'POP Site';
                 detailUrl = `/admin/network/pop-sites/${p.id}`;
                 editUrl = `/admin/network/pop-sites/${p.id}/edit`;
+                if (canReadCustomers && p.customer_cohort_link) {
+                    customerListUrl = p.customer_cohort_link.href;
+                    customerListLabel = p.customer_cohort_link.label;
+                }
                 break;
             case 'fdh_cabinet':
                 iconBg = themeColor('semantic-warning-600');
@@ -944,6 +964,10 @@
                 typeLabel = 'FDH Cabinet';
                 detailUrl = `/admin/network/fdh-cabinets/${p.id}`;
                 editUrl = `/admin/network/fdh-cabinets/${p.id}/edit`;
+                if (canReadCustomers && p.customer_cohort_link) {
+                    customerListUrl = p.customer_cohort_link.href;
+                    customerListLabel = p.customer_cohort_link.label;
+                }
                 break;
             case 'splice_closure':
                 iconBg = themeColor('accent-600');
@@ -988,21 +1012,13 @@
                 editUrl = `/admin/network/core-devices/${p.id}/edit`;
                 break;
             case 'customer':
-                iconBg = p.is_online
-                    ? themeColor('semantic-positive-600')
-                    : themeColor('semantic-negative-600');
+                const customerPresentation = p.connectivity.presentation;
+                iconBg = semanticToneColor(customerPresentation.tone);
                 iconSvg = '<svg class="h-5 w-5 text-white" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" clip-rule="evenodd"/></svg>';
-                if (p.source_type === 'service_building') {
-                    typeLabel = 'Customer (Service Building)';
-                } else if (p.source_type === 'wireless_mast') {
-                    typeLabel = 'Customer (Wireless Mast)';
-                } else {
-                    typeLabel = p.is_online ? 'Customer (Online)' : 'Customer (Offline)';
-                }
-                if (p.subscriber_id) {
-                    detailUrl = p.customer_type === 'business'
-                        ? `/admin/customers/business/${p.subscriber_id}`
-                        : `/admin/customers/person/${p.subscriber_id}`;
+                typeLabel = `Customer (${customerPresentation.label})`;
+                if (canReadCustomers && p.customer_detail_link) {
+                    detailUrl = p.customer_detail_link.href;
+                    detailLabel = p.customer_detail_link.label;
                 }
                 break;
             case 'fiber_segment':
@@ -1032,6 +1048,14 @@
         if (p.code) html += `<div class="asset-detail-row"><span class="asset-detail-label">Code</span><span class="asset-detail-value">${escapeHtml(p.code)}</span></div>`;
         if (p.address) html += `<div class="asset-detail-row"><span class="asset-detail-label">Address</span><span class="asset-detail-value">${escapeHtml(p.address)}</span></div>`;
         if (p.city) html += `<div class="asset-detail-row"><span class="asset-detail-label">City</span><span class="asset-detail-value">${escapeHtml(p.city)}</span></div>`;
+        if (p.type === 'customer') {
+            const customerPresentation = p.connectivity.presentation;
+            html += `<div class="asset-detail-row"><span class="asset-detail-label">Access session</span><span class="asset-detail-value status-foreground status-tone-${semanticTone(customerPresentation.tone)}">${escapeHtml(customerPresentation.label)}</span></div>`;
+            html += `<div class="asset-detail-row"><span class="asset-detail-label">Source</span><span class="asset-detail-value">${escapeHtml(p.connectivity.source_owner)}</span></div>`;
+            if (p.connectivity.observed_at) {
+                html += `<div class="asset-detail-row"><span class="asset-detail-label">Observed</span><span class="asset-detail-value">${escapeHtml(p.connectivity.observed_at)}</span></div>`;
+            }
+        }
         if (p.status) html += `<div class="asset-detail-row"><span class="asset-detail-label">Status</span><span class="asset-detail-value">${escapeHtml(p.status)}</span></div>`;
         if (p.role) html += `<div class="asset-detail-row"><span class="asset-detail-label">Role</span><span class="asset-detail-value">${escapeHtml(p.role)}</span></div>`;
         if (p.device_type) html += `<div class="asset-detail-row"><span class="asset-detail-label">Device Type</span><span class="asset-detail-value">${escapeHtml(p.device_type)}</span></div>`;
@@ -1065,13 +1089,16 @@
 
         html += '</div>';
 
-        if (detailUrl || editUrl || coordText) {
+        if (detailUrl || editUrl || customerListUrl || coordText) {
             html += '<div class="mt-4 flex flex-wrap items-center gap-2">';
             if (detailUrl) {
-                html += `<a href="${detailUrl}" class="inline-flex items-center justify-center rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300">View</a>`;
+                html += `<a href="${detailUrl}" class="inline-flex items-center justify-center rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300">${escapeHtml(detailLabel)}</a>`;
             }
             if (editUrl) {
                 html += `<a href="${editUrl}" class="inline-flex items-center justify-center rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300">Edit</a>`;
+            }
+            if (customerListUrl) {
+                html += `<a href="${customerListUrl}" class="inline-flex items-center justify-center rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300">${escapeHtml(customerListLabel)}</a>`;
             }
             if (coordText) {
                 html += `<button type="button" data-copy-coords="${coordText}" class="inline-flex items-center justify-center rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300">Copy coords</button>`;
@@ -1098,10 +1125,13 @@
             if (geom.type === 'Point') {
                 const coords = [geom.coordinates[1], geom.coordinates[0]];
                 bounds.push(coords);
+                if (p.type === 'customer') customerBounds.push(coords);
 
                 let icon;
                 if (p.type === 'customer') {
-                    icon = p.is_online ? icons.customer_online : icons.customer_offline;
+                    icon = p.connectivity.layer === 'connected'
+                        ? icons.customer_connected
+                        : icons.customer_not_connected;
                 } else if (p.type === 'ont') {
                     if (p.signal_quality === 'warning' || p.signal_quality === 'critical') {
                         icon = icons.ont_warning;
@@ -1122,7 +1152,7 @@
                         icon = icons.network_device_neutral;
                     }
                 } else {
-                    icon = icons[p.type] || icons.customer_online;
+                    icon = icons[p.type] || icons.customer_not_connected;
                 }
                 const marker = L.marker(coords, { icon: icon });
 
@@ -1159,7 +1189,11 @@
                     case 'support_structure': layers.supportStructures.addLayer(marker); break;
                     case 'network_device': layers.networkDevices.addLayer(marker); break;
                     case 'ont': layers.onts.addLayer(marker); break;
-                    case 'customer': layers.customers.addLayer(marker); break;
+                    case 'customer':
+                        (p.connectivity.layer === 'connected'
+                            ? layers.customersConnected
+                            : layers.customersNotConnected).addLayer(marker);
+                        break;
                 }
             } else if (geom.type === 'LineString') {
                 const coords = geom.coordinates.map(c => [c[1], c[0]]);
@@ -1200,7 +1234,12 @@
             map.fitBounds(bounds, { padding: [50, 50] });
         }
     }
-    fitAllBounds();
+    const initialFocus = new URLSearchParams(window.location.search).get('focus');
+    if (initialFocus === 'customers' && customerBounds.length > 0) {
+        map.fitBounds(customerBounds, { padding: [50, 50] });
+    } else {
+        fitAllBounds();
+    }
 
     // Layer toggles
     const layerToggles = {
@@ -1211,7 +1250,8 @@
         'layer-support-structures': 'supportStructures',
         'layer-network-devices': 'networkDevices',
         'layer-onts': 'onts',
-        'layer-customers': 'customers',
+        'layer-customers-connected': 'customersConnected',
+        'layer-customers-not-connected': 'customersNotConnected',
         'layer-feeder': 'feeder',
         'layer-distribution': 'distribution',
         'layer-drop': 'drop'

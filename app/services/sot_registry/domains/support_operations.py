@@ -370,7 +370,8 @@ DOMAIN = DomainSOT(
                         owner="support.ticket_vocabulary",
                         kind=AuthorityKind.CONTROL_INPUT,
                         source=(
-                            "closed TicketStatus enum values and terminal-state semantics"
+                            "closed TicketStatus enum values, canonical closed completion "
+                            "status, and terminal-state semantics"
                         ),
                     ),
                 ),
@@ -426,7 +427,9 @@ DOMAIN = DomainSOT(
                 "guarded ticket status transitions",
                 "ticket lifecycle timestamps and consequences",
                 "ticket team and person assignment",
+                "ticket assignment and mention staff notification consequence",
                 "ticket comments mentions and attachments",
+                "ticket customer publication visibility",
                 "ticket links duplicates and merges",
                 "signed-link and authenticated resolution confirmation/dispute",
                 "ticket CSAT and satisfaction",
@@ -442,6 +445,7 @@ DOMAIN = DomainSOT(
                 "customer.branding",
                 "communications.intents",
                 "communications.notification_service",
+                "communications.nextcloud_talk_staff",
             ),
             contract=ServiceContract(
                 concerns=(
@@ -486,6 +490,7 @@ DOMAIN = DomainSOT(
                             "ticket lifecycle timestamps and consequences",
                             "ticket team and person assignment",
                             "ticket comments mentions and attachments",
+                            "ticket customer publication visibility",
                             "ticket links duplicates and merges",
                             "signed-link and authenticated resolution confirmation/dispute",
                             "ticket CSAT and satisfaction",
@@ -502,6 +507,16 @@ DOMAIN = DomainSOT(
                             "customer communication delivery intent",
                         ),
                     ),
+                    ConcernContract(
+                        name="ticket assignment and mention staff notification consequence",
+                        role=OwnerRole.EVENT_POLICY,
+                        input_names=(
+                            "typed ticket command",
+                            "canonical ticket state",
+                            "active assigned staff contact identity",
+                            "staff notification delivery queue",
+                        ),
+                    ),
                 ),
                 authoritative_inputs=(
                     AuthorityInput(
@@ -511,7 +526,8 @@ DOMAIN = DomainSOT(
                         source=(
                             "typed TicketCreate, TicketUpdate, comment, merge, link, "
                             "resolution, satisfaction, attachment, and bulk command inputs "
-                            "with CommandContext"
+                            "with CommandContext plus the closed silent-internal creation "
+                            "consequence mode"
                         ),
                     ),
                     AuthorityInput(
@@ -575,7 +591,8 @@ DOMAIN = DomainSOT(
                         kind=AuthorityKind.AUTHORITATIVE_RECORD,
                         source=(
                             "active SystemUser identity and email resolved from current "
-                            "Ticket SystemUser or canonical Person assignment identifiers"
+                            "Ticket SystemUser or canonical Person assignment identifiers "
+                            "and active assigned Service Team membership"
                         ),
                     ),
                     AuthorityInput(
@@ -611,7 +628,9 @@ DOMAIN = DomainSOT(
                         "Each public Ticket mutation enters execute_owner_command once on a "
                         "transaction-free session. Lifecycle helpers, SLA clocks, policy "
                         "evaluators, notifications, audit, and events are flush-only "
-                        "participants."
+                        "participants. The unmatched-radio coordinator may request only the "
+                        "restricted silent-internal creation/observation participants; those "
+                        "participants still allocate identity and stage audit/event evidence."
                     ),
                     locking=(
                         "Existing Ticket mutations lock or operate under the root command; "
@@ -646,6 +665,9 @@ DOMAIN = DomainSOT(
                         "resolution_confirmation_not_pending",
                         "resolution_confirmation_inactive",
                         "resolution_dispute_terminal",
+                        "invalid_ticket_creation_mode",
+                        "internal_ticket_source_mismatch",
+                        "internal_ticket_participant_requires_transaction",
                         *owner_command_boundary_error_codes("support.ticket_lifecycle"),
                     ),
                     mapping_owner=(
@@ -673,8 +695,9 @@ DOMAIN = DomainSOT(
                     delivery_owner="events.dispatcher",
                     compatibility=(
                         "Version 1 carries stable Ticket/account identifiers and bounded "
-                        "change evidence; private comment bodies and attachments are not "
-                        "placed in transport events."
+                        "change evidence, including the explicit creation consequence mode; "
+                        "private comment bodies and attachments are not placed in transport "
+                        "events."
                     ),
                     replay=(
                         "Canonical Ticket rows, official comments, links/merges, access "
@@ -685,12 +708,14 @@ DOMAIN = DomainSOT(
                     state=AuthorityMigrationState.COMPLETE,
                     old_owner=(
                         "support route/API/task mutations, direct service transaction "
-                        "completion, and assignment/automation policy Ticket writers"
+                        "completion, assignment/automation policy Ticket writers, and direct "
+                        "unmatched-radio Ticket construction"
                     ),
                     new_owner="support.ticket_lifecycle",
                     verification=(
                         "Support lifecycle, assignment, automation, comment, attachment, "
-                        "link, duplicate, merge, CSAT, portal, and architecture tests"
+                        "link, duplicate, merge, CSAT, portal, unmatched-radio silent creation "
+                        "and legacy-number repair, and architecture tests"
                     ),
                     cutover_gate=(
                         "all Ticket mutations enter the registered owner; policies return "
@@ -698,7 +723,8 @@ DOMAIN = DomainSOT(
                     ),
                     fallback_retirement=(
                         "the retired lifecycle-owner alias, HTTPException service coupling, direct "
-                        "service commits/rollbacks, and policy-side Ticket writes are absent"
+                        "service commits/rollbacks, policy-side Ticket writes, and direct "
+                        "unmatched-radio Ticket construction are absent"
                     ),
                 ),
                 steward="support operations",
@@ -732,7 +758,11 @@ DOMAIN = DomainSOT(
             ),
             notes=(
                 "Configured status choices are constrained to the lifecycle "
-                "vocabulary and do not own semantic colors or tones. Every "
+                "vocabulary, with legacy resolved input canonicalized to closed. "
+                "Admin selection uses the typed OperatorTicketStatusSelection "
+                "resolver and may preserve a current canonical status that was "
+                "later removed from the configured subset. "
+                "Status configuration does not own semantic colors or tones. Every "
                 "ticket SLA target is operator-managed in the ticket settings UI. "
                 "Customer-portal routing resolves current native Service Teams by "
                 "exact case-insensitive name without owning their identity."
@@ -801,7 +831,8 @@ DOMAIN = DomainSOT(
                 transaction=TransactionContract(
                     mode=TransactionMode.OWNER_MANAGED,
                     boundary=(
-                        "update_options enters execute_owner_command once; all settings, "
+                        "update_ticket_configuration enters execute_owner_command once; "
+                        "all settings, "
                         "team, routing, and SLA writes flush in the same root transaction"
                     ),
                     locking=(
@@ -903,7 +934,8 @@ DOMAIN = DomainSOT(
                         owner="support.ticket_lifecycle",
                         kind=AuthorityKind.AUTHORITATIVE_RECORD,
                         source=(
-                            "distinct non-empty Region values on current active Ticket rows"
+                            "distinct normalized non-empty Region values on current "
+                            "active Ticket rows"
                         ),
                     ),
                 ),

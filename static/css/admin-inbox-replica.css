@@ -29,6 +29,10 @@
   --channel-color: 139, 92, 246;
 }
 
+[data-inbox-workspace] [data-inbox-channel="website_fiber"] {
+  --channel-color: 15, 118, 110;
+}
+
 [data-inbox-workspace] [data-inbox-channel="whatsapp"] {
   --channel-color: 34, 197, 94;
 }

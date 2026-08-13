@@ -32,23 +32,42 @@ depends_on = None
 _KEYS = ("billing_enabled", "billing_enabled_expected")
 
 
-_UPSERT = sa.text(
+# UPDATE-then-INSERT rather than `ON CONFLICT (domain, key)`.
+#
+# A conflict TARGET must match a unique index existing when this runs, and
+# `(domain, key)` no longer does: migration 507 replaced it with
+# `uq_domain_settings_scope_domain_key`, which includes the scope columns. That
+# reaches back to here because `001_squashed_initial_schema` builds the baseline
+# from the CURRENT model metadata — the model is this chain's history, so a
+# constraint dropped from the model is absent at every earlier point too.
+#
+# These two name no index, so no later change to the uniqueness shape can break
+# this migration again.
+_UPDATE = sa.text(
+    """
+    UPDATE domain_settings
+       SET value_text = 'true',
+           value_json = NULL,
+           value_type = 'boolean',
+           is_active = true,
+           updated_at = now()
+     WHERE domain = CAST(:domain AS settingdomain) AND key = :key
+    """
+)
+
+_INSERT_MISSING = sa.text(
     """
     INSERT INTO domain_settings (
         id, domain, key, value_type, value_text, value_json,
         is_secret, is_active, created_at, updated_at
     )
-    VALUES (
+    SELECT
         gen_random_uuid(), CAST(:domain AS settingdomain), :key, 'boolean',
         'true', NULL, false, true, now(), now()
+    WHERE NOT EXISTS (
+        SELECT 1 FROM domain_settings
+         WHERE domain = CAST(:domain AS settingdomain) AND key = :key
     )
-    ON CONFLICT (domain, key)
-    DO UPDATE SET
-        value_text = 'true',
-        value_json = NULL,
-        value_type = 'boolean',
-        is_active = true,
-        updated_at = now()
     """
 )
 
@@ -56,9 +75,13 @@ _UPSERT = sa.text(
 def upgrade() -> None:
     # Master switch + drift-expectation (billing domain).
     for key in _KEYS:
-        op.execute(_UPSERT.bindparams(domain="billing", key=key))
+        op.execute(_UPDATE.bindparams(domain="billing", key=key))
+        op.execute(_INSERT_MISSING.bindparams(domain="billing", key=key))
     # Billing MODULE on (modules domain) — the single control plane reads this.
-    op.execute(_UPSERT.bindparams(domain="modules", key="module_billing_enabled"))
+    op.execute(_UPDATE.bindparams(domain="modules", key="module_billing_enabled"))
+    op.execute(
+        _INSERT_MISSING.bindparams(domain="modules", key="module_billing_enabled")
+    )
 
 
 def downgrade() -> None:

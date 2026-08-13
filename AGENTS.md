@@ -94,17 +94,31 @@ authoritative documents in the same change that updates the contract.
 - Work on a feature branch; never commit directly to `main`.
 - Follow the mandatory promotion sequence for every release change:
   feature branch -> `dev` -> `origin/dev` -> prescribed validation on that exact
-  remote commit -> immutable dev image -> staging deployment and acceptance ->
-  `main` -> immutable main image -> production deployment.
+  remote commit -> rolling version bump -> explicit one-time candidate build ->
+  immutable candidate digest -> staging deployment and acceptance -> `main` ->
+  main authorization of the same immutable digest -> production deployment.
 - Do not merge a feature branch directly into `main`. Merge it into `dev`,
   update `origin/dev`, and require the repository-prescribed tests and CI to
   pass on that exact `origin/dev` commit before merging `dev` into `main`.
-- Deploy the validated immutable `origin/dev` image to the explicitly named
-  staging host and complete staging acceptance before promoting `dev` to
-  `main`. A dev image is staging-only and must never receive the `latest` tag.
+- After the intended source pull requests for a release have merged, explicitly
+  select the exact validated `origin/dev` SHA and build that image once. Deploy
+  that exact OCI digest to the explicitly named staging host and complete
+  staging acceptance before promoting the same tree to `main`. An open rolling
+  version-bump pull request does not block digest-bound deployment of an already
+  selected candidate; version bumps govern semver metadata and aliases. A dev
+  image is staging-only and must never receive the `latest` tag.
+- During an active release deployment, freeze merges into `dev` until the
+  candidate is deployed to production or explicitly abandoned. The freeze does
+  not block feature branch pushes, pull request creation, or pull request
+  updates; it blocks only merges that would move the release base while the
+  digest-bound candidate is in flight.
+- The one-time bootstrap promotion that first places the candidate workflow on
+  the default branch uses the previously active dev-image staging path. GitHub
+  cannot dispatch a new workflow until its file exists on the default branch;
+  do not bypass staging or manually emulate candidate evidence during bootstrap.
 - Promote only the staged and accepted code from `dev` to `main`; do not add
   unrelated changes during promotion. Require the resulting `main` CI and
-  immutable image build to pass before any production deployment.
+  digest-bound production authorization to pass before any production deployment.
 - Keep each implementation slice coherent and reviewable even when several
   slices are assembled into a larger release.
 - Every pull request must declare exactly one appropriate `version:major`,

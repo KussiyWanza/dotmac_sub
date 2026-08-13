@@ -44,6 +44,7 @@ STALE_ACTIVE_OPERATION_AGE_BY_TYPE: dict[NetworkOperationType, timedelta] = {
     NetworkOperationType.ont_commission: timedelta(minutes=20),
     NetworkOperationType.ont_commission_cleanup: timedelta(minutes=30),
     NetworkOperationType.ont_provision: timedelta(minutes=30),
+    NetworkOperationType.ont_service_config: timedelta(minutes=30),
     NetworkOperationType.tr069_bootstrap: timedelta(minutes=15),
 }
 
@@ -79,6 +80,26 @@ class NetworkOperationRedriveMetadata:
     idempotency_key: str
     retry_count: int
     max_retries: int
+
+
+@dataclass(frozen=True, slots=True)
+class StartOntServiceConfigurationOperation:
+    """Exact operation-ledger input for one ONT configuration attempt."""
+
+    ont_unit_id: UUID
+    assignment_id: UUID
+    configuration_head_id: UUID
+    configuration_revision: int
+    section: str
+    command_fingerprint: str
+    correlation_key: str
+    initiated_by: str
+    wan_intent_id: UUID | None = None
+    effective_customer_vlan: int | None = None
+    vlan_source: str | None = None
+    explicit_repair: bool = False
+    retry_fingerprint: str | None = None
+    max_retries: int = 3
 
 
 def _operation_extra(op: NetworkOperation) -> dict[str, object]:
@@ -813,6 +834,43 @@ class NetworkOperations(ListResponseMixin):
 
 
 network_operations = NetworkOperations()
+
+
+def start_ont_service_configuration_operation(
+    db: Session, command: StartOntServiceConfigurationOperation
+) -> NetworkOperation:
+    """Create one lifecycle-bound operation in the coordinator transaction."""
+
+    input_payload: dict[str, object] = {
+        "ont_id": str(command.ont_unit_id),
+        "assignment_id": str(command.assignment_id),
+        "configuration_head_id": str(command.configuration_head_id),
+        "configuration_revision": command.configuration_revision,
+        "section": command.section,
+        "command_fingerprint": command.command_fingerprint,
+        "explicit_repair": command.explicit_repair,
+    }
+    if command.wan_intent_id is not None:
+        input_payload["wan_intent_id"] = str(command.wan_intent_id)
+    if command.effective_customer_vlan is not None:
+        input_payload["effective_customer_vlan"] = command.effective_customer_vlan
+    if command.vlan_source is not None:
+        input_payload["vlan_source"] = command.vlan_source
+    if command.retry_fingerprint is not None:
+        input_payload["retry_fingerprint"] = command.retry_fingerprint
+
+    operation = network_operations.start(
+        db=db,
+        operation_type=NetworkOperationType.ont_service_config,
+        target_type=NetworkOperationTargetType.ont,
+        target_id=str(command.ont_unit_id),
+        correlation_key=command.correlation_key,
+        input_payload=input_payload,
+        initiated_by=command.initiated_by,
+    )
+    operation.max_retries = command.max_retries
+    db.flush()
+    return operation
 
 
 @contextmanager

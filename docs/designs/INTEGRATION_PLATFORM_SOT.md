@@ -385,7 +385,22 @@ manifest-pin ledger at
 configuration schema, secret declarations, runtime, capabilities, data access,
 egress, or health metadata requires a new semantic connector version. The two
 Paystack `1.0.0` digests are a documented, shrink-only historical anomaly from
-the payment control-plane cutover; no new version/digest collision is allowed.
+the payment control-plane cutover. Meta Social also retains both deployed
+`1.0.0` digests after `auth_mode` was added in place; the original production
+pin and the later individual-auth pin remain executable until explicit
+adoption closes their rollback windows. No new version/digest collision is
+allowed.
+
+The ledger records the digests this code produces, not the digests any
+environment has installed, so it cannot by itself detect that a rebuilt
+historical manifest has drifted away from a live pin. A historical manifest is
+reconstructed by its builder rather than stored, and editing that builder
+silently changes every version it rebuilds. Twice now the ledger was updated to
+match a drifted rebuild and stayed green while a production pin went
+unrepresented, which the deployment gate then caught as `unavailable` — after
+the release had already started. When a builder gains a field, gate it behind
+a per-version flag so prior versions rebuild byte-identically, and treat a
+changed historical digest as a break rather than a ledger update.
 
 Upgrade flow is expand, adopt, then contract:
 
@@ -436,6 +451,7 @@ interactive traffic uses typed service ports.
 | CRM | Direct `CRMClient` construction and CRM-specific delivery records | `dotmac.crm` capabilities plus `integration.inbox` | All subscriber, ticket, operational, portal, quote, and inbound-event calls use the runtime; enabled ticket pull additionally requires one connection-validated ticket binding and one active bound manual job |
 | Outbound webhooks and hooks | `events.webhook_deliveries`, webhook endpoint tables, and `integration.hooks` | `integration.delivery` using `events.deliver.v1` | Duplicate tables, services, routes, tasks, and CLI execution are removed |
 | WhatsApp messaging | Settings-backed provider client | Direct Meta `messaging.send.v1`, `messaging.receive.v1`, and `messaging.templates.read.v1` bindings | Outbound callers and the verified inbound route use one installation |
+| Nextcloud Talk staff notifications | Direct credentials and legacy `/room/{token}/message` calls | `nextcloud.talk` `collaboration.message.send.v1` capability plus communications-owned staff mapping, room cache, and notification outbox | Assignments and explicit mentions stage locally; the worker creates/reuses a one-to-one room and posts with a deterministic reference ID |
 | Meta social inbox | Settings-backed app secrets, expired OAuth projections, and direct `meta_pages` delivery | `meta.social` with separate Facebook Page and Instagram Login credentials behind `messaging.send.v1` and `messaging.receive.v1` | New delivery and webhook verification use one version-pinned installation; production traffic cutover remains operator-gated |
 | ERP | Direct ERP client construction | `dotmac.erp` versioned capabilities | Outbox, inventory, operations, expense, purchasing, and regulatory calls use the runtime |
 | Payments | Direct Paystack and Flutterwave services plus a payment-specific webhook dead-letter store | Billing-owned decisions using typed payment capabilities and `integration.inbox` | Intent, signature verification, reconciliation, refund, and replay evidence use one binding |
@@ -466,6 +482,15 @@ delivery/inbox evidence remain intact.
 10. Meta social inbox transport with distinct Facebook Page and Instagram
     Login account bindings, Meta-owned webhook verification, and no WhatsApp or
     expired-OAuth credential fallback.
+11. Nextcloud Talk staff notification transport with a pinned installation,
+    OpenBao app-password reference, public-HTTPS egress validation, explicit
+    `SystemUser` mappings to exact immutable Nextcloud user IDs, cached one-to-one
+    rooms, deterministic chat references, and asynchronous retry/reconciliation.
+    Ordinary internal spaces are preserved because Nextcloud permits them in user
+    IDs; email addresses and display names are not substituted for the provider
+    identity. The capability binding's `approved_egress_hosts` must explicitly
+    include the hostname from the installation URL before static validation can
+    enable it.
 
 Signed external artifacts and OAuth installation grants require separate
 approved designs before they can become live owners. They are not implicit

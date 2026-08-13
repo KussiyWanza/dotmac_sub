@@ -151,6 +151,13 @@ Extracted from the rendered templates + `static/js/admin-inbox.js` (845 lines, o
 `reports/outbox-failures` · `{id}/contact` · `{id}/contact-link` · `{id}/labels` ·
 `{id}/note` · `{id}/reply` · `{id}/status` · `{id}/workflow`.
 
+Reply submission is an HTMX workspace action. The route still delegates the
+write to `team_inbox_commands.reply`, then returns a typed completion event that
+causes the browser adapter to refresh only the authoritative thread and current
+filtered queue. It must not navigate or reload the full workspace. The ordinary
+POST/303 response remains the progressive-enhancement fallback when HTMX is not
+available.
+
 **Backend exists, active workspace never calls it:** `{id}/read` ·
 `{id}/comments` · `comments/{id}/resolve` · `{id}/macros/create` ·
 `{id}/templates/create`.
@@ -359,6 +366,10 @@ in CI rather than on the test host.
    So *"what did agent X send"* is not a queryable question — it needs a JSON
    scan and no index helps. That is tolerable at 84 conversations and worth
    deciding before ~37k arrive. Surfacing it is precisely what this gate is for.
+   The conversation timeline may still bulk-resolve the sender IDs already
+   present on one thread to canonical staff display names; that read projection
+   does not make cross-message attribution queryable or move authority into the
+   UI.
 
 Both are pinned by tests so neither the columns nor the metadata keys can be
 dropped silently.

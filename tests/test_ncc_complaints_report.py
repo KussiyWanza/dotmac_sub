@@ -169,13 +169,13 @@ def test_unclassified_ticket_reports_blank_and_is_counted(db_session):
 # ── status map ──────────────────────────────────────────────────────────────
 
 
-def test_resolved_status_files_as_resolved_not_pending(db_session):
-    """CRM mapped closed-only, so a resolved ticket filed as Pending."""
+def test_closed_status_files_in_ncc_resolved_vocabulary(db_session):
+    """Closed is native; Resolved is the NCC filing's external vocabulary."""
     subscriber = _subscriber(db_session)
     ticket = _ticket(
         db_session,
         subscriber,
-        status="resolved",
+        status="closed",
         resolved_at=datetime.now(UTC) - timedelta(hours=1),
         ncc_category="Billing",
         ncc_category_source=ncc_categorisation.SOURCE_DERIVED,
@@ -229,14 +229,14 @@ def test_sla_yes_and_no_when_due_at_is_known(db_session):
     in_time = _ticket(
         db_session,
         subscriber,
-        status="resolved",
+        status="closed",
         resolved_at=resolved_at,
         due_at=resolved_at + timedelta(hours=1),
     )
     late = _ticket(
         db_session,
         subscriber,
-        status="resolved",
+        status="closed",
         resolved_at=resolved_at,
         due_at=resolved_at - timedelta(hours=1),
     )
@@ -335,7 +335,7 @@ def test_report_totals_agree_with_records(db_session):
     _ticket(
         db_session,
         subscriber,
-        status="resolved",
+        status="closed",
         resolved_at=datetime.now(UTC) - timedelta(hours=1),
     )
     start, end = _window()

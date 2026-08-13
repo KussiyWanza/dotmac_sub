@@ -80,3 +80,15 @@ def test_detail_route_feeds_proposed_route_context():
     assert "route_geojson" in source
     assert "build_vendor_project_route_geojson" in source
     assert "route_geojson" in TEMPLATE  # and the template consumes it
+
+
+def test_closure_pin_is_not_coupled_to_asbuilt_submission_eligibility():
+    source = inspect.getsource(vendor_portal.vendor_project_detail)
+
+    assert "can_propose_closure" in source
+    assert "vendor_capabilities.AS_BUILT_WRITE" in source
+    assert "project.as_built_action) and vendor_work_orders" not in TEMPLATE
+    assert "or can_propose_closure" in TEMPLATE
+    assert "var canProposeClosure" in TEMPLATE
+    assert "if (!canCapture && !canProposeClosure) return;" in TEMPLATE
+    assert "if (canCapture) {" in TEMPLATE

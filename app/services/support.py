@@ -13,7 +13,7 @@ from functools import wraps
 from typing import Any, ParamSpec, TypeVar
 from uuid import UUID
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.domain_settings import SettingDomain
@@ -32,6 +32,8 @@ from app.models.support import (
     TicketMerge,
     TicketSlaEvent,
     TicketStatus,
+    canonical_ticket_status_value,
+    parse_ticket_status,
 )
 from app.schemas.notification import NotificationCreate
 from app.schemas.support import (
@@ -48,7 +50,12 @@ from app.services import domain_settings as domain_settings_service
 from app.services import notification as notification_service
 from app.services import numbering as numbering_service
 from app.services import service_address as service_address_service
-from app.services import settings_spec, support_ticket_filters, ticket_validation
+from app.services import (
+    settings_spec,
+    support_ticket_filters,
+    support_ticket_region_projection,
+    ticket_validation,
+)
 from app.services import support_ticket_settings as support_ticket_settings_service
 from app.services.audit_helpers import log_audit_event
 from app.services.common import apply_ordering, apply_pagination
@@ -66,12 +73,13 @@ from app.services.events.types import EventType
 from app.services.owner_commands import (
     CommandContext,
     OwnerCommandDefinition,
+    current_command_context,
     execute_owner_command,
     execute_owner_savepoint,
     owner_command_active,
 )
 from app.services.sales import lifecycle as lead_lifecycle
-from app.services.staff_notifications import queue_staff_email, queue_staff_push
+from app.services.staff_notifications import queue_staff_email
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +104,19 @@ class TicketCreationAcknowledgementMode(str, Enum):
 
     none = "none"
     customer_email = "customer_email"
+
+
+class TicketCreationConsequenceMode(str, Enum):
+    """Select which creation consequences the Ticket owner stages."""
+
+    standard = "standard"
+    silent_internal = "silent_internal"
+
+
+class InternalOperationalTicketSource(str, Enum):
+    """Approved internal sources allowed to request silent Ticket creation."""
+
+    unmatched_radio_queue = "unmatched_radio_queue"
 
 
 class CustomerReplyStaffNotificationSource(str, Enum):
@@ -193,7 +214,7 @@ def ticket_owner_command(name: str):
 
 
 # Ticket.status is a free-form string column; these guard every write at the
-# boundary (no schema migration). closed/canceled/merged are terminal — they
+# boundary. closed/canceled/merged are terminal — they
 # cannot be reopened except by an explicit admin action (allow_reopen=True),
 # which keeps CRM pull and automation from silently resurrecting a closed
 # ticket. Garbage values are rejected outright.
@@ -240,7 +261,6 @@ def active_ticket_status_values() -> tuple[str, ...]:
         for status in TicketStatus
         if status
         not in {
-            TicketStatus.resolved,
             TicketStatus.closed,
             TicketStatus.canceled,
             TicketStatus.merged,
@@ -263,16 +283,17 @@ def transition_ticket_status(
       automation rule cannot reopen a locally-closed ticket.
     - Audits every change (and every blocked reopen) via the log.
     """
-    raw = (
-        new_status.value
-        if isinstance(new_status, TicketStatus)
-        else str(new_status).strip()
-    )
-    if raw not in _VALID_TICKET_STATUSES:
+    try:
+        raw = parse_ticket_status(new_status).value
+    except ValueError:
         raise ValueError(f"Invalid ticket status: {new_status!r}")
-    current = ticket.status
+    stored = ticket.status
+    current = canonical_ticket_status_value(stored) if stored else stored
+    repaired_legacy_value = stored != current
+    if repaired_legacy_value:
+        ticket.status = current
     if current == raw:
-        return False
+        return repaired_legacy_value
     if current in _TICKET_TERMINAL_STATUSES and not allow_reopen:
         logger.info(
             "ticket_status_transition_blocked",
@@ -1013,9 +1034,6 @@ class Tickets:
     def _apply_status_timestamp_rules(
         ticket: Ticket, explicit_data: dict[str, Any]
     ) -> None:
-        if ticket.status == "resolved":
-            if explicit_data.get("resolved_at") is None and ticket.resolved_at is None:
-                ticket.resolved_at = _now()
         if ticket.status == "closed":
             if explicit_data.get("closed_at") is None and ticket.closed_at is None:
                 ticket.closed_at = _now()
@@ -1065,47 +1083,26 @@ class Tickets:
 
     @staticmethod
     def _apply_region_auto_assignment(ticket: Ticket, db: Session) -> dict[str, Any]:
-        rules = support_ticket_settings_service.region_assignment_rules(db)
         if not ticket.region:
             return {"matched": False, "reason": "region_missing"}
-        region_key = support_ticket_settings_service.normalize_system_value(
-            ticket.region
+        region_rule = support_ticket_settings_service.resolve_region_assignment_rule(
+            db, ticket.region
         )
-        region_rule = rules.get(region_key) if isinstance(rules, dict) else None
-        if not isinstance(region_rule, dict):
+        if region_rule is None:
             return {"matched": False, "reason": "no_rule"}
 
         changed: dict[str, Any] = {}
-        if not ticket.ticket_manager_person_id and region_rule.get(
-            "ticket_manager_person_id"
-        ):
-            ticket.ticket_manager_person_id = _coerce_uuid(
-                region_rule.get("ticket_manager_person_id")
-            )
+        if not ticket.ticket_manager_person_id and region_rule.ticket_manager_person_id:
+            ticket.ticket_manager_person_id = region_rule.ticket_manager_person_id
             changed["ticket_manager_person_id"] = str(ticket.ticket_manager_person_id)
-        if not ticket.site_coordinator_person_id and region_rule.get(
-            "site_coordinator_person_id"
-        ):
-            ticket.site_coordinator_person_id = _coerce_uuid(
-                region_rule.get("site_coordinator_person_id")
-            )
-            changed["site_coordinator_person_id"] = str(
-                ticket.site_coordinator_person_id
-            )
-        if not ticket.technician_person_id and region_rule.get("technician_person_id"):
-            ticket.technician_person_id = _coerce_uuid(
-                region_rule.get("technician_person_id")
-            )
+        if not ticket.technician_person_id and region_rule.technician_person_id:
+            ticket.technician_person_id = region_rule.technician_person_id
             changed["technician_person_id"] = str(ticket.technician_person_id)
-        if not ticket.service_team_id and region_rule.get("service_team_id"):
-            ticket.service_team_id = _coerce_uuid(region_rule.get("service_team_id"))
+        if not ticket.service_team_id and region_rule.service_team_id:
+            ticket.service_team_id = region_rule.service_team_id
             changed["service_team_id"] = str(ticket.service_team_id)
 
-        assignee_ids = (
-            region_rule.get("assignee_person_ids")
-            if isinstance(region_rule.get("assignee_person_ids"), list)
-            else []
-        )
+        assignee_ids = [str(value) for value in region_rule.assignee_person_ids]
         if ticket.service_team_id:
             from app.services.ticket_assignment.selectors import (
                 list_team_candidate_person_ids,
@@ -1204,9 +1201,6 @@ class Tickets:
         elif result.assignment_target == "technical_supervisor" and assignee_id:
             if not ticket.ticket_manager_person_id:
                 ticket.ticket_manager_person_id = assignee_id
-        elif result.assignment_target == "site_coordinator" and assignee_id:
-            if not ticket.site_coordinator_person_id:
-                ticket.site_coordinator_person_id = assignee_id
         elif result.assignment_target == "technician" and assignee_id:
             if not ticket.assigned_to_person_id:
                 ticket.assigned_to_person_id = assignee_id
@@ -1273,10 +1267,16 @@ class Tickets:
 
     @staticmethod
     def _queue_notifications_for_assignments(
-        db: Session, ticket: Ticket, actor_id: str | None
+        db: Session,
+        ticket: Ticket,
+        actor_id: str | None,
+        *,
+        previous_user_ids: frozenset[str] = frozenset(),
     ) -> None:
-        if not Tickets._notifications_enabled(db):
-            return
+        from app.services.staff_notifications import (
+            queue_staff_assignment_notifications,
+            resolve_assignment_users,
+        )
 
         recipients: set[str] = set()
         for candidate in [
@@ -1293,41 +1293,88 @@ class Tickets:
         )
         recipients.update(str(row.person_id) for row in assignee_rows)
 
-        if ticket.service_team_id:
-            from app.services.ticket_assignment.selectors import (
-                list_team_candidate_person_ids,
-            )
-
-            team_members = list_team_candidate_person_ids(
-                db, str(ticket.service_team_id)
-            )
-            for member in team_members:
-                member_uuid = _coerce_uuid(str(member))
-                if member_uuid:
-                    recipients.add(str(member_uuid))
-
-        if actor_id:
-            recipients.discard(str(actor_id))
-
         subject = f"Ticket assigned: {ticket.number or str(ticket.id)[:8]}"
         body = f"Ticket {ticket.number or ticket.id} assignment updated."
-        for recipient in recipients:
-            queue_staff_push(
-                db,
-                recipient=recipient,
-                subject=subject,
-                body=body,
+        users = resolve_assignment_users(
+            db,
+            person_ids=recipients,
+            service_team_ids=(str(ticket.service_team_id),)
+            if ticket.service_team_id
+            else (),
+        )
+        users = [user for user in users if str(user.id) not in previous_user_ids]
+        queue_staff_assignment_notifications(
+            db,
+            users=users,
+            subject=subject,
+            body=body,
+            actor_id=actor_id,
+        )
+
+        try:
+
+            def stage_talk_notifications() -> None:
+                from app.services.nextcloud_talk_staff import (
+                    StaffTalkEventType,
+                    StageStaffTalkNotification,
+                    stage_staff_talk_notification,
+                )
+
+                context = current_command_context(db)
+                for user in users:
+                    if actor_id and str(actor_id) in {
+                        str(user.id),
+                        str(user.person_party_id),
+                    }:
+                        continue
+                    stage_staff_talk_notification(
+                        db,
+                        StageStaffTalkNotification(
+                            system_user_id=user.id,
+                            source_event_id=context.command_id,
+                            event_type=StaffTalkEventType.ticket_assignment,
+                            subject=subject,
+                            body=body,
+                            target_url=f"/admin/support/tickets/{ticket.id}",
+                            source_entity_type="support_ticket",
+                            source_entity_id=ticket.id,
+                        ),
+                    )
+
+            execute_owner_savepoint(db, stage_talk_notifications)
+        except Exception:  # noqa: BLE001 - Talk cannot reject an assignment
+            logger.exception(
+                "ticket_assignment_talk_staging_failed ticket_id=%s",
+                ticket.id,
             )
 
-        # Email queue for service-team assignments.
-        if ticket.service_team_id:
-            for recipient in recipients:
-                queue_staff_email(
-                    db,
-                    recipient=recipient,
-                    subject=subject,
-                    body=body,
-                )
+    @staticmethod
+    def _assignment_user_ids(db: Session, ticket: Ticket) -> frozenset[str]:
+        from app.services.staff_notifications import resolve_assignment_users
+
+        recipients = {
+            str(value)
+            for value in (
+                ticket.technician_person_id,
+                ticket.ticket_manager_person_id,
+                ticket.assigned_to_person_id,
+            )
+            if value
+        }
+        recipients.update(
+            str(row.person_id)
+            for row in db.query(TicketAssignee)
+            .filter(TicketAssignee.ticket_id == ticket.id)
+            .all()
+        )
+        users = resolve_assignment_users(
+            db,
+            person_ids=recipients,
+            service_team_ids=(str(ticket.service_team_id),)
+            if ticket.service_team_id
+            else (),
+        )
+        return frozenset(str(user.id) for user in users)
 
     @staticmethod
     def _queue_mention_notifications(
@@ -1727,6 +1774,7 @@ class Tickets:
         dispatch_after_commit: bool = True,
         creation_routing_mode: TicketCreationRoutingMode | None = None,
         creation_acknowledgement_mode: TicketCreationAcknowledgementMode | None = None,
+        creation_consequence_mode: TicketCreationConsequenceMode | None = None,
     ) -> None:
         payload = {
             "name": event_name,
@@ -1759,6 +1807,8 @@ class Tickets:
             payload["creation_acknowledgement_mode"] = (
                 creation_acknowledgement_mode.value
             )
+        if creation_consequence_mode is not None:
+            payload["creation_consequence_mode"] = creation_consequence_mode.value
         emit_event(
             db,
             EventType.custom,
@@ -1770,8 +1820,7 @@ class Tickets:
         )
 
     @staticmethod
-    @ticket_owner_command("create")
-    def create(
+    def _stage_create(
         db: Session,
         payload: TicketCreate,
         actor_id: str | None = None,
@@ -1785,19 +1834,30 @@ class Tickets:
         acknowledgement_mode: TicketCreationAcknowledgementMode = (
             TicketCreationAcknowledgementMode.none
         ),
+        consequence_mode: TicketCreationConsequenceMode = (
+            TicketCreationConsequenceMode.standard
+        ),
     ) -> Ticket:
-        """Create a ticket inside the canonical Ticket transaction.
+        """Stage Ticket creation inside the canonical owner transaction.
 
         ``origin_conversation_id`` is keyword-only and deliberately absent from
         ``TicketCreate``: only ``communications.conversation_ticket_handoff``
         may assert that a ticket originated from an inbox conversation, so the
         claim must not be settable by anything that can post a ticket payload.
         """
+        if (
+            consequence_mode is TicketCreationConsequenceMode.silent_internal
+            and acknowledgement_mode is not TicketCreationAcknowledgementMode.none
+        ):
+            raise _ticket_error(
+                "invalid_ticket_creation_mode",
+                "Silent internal tickets cannot request customer acknowledgement.",
+            )
         ticket_validation.validate_ticket_creation(db, payload)
         data = payload.model_dump()
-        data["status"] = data.get(
-            "status"
-        ) or support_ticket_settings_service.default_status(db)
+        data["status"] = parse_ticket_status(
+            data.get("status") or support_ticket_settings_service.default_status(db)
+        ).value
         data["priority"] = data.get(
             "priority"
         ) or support_ticket_settings_service.default_priority(db)
@@ -1841,52 +1901,71 @@ class Tickets:
             db.add(link)
 
         if (
-            routing_mode is TicketCreationRoutingMode.evaluate_policy
+            consequence_mode is TicketCreationConsequenceMode.standard
+            and routing_mode is TicketCreationRoutingMode.evaluate_policy
             and Tickets._auto_assignment_enabled(db)
         ):
             Tickets._apply_auto_assignment(ticket, db)
 
-        Tickets._apply_sla_policy(
-            db, ticket, explicit_due_at=payload.due_at is not None
-        )
-        from app.services import sla_assignment
-
-        sla_assignment.create_sla_clock_for_ticket(db, ticket)
         Tickets._apply_status_timestamp_rules(ticket, data)
-        Tickets._apply_ncc_categorisation(ticket, data)
+        if consequence_mode is TicketCreationConsequenceMode.standard:
+            Tickets._apply_sla_policy(
+                db, ticket, explicit_due_at=payload.due_at is not None
+            )
+            from app.services import sla_assignment
 
-        from app.models.support import AutomationTrigger
+            sla_assignment.create_sla_clock_for_ticket(db, ticket)
+            Tickets._apply_ncc_categorisation(ticket, data)
 
-        Tickets._apply_automation_rules(
-            db,
-            ticket,
-            AutomationTrigger.ticket_created,
-            preserve_service_team=(
-                routing_mode is TicketCreationRoutingMode.preserve_requested_team
-            ),
-        )
+            from app.models.support import AutomationTrigger
 
-        Tickets._queue_notifications_for_assignments(db, ticket, actor_id)
-
-        log_audit_event(
-            db=db,
-            request=request,
-            action="create",
-            entity_type="support_ticket",
-            entity_id=str(ticket.id),
-            actor_id=actor_id,
-            metadata={
-                "number": ticket.number,
-                "region": ticket.region,
-                "service_team_id": (
-                    str(ticket.service_team_id)
-                    if ticket.service_team_id is not None
-                    else None
+            Tickets._apply_automation_rules(
+                db,
+                ticket,
+                AutomationTrigger.ticket_created,
+                preserve_service_team=(
+                    routing_mode is TicketCreationRoutingMode.preserve_requested_team
                 ),
-                "creation_routing_mode": routing_mode.value,
-                "creation_acknowledgement_mode": acknowledgement_mode.value,
-            },
-        )
+            )
+
+            Tickets._queue_notifications_for_assignments(db, ticket, actor_id)
+
+        audit_metadata = {
+            "number": ticket.number,
+            "description_is_internal": ticket.description_is_internal,
+            "region": ticket.region,
+            "service_team_id": (
+                str(ticket.service_team_id)
+                if ticket.service_team_id is not None
+                else None
+            ),
+            "creation_routing_mode": routing_mode.value,
+            "creation_acknowledgement_mode": acknowledgement_mode.value,
+            "creation_consequence_mode": consequence_mode.value,
+        }
+        if consequence_mode is TicketCreationConsequenceMode.silent_internal:
+            from app.models.audit import AuditActorType
+            from app.services.audit_adapter import stage_audit_event
+
+            stage_audit_event(
+                db,
+                action="create",
+                entity_type="support_ticket",
+                entity_id=str(ticket.id),
+                actor_type=AuditActorType.service,
+                actor_id=actor_id,
+                metadata=audit_metadata,
+            )
+        else:
+            log_audit_event(
+                db=db,
+                request=request,
+                action="create",
+                entity_type="support_ticket",
+                entity_id=str(ticket.id),
+                actor_id=actor_id,
+                metadata=audit_metadata,
+            )
         Tickets._emit_ticket_event(
             db,
             "ticket.created",
@@ -1895,6 +1974,7 @@ class Tickets:
             dispatch_after_commit=dispatch_event_after_commit,
             creation_routing_mode=routing_mode,
             creation_acknowledgement_mode=acknowledgement_mode,
+            creation_consequence_mode=consequence_mode,
         )
         if acknowledgement_mode is TicketCreationAcknowledgementMode.customer_email:
             Tickets._stage_admin_creation_customer_email(
@@ -1909,6 +1989,132 @@ class Tickets:
         return ticket
 
     @staticmethod
+    @ticket_owner_command("create")
+    def create(
+        db: Session,
+        payload: TicketCreate,
+        actor_id: str | None = None,
+        request: object | None = None,
+        *,
+        origin_conversation_id: UUID | None = None,
+        dispatch_event_after_commit: bool = True,
+        routing_mode: TicketCreationRoutingMode = (
+            TicketCreationRoutingMode.evaluate_policy
+        ),
+        acknowledgement_mode: TicketCreationAcknowledgementMode = (
+            TicketCreationAcknowledgementMode.none
+        ),
+    ) -> Ticket:
+        """Create a standard Ticket through the canonical lifecycle owner."""
+
+        return Tickets._stage_create(
+            db,
+            payload,
+            actor_id=actor_id,
+            request=request,
+            origin_conversation_id=origin_conversation_id,
+            dispatch_event_after_commit=dispatch_event_after_commit,
+            routing_mode=routing_mode,
+            acknowledgement_mode=acknowledgement_mode,
+            consequence_mode=TicketCreationConsequenceMode.standard,
+        )
+
+    @staticmethod
+    def stage_internal_creation_participant(
+        db: Session,
+        payload: TicketCreate,
+        *,
+        source: InternalOperationalTicketSource,
+    ) -> Ticket:
+        """Stage a numbered, audited Ticket for an approved silent ops source.
+
+        The coordinating caller owns the surrounding transaction. This narrow
+        participant retains Ticket identity and lifecycle writes in the
+        canonical owner while deliberately suppressing assignment, SLA,
+        automation, and notification consequences.
+        """
+
+        if not db.in_transaction():
+            raise _ticket_error(
+                "internal_ticket_participant_requires_transaction",
+                "Internal ticket participants require a coordinating transaction.",
+            )
+        metadata = payload.metadata_ if isinstance(payload.metadata_, dict) else {}
+        if metadata.get("opened_by") != source.value:
+            raise _ticket_error(
+                "internal_ticket_source_mismatch",
+                "Internal ticket evidence does not match its declared source.",
+                source=source.value,
+            )
+        return Tickets._stage_create(
+            db,
+            payload,
+            actor_id=source.value,
+            routing_mode=TicketCreationRoutingMode.preserve_requested_team,
+            acknowledgement_mode=TicketCreationAcknowledgementMode.none,
+            consequence_mode=TicketCreationConsequenceMode.silent_internal,
+        )
+
+    @staticmethod
+    def stage_internal_observation_participant(
+        db: Session,
+        *,
+        ticket_id: UUID,
+        source: InternalOperationalTicketSource,
+        observed_at: datetime,
+    ) -> Ticket:
+        """Record another observation and repair a legacy missing number."""
+
+        if not db.in_transaction():
+            raise _ticket_error(
+                "internal_ticket_participant_requires_transaction",
+                "Internal ticket participants require a coordinating transaction.",
+            )
+        ticket = db.get(Ticket, ticket_id)
+        if ticket is None or not ticket.is_active:
+            raise _ticket_error("ticket_not_found", "Ticket not found")
+        metadata = dict(ticket.metadata_ or {})
+        if metadata.get("opened_by") != source.value:
+            raise _ticket_error(
+                "internal_ticket_source_mismatch",
+                "Internal ticket evidence does not match its declared source.",
+                source=source.value,
+            )
+        metadata["occurrences"] = int(metadata.get("occurrences") or 1) + 1
+        metadata["last_seen_at"] = observed_at.isoformat()
+        ticket.metadata_ = metadata
+        if ticket.number is None:
+            ticket.number = Tickets._resolve_ticket_number(db)
+            from app.models.audit import AuditActorType
+            from app.services.audit_adapter import stage_audit_event
+
+            stage_audit_event(
+                db,
+                action="number_repair",
+                entity_type="support_ticket",
+                entity_id=str(ticket.id),
+                actor_type=AuditActorType.service,
+                actor_id=source.value,
+                metadata={
+                    "number": ticket.number,
+                    "creation_consequence_mode": (
+                        TicketCreationConsequenceMode.silent_internal.value
+                    ),
+                },
+            )
+            Tickets._emit_ticket_event(
+                db,
+                "ticket.number_repaired",
+                ticket,
+                source.value,
+                creation_consequence_mode=(
+                    TicketCreationConsequenceMode.silent_internal
+                ),
+            )
+        db.flush()
+        return ticket
+
+    @staticmethod
     def get(db: Session, ticket_id: str) -> Ticket:
         ticket = db.get(Ticket, ticket_id)
         if not ticket or not ticket.is_active:
@@ -1920,17 +2126,11 @@ class Tickets:
     def set_satisfaction(
         db: Session, ticket: Ticket, *, rating: int, comment: str | None = None
     ) -> Ticket:
-        """Record a customer CSAT rating (1-5 + optional comment) on a resolved
-        or closed ticket, stored under ``metadata.csat``. Re-rating overwrites.
-        Rejects tickets that aren't resolved/closed so support is rated on the
-        outcome, not mid-flight."""
-        if ticket.status not in (
-            TicketStatus.resolved.value,
-            TicketStatus.closed.value,
-        ):
+        """Record customer CSAT on a closed ticket under ``metadata.csat``."""
+        if ticket.status != TicketStatus.closed.value:
             raise _ticket_error(
                 "satisfaction_not_eligible",
-                "You can rate support once the ticket is resolved.",
+                "You can rate support once the ticket is closed.",
             )
         meta = dict(ticket.metadata_ or {})
         meta["csat"] = {
@@ -2509,11 +2709,18 @@ class Tickets:
                     )
                 )
         elif status:
-            query = query.filter(Ticket.status == str(status).strip())
+            query = query.filter(
+                Ticket.status == canonical_ticket_status_value(str(status).strip())
+            )
         if ticket_type:
             query = query.filter(Ticket.ticket_type == ticket_type)
         if region:
-            query = query.filter(Ticket.region == str(region).strip())
+            normalized_region = support_ticket_region_projection.normalize_region_value(
+                region
+            )
+            query = query.filter(
+                func.lower(func.trim(Ticket.region)) == normalized_region
+            )
         if priority:
             query = query.filter(Ticket.priority == str(priority).strip())
         if channel:
@@ -2664,10 +2871,12 @@ class Tickets:
     ) -> Ticket:
         ticket = Tickets.get(db, ticket_id)
         _ensure_not_merged_source(ticket)
+        previous_assignment_user_ids = Tickets._assignment_user_ids(db, ticket)
 
         before = {
             "status": ticket.status,
             "priority": ticket.priority,
+            "description_is_internal": ticket.description_is_internal,
             "assigned_to_person_id": str(ticket.assigned_to_person_id)
             if ticket.assigned_to_person_id
             else None,
@@ -2720,11 +2929,17 @@ class Tickets:
             sla_assignment.update_sla_clocks_for_status_change(
                 db, ticket, before["status"], ticket.status
             )
-        Tickets._queue_notifications_for_assignments(db, ticket, actor_id)
+        Tickets._queue_notifications_for_assignments(
+            db,
+            ticket,
+            actor_id,
+            previous_user_ids=previous_assignment_user_ids,
+        )
 
         after = {
             "status": ticket.status,
             "priority": ticket.priority,
+            "description_is_internal": ticket.description_is_internal,
             "assigned_to_person_id": str(ticket.assigned_to_person_id)
             if ticket.assigned_to_person_id
             else None,
@@ -2881,6 +3096,7 @@ class Tickets:
     ) -> dict[str, Any]:
         ticket = Tickets.get(db, ticket_id)
         _ensure_not_merged_source(ticket)
+        previous_assignment_user_ids = Tickets._assignment_user_ids(db, ticket)
         result = Tickets._apply_auto_assignment(ticket, db)
         log_audit_event(
             db=db,
@@ -2891,7 +3107,12 @@ class Tickets:
             actor_id=actor_id,
             metadata={"result": result},
         )
-        Tickets._queue_notifications_for_assignments(db, ticket, actor_id)
+        Tickets._queue_notifications_for_assignments(
+            db,
+            ticket,
+            actor_id,
+            previous_user_ids=previous_assignment_user_ids,
+        )
         db.flush()
         return result
 
@@ -2923,6 +3144,7 @@ class Tickets:
                 comment_preview=payload.body[:300],
                 mentioned_agent_ids=[str(item) for item in mentioned_agent_ids],
                 actor_person_id=actor_id,
+                source_event_id=comment.id,
             )
         db.flush()
         db.refresh(comment)
@@ -3094,7 +3316,7 @@ class Tickets:
 
         db.query(TicketAssignee).filter(TicketAssignee.ticket_id == source.id).delete()
 
-        # Merge is an explicit admin action; a closed/resolved source can still
+        # Merge is an explicit admin action; a closed source can still
         # be merged (allow_reopen lets it leave a terminal state into merged).
         transition_ticket_status(
             source, TicketStatus.merged, source="merge", allow_reopen=True
@@ -3411,10 +3633,10 @@ def status_totals(db: Session) -> dict[str, int]:
         .all()
     )
     for status_value, count in rows:
-        key = str(status_value or "").strip()
+        key = canonical_ticket_status_value(str(status_value or "").strip())
         if not key:
             continue
-        counts[key] = int(count)
+        counts[key] = counts.get(key, 0) + int(count)
     return counts
 
 

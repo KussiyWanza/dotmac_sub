@@ -971,6 +971,165 @@ SERVICES: tuple[SOTService, ...] = (
         ),
     ),
     SOTService(
+        name="network.ont_reconcile_projection",
+        module="app.services.network.reconcile.lifecycle",
+        owns=(
+            "lifecycle-bound ONT reconcile status projection",
+            "inventory retirement of current ONT reconcile projection",
+        ),
+        depends_on=(
+            "network.ont_service_configuration",
+            "network.ont_assignment_identity",
+            "network.identity",
+            "runtime.db_sessions",
+        ),
+        notes=(
+            "Owns the assignment/head/revision/operation binding carried by "
+            "sync_status and last_error. Return-to-inventory invokes its "
+            "flush-only participant only after external cleanup succeeds; a "
+            "failed outer transaction restores the prior fault projection."
+        ),
+        contract=ServiceContract(
+            concerns=(
+                ConcernContract(
+                    name="lifecycle-bound ONT reconcile status projection",
+                    role=OwnerRole.PROJECTION_WRITER,
+                    input_names=(
+                        "exact ONT configuration lifecycle binding",
+                        "device convergence and readback result",
+                    ),
+                    canonical_writer="network.ont_reconcile_projection",
+                ),
+                ConcernContract(
+                    name="inventory retirement of current ONT reconcile projection",
+                    role=OwnerRole.RECONCILER,
+                    input_names=(
+                        "exact returning assignment identities",
+                        "current reconcile projection",
+                    ),
+                    canonical_writer="network.ont_reconcile_projection",
+                ),
+            ),
+            authoritative_inputs=(
+                AuthorityInput(
+                    name="exact ONT configuration lifecycle binding",
+                    owner="network.ont_service_configuration",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source="configuration head, revision and tracked operation identity",
+                ),
+                AuthorityInput(
+                    name="device convergence and readback result",
+                    owner="network.ont_reconcile_projection",
+                    kind=AuthorityKind.DERIVED_PROJECTION,
+                    source="ONT reconciler plan, delivery result and OntObservation readback",
+                ),
+                AuthorityInput(
+                    name="exact returning assignment identities",
+                    owner="network.ont_assignment_identity",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source="locked active assignments in canonical return-to-inventory",
+                ),
+                AuthorityInput(
+                    name="current reconcile projection",
+                    owner="network.ont_reconcile_projection",
+                    kind=AuthorityKind.DERIVED_PROJECTION,
+                    source="OntUnit sync_status, last_error and explicit lifecycle bindings",
+                ),
+            ),
+            transaction=TransactionContract(
+                mode=TransactionMode.PARTICIPANT,
+                boundary=(
+                    "Flush-only participant inside the configuration executor or canonical "
+                    "return-to-inventory owner transaction; it never commits or rolls back."
+                ),
+                locking=(
+                    "The caller locks OntUnit and assignments first; the participant locks "
+                    "matching configuration heads before retiring them."
+                ),
+                idempotency=(
+                    "Retiring an already-retired head and clearing an already-empty "
+                    "projection are no-ops."
+                ),
+                retries=(
+                    "Safe only inside a freshly revalidated owner transaction. Failed or "
+                    "partial inventory cleanup never invokes it."
+                ),
+            ),
+            errors=ErrorContract(
+                domain_codes=("network.ont_reconcile_projection.binding_conflict",),
+                mapping_owner=(
+                    "app.services.network.ont_service_configuration and "
+                    "app.services.network.ont_inventory"
+                ),
+                fail_closed_on=(
+                    "binding to a head that does not belong to the exact assignment",
+                    "inventory retirement before external cleanup succeeds",
+                ),
+            ),
+            events=EventContract(
+                event_types=("ont.service_configuration.retired",),
+                schema_version=1,
+                delivery_owner="events.dispatcher",
+                compatibility=(
+                    "Version 1 carries ONT and retired head identities plus the "
+                    "retirement reason; historical events are never deleted."
+                ),
+                replay=(
+                    "The event is evidence only. Re-running the participant "
+                    "revalidates and no-ops when the projection is already retired."
+                ),
+            ),
+            projections=(
+                ProjectionContract(
+                    name="lifecycle-bound ONT reconcile status projection",
+                    input_names=(
+                        "exact ONT configuration lifecycle binding",
+                        "device convergence and readback result",
+                    ),
+                    writer="network.ont_reconcile_projection",
+                    freshness=(
+                        "Fresh only for the exact active assignment, configuration head, "
+                        "desired revision and operation that produced it."
+                    ),
+                    stale_behavior=(
+                        "A mismatched or unbound projection is historical evidence and is "
+                        "excluded from the current Configure UI."
+                    ),
+                    drift_signal="Any explicit assignment/head/revision/operation mismatch.",
+                    rebuild_operation=(
+                        "Re-run the current revision through the tracked configuration "
+                        "repair command; inventory retirement invalidates the projection."
+                    ),
+                    repair_owner="network.ont_service_configuration",
+                ),
+            ),
+            migration=MigrationContract(
+                state=AuthorityMigrationState.COMPLETE,
+                new_owner="network.ont_reconcile_projection",
+                old_owner="unscoped OntUnit sync_status and last_error",
+                verification=(
+                    "Lifecycle tests pin failed-return preservation, successful-return "
+                    "retirement and exclusion of prior-assignment errors."
+                ),
+                cutover_gate=(
+                    "New configuration workers always supply exact lifecycle binding."
+                ),
+                fallback_retirement=(
+                    "Legacy unbound rows remain evidence and require exact-ID reviewed repair."
+                ),
+            ),
+            steward="network operations",
+            design_refs=(
+                "docs/designs/ONT_UI_SERVICE_CONFIGURATION_SOT.md",
+                "docs/designs/ONT_RECONCILE_ELIGIBILITY_SOT.md",
+            ),
+            test_refs=(
+                "tests/test_ont_service_configuration.py",
+                "tests/test_return_to_inventory.py",
+            ),
+        ),
+    ),
+    SOTService(
         name="network.control_plane_intent",
         module="app.services.control_plane_intent",
         owns=(

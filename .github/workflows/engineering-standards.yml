@@ -1,11 +1,21 @@
 name: Engineering standards
 
 on:
+  # `integration/**` carries multi-PR adoption programmes (kernel migration).
+  # Without it a PR INTO an integration branch runs no tests at all, and the
+  # whole section meets CI for the first time at the integration -> dev merge —
+  # which is exactly the batch this branching model exists to avoid.
   push:
-    branches: [main, dev]
+    branches: [main, dev, 'integration/**']
   pull_request:
-    branches: [main, dev]
+    branches: [main, dev, 'integration/**']
     types: [opened, synchronize, reopened]
+  # `Dotmac engineering standards` is a required context on dev. A required
+  # context that never reports deadlocks the merge queue: GitHub waits forever
+  # for a run that will never exist, and every queued merge stalls. This job
+  # must therefore stay reachable from `merge_group` for as long as it is
+  # required — the same rule ci.yml and mobile.yml already follow.
+  merge_group:
 
 permissions:
   contents: read
@@ -20,6 +30,6 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Enforce the accepted Dotmac engineering standards
-        uses: michaelayoade/dotmac_governance/.github/actions/standards-check@1f5f1372238ef37eff71154694d5620008de0959
+        uses: michaelayoade/dotmac_governance/.github/actions/standards-check@fbd47b8965002943bd5799992f4b29b04e361582
         with:
           default-branch: ${{ github.event.repository.default_branch }}

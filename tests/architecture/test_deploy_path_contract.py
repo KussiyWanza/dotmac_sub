@@ -17,6 +17,7 @@ These tests pin the two properties that kept regressing:
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import yaml
@@ -78,3 +79,69 @@ def test_deploy_requires_exact_branch_github_evidence_before_database_work() -> 
     assert deploy.index('scripts/verify_github_release.py"') < deploy.index(
         'log "Applying migrations (alembic upgrade heads)"'
     )
+    assert "production does not accept SKIP_BACKUP=1" in deploy
+    assert "typed production authorization is required" in deploy
+    assert "verify-production-decision" in deploy
+
+
+def test_deploy_accepts_and_reverifies_an_exact_oci_digest() -> None:
+    deploy = (ROOT / "scripts/deploy.sh").read_text(encoding="utf-8")
+
+    assert '[[ "${TAG}" =~ ^sha256:[0-9a-f]{64}$ ]]' in deploy
+    assert 'IMAGE="${IMAGE_REPO}@${TAG}"' in deploy
+    assert 'grep -Fxq "${image}" <<<"${repo_digests}"' in deploy
+    assert 'docker manifest inspect "${IMAGE}"' in deploy
+    assert 'docker pull "${IMAGE}"' in deploy
+
+
+def test_deploy_checks_openbao_boot_secrets_before_migrations() -> None:
+    deploy = (ROOT / "scripts/deploy.sh").read_text(encoding="utf-8")
+
+    preflight = "python -m scripts.setup.verify_openbao_boot_secrets"
+    migration = 'log "Applying migrations (alembic upgrade heads)"'
+    assert preflight in deploy
+    assert deploy.index(preflight) < deploy.index(migration)
+
+
+def test_openbao_initializer_seeds_kernel_secret_source_paths() -> None:
+    initializer = (ROOT / "scripts/setup/openbao_init.sh").read_text(encoding="utf-8")
+    source = (ROOT / "app/services/kernel_secret_source.py").read_text(encoding="utf-8")
+    required_source = source[
+        source.index("SECRET_REFS:") : source.index("OPTIONAL_SECRET_REFS:")
+    ]
+    required_bindings = set(
+        re.findall(r"bao://secret/([^#]+)#([a-z_]+)", required_source)
+    )
+
+    for path, field in required_bindings:
+        assert path in initializer
+        assert field in initializer
+    assert 'kv patch "secret/${path}"' in initializer
+
+
+def test_openbao_initializer_seeds_optional_material_without_requiring_it() -> None:
+    """Optional material is provisioned by the bootstrap and gates nothing.
+
+    Two separate failures this closes. An unseeded path means the feature
+    reports itself unconfigured far from the cause — prepaid manifest
+    verification refuses everything, and a secret setting cannot be written at
+    all. And a `seed_group` here would fail `--strict` for every deployment
+    that does not use the feature, which is most of them.
+    """
+
+    initializer = (ROOT / "scripts/setup/openbao_init.sh").read_text(encoding="utf-8")
+    source = (ROOT / "app/services/kernel_secret_source.py").read_text(encoding="utf-8")
+    provider = (ROOT / "app/services/kernel_key_provider.py").read_text(
+        encoding="utf-8"
+    )
+
+    optional_source = source[source.index("OPTIONAL_SECRET_REFS:") :]
+    bindings = set(re.findall(r"bao://secret/([^#]+)#([a-z_]+)", optional_source))
+    bindings |= set(re.findall(r"bao://secret/([^#]+)#([a-z_]+)", provider))
+    assert bindings, "no optional bindings found to check"
+
+    for path, field in bindings:
+        assert path in initializer, f"{path} is never seeded"
+        assert field in initializer, f"{field} is never seeded"
+        # Seeded by the helper that skips under `--strict`, not by `seed_group`.
+        assert f"seed_optional_group {path}" in initializer

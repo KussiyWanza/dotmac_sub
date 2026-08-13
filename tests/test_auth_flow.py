@@ -259,10 +259,24 @@ def test_admin_mfa_setup_confirm_uses_system_user_id(db_session, monkeypatch):
     assert method.subscriber_id is None
     assert method.enabled is False
 
+    import time as _time
+
+    totp = pyotp.TOTP(setup["secret"])
+    timecode = int(_time.time()) // totp.interval
+    code = totp.generate_otp(timecode)
+    original_generate = pyotp.TOTP.generate_otp
+
+    def verify_fixed(self, otp, for_time=None, valid_window=0):
+        for offset in range(-valid_window, valid_window + 1):
+            if original_generate(self, timecode + offset) == str(otp):
+                return True
+        return False
+
+    monkeypatch.setattr(pyotp.TOTP, "verify", verify_fixed)
     confirmed = AuthFlow.admin_mfa_confirm(
         db_session,
         str(setup["method_id"]),
-        pyotp.TOTP(setup["secret"]).now(),
+        code,
         str(system_user.id),
     )
 

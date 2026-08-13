@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
 from functools import wraps
@@ -14,7 +15,7 @@ from app.models.audit import AuditActorType
 from app.models.domain_settings import SettingDomain
 from app.models.service_team import ServiceTeam
 from app.models.subscription_engine import SettingValueType
-from app.models.support import TicketStatus
+from app.models.support import TicketStatus, parse_ticket_status
 from app.models.ticket_workflow import TicketAssignmentRule, TicketAssignmentStrategy
 from app.schemas.settings import DomainSettingUpdate
 from app.services import domain_settings as domain_settings_service
@@ -40,7 +41,6 @@ TYPE_SLA_POLICY_KEY = "support_ticket_type_sla_policy"
 SETTINGS_DOMAIN = SettingDomain.workflow
 
 DEFAULT_STATUS_OPTIONS = [status.value for status in TicketStatus]
-VALID_STATUS_OPTIONS = frozenset(DEFAULT_STATUS_OPTIONS)
 DEFAULT_PRIORITY_OPTIONS = [
     "lower",
     "low",
@@ -65,7 +65,7 @@ DEFAULT_SLA_POLICY = {
     "low": {"response_hours": 24, "resolution_hours": 120, "aging_hours": 48},
     "lower": {"response_hours": 24, "resolution_hours": 168, "aging_hours": 72},
 }
-TERMINAL_STATUSES = {"resolved", "closed", "canceled", "merged"}
+TERMINAL_STATUSES = {"closed", "canceled", "merged"}
 
 _NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
 _CONFIGURATION_OWNER = "support.ticket_configuration"
@@ -89,6 +89,131 @@ class SupportTeamRoutingResolution:
     service_team_id: UUID | None
     service_team_name: str | None
     source: PortalTicketTeamRoutingSource
+
+
+class RoutingOptionAvailability(str, Enum):
+    active = "active"
+    inactive = "inactive"
+    unavailable = "unavailable"
+
+
+class OperatorTicketStatusSurface(str, Enum):
+    """Admin surface requesting a selectable ticket lifecycle status."""
+
+    create = "create"
+    edit = "edit"
+    quick_status = "quick_status"
+
+
+@dataclass(frozen=True, slots=True)
+class OperatorTicketStatusSelection:
+    """Typed admin intent to select or preserve one ticket lifecycle status."""
+
+    requested_status: TicketStatus
+    current_status: TicketStatus | None
+    surface: OperatorTicketStatusSurface
+
+
+@dataclass(frozen=True, slots=True)
+class OperatorTicketStatusSelectionOutcome:
+    """Configuration-owner resolution of an admin status selection."""
+
+    status: TicketStatus
+    preserved_current: bool
+
+
+@dataclass(frozen=True, slots=True)
+class RegionAssignmentRule:
+    """Typed regional routing input owned by ticket configuration."""
+
+    region: str
+    ticket_manager_person_id: UUID | None = None
+    site_coordinator_person_id: UUID | None = None
+    technician_person_id: UUID | None = None
+    service_team_id: UUID | None = None
+    assignee_person_ids: tuple[UUID, ...] = ()
+
+    def as_storage_value(self) -> dict[str, str | list[str] | None]:
+        return {
+            "ticket_manager_person_id": _uuid_text(self.ticket_manager_person_id),
+            "site_coordinator_person_id": _uuid_text(self.site_coordinator_person_id),
+            "technician_person_id": _uuid_text(self.technician_person_id),
+            "service_team_id": _uuid_text(self.service_team_id),
+            "assignee_person_ids": [str(value) for value in self.assignee_person_ids],
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class RegionRoutingRuleUpdate:
+    """One typed row submitted to the regional routing configuration owner."""
+
+    region: str | None = None
+    ticket_manager_person_id: UUID | None = None
+    site_coordinator_person_id: UUID | None = None
+    technician_person_id: UUID | None = None
+    service_team_id: UUID | None = None
+    assignee_person_ids: tuple[UUID, ...] = ()
+
+    @property
+    def has_assignment(self) -> bool:
+        return any(
+            (
+                self.ticket_manager_person_id,
+                self.site_coordinator_person_id,
+                self.technician_person_id,
+                self.service_team_id,
+                self.assignee_person_ids,
+            )
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TicketSlaPolicyUpdate:
+    priority: str
+    response_hours: int
+    resolution_hours: int
+    aging_hours: int
+
+
+@dataclass(frozen=True, slots=True)
+class TicketTypeSlaPolicyUpdate:
+    ticket_type: str
+    resolution_hours: int
+
+
+@dataclass(frozen=True, slots=True)
+class TicketConfigurationUpdate:
+    """Complete typed input for the ticket-configuration owner command."""
+
+    statuses: tuple[str, ...]
+    priorities: tuple[str, ...]
+    ticket_types: tuple[str, ...]
+    regions: tuple[str, ...] | None = None
+    auto_assign: bool | None = None
+    auto_assign_max_open_tickets: int | None = None
+    replace_auto_assign_max_open_tickets: bool = False
+    routing_rules: tuple[RegionRoutingRuleUpdate, ...] | None = None
+    sla_policy: tuple[TicketSlaPolicyUpdate, ...] | None = None
+    ticket_type_sla_policy: tuple[TicketTypeSlaPolicyUpdate, ...] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TicketConfigurationUpdateOutcome:
+    routing_rule_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class RoutingSelectOption:
+    id: UUID
+    label: str
+    availability: RoutingOptionAvailability
+
+    def as_template_value(self) -> dict[str, str]:
+        return {
+            "id": str(self.id),
+            "label": self.label,
+            "availability": self.availability.value,
+        }
 
 
 class SupportTicketConfigurationError(DomainError):
@@ -161,19 +286,30 @@ def normalize_system_value(value: str) -> str:
     return text.strip("_")
 
 
-def normalize_ticket_status(value: str) -> str:
+def normalize_region_key(value: str | None) -> str:
+    return support_ticket_region_projection.normalize_region_value(value)
+
+
+def normalize_ticket_status(value: TicketStatus | str) -> str:
     """Keep configured choices inside the lifecycle owner's vocabulary."""
-    normalized = normalize_system_value(value)
-    return normalized if normalized in VALID_STATUS_OPTIONS else ""
+    normalized = (
+        value.value
+        if isinstance(value, TicketStatus)
+        else normalize_system_value(value)
+    )
+    try:
+        return parse_ticket_status(normalized).value
+    except ValueError:
+        return ""
 
 
 def _normalize_list(
-    raw: Any,
+    raw: Sequence[object] | None,
     *,
     defaults: list[str],
     normalizer=None,
 ) -> list[str]:
-    values = raw if isinstance(raw, list) else []
+    values = raw or ()
     normalized: list[str] = []
     seen: set[str] = set()
     for item in values:
@@ -307,6 +443,15 @@ def _normalize_uuid(
         raise ValueError(f"{text!r} is not a valid UUID")
 
 
+def _parse_uuid(value: object | None) -> UUID | None:
+    normalized = _normalize_uuid(value)
+    return UUID(normalized) if normalized else None
+
+
+def _uuid_text(value: UUID | None) -> str | None:
+    return str(value) if value is not None else None
+
+
 def _normalize_non_negative_int(value: object | None) -> int:
     text = str(value or "").strip()
     if not text:
@@ -316,13 +461,6 @@ def _normalize_non_negative_int(value: object | None) -> int:
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{text!r} must be a whole number") from exc
     return max(parsed, 0)
-
-
-def _normalize_optional_non_negative_int(value: object | None) -> int | None:
-    text = str(value or "").strip()
-    if not text:
-        return None
-    return _normalize_non_negative_int(value)
 
 
 def list_assignment_rules(db: Session) -> list[dict[str, Any]]:
@@ -433,6 +571,31 @@ def list_status_options(db: Session) -> list[str]:
     )
 
 
+def resolve_operator_ticket_status_selection(
+    db: Session, selection: OperatorTicketStatusSelection
+) -> OperatorTicketStatusSelectionOutcome:
+    """Resolve admin selection without narrowing the lifecycle vocabulary."""
+
+    if selection.requested_status is selection.current_status:
+        return OperatorTicketStatusSelectionOutcome(
+            status=selection.requested_status,
+            preserved_current=True,
+        )
+    if selection.requested_status.value not in set(list_status_options(db)):
+        raise SupportTicketConfigurationError(
+            code="support_ticket_status_not_selectable",
+            message="Select an available ticket status",
+            details={
+                "status": selection.requested_status.value,
+                "surface": selection.surface.value,
+            },
+        )
+    return OperatorTicketStatusSelectionOutcome(
+        status=selection.requested_status,
+        preserved_current=False,
+    )
+
+
 def list_priority_options(db: Session) -> list[str]:
     return _read_list(
         db,
@@ -455,7 +618,7 @@ def list_region_options(db: Session) -> list[str]:
         db,
         key=REGION_OPTIONS_KEY,
         defaults=DEFAULT_REGION_OPTIONS,
-        normalizer=normalize_system_value,
+        normalizer=normalize_region_key,
     )
 
 
@@ -535,32 +698,128 @@ def auto_assign_enabled(db: Session) -> bool:
     return True
 
 
-def region_assignment_rules(db: Session) -> dict[str, dict[str, Any]]:
+def region_assignment_rules(db: Session) -> dict[str, RegionAssignmentRule]:
     raw = _read_raw_setting(db, REGION_ASSIGNMENT_RULES_KEY)
     rules = raw if isinstance(raw, dict) else {}
-    normalized: dict[str, dict[str, Any]] = {}
+    normalized: dict[str, RegionAssignmentRule] = {}
     for region, rule in rules.items():
-        key = normalize_system_value(str(region))
+        key = normalize_region_key(str(region))
         if not key or not isinstance(rule, dict):
             continue
         raw_assignees = rule.get("assignee_person_ids")
         assignee_values = raw_assignees if isinstance(raw_assignees, list) else []
-        normalized[key] = {
-            "ticket_manager_person_id": _normalize_uuid(
-                rule.get("ticket_manager_person_id")
-            ),
-            "site_coordinator_person_id": _normalize_uuid(
+        normalized[key] = RegionAssignmentRule(
+            region=key,
+            ticket_manager_person_id=_parse_uuid(rule.get("ticket_manager_person_id")),
+            site_coordinator_person_id=_parse_uuid(
                 rule.get("site_coordinator_person_id")
             ),
-            "technician_person_id": _normalize_uuid(rule.get("technician_person_id")),
-            "service_team_id": _normalize_uuid(rule.get("service_team_id")),
-            "assignee_person_ids": [
-                uid
-                for uid in (_normalize_uuid(item) for item in assignee_values)
-                if uid
-            ],
-        }
+            technician_person_id=_parse_uuid(rule.get("technician_person_id")),
+            service_team_id=_parse_uuid(rule.get("service_team_id")),
+            assignee_person_ids=tuple(
+                uid for uid in (_parse_uuid(item) for item in assignee_values) if uid
+            ),
+        )
     return normalized
+
+
+def active_routing_staff_ids(db: Session) -> frozenset[UUID]:
+    """Return staff identities currently eligible for configured routing."""
+
+    return frozenset(
+        option.system_user_id
+        for option in service_team_lifecycle.list_staff_options(db)
+    )
+
+
+def resolve_region_assignment_rule(
+    db: Session, region: str | None
+) -> RegionAssignmentRule | None:
+    """Resolve a current rule and remove assignments that are no longer active."""
+
+    region_key = normalize_region_key(region)
+    if not region_key:
+        return None
+    configured = region_assignment_rules(db).get(region_key)
+    if configured is None:
+        return None
+
+    active_staff_ids = active_routing_staff_ids(db)
+    active_team_ids = {
+        team_id
+        for team_id, _label in service_team_lifecycle.list_active_team_options(db)
+    }
+
+    def active_staff(value: UUID | None) -> UUID | None:
+        return value if value in active_staff_ids else None
+
+    return RegionAssignmentRule(
+        region=configured.region,
+        ticket_manager_person_id=active_staff(configured.ticket_manager_person_id),
+        site_coordinator_person_id=active_staff(configured.site_coordinator_person_id),
+        technician_person_id=active_staff(configured.technician_person_id),
+        service_team_id=(
+            configured.service_team_id
+            if configured.service_team_id in active_team_ids
+            else None
+        ),
+        assignee_person_ids=tuple(
+            person_id
+            for person_id in configured.assignee_person_ids
+            if person_id in active_staff_ids
+        ),
+    )
+
+
+def region_manager_routing_preview(db: Session) -> tuple[RegionAssignmentRule, ...]:
+    """Return current manager decisions for the new-ticket preview."""
+
+    previews: list[RegionAssignmentRule] = []
+    for region in region_assignment_rules(db):
+        resolved = resolve_region_assignment_rule(db, region)
+        if resolved is not None and resolved.ticket_manager_person_id is not None:
+            previews.append(resolved)
+    return tuple(previews)
+
+
+def list_routing_service_team_options(
+    db: Session, *, include_ids: tuple[UUID, ...] = ()
+) -> tuple[RoutingSelectOption, ...]:
+    """Return active teams plus stale saved teams for configuration repair."""
+
+    active_rows = service_team_lifecycle.list_active_team_options(db)
+    options = [
+        RoutingSelectOption(
+            id=team_id,
+            label=label,
+            availability=RoutingOptionAvailability.active,
+        )
+        for team_id, label in active_rows
+    ]
+    seen = {option.id for option in options}
+    for team_id in include_ids:
+        if team_id in seen:
+            continue
+        try:
+            detail = service_team_lifecycle.get_team(db, team_id)
+        except DomainError:
+            options.append(
+                RoutingSelectOption(
+                    id=team_id,
+                    label=f"Unavailable service team ({team_id})",
+                    availability=RoutingOptionAvailability.unavailable,
+                )
+            )
+        else:
+            options.append(
+                RoutingSelectOption(
+                    id=team_id,
+                    label=f"{detail.team.name} (Inactive)",
+                    availability=RoutingOptionAvailability.inactive,
+                )
+            )
+        seen.add(team_id)
+    return tuple(options)
 
 
 def auto_assign_max_open_tickets(db: Session) -> int | None:
@@ -609,146 +868,126 @@ def ticket_type_sla_policy(db: Session) -> dict[str, int]:
 
 
 @_configuration_command("update_ticket_configuration")
-def update_options(
-    db: Session,
-    *,
-    statuses: list[str],
-    priorities: list[str],
-    ticket_types: list[str],
-    regions: list[str] | None = None,
-    auto_assign: bool | None = None,
-    auto_assign_max_open_tickets: str | int | None = None,
-    routing_regions: list[str] | None = None,
-    routing_ticket_manager_person_ids: list[str] | None = None,
-    routing_site_coordinator_person_ids: list[str] | None = None,
-    routing_technician_person_ids: list[str] | None = None,
-    routing_service_team_ids: list[str] | None = None,
-    routing_assignee_person_ids: list[str] | None = None,
-    sla_priorities: list[str] | None = None,
-    sla_response_hours: list[str] | None = None,
-    sla_resolution_hours: list[str] | None = None,
-    sla_aging_hours: list[str] | None = None,
-    sla_ticket_types: list[str] | None = None,
-    sla_ticket_type_resolution_hours: list[str] | None = None,
-) -> None:
+def update_ticket_configuration(
+    db: Session, command: TicketConfigurationUpdate
+) -> TicketConfigurationUpdateOutcome:
     requested_statuses = _normalize_list(
-        statuses,
+        command.statuses,
         defaults=DEFAULT_STATUS_OPTIONS,
         normalizer=normalize_system_value,
     )
     invalid_statuses = [
-        status for status in requested_statuses if status not in VALID_STATUS_OPTIONS
+        status for status in requested_statuses if not normalize_ticket_status(status)
     ]
     if invalid_statuses:
         unsupported = ", ".join(invalid_statuses)
         raise ValueError(f"Unsupported ticket status: {unsupported}")
-    normalized_statuses = requested_statuses
+    normalized_statuses = list(
+        dict.fromkeys(normalize_ticket_status(status) for status in requested_statuses)
+    )
     normalized_priorities = _normalize_list(
-        priorities,
+        command.priorities,
         defaults=DEFAULT_PRIORITY_OPTIONS,
         normalizer=normalize_system_value,
     )
     normalized_types = _normalize_list(
-        ticket_types,
+        command.ticket_types,
         defaults=DEFAULT_TYPE_OPTIONS,
     )
     _write_list(db, key=STATUS_OPTIONS_KEY, values=normalized_statuses)
     _write_list(db, key=PRIORITY_OPTIONS_KEY, values=normalized_priorities)
     _write_list(db, key=TYPE_OPTIONS_KEY, values=normalized_types)
-    if regions is not None:
+    if command.regions is not None:
         _write_list(
             db,
             key=REGION_OPTIONS_KEY,
             values=_normalize_list(
-                regions,
+                command.regions,
                 defaults=DEFAULT_REGION_OPTIONS,
-                normalizer=normalize_system_value,
+                normalizer=normalize_region_key,
             ),
         )
-    if auto_assign is not None:
-        _write_bool(db, key=AUTO_ASSIGN_ENABLED_KEY, value=auto_assign)
-    if auto_assign_max_open_tickets is not None:
-        value = _normalize_optional_non_negative_int(auto_assign_max_open_tickets)
-        _write_optional_int(db, key=AUTO_ASSIGN_MAX_OPEN_TICKETS_KEY, value=value)
-    if routing_regions is not None:
-
-        def indexed(values: list[str] | None, index: int) -> str | None:
-            return values[index] if values and index < len(values) else None
-
-        rules: dict[str, dict[str, Any]] = {}
-        active_team_ids = {item["id"] for item in list_service_teams(db)}
-        for index, region_raw in enumerate(routing_regions):
-            region = normalize_system_value(region_raw)
+    if command.auto_assign is not None:
+        _write_bool(db, key=AUTO_ASSIGN_ENABLED_KEY, value=command.auto_assign)
+    if command.replace_auto_assign_max_open_tickets:
+        _write_optional_int(
+            db,
+            key=AUTO_ASSIGN_MAX_OPEN_TICKETS_KEY,
+            value=command.auto_assign_max_open_tickets,
+        )
+    routing_rule_count = len(region_assignment_rules(db))
+    if command.routing_rules is not None:
+        rules: dict[str, dict[str, str | list[str] | None]] = {}
+        active_team_ids = {
+            team_id
+            for team_id, _label in service_team_lifecycle.list_active_team_options(db)
+        }
+        active_staff_ids = active_routing_staff_ids(db)
+        for submitted in command.routing_rules:
+            region = normalize_region_key(submitted.region)
             if not region:
+                if submitted.has_assignment:
+                    raise ValueError(
+                        "Routing assignments require a region. Remove the assignments "
+                        "or select a region."
+                    )
                 continue
-            assignee_raw = indexed(routing_assignee_person_ids, index) or ""
-            assignees = [
-                uid
-                for uid in (
-                    _normalize_uuid(item.strip())
-                    for item in str(assignee_raw or "").split(",")
-                    if item.strip()
-                )
-                if uid
-            ]
-            service_team_id = _normalize_uuid(indexed(routing_service_team_ids, index))
-            if service_team_id and service_team_id not in active_team_ids:
+            if (
+                submitted.service_team_id is not None
+                and submitted.service_team_id not in active_team_ids
+            ):
                 raise ValueError(
                     "Routing service team must reference an active native team."
                 )
-            rules[region] = {
-                "ticket_manager_person_id": _normalize_uuid(
-                    indexed(routing_ticket_manager_person_ids, index)
-                ),
-                "site_coordinator_person_id": _normalize_uuid(
-                    indexed(routing_site_coordinator_person_ids, index)
-                ),
-                "technician_person_id": _normalize_uuid(
-                    indexed(routing_technician_person_ids, index)
-                ),
-                "service_team_id": service_team_id,
-                "assignee_person_ids": assignees,
+            submitted_staff_ids = {
+                value
+                for value in (
+                    submitted.ticket_manager_person_id,
+                    submitted.site_coordinator_person_id,
+                    submitted.technician_person_id,
+                    *submitted.assignee_person_ids,
+                )
+                if value is not None
             }
+            if not submitted_staff_ids.issubset(active_staff_ids):
+                raise ValueError(
+                    "Routing assignments must reference active staff. Replace any "
+                    "inactive or unavailable assignment."
+                )
+            rule = RegionAssignmentRule(
+                region=region,
+                ticket_manager_person_id=submitted.ticket_manager_person_id,
+                site_coordinator_person_id=submitted.site_coordinator_person_id,
+                technician_person_id=submitted.technician_person_id,
+                service_team_id=submitted.service_team_id,
+                assignee_person_ids=submitted.assignee_person_ids,
+            )
+            rules[region] = rule.as_storage_value()
         _write_json(db, key=REGION_ASSIGNMENT_RULES_KEY, value=rules)
-    if sla_priorities is not None:
+        routing_rule_count = len(rules)
+    if command.sla_policy is not None:
         policy: dict[str, dict[str, int]] = {}
-        for index, priority_raw in enumerate(sla_priorities):
-            priority = normalize_system_value(priority_raw)
+        for sla_update in command.sla_policy:
+            priority = normalize_system_value(sla_update.priority)
             if not priority:
                 continue
             policy[priority] = {
-                "response_hours": _normalize_non_negative_int(
-                    sla_response_hours[index]
-                    if sla_response_hours and index < len(sla_response_hours)
-                    else None
-                ),
-                "resolution_hours": _normalize_non_negative_int(
-                    sla_resolution_hours[index]
-                    if sla_resolution_hours and index < len(sla_resolution_hours)
-                    else None
-                ),
-                "aging_hours": _normalize_non_negative_int(
-                    sla_aging_hours[index]
-                    if sla_aging_hours and index < len(sla_aging_hours)
-                    else None
-                ),
+                "response_hours": max(sla_update.response_hours, 0),
+                "resolution_hours": max(sla_update.resolution_hours, 0),
+                "aging_hours": max(sla_update.aging_hours, 0),
             }
         _write_json(db, key=SLA_POLICY_KEY, value=policy)
-    if sla_ticket_types is not None:
+    if command.ticket_type_sla_policy is not None:
         type_policy: dict[str, int] = {}
-        for index, ticket_type_raw in enumerate(sla_ticket_types):
-            ticket_type = " ".join(str(ticket_type_raw).strip().lower().split())
+        for type_sla_update in command.ticket_type_sla_policy:
+            ticket_type = " ".join(type_sla_update.ticket_type.strip().lower().split())
             if not ticket_type:
                 continue
-            resolution_hours = _normalize_non_negative_int(
-                sla_ticket_type_resolution_hours[index]
-                if sla_ticket_type_resolution_hours
-                and index < len(sla_ticket_type_resolution_hours)
-                else None
-            )
+            resolution_hours = max(type_sla_update.resolution_hours, 0)
             if resolution_hours > 0:
                 type_policy[ticket_type] = resolution_hours
         _write_json(db, key=TYPE_SLA_POLICY_KEY, value=type_policy)
+    return TicketConfigurationUpdateOutcome(routing_rule_count=routing_rule_count)
 
 
 def default_status(db: Session) -> str:

@@ -148,7 +148,6 @@ app/services/scheduler.py
 app/services/secrets.py
 app/services/session_manager.py
 app/services/settings_api_custom.py
-app/services/settings_spec.py
 app/services/subscriber.py
 app/services/subscription_changes.py
 app/services/subscription_engine.py

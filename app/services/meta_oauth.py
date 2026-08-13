@@ -309,10 +309,17 @@ def _load_configuration(
         raise _ExpectedRefreshFailure(MetaTokenRefreshFailureCode.CONFIGURATION_MISSING)
     if not isinstance(raw_secret_ref, str) or not raw_secret_ref.strip():
         raise _ExpectedRefreshFailure(MetaTokenRefreshFailureCode.CONFIGURATION_MISSING)
-    if not secrets.is_secret_ref(raw_secret_ref):
-        raise _ExpectedRefreshFailure(
-            MetaTokenRefreshFailureCode.SECRET_REFERENCE_REQUIRED
-        )
+    # No `is_secret_ref` gate any more. It demanded the stored value BE a
+    # `bao://…` reference, which was this codebase's way of saying "do not keep
+    # an app secret in the database in plaintext" — a real requirement met a
+    # better way now: `comms/meta_app_secret` is stored as ciphertext and
+    # decrypted by the resolver, so the database carries nothing readable
+    # without the held key, and no network call sits on this path.
+    #
+    # The gate was also weaker than it read. It checked the value WAS a
+    # reference and never WHICH one, so it constrained the format and not the
+    # authority. `SECRET_REFERENCE_REQUIRED` survives as a member so any stored
+    # or logged occurrence still resolves to a name; nothing raises it.
     try:
         app_secret = secrets.resolve_secret(raw_secret_ref)
     except Exception as exc:

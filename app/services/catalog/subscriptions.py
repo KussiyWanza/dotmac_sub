@@ -494,8 +494,56 @@ def _billing_cycle_start(next_billing_at: datetime, cycle: BillingCycle) -> date
     return _add_months(next_billing_at, -1)
 
 
-def _offer_recurring_price_amount(db: Session, offer_id) -> Decimal:
-    """Return the active recurring amount for an offer, or zero."""
+def contracted_amount_for_offer(
+    db: Session, offer_id, *, offer_version_id=None
+) -> Decimal | None:
+    """The recurring amount a new subscription snapshots from its offer.
+
+    Public because ``Subscriptions.create`` is not the only writer that
+    persists a ``Subscription``: bulk activation builds one directly, and it
+    must snapshot the same amount rather than deriving its own. One definition
+    of what a subscription is contracted at.
+
+    Returns ``None`` when no active recurring price exists, and never zero.
+    A zero is indistinguishable downstream from a real contracted amount and
+    renders as a genuine price in billing summaries, while prepaid enforcement
+    treats ``unit_price`` NULL *or <= 0* alike — so the zero blocked the
+    account exactly as an absence would, and hid why. ``None`` is honestly
+    absent; zero is a claim.
+
+    It does not refuse an unpriced offer. A subscription without a price is a
+    state this system models deliberately: the invoice cycle skips it
+    (``test_skips_subscription_without_price``), the price resolver returns
+    nothing (``test_no_price_found``), and plan-family edits preserve a null
+    price on a live subscription. Raising here would contradict that contract.
+    Where a missing amount does matter — prepaid enforcement — it already fails
+    closed, and the gap is reported by the ``unbilled_active_subscriptions``
+    health signal and its alert.
+    """
+    return _recurring_price_amount(db, offer_id, offer_version_id=offer_version_id)
+
+
+def _recurring_price_amount(db: Session, offer_id, *, offer_version_id=None):
+    """Active recurring amount for an offer, or None when none is configured.
+
+    Resolution order mirrors ``billing_automation._resolve_price``, which is
+    what the subscription is actually invoiced at: a pinned offer version's
+    price wins, then the offer's own. Consulting only ``OfferPrice`` would
+    report a correctly-priced versioned offer as unpriced.
+    """
+    if offer_version_id:
+        version_price = (
+            db.query(OfferVersionPrice.amount)
+            .filter(
+                OfferVersionPrice.offer_version_id == offer_version_id,
+                OfferVersionPrice.price_type == PriceType.recurring,
+                OfferVersionPrice.is_active.is_(True),
+            )
+            .order_by(OfferVersionPrice.created_at.desc(), OfferVersionPrice.id.desc())
+            .first()
+        )
+        if version_price:
+            return Decimal(str(version_price[0]))
     price = (
         db.query(OfferPrice.amount)
         .filter(
@@ -505,7 +553,7 @@ def _offer_recurring_price_amount(db: Session, offer_id) -> Decimal:
         )
         .first()
     )
-    return Decimal(str(price[0])) if price else Decimal("0")
+    return Decimal(str(price[0])) if price else None
 
 
 def _plan_change_text_setting(db: Session, key: str, default: str) -> str:
@@ -649,9 +697,16 @@ def _calculate_proration(
     old_catalog = (
         Decimal(str(resolved_old))
         if resolved_old is not None
-        else _offer_recurring_price_amount(db, subscription.offer_id)
+        # Reading what an already-persisted subscription is priced at, not
+        # contracting a new one. An unpriced row here IS the defect this quote
+        # is being used to inspect, so it reads as zero rather than refusing to
+        # render — refusing would block the screen an operator repairs it from.
+        else (_recurring_price_amount(db, subscription.offer_id) or Decimal("0"))
     )
-    new_catalog = _offer_recurring_price_amount(db, new_offer_id)
+    # The offer being moved TO must be priced: this quote becomes the contract.
+    # A usage-billed target has no recurring amount to compare, which is not a
+    # misconfiguration — it compares as zero for the delta only.
+    new_catalog = contracted_amount_for_offer(db, new_offer_id) or Decimal("0")
     old_price = billing_automation._effective_unit_price(subscription, old_catalog, now)
     new_price = billing_automation._effective_unit_price(
         subscription, new_catalog, now, include_override=False
@@ -937,8 +992,10 @@ class Subscriptions(ListResponseMixin):
         # billing summaries read subscription.unit_price and otherwise show
         # "Price not set" / a ₦0 monthly recurring total).
         if "unit_price" not in fields_set or data.get("unit_price") is None:
-            data["unit_price"] = _offer_recurring_price_amount(
-                db, str(payload.offer_id)
+            data["unit_price"] = contracted_amount_for_offer(
+                db,
+                str(payload.offer_id),
+                offer_version_id=payload.offer_version_id,
             )
 
         # Auto-select NAS device from subscriber's POP site if not provided
@@ -1360,8 +1417,10 @@ class Subscriptions(ListResponseMixin):
             and str(data["offer_id"]) != str(previous_offer_id)
             and "unit_price" not in data
         ):
-            data["unit_price"] = _offer_recurring_price_amount(
-                db, str(data["offer_id"])
+            data["unit_price"] = contracted_amount_for_offer(
+                db,
+                str(data["offer_id"]),
+                offer_version_id=data.get("offer_version_id"),
             )
 
         status = subscription.status

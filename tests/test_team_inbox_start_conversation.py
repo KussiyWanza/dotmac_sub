@@ -314,6 +314,77 @@ def test_whatsapp_selected_contact_uses_its_phone_when_form_value_is_missing(
     assert conversation.contact_address == "+2348012345678"
 
 
+def test_whatsapp_legacy_contact_requires_matching_active_customer(
+    db_session, subscriber, monkeypatch
+):
+    from app.services.integrations import whatsapp_capability
+
+    subscriber.phone = "09037423041"
+    subscriber.is_active = True
+    db_session.commit()
+    monkeypatch.setattr(
+        whatsapp_capability,
+        "list_approved_templates",
+        lambda _db: (
+            {
+                "name": "custom_message",
+                "language": "en",
+                "status": "APPROVED",
+                "components": [],
+            },
+        ),
+    )
+
+    outcome = team_inbox_commands.start_conversation(
+        db_session,
+        channel_type="whatsapp",
+        contact_address="+2349037423041",
+        legacy_contact_subscriber_id=subscriber.id,
+        body_text="Hello",
+        whatsapp_template_name="custom_message",
+        whatsapp_template_language="en",
+    )
+
+    conversation = db_session.get(InboxConversation, outcome.conversation_id)
+    assert conversation.subscriber_id == subscriber.id
+    assert outcome.contact_status == "explicit_subscriber"
+
+
+def test_whatsapp_legacy_contact_rejects_subscriber_number_mismatch(
+    db_session, subscriber, monkeypatch
+):
+    from app.services.integrations import whatsapp_capability
+
+    subscriber.phone = "09037423041"
+    subscriber.is_active = True
+    db_session.commit()
+    monkeypatch.setattr(
+        whatsapp_capability,
+        "list_approved_templates",
+        lambda _db: (
+            {
+                "name": "custom_message",
+                "language": "en",
+                "status": "APPROVED",
+                "components": [],
+            },
+        ),
+    )
+
+    with pytest.raises(team_inbox_commands.InboxCommandError) as exc:
+        team_inbox_commands.start_conversation(
+            db_session,
+            channel_type="whatsapp",
+            contact_address="+2348000000000",
+            legacy_contact_subscriber_id=subscriber.id,
+            body_text="Hello",
+            whatsapp_template_name="custom_message",
+            whatsapp_template_language="en",
+        )
+
+    assert "no longer matches" in str(exc.value)
+
+
 def test_an_unknown_channel_is_refused(db_session):
     with pytest.raises(team_inbox_commands.InboxCommandError) as exc:
         team_inbox_commands.start_conversation(

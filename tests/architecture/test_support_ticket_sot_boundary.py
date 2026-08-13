@@ -47,6 +47,30 @@ def test_support_services_have_complete_registered_contracts() -> None:
         assert SERVICES_BY_NAME[name].contract is not None, name
 
 
+def test_customer_publication_is_owned_and_legacy_visibility_is_reconciled() -> None:
+    contract = SERVICES_BY_NAME["support.ticket_lifecycle"].contract
+    assert contract is not None
+    assert any(
+        concern.name == "ticket customer publication visibility"
+        for concern in contract.concerns
+    )
+
+    migration = _source("alembic/versions/503_reconcile_ticket_portal_visibility.py")
+    assert '"description_is_internal"' in migration
+    assert "UPDATE support_ticket_comments" in migration
+    assert "SET is_internal = true" in migration
+    assert "server_default=sa.true()" in migration
+    lifecycle = _source("app/services/support.py")
+    assert (
+        lifecycle.count('"description_is_internal": ticket.description_is_internal')
+        >= 3
+    )
+    assert "is_internal=True" in _source("app/services/crm_ticket_pull.py")
+    assert (
+        ROOT / "docs/runbooks/SUPPORT_TICKET_PORTAL_VISIBILITY_RECONCILIATION.md"
+    ).exists()
+
+
 def test_migrated_support_services_do_not_own_transport_or_transactions() -> None:
     forbidden = ("HTTPException", ".commit(", ".rollback(", ".begin_nested(")
     for relative_path in MIGRATED_MODULES:
@@ -58,7 +82,7 @@ def test_migrated_support_services_do_not_own_transport_or_transactions() -> Non
 def test_shared_audit_helper_is_flush_only_inside_owner_commands() -> None:
     source = _source("app/services/audit_helpers.py")
     assert "if owner_command_active(db):" in source
-    assert "audit_service.audit_events.stage(db=db, payload=payload)" in source
+    assert "stage_audit_event(" in source
 
 
 def test_support_legacy_contract_and_writer_baselines_shrank() -> None:
@@ -106,8 +130,30 @@ def test_portal_ticket_routing_stays_in_configuration_and_lifecycle_owners() -> 
     )
 
 
+def test_operator_status_subset_is_owned_by_ticket_configuration() -> None:
+    configuration = _source("app/services/support_ticket_settings.py")
+    web_projection = _source("app/services/web_support_tickets.py")
+    admin_adapter = _source("app/web/admin/support_tickets.py")
+    list_template = _source("templates/admin/support/tickets/_list.html")
+    form_template = _source("templates/admin/support/tickets/new.html")
+
+    assert "DEFAULT_STATUS_OPTIONS = [status.value for status in TicketStatus]" in (
+        configuration
+    )
+    assert "parse_ticket_status(normalized).value" in configuration
+    assert "class OperatorTicketStatusSelection" in configuration
+    assert "class OperatorTicketStatusSelectionOutcome" in configuration
+    assert "def resolve_operator_ticket_status_selection(" in configuration
+    assert "list_status_options(db)" in web_projection
+    assert "support_ticket_status_not_selectable" in web_projection
+    assert "WebSupportTicketInputError" in admin_adapter
+    assert "s != 'resolved'" not in list_template
+    assert "s != 'resolved'" not in form_template
+
+
 def test_ticket_region_projection_has_one_typed_owner() -> None:
     configuration = _source("app/services/support_ticket_settings.py")
+    lifecycle = _source("app/services/support.py")
     projection = _source("app/services/support_ticket_region_projection.py")
 
     assert (
@@ -115,8 +161,10 @@ def test_ticket_region_projection_has_one_typed_owner() -> None:
         in configuration
     )
     assert "configured_regions: tuple[str, ...]" in projection
-    assert 'Ticket.region.label("region")' in projection
+    assert "func.lower(func.trim(Ticket.region))" in projection
+    assert "normalize_region_value" in projection
     assert ".order_by(region_sources.c.region.asc())" in projection
+    assert "func.lower(func.trim(Ticket.region)) == normalized_region" in lifecycle
     assert "db.query(Ticket.region)" not in configuration
 
 
@@ -157,6 +205,30 @@ def test_admin_ticket_creation_customer_email_stays_in_lifecycle_owner() -> None
     assert 'event_type="support_ticket_created_admin"' in lifecycle
     assert "TicketCreationAcknowledgementMode.customer_email" in admin_adapter
     assert "default_channels=(NotificationChannel.email,)" in lifecycle
+
+
+def test_unmatched_radio_creation_delegates_to_silent_ticket_participant() -> None:
+    lifecycle = _source("app/services/support.py")
+    queue = _source("app/services/unmatched_radio_queue.py")
+
+    assert "class TicketCreationConsequenceMode" in lifecycle
+    assert "stage_internal_creation_participant" in lifecycle
+    assert "stage_internal_observation_participant" in lifecycle
+    assert "Ticket(" not in queue
+    assert "stage_internal_creation_participant(" in queue
+    assert "stage_internal_observation_participant(" in queue
+
+    allowed = {
+        "app/services/support.py",
+        "app/services/unmatched_radio_queue.py",
+    }
+    for path in (ROOT / "app" / "services").rglob("*.py"):
+        relative = path.relative_to(ROOT).as_posix()
+        if relative in allowed:
+            continue
+        source = path.read_text(encoding="utf-8")
+        assert "stage_internal_creation_participant(" not in source, relative
+        assert "stage_internal_observation_participant(" not in source, relative
 
 
 def test_ticket_work_order_field_results_cannot_close_ticket() -> None:

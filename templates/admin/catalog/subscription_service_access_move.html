@@ -44,7 +44,7 @@
                 <label for="target_pool_id" class="block text-sm font-medium text-slate-700 dark:text-slate-300">Router-linked IPv4 pool</label>
                 <select id="target_pool_id" name="target_pool_id" required class="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
                     <option value="">Select a pool</option>
-                    {% for pool in target_pools %}<option value="{{ pool.id }}" data-nas-id="{{ pool.nas_device_id }}" {% if selected_pool_id == pool.id|string %}selected{% endif %}>{{ pool.name }} · {{ pool.cidr }}</option>{% endfor %}
+                    {% for option in target_pool_options %}{% set pool = option.pool %}<option value="{{ pool.id }}" data-nas-id="{{ option.nas_device_id }}" {% if selected_pool_id == pool.id|string and selected_nas_id == option.nas_device_id|string %}selected{% endif %}>{{ pool.name }} · {{ pool.cidr }}</option>{% endfor %}
                 </select>
             </div>
         </div>

@@ -174,7 +174,6 @@ def test_ticket_create_defaults_to_open_and_generates_number(db_session, subscri
 
 def test_ticket_create_uses_configured_routing_and_sla_policy(db_session, subscriber):
     team_id = uuid4()
-    technician_id = uuid4()
     member_id = uuid4()
     team = ServiceTeam(
         id=team_id,
@@ -197,19 +196,30 @@ def test_ticket_create_uses_configured_routing_and_sla_policy(db_session, subscr
     )
     db_session.commit()
     assert member.id == member_id
-    support_ticket_settings_service.update_options(
+    support_ticket_settings_service.update_ticket_configuration(
         db_session,
-        statuses=["open", "closed", "merged"],
-        priorities=["normal"],
-        ticket_types=["incident"],
-        regions=["north"],
-        routing_regions=["north"],
-        routing_technician_person_ids=[str(technician_id)],
-        routing_service_team_ids=[str(team_id)],
-        sla_priorities=["normal"],
-        sla_response_hours=["1"],
-        sla_resolution_hours=["8"],
-        sla_aging_hours=["4"],
+        support_ticket_settings_service.TicketConfigurationUpdate(
+            statuses=("open", "closed", "merged"),
+            priorities=("normal",),
+            ticket_types=("incident",),
+            regions=("north",),
+            routing_rules=(
+                support_ticket_settings_service.RegionRoutingRuleUpdate(
+                    region="north",
+                    ticket_manager_person_id=member.id,
+                    technician_person_id=member.id,
+                    service_team_id=team.id,
+                ),
+            ),
+            sla_policy=(
+                support_ticket_settings_service.TicketSlaPolicyUpdate(
+                    priority="normal",
+                    response_hours=1,
+                    resolution_hours=8,
+                    aging_hours=4,
+                ),
+            ),
+        ),
     )
 
     ticket = support_service.tickets.create(
@@ -225,7 +235,8 @@ def test_ticket_create_uses_configured_routing_and_sla_policy(db_session, subscr
         actor_id=str(subscriber.id),
     )
 
-    assert ticket.technician_person_id == technician_id
+    assert ticket.ticket_manager_person_id == member.id
+    assert ticket.technician_person_id == member.id
     assert ticket.service_team_id == team_id
     assert ticket.due_at is not None
     assert (
@@ -357,13 +368,16 @@ def test_ticket_auto_assignment_respects_configured_open_limit(db_session, subsc
         ]
     )
     db_session.commit()
-    support_ticket_settings_service.update_options(
+    support_ticket_settings_service.update_ticket_configuration(
         db_session,
-        statuses=["open", "closed", "merged"],
-        priorities=["normal"],
-        ticket_types=["incident"],
-        auto_assign=True,
-        auto_assign_max_open_tickets=0,
+        support_ticket_settings_service.TicketConfigurationUpdate(
+            statuses=("open", "closed", "merged"),
+            priorities=("normal",),
+            ticket_types=("incident",),
+            auto_assign=True,
+            auto_assign_max_open_tickets=0,
+            replace_auto_assign_max_open_tickets=True,
+        ),
     )
     db_session.commit()
 
@@ -405,25 +419,31 @@ def test_link_and_merge_form_reject_invalid_target_uuid(db_session):
         )
 
 
-def test_ticket_resolved_and_closed_set_timestamps(db_session, subscriber):
+def test_ticket_legacy_resolved_create_and_update_are_stored_as_closed(
+    db_session, subscriber
+):
+    created = support_service.tickets.create(
+        db_session,
+        TicketCreate(
+            title="Legacy create",
+            subscriber_id=subscriber.id,
+            status="resolved",
+        ),
+        actor_id=str(subscriber.id),
+    )
+    assert created.status == "closed"
+
     ticket = support_service.tickets.create(
         db_session, _ticket_payload(subscriber.id), actor_id=str(subscriber.id)
     )
 
-    resolved = support_service.tickets.update(
+    closed = support_service.tickets.update(
         db_session,
         str(ticket.id),
         TicketUpdate(status="resolved"),
         actor_id=str(subscriber.id),
     )
-    assert resolved.resolved_at is not None
-
-    closed = support_service.tickets.update(
-        db_session,
-        str(ticket.id),
-        TicketUpdate(status="closed"),
-        actor_id=str(subscriber.id),
-    )
+    assert closed.status == "closed"
     assert closed.closed_at is not None
 
 
@@ -885,11 +905,12 @@ def test_merge_moves_comments_assignees_and_blocks_source_mutations(
     assert exc.value.code == "ticket_merged_source"
 
 
-def test_assignment_notifications_wired_but_disabled(db_session, subscriber):
+def test_assignment_notifications_send_push_and_email_without_legacy_toggle(
+    db_session, subscriber
+):
     technician = _system_user(display_name="Technician")
     manager = _system_user(display_name="Manager")
-    coordinator = _system_user(display_name="Coordinator")
-    db_session.add_all([technician, manager, coordinator])
+    db_session.add_all([technician, manager])
     db_session.commit()
 
     ticket = support_service.tickets.create(
@@ -901,8 +922,6 @@ def test_assignment_notifications_wired_but_disabled(db_session, subscriber):
             customer_account_id=subscriber.id,
             technician_person_id=technician.id,
             ticket_manager_person_id=manager.id,
-            site_coordinator_person_id=coordinator.id,
-            service_team_id=uuid4(),
         ),
         actor_id=str(subscriber.id),
     )
@@ -914,15 +933,20 @@ def test_assignment_notifications_wired_but_disabled(db_session, subscriber):
         actor_id=str(subscriber.id),
     )
 
-    assert db_session.query(Notification).count() == 0
+    rows = db_session.query(Notification).all()
+    assert {(row.channel, row.recipient) for row in rows} == {
+        (NotificationChannel.push, str(technician.id)),
+        (NotificationChannel.email, technician.email),
+        (NotificationChannel.push, str(manager.id)),
+        (NotificationChannel.email, manager.email),
+    }
 
 
 def test_ticket_assignments_accept_system_user_ids(db_session, subscriber):
     technician = _system_user(display_name="Field Tech")
     manager = _system_user(display_name="Project Manager")
-    coordinator = _system_user(display_name="Site Coordinator")
     assignee = _system_user(display_name="Queue Assignee")
-    db_session.add_all([technician, manager, coordinator, assignee])
+    db_session.add_all([technician, manager, assignee])
     db_session.commit()
 
     ticket = support_service.tickets.create(
@@ -934,7 +958,6 @@ def test_ticket_assignments_accept_system_user_ids(db_session, subscriber):
             customer_account_id=subscriber.id,
             technician_person_id=technician.id,
             ticket_manager_person_id=manager.id,
-            site_coordinator_person_id=coordinator.id,
             assignee_person_ids=[assignee.id],
         ),
         actor_id=str(subscriber.id),
@@ -949,7 +972,7 @@ def test_ticket_assignments_accept_system_user_ids(db_session, subscriber):
 
     assert ticket.technician_person_id == technician.id
     assert ticket.ticket_manager_person_id == manager.id
-    assert ticket.site_coordinator_person_id == coordinator.id
+    assert ticket.site_coordinator_person_id is None
     assert any(row.person_id == assignee.id for row in assignee_rows)
 
 
@@ -1073,6 +1096,7 @@ def test_customer_reply_emails_each_active_assignee_once(db_session, subscriber)
         db_session.query(Notification)
         .filter(Notification.channel == NotificationChannel.email)
         .filter(Notification.recipient == assignee.email)
+        .filter(Notification.subject == f"New customer reply on ticket {ticket.number}")
         .all()
     )
     assert len(emails) == 1
@@ -1360,7 +1384,7 @@ def test_ticket_automation_is_suppressed_for_low_confidence_identity(
         trigger=AutomationTrigger.ticket_created,
         action_type=AutomationActionType.set_status,
         action_value=support_automation_rules.TicketAutomationAction(
-            status="pending_customer"
+            status=TicketStatus.pending
         ),
     )
     db_session.commit()

@@ -9,6 +9,7 @@ from app.services.sot_registry.model import DomainSOT
 
 DOMAIN = DomainSOT(
     domain="scheduler_control_plane",
+    setting_domains=("scheduler",),
     services=(
         SOTService(
             name="scheduler.registry",

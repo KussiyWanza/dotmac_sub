@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from paramiko.ssh_exception import SSHException
 
 from app.models.network import OLTDevice
+from app.services.network.huawei_cli_response import describe_huawei_rejection
 
 logger = logging.getLogger(__name__)
 
@@ -823,10 +824,10 @@ def ensure_wan_srvprofile(
     from app.services.network import olt_ssh as core
 
     def _run_slow(command: str) -> str:
-        from app.services.network.olt_ssh_ont._common import _send_slow
+        from app.services.network.olt_ssh_ont._common import send_ont_command
 
-        logger.debug("OLT slow command: %r", command)
-        _send_slow(channel, command)
+        logger.debug("OLT paced command: %r", command)
+        send_ont_command(olt, channel, command)
         out = core._read_until_prompt(
             channel,
             rf"{config_prompt}|<cr>|{core.HUAWEI_OPTIONAL_ARG_PROMPT}",
@@ -874,7 +875,7 @@ def ensure_wan_srvprofile(
             core._run_huawei_cmd(channel, "quit", prompt=config_prompt)
             return (
                 False,
-                f"OLT rejected ONT WAN profile create: {output.strip()[-200:]}",
+                describe_huawei_rejection(output, action="ONT WAN profile create"),
             )
 
         commands = [
@@ -886,7 +887,7 @@ def ensure_wan_srvprofile(
             output = _run_slow(cmd)
             if core.is_error_output(output):
                 core._run_huawei_cmd(channel, "quit", prompt=config_prompt)
-                return False, f"OLT rejected '{cmd}': {output.strip()[-200:]}"
+                return False, describe_huawei_rejection(output, action=cmd)
 
         verify = core._run_huawei_cmd(channel, display_cmd, prompt=config_prompt)
         core._run_huawei_cmd(channel, "quit", prompt=config_prompt)

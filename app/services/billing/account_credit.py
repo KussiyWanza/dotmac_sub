@@ -4,7 +4,14 @@ Account credit is not a wallet counter. It is the unconsumed portion of exact,
 succeeded payment settlements. This owner serializes one account, chooses
 eligible invoices and source payments deterministically, and composes the
 existing payment-allocation preview/confirmation owner for every transfer.
-It never creates payments or ledger entries directly and never commits.
+It never creates payments and never commits.
+
+It does create one thing: the unallocated credit ledger row itself, through
+``financial.ledger``, in ``record_credit``. That is deliberate. Before it, every
+caller that needed to mint credit went straight to the ledger writer and this
+owner never learned the credit existed, so "offer new credit to the account's
+open receivables" had nowhere to live except replicated at each call site — and
+was missed at all but one of them.
 """
 
 from __future__ import annotations
@@ -12,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -40,6 +48,7 @@ from app.models.integration_platform import (
 )
 from app.models.prepaid_funding import PrepaidOpeningFundingConsumption
 from app.schemas.billing import (
+    LedgerEntryCreate,
     PaymentAllocationConfirm,
     PaymentAllocationPreviewRequest,
 )
@@ -79,6 +88,27 @@ class AccountCreditApplicationResult:
 
 
 @dataclass(frozen=True, slots=True)
+class AccountCreditRecordResult:
+    """Account credit came into existence, and whether an offer is still owed.
+
+    ``offer_pending`` is the load-bearing field. Credit minted and never offered
+    to the account's open receivables is exactly the state
+    ``eligible_invoice_with_unused_credit`` reports as a violation, so the
+    creation path says outright that the debt is outstanding rather than leaving
+    it to be discovered by a later scan. Payment-backed credit sets it; a credit
+    note or adjustment does not, because this owner has no instrument to offer
+    those with.
+    """
+
+    account_id: str
+    amount: Decimal
+    currency: str
+    source: LedgerSource
+    ledger_entry: LedgerEntry | None
+    offer_pending: bool
+
+
+@dataclass(frozen=True, slots=True)
 class AccountCreditInvoiceFundingPreview:
     """Exact payment-backed funding available to one invoice."""
 
@@ -111,6 +141,127 @@ class AccountCreditInvariantViolation:
     code: str
     account_id: str
     detail: str
+
+
+def _count_underfunded_paid_invoices(db: Session, *, opening_balance: bool) -> int:
+    """Count paid invoices whose funding evidence falls short of their total.
+
+    One definition, two populations, split on provenance. An invoice carrying a
+    prior-system identity is opening balance: it was carried in already settled,
+    without the allocations that tie a payment to an invoice, so it can never
+    satisfy this check. Its balance due is zero and no reconciler can produce
+    evidence that was never carried in, so counting it forever would pin the
+    gauge above zero and bury the live defect underneath it. An invoice with no
+    prior-system identity is Sub's own work, and underfunding there is a real
+    defect.
+
+    Provenance, not creation date. The carried-in book was loaded in one bulk
+    write, which makes a timestamp look like a clean boundary — but backfill
+    continued for months afterwards, so 111 carried-in invoices were created
+    after any such instant and a date test reports them as live defects. By
+    identity the split is exact: 12.1% of the carried-in book is underfunded,
+    against 0.29% of the book Sub authored.
+
+    Splitting here rather than duplicating the query keeps the partial-refund
+    proration and rounding identical for both populations.
+    """
+    zero = Decimal("0.00")
+    carried_in = (
+        Invoice.splynx_invoice_id.is_not(None)
+        if opening_balance
+        else Invoice.splynx_invoice_id.is_(None)
+    )
+    effective_payment_amount = case(
+        (
+            Payment.status == PaymentStatus.succeeded,
+            PaymentAllocation.amount,
+        ),
+        (
+            and_(
+                Payment.status == PaymentStatus.partially_refunded,
+                Payment.amount > zero,
+            ),
+            PaymentAllocation.amount
+            * (Payment.amount - func.coalesce(Payment.refunded_amount, zero))
+            / func.nullif(Payment.amount, zero),
+        ),
+        else_=zero,
+    )
+    payment_totals = (
+        select(
+            PaymentAllocation.invoice_id.label("invoice_id"),
+            func.coalesce(func.sum(effective_payment_amount), zero).label("amount"),
+        )
+        .join(Payment, Payment.id == PaymentAllocation.payment_id)
+        .where(
+            PaymentAllocation.is_active.is_(True),
+            Payment.is_active.is_(True),
+            Payment.status.in_(
+                [PaymentStatus.succeeded, PaymentStatus.partially_refunded]
+            ),
+        )
+        .group_by(PaymentAllocation.invoice_id)
+        .subquery()
+    )
+    credit_totals = (
+        select(
+            CreditNoteApplication.invoice_id.label("invoice_id"),
+            func.coalesce(func.sum(CreditNoteApplication.amount), zero).label("amount"),
+        )
+        .group_by(CreditNoteApplication.invoice_id)
+        .subquery()
+    )
+    opening_funding_totals = (
+        select(
+            PrepaidOpeningFundingConsumption.invoice_id.label("invoice_id"),
+            func.coalesce(
+                func.sum(PrepaidOpeningFundingConsumption.amount),
+                zero,
+            ).label("amount"),
+        )
+        .group_by(PrepaidOpeningFundingConsumption.invoice_id)
+        .subquery()
+    )
+    payments_applied = func.round(
+        func.coalesce(payment_totals.c.amount, zero),
+        2,
+    )
+    credits_applied = func.round(
+        func.coalesce(credit_totals.c.amount, zero),
+        2,
+    )
+    opening_funding_applied = func.round(
+        func.coalesce(opening_funding_totals.c.amount, zero),
+        2,
+    )
+    funded_total = func.round(
+        payments_applied + credits_applied + opening_funding_applied,
+        2,
+    )
+    return int(
+        db.execute(
+            select(func.count(Invoice.id))
+            .outerjoin(
+                payment_totals,
+                payment_totals.c.invoice_id == Invoice.id,
+            )
+            .outerjoin(
+                credit_totals,
+                credit_totals.c.invoice_id == Invoice.id,
+            )
+            .outerjoin(
+                opening_funding_totals,
+                opening_funding_totals.c.invoice_id == Invoice.id,
+            )
+            .where(
+                Invoice.is_active.is_(True),
+                Invoice.status == InvoiceStatus.paid,
+                carried_in,
+                funded_total < func.round(Invoice.total, 2),
+            )
+        ).scalar()
+        or 0
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,6 +304,15 @@ class AccountCreditReleasePreview:
     allocation_ids: tuple[UUID, ...]
     amount: Decimal
     entries: tuple[AccountCreditReleaseEntry, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewedOpeningSettlementAllocationRelease:
+    """Exact historical allocation to release back to its payment source."""
+
+    invoice_id: UUID
+    allocation_id: UUID
+    reason: str
 
 
 def _invoice_void_release_preview(
@@ -256,7 +416,7 @@ def _source_payments(
         .filter(Payment.account_id == coerce_uuid(account_id))
         .filter(Payment.is_active.is_(True))
         .filter(Payment.status == PaymentStatus.succeeded)
-        # Historical Splynx rows are migration evidence, not reusable cash.
+        # Historical carried-in rows are migration evidence, not reusable cash.
         .filter(Payment.splynx_payment_id.is_(None))
         .order_by(
             Payment.paid_at.asc().nulls_last(),
@@ -418,6 +578,128 @@ class AccountCreditApplications:
             preview_fingerprint=preview_fingerprint,
             require_full_funding=True,
             funding_position_at=funding_position_at,
+        )
+
+    @staticmethod
+    def apply_invoice_from_selected_payment_fully(
+        db: Session,
+        invoice: Invoice,
+        *,
+        payment_id: UUID,
+        expected_amount: Decimal,
+    ) -> AccountCreditApplicationResult:
+        """Fund one invoice from one explicitly reviewed native payment."""
+
+        lock_account(db, str(invoice.account_id))
+        db.refresh(invoice)
+        invoice_remaining = round_money(to_decimal(invoice.balance_due))
+        expected = round_money(expected_amount)
+        currency = (invoice.currency or "NGN").upper()
+        payment = db.scalar(
+            select(Payment).where(Payment.id == payment_id).with_for_update()
+        )
+        account_credit = round_money(
+            get_account_credit_balance(
+                db,
+                str(invoice.account_id),
+                currency=currency,
+            )
+        )
+        payment_available = (
+            round_money(PaymentAllocations.available_amount(db, str(payment_id)))
+            if payment is not None
+            else Decimal("0.00")
+        )
+        if (
+            invoice_remaining <= Decimal("0.00")
+            or invoice_remaining != expected
+            or payment is None
+            or not payment.is_active
+            or payment.status is not PaymentStatus.succeeded
+            or payment.account_id != invoice.account_id
+            or (payment.currency or "NGN").upper() != currency
+            or account_credit < expected
+            or payment_available < expected
+        ):
+            raise AccountCreditApplicationError(
+                code="financial.account_credit_applications.selected_payment_rejected",
+                message=(
+                    "Selected payment no longer exactly funds the reviewed invoice."
+                ),
+                details={
+                    "invoice_id": str(invoice.id),
+                    "payment_id": str(payment_id),
+                    "invoice_remaining": str(invoice_remaining),
+                    "expected_amount": str(expected),
+                    "account_credit": str(account_credit),
+                    "payment_available": str(payment_available),
+                },
+            )
+
+        request = PaymentAllocationPreviewRequest(
+            payment_id=payment.id,
+            invoice_id=invoice.id,
+            amount=expected,
+        )
+        try:
+            allocation_preview = PaymentAllocations.preview(db, request)
+            confirmation = (
+                PaymentAllocations.stage_confirm_reviewed_document_correction(
+                    db,
+                    PaymentAllocationConfirm(
+                        **request.model_dump(),
+                        preview_fingerprint=allocation_preview.fingerprint,
+                        idempotency_key=_allocation_key(payment, invoice),
+                    ),
+                )
+            )
+        except HTTPException as exc:
+            raise AccountCreditApplicationError(
+                code="financial.account_credit_applications.allocation_rejected",
+                message="Payment-allocation owner rejected selected invoice funding.",
+                details={
+                    "invoice_id": str(invoice.id),
+                    "payment_id": str(payment.id),
+                    "reason": str(exc.detail),
+                },
+            ) from exc
+
+        applied = round_money(to_decimal(confirmation.allocation.amount))
+        _stage_application_posting(
+            db,
+            allocation=confirmation.allocation,
+            invoice=invoice,
+            payment=payment,
+            currency=currency,
+            amount=applied,
+        )
+        db.flush()
+        db.refresh(invoice)
+        remaining = round_money(to_decimal(invoice.balance_due))
+        if (
+            applied != expected
+            or remaining != Decimal("0.00")
+            or invoice.status is not InvoiceStatus.paid
+        ):
+            raise AccountCreditApplicationError(
+                code="financial.account_credit_applications.incomplete_application",
+                message="Selected payment did not produce an exactly paid invoice.",
+                details={
+                    "invoice_id": str(invoice.id),
+                    "payment_id": str(payment.id),
+                    "applied": str(applied),
+                    "remaining": str(remaining),
+                    "status": invoice.status.value,
+                },
+            )
+        return AccountCreditApplicationResult(
+            account_id=str(invoice.account_id),
+            available_credit=account_credit,
+            applied=applied,
+            invoices_settled=[str(invoice.id)],
+            invoices_touched=[str(invoice.id)],
+            allocation_ids=[str(confirmation.allocation.id)],
+            invoice_remaining=remaining,
         )
 
     @staticmethod
@@ -682,6 +964,125 @@ class AccountCreditApplications:
         return result
 
     @staticmethod
+    def record_credit(
+        db: Session,
+        account_id: str,
+        *,
+        amount: Decimal,
+        currency: str,
+        source: LedgerSource,
+        memo: str | None = None,
+        payment_id: UUID | None = None,
+    ) -> AccountCreditRecordResult:
+        """Bring unallocated account credit into existence, and offer it.
+
+        The owner had a consume half (:meth:`apply` and the per-invoice
+        variants) and a read half (the previews and invariant summaries), but no
+        creation half — so every caller that needed to mint credit reached past
+        this owner to the generic ledger writer and handed it an
+        ``entry_type=credit, invoice_id=NULL`` row. The owner never learned the
+        credit existed, which left "newly created credit is offered to the
+        account's open receivables" with nowhere to live except replicated at
+        each call site. Replicating it is how the rule gets missed: the next
+        caller simply does not know about it.
+
+        Minting happens here so there is one door. The offer does NOT, and the
+        reason is a real domain rule rather than a layering preference: credit
+        is spendable only once its settlement evidence exists.
+        ``PaymentAllocations.available_amount`` returns zero while
+        ``payment.settlement`` is None, so a payment's surplus is not yet
+        allocatable at the moment its ledger row is written — the settlement is
+        recorded a few statements later. Offering here would find nothing
+        backed and quietly apply nothing, which looks exactly like success.
+
+        Worse, it would look at ``payment.settlement`` before the row exists and
+        leave SQLAlchemy caching that ``None`` on the instance, so a later,
+        correctly-timed offer in the same transaction reads the stale value and
+        also applies nothing. That is not hypothetical; it broke the deposit
+        settlement path.
+
+        The offer is therefore :meth:`offer_available_credit`, called by the
+        settlement path once the evidence is in place. Minting still cannot
+        happen anywhere else — see
+        ``tests/architecture/test_account_credit_single_writer.py`` — so the
+        pairing is enforced at the one door rather than remembered at each.
+
+        Accounting reads the same way. Unallocated credit sitting against an
+        account that carries a payable invoice overstates the receivable — the
+        obligation has already been reduced, and offsetting a debit and credit
+        on one counterparty account is the standard treatment. Leaving it
+        unoffered means ageing and dunning a balance that is not owed.
+
+        Staged, never committed: the caller owns the transaction boundary so the
+        money and its consequence land or roll back together.
+        """
+        account_id = str(account_id)
+        amount = round_money(to_decimal(amount))
+        currency = (currency or "NGN").upper()
+        if amount <= Decimal("0.00"):
+            return AccountCreditRecordResult(
+                account_id=account_id,
+                amount=Decimal("0.00"),
+                currency=currency,
+                source=source,
+                ledger_entry=None,
+                offer_pending=False,
+            )
+
+        entry = LedgerEntries.create(
+            db,
+            LedgerEntryCreate(
+                account_id=coerce_uuid(account_id),
+                invoice_id=None,
+                payment_id=payment_id,
+                entry_type=LedgerEntryType.credit,
+                source=source,
+                amount=amount,
+                currency=currency,
+                memo=memo,
+            ),
+            commit=False,
+        )
+
+        return AccountCreditRecordResult(
+            account_id=account_id,
+            amount=amount,
+            currency=currency,
+            source=source,
+            ledger_entry=entry,
+            # Only payment-backed credit is ever offerable. `apply` settles by
+            # composing PaymentAllocations against succeeded payments, so credit
+            # from a credit note or an adjustment has no payment to allocate
+            # from — it is a different funding instrument with its own
+            # application record (CreditNoteApplication), owned elsewhere.
+            offer_pending=source is LedgerSource.payment,
+        )
+
+    @staticmethod
+    def offer_available_credit(
+        db: Session,
+        account_id: str,
+        *,
+        payments: Sequence[Payment] = (),
+    ) -> AccountCreditApplicationResult:
+        """Offer an account's now-spendable credit to its open receivables.
+
+        The other half of :meth:`record_credit`, split from it because credit
+        becomes spendable when its settlement evidence is written, not when its
+        ledger row is. Call this once that evidence exists.
+
+        ``payments`` names the payments whose settlement was just created in
+        this transaction. Their ``settlement`` relationship is expired first: if
+        anything read it while the row was still absent, SQLAlchemy is holding a
+        cached ``None`` and ``available_amount`` will report the credit unbacked
+        and silently apply nothing.
+        """
+        for payment in payments:
+            if payment in db:
+                db.expire(payment, ["settlement"])
+        return AccountCreditApplications.apply(db, str(account_id))
+
+    @staticmethod
     def preview_invoice_void_release(
         db: Session, invoice_id: UUID
     ) -> AccountCreditReleasePreview:
@@ -734,6 +1135,34 @@ class AccountCreditApplications:
             allocation.payment.updated_at = datetime.now(UTC)
         db.flush()
         return reversals
+
+    @staticmethod
+    def release_for_reviewed_opening_settlement(
+        db: Session,
+        command: ReviewedOpeningSettlementAllocationRelease,
+    ) -> list[tuple[LedgerEntry, UUID]]:
+        """Release one reviewed allocation whose invoice predates an opening.
+
+        The original allocation and ledger entries remain durable.  The shared
+        release path appends exact ledger reversals and retires only the active
+        projection, so the payment becomes reusable without deleting history.
+        The coordinating reconciliation owner has already fingerprinted the
+        opening, allocation, invoice, and customer-subledger posting.
+        """
+
+        reason = command.reason.strip()
+        if not reason:
+            raise AccountCreditApplicationError(
+                code="financial.account_credit_applications.missing_review_reason",
+                message="Reviewed allocation release requires a reason.",
+                details={"allocation_id": str(command.allocation_id)},
+            )
+        return AccountCreditApplications.release_for_invoice_void(
+            db,
+            invoice_id=command.invoice_id,
+            expected_allocation_ids=(command.allocation_id,),
+            memo=reason,
+        )
 
     @staticmethod
     def inspect_invariants(
@@ -1082,97 +1511,8 @@ class AccountCreditApplications:
             ) > round_money(row.source_capacity):
                 negative_payment_credit_source_availability += 1
 
-        effective_payment_amount = case(
-            (
-                Payment.status == PaymentStatus.succeeded,
-                PaymentAllocation.amount,
-            ),
-            (
-                and_(
-                    Payment.status == PaymentStatus.partially_refunded,
-                    Payment.amount > zero,
-                ),
-                PaymentAllocation.amount
-                * (Payment.amount - func.coalesce(Payment.refunded_amount, zero))
-                / func.nullif(Payment.amount, zero),
-            ),
-            else_=zero,
-        )
-        payment_totals = (
-            select(
-                PaymentAllocation.invoice_id.label("invoice_id"),
-                func.coalesce(func.sum(effective_payment_amount), zero).label("amount"),
-            )
-            .join(Payment, Payment.id == PaymentAllocation.payment_id)
-            .where(
-                PaymentAllocation.is_active.is_(True),
-                Payment.is_active.is_(True),
-                Payment.status.in_(
-                    [PaymentStatus.succeeded, PaymentStatus.partially_refunded]
-                ),
-            )
-            .group_by(PaymentAllocation.invoice_id)
-            .subquery()
-        )
-        credit_totals = (
-            select(
-                CreditNoteApplication.invoice_id.label("invoice_id"),
-                func.coalesce(func.sum(CreditNoteApplication.amount), zero).label(
-                    "amount"
-                ),
-            )
-            .group_by(CreditNoteApplication.invoice_id)
-            .subquery()
-        )
-        opening_funding_totals = (
-            select(
-                PrepaidOpeningFundingConsumption.invoice_id.label("invoice_id"),
-                func.coalesce(
-                    func.sum(PrepaidOpeningFundingConsumption.amount),
-                    zero,
-                ).label("amount"),
-            )
-            .group_by(PrepaidOpeningFundingConsumption.invoice_id)
-            .subquery()
-        )
-        payments_applied = func.round(
-            func.coalesce(payment_totals.c.amount, zero),
-            2,
-        )
-        credits_applied = func.round(
-            func.coalesce(credit_totals.c.amount, zero),
-            2,
-        )
-        opening_funding_applied = func.round(
-            func.coalesce(opening_funding_totals.c.amount, zero),
-            2,
-        )
-        funded_total = func.round(
-            payments_applied + credits_applied + opening_funding_applied,
-            2,
-        )
-        paid_invoice_underfunded = int(
-            db.execute(
-                select(func.count(Invoice.id))
-                .outerjoin(
-                    payment_totals,
-                    payment_totals.c.invoice_id == Invoice.id,
-                )
-                .outerjoin(
-                    credit_totals,
-                    credit_totals.c.invoice_id == Invoice.id,
-                )
-                .outerjoin(
-                    opening_funding_totals,
-                    opening_funding_totals.c.invoice_id == Invoice.id,
-                )
-                .where(
-                    Invoice.is_active.is_(True),
-                    Invoice.status == InvoiceStatus.paid,
-                    funded_total < func.round(Invoice.total, 2),
-                )
-            ).scalar()
-            or 0
+        paid_invoice_underfunded = _count_underfunded_paid_invoices(
+            db, opening_balance=False
         )
 
         settled_deposit_without_exact_payment = int(
@@ -1268,6 +1608,20 @@ class AccountCreditApplications:
             duplicate_provider_reference=duplicate_provider_reference,
             deposit_webhook_unresolved=deposit_webhook_unresolved,
         )
+
+    @staticmethod
+    def count_opening_balance_underfunded_invoices(db: Session) -> int:
+        """Count opening-balance paid invoices lacking complete funding evidence.
+
+        Deliberately not a field on `AccountCreditInvariantSummary`: that type is
+        pinned one-field-per-forensic-violation-code, and this is an observation
+        rather than a live breach. These invoices were settled before the
+        handoff and carried in already paid, so no reconciler can produce
+        allocations that were never carried in. Reporting the figure keeps the
+        invariant's boundary honest instead of quietly losing what sits behind
+        it.
+        """
+        return _count_underfunded_paid_invoices(db, opening_balance=True)
 
 
 __all__ = [

@@ -15,6 +15,7 @@ from app.models.service_team import (
     ServiceTeamCapabilityDefinition,
     ServiceTeamType,
 )
+from app.models.system_user import SystemUser
 from app.models.team_inbox import (
     InboxConversation,
     InboxConversationAssignment,
@@ -317,6 +318,9 @@ def test_admin_inbox_detail_renders_timeline(db_session, monkeypatch):
     def _fake_template_response(template_name, context):
         captured["template_name"] = template_name
         captured["context"] = context
+        captured["html"] = admin_inbox.templates.env.get_template(template_name).render(
+            **context
+        )
         return context
 
     monkeypatch.setattr(
@@ -324,6 +328,13 @@ def test_admin_inbox_detail_renders_timeline(db_session, monkeypatch):
         "TemplateResponse",
         _fake_template_response,
     )
+
+    def _fail_full_page_context(*_args, **_kwargs):
+        raise AssertionError(
+            "conversation partial must not rebuild global sidebar statistics"
+        )
+
+    monkeypatch.setattr(admin_inbox, "_ctx", _fail_full_page_context)
     db_session.commit()
 
     context = admin_inbox.team_inbox_detail(
@@ -340,6 +351,9 @@ def test_admin_inbox_detail_renders_timeline(db_session, monkeypatch):
     assert captured["template_name"] == "admin/inbox/_conversation.html"
     assert context["timeline"].id == str(conversation.id)
     assert context["timeline"].messages[0].body == "Down"
+    assert context["request"].headers["hx-request"] == "true"
+    assert "sidebar_stats" not in context
+    assert "Down" in captured["html"]
 
 
 def test_admin_inbox_detail_non_htmx_redirects_to_workspace(db_session):
@@ -450,6 +464,50 @@ def test_conversation_timeline_returns_teams_assignments_and_messages(db_session
         InboxMessageDirection.inbound.value,
         InboxMessageDirection.outbound.value,
     ]
+    assert timeline.messages[0].sender is None
+    assert timeline.messages[1].sender is not None
+    assert timeline.messages[1].sender.display_name == "Support agent"
+    assert timeline.messages[1].sender.initials == "AG"
+    assert (
+        timeline.messages[1].sender.source
+        is team_inbox_read.InboxTimelineSenderSource.fallback
+    )
+
+
+def test_conversation_timeline_resolves_inactive_outbound_sender_identity(db_session):
+    team = _team(db_session, "Support")
+    conversation = _conversation(db_session, team, subject="Sender identity")
+    sender = SystemUser(
+        first_name="Ibrahim",
+        last_name="Nurudeen",
+        display_name="Ibrahim Nurudeen",
+        email="inactive.inbox.sender@example.test",
+        is_active=False,
+    )
+    db_session.add(sender)
+    db_session.flush()
+    message = _message(
+        db_session,
+        conversation,
+        direction=InboxMessageDirection.outbound.value,
+        body="We are checking this now.",
+        at=datetime(2026, 7, 10, 8, 5, tzinfo=UTC),
+    )
+    message.metadata_ = {
+        "sent_by_person_id": str(sender.id),
+        "delivery_status": "sent",
+    }
+    db_session.commit()
+
+    timeline = team_inbox_read.get_conversation_timeline(db_session, conversation.id)
+
+    assert timeline is not None
+    projected = timeline.messages[-1].sender
+    assert projected is not None
+    assert projected.system_user_id == str(sender.id)
+    assert projected.display_name == "Ibrahim Nurudeen"
+    assert projected.initials == "IN"
+    assert projected.source is team_inbox_read.InboxTimelineSenderSource.staff
 
 
 def test_conversation_timeline_api_returns_404_for_inactive_conversation(db_session):

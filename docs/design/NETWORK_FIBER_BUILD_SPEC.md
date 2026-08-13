@@ -36,7 +36,7 @@ presentation owner) — the SoT tone contract the inventory owners lacked. Teste
    and web exposure for `FiberSegments`/`FiberAccessPoint`.
 3. Fold spatial assets (FDH, closures, access points, support structures,
    segments) into the **network canvas fiber layer** via
-   `network_map.build_network_map_context`; retire `fiber/map.html`.
+   `network_map.build_network_map_projection`; retire `fiber/map.html`.
 
 ## Geo vs ledger
 - Canvas (fiber layer): FdhCabinet, FiberSpliceClosure, FiberAccessPoint,

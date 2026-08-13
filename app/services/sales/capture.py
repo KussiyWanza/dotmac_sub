@@ -23,6 +23,7 @@ from app.services.customer_identity_normalization import (
 )
 from app.services.events import EventType, emit_event
 from app.services.integrations import inbox as integration_inbox
+from app.services.owner_commands import owner_command_active
 from app.services.sales import lifecycle
 
 LEAD_CAPTURE_CAPABILITY = "sales.lead_capture.v1"
@@ -220,6 +221,11 @@ def capture_lead(
             replayed=False,
         )
     except IntegrityError as exc:
+        if not commit:
+            raise LeadCaptureError(
+                "capture_conflict",
+                "Participant lead capture conflicted with canonical state",
+            ) from exc
         db.rollback()
         winner = _existing_capture(
             db,
@@ -235,6 +241,32 @@ def capture_lead(
         if commit:
             db.rollback()
         raise LeadCaptureError("capture_rejected", str(exc), kind="invalid") from exc
+
+
+def capture_lead_participant(
+    db: Session,
+    payload: LeadCaptureRequest,
+    *,
+    actor_id: str,
+) -> LeadCaptureResult:
+    """Stage Party-first Lead capture inside an active coordinating command.
+
+    The caller owns the root transaction. This entry point is flush-only and is
+    intentionally used by the Team Inbox fiber inquiry and public chat owners
+    so Party, Lead, Conversation, Message, and their provenance link commit
+    atomically.
+    """
+
+    allowed_owners = {
+        "communications.team_inbox_processing",
+        "communications.team_inbox_widget",
+    }
+    if not any(owner_command_active(db, owner=owner) for owner in allowed_owners):
+        raise LeadCaptureError(
+            "owner_command_required",
+            "Participant lead capture requires an active owner command",
+        )
+    return capture_lead(db, payload, actor_id=actor_id, commit=False)
 
 
 def capture_verified_receipt(

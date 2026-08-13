@@ -19,6 +19,8 @@ from app.models.analytics import (  # noqa: F401
 from app.models.audit import AuditActorType, AuditEvent  # noqa: F401
 from app.models.auth import (  # noqa: F401
     ApiKey,
+    AuthenticationBinding,
+    AuthenticationBindingIdentityError,
     MFAMethod,
     MFARecoveryCode,
     Session,
@@ -244,6 +246,10 @@ from app.models.dispatch import (  # noqa: F401
     TechnicianSkill,
     WorkOrderAssignmentQueue,
 )
+from app.models.domain_setting_history import (  # noqa: F401
+    DomainSettingHistory,
+    SettingChangeAction,
+)
 from app.models.domain_settings import (  # noqa: F401
     DomainSetting,
     SettingDomain,
@@ -280,6 +286,10 @@ from app.models.fiber_change_request import (  # noqa: F401
     FiberChangeRequest,
     FiberChangeRequestOperation,
     FiberChangeRequestStatus,
+)
+from app.models.fiber_cost_item import (  # noqa: F401
+    FiberCostItem,
+    FiberCostUnit,
 )
 from app.models.fiber_physical import (  # noqa: F401
     FiberConnectorPort,
@@ -527,6 +537,9 @@ from app.models.network import (  # noqa: F401
     WanMode,
     WanServiceType,
 )
+from app.models.network_map_asset_change import (  # noqa: F401
+    NetworkMapAssetChangeProposal,
+)
 from app.models.network_monitoring import (  # noqa: F401
     Alert,
     AlertEvent,
@@ -568,6 +581,10 @@ from app.models.network_operation import (  # noqa: F401
     NetworkOperationTargetType,
     NetworkOperationType,
 )
+from app.models.nextcloud_talk import (  # noqa: F401
+    NextcloudTalkNotificationRoom,
+    NextcloudTalkStaffAccount,
+)
 from app.models.notification import (  # noqa: F401
     AlertNotificationLog,
     AlertNotificationPolicy,
@@ -608,6 +625,11 @@ from app.models.ont_commissioning import (  # noqa: F401
     OntCommissioningState,
 )
 from app.models.ont_observation import OntObservation  # noqa: F401
+from app.models.ont_service_configuration import (  # noqa: F401
+    OntServiceConfigurationHead,
+    OntServiceConfigurationPhase,
+    OntServiceConfigurationRevision,
+)
 from app.models.ont_topology_observation import (  # noqa: F401
     OntTopologyObservationEvidence,
 )

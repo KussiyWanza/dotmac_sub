@@ -1,32 +1,42 @@
 #!/usr/bin/env python
 """Preview or apply stranded prepaid draft invoice reconciliation.
 
-Preview is the default and writes nothing. Apply is deliberately one invoice at
-a time and requires the exact reviewed fingerprint, timestamp, idempotency key,
-actor, and reason. A shortfall, including NGN 0.50, is never rounded or waived.
+Preview is the default and writes nothing. Apply is deliberately one existing
+invoice or one explicitly named missing-document entity at a time and requires
+the exact reviewed fingerprint, idempotency key, actor, and reason. A shortfall,
+including NGN 0.50, is never rounded or waived.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal, InvalidOperation
 from uuid import UUID
 
 from app.services.db_session_adapter import db_session_adapter
 from app.services.owner_commands import CommandContext
 from app.services.prepaid_draft_reconciliation import (
     AdoptFundedPrepaidProformaCommand,
+    CreateReviewedPaidPrepaidInvoiceCommand,
+    MissingPaidPrepaidInvoiceRepairQuery,
+    OpeningSettlementCorrectionQuery,
     PaidPrepaidInvoiceRepairQuery,
     PrepaidDraftReconciliationPreview,
     PrepaidProformaAdoptionQuery,
+    ReconcileOpeningSettlementCorrectionCommand,
     ReconcilePrepaidDraftCommand,
     RepairHistoricalPaidPrepaidInvoiceCommand,
     adopt_funded_prepaid_proforma,
+    create_reviewed_paid_prepaid_invoice,
     preview_funded_prepaid_proforma_adoption,
     preview_historical_paid_prepaid_invoice_repair,
+    preview_missing_paid_prepaid_invoice_repair,
+    preview_opening_settlement_correction,
     preview_prepaid_draft_cohort,
     preview_prepaid_draft_reconciliation,
+    reconcile_opening_settlement_correction,
     reconcile_prepaid_draft_invoice,
     repair_historical_paid_prepaid_invoice,
 )
@@ -46,6 +56,23 @@ def _timestamp(value: str) -> datetime:
         raise argparse.ArgumentTypeError("timestamp must be ISO 8601") from exc
     if parsed.tzinfo is None:
         raise argparse.ArgumentTypeError("timestamp must include a timezone offset")
+    return parsed
+
+
+def _date(value: str) -> date:
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("date must be YYYY-MM-DD") from exc
+
+
+def _money(value: str) -> Decimal:
+    try:
+        parsed = Decimal(value)
+    except InvalidOperation as exc:
+        raise argparse.ArgumentTypeError("money must be a decimal amount") from exc
+    if not parsed.is_finite():
+        raise argparse.ArgumentTypeError("money must be finite")
     return parsed
 
 
@@ -152,6 +179,72 @@ def _paid_invoice_repair_preview_payload(preview) -> dict[str, object]:
     }
 
 
+def _missing_paid_invoice_preview_payload(preview) -> dict[str, object]:
+    return {
+        "account_id": str(preview.account_id),
+        "subscription_id": str(preview.subscription_id),
+        "payment_id": str(preview.payment_id),
+        "existing_invoice_id": (
+            str(preview.existing_invoice_id) if preview.existing_invoice_id else None
+        ),
+        "disposition": preview.disposition.value,
+        "actionable": preview.actionable,
+        "issued_at": preview.issued_at.isoformat() if preview.issued_at else None,
+        "paid_at": preview.paid_at.isoformat() if preview.paid_at else None,
+        "due_at": preview.due_at.isoformat() if preview.due_at else None,
+        "billing_period_start": (
+            preview.billing_period_start.isoformat()
+            if preview.billing_period_start
+            else None
+        ),
+        "billing_period_end": (
+            preview.billing_period_end.isoformat()
+            if preview.billing_period_end
+            else None
+        ),
+        "subtotal": str(preview.subtotal),
+        "tax_total": str(preview.tax_total),
+        "total": str(preview.total),
+        "currency": preview.currency,
+        "account_credit_before": str(preview.account_credit_before),
+        "expected_remaining_credit": str(preview.expected_remaining_credit),
+        "selected_payment_available": str(preview.selected_payment_available),
+        "reason": preview.reason,
+        "fingerprint": preview.fingerprint,
+    }
+
+
+def _opening_settlement_preview_payload(preview) -> dict[str, object]:
+    return {
+        "invoice_id": str(preview.invoice_id),
+        "account_id": str(preview.account_id),
+        "invoice_number": preview.invoice_number,
+        "allocation_id": str(preview.allocation_id),
+        "payment_id": str(preview.payment_id) if preview.payment_id else None,
+        "opening_position_id": (
+            str(preview.opening_position_id) if preview.opening_position_id else None
+        ),
+        "baseline_id": str(preview.baseline_id) if preview.baseline_id else None,
+        "original_posting_group_id": (
+            str(preview.original_posting_group_id)
+            if preview.original_posting_group_id
+            else None
+        ),
+        "disposition": preview.disposition.value,
+        "actionable": preview.actionable,
+        "currency": preview.currency,
+        "invoice_total": str(preview.invoice_total),
+        "balance_due": str(preview.balance_due),
+        "allocated_amount": str(preview.allocated_amount),
+        "confirmed_balance": str(preview.confirmed_balance),
+        "subledger_credit_before": str(preview.subledger_credit_before),
+        "subledger_receivable_before": str(preview.subledger_receivable_before),
+        "opening_settlement_amount": str(preview.opening_settlement_amount),
+        "reason": preview.reason,
+        "fingerprint": preview.fingerprint,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--invoice-id", type=_uuid)
@@ -160,6 +253,16 @@ def main() -> int:
     parser.add_argument("--limit", type=int)
     parser.add_argument("--adopt-proforma", action="store_true")
     parser.add_argument("--repair-paid-invoice", action="store_true")
+    parser.add_argument("--repair-missing-paid-invoice", action="store_true")
+    parser.add_argument("--repair-opening-settlement", action="store_true")
+    parser.add_argument("--payment-id", type=_uuid)
+    parser.add_argument("--allocation-id", type=_uuid)
+    parser.add_argument("--issued-on", type=_date)
+    parser.add_argument("--due-on", type=_date)
+    parser.add_argument("--next-billing-on", type=_date)
+    parser.add_argument("--expected-total", type=_money)
+    parser.add_argument("--expected-remaining-credit", type=_money)
+    parser.add_argument("--expected-confirmed-balance", type=_money)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--fingerprint")
     parser.add_argument("--effective-at", type=_timestamp)
@@ -168,29 +271,136 @@ def main() -> int:
     parser.add_argument("--reason")
     args = parser.parse_args()
 
-    if args.adopt_proforma and args.repair_paid_invoice:
-        parser.error(
-            "--adopt-proforma and --repair-paid-invoice are mutually exclusive"
+    document_modes = sum(
+        bool(value)
+        for value in (
+            args.adopt_proforma,
+            args.repair_paid_invoice,
+            args.repair_missing_paid_invoice,
+            args.repair_opening_settlement,
         )
+    )
+    if document_modes > 1:
+        parser.error("document repair modes are mutually exclusive")
+
+    missing_only_values = (
+        args.payment_id,
+        args.issued_on,
+        args.due_on,
+        args.next_billing_on,
+        args.expected_total,
+        args.expected_remaining_credit,
+    )
+    if not args.repair_missing_paid_invoice and any(
+        value is not None for value in missing_only_values
+    ):
+        parser.error(
+            "payment, business-date, and expected-credit arguments require "
+            "--repair-missing-paid-invoice"
+        )
+    opening_only_values = (args.allocation_id, args.expected_confirmed_balance)
+    if not args.repair_opening_settlement and any(
+        value is not None for value in opening_only_values
+    ):
+        parser.error(
+            "--allocation-id and --expected-confirmed-balance require "
+            "--repair-opening-settlement"
+        )
+    if args.repair_opening_settlement and (
+        args.invoice_id is None
+        or args.allocation_id is None
+        or args.expected_confirmed_balance is None
+    ):
+        parser.error(
+            "--repair-opening-settlement requires --invoice-id, "
+            "--allocation-id, and --expected-confirmed-balance"
+        )
+    if args.repair_opening_settlement and (
+        args.subscription_id is not None
+        or args.account_id is not None
+        or args.limit is not None
+    ):
+        parser.error(
+            "--subscription-id, --account-id, and --limit cannot be used with "
+            "--repair-opening-settlement"
+        )
+    opening_query = (
+        OpeningSettlementCorrectionQuery(
+            invoice_id=args.invoice_id,
+            allocation_id=args.allocation_id,
+            expected_confirmed_balance=args.expected_confirmed_balance,
+        )
+        if args.repair_opening_settlement
+        else None
+    )
+    if args.repair_missing_paid_invoice and (
+        args.invoice_id is not None
+        or args.limit is not None
+        or args.effective_at is not None
+    ):
+        parser.error(
+            "--invoice-id, --limit, and --effective-at cannot be used with "
+            "--repair-missing-paid-invoice"
+        )
+
+    missing_query_values = (
+        args.account_id,
+        args.subscription_id,
+        args.payment_id,
+        args.issued_on,
+        args.due_on,
+        args.next_billing_on,
+        args.expected_total,
+        args.expected_remaining_credit,
+    )
+    if args.repair_missing_paid_invoice and any(
+        value is None for value in missing_query_values
+    ):
+        parser.error(
+            "--repair-missing-paid-invoice requires --account-id, "
+            "--subscription-id, --payment-id, --issued-on, --due-on, "
+            "--next-billing-on, --expected-total, and "
+            "--expected-remaining-credit"
+        )
+    missing_query = (
+        MissingPaidPrepaidInvoiceRepairQuery(
+            account_id=args.account_id,
+            subscription_id=args.subscription_id,
+            payment_id=args.payment_id,
+            issued_on=args.issued_on,
+            due_on=args.due_on,
+            next_billing_on=args.next_billing_on,
+            expected_total=args.expected_total,
+            expected_remaining_credit=args.expected_remaining_credit,
+        )
+        if args.repair_missing_paid_invoice
+        else None
+    )
 
     if args.limit is not None and args.limit <= 0:
         parser.error("--limit must be positive")
     if args.apply:
         required = [
-            ("--invoice-id", args.invoice_id),
             ("--fingerprint", args.fingerprint),
             ("--idempotency-key", args.idempotency_key),
             ("--actor", args.actor),
             ("--reason", args.reason),
         ]
-        if args.adopt_proforma or args.repair_paid_invoice:
-            required.append(("--subscription-id", args.subscription_id))
-        else:
+        if args.repair_opening_settlement:
             required.append(("--effective-at", args.effective_at))
+        elif not args.repair_missing_paid_invoice:
+            if args.adopt_proforma or args.repair_paid_invoice:
+                required.append(("--invoice-id", args.invoice_id))
+                required.append(("--subscription-id", args.subscription_id))
+            else:
+                required.append(("--invoice-id", args.invoice_id))
+                required.append(("--effective-at", args.effective_at))
         missing = [name for name, value in required if not value]
         if missing:
             parser.error("--apply requires " + ", ".join(missing))
-        if args.account_id is not None or args.limit is not None:
+        if not args.repair_missing_paid_invoice and (
+            args.account_id is not None or args.limit is not None
+        ):
             parser.error("--account-id and --limit are preview-only")
         with db_session_adapter.owner_command_session() as db:
             context = CommandContext.system(
@@ -199,7 +409,28 @@ def main() -> int:
                 reason=args.reason,
                 idempotency_key=args.idempotency_key,
             )
-            if args.adopt_proforma:
+            if args.repair_opening_settlement:
+                assert opening_query is not None
+                opening_result = reconcile_opening_settlement_correction(
+                    db,
+                    ReconcileOpeningSettlementCorrectionCommand(
+                        context=context,
+                        query=opening_query,
+                        preview_fingerprint=args.fingerprint,
+                        effective_at=args.effective_at,
+                    ),
+                )
+            elif args.repair_missing_paid_invoice:
+                assert missing_query is not None
+                missing_repair = create_reviewed_paid_prepaid_invoice(
+                    db,
+                    CreateReviewedPaidPrepaidInvoiceCommand(
+                        context=context,
+                        query=missing_query,
+                        preview_fingerprint=args.fingerprint,
+                    ),
+                )
+            elif args.adopt_proforma:
                 adoption = adopt_funded_prepaid_proforma(
                     db,
                     AdoptFundedPrepaidProformaCommand(
@@ -229,6 +460,66 @@ def main() -> int:
                         effective_at=args.effective_at,
                     ),
                 )
+        if args.repair_opening_settlement:
+            print(
+                json.dumps(
+                    {
+                        "invoice_id": str(opening_result.invoice_id),
+                        "allocation_id": str(opening_result.allocation_id),
+                        "opening_funding_consumption_id": str(
+                            opening_result.opening_funding_consumption_id
+                        ),
+                        "customer_posting_reversal_id": str(
+                            opening_result.customer_posting_reversal_id
+                        ),
+                        "ledger_reversal_ids": [
+                            str(value) for value in opening_result.ledger_reversal_ids
+                        ],
+                        "final_status": opening_result.final_status.value,
+                        "final_balance_due": str(opening_result.final_balance_due),
+                        "confirmed_balance": str(opening_result.confirmed_balance),
+                        "subledger_credit_after": str(
+                            opening_result.subledger_credit_after
+                        ),
+                        "subledger_receivable_after": str(
+                            opening_result.subledger_receivable_after
+                        ),
+                        "preview_fingerprint": opening_result.preview_fingerprint,
+                        "replayed": opening_result.replayed,
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
+        if args.repair_missing_paid_invoice:
+            print(
+                json.dumps(
+                    {
+                        "invoice_id": str(missing_repair.invoice_id),
+                        "invoice_number": missing_repair.invoice_number,
+                        "subscription_id": str(missing_repair.subscription_id),
+                        "payment_id": str(missing_repair.payment_id),
+                        "entitlement_id": str(missing_repair.entitlement_id),
+                        "issued_at": missing_repair.issued_at.isoformat(),
+                        "paid_at": missing_repair.paid_at.isoformat(),
+                        "due_at": missing_repair.due_at.isoformat(),
+                        "billing_period_start": (
+                            missing_repair.billing_period_start.isoformat()
+                        ),
+                        "billing_period_end": (
+                            missing_repair.billing_period_end.isoformat()
+                        ),
+                        "total": str(missing_repair.total),
+                        "remaining_credit": str(missing_repair.remaining_credit),
+                        "preview_fingerprint": (missing_repair.preview_fingerprint),
+                        "replayed": missing_repair.replayed,
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
         if args.adopt_proforma:
             print(
                 json.dumps(
@@ -309,7 +600,9 @@ def main() -> int:
             "document repair preview requires --invoice-id and --subscription-id"
         )
     if args.subscription_id is not None and not (
-        args.adopt_proforma or args.repair_paid_invoice
+        args.adopt_proforma
+        or args.repair_paid_invoice
+        or args.repair_missing_paid_invoice
     ):
         parser.error(
             "--subscription-id requires --adopt-proforma or --repair-paid-invoice"
@@ -321,7 +614,29 @@ def main() -> int:
 
     previews: tuple[PrepaidDraftReconciliationPreview, ...]
     with db_session_adapter.read_session() as db:
-        if args.adopt_proforma:
+        if args.repair_opening_settlement:
+            assert opening_query is not None
+            opening_preview = preview_opening_settlement_correction(
+                db,
+                opening_query,
+            )
+            payload = {
+                "dry_run": True,
+                "operation": "reconcile_preopening_invoice_settlement",
+                "item": _opening_settlement_preview_payload(opening_preview),
+            }
+        elif args.repair_missing_paid_invoice:
+            assert missing_query is not None
+            missing_preview = preview_missing_paid_prepaid_invoice_repair(
+                db,
+                missing_query,
+            )
+            payload = {
+                "dry_run": True,
+                "operation": "create_reviewed_paid_prepaid_invoice",
+                "item": _missing_paid_invoice_preview_payload(missing_preview),
+            }
+        elif args.adopt_proforma:
             adoption_preview = preview_funded_prepaid_proforma_adoption(
                 db,
                 PrepaidProformaAdoptionQuery(

@@ -14,10 +14,13 @@ arrive at the read model with the type the read model expects.
 from __future__ import annotations
 
 import asyncio
+import json
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from io import BytesIO
 from unittest.mock import patch
+from urllib.parse import quote
 
 import pytest
 from fastapi import FastAPI
@@ -25,7 +28,7 @@ from fastapi.testclient import TestClient
 from starlette.datastructures import UploadFile
 
 from app.db import get_db
-from app.services import team_inbox_commands, team_inbox_projection
+from app.services import team_inbox_commands, team_inbox_filters, team_inbox_projection
 from app.web.admin.inbox import _read_new_conversation_uploads, router
 
 
@@ -114,6 +117,29 @@ def test_multi_team_scope_is_split_on_commas(captured_request):
     assert parsed.service_team_ids == ("a", "b", "c")
 
 
+def test_advanced_team_filter_reaches_projection_as_typed_raw_input(captured_request):
+    raw_json = '["not parsed by the adapter"]'
+
+    parsed = captured_request(f"?filters={quote(raw_json)}")
+
+    assert parsed.advanced_filters == team_inbox_filters.InboxAdvancedFilterPayload(
+        raw_json=raw_json
+    )
+
+
+def test_invalid_advanced_team_filter_returns_controlled_422(db_session):
+    client = _client(db_session)
+    with (
+        patch("app.web.admin.get_current_user", return_value=None),
+        patch("app.web.admin.get_sidebar_stats", return_value={}),
+        patch("app.services.web_admin.get_actor_id", return_value=None),
+    ):
+        response = client.get("/inbox", params={"filters": "not-json"})
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Invalid JSON in filters payload"
+
+
 def test_every_route_declares_a_permission_guard():
     """No inbox route may be reachable without an explicit permission."""
     unguarded = [
@@ -126,6 +152,69 @@ def test_every_route_declares_a_permission_guard():
         ]
     ]
     assert unguarded == []
+
+
+def test_reply_htmx_request_returns_typed_completion_event_without_redirect():
+    conversation_id = uuid.uuid4()
+    outcome = team_inbox_commands.ReplyOutcome(
+        conversation_id=str(conversation_id),
+        kind="queued",
+        sender="support@example.test",
+        message_id=str(uuid.uuid4()),
+    )
+    client = _client(object())
+
+    with (
+        patch("app.web.admin.inbox._prepare_mutation"),
+        patch("app.services.team_inbox_commands.reply", return_value=outcome),
+        patch("app.services.web_admin.get_actor_id", return_value=None),
+    ):
+        response = client.post(
+            f"/inbox/{conversation_id}/reply",
+            data={"body_text": "We are checking this now."},
+            headers={"HX-Request": "true"},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 204
+    assert "location" not in response.headers
+    event = json.loads(response.headers["HX-Trigger"])["inbox-reply-completed"]
+    assert event == {
+        "conversation_id": str(conversation_id),
+        "status": "success",
+        "message": "Reply queued from support@example.test.",
+    }
+
+
+def test_reply_htmx_command_error_stays_in_workspace_with_failure_event():
+    conversation_id = uuid.uuid4()
+    client = _client(object())
+
+    with (
+        patch("app.web.admin.inbox._prepare_mutation"),
+        patch(
+            "app.services.team_inbox_commands.reply",
+            side_effect=team_inbox_commands.InboxCommandError(
+                "The channel is temporarily unavailable."
+            ),
+        ),
+        patch("app.services.web_admin.get_actor_id", return_value=None),
+    ):
+        response = client.post(
+            f"/inbox/{conversation_id}/reply",
+            data={"body_text": "Please try this reply."},
+            headers={"HX-Request": "true"},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 204
+    assert "location" not in response.headers
+    event = json.loads(response.headers["HX-Trigger"])["inbox-reply-completed"]
+    assert event == {
+        "conversation_id": str(conversation_id),
+        "status": "error",
+        "message": "The channel is temporarily unavailable.",
+    }
 
 
 def _post_new_email_conversation(

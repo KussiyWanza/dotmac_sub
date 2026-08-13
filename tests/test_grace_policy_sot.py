@@ -148,7 +148,9 @@ def test_invalid_default_policy_set_id_is_a_stable_domain_failure(
 
 def test_invalid_grace_days_fail_closed(db_session, subscriber_account, monkeypatch):
     def _setting(_db, domain, key):
-        if domain is SettingDomain.collections:
+        # `==`, not `is`: enum members were interned singletons, whereas the
+        # open member type constructs a new object per call.
+        if domain == SettingDomain.collections:
             return None
         if key.endswith("_default_grace_period_days"):
             return "invalid"

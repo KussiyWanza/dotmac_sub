@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from enum import Enum
 from uuid import UUID
 
 from fastapi import HTTPException
@@ -884,10 +885,19 @@ def _record_unallocated_payment_credit(
 ) -> LedgerEntry | None:
     """Record the unallocated payment surplus.
 
-    For an account-scoped payment, this writes a ledger entry against the
-    payer's subscriber account. For a consolidated (billing-account-scoped)
-    payment, the surplus increments ``BillingAccount.balance`` instead.
+    For an account-scoped payment, this hands the surplus to the account-credit
+    owner, which mints the ledger evidence. The offer to the account's open
+    receivables follows in ``_offer_settled_account_credit`` once the settlement
+    row exists, because credit is not spendable before then. Minting outside the
+    owner is what stranded the surplus: an overpaid account holds credit while
+    an issued invoice stays payable, which is what
+    ``eligible_invoice_with_unused_credit`` counts and what overstates AR.
+
+    For a consolidated (billing-account-scoped) payment, the surplus increments
+    ``BillingAccount.balance`` instead and is refused here.
     """
+    from app.services.billing.account_credit import AccountCreditApplications
+
     remaining = round_money(to_decimal(remaining))
     if remaining <= 0:
         return None
@@ -899,13 +909,60 @@ def _record_unallocated_payment_credit(
                 "settlement owner with exact billing-account ledger evidence"
             ),
         )
-    entry = _create_payment_ledger_entry(db, payment, None, remaining)
-    if entry is None:
+    result = AccountCreditApplications.record_credit(
+        db,
+        str(payment.account_id),
+        amount=remaining,
+        currency=payment.currency or "NGN",
+        source=LedgerSource.payment,
+        memo=f"Payment {payment.id}",
+        payment_id=payment.id,
+    )
+    if result.ledger_entry is None:
         raise HTTPException(
             status_code=409,
             detail="Unallocated payment ledger evidence could not be created",
         )
-    return entry
+    return result.ledger_entry
+
+
+def _offer_settled_account_credit(
+    db: Session,
+    payment: Payment,
+    settlement: PaymentSettlement,
+) -> None:
+    """Offer this payment's surplus now that its settlement evidence exists.
+
+    Deliberately here and not where the credit is minted. Credit is spendable
+    only once the settlement row exists — ``PaymentAllocations.available_amount``
+    returns zero while ``payment.settlement`` is None — so an offer at mint time
+    finds nothing backed and silently applies nothing. Without this call the
+    surplus simply sits, and the account is dunned on an invoice it has already
+    funded.
+
+    Not called from the evidence reconciler. That path reconstructs settlement
+    rows for payments that already carry their own allocation decisions, so
+    allocating there collides with the evidence it was asked to attach.
+    """
+    from app.services.billing.account_credit import AccountCreditApplications
+
+    if not payment.auto_allocate_on_settlement:
+        # An explicit operator decision, not an oversight. Verifying a payment
+        # proof with auto_allocate=False, and the provider-settlement path that
+        # runs its own application afterwards, both mean "hold this as credit".
+        # The column exists precisely to record that.
+        return
+    if payment.billing_account_id is not None:
+        return
+    if payment.account_id is None:
+        return
+    if round_money(to_decimal(settlement.unallocated_amount)) <= 0:
+        return
+    AccountCreditApplications.offer_available_credit(
+        db,
+        str(payment.account_id),
+        payments=(payment,),
+    )
 
 
 def _latest_successful_invoice_payment(db: Session, invoice: Invoice) -> Payment | None:
@@ -1128,6 +1185,43 @@ def _reanchor_paid_prepaid_invoice_if_lapsed(
         },
     )
     return True
+
+
+class PaymentAllocationFinalizationMode(str, Enum):
+    """Bound the consequences requested by a payment-allocation caller."""
+
+    standard = "standard"
+    reviewed_document_correction = "reviewed_document_correction"
+
+
+def _finalize_reviewed_document_payment_effects(
+    db: Session,
+    invoice: Invoice,
+) -> None:
+    """Finalize documentary evidence without asserting new funding.
+
+    A reviewed historical correction consumes money that was already settled
+    and available. It creates the canonical paid document and entitlement, but
+    does not run financial-access restoration against an account whose opening
+    funding cutover may still be incomplete. The repair owner separately
+    projects its fingerprint-bound billing anchor.
+    """
+
+    _recalculate_invoice_totals(db, invoice)
+    db.flush()
+    if invoice.status == InvoiceStatus.paid:
+        ensure_prepaid_entitlements_for_paid_invoice(db, invoice)
+    else:
+        revoke_prepaid_entitlements_for_unpaid_invoice(db, invoice)
+
+
+def finalize_reviewed_document_settlement_for_owner(
+    db: Session,
+    invoice: Invoice,
+) -> None:
+    """Flush-only participant for a zero-economic-delta document correction."""
+
+    _finalize_reviewed_document_payment_effects(db, invoice)
 
 
 def _finalize_invoice_payment_effects(db: Session, invoice: Invoice) -> None:
@@ -1612,6 +1706,7 @@ def _create_account_payment_from_preview(
     )
     db.add(settlement)
     db.flush()
+    _offer_settled_account_credit(db, payment, settlement)
     AuditEvents.stage(
         db,
         AuditEventCreate(
@@ -1778,6 +1873,7 @@ def _settle_existing_account_payment(
     )
     db.add(settlement)
     db.flush()
+    _offer_settled_account_credit(db, payment, settlement)
     AuditEvents.stage(
         db,
         AuditEventCreate(
@@ -2036,6 +2132,7 @@ class Payments(ListResponseMixin):
         )
         db.add(settlement)
         db.flush()
+        _offer_settled_account_credit(db, payment, settlement)
         AuditEvents.stage(
             db,
             AuditEventCreate(
@@ -4192,6 +4289,23 @@ class PaymentAllocations(ListResponseMixin):
             db,
             payload,
             complete_transaction=False,
+            finalization_mode=PaymentAllocationFinalizationMode.standard,
+        )
+
+    @staticmethod
+    def stage_confirm_reviewed_document_correction(
+        db: Session,
+        payload: PaymentAllocationConfirm,
+    ) -> PaymentAllocationResult:
+        """Stage allocation evidence for one reviewed historical document repair."""
+
+        return PaymentAllocations._confirm(
+            db,
+            payload,
+            complete_transaction=False,
+            finalization_mode=(
+                PaymentAllocationFinalizationMode.reviewed_document_correction
+            ),
         )
 
     @staticmethod
@@ -4207,6 +4321,7 @@ class PaymentAllocations(ListResponseMixin):
             db,
             payload,
             complete_transaction=commit,
+            finalization_mode=PaymentAllocationFinalizationMode.standard,
         )
 
     @staticmethod
@@ -4215,6 +4330,7 @@ class PaymentAllocations(ListResponseMixin):
         payload: PaymentAllocationConfirm,
         *,
         complete_transaction: bool,
+        finalization_mode: PaymentAllocationFinalizationMode,
     ) -> PaymentAllocationResult:
         key = _normalize_payment_allocation_key(payload.idempotency_key)
         replay = PaymentAllocations._replay(
@@ -4297,7 +4413,13 @@ class PaymentAllocations(ListResponseMixin):
             # the parent to ensure the next sync page includes it.
             payment.updated_at = datetime.now(UTC)
             reservation.ref_id = str(allocation.id)
-            _finalize_invoice_payment_effects(db, invoice)
+            if (
+                finalization_mode
+                is PaymentAllocationFinalizationMode.reviewed_document_correction
+            ):
+                _finalize_reviewed_document_payment_effects(db, invoice)
+            else:
+                _finalize_invoice_payment_effects(db, invoice)
             AuditEvents.stage(
                 db,
                 AuditEventCreate(
@@ -4322,37 +4444,42 @@ class PaymentAllocations(ListResponseMixin):
                         "account_credit_after": str(preview.account_credit_after),
                         "receivable_before": str(preview.receivable_before),
                         "receivable_after": str(preview.receivable_after),
-                        "access_consequence": preview.access_consequence,
+                        "access_consequence": (
+                            "unchanged_reviewed_document_correction"
+                            if finalization_mode
+                            is PaymentAllocationFinalizationMode.reviewed_document_correction
+                            else preview.access_consequence
+                        ),
+                        "finalization_mode": finalization_mode.value,
                     },
                 ),
             )
             db.flush()
-            # `financial.payments` ends here: confirmed cash, invoice
-            # allocation and unallocated-credit evidence are committed. This
-            # durable funding-change event is the ONLY way the allocation path
-            # reaches `financial.prepaid_service_renewals`, which owns prepaid
-            # period funding, entitlements and billing-anchor advancement.
-            # Without it a standalone credit allocation created entitlements
-            # but left `next_billing_at` stale, and the account was suspended
-            # again for service it had already paid for.
-            emit_event(
-                db,
-                EventType.payment_received,
-                {
-                    "payment_id": str(payment.id),
-                    "settlement_id": str(preview.settlement_id),
-                    "allocation_id": str(allocation.id),
-                    "amount": str(preview.amount),
-                    "currency": preview.currency,
-                    "invoice_id": str(invoice.id),
-                    "status": payment.status.value if payment.status else None,
-                    "source": "payment_allocation",
-                    "prepaid_funding_before": str(preview.prepaid_funding_before),
-                    "prepaid_funding_after": str(preview.prepaid_funding_after),
-                },
-                account_id=payment.account_id,
-                invoice_id=invoice.id,
-            )
+            # An ordinary allocation is a new funding-change observation and
+            # reaches `financial.prepaid_service_renewals` only through this
+            # durable event. A reviewed historical document correction instead
+            # consumes money that was already observed; its owner projects the
+            # fingerprint-bound anchor in the same transaction and must not
+            # emit a second payment observation.
+            if finalization_mode is PaymentAllocationFinalizationMode.standard:
+                emit_event(
+                    db,
+                    EventType.payment_received,
+                    {
+                        "payment_id": str(payment.id),
+                        "settlement_id": str(preview.settlement_id),
+                        "allocation_id": str(allocation.id),
+                        "amount": str(preview.amount),
+                        "currency": preview.currency,
+                        "invoice_id": str(invoice.id),
+                        "status": payment.status.value if payment.status else None,
+                        "source": "payment_allocation",
+                        "prepaid_funding_before": str(preview.prepaid_funding_before),
+                        "prepaid_funding_after": str(preview.prepaid_funding_after),
+                    },
+                    account_id=payment.account_id,
+                    invoice_id=invoice.id,
+                )
             if complete_transaction:
                 db.commit()
                 db.refresh(allocation)

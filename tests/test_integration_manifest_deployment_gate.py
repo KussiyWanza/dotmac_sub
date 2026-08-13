@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from uuid import uuid4
+
+from app.models.integration_platform import IntegrationInstallation
 from app.services.integrations import installations
 from scripts.integrations.verify_manifest_pins import manifest_pin_report
 from tests.integration_platform_helpers import enable_payment_provider
@@ -52,3 +55,24 @@ def test_deployment_gate_rejects_unavailable_enabled_pin(db_session):
     assert report["ok"] is False
     assert report["unavailable_count"] == 1
     assert report["installations"][0]["pin_state"] == "unavailable"
+
+
+def test_deployment_gate_accepts_original_meta_social_production_pin() -> None:
+    installation = IntegrationInstallation(
+        id=uuid4(),
+        connector_key="meta.social",
+        connector_version="1.0.0",
+        manifest_digest=(
+            "c2a13ab30bebb90b312ab4bbcf1d2feaa23ea706100b3e5ea35a101ec566cf08"
+        ),
+        name="Production Meta Social",
+        environment="production",
+        state="enabled",
+    )
+
+    report = manifest_pin_report((installations.manifest_pin_check(installation),))
+
+    assert report["ok"] is True
+    assert report["unavailable_count"] == 0
+    assert report["supported_historical_count"] == 1
+    assert report["installations"][0]["pin_state"] == "supported_historical"

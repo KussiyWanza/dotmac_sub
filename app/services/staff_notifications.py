@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from uuid import UUID
 
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
+from app.models.admin_alert import AdminNotification
 from app.models.network_monitoring import AlertSeverity
 from app.models.notification import (
     Notification,
@@ -21,6 +23,7 @@ from app.models.rbac import (
     SystemUserPermission,
     SystemUserRole,
 )
+from app.models.service_team import ServiceTeam, ServiceTeamMember
 from app.models.system_user import SystemUser
 from app.schemas.notification import NotificationCreate
 from app.services import admin_alerts
@@ -40,6 +43,82 @@ class PermissionReviewNotificationResult:
     sla_delivery_count: int
 
 
+def resolve_assignment_users(
+    db: Session,
+    *,
+    person_ids: set[str] | frozenset[str] | tuple[str, ...] = (),
+    service_team_ids: set[str] | frozenset[str] | tuple[str, ...] = (),
+) -> list[SystemUser]:
+    """Resolve active users assigned directly or through active service teams."""
+    normalized_people = {str(value) for value in person_ids if value}
+    normalized_teams = {str(value) for value in service_team_ids if value}
+    user_ids: set[UUID] = set()
+    if normalized_people:
+        direct = (
+            db.query(SystemUser.id)
+            .filter(SystemUser.is_active.is_(True))
+            .filter(
+                or_(
+                    SystemUser.id.in_(normalized_people),
+                    SystemUser.person_party_id.in_(normalized_people),
+                )
+            )
+            .all()
+        )
+        user_ids.update(row[0] for row in direct)
+    if normalized_teams:
+        team_members = (
+            db.query(SystemUser.id)
+            .select_from(ServiceTeamMember)
+            .join(ServiceTeam, ServiceTeam.id == ServiceTeamMember.team_id)
+            .join(SystemUser, SystemUser.person_party_id == ServiceTeamMember.person_id)
+            .filter(ServiceTeam.id.in_(normalized_teams))
+            .filter(ServiceTeam.is_active.is_(True))
+            .filter(ServiceTeamMember.is_active.is_(True))
+            .filter(SystemUser.is_active.is_(True))
+            .all()
+        )
+        user_ids.update(row[0] for row in team_members)
+    if not user_ids:
+        return []
+    return (
+        db.query(SystemUser)
+        .filter(SystemUser.id.in_(user_ids))
+        .order_by(SystemUser.id.asc())
+        .all()
+    )
+
+
+def queue_staff_assignment_notifications(
+    db: Session,
+    *,
+    users: list[SystemUser],
+    subject: str,
+    body: str,
+    actor_id: str | None = None,
+) -> tuple[str, ...]:
+    """Queue in-app and email assignment notifications for active staff."""
+    notified: list[str] = []
+    for user in users:
+        if actor_id and str(user.id) == str(actor_id):
+            continue
+        queue_staff_push(
+            db,
+            recipient=str(user.id),
+            subject=subject,
+            body=body,
+        )
+        if user.email:
+            queue_staff_email(
+                db,
+                recipient=user.email,
+                subject=subject,
+                body=body,
+            )
+        notified.append(str(user.id))
+    return tuple(notified)
+
+
 def queue_staff_notification(
     db: Session,
     *,
@@ -54,11 +133,11 @@ def queue_staff_notification(
     audience_type: str | None = None,
     audience_id=None,
     metadata: dict | None = None,
-) -> None:
+) -> Notification | None:
     """Queue an internal notification without customer preference/status policy."""
     if not recipient:
-        return
-    notifications_svc.queue_internal_notification(
+        return None
+    return notifications_svc.queue_internal_notification(
         db,
         NotificationCreate(
             channel=channel,
@@ -85,14 +164,39 @@ def queue_staff_push(
     subject: str,
     body: str,
     delivered: bool = True,
+    target_url: str = "/admin",
 ) -> None:
-    queue_staff_notification(
+    notification = queue_staff_notification(
         db,
         channel=NotificationChannel.push,
         recipient=recipient,
         subject=subject,
         body=body,
         delivered=delivered,
+        metadata={"target_url": target_url},
+    )
+    if notification is None:
+        return
+    try:
+        system_user_id = UUID(str(recipient))
+    except (TypeError, ValueError):
+        return
+    user_exists = (
+        db.query(SystemUser.id)
+        .filter(SystemUser.id == system_user_id)
+        .filter(SystemUser.is_active.is_(True))
+        .first()
+    )
+    if user_exists is None:
+        return
+    db.add(
+        AdminNotification(
+            source_notification_id=notification.id,
+            system_user_id=system_user_id,
+            title=subject[:180],
+            body=body,
+            target_url=target_url,
+        )
     )
 
 

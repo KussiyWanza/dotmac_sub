@@ -9,8 +9,9 @@ import pytest
 from jinja2 import Environment, FileSystemLoader
 
 from app.models.party import Party, PartyType
+from app.models.sales import Lead, LeadOriginCapture
 from app.models.service_team import ServiceTeam, ServiceTeamMember, ServiceTeamType
-from app.models.subscriber import Subscriber
+from app.models.subscriber import Subscriber, SubscriberStatus
 from app.models.team_inbox import (
     InboxAgentPresence,
     InboxAgentPresenceStatus,
@@ -63,6 +64,7 @@ def test_inbox_workspace_templates_compile():
         "admin/inbox/_floating_surfaces.html",
         "admin/inbox/_overlays.html",
         "admin/inbox/_ticket_panel.html",
+        "admin/inbox/manager_ai.html",
     ):
         assert environment.get_template(template_name) is not None
 
@@ -118,13 +120,46 @@ def test_workspace_exposes_responsive_realtime_and_accessible_controls():
     assert "/admin/inbox/presence" in sidebar
     assert "Only online agents receive auto-assigned inbox conversations." in sidebar
     assert "conversation_id" in sidebar
+    assert "Advanced team conditions" in sidebar
+    assert "support:inbox:self_assign" in conversation
+    assert "service_team_options | default(())" in conversation
+    assert "/admin/inbox/{{ timeline.id }}/assign-to-me" in conversation
+    assert 'action="/admin/inbox/bulk"' not in conversation
+    assert 'aria-label="Team for assignment to me"' in conversation
+    assert 'name="service_team_id" required' in conversation
+    assert "inboxTeamFilterBuilder" in javascript
+    assert 'filters: "filters"' in javascript
+    assert 'name="priority_at_most"' in sidebar
     assert "data-reply-composer" in conversation
     assert "idempotency_key" in conversation
+    assert "import message_bubble with context" in conversation
     triage = Path("templates/components/ui/triage.html").read_text()
+    assert "att.mime_type.startswith('video/')" in triage
+    assert "att.mime_type.startswith('audio/')" in triage
+    assert "<video" in triage
+    assert "<audio" in triage
     assert 'set priority_label = "Urgent"' in triage
     assert "assignee.initials" in triage
+    assert "title=\"{{ assignee.name or 'Assigned agent' }}\"" in triage
+    assert "message.sender" in triage
+    assert "outbound_sender.display_name" in triage
+    assert "outbound_sender.initials" in triage
+    assert 'aria-label="Sent by {{ outbound_sender_name }}"' in triage
+    assert ">AG</div>" not in triage
+    assert "att.location.map_url" in triage
+    assert "att.location.latitude" in triage
+    assert "att.location.longitude" in triage
+    assert "https://www.google.com/maps/search/?api=1&query=" in triage
+    assert "Open in Google Maps" in triage
+    assert 'rel="noopener noreferrer"' in triage
     assert "dotmac.inbox.draft." in javascript
     assert "newMessagesAvailable" in javascript
+    assert "data.agent_name" in javascript
+    assert 'name: agentName || "Another agent"' in javascript
+    assert "${names[0]} is replying" in javascript
+    assert "expiresAt: Date.now() + 3500" in javascript
+    assert "clearTypingPresence()" in javascript
+    assert "scheduleTypingPrune()" in javascript
     assert "setInterval" in javascript
     assert "5000" in javascript
     assert "handleShortcut" in javascript
@@ -134,6 +169,11 @@ def test_workspace_exposes_responsive_realtime_and_accessible_controls():
     assert "event.detail.shouldSwap = false" in javascript
     assert "if (this.filterLoading) return" in javascript
     assert 'document.body.addEventListener("htmx:sendAbort", release)' in javascript
+    assert (
+        "SAFE_INLINE_VIDEO_CONTENT_TYPES"
+        in Path("app/services/team_inbox_projection.py").read_text()
+    )
+    assert "video/mp4" in Path("app/services/team_inbox_projection.py").read_text()
 
 
 def test_projection_supplies_live_agent_and_assignment_options(db_session):
@@ -163,6 +203,15 @@ def test_projection_supplies_live_agent_and_assignment_options(db_session):
 
     assert projection.agent_options[0].name == "Ada Agent"
     assert projection.agent_options[0].initials == "AA"
+    assert projection.agent_options[0].presence_status == (
+        InboxAgentPresenceStatus.offline.value
+    )
+    assert projection.service_team_options[0].name == "Support"
+    assert projection.service_team_options[0].id == team.id
+    assert (
+        team_inbox_projection.list_actor_service_team_options(db_session, user.id)
+        == projection.service_team_options
+    )
     assert projection.agent_presence is not None
     assert projection.agent_presence.status == InboxAgentPresenceStatus.offline.value
     assert projection.assignment_counts.all == 1
@@ -197,6 +246,41 @@ def test_projection_reads_current_agent_presence(db_session):
 
     assert projection.agent_presence is not None
     assert projection.agent_presence.status == InboxAgentPresenceStatus.away.value
+
+
+def test_assignment_agent_options_show_team_and_presence_status(db_session):
+    user, person = add_bound_staff_user(
+        db_session,
+        email="online-agent@example.test",
+    )
+    user.first_name = "Online"
+    user.last_name = "Agent"
+    user.display_name = "Online Agent"
+    team = ServiceTeam(name="Support", team_type=ServiceTeamType.support.value)
+    db_session.add_all([user, team])
+    db_session.flush()
+    db_session.add(ServiceTeamMember(team_id=team.id, person_id=person.id))
+    db_session.add(
+        InboxAgentPresence(
+            person_id=user.id,
+            status=InboxAgentPresenceStatus.online.value,
+        )
+    )
+    db_session.commit()
+
+    projection = team_inbox_projection.build_queue_projection(
+        db_session,
+        team_inbox_projection.InboxQueueRequest(actor_person_id=user.id),
+    )
+
+    conversation_template = Path("templates/admin/inbox/_conversation.html").read_text()
+
+    assert projection.agent_options[0].presence_status == (
+        InboxAgentPresenceStatus.online.value
+    )
+    assert 'name="service_team_id"' in conversation_template
+    assert "service_team_options" in conversation_template
+    assert "agent.presence_status" in conversation_template
 
 
 def test_set_agent_presence_command_updates_current_operator(db_session):
@@ -734,3 +818,65 @@ def test_bulk_priority_action_uses_existing_command_owner(db_session):
     assert outcome.message == "Updated priority for 1 conversations."
     assert conversation.priority == 25
     assert conversation.metadata_["priority_history"][0]["to"] == 25
+
+
+def test_create_lead_from_unmatched_conversation_is_idempotent(db_session):
+    conversation_id = _conversation(db_session)
+
+    first = team_inbox_commands.create_lead_from_conversation(
+        db_session,
+        conversation_id=conversation_id,
+        actor_person_id=uuid.uuid4(),
+    )
+    second = team_inbox_commands.create_lead_from_conversation(
+        db_session,
+        conversation_id=conversation_id,
+        actor_person_id=uuid.uuid4(),
+    )
+
+    conversation = db_session.get(InboxConversation, conversation_id)
+    lead = db_session.get(Lead, first.lead_id)
+    origin = db_session.query(LeadOriginCapture).one()
+    assert second.replayed is True
+    assert second.lead_id == first.lead_id
+    assert lead is not None
+    assert lead.party_id is not None
+    assert lead.subscriber_id is None
+    assert origin.source_interaction_id == f"team-inbox:{conversation_id}"
+    assert conversation.metadata_["lead_capture"]["lead_id"] == first.lead_id
+    assert db_session.query(Lead).count() == 1
+
+
+def test_merge_contact_to_customer_captures_and_attaches_lead(db_session):
+    conversation_id = _conversation(db_session)
+    subscriber = Subscriber(
+        first_name="Ada",
+        last_name="Customer",
+        email="ada-merge@example.test",
+        status=SubscriberStatus.active,
+        is_active=True,
+    )
+    db_session.add(subscriber)
+    db_session.flush()
+    subscriber_id = subscriber.id
+    db_session.commit()
+
+    outcome = team_inbox_commands.merge_contact(
+        db_session,
+        conversation_id=conversation_id,
+        target_type="subscriber",
+        target_query="ada-merge@example.test",
+        actor_person_id=uuid.uuid4(),
+    )
+
+    lead = db_session.query(Lead).one()
+    conversation = db_session.get(InboxConversation, conversation_id)
+    subscriber = db_session.get(Subscriber, subscriber_id)
+    assert outcome.target_type == "subscriber"
+    assert outcome.target_id == str(subscriber_id)
+    assert lead.subscriber_id == subscriber_id
+    assert subscriber.party_id == lead.party_id
+    assert conversation.subscriber_id == subscriber_id
+    assert (
+        conversation.metadata_["lead_capture"]["merge"]["target_type"] == "subscriber"
+    )

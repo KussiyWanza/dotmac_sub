@@ -182,9 +182,6 @@ def default_offer_form(db: Session | None = None) -> dict[str, object]:
         "sla_profile_id": "",
         "radius_profile_id": "",
         "policy_set_id": "",
-        "splynx_tariff_id": "",
-        "splynx_service_name": "",
-        "splynx_tax_id": "",
         "with_vat": False,
         "vat_percent": "",
         "speed_download_mbps": "",
@@ -239,9 +236,6 @@ def parse_offer_form(form: FormData) -> dict[str, object]:
         "sla_profile_id": _form_str(form, "sla_profile_id").strip(),
         "radius_profile_id": _form_str(form, "radius_profile_id").strip(),
         "policy_set_id": _form_str(form, "policy_set_id").strip(),
-        "splynx_tariff_id": _form_str(form, "splynx_tariff_id").strip(),
-        "splynx_service_name": _form_str(form, "splynx_service_name").strip(),
-        "splynx_tax_id": _form_str(form, "splynx_tax_id").strip(),
         "with_vat": form.get("with_vat") == "true",
         "vat_percent": _form_str(form, "vat_percent").strip(),
         "speed_download_mbps": _form_str(form, "speed_download_mbps").strip(),
@@ -327,9 +321,6 @@ def build_offer_payload_data(offer: dict[str, object]) -> dict[str, object]:
         "usage_allowance_id",
         "sla_profile_id",
         "policy_set_id",
-        "splynx_tariff_id",
-        "splynx_service_name",
-        "splynx_tax_id",
         "vat_percent",
         "speed_download_mbps",
         "speed_upload_mbps",
@@ -678,9 +669,6 @@ def offer_edit_form_data(
         "sla_profile_id": offer.sla_profile_id or "",
         "radius_profile_id": radius_profile_id or "",
         "policy_set_id": offer.policy_set_id or "",
-        "splynx_tariff_id": offer.splynx_tariff_id or "",
-        "splynx_service_name": offer.splynx_service_name or "",
-        "splynx_tax_id": offer.splynx_tax_id or "",
         "with_vat": offer.with_vat,
         "vat_percent": offer.vat_percent or "",
         "speed_download_mbps": offer.speed_download_mbps or "",
@@ -1193,6 +1181,68 @@ class OfferNameConflict(DomainError):
     """
 
 
+class MissingSpeedReductionRule(DomainError):
+    """A capped family put on sale with nothing that reduces speed."""
+
+
+def assert_sellable_capped_offer_can_enforce(
+    db: Session,
+    *,
+    offer_id: str | None,
+    plan_family: str | None,
+    available_for_services: bool,
+) -> None:
+    """Refuse to put a capped-family offer on sale with no speed-reduction rule.
+
+    ``home_flex`` is defined by its cap: past the allowance you keep working at
+    a reduced speed rather than losing service (§1). Production carries five
+    home_flex offers and **63 subscribers with zero FUP rules between them** —
+    a product sold on a limit that has never once been enforced. The failure is
+    silent at every layer, which is why it survived: the offer looks complete,
+    the family is set, and nothing reads back as missing.
+
+    **What this proves, precisely:** that an active ``reduce_speed`` rule
+    exists under an active policy. It does **not** prove the ladder is complete
+    or that the threshold is reachable — a rule can sit behind a chain whose
+    prerequisite never fires, or inside a time window that never opens. Named
+    for the weaker claim on purpose; calling it a ladder check would overstate
+    it and invite someone to trust it for more.
+
+    Checked at the point of sale rather than at creation, because an offer must
+    exist before rules can be attached to it. The companion guard in
+    ``fup._assert_not_last_enforcing_rule`` keeps the invariant afterwards.
+
+    Deliberately does **not** check thresholds. Whether the cap is 4 GB/day or
+    40 is a commercial decision, and a validator that invented a default would
+    be a worse outcome than one that refuses: it would silently enforce a
+    number nobody chose.
+    """
+    from app.services.fup import (
+        FUP_REQUIRED_FAMILIES,
+        active_speed_reduction_rule_ids,
+    )
+
+    if not available_for_services:
+        return
+    if (plan_family or "") not in FUP_REQUIRED_FAMILIES:
+        return
+    if not offer_id:
+        # Nothing to look up yet; the update path re-checks once it exists.
+        return
+    if active_speed_reduction_rule_ids(db, offer_id):
+        return
+
+    raise MissingSpeedReductionRule(
+        code="catalog.offer.missing_speed_reduction_rule",
+        message=(
+            f"A {plan_family} offer cannot be made available for sale without "
+            "an active FUP rule that reduces speed. Add one on the offer's FUP "
+            "screen first — the cap is what defines this family."
+        ),
+        details={"offer_id": str(offer_id), "plan_family": plan_family},
+    )
+
+
 def assert_sellable_name_is_unique(
     db: Session, name: str, *, exclude_offer_id: str | None = None
 ) -> None:
@@ -1329,6 +1379,24 @@ def update_offer_with_audit(
         db,
         str(offer_data.get("name") or getattr(existing_offer, "name", "") or ""),
         exclude_offer_id=offer_id,
+    )
+    # Checked here rather than on create: rules hang off the offer, so it must
+    # exist before it can have a ladder. This is the transition that matters —
+    # putting a capped product on sale.
+    assert_sellable_capped_offer_can_enforce(
+        db,
+        offer_id=offer_id,
+        plan_family=str(
+            offer_data.get("plan_family")
+            or getattr(existing_offer, "plan_family", "")
+            or ""
+        ),
+        available_for_services=bool(
+            offer_data.get(
+                "available_for_services",
+                getattr(existing_offer, "available_for_services", False),
+            )
+        ),
     )
     price_id = str(offer_data.get("price_id") or "").strip()
     if price_id and offer_data.get("price_amount"):

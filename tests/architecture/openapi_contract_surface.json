@@ -4131,7 +4131,8 @@
     "query:kind",
     "query:limit",
     "query:note_id",
-    "query:offset"
+    "query:offset",
+    "query:work_order_id"
    ],
    "request": null,
    "responses": {
@@ -4202,11 +4203,23 @@
     "query:crm_work_order_id",
     "query:limit",
     "query:offset",
-    "query:status"
+    "query:status",
+    "query:work_order_id"
    ],
    "request": null,
    "responses": {
     "200": "4b475834c8b9",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "GET /api/v1/field/expense-requests/categories": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key"
+   ],
+   "request": null,
+   "responses": {
+    "200": "c460c1049fc4",
     "422": "a11c9d9b2af8"
    }
   },
@@ -4680,7 +4693,8 @@
     "query:crm_work_order_id",
     "query:limit",
     "query:offset",
-    "query:status"
+    "query:status",
+    "query:work_order_id"
    ],
    "request": null,
    "responses": {
@@ -4737,6 +4751,20 @@
    "request": null,
    "responses": {
     "200": "3261aba732c3",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "GET /api/v1/field/vendor/map-assets/search": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "query:limit",
+    "query:q!",
+    "query:types"
+   ],
+   "request": null,
+   "responses": {
+    "200": "b2e8032a0b31",
     "422": "a11c9d9b2af8"
    }
   },
@@ -9022,6 +9050,19 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "GET /api/v1/search/material-items": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "query:limit",
+    "query:q!"
+   ],
+   "request": null,
+   "responses": {
+    "200": "79dcaa8692e2",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "GET /api/v1/search/nas-devices": {
    "params": [
     "header:authorization",
@@ -10095,6 +10136,7 @@
     "query:assigned_person_id",
     "query:channel_type",
     "query:contact_resolution_status",
+    "query:filters",
     "query:limit",
     "query:muted",
     "query:needs_response",
@@ -14306,6 +14348,28 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "POST /api/v1/field/expense-requests/receipts": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key"
+   ],
+   "request": "58058c73003f",
+   "responses": {
+    "201": "a0ec87667cd6",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "POST /api/v1/field/expense-requests/submit": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key"
+   ],
+   "request": "f031511772eb",
+   "responses": {
+    "201": "6cc1ebd3f658",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "POST /api/v1/field/expense-requests/{expense_request_id}/cancel": {
    "params": [
     "header:authorization",
@@ -14654,6 +14718,17 @@
     "header:x-api-key"
    ],
    "request": "3ac55028283e",
+   "responses": {
+    "201": "2ce612d842fb",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "POST /api/v1/field/material-requests/submit": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key"
+   ],
+   "request": "595c666aaaf7",
    "responses": {
     "201": "2ce612d842fb",
     "422": "a11c9d9b2af8"
@@ -18193,6 +18268,26 @@
     "200": "35ca38bd28f3"
    }
   },
+  "POST /api/v1/webhooks/erp-material/{capability_binding_id}": {
+   "params": [
+    "path:capability_binding_id!"
+   ],
+   "request": null,
+   "responses": {
+    "200": "079f059bc605",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "POST /api/v1/webhooks/fiber-inquiry/{capability_binding_id}": {
+   "params": [
+    "path:capability_binding_id!"
+   ],
+   "request": null,
+   "responses": {
+    "200": "825108100fd0",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "POST /api/v1/webhooks/lead-capture/{capability_binding_id}": {
    "params": [
     "path:capability_binding_id!"
@@ -18682,7 +18777,7 @@
   "AssetCatalogSummary": "0b8db6079180",
   "AttachmentMeta": "de5420f7d9eb",
   "AuditActorType": "add968509176",
-  "AuditEventRead": "4db292edd781",
+  "AuditEventRead": "ba1463d9e560",
   "AuthProvider": "12388e0c7135",
   "AutopayEnableRequest": "3c99c04a008a",
   "AutopayStatusResponse": "f56a6f712555",
@@ -18766,7 +18861,8 @@
   "Body_submit_my_payment_proof_api_v1_payment_proofs_me_post": "d9b77dbb728d",
   "Body_submit_reseller_consolidated_proof_api_v1_payment_proofs_reseller_consolidated_post": "7e14a6cc3202",
   "Body_upload_avatar_api_v1_auth_me_avatar_post": "46d7e6a42f9a",
-  "Body_upload_field_attachment_api_v1_field_attachments_post": "ffe3aa2f464b",
+  "Body_upload_field_attachment_api_v1_field_attachments_post": "e39e31ee5e0c",
+  "Body_upload_field_expense_receipt_api_v1_field_expense_requests_receipts_post": "0962fefc0121",
   "Body_upload_purchase_invoice_attachment_api_v1_vendor_purchase_invoices__invoice_id__attachment_post": "a00c2cbdf3d2",
   "BrandProfileRead": "37033a9fe2b5",
   "BrandProfileUpdate": "7488ddafe176",
@@ -18805,9 +18901,9 @@
   "CampaignStepUpdate": "6804fecaf7e3",
   "CampaignUnsubscribeRead": "1d4ff16606cf",
   "CampaignUpdate": "7681c918673f",
-  "CatalogOfferCreate": "e9bbabd65902",
-  "CatalogOfferRead": "93b5cba9818b",
-  "CatalogOfferUpdate": "b2665d2d726b",
+  "CatalogOfferCreate": "48cc4d12ca81",
+  "CatalogOfferRead": "207c31b5e582",
+  "CatalogOfferUpdate": "17ed53516c46",
   "ChannelType": "c29499d2167f",
   "ChatSessionResponse": "a5b572df2349",
   "CollectionAccountCreate": "2027be22d479",
@@ -18837,8 +18933,10 @@
   "CreditNoteApplicationRead": "b53f641e9f06",
   "CreditNoteApplyRequest": "2108396b9c45",
   "CreditNoteCreate": "731b447fdafe",
+  "CreditNoteIssueApplicationDisposition": "7a58562715d4",
+  "CreditNoteIssueApplicationReason": "1caec0cd05ec",
   "CreditNoteIssueConfirmation": "53de2744cd22",
-  "CreditNoteIssuePreviewRead": "91a08365ee12",
+  "CreditNoteIssuePreviewRead": "b5acb6ede765",
   "CreditNoteIssuePreviewRequest": "15ed51ca44f5",
   "CreditNoteIssueRequest": "ac5cefadd1f2",
   "CreditNoteLineCreate": "bf223130f49a",
@@ -18900,12 +18998,13 @@
   "DispatchRuleCreate": "22adef00c73e",
   "DispatchRuleRead": "cace5b1f540f",
   "DispatchRuleUpdate": "0179f24569e6",
-  "DomainSettingRead": "5a8a3bb12d75",
-  "DomainSettingUpdate": "6e4e007f0b88",
+  "DomainSettingRead": "fdd43a90cd92",
+  "DomainSettingUpdate": "305f2d7ecc35",
   "DueDateCalculationRequest": "0215060c3e1f",
   "DueDateCalculationResponse": "7e29aca78232",
   "DunningAction": "d42e316f102b",
   "ElevationRead": "3ca3d8f2a410",
+  "ErpMaterialStatusReceipt": "dea085458884",
   "ErrorDetail": "baaa77850daa",
   "ErrorResponse": "9a1634f1cfc4",
   "EtaUpdateCreate": "3b90f58a7082",
@@ -18928,6 +19027,7 @@
   "FiberFieldVerificationJobPlanFeatureRead": "42bcf151f2ab",
   "FiberFieldVerificationJobPlanPreviewRead": "b64820005273",
   "FiberFieldVerificationJobPlanRequest": "a50564a58e40",
+  "FiberInquiryReceipt": "a1106cf17b8d",
   "FiberPathRead": "d6a2ee343fdf",
   "FiberPathSegment": "a86366b1a29f",
   "FiberSegmentCreate": "c12fc3c3d8bf",
@@ -18956,7 +19056,7 @@
   "FiberTerminationPointCreate": "d70cd85749a7",
   "FiberTerminationPointRead": "eef2a7ac34e4",
   "FiberTerminationPointUpdate": "ebdbeb8a047e",
-  "FieldAttachmentRead": "a4167d819d47",
+  "FieldAttachmentRead": "12a11823b799",
   "FieldCableRegistrationCreate": "2fe2e6d32087",
   "FieldCableRegistrationResponse": "7e0dd2969fbb",
   "FieldCompletionRequirements": "3a2d8a58716d",
@@ -18968,10 +19068,12 @@
   "FieldEquipmentRead": "c401fc79d178",
   "FieldEquipmentRecord": "7c7bcf16d5ae",
   "FieldEquipmentReturnRequest": "80e3640552d3",
-  "FieldExpenseRequestCreate": "63ca586b290c",
+  "FieldExpenseCategoryRead": "c8edfa89ab4d",
+  "FieldExpenseRequestCreate": "4a21a0cb3712",
   "FieldExpenseRequestItemCreate": "3b23aa8d5a6d",
   "FieldExpenseRequestItemRead": "515094e4452b",
-  "FieldExpenseRequestRead": "48008f260a1d",
+  "FieldExpenseRequestRead": "4e1e5219e3d4",
+  "FieldExpenseRequestSubmit": "e8a7e3d6ec5a",
   "FieldFiberCustomerTraceRead": "77b4750e8e06",
   "FieldFiberOntLiveRead": "b56481e9b334",
   "FieldFiberSourceObservationCreate": "e2926b09d191",
@@ -19015,10 +19117,11 @@
   "FieldMaterialConsumeItem": "911c9370f480",
   "FieldMaterialConsumeRequest": "83119748b137",
   "FieldMaterialRead": "b3ca3b51848b",
-  "FieldMaterialRequestCreate": "b0e4e38209fb",
+  "FieldMaterialRequestCreate": "beb591240e6a",
   "FieldMaterialRequestItemCreate": "04759e76cb22",
   "FieldMaterialRequestItemRead": "1e218709f934",
-  "FieldMaterialRequestRead": "5045387560f6",
+  "FieldMaterialRequestRead": "c01095e4d9b6",
+  "FieldMaterialRequestSubmit": "0bac3c573aa7",
   "FieldMeResponse": "92ccd05b3f23",
   "FieldMovementRead": "e6afbc3e60fc",
   "FieldNoteCreate": "38437360dd97",
@@ -19092,7 +19195,7 @@
   "IPv6AddressCreate": "556d549e15ca",
   "IPv6AddressRead": "d14ab909bf1f",
   "IPv6AddressUpdate": "c13ce5267072",
-  "InboxAgentPerformanceRead": "eb25784261e6",
+  "InboxAgentPerformanceRead": "f93a4811c371",
   "InboxConversationContactLinkRead": "a4cc7ff7853d",
   "InboxConversationContactLinkRequest": "f407043f0c43",
   "InboxConversationEscalateRequest": "616991a12b83",
@@ -19259,6 +19362,7 @@
   "ListResponse_FiberTerminationPointRead_": "5211ce97bd5d",
   "ListResponse_FieldAttachmentRead_": "6b63585cb6fe",
   "ListResponse_FieldEquipmentCustodyRead_": "3ca9545967e8",
+  "ListResponse_FieldExpenseCategoryRead_": "48f31f419bbc",
   "ListResponse_FieldExpenseRequestRead_": "1a0780401fd8",
   "ListResponse_FieldFiberCustomerTraceRead_": "a780397774e9",
   "ListResponse_FieldFiberSourceObservationRead_": "5ad0239abaf9",
@@ -19435,7 +19539,7 @@
   "NextcloudTalkRoomListRequest": "2254aa431aad",
   "NotificationBulkCreateRequest": "6ea3623d1c9b",
   "NotificationBulkCreateResponse": "815274951d90",
-  "NotificationChannel": "3b44d9af7c7b",
+  "NotificationChannel": "11eefb3772ea",
   "NotificationCreate": "3a856e28acdb",
   "NotificationDeliveryBulkUpdateRequest": "9d54e5dcc470",
   "NotificationDeliveryBulkUpdateResponse": "b0f1203ff82b",
@@ -19640,7 +19744,7 @@
   "PriceType": "991176fa607a",
   "PriceUnit": "8587e7348110",
   "ProjectCostSummary": "f953c7ceefa5",
-  "ProjectCreate": "d3f9bf5d5ed7",
+  "ProjectCreate": "306ae5d9f212",
   "ProjectGanttUpdate": "38b022ae411d",
   "ProjectItem": "df3035be834b",
   "ProjectKanbanMove": "7578fb10fb86",
@@ -19804,8 +19908,6 @@
   "SessionRevokeResponse": "6f65989aa4a7",
   "SessionStatus": "da0d2e5253e5",
   "SessionUpdate": "67c007064d12",
-  "SettingDomain": "5e290a65e6a5",
-  "SettingValueType": "6e0b30116466",
   "ShiftCreate": "60488314a714",
   "ShiftRead": "360213b8ce8f",
   "ShiftUpdate": "0fc6570f0c71",
@@ -19867,11 +19969,11 @@
   "SubscriptionAddOnRead": "fc2a625323ad",
   "SubscriptionAddOnUpdate": "3eb9493528e7",
   "SubscriptionBillingTreatment": "6f669e9e59a6",
-  "SubscriptionCreate": "dd2fcd35ad82",
+  "SubscriptionCreate": "74d292a7c6ce",
   "SubscriptionDefaultsResponse": "3e153d9f51b0",
-  "SubscriptionRead": "4217aba4c23f",
+  "SubscriptionRead": "fc8ee2012673",
   "SubscriptionStatus": "55da6209c756",
-  "SubscriptionTechnicalUpdate": "9a8baf2ca29b",
+  "SubscriptionTechnicalUpdate": "cf9d7e2a90c6",
   "SuppressionCreate": "875f5ad57243",
   "SuppressionReason": "e3c4e28c7028",
   "SuppressionScope": "8a2a4910b101",
@@ -19906,24 +20008,25 @@
   "TechnicianSkillCreate": "faeb4784d110",
   "TechnicianSkillRead": "251874c88447",
   "TechnicianSkillUpdate": "ac4bdc9323d0",
-  "TicketBulkUpdateItem": "0479fd552a3a",
+  "TicketBulkUpdateItem": "0ccf42cd5af2",
   "TicketBulkUpdateRequest": "0d26f731f1d3",
   "TicketChannel": "038f82eb6030",
   "TicketCommentAuthorType": "71c5dc34bd82",
-  "TicketCommentCreate": "9b2e3d1d8921",
+  "TicketCommentCreate": "f48b2f317b18",
   "TicketCommentRead": "21b3919ecc05",
   "TicketCommentUpdate": "a7569ca78ed3",
-  "TicketCreate": "e3632cc2b02c",
+  "TicketCreate": "12e715694d5b",
   "TicketDisputeRequest": "03d11e1bd38b",
   "TicketLinkCreate": "c18804421941",
   "TicketMergeRequest": "42598a940d25",
-  "TicketRead": "8b93d9651afa",
+  "TicketRead": "4214e8a3541e",
   "TicketResolutionDisputeRequest": "4f363fced57e",
-  "TicketSatisfactionRequest": "0a9ced9fce0c",
+  "TicketSatisfactionRequest": "784025f573c3",
   "TicketSlaEventCreate": "fa4cf25fdf5b",
   "TicketSlaEventRead": "c059a611173c",
   "TicketSlaEventUpdate": "f43daca466d0",
-  "TicketUpdate": "2a276a5390e8",
+  "TicketStatus": "529ca7a257d7",
+  "TicketUpdate": "69efba38c366",
   "TicketWorkOrderIssueRequest": "4c4c1217d48d",
   "TokenResponse": "b55a164b5612",
   "TopUserEntry": "a8f50c81e200",
@@ -19950,9 +20053,9 @@
   "UptimeReportItem": "f304a6c052eb",
   "UptimeReportRequest": "3c6e26b26aeb",
   "UptimeReportResponse": "fa073ce2f2ec",
-  "UsageAllowanceCreate": "3e96ab940b9d",
-  "UsageAllowanceRead": "98dbff359752",
-  "UsageAllowanceUpdate": "1717f6f54497",
+  "UsageAllowanceCreate": "c0d41d92373f",
+  "UsageAllowanceRead": "f00b200e3247",
+  "UsageAllowanceUpdate": "b0e8a62c1ec8",
   "UsageChargePostBatchRequest": "efc2858459ac",
   "UsageChargePostBatchResponse": "97b1c0161a19",
   "UsageChargePostRequest": "7d964858524a",

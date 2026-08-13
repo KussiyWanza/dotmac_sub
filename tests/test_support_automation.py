@@ -38,6 +38,21 @@ def test_clean_conditions_drops_unknown_keys_and_empty_values():
     assert cleaned == {"status": "open", "ticket_type": "incident"}
 
 
+def test_automation_configuration_canonicalizes_legacy_resolved_status():
+    conditions = support_automation_rules.TicketAutomationConditions.from_mapping(
+        {"status": "resolved"}
+    )
+    action = support_automation_rules.TicketAutomationAction.from_mapping(
+        AutomationActionType.set_status,
+        {"status": "resolved"},
+    )
+
+    assert conditions.status is TicketStatus.closed
+    assert conditions.as_dict() == {"status": "closed"}
+    assert action.status is TicketStatus.closed
+    assert action.as_dict() == {"status": "closed"}
+
+
 def test_conditions_match_empty_dict_matches_anything():
     ticket = SimpleNamespace(status="open", priority="high")
     assert support_automation._conditions_match({}, ticket) is True
@@ -90,7 +105,7 @@ def test_proposal_sets_priority_without_a_ticket_write():
 def test_status_proposal_strips_whitespace():
     rule = _fake_rule(AutomationActionType.set_status, {"status": "  resolved  "})
     proposal = support_automation._proposal_for_rule(rule)
-    assert proposal is not None and proposal.status == "resolved"
+    assert proposal is not None and proposal.status is TicketStatus.closed
 
 
 def test_tag_proposal_carries_only_the_requested_tag():
@@ -119,11 +134,13 @@ def test_missing_action_value_produces_no_proposal():
 
 
 def test_admin_action_value_validation_rejects_mismatched_payload(db_session):
-    support_ticket_settings_service.update_options(
+    support_ticket_settings_service.update_ticket_configuration(
         db_session,
-        statuses=["open"],
-        priorities=["normal"],
-        ticket_types=["incident"],
+        support_ticket_settings_service.TicketConfigurationUpdate(
+            statuses=("open",),
+            priorities=("normal",),
+            ticket_types=("incident",),
+        ),
     )
 
     with pytest.raises(ValueError, match="priority"):

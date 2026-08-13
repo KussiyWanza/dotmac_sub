@@ -397,14 +397,21 @@ def test_erp_manifest_owns_config_secrets_and_capabilities():
 
     definition = require_connector_definition("dotmac.erp")
     assert definition.config_schema["required"] == ["base_url"]
-    assert {secret.name for secret in definition.secrets} == {"service_credentials"}
+    assert {secret.name for secret in definition.secrets} == {
+        "service_credentials",
+        "webhook_signing_secret",
+    }
     assert {capability.id for capability in definition.capabilities} == {
         "erp.outbox.deliver.v1",
         "erp.status.read.v1",
         "erp.inventory.read.v1",
+        "erp.material_status.webhook.v1",
         "erp.operational_context.sync.v1",
         "erp.regulatory.read.v1",
+        "workforce.attendance.read.v1",
+        "workforce.attendance.punch.v1",
     }
+    assert definition.version == "1.2.0"
 
 
 def test_erp_capability_fails_closed_without_binding(db_session):

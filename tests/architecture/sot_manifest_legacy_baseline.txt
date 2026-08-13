@@ -98,7 +98,6 @@ network.monitoring_inventory
 network.nas_access_path_evidence
 network.nas_inventory
 network.nas_lifecycle
-network.ont_assignment_commands
 network.ont_assignment_constraint_authorization
 network.ont_assignment_cutover
 network.ont_assignment_cutover_batches
@@ -116,7 +115,6 @@ network.operation_ledger
 network.outage_impact
 network.routeros_sot
 network.splitter_inventory
-observability.audit_log
 observability.channel_health_contracts
 observability.metrics
 observability.recording
@@ -135,7 +133,6 @@ party.organization_profile_audit
 party.principal_context_audit
 party.registry
 runtime.db_sessions
-runtime.infrastructure_health
 runtime.infrastructure_polling
 runtime.task_heartbeat
 runtime.task_idempotency

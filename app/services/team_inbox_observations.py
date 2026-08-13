@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -45,6 +46,7 @@ class InboxProvider(StrEnum):
     meta_cloud_api = "meta_cloud_api"
     meta_social = "meta_social"
     chat_widget = "chat_widget"
+    fiber_website = "fiber_website"
 
 
 class ObservationProcessingOutcome(StrEnum):
@@ -59,6 +61,75 @@ class TeamInboxObservationError(DomainError):
 
 
 @dataclass(frozen=True, slots=True)
+class InboundLocationObservation:
+    latitude: float
+    longitude: float
+    name: str | None = None
+    address: str | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            not math.isfinite(self.latitude)
+            or not -90 <= self.latitude <= 90
+            or not math.isfinite(self.longitude)
+            or not -180 <= self.longitude <= 180
+        ):
+            raise TeamInboxObservationError(
+                code="communications.team_inbox_observations.invalid_location",
+                message="The provider location coordinates are invalid.",
+            )
+
+    def to_metadata(self) -> dict[str, float | str | None]:
+        return {
+            "latitude": self.latitude,
+            "longitude": self.longitude,
+            "name": self.name,
+            "address": self.address,
+        }
+
+
+def inbound_location_observation(
+    *,
+    latitude: object,
+    longitude: object,
+    name: object = None,
+    address: object = None,
+) -> InboundLocationObservation | None:
+    if latitude is None and longitude is None:
+        return None
+    if (
+        latitude is None
+        or longitude is None
+        or isinstance(latitude, bool)
+        or isinstance(longitude, bool)
+    ):
+        raise TeamInboxObservationError(
+            code="communications.team_inbox_observations.invalid_location",
+            message="The provider location must include valid latitude and longitude.",
+        )
+    try:
+        latitude_value = float(str(latitude).strip())
+        longitude_value = float(str(longitude).strip())
+    except (TypeError, ValueError) as exc:
+        raise TeamInboxObservationError(
+            code="communications.team_inbox_observations.invalid_location",
+            message="The provider location must include valid latitude and longitude.",
+        ) from exc
+    return InboundLocationObservation(
+        latitude=latitude_value,
+        longitude=longitude_value,
+        name=(
+            str(name).strip()[:255] if name is not None and str(name).strip() else None
+        ),
+        address=(
+            str(address).strip()[:500]
+            if address is not None and str(address).strip()
+            else None
+        ),
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class InboundAttachmentObservation:
     asset_type: str
     file_name: str | None = None
@@ -67,6 +138,8 @@ class InboundAttachmentObservation:
     source_url: str | None = None
     caption: str | None = None
     file_size: int | None = None
+    download_status: str | None = None
+    location: InboundLocationObservation | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,7 +162,34 @@ class InboundMessageObservation:
     # DKIM result for a message already accepted — so it is carried even though
     # no admission policy reads it yet.
     authentication: dict[str, object] | None = None
+    provider_account_id: str | None = None
+    external_account_id: str | None = None
+    page_id: str | None = None
+    instagram_account_id: str | None = None
+    provider_comment_id: str | None = None
+    comment_id: str | None = None
+    post_id: str | None = None
+    media_id: str | None = None
+    parent_provider_comment_id: str | None = None
+    commenter_id: str | None = None
+    commenter_name: str | None = None
+    commenter_username: str | None = None
+    surface: str | None = None
+    permalink_url: str | None = None
+    media_url: str | None = None
+    contact_profile: dict[str, str | None] | None = None
     attachments: tuple[InboundAttachmentObservation, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class FiberWebsiteInquiryObservation:
+    full_name: str
+    email: str
+    phone: str | None
+    interest: str
+    message: str | None
+    integration_inbox_id: UUID
+    form_version: str = "fiber-contact-v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,7 +199,11 @@ class DeliveryReceiptObservation:
     error_codes: tuple[str, ...] = ()
 
 
-NormalizedObservation = InboundMessageObservation | DeliveryReceiptObservation
+NormalizedObservation = (
+    InboundMessageObservation
+    | FiberWebsiteInquiryObservation
+    | DeliveryReceiptObservation
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,17 +278,31 @@ def _validate(command: RecordProviderObservationCommand) -> tuple[str, str, str]
             "invalid_observation", "Provider observed_at must be timezone-aware."
         )
     if command.kind is InboxObservationKind.message:
-        if not isinstance(command.payload, InboundMessageObservation):
+        if not isinstance(
+            command.payload,
+            (InboundMessageObservation, FiberWebsiteInquiryObservation),
+        ):
             raise _error(
                 "invalid_observation", "Message observation payload is invalid."
             )
-        if (
+        if isinstance(command.payload, InboundMessageObservation) and (
             not command.payload.contact_address.strip()
             or not command.payload.body.strip()
         ):
             raise _error(
                 "invalid_observation",
                 "Inbound contact address and message body are required.",
+            )
+        if isinstance(command.payload, FiberWebsiteInquiryObservation) and (
+            command.channel_type is not InboxChannelType.website_fiber
+            or command.provider is not InboxProvider.fiber_website
+            or not command.payload.full_name.strip()
+            or not command.payload.email.strip()
+            or not command.payload.interest.strip()
+        ):
+            raise _error(
+                "invalid_observation",
+                "Fiber inquiry identity and interest are required.",
             )
         if not external_message_id:
             raise _error(

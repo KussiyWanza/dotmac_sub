@@ -43,6 +43,7 @@ from app.tasks.device_projection import reconcile_device_projections
 from app.tasks.dotmac_erp_outbox import (
     deliver_erp_sync_events,
     refresh_expense_claim_statuses,
+    refresh_material_catalog,
     refresh_material_request_statuses,
     refresh_purchase_invoice_statuses,
     repair_purchase_invoice_sync,
@@ -136,6 +137,7 @@ from app.tasks.ont_runtime_status import (
     dispatch_huawei_ont_status,
     refresh_huawei_olt_status,
 )
+from app.tasks.ont_service_configuration import apply as apply_ont_service_configuration
 from app.tasks.ont_signal_observations import record_ont_observations
 from app.tasks.operational_escalations import dispatch_operational_escalation_deliveries
 from app.tasks.outage_auto_notify import auto_dispatch_outage_notifications
@@ -175,6 +177,9 @@ from app.tasks.team_inbox import (
 )
 from app.tasks.team_inbox import (
     recover_stale_ai_intake as recover_stale_inbox_ai_intake,
+)
+from app.tasks.team_inbox import (
+    repair_whatsapp_locations as repair_inbox_whatsapp_locations,
 )
 from app.tasks.team_inbox import (
     retry_failed_outbound_messages as retry_failed_inbox_outbound_messages,
@@ -270,6 +275,7 @@ __all__ = [
     "retry_failed_inbox_outbound_messages",
     "promote_inbox_message_media_assets",
     "recover_stale_inbox_ai_intake",
+    "repair_inbox_whatsapp_locations",
     "auto_resolve_stale_inbox_conversations",
     "run_scheduled_export",
     "run_export_job",
@@ -282,6 +288,7 @@ __all__ = [
     "deliver_erp_sync_events",
     "refresh_expense_claim_statuses",
     "refresh_material_request_statuses",
+    "refresh_material_catalog",
     "refresh_purchase_invoice_statuses",
     "repair_purchase_invoice_sync",
     "sync_erp_operational_domains",
@@ -353,6 +360,7 @@ __all__ = [
     "check_nas_health",
     "execute_ont_bulk_action",
     "run_ont_reconcile_sweep",
+    "apply_ont_service_configuration",
     "apply_huawei_ont_firmware",
     "verify_huawei_ont_firmware",
     "dispatch_huawei_ont_status",

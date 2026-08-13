@@ -27,13 +27,16 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.models.stored_file import StoredFile
 from app.services import web_support_ticket_bulk as support_ticket_bulk_service
 from app.services import (
     web_support_ticket_bulk_actions as support_ticket_bulk_actions_service,
 )
 from app.services import web_support_tickets as support_web_service
 from app.services.auth_dependencies import can, require_permission
+from app.services.file_storage import build_content_disposition, file_uploads
 from app.services.list_query import ListQuery
+from app.services.object_storage import ObjectNotFoundError
 from app.web.request_parsing import parse_json_body
 
 router = APIRouter(prefix="/support/tickets", tags=["web-admin-support-tickets"])
@@ -77,6 +80,26 @@ def _actor_id(request: Request) -> str | None:
         else None
     )
     return str(value) if value else None
+
+
+def _ticket_attachment_response(record: StoredFile) -> StreamingResponse:
+    try:
+        stream = file_uploads.stream_file(record)
+    except ObjectNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Attachment not found") from exc
+    disposition = build_content_disposition(record.original_filename)
+    if (record.content_type or "").startswith(
+        "image/"
+    ) or record.content_type == "application/pdf":
+        disposition = disposition.replace("attachment;", "inline;", 1)
+    headers = {"Content-Disposition": disposition}
+    if stream.content_length is not None:
+        headers["Content-Length"] = str(stream.content_length)
+    return StreamingResponse(
+        stream.chunks,
+        media_type=stream.content_type or "application/octet-stream",
+        headers=headers,
+    )
 
 
 @router.get(
@@ -153,9 +176,12 @@ def tickets_list(
     )
 
     if request.headers.get("HX-Request"):
-        response = templates.TemplateResponse(
-            "admin/support/tickets/_list.html", context
+        partial_name = (
+            "admin/support/tickets/_results.html"
+            if request.headers.get("HX-Target") == "tickets-table"
+            else "admin/support/tickets/_list.html"
         )
+        response = templates.TemplateResponse(partial_name, context)
         if canonicalization_needed:
             response.headers["HX-Replace-Url"] = effective_query.url(
                 "/admin/support/tickets"
@@ -309,13 +335,13 @@ def ticket_create(
     request: Request,
     title: str = Form(...),
     description: str = Form(""),
+    publish_description: bool = Form(False),
     subscriber_id: str | None = Form(default=None),
     customer_account_id: str | None = Form(default=None),
     customer_person_id: str | None = Form(default=None),
     region: str | None = Form(default=None),
     technician_person_id: str | None = Form(default=None),
     ticket_manager_person_id: str | None = Form(default=None),
-    site_coordinator_person_id: str | None = Form(default=None),
     service_team_id: str | None = Form(default=None),
     ticket_type: str | None = Form(default=None),
     priority: str = Form("normal"),
@@ -345,13 +371,14 @@ def ticket_create(
             duplicate_override=duplicate_confirmed,
             title=title,
             description=description,
+            publish_description=publish_description,
             subscriber_id=subscriber_id,
             customer_account_id=customer_account_id,
             customer_person_id=customer_person_id,
             region=region,
             technician_person_id=technician_person_id,
             ticket_manager_person_id=ticket_manager_person_id,
-            site_coordinator_person_id=site_coordinator_person_id,
+            site_coordinator_person_id=None,
             service_team_id=service_team_id,
             ticket_type=ticket_type,
             priority=priority,
@@ -374,10 +401,14 @@ def ticket_create(
                 query_params={
                     "title": title,
                     "description": description,
+                    "publish_description": publish_description,
                     "subscriber_id": subscriber_id or "",
                     "customer_account_id": customer_account_id or "",
                     "customer_person_id": customer_person_id or "",
                     "region": region or "",
+                    "technician_person_id": technician_person_id or "",
+                    "ticket_manager_person_id": ticket_manager_person_id or "",
+                    "service_team_id": service_team_id or "",
                     "ticket_type": ticket_type or "",
                     "priority": priority,
                     "channel": channel,
@@ -402,14 +433,37 @@ def ticket_create(
         return templates.TemplateResponse(
             "admin/support/tickets/new.html", context, status_code=409
         )
-    except (ValidationError, ValueError) as exc:
+    except (
+        ValidationError,
+        ValueError,
+        support_web_service.WebSupportTicketInputError,
+    ) as exc:
         # Re-render the form with a clean message instead of a 500 (e.g. a
         # blank/whitespace-only title that fails schema validation).
         db.rollback()
         context = _ctx(request, db)
         context.update(
             support_web_service.build_ticket_form_context(
-                db, query_params=request.query_params
+                db,
+                query_params={
+                    "title": title,
+                    "description": description,
+                    "publish_description": publish_description,
+                    "subscriber_id": subscriber_id or "",
+                    "customer_account_id": customer_account_id or "",
+                    "customer_person_id": customer_person_id or "",
+                    "region": region or "",
+                    "technician_person_id": technician_person_id or "",
+                    "ticket_manager_person_id": ticket_manager_person_id or "",
+                    "service_team_id": service_team_id or "",
+                    "ticket_type": ticket_type or "",
+                    "priority": priority,
+                    "channel": channel,
+                    "status": status,
+                    "due_at": due_at or "",
+                    "tags": tags or "",
+                    "related_outage_ticket_id": related_outage_ticket_id or "",
+                },
             )
         )
         context.update(
@@ -422,6 +476,7 @@ def ticket_create(
                     **(context.get("prefill") or {}),
                     "title": title,
                     "description": description,
+                    "description_is_internal": not publish_description,
                 },
             }
         )
@@ -448,7 +503,23 @@ def ticket_detail(request: Request, ticket_lookup: str, db: Session = Depends(ge
     )
     context["handoff_notice"] = request.query_params.get("handoff_notice")
     context["handoff_error"] = request.query_params.get("handoff_error")
+    context["action_error"] = request.query_params.get("action_error")
     return templates.TemplateResponse("admin/support/tickets/detail.html", context)
+
+
+@router.get(
+    "/{ticket_id}/attachments/{file_id}",
+    dependencies=[Depends(require_permission("support:ticket:read"))],
+)
+def ticket_attachment_download(
+    ticket_id: UUID, file_id: UUID, db: Session = Depends(get_db)
+) -> StreamingResponse:
+    record = support_web_service.get_ticket_attachment_file(
+        db, ticket_id=ticket_id, file_id=file_id
+    )
+    if record is None:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    return _ticket_attachment_response(record)
 
 
 @router.post(
@@ -567,6 +638,7 @@ def ticket_edit(
     ticket_id: UUID,
     title: str = Form(...),
     description: str = Form(""),
+    publish_description: bool = Form(False),
     subscriber_id: str | None = Form(default=None),
     customer_account_id: str | None = Form(default=None),
     customer_person_id: str | None = Form(default=None),
@@ -584,29 +656,36 @@ def ticket_edit(
     assignee_person_ids: list[str] = Form(default=[]),
     db: Session = Depends(get_db),
 ):
-    support_web_service.update_ticket_from_form(
-        db,
-        request=request,
-        ticket_id=str(ticket_id),
-        actor_id=_actor_id(request),
-        title=title,
-        description=description,
-        subscriber_id=subscriber_id,
-        customer_account_id=customer_account_id,
-        customer_person_id=customer_person_id,
-        region=region,
-        status=status,
-        priority=priority,
-        channel=channel,
-        ticket_type=ticket_type,
-        due_at=due_at,
-        tags=tags,
-        technician_person_id=technician_person_id,
-        ticket_manager_person_id=ticket_manager_person_id,
-        site_coordinator_person_id=site_coordinator_person_id,
-        service_team_id=service_team_id,
-        assignee_person_ids=assignee_person_ids,
-    )
+    try:
+        support_web_service.update_ticket_from_form(
+            db,
+            request=request,
+            ticket_id=str(ticket_id),
+            actor_id=_actor_id(request),
+            title=title,
+            description=description,
+            publish_description=publish_description,
+            subscriber_id=subscriber_id,
+            customer_account_id=customer_account_id,
+            customer_person_id=customer_person_id,
+            region=region,
+            status=status,
+            priority=priority,
+            channel=channel,
+            ticket_type=ticket_type,
+            due_at=due_at,
+            tags=tags,
+            technician_person_id=technician_person_id,
+            ticket_manager_person_id=ticket_manager_person_id,
+            site_coordinator_person_id=site_coordinator_person_id,
+            service_team_id=service_team_id,
+            assignee_person_ids=assignee_person_ids,
+        )
+    except support_web_service.WebSupportTicketInputError as exc:
+        query = urlencode({"action_error": exc.message})
+        return RedirectResponse(
+            url=f"/admin/support/tickets/{ticket_id}?{query}", status_code=303
+        )
     return RedirectResponse(url=f"/admin/support/tickets/{ticket_id}", status_code=303)
 
 
@@ -619,7 +698,7 @@ def ticket_add_comment(
     request: Request,
     ticket_id: UUID,
     body: str = Form(...),
-    is_internal: bool = Form(False),
+    reply_to_customer: bool = Form(False),
     mentions: str | None = Form(default=None),
     attachments: list[UploadFile] = File(default=[]),
     db: Session = Depends(get_db),
@@ -631,7 +710,7 @@ def ticket_add_comment(
         ticket_id=str(ticket_id),
         actor_id=actor_id,
         body=body,
-        is_internal=is_internal,
+        is_internal=not reply_to_customer,
         mentions=mentions,
         attachments=attachments,
     )
@@ -776,13 +855,19 @@ def ticket_quick_status(
     status: str = Form(...),
     db: Session = Depends(get_db),
 ):
-    support_web_service.quick_update_ticket(
-        db,
-        request=request,
-        ticket_id=str(ticket_id),
-        actor_id=_actor_id(request),
-        fields={"status": status},
-    )
+    try:
+        support_web_service.quick_update_ticket(
+            db,
+            request=request,
+            ticket_id=str(ticket_id),
+            actor_id=_actor_id(request),
+            fields={"status": status},
+        )
+    except support_web_service.WebSupportTicketInputError as exc:
+        query = urlencode({"action_error": exc.message})
+        return RedirectResponse(
+            url=f"/admin/support/tickets/{ticket_id}?{query}", status_code=303
+        )
     return RedirectResponse(url=f"/admin/support/tickets/{ticket_id}", status_code=303)
 
 

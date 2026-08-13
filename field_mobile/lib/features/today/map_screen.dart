@@ -23,10 +23,13 @@ final mapPinsProvider = FutureProvider<List<JobPin>>((ref) async {
 });
 
 class MapScreen extends ConsumerStatefulWidget {
-  const MapScreen({super.key, this.showTiles = true});
+  const MapScreen({super.key, this.showTiles = true, this.focusJobId});
 
   /// Disabled in widget tests so no tile HTTP requests are made.
   final bool showTiles;
+
+  /// When opened from a job card, center the map on that job's pin.
+  final String? focusJobId;
 
   @override
   ConsumerState<MapScreen> createState() => _MapScreenState();
@@ -81,6 +84,12 @@ class _MapScreenState extends ConsumerState<MapScreen> {
           final validPins = items
               .where((pin) => pin.hasValidCoordinates)
               .toList();
+          final focusedPin = widget.focusJobId == null
+              ? null
+              : validPins.cast<JobPin?>().firstWhere(
+                  (pin) => pin?.id == widget.focusJobId,
+                  orElse: () => null,
+                );
           final assetItems =
               (assets.valueOrNull ?? const <MapAsset>[])
                   .where((asset) => asset.hasValidCoordinates)
@@ -90,7 +99,9 @@ class _MapScreenState extends ConsumerState<MapScreen> {
                     a.type,
                   ).compareTo(_assetPaintRank(b.type)),
                 );
-          final center = validPins.isNotEmpty
+          final center = focusedPin != null
+              ? safeLatLng(focusedPin.latitude, focusedPin.longitude)!
+              : validPins.isNotEmpty
               ? safeLatLng(validPins.first.latitude, validPins.first.longitude)!
               : assetItems.isNotEmpty
               ? safeLatLng(
@@ -104,7 +115,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
                 mapController: _mapController,
                 options: MapOptions(
                   initialCenter: center,
-                  initialZoom: 12,
+                  initialZoom: focusedPin == null ? 12 : 16,
                   cameraConstraint: finiteMapCameraConstraint,
                 ),
                 children: [

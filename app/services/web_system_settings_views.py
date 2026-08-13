@@ -14,6 +14,7 @@ from app.services.brand_theme import (
     DEFAULT_SECONDARY_HEX,
     DEFAULT_SEMANTIC_COLORS,
 )
+from app.services.setting_domain_registry import is_declared
 
 logger = logging.getLogger(__name__)
 
@@ -90,10 +91,14 @@ def resolve_settings_domain(value: str | None) -> SettingDomain:
     raw = value or default_value
     if raw == ENFORCEMENT_DOMAIN:
         return SettingDomain.auth
-    try:
+    # `SettingDomain` is an OPEN type, so construction no longer rejects an
+    # unknown value the way the enum did — this view's request-supplied domain
+    # has to be checked against the declaration registry instead. Behaviour is
+    # unchanged: an undeclared domain degrades to the default tab rather than
+    # erroring, because this is a navigation surface, not a write path.
+    if is_declared(raw):
         return SettingDomain(raw)
-    except ValueError:
-        return SettingDomain(default_value)
+    return SettingDomain(default_value)
 
 
 def enforcement_specs() -> list[settings_spec.SettingSpec]:

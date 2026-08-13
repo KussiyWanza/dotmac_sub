@@ -12,7 +12,7 @@ from starlette.requests import Request
 
 from app.models.support import Ticket, TicketChannel, TicketStatus
 from app.services import support as support_service
-from app.services import web_support_tickets
+from app.services import support_ticket_settings, web_support_tickets
 from app.services.list_query import PageMeta
 from app.web.admin import support_tickets as admin_support_tickets
 
@@ -97,7 +97,7 @@ def test_ticket_query_normalizes_declared_state_and_rejects_unknown_values():
         search=" TKT-100 ",
         status=" OPEN ",
         ticket_type=" billing ",
-        region=" north ",
+        region=" NoRtH ",
         assigned_to_me=True,
         project_manager_person_id=f" {manager_id} ",
         filters=filters,
@@ -182,6 +182,48 @@ def test_not_closed_status_scope_excludes_only_closed_and_aligns_paging(
     assert set(csv_output.splitlines()[1:]) == expected_statuses
 
 
+def test_unconfigured_status_remains_visible_in_admin_list_filter(db_session):
+    support_ticket_settings.update_ticket_configuration(
+        db_session,
+        support_ticket_settings.TicketConfigurationUpdate(
+            statuses=("open", "closed"),
+            priorities=("normal",),
+            ticket_types=("incident",),
+        ),
+    )
+    ticket = _ticket(title="Pending ticket", status="pending")
+    db_session.add(ticket)
+    db_session.commit()
+
+    context = web_support_tickets.build_tickets_list_context(
+        db_session,
+        list_query=_query(status="pending"),
+        actor_id=None,
+        visible_columns_cookie=None,
+    )
+
+    assert [row.id for row in context["tickets"]] == [ticket.id]
+    assert "pending" not in context["all_statuses"]
+    status_filter = next(
+        field for field in context["ticket_filter_schema"] if field["field"] == "status"
+    )
+    assert "pending" not in {option["value"] for option in status_filter["options"]}
+    assert context["unavailable_status_filter"].value == "pending"
+    assert context["status_presentations"]["pending"].label == "Pending"
+
+    templates = Jinja2Templates(directory=str(PROJECT_ROOT / "templates"))
+    html = templates.env.get_template("admin/support/tickets/_list.html").render(
+        current_user=None,
+        support_ticket_bulk_action_contract={"selection_enabled": False},
+        **context,
+    )
+    assert (
+        '<option value="pending" selected hidden>Pending (not selectable)</option>'
+        in html
+    )
+    assert "Pending ticket" in html
+
+
 def test_ticket_context_uses_exact_count_clamps_page_and_aligns_status_links(
     db_session,
 ):
@@ -258,6 +300,7 @@ def test_ticket_region_filter_aligns_rows_counts_options_and_status_links(
     db_session.add_all(
         [
             _ticket(title="North open", status="open", region="north"),
+            _ticket(title="Legacy North open", status="open", region=" North "),
             _ticket(title="South closed", status="closed", region="south"),
         ]
     )
@@ -271,12 +314,16 @@ def test_ticket_region_filter_aligns_rows_counts_options_and_status_links(
     )
 
     assert context["region"] == "north"
-    assert context["total"] == 1
-    assert [ticket.title for ticket in context["tickets"]] == ["North open"]
+    assert context["total"] == 2
+    assert {ticket.title for ticket in context["tickets"]} == {
+        "North open",
+        "Legacy North open",
+    }
     assert {"north", "south"}.issubset(set(context["region_options"]))
+    assert context["region_options"].count("north") == 1
     cards = {card["value"]: card for card in context["status_summary_cards"]}
-    assert cards[""]["count"] == 1
-    assert cards["open"]["count"] == 1
+    assert cards[""]["count"] == 2
+    assert cards["open"]["count"] == 2
     assert cards["closed"]["count"] == 0
     assert "region=north" in cards["open"]["href"]
 
@@ -303,7 +350,9 @@ def test_ticket_complete_scope_explicitly_disables_the_page_limit(monkeypatch):
     assert captured["region"] == "north"
 
 
-def test_ticket_number_search_renders_htmx_list_response(db_session, monkeypatch):
+def test_ticket_number_search_renders_results_without_filter_controls(
+    db_session, monkeypatch
+):
     ticket_number = "TKT-SEARCH-2048"
     db_session.add_all(
         [
@@ -318,7 +367,10 @@ def test_ticket_number_search_renders_htmx_list_response(db_session, monkeypatch
             "method": "GET",
             "path": "/admin/support/tickets",
             "query_string": f"search={ticket_number}".encode(),
-            "headers": [(b"hx-request", b"true")],
+            "headers": [
+                (b"hx-request", b"true"),
+                (b"hx-target", b"tickets-table"),
+            ],
             "scheme": "http",
             "server": ("testserver", 80),
             "client": ("testclient", 50000),
@@ -355,6 +407,10 @@ def test_ticket_number_search_renders_htmx_list_response(db_session, monkeypatch
     assert response.status_code == 200
     assert ticket_number in html
     assert "TKT-OTHER-4096" not in html
+    assert 'id="ticket-status-summary"' in html
+    assert 'hx-swap-oob="outerHTML"' in html
+    assert 'id="ticket-export-control"' in html
+    assert 'id="ticket-column-options"' not in html
 
 
 def test_ticket_full_and_htmx_views_share_canonical_accessible_partials():
@@ -367,17 +423,56 @@ def test_ticket_full_and_htmx_views_share_canonical_accessible_partials():
     table = (PROJECT_ROOT / "templates/admin/support/tickets/_table.html").read_text(
         encoding="utf-8"
     )
+    results = (
+        PROJECT_ROOT / "templates/admin/support/tickets/_results.html"
+    ).read_text(encoding="utf-8")
+    status_summary = (
+        PROJECT_ROOT / "templates/admin/support/tickets/_status_summary.html"
+    ).read_text(encoding="utf-8")
+    export_control = (
+        PROJECT_ROOT / "templates/admin/support/tickets/_export_control.html"
+    ).read_text(encoding="utf-8")
 
     assert '{% include "admin/support/tickets/_list.html" %}' in page
     assert '{% include "admin/support/tickets/_table.html" %}' in list_partial
+    assert '{% include "admin/support/tickets/_table.html" %}' in results
+    assert 'hx-swap-oob="outerHTML"' in results
+    assert 'id="ticket-status-summary"' in status_summary
+    assert 'hx-target="#tickets-table"' in status_summary
+    assert 'id="ticket-export-control"' in export_control
     assert 'hx-push-url="true"' in list_partial
-    assert 'aria-current="page"' in list_partial
+    assert 'hx-target="#tickets-table"' in list_partial
+    assert 'aria-current="page"' in status_summary
+    assert 'x-data="ticketFilterFeedback()"' in list_partial
+    assert '@htmx:before-request.window="handleBeforeRequest($event)"' in list_partial
+    assert '@htmx:after-request.window="handleAfterRequest($event)"' in list_partial
+    assert "Updating tickets…" in list_partial
+    assert 'role="status"' in list_partial
+    assert 'role="alert"' in list_partial
+    assert "Your current results are still shown." in page
+    assert "function ticketFilterFeedback()" in page
+    assert "function ticketListControls()" in page
+    assert "tickets.filter.state.${userId}" in page
+    assert "window.localStorage.setItem(this.storageKey" in page
+    assert "window.localStorage.getItem(this.storageKey)" in page
+    assert "window.localStorage.removeItem(this.storageKey)" in page
+    assert "window.location.replace(listUrl)" in page
+    assert "window.location.assign('/admin/support/tickets')" in page
+    assert "url.pathname !== '/admin/support/tickets'" in page
+    assert "if (window.location.search) return false" in page
+    assert "this.persistCurrentState()" in page
+    assert 'x-data="ticketListControls()"' in list_partial
+    assert 'data-current-user-id="{{' in list_partial
     assert 'x-bind:aria-expanded="open.toString()"' in list_partial
     assert 'id="ticket-column-toggle"' in list_partial
     assert 'aria-labelledby="ticket-column-toggle"' in list_partial
+    assert "document.addEventListener('click', this.closeOnOutsideClick, true);" in page
+    assert (
+        "document.removeEventListener('click', this.closeOnOutsideClick, true);" in page
+    )
     assert (
         '@click.window.capture="if (!$el.contains($event.target)) open = false"'
-        in list_partial
+        not in list_partial
     )
     assert '@keydown.escape.window="open = false"' in list_partial
     assert "@click.outside" not in list_partial
@@ -387,11 +482,14 @@ def test_ticket_full_and_htmx_views_share_canonical_accessible_partials():
     assert '<option value="not_closed"' in list_partial
     assert ">Not closed</option>" in list_partial
     assert 'id="ticket-filter-apply"' in list_partial
+    assert '@click="open = false"' in list_partial
     assert 'aria-label="Apply ticket filters"' in list_partial
+    assert 'aria-label="Clear ticket filters"' in list_partial
     assert 'hx-include="#ticket-filter-form"' in list_partial
     assert 'hx-sync="#ticket-filter-form:replace"' in list_partial
     assert 'name="sort" value="{{ list_query.sort_by }}"' in list_partial
     assert "list_query.url('/admin/support/tickets'" in table
+    assert 'hx-target="#tickets-table"' in table
     assert 'aria-sort="' in table
     assert 'aria-current="page"' in table
     assert 'role="status"' in table
@@ -416,6 +514,9 @@ def test_ticket_full_and_htmx_views_share_canonical_accessible_partials():
         assert literal_color not in page
         assert literal_color not in list_partial
         assert literal_color not in table
+        assert literal_color not in results
+        assert literal_color not in status_summary
+        assert literal_color not in export_control
 
 
 def test_ticket_table_contract_renders_with_empty_results():

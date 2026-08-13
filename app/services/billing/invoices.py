@@ -7,7 +7,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
 
@@ -105,6 +105,39 @@ def _apply_available_account_credit(db: Session, invoice: Invoice) -> None:
         # applicator's deterministic query before it selects the account cohort.
         db.flush()
         AccountCreditApplications.apply(db, str(invoice.account_id))
+
+
+def _apply_available_account_credit_when_fully_funded(
+    db: Session, invoice: Invoice
+) -> None:
+    """Apply account credit only when it can settle the whole invoice."""
+    if (
+        not invoice.is_active
+        or invoice.is_proforma
+        or invoice.status
+        not in {
+            InvoiceStatus.issued,
+            InvoiceStatus.partially_paid,
+            InvoiceStatus.overdue,
+        }
+        or round_money(to_decimal(invoice.balance_due)) <= Decimal("0.00")
+    ):
+        return
+
+    from app.services.billing.account_credit import AccountCreditApplications
+
+    db.flush()
+    preview = AccountCreditApplications.preview_invoice_funding(db, invoice)
+    if not preview.fully_funded:
+        return
+    try:
+        AccountCreditApplications.apply_invoice_fully(
+            db,
+            invoice,
+            preview_fingerprint=preview.fingerprint,
+        )
+    except DomainError as exc:
+        raise HTTPException(status_code=409, detail=exc.message) from exc
 
 
 @dataclass(frozen=True)
@@ -1507,6 +1540,24 @@ class Invoices(ListResponseMixin):
         return invoice
 
     @staticmethod
+    def stage_system_invoice_for_owner(
+        db: Session,
+        payload: InvoiceCreate,
+        *,
+        reason: str,
+    ) -> Invoice:
+        """Stage an invoice as a flush-only participant for a command owner."""
+
+        try:
+            return Invoices.stage_system_invoice(db, payload, reason=reason)
+        except HTTPException as exc:
+            raise InvoiceOwnerError(
+                code="financial.invoice.stage_rejected",
+                message="Invoice owner rejected system document construction.",
+                details={"reason": str(exc.detail)},
+            ) from exc
+
+    @staticmethod
     def issue_draft_system(
         db: Session,
         invoice_id: str,
@@ -1516,6 +1567,7 @@ class Invoices(ListResponseMixin):
         reason: str,
         announce: bool = False,
         apply_available_credit: bool = True,
+        require_full_available_credit: bool = False,
         commit: bool = False,
     ) -> InvoiceLifecycleTransitionResult:
         """Own the deterministic draft -> issued transition.
@@ -1523,6 +1575,9 @@ class Invoices(ListResponseMixin):
         ``apply_available_credit=False`` is reserved for domain owners that
         immediately compose a stricter allocation policy, such as prepaid
         draft-until-fully-funded renewal. Thin adapters must keep the default.
+        ``require_full_available_credit=True`` narrows the automatic credit
+        application to exact full settlement and leaves underfunded credit
+        untouched.
         """
         invoice = lock_for_update(db, Invoice, invoice_id)
         if invoice is None:
@@ -1578,7 +1633,9 @@ class Invoices(ListResponseMixin):
                 account_id=invoice.account_id,
                 invoice_id=invoice.id,
             )
-        if apply_available_credit:
+        if apply_available_credit and require_full_available_credit:
+            _apply_available_account_credit_when_fully_funded(db, invoice)
+        elif apply_available_credit:
             _apply_available_account_credit(db, invoice)
         if commit:
             db.commit()
@@ -2194,6 +2251,18 @@ class Invoices(ListResponseMixin):
             "invoice_number_padding",
             "invoice_number_start",
         )
+        # An invoice that calls itself issued must carry the dates that make
+        # that true. Declaring the status without them produced invoices with no
+        # issue date and no due date: they could never age, never go overdue,
+        # and dropped out of anything filtering on issue date. Settlement then
+        # advanced them to paid, so they were paid without ever being issued.
+        # `issue_draft_system` remains the owner of the draft -> issued
+        # transition; this path builds the state directly and must therefore
+        # match it.
+        from app.services.billing_settings import resolve_payment_due_days
+
+        issued_at = datetime.now(UTC)
+        due_days = resolve_payment_due_days(db, subscriber=subscriber)
         invoice = Invoice(
             account_id=subscriber_id,
             invoice_number=invoice_number,
@@ -2203,6 +2272,8 @@ class Invoices(ListResponseMixin):
             total=total,
             balance_due=total,
             status=InvoiceStatus.issued,
+            issued_at=issued_at,
+            due_at=issued_at + timedelta(days=due_days),
         )
         db.add(invoice)
         db.flush()
@@ -2760,6 +2831,24 @@ class InvoiceLines(ListResponseMixin):
             ),
         )
         return line
+
+    @staticmethod
+    def stage_system_line_for_owner(
+        db: Session,
+        payload: SystemInvoiceLineCreate,
+        *,
+        reason: str,
+    ) -> InvoiceLine:
+        """Stage a system line as a flush-only participant for a command owner."""
+
+        try:
+            return InvoiceLines.stage_system_line(db, payload, reason=reason)
+        except HTTPException as exc:
+            raise InvoiceOwnerError(
+                code="financial.invoice.line_stage_rejected",
+                message="Invoice owner rejected system line construction.",
+                details={"reason": str(exc.detail)},
+            ) from exc
 
     @staticmethod
     def create(db: Session, payload: InvoiceLineCreate):

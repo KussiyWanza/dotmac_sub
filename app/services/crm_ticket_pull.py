@@ -401,7 +401,10 @@ def _sync_comments(
                 author_person_id=None,
                 author_type="system",
                 body=str(comment.get("body") or "").strip() or "(empty comment)",
-                is_internal=bool(comment.get("is_internal", False)),
+                # CRM is provenance-only for tickets. Its legacy boolean was a
+                # storage default, not evidence that a customer publication
+                # decision occurred in Selfcare.
+                is_internal=True,
                 attachments=_clean_attachments(comment.get("attachments")),
                 metadata_={
                     "sync_source": "crm",
@@ -488,15 +491,15 @@ def sync_ticket(
 
     _apply_ticket_fields(local_ticket, crm_ticket, subscriber_id)
 
-    # Proactively notify the customer when their ticket is newly resolved
+    # Proactively notify the customer when their ticket is newly closed
     # (mirrors the work-order/project push). Best-effort — a push failure never
     # breaks the sync.
     # Ticket.status is a plain string column, and transition_ticket_status
     # writes the enum's *value* — so compare against the string, not the member.
     if (
         subscriber_id
-        and local_ticket.status == TicketStatus.resolved.value
-        and previous_status != TicketStatus.resolved.value
+        and local_ticket.status == TicketStatus.closed.value
+        and previous_status != TicketStatus.closed.value
     ):
         try:
             from app.services import push as push_service
@@ -504,13 +507,13 @@ def sync_ticket(
             push_service.send_push(
                 db,
                 str(subscriber_id),
-                title="Support ticket resolved",
-                body="Your support ticket has been marked resolved.",
+                title="Support ticket closed",
+                body="Your support ticket has been closed.",
                 data={"type": "ticket", "ticket_id": str(local_ticket.id)},
             )
         except Exception as exc:  # noqa: BLE001 - notification is advisory
             logger.warning(
-                "ticket_resolved_push_failed ticket=%s: %s", crm_ticket_id, exc
+                "ticket_closed_push_failed ticket=%s: %s", crm_ticket_id, exc
             )
 
     comments_created = 0

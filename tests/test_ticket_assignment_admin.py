@@ -61,16 +61,16 @@ def test_build_match_config_keeps_structured_lists_and_splits_csv():
 def test_build_match_config_direct_assignee_records_target():
     person_id = str(uuid4())
     config = _build_config(
-        assignee_person_id=person_id, assignment_target="site_coordinator"
+        assignee_person_id=person_id, assignment_target="technical_supervisor"
     )
     assert config == {
         "assignee_person_id": person_id,
-        "assignment_target": "site_coordinator",
+        "assignment_target": "technical_supervisor",
     }
 
 
 def test_build_match_config_target_ignored_without_assignee():
-    assert _build_config(assignment_target="site_coordinator") == {}
+    assert _build_config(assignment_target="technical_supervisor") == {}
 
 
 def test_build_match_config_rejects_invalid_assignee_uuid():

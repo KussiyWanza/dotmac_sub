@@ -1,8 +1,12 @@
+import json
 import logging
 from dataclasses import dataclass
+from enum import Enum
 from typing import TYPE_CHECKING, Any, cast
 
-from fastapi import HTTPException
+from dotmac_kernel.settings_models import SettingDomain as KernelSettingDomain
+from dotmac_kernel.settings_resolver import resolve_many as kernel_resolve_many
+from dotmac_kernel.settings_resolver import resolve_value as kernel_resolve_value
 
 from app.models.domain_settings import SettingDomain
 from app.models.subscription_engine import SettingValueType
@@ -15,8 +19,8 @@ from app.services.brand_theme import (
 from app.services.channel_health_contracts import (
     DEFAULT_CHANNEL_HEALTH_CONTRACTS,
 )
+from app.services.operator_tenant import operator_tenant_id
 from app.services.response import ListResponseMixin
-from app.services.settings_cache import SettingsCache
 from app.services.settings_specs.integration import build_integration_specs
 from app.services.settings_specs.provisioning import build_provisioning_specs
 from app.timezone import APP_TIMEZONE_NAME
@@ -26,6 +30,13 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+class SettingStringNormalization(str, Enum):
+    """Canonical normalization applied to a declared string setting."""
+
+    NONE = "none"
+    LOWERCASE = "lowercase"
 
 
 def _coerce_int_value(value: object) -> int | None:
@@ -66,6 +77,7 @@ class SettingSpec(ListResponseMixin):
     min_value: int | None = None
     max_value: int | None = None
     is_secret: bool = False
+    string_normalization: SettingStringNormalization = SettingStringNormalization.NONE
 
 
 SCHEDULER_BOOLEAN_SETTING_KEYS = frozenset(
@@ -176,26 +188,13 @@ SCHEDULER_ENV_BOOTSTRAP_SETTING_KEYS = frozenset(
 )
 
 
+#: 6 concatenated GSM-7 segments x 153 characters — the practical ceiling of a
+#: multipart SMS, and the one bound on these settings that is PHYSICAL rather
+#: than policy. It is hardcoded on purpose: it is not deployment-specific, and a
+#: knob for it would exist only to let someone configure an impossibility.
+MAX_CONCATENATED_SMS_CHARS = 918
+
 SETTINGS_SPECS: list[SettingSpec] = [
-    SettingSpec(
-        domain=SettingDomain.auth,
-        key="jwt_secret",
-        label=None,
-        env_var="JWT_SECRET",
-        value_type=SettingValueType.string,
-        default=None,
-        required=True,
-        is_secret=True,
-    ),
-    SettingSpec(
-        domain=SettingDomain.auth,
-        key="credential_encryption_key",
-        label=None,
-        env_var="CREDENTIAL_ENCRYPTION_KEY",
-        value_type=SettingValueType.string,
-        default=None,
-        is_secret=True,
-    ),
     SettingSpec(
         domain=SettingDomain.auth,
         key="credential_rotation_enabled",
@@ -277,6 +276,7 @@ SETTINGS_SPECS: list[SettingSpec] = [
         value_type=SettingValueType.string,
         default="lax",
         allowed={"lax", "strict", "none"},
+        string_normalization=SettingStringNormalization.LOWERCASE,
     ),
     SettingSpec(
         domain=SettingDomain.auth,
@@ -342,15 +342,6 @@ SETTINGS_SPECS: list[SettingSpec] = [
     ),
     SettingSpec(
         domain=SettingDomain.auth,
-        key="totp_encryption_key",
-        env_var="TOTP_ENCRYPTION_KEY",
-        value_type=SettingValueType.string,
-        default=None,
-        required=True,
-        is_secret=True,
-    ),
-    SettingSpec(
-        domain=SettingDomain.auth,
         key="api_key_rate_window_seconds",
         env_var="API_KEY_RATE_WINDOW_SECONDS",
         value_type=SettingValueType.integer,
@@ -403,7 +394,7 @@ SETTINGS_SPECS: list[SettingSpec] = [
         domain=SettingDomain.imports,
         key="import_history_log",
         env_var=None,
-        value_type=SettingValueType.json,
+        value_type=SettingValueType.list,
         default=[],
     ),
     SettingSpec(
@@ -428,8 +419,155 @@ SETTINGS_SPECS: list[SettingSpec] = [
         domain=SettingDomain.imports,
         key="import_jobs_log",
         env_var=None,
-        value_type=SettingValueType.json,
+        value_type=SettingValueType.list,
         default=[],
+    ),
+    # ── Provisioning behaviour (OLT/ONT) ────────────────────────────────────
+    #
+    # Registered here rather than in `app/services/network/provisioning_settings.py`,
+    # which held them as a frozen `ProvisioningDefaults` dataclass beside its own
+    # `DomainSetting` query and its own cache — a parallel settings subsystem with
+    # a second source of defaults, reading without a tenant filter and caching
+    # under an unscoped key.
+    #
+    # Defaults are copied EXACTLY from that dataclass, and no `min_value` or
+    # `max_value` is added. The module enforced no bounds, so inventing one here
+    # would silently degrade any deployment already storing a value outside it —
+    # the failure mode this repository has already paid for once. Bounds are a
+    # separate, evidenced change.
+    #
+    # `env_var` is None throughout: these were never environment-seeded, and
+    # giving them one would make the seed write rows that do not exist today.
+    SettingSpec(
+        domain=SettingDomain.provisioning,
+        key="tr069_bootstrap_timeout_sec",
+        env_var=None,
+        value_type=SettingValueType.integer,
+        default=120,
+        label="TR-069 bootstrap timeout (seconds)",
+    ),
+    SettingSpec(
+        domain=SettingDomain.provisioning,
+        key="tr069_bootstrap_poll_interval_sec",
+        env_var=None,
+        value_type=SettingValueType.integer,
+        default=10,
+        label="TR-069 bootstrap poll interval (seconds)",
+    ),
+    SettingSpec(
+        domain=SettingDomain.provisioning,
+        key="tr069_task_ready_timeout_sec",
+        env_var=None,
+        value_type=SettingValueType.integer,
+        default=45,
+        label="TR-069 task-ready timeout (seconds)",
+    ),
+    SettingSpec(
+        domain=SettingDomain.provisioning,
+        key="tr069_task_ready_poll_interval_sec",
+        env_var=None,
+        value_type=SettingValueType.integer,
+        default=5,
+        label="TR-069 task-ready poll interval (seconds)",
+    ),
+    SettingSpec(
+        domain=SettingDomain.provisioning,
+        key="pppoe_push_max_attempts",
+        env_var=None,
+        value_type=SettingValueType.integer,
+        default=3,
+        label="PPPoE push attempts before giving up",
+    ),
+    SettingSpec(
+        domain=SettingDomain.provisioning,
+        key="pppoe_push_retry_delay_sec",
+        env_var=None,
+        value_type=SettingValueType.integer,
+        default=10,
+        label="PPPoE push retry delay (seconds)",
+    ),
+    SettingSpec(
+        domain=SettingDomain.provisioning,
+        key="stale_runtime_hours",
+        env_var=None,
+        value_type=SettingValueType.integer,
+        default=24,
+        label="Hours after which provisioning runtime state is stale",
+    ),
+    # `olt_write_mode_enabled` is NOT declared here. It already exists in
+    # `app/services/settings_specs/provisioning.py`, with an `env_var` this one
+    # would have dropped. I missed it because that package builds specs through
+    # a `setting_spec` CALLABLE rather than a literal `SettingSpec(...)`, so the
+    # sweep that told me "none of these sixteen is registered" was reading one
+    # file instead of the spec system. Fifteen here, one there.
+    SettingSpec(
+        domain=SettingDomain.provisioning,
+        key="pppoe_provisioning_method",
+        env_var=None,
+        value_type=SettingValueType.string,
+        default="auto",
+        # `get_pppoe_provisioning_method` already normalises and falls back to
+        # "auto" for anything else, so declaring the set changes no outcome —
+        # it moves the knowledge to where the admin screen can render it.
+        allowed={"auto", "omci", "tr069"},
+        label="PPPoE provisioning method (auto | omci | tr069)",
+    ),
+    SettingSpec(
+        domain=SettingDomain.provisioning,
+        key="verification_interval_sec",
+        env_var=None,
+        value_type=SettingValueType.integer,
+        default=300,
+        label="Async provisioning verification interval (seconds)",
+    ),
+    SettingSpec(
+        domain=SettingDomain.provisioning,
+        key="verification_staleness_minutes",
+        env_var=None,
+        value_type=SettingValueType.integer,
+        default=15,
+        label="Minutes before a verification result is stale",
+    ),
+    SettingSpec(
+        domain=SettingDomain.provisioning,
+        key="drift_handling_mode",
+        env_var=None,
+        value_type=SettingValueType.string,
+        default="alert_only",
+        allowed={"alert_only", "auto_repair"},
+        label="Provisioning drift handling (alert_only | auto_repair)",
+    ),
+    SettingSpec(
+        domain=SettingDomain.provisioning,
+        key="circuit_breaker_failure_threshold",
+        env_var=None,
+        value_type=SettingValueType.integer,
+        default=3,
+        label="Provisioning circuit-breaker failure threshold",
+    ),
+    SettingSpec(
+        domain=SettingDomain.provisioning,
+        key="circuit_breaker_backoff_sec",
+        env_var=None,
+        value_type=SettingValueType.integer,
+        default=30,
+        label="Provisioning circuit-breaker backoff (seconds)",
+    ),
+    SettingSpec(
+        domain=SettingDomain.provisioning,
+        key="service_port_pool_min_index",
+        env_var=None,
+        value_type=SettingValueType.integer,
+        default=0,
+        label="Service-port pool minimum index",
+    ),
+    SettingSpec(
+        domain=SettingDomain.provisioning,
+        key="service_port_pool_max_index",
+        env_var=None,
+        value_type=SettingValueType.integer,
+        default=65535,
+        label="Service-port pool maximum index",
     ),
     SettingSpec(
         domain=SettingDomain.gis,
@@ -581,6 +719,96 @@ SETTINGS_SPECS: list[SettingSpec] = [
         value_type=SettingValueType.boolean,
         default=True,
     ),
+    # The SMS channel's operational controls. They were read through
+    # `sms._get_setting`, which consulted the environment ABOVE the stored row
+    # and carried a per-call-site default — so `sms_enabled` defaulted to `true`
+    # in `notification_adapter` and `false` in the three other readers, and
+    # `is_available()` advertised a channel the send path refused. The
+    # credentials (`sms_api_key`, `sms_api_secret`) are NOT here: a credential is
+    # not a setting, and they are held in `app.config` (ADR-0009).
+    SettingSpec(
+        domain=SettingDomain.notification,
+        key="sms_enabled",
+        env_var="SMS_ENABLED",
+        value_type=SettingValueType.boolean,
+        default=False,
+        label="SMS channel enabled",
+    ),
+    SettingSpec(
+        domain=SettingDomain.notification,
+        key="sms_provider",
+        env_var="SMS_PROVIDER",
+        value_type=SettingValueType.string,
+        default="",
+        # "" is the deliberate unconfigured state: `send_sms` refuses and names
+        # the three real providers rather than defaulting to `webhook`, which
+        # with no webhook URL is a guaranteed failure dressed as a live channel.
+        allowed={"", "twilio", "africastalking", "webhook"},
+        label="SMS provider",
+    ),
+    SettingSpec(
+        domain=SettingDomain.notification,
+        key="sms_from_number",
+        env_var="SMS_FROM_NUMBER",
+        value_type=SettingValueType.string,
+        default="",
+        label="SMS sender number",
+    ),
+    SettingSpec(
+        domain=SettingDomain.notification,
+        key="sms_username",
+        env_var="SMS_USERNAME",
+        value_type=SettingValueType.string,
+        default="",
+        # Africa's Talking account identifier. Paired with the API key but not
+        # itself secret, so it stays a setting under the split.
+        label="SMS provider account username",
+    ),
+    SettingSpec(
+        domain=SettingDomain.notification,
+        key="sms_webhook_url",
+        env_var="SMS_WEBHOOK_URL",
+        value_type=SettingValueType.string,
+        default="",
+        label="SMS webhook URL",
+    ),
+    SettingSpec(
+        domain=SettingDomain.notification,
+        key="sms_api_timeout_seconds",
+        env_var="SMS_API_TIMEOUT_SECONDS",
+        value_type=SettingValueType.integer,
+        default=30,
+        min_value=1,
+        # No ceiling. An earlier version carried `max_value=60`, recovered from
+        # a duplicate declaration and justified as "above a minute it stops
+        # being a timeout" — which is a rationale, not a physical limit. A slow
+        # gateway on a bad link can legitimately want ninety seconds, so the
+        # number was an operator's judgement wearing validation's clothes.
+        #
+        # An out-of-range stored value does not clamp; it DEGRADES to the
+        # default. So a policy ceiling here would silently reset a deliberately
+        # tuned timeout, in the SMS path, with no signal. The duplicate's
+        # `min_value=5` is not adopted for the same reason.
+        label="SMS provider request timeout (seconds)",
+    ),
+    SettingSpec(
+        domain=SettingDomain.notification,
+        key="sms_max_length",
+        env_var="SMS_MAX_LENGTH",
+        value_type=SettingValueType.integer,
+        default=160,
+        # `0` is load-bearing, not a lower bound nobody thought about:
+        # `sms.py` reads `if max_length > 0 and len(body) > max_length`, so 0
+        # is how truncation is DISABLED. The duplicate declaration this spec
+        # absorbed had `min_value=1`, which would have made the documented
+        # disable value unstorable — the concrete harm in letting a dead
+        # second declaration look authoritative.
+        min_value=0,
+        # A named constant, not a bare literal: the number is a property of the
+        # transport, and written as `918` it reads like somebody's preference.
+        max_value=MAX_CONCATENATED_SMS_CHARS,
+        label="SMS body truncation length (0 disables truncation)",
+    ),
     SettingSpec(
         domain=SettingDomain.notification,
         key="alert_notifications_default_channel",
@@ -716,24 +944,6 @@ SETTINGS_SPECS: list[SettingSpec] = [
         default=50,
         min_value=1,
         max_value=1000,
-    ),
-    SettingSpec(
-        domain=SettingDomain.notification,
-        key="sms_api_timeout_seconds",
-        env_var="SMS_API_TIMEOUT_SECONDS",
-        value_type=SettingValueType.integer,
-        default=30,
-        min_value=5,
-        max_value=60,
-    ),
-    SettingSpec(
-        domain=SettingDomain.notification,
-        key="sms_max_length",
-        env_var="SMS_MAX_LENGTH",
-        value_type=SettingValueType.integer,
-        default=160,
-        min_value=1,
-        max_value=918,
     ),
     SettingSpec(
         domain=SettingDomain.notification,
@@ -1279,14 +1489,6 @@ SETTINGS_SPECS: list[SettingSpec] = [
     ),
     SettingSpec(
         domain=SettingDomain.scheduler,
-        key="refresh_minutes",
-        env_var="CELERY_BEAT_REFRESH_MINUTES",
-        value_type=SettingValueType.integer,
-        default=5,
-        min_value=1,
-    ),
-    SettingSpec(
-        domain=SettingDomain.scheduler,
         key="event_dispatch_interval_seconds",
         env_var="EVENT_DISPATCH_INTERVAL_SECONDS",
         value_type=SettingValueType.integer,
@@ -1409,14 +1611,20 @@ SETTINGS_SPECS: list[SettingSpec] = [
         min_value=16,
         max_value=64,
     ),
-    SettingSpec(
-        domain=SettingDomain.radius,
-        key="auth_shared_secret",
-        env_var="RADIUS_AUTH_SHARED_SECRET",
-        value_type=SettingValueType.string,
-        default=None,
-        is_secret=True,
-    ),
+    # `radius/auth_shared_secret` was RETIRED here: it stopped being a setting.
+    #
+    # Per the secret classification of 2026-08-09 it is one of the five Dotmac
+    # issues and rotates, and it is now held from OpenBao at boot
+    # (`app/services/kernel_secret_source.py`) and read by
+    # `radius_auth.authenticate` from there. The row never held the secret
+    # anyway — being `is_secret=True`, every write stored a `bao://` REFERENCE,
+    # which that call site passed to the RADIUS client verbatim.
+    #
+    # Retired rather than left declared, because a spec with no reader is a
+    # control an operator can set that changes nothing —
+    # `tests/architecture/test_no_orphan_settings.py` names that "dead control"
+    # and refuses it. `RADIUS_AUTH_SHARED_SECRET` remains the bootstrap input
+    # for the OpenBao entry.
     SettingSpec(
         domain=SettingDomain.radius,
         key="auth_dictionary_path",
@@ -1642,16 +1850,6 @@ SETTINGS_SPECS: list[SettingSpec] = [
         env_var="BILLING_DEFAULT_CURRENCY",
         value_type=SettingValueType.string,
         default="NGN",
-    ),
-    SettingSpec(
-        domain=SettingDomain.billing,
-        key="prepaid_reconstruction_attestation_public_key_ref",
-        env_var="PREPAID_RECONSTRUCTION_ATTESTATION_PUBLIC_KEY_REF",
-        value_type=SettingValueType.string,
-        default=None,
-        required=True,
-        is_secret=True,
-        label="Prepaid reconstruction attestation public key reference",
     ),
     SettingSpec(
         domain=SettingDomain.billing,
@@ -2758,34 +2956,6 @@ SETTINGS_SPECS: list[SettingSpec] = [
     # Fiber installation planning cost rates
     SettingSpec(
         domain=SettingDomain.network,
-        key="fiber_drop_cable_cost_per_meter",
-        env_var="NETWORK_FIBER_DROP_CABLE_COST_PER_METER",
-        value_type=SettingValueType.string,
-        default="2.50",
-    ),
-    SettingSpec(
-        domain=SettingDomain.network,
-        key="fiber_labor_cost_per_meter",
-        env_var="NETWORK_FIBER_LABOR_COST_PER_METER",
-        value_type=SettingValueType.string,
-        default="1.50",
-    ),
-    SettingSpec(
-        domain=SettingDomain.network,
-        key="fiber_ont_device_cost",
-        env_var="NETWORK_FIBER_ONT_DEVICE_COST",
-        value_type=SettingValueType.string,
-        default="85.00",
-    ),
-    SettingSpec(
-        domain=SettingDomain.network,
-        key="fiber_installation_base_fee",
-        env_var="NETWORK_FIBER_INSTALLATION_BASE_FEE",
-        value_type=SettingValueType.string,
-        default="50.00",
-    ),
-    SettingSpec(
-        domain=SettingDomain.network,
         key="olt_profile_sync_worker_enabled",
         env_var="OLT_PROFILE_SYNC_WORKER_ENABLED",
         value_type=SettingValueType.boolean,
@@ -3772,16 +3942,6 @@ SETTINGS_SPECS: list[SettingSpec] = [
     ),
     SettingSpec(
         domain=SettingDomain.network,
-        key="wireguard_key_encryption_key",
-        env_var="WIREGUARD_KEY_ENCRYPTION_KEY",
-        value_type=SettingValueType.string,
-        default=None,
-        required=True,
-        is_secret=True,
-        label="WireGuard Key Encryption Key",
-    ),
-    SettingSpec(
-        domain=SettingDomain.network,
         key="wireguard_log_cleanup_enabled",
         env_var="WIREGUARD_LOG_CLEANUP_ENABLED",
         value_type=SettingValueType.boolean,
@@ -3981,6 +4141,30 @@ SETTINGS_SPECS: list[SettingSpec] = [
         default="normal",
         label="Default project priority",
         allowed={"lower", "low", "medium", "normal", "high", "urgent"},
+    ),
+    SettingSpec(
+        domain=SettingDomain.projects,
+        key="project_completion_finance_email_enabled",
+        env_var="PROJECTS_COMPLETION_FINANCE_EMAIL_ENABLED",
+        value_type=SettingValueType.boolean,
+        default=True,
+        label="Email finance when a project is completed",
+    ),
+    SettingSpec(
+        domain=SettingDomain.projects,
+        key="project_completion_finance_email_recipients",
+        env_var="PROJECTS_COMPLETION_FINANCE_EMAIL_RECIPIENTS",
+        value_type=SettingValueType.list,
+        default=[],
+        label="Project completion finance email recipients",
+    ),
+    SettingSpec(
+        domain=SettingDomain.projects,
+        key="project_completion_finance_permission_key",
+        env_var="PROJECTS_COMPLETION_FINANCE_PERMISSION_KEY",
+        value_type=SettingValueType.string,
+        default="finance:ap:read",
+        label="Permission used to resolve project completion finance recipients",
     ),
     SettingSpec(
         domain=SettingDomain.projects,
@@ -4458,6 +4642,53 @@ SETTINGS_SPECS: list[SettingSpec] = [
         default=True,
         label="Cross-application drift detection",
     ),
+    # The request-audit middleware's five controls. They were writable through
+    # `settings_api_custom` with NO spec at all — the custom handler validates
+    # against its own `_AUDIT_SETTING_*` sets, so nothing required a
+    # declaration. Declared here at their EXACT current shape (seed:
+    # `seed_audit_settings`; runtime defaults: `app.main._default_audit_settings`)
+    # so the two agree before the handler is routed through the spec.
+    # `tests/architecture/test_audit_setting_defaults.py` pins that agreement.
+    SettingSpec(
+        domain=SettingDomain.audit,
+        key="enabled",
+        env_var=None,
+        value_type=SettingValueType.boolean,
+        default=True,
+        label="Request audit logging",
+    ),
+    SettingSpec(
+        domain=SettingDomain.audit,
+        key="methods",
+        env_var=None,
+        value_type=SettingValueType.list,
+        default=["POST", "PUT", "PATCH", "DELETE"],
+        label="Audited HTTP methods",
+    ),
+    SettingSpec(
+        domain=SettingDomain.audit,
+        key="skip_paths",
+        env_var=None,
+        value_type=SettingValueType.list,
+        default=["/static", "/web", "/health"],
+        label="Path prefixes excluded from audit logging",
+    ),
+    SettingSpec(
+        domain=SettingDomain.audit,
+        key="read_trigger_header",
+        env_var=None,
+        value_type=SettingValueType.string,
+        default="x-audit-read",
+        label="Header that opts a read request into audit logging",
+    ),
+    SettingSpec(
+        domain=SettingDomain.audit,
+        key="read_trigger_query",
+        env_var=None,
+        value_type=SettingValueType.string,
+        default="audit",
+        label="Query parameter that opts a read request into audit logging",
+    ),
     SettingSpec(
         domain=SettingDomain.billing,
         key="cutover_balance_audit_enabled",
@@ -4513,6 +4744,14 @@ SETTINGS_SPECS: list[SettingSpec] = [
         value_type=SettingValueType.boolean,
         default=True,
         label="Operational escalation delivery",
+    ),
+    SettingSpec(
+        domain=SettingDomain.notification,
+        key="nextcloud_talk_staff_notifications_enabled",
+        env_var="NEXTCLOUD_TALK_STAFF_NOTIFICATIONS_ENABLED",
+        value_type=SettingValueType.boolean,
+        default=False,
+        label="Nextcloud Talk staff notifications",
     ),
     SettingSpec(
         domain=SettingDomain.catalog,
@@ -5055,18 +5294,48 @@ DOMAIN_SETTINGS_SERVICE = {
     SettingDomain.tr069: settings_service.tr069_settings,
     SettingDomain.snmp: settings_service.snmp_settings,
     SettingDomain.bandwidth: settings_service.bandwidth_settings,
-    SettingDomain.subscription_engine: settings_service.subscription_engine_settings,
     SettingDomain.gis: settings_service.gis_settings,
     SettingDomain.scheduler: settings_service.scheduler_settings,
     SettingDomain.integration: settings_service.integration_settings,
 }
 
 
+#: Every spec by ``(domain, key)``. Built once, and construction is where a
+#: duplicate declaration now DIES rather than hiding.
+#:
+#: `get_spec` used to linear-scan and return the FIRST match while `list_specs`
+#: returned every match. Those two answers only agree while no key is declared
+#: twice, and nothing checked — so when `notification.sms_max_length` was
+#: declared twice, every resolver silently used the first spec, the admin
+#: settings screen rendered the key twice, and the second declaration's bounds
+#: read as authoritative while being dead. It took the kernel's registry, which
+#: is a dict and therefore keeps the LAST, to make the disagreement visible.
+#:
+#: A dict removes the disagreement by construction: there is one answer, and a
+#: second declaration cannot quietly become it.
+_SPECS_BY_KEY: dict[tuple[str, str], SettingSpec] = {}
+for _spec in SETTINGS_SPECS:
+    _existing = _SPECS_BY_KEY.get((str(_spec.domain), _spec.key))
+    if _existing is not None and _existing != _spec:
+        raise RuntimeError(
+            f"setting {_spec.domain}.{_spec.key} is declared twice with "
+            "different definitions — the effective spec would depend on "
+            "declaration order. Delete the dead declaration; do not merge "
+            "them silently (tests/test_settings_kernel_parity.py"
+            "::test_no_setting_is_declared_twice)"
+        )
+    _SPECS_BY_KEY[(str(_spec.domain), _spec.key)] = _spec
+del _spec
+
+
 def get_spec(domain: SettingDomain, key: str) -> SettingSpec | None:
-    for spec in SETTINGS_SPECS:
-        if spec.domain == domain and spec.key == key:
-            return spec
-    return None
+    """The one spec for a key.
+
+    A dict lookup rather than a scan over 574 specs, which also matters because
+    this sits under every `resolve_value` call.
+    """
+
+    return _SPECS_BY_KEY.get((str(domain), key))
 
 
 def list_specs(domain: SettingDomain) -> list[SettingSpec]:
@@ -5074,67 +5343,49 @@ def list_specs(domain: SettingDomain) -> list[SettingSpec]:
 
 
 def resolve_value(db, domain: SettingDomain, key: str) -> Any:
-    """Resolve a database-authoritative setting value with Redis caching.
+    """Resolve a database-authoritative setting value.
 
-    Resolution order is Redis cache, active database row, then the registered
-    default. Environment inputs are materialized by bootstrap/sync and are not
-    consulted here.
+    Delegates to `dotmac_kernel.settings_resolver`. Sub keeps this signature so
+    that the 109 call sites do not change and this remains the one seam; what
+    moved is WHO decides, not who is asked.
+
+    Resolution is the kernel's: the operator tenant's row, then the platform
+    row, then the spec default. Environment inputs are materialised into rows
+    by the seed and are never consulted here — that is Sub's approved rule and
+    the kernel's own (starter ADR-0011: settings resolution reads rows and
+    defaults, never the environment).
+
+    Caching is the KERNEL's, and no longer Sub's. `dotmac_kernel.settings_cache`
+    owns the key, the scope segment, the TTL policy, what is never cached and
+    what a write invalidates; Sub supplies only the Redis transport
+    (`app/services/kernel_settings_cache_store.py`), installed at import of this
+    module. The resolver consults that cache itself, which is why there is no
+    cache call left in this function.
+
+    The cache that used to sit here keyed on `settings:{domain}:{key}` with no
+    scope segment — the cross-tenant leak the kernel's own module docstring
+    cites `dotmac_erp` for. Adding a segment would have fixed the instance and
+    kept the shape: a second key model, drifting. There is now one.
     """
-    spec = get_spec(domain, key)
-    if not spec:
+
+    if get_spec(domain, key) is None:
         return None
-
-    # 1. Check cache first
-    cached = SettingsCache.get(domain.value, key)
-    if cached is not None:
-        return cast(object, cached)
-
-    # 2. Query database
-    service = DOMAIN_SETTINGS_SERVICE.get(domain)
-    setting = None
-    if service:
-        try:
-            setting = service.get_by_key(db, key)
-        except HTTPException:
-            setting = None
-    raw = extract_db_value(setting)
-    if raw is None:
-        raw = spec.default
-    value, error = coerce_value(spec, raw)
-    if error:
-        value = spec.default
-    if spec.allowed and value is not None and value not in spec.allowed:
-        value = spec.default
-    if spec.value_type == SettingValueType.integer and value is not None:
-        parsed = _coerce_int_value(value)
-        if parsed is None:
-            parsed = spec.default if isinstance(spec.default, int) else None
-        if (
-            spec.min_value is not None
-            and parsed is not None
-            and parsed < spec.min_value
-        ):
-            parsed = spec.default if isinstance(spec.default, int) else None
-        if (
-            spec.max_value is not None
-            and parsed is not None
-            and parsed > spec.max_value
-        ):
-            parsed = spec.default if isinstance(spec.default, int) else None
-        value = parsed
-
-    # 3. Cache the result (only non-None values)
-    if value is not None:
-        SettingsCache.set(domain.value, key, value)
-
-    return value
+    # The kernel's own member type, not a bare `str`: its signature asks for
+    # one and its validation reads `.value`. Same conversion the bridge
+    # makes for a spec's domain.
+    return kernel_resolve_value(
+        db,
+        KernelSettingDomain(str(domain)),
+        key,
+        tenant_id=operator_tenant_id(),
+    )
 
 
 def resolve_boolean(db, domain: SettingDomain, key: str) -> bool:
     """Resolve a registered boolean without call-site fallback semantics."""
 
     spec = get_spec(domain, key)
-    if spec is None or spec.value_type is not SettingValueType.boolean:
+    if spec is None or spec.value_type != SettingValueType.boolean:
         raise RuntimeError(f"Boolean setting must be registered: {domain.value}.{key}")
     value = resolve_value(db, domain, key)
     if not isinstance(value, bool):
@@ -5148,7 +5399,7 @@ def resolve_integer(db, domain: SettingDomain, key: str) -> int:
     """Resolve a registered integer without call-site fallback semantics."""
 
     spec = get_spec(domain, key)
-    if spec is None or spec.value_type is not SettingValueType.integer:
+    if spec is None or spec.value_type != SettingValueType.integer:
         raise RuntimeError(f"Integer setting must be registered: {domain.value}.{key}")
     value = resolve_value(db, domain, key)
     if not isinstance(value, int) or isinstance(value, bool):
@@ -5162,7 +5413,7 @@ def resolve_string(db, domain: SettingDomain, key: str) -> str:
     """Resolve a required registered string without call-site fallback semantics."""
 
     spec = get_spec(domain, key)
-    if spec is None or spec.value_type is not SettingValueType.string:
+    if spec is None or spec.value_type != SettingValueType.string:
         raise RuntimeError(f"String setting must be registered: {domain.value}.{key}")
     value = resolve_value(db, domain, key)
     if not isinstance(value, str):
@@ -5173,91 +5424,41 @@ def resolve_string(db, domain: SettingDomain, key: str) -> str:
 
 
 def resolve_values_atomic(db, domain: SettingDomain, keys: list[str]) -> dict[str, Any]:
-    """Read multiple database-authoritative settings atomically.
+    """Read multiple database-authoritative settings in one pass.
 
-    This function retrieves multiple settings in a single database query,
-    preventing inconsistent reads that can occur when settings are read
-    one at a time while another process is updating them.
+    Delegates to `dotmac_kernel.settings_resolver.resolve_many`, which is the
+    same thing this function used to do by hand: one query per scope level with
+    `key IN (...)`, precedence applied in memory, then each value coerced and
+    degraded to its default by the SAME `_finish` that `resolve_value` uses.
+
+    What was here was a second copy of the resolution rules — coercion,
+    `allowed`, the integer bounds, degrade-to-default — about fifty lines of
+    them, beside a first copy in `resolve_value`. Two copies of a rule is the
+    defect this whole cutover has been closing; this one was simply the largest.
+
+    Behaviour preserved deliberately: a key with no registered spec, and a key
+    that resolves to None, are OMITTED from the result rather than present with
+    a null. Callers use `key in result` to mean "configured", so returning the
+    key with None would flip that test.
 
     Missing rows resolve to their registered defaults. Environment inputs are
     bootstrap-only and are not consulted here.
-
-    Args:
-        db: Database session
-        domain: The setting domain
-        keys: List of setting keys to retrieve
-
-    Returns:
-        Dict mapping keys to their resolved values (missing keys are omitted)
     """
+
     if not keys:
         return {}
 
-    # 1. Check cache for all keys
-    cached = SettingsCache.get_multi(domain.value, keys)
-    missing_keys = [k for k in keys if k not in cached]
-
-    if not missing_keys:
-        return cached
-
-    # 2. Query database for missing keys in single query
-    service = DOMAIN_SETTINGS_SERVICE.get(domain)
-    if not service:
-        return cached
-
-    from app.models.domain_settings import DomainSetting
-
-    settings = (
-        db.query(DomainSetting)
-        .filter(DomainSetting.domain == domain)
-        .filter(DomainSetting.key.in_(missing_keys))
-        .all()
+    resolved = kernel_resolve_many(
+        db,
+        KernelSettingDomain(str(domain)),
+        keys,
+        tenant_id=operator_tenant_id(),
     )
-
-    settings_by_key = {s.key: s for s in settings}
-    to_cache: dict[str, Any] = {}
-
-    for key in missing_keys:
-        spec = get_spec(domain, key)
-        if not spec:
-            continue
-
-        setting = settings_by_key.get(key)
-        raw = extract_db_value(setting)
-        if raw is None:
-            raw = spec.default
-        value, error = coerce_value(spec, raw)
-        if error:
-            value = spec.default
-        if spec.allowed and value is not None and value not in spec.allowed:
-            value = spec.default
-        if spec.value_type == SettingValueType.integer and value is not None:
-            parsed = _coerce_int_value(value)
-            if parsed is None:
-                parsed = spec.default if isinstance(spec.default, int) else None
-            if (
-                spec.min_value is not None
-                and parsed is not None
-                and parsed < spec.min_value
-            ):
-                parsed = spec.default if isinstance(spec.default, int) else None
-            if (
-                spec.max_value is not None
-                and parsed is not None
-                and parsed > spec.max_value
-            ):
-                parsed = spec.default if isinstance(spec.default, int) else None
-            value = parsed
-
-        if value is not None:
-            cached[key] = value
-            to_cache[key] = value
-
-    # 3. Cache all retrieved values atomically
-    if to_cache:
-        SettingsCache.set_multi(domain.value, to_cache)
-
-    return cached
+    return {
+        key: value
+        for key, value in resolved.items()
+        if value is not None and get_spec(domain, key) is not None
+    }
 
 
 def extract_db_value(setting: "DomainSetting | None") -> object | None:
@@ -5294,8 +5495,60 @@ def coerce_value(spec: SettingSpec, raw: object) -> tuple[object | None, str | N
         return None, "Value must be an integer"
     if spec.value_type == SettingValueType.string:
         if isinstance(raw, str):
+            value = raw
+        else:
+            value = str(raw)
+        if spec.string_normalization is SettingStringNormalization.LOWERCASE:
+            value = value.lower()
+        return value, None
+    if spec.value_type == SettingValueType.list:
+        # A list setting reached through the settings form arrives as text. A
+        # JSON array is parsed; anything else is read as a comma-separated
+        # list, which is the established convention for these — the audit
+        # `methods`/`skip_paths` handler did exactly this before the shape moved
+        # to its owner. Without it, "POST, GET" would store as that string.
+        if isinstance(raw, str):
+            text = raw.strip()
+            if not text:
+                return [], None
+            if text.startswith("["):
+                try:
+                    parsed = json.loads(text)
+                except ValueError:
+                    return None, "Value must be valid JSON"
+                if not isinstance(parsed, list):
+                    return None, "Value must be a JSON array"
+                raw = parsed
+            else:
+                return [item.strip() for item in text.split(",") if item.strip()], None
+        if isinstance(raw, tuple):
+            raw = list(raw)
+        if isinstance(raw, list):
+            return [
+                item.strip() if isinstance(item, str) else item
+                for item in raw
+                if not isinstance(item, str) or item.strip()
+            ], None
+        return None, "Value must be a list"
+    if spec.value_type == SettingValueType.json:
+        # An OBJECT, and only an object. The kernel's `json` type rejects
+        # anything else, and a reader that cannot tell whether to expect
+        # `.get(...)` or `[0]` is the ambiguity a value type exists to remove.
+        # Sequences belong to `list` above.
+        if isinstance(raw, str):
+            text = raw.strip()
+            if not text:
+                return {}, None
+            try:
+                parsed = json.loads(text)
+            except ValueError:
+                return None, "Value must be valid JSON"
+            if not isinstance(parsed, dict):
+                return None, "Value must be a JSON object"
+            return parsed, None
+        if isinstance(raw, dict):
             return raw, None
-        return str(raw), None
+        return None, "Value must be a JSON object"
     return raw, None
 
 
@@ -5303,8 +5556,12 @@ def normalize_for_db(
     spec: SettingSpec, value: object
 ) -> tuple[str | None, object | None]:
     if spec.value_type == SettingValueType.boolean:
+        # Both columns, deliberately. The seed writes both, the retired
+        # per-domain handlers wrote both, and `_to_bool` in app.main reads
+        # `value_json` first — leaving it NULL made a boolean row's shape depend
+        # on which writer produced it.
         bool_value = bool(value)
-        return ("true" if bool_value else "false"), None
+        return ("true" if bool_value else "false"), bool_value
     if spec.value_type == SettingValueType.integer:
         parsed = _coerce_int_value(value)
         if parsed is None:
@@ -5314,3 +5571,26 @@ def normalize_for_db(
     if spec.value_type == SettingValueType.string:
         return str(value), None
     return None, value
+
+
+# Register Sub's specs with the kernel registry at import time: a kernel read
+# must never precede the declaration it depends on, and `resolve_value` above
+# delegates to it. Imported HERE rather than at module top because the bridge
+# reads `SETTINGS_SPECS` from this module — a top-level import would be a
+# cycle, and by this line the specs exist.
+from app.services.settings_kernel_bridge import (  # noqa: E402
+    register_with_kernel,
+)
+
+register_with_kernel()
+
+# Install the Redis transport for the KERNEL's settings cache, here and for the
+# same reason as the line above: a resolution must not happen before the thing
+# it depends on exists. An uninstalled store is not an error — the kernel's
+# cache is simply inert — so a missed install shows up as a performance
+# regression rather than a failure, which is how it would survive for months.
+from app.services.kernel_settings_cache_store import (  # noqa: E402
+    install as install_settings_cache_store,
+)
+
+install_settings_cache_store()

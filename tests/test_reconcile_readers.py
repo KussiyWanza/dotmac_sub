@@ -835,6 +835,70 @@ def test_acs_reader_uses_trailing_serial_regex_match():
     assert "Device.IP.Interface" in projection
 
 
+def test_acs_reader_uses_recorded_id_for_hex_serial_device_document():
+    """Huawei OLT and CWMP serial renderings still identify one exact ONT."""
+    device_id = "00259E-HG8546M-485754431DAF83D1"
+    client = _StubGenieAcsClient(devices=[_device_doc(serial="485754431DAF83D1")])
+
+    result = read_acs_state(
+        client,
+        _desired(
+            serial_number="HWTC1DAF83D1",
+            acs_device_id=device_id,
+        ),
+    )
+
+    assert client.list_calls[0][0] == {"_id": device_id}
+    assert len(client.list_calls) == 1
+    assert result.observed is not None
+    assert result.observed.acs_present is True
+    assert result.observed.acs_observed_device_id == device_id
+
+
+def test_acs_reader_finds_hex_serial_variant_without_a_recorded_id():
+    device_id = "00259E-HG8546M-485754431DAF83D1"
+    client = _StubGenieAcsClient(devices=[_device_doc(serial="485754431DAF83D1")])
+
+    result = read_acs_state(
+        client,
+        _desired(serial_number="HWTC1DAF83D1", acs_device_id=None),
+    )
+
+    assert client.list_calls[0][0] == {
+        "_id": {"$regex": r".*-(?:HWTC1DAF83D1|HWTC\-1DAF83D1|485754431DAF83D1)$"}
+    }
+    assert result.observed is not None
+    assert result.observed.acs_observed_device_id == device_id
+
+
+def test_acs_reader_falls_back_to_serial_to_expose_stale_recorded_id():
+    recorded_id = "00259E-HG8546M-HWTCOLD"
+    observed_id = "00259E-HG8546M-HWTCABC123"
+
+    class _StaleIdentityClient:
+        def __init__(self):
+            self.list_calls: list[tuple[dict[str, object] | None, object]] = []
+
+        def list_devices(self, query=None, projection=None):
+            self.list_calls.append((query, projection))
+            if query == {"_id": recorded_id}:
+                return []
+            return [_device_doc(serial="HWTCABC123")]
+
+    client = _StaleIdentityClient()
+    result = read_acs_state(
+        client,
+        _desired(serial_number="HWTCABC123", acs_device_id=recorded_id),
+    )
+
+    assert [call[0] for call in client.list_calls] == [
+        {"_id": recorded_id},
+        {"_id": {"$regex": r".*-HWTCABC123$"}},
+    ]
+    assert result.observed is not None
+    assert result.observed.acs_observed_device_id == observed_id
+
+
 def test_acs_reader_never_projects_wifi_psk() -> None:
     desired = _desired(
         wifi_paths=Tr069WifiParameterPaths(

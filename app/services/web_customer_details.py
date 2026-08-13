@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from types import SimpleNamespace
@@ -28,6 +29,7 @@ from app.models.billing import (
 from app.models.catalog import (
     AccessCredential,
     AddOn,
+    BillingMode,
     ConnectionType,
     Subscription,
     SubscriptionAddOn,
@@ -75,9 +77,10 @@ from app.services import subscriber as subscriber_service
 from app.services import subscriber_summary as subscriber_summary_service
 from app.services import web_customer_user_access as web_customer_user_access_service
 from app.services.access_resolution import resolve_customer_access
+from app.services.billing_profile import resolve_billing_profiles
 from app.services.billing_settings import resolve_payment_due_days
-from app.services.collections import get_available_balance
 from app.services.credential_crypto import decrypt_credential
+from app.services.customer_financial_position import prepaid_available_balances
 from app.services.customer_network_path import (
     SubscriptionNetworkPath,
     project_customer_network_map,
@@ -112,8 +115,20 @@ from app.services.topology.customer_path import resolve_customer_path
 
 logger = logging.getLogger(__name__)
 
-RESOLVED_TICKET_STATUSES = {
-    "resolved",
+
+@dataclass(frozen=True)
+class CustomerDetailNetworkQuery:
+    """Typed bounded network-panel request for the legacy detail projection."""
+
+    include: bool
+    limit: int = 12
+
+    def __post_init__(self) -> None:
+        if not 1 <= self.limit <= 50:
+            raise ValueError("Customer detail network limit must be between 1 and 50")
+
+
+TERMINAL_TICKET_STATUSES = {
     "closed",
     "canceled",
     "merged",
@@ -320,6 +335,31 @@ def _billing_policy_snapshot(
     }
 
 
+def _billing_notification_flag_enabled(metadata: dict | None) -> bool:
+    raw_value = (metadata or {}).get("send_billing_notifications")
+    if raw_value is None:
+        return True
+    if isinstance(raw_value, bool):
+        return raw_value
+    if isinstance(raw_value, str):
+        return raw_value.strip().lower() not in {"0", "false", "no", "off"}
+    return bool(raw_value)
+
+
+def _billing_config_snapshot(customer: Subscriber) -> dict[str, object]:
+    metadata = dict(getattr(customer, "metadata_", None) or {})
+    return {
+        "category": getattr(customer, "category", None),
+        "billing_day": getattr(customer, "billing_day", None),
+        "payment_due_days": getattr(customer, "payment_due_days", None),
+        "grace_period_days": getattr(customer, "grace_period_days", None),
+        "min_balance": getattr(customer, "min_balance", None),
+        "billing_enabled": bool(getattr(customer, "billing_enabled", True)),
+        "auto_create_invoices": bool(metadata.get("auto_create_invoices", True)),
+        "send_billing_notifications": _billing_notification_flag_enabled(metadata),
+    }
+
+
 def _dedupe_accounts(accounts):
     unique = {}
     for account in accounts:
@@ -380,7 +420,8 @@ def get_customer_audit_activity_items(
     )
 
 
-def _build_common_financials(db: Session, account_ids):
+def _build_common_financials(db: Session, accounts: Sequence[Subscriber]):
+    account_ids = [account.id for account in accounts]
     invoices = []
     payments = []
     if account_ids:
@@ -404,13 +445,22 @@ def _build_common_financials(db: Session, account_ids):
     balance_due = float(open_invoice_balance_for_accounts(db, account_ids or []))
 
     current_balance = Decimal("0.00")
-    for account_id in account_ids or []:
+    if account_ids:
         try:
-            current_balance += get_available_balance(db, str(account_id))
+            profiles = resolve_billing_profiles(db, accounts)
+            prepaid_account_ids = [
+                account_id
+                for account_id, profile in profiles.items()
+                if profile.effective_mode == BillingMode.prepaid
+            ]
+            if prepaid_account_ids:
+                current_balance = sum(
+                    prepaid_available_balances(db, prepaid_account_ids).values(),
+                    start=Decimal("0.00"),
+                )
         except Exception:
             logger.warning(
-                "Failed to resolve current balance for customer account %s",
-                account_id,
+                "Failed to resolve current balances for customer accounts",
                 exc_info=True,
             )
 
@@ -736,7 +786,7 @@ def _build_relationship_data(db: Session, account_ids: list[UUID]) -> dict[str, 
         "open_tickets": sum(
             1
             for ticket in support_tickets
-            if ticket.status not in RESOLVED_TICKET_STATUSES
+            if ticket.status not in TERMINAL_TICKET_STATUSES
         ),
         "recent_communications": len(communication_logs),
         "active_service_orders": sum(
@@ -1641,6 +1691,7 @@ def build_customer_detail_snapshot(
     customer_id: str,
     *,
     include_conversations: bool = False,
+    network_query: CustomerDetailNetworkQuery | None = None,
 ) -> dict[str, Any]:
     """Build unified customer detail snapshot.
 
@@ -1709,7 +1760,7 @@ def build_customer_detail_snapshot(
     account_ids = [account.id for account in accounts]
 
     # Financials & relationships
-    finance_data = _build_common_financials(db, account_ids)
+    finance_data = _build_common_financials(db, accounts)
     invoices = finance_data["invoices"]
     payments = finance_data["payments"]
     invoice_status_presentations = finance_data["invoice_status_presentations"]
@@ -1819,17 +1870,11 @@ def build_customer_detail_snapshot(
     except Exception as exc:
         customer_user_access = {"error": str(exc)}
 
-    account_health = build_portal_account_health(db, customer.id).for_active_services()
-    service_health_by_subscription = {
-        str(service.subscription_id): service for service in account_health.services
-    }
+    account_health = None
+    service_health_by_subscription: dict[str, object] = {}
     pppoe_access = _build_pppoe_access_snapshot(db, account_ids)
-    network_connection_status, connection_by_subscription = (
-        _build_network_connection_snapshot(db, subscriptions)
-    )
-    additional_routes_by_subscriber = _active_additional_routes_by_subscriber(
-        db, account_ids
-    )
+    network_connection_status: dict[str, object] = {}
+    connection_by_subscription: dict[str, dict[str, object]] = {}
     endpoints_by_subscription: dict[str, dict[str, object]] = {}
     traces_by_subscription: dict[str, dict[str, object] | None] = {}
     network_path_by_subscription: dict[str, dict[str, object] | None] = {}
@@ -1838,7 +1883,29 @@ def build_customer_detail_snapshot(
     incident_by_subscription: dict[str, dict[str, object] | None] = {}
     service_impact_by_subscription: dict[str, dict[str, object] | None] = {}
     service_level_by_subscription: dict[str, dict[str, object] | None] = {}
-    for sub in subscriptions:
+    include_network = network_query is None or network_query.include
+    network_subscriptions = [
+        sub for sub in subscriptions if sub.login or sub.ipv4_address
+    ]
+    network_access_total_count = len(network_subscriptions)
+    if network_query is not None:
+        network_subscriptions = network_subscriptions[: network_query.limit]
+    if include_network:
+        account_health = build_portal_account_health(
+            db, customer.id
+        ).for_active_services()
+        service_health_by_subscription = {
+            str(service.subscription_id): service for service in account_health.services
+        }
+        network_connection_status, connection_by_subscription = (
+            _build_network_connection_snapshot(db, network_subscriptions)
+        )
+        additional_routes_by_subscriber = _active_additional_routes_by_subscriber(
+            db, account_ids
+        )
+    else:
+        additional_routes_by_subscriber = {}
+    for sub in network_subscriptions if include_network else ():
         if not sub.login and not sub.ipv4_address:
             continue
         # One composition per subscription: access facts, known incident,
@@ -1875,7 +1942,7 @@ def build_customer_detail_snapshot(
     network_access_inactive_count = (
         len(network_access_cards) - network_access_active_count
     )
-    if map_data and primary_address:
+    if include_network and map_data and primary_address:
         map_data = project_customer_network_map(
             db,
             customer_name=customer_name,
@@ -1964,6 +2031,7 @@ def build_customer_detail_snapshot(
         "crm_sync_status": _build_crm_sync_status(db, customer),
         "identity_profile": _build_identity_profile(customer),
         "pppoe_access": pppoe_access,
+        "billing_config": _billing_config_snapshot(customer),
         "billing_policy": _billing_policy_snapshot(db, accounts),
         "billing_workspace": billing_workspace,
         "network_connection_status": network_connection_status,
@@ -1971,6 +2039,11 @@ def build_customer_detail_snapshot(
         "network_access_cards": network_access_cards,
         "network_access_active_count": network_access_active_count,
         "network_access_inactive_count": network_access_inactive_count,
+        "network_access_total_count": network_access_total_count,
+        "network_access_is_bounded": (
+            include_network and network_access_total_count > len(network_subscriptions)
+        ),
+        "network_panel_loaded": include_network,
         "account_health": account_health,
         "service_health_by_subscription": service_health_by_subscription,
         "access_repair_state": _build_access_repair_state(

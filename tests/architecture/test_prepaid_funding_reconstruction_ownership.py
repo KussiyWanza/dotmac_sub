@@ -152,15 +152,31 @@ def test_materializer_owner_requires_a_config_trusted_clean_replay_seal() -> Non
     assert "reconstruction_existing_attestation_mismatch" in owner
     assert "reconstruction_source_cohort_incomplete" in owner
     assert "expected_candidate_hash = candidate_cohort_sha256" in owner
-    assert "resolve_splynx_history_opening_targets" in exporter
+    assert "resolve_opening_balance_history_targets" in exporter
     assert "--allow-quarantined-subset" not in exporter
     assert "source_cohort_incomplete" in _read(
-        "app/services/billing/splynx_history_opening.py"
+        "app/services/billing/opening_balance_history.py"
     )
     assert "apply_prepaid_funding_reconstruction" in materializer
     assert "Ed25519PublicKey" in attestation
-    assert "is_openbao_ref" in attestation
-    assert "prepaid_reconstruction_attestation_public_key_ref" in settings
+    # The trust anchor must come from somewhere an operator cannot repoint.
+    #
+    # This used to assert `is_openbao_ref` in the attestation module and a
+    # `prepaid_reconstruction_attestation_public_key_ref` SPEC. Both were
+    # proxies for that property and both expired when the anchor became held
+    # material: the spec is retired, and the reference check is gone because
+    # there is no longer a reference to check.
+    #
+    # The proxy was also weaker than the property. `is_openbao_ref` asserted
+    # the stored value WAS a reference and never WHICH reference, so anyone
+    # able to write settings could aim the anchor at a key they controlled.
+    # What replaces it is the stronger statement: the anchor is read from the
+    # held set by name, and the settings resolver is not on that path at all.
+    assert "get_secret(TRUST_KEY_NAME)" in attestation
+    assert "prepaid_attestation_public_key" in _read(
+        "app/services/kernel_secret_source.py"
+    )
+    assert "prepaid_reconstruction_attestation_public_key_ref" not in settings
 
 
 def test_complete_history_reader_and_retired_quarantine_name_have_one_app_home() -> (
@@ -185,7 +201,7 @@ def test_complete_history_reader_and_retired_quarantine_name_have_one_app_home()
         if "prepaid_funding_quarantined_account_ids" in path.read_text(encoding="utf-8")
     ]
 
-    assert history_readers == ["app/services/billing/splynx_history_opening.py"]
+    assert history_readers == ["app/services/billing/opening_balance_history.py"]
     assert quarantine_name_homes == ["app/services/prepaid_funding_reconstruction.py"]
 
 

@@ -755,30 +755,36 @@ class TestSeedBillingSettings:
         assert setting is not None
         assert setting.value_text == "EUR"
 
-    def test_seeds_prepaid_reconstruction_trust_anchor_as_openbao_ref(
+    def test_no_longer_seeds_the_prepaid_reconstruction_trust_anchor(
         self, db_session, monkeypatch
     ):
-        reference = (
-            "bao://secret/billing/prepaid-reconstruction-attestation#public_key_pem"
-        )
+        """The trust anchor stopped being a setting.
+
+        It is held from a path named in
+        `kernel_secret_source.OPTIONAL_SECRET_REFS`, so the settings surface
+        cannot repoint it. Seeding a row would restore exactly the control this
+        removed: the old guard checked the value WAS an OpenBao reference and
+        never WHICH one, so anyone able to write settings could aim it at a key
+        they controlled.
+        """
+
         monkeypatch.setenv(
             "PREPAID_RECONSTRUCTION_ATTESTATION_PUBLIC_KEY_REF",
-            reference,
+            "bao://secret/billing/prepaid-reconstruction-attestation#public_key_pem",
         )
 
         settings_seed.seed_billing_settings(db_session)
 
-        setting = (
+        assert (
             db_session.query(DomainSetting)
             .filter(
                 DomainSetting.domain == SettingDomain.billing,
                 DomainSetting.key
                 == "prepaid_reconstruction_attestation_public_key_ref",
             )
-            .one()
+            .first()
+            is None
         )
-        assert setting.is_secret is True
-        assert setting.value_text == reference
 
     def test_seeds_invoice_number_settings(self, db_session, monkeypatch):
         """Test invoice number settings are seeded."""
@@ -999,6 +1005,44 @@ class TestSeedProjectsSettings:
             .first()
         )
         assert setting is not None
+
+    def test_seeds_project_completion_finance_notification_settings(
+        self, db_session, monkeypatch
+    ):
+        """Test project completion finance notification settings are seeded."""
+        monkeypatch.setenv("PROJECTS_COMPLETION_FINANCE_EMAIL_ENABLED", "true")
+        monkeypatch.setenv(
+            "PROJECTS_COMPLETION_FINANCE_EMAIL_RECIPIENTS",
+            "finance@example.com, controller@example.com",
+        )
+        monkeypatch.setenv(
+            "PROJECTS_COMPLETION_FINANCE_PERMISSION_KEY", "finance:ap:read"
+        )
+
+        settings_seed.seed_projects_settings(db_session)
+
+        rows = {
+            row.key: row
+            for row in db_session.query(DomainSetting)
+            .filter(DomainSetting.domain == SettingDomain.projects)
+            .filter(
+                DomainSetting.key.in_(
+                    (
+                        "project_completion_finance_email_enabled",
+                        "project_completion_finance_email_recipients",
+                        "project_completion_finance_permission_key",
+                    )
+                )
+            )
+        }
+        assert rows["project_completion_finance_email_enabled"].value_json is True
+        assert rows["project_completion_finance_email_recipients"].value_json == [
+            "finance@example.com",
+            "controller@example.com",
+        ]
+        assert rows["project_completion_finance_permission_key"].value_text == (
+            "finance:ap:read"
+        )
 
 
 # =============================================================================

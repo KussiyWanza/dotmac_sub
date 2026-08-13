@@ -1,0 +1,44 @@
+{% extends "layouts/admin.html" %}
+{% block title %}Payment Intents - {{ customer.display_name or customer.email }}{% endblock %}
+{% block content %}
+<div class="space-y-6">
+    <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+            <a href="/admin/customers/person/{{ customer.id }}#billing" class="text-sm font-medium text-primary-600 hover:text-primary-700">&larr; Customer billing</a>
+            <h1 class="mt-2 text-2xl font-bold text-slate-900 dark:text-white">Payment intents</h1>
+            <p class="mt-1 text-sm text-slate-500">Checkout and bank-transfer attempts for {{ customer.display_name or customer.email }}.</p>
+        </div>
+    </div>
+    {% if message %}<div class="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">{{ message }}</div>{% endif %}
+    {% if error %}<div class="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">{{ error }}</div>{% endif %}
+    {% if intents %}
+    <div class="space-y-4">
+        {% for intent in intents %}
+        <details class="rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800" {% if loop.first %}open{% endif %}>
+            <summary class="cursor-pointer list-none px-5 py-4">
+                <div class="flex flex-wrap items-center justify-between gap-3">
+                    <div><p class="font-semibold text-slate-900 dark:text-white">{{ intent.reference }}</p><p class="mt-1 text-xs text-slate-500">{{ intent.provider_type|replace('_', ' ')|title }} &middot; {{ intent.created_at }}</p></div>
+                    <div class="text-right"><p class="font-semibold text-slate-900 dark:text-white">{{ intent.currency }} {{ "{:,.2f}".format(intent.requested_amount) }}</p><span class="text-xs font-semibold uppercase tracking-wide">{{ intent.status }}</span></div>
+                </div>
+            </summary>
+            <div class="border-t border-slate-100 px-5 py-5 dark:border-slate-700">
+                <dl class="grid gap-4 text-sm sm:grid-cols-2 lg:grid-cols-3">
+                    {% for label, value in [('Intent ID', intent.id), ('Purpose', intent.purpose), ('Channel', intent.channel), ('External ID', intent.external_id), ('Completed payment ID', intent.completed_payment_id), ('Actual amount', intent.actual_amount), ('Expires', intent.expires_at), ('Updated', intent.updated_at)] %}
+                    <div><dt class="text-xs font-semibold uppercase tracking-wide text-slate-500">{{ label }}</dt><dd class="mt-1 break-all text-slate-800 dark:text-slate-200">{{ value or '—' }}</dd></div>
+                    {% endfor %}
+                </dl>
+                <div class="mt-5"><p class="text-xs font-semibold uppercase tracking-wide text-slate-500">Lifecycle metadata</p><pre class="mt-2 overflow-x-auto rounded-xl bg-slate-950 p-4 text-xs text-slate-100">{{ intent.metadata|tojson(indent=2) }}</pre></div>
+                {% if can_cancel and intent.can_cancel %}
+                <form method="post" action="/admin/customers/person/{{ customer.id }}/payment-intents/{{ intent.id }}/cancel" class="mt-5 flex flex-col gap-3 border-t border-slate-100 pt-5 sm:flex-row dark:border-slate-700" onsubmit="return confirm('Cancel this pending payment intent?');">
+                    {% include "components/forms/csrf_input.html" %}
+                    <input name="reason" required maxlength="500" placeholder="Reason for cancellation" class="min-w-0 flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-900">
+                    <button type="submit" class="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700">Cancel intent</button>
+                </form>
+                {% endif %}
+            </div>
+        </details>
+        {% endfor %}
+    </div>
+    {% else %}<div class="rounded-2xl border border-dashed border-slate-300 p-10 text-center text-sm text-slate-500">No payment intents were found for this customer.</div>{% endif %}
+</div>
+{% endblock %}

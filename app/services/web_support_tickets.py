@@ -14,13 +14,17 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.models.project import ProjectTask
+from app.models.stored_file import StoredFile
 from app.models.subscriber import Subscriber
 from app.models.support import (
     Ticket,
     TicketChannel,
     TicketCommentAuthorType,
     TicketStatus,
+    canonical_ticket_status_value,
+    parse_ticket_status,
 )
+from app.schemas.status_presentation import StatusPresentation
 from app.schemas.support import (
     AttachmentMeta,
     TicketCommentCreate,
@@ -34,6 +38,7 @@ from app.services import (
     service_address,
     sla_assignment,
     support_ticket_filters,
+    support_ticket_region_projection,
     ticket_mentions,
     ticket_validation,
 )
@@ -53,6 +58,10 @@ from app.services.status_presentation import ticket_status_presentation
 
 logger = logging.getLogger(__name__)
 
+TICKET_ATTACHMENT_ENTITY_TYPES = frozenset(
+    {"support_ticket_attachment", "support_ticket_comment_attachment"}
+)
+
 
 @dataclass(frozen=True, slots=True)
 class TicketCustomerContext:
@@ -61,6 +70,52 @@ class TicketCustomerContext:
     phone: str | None
     service_address: str | None
     subscriber_id: UUID
+
+
+def get_ticket_attachment_file(
+    db: Session, *, ticket_id: UUID, file_id: UUID
+) -> StoredFile | None:
+    """Return an active file only when it belongs to the named support ticket."""
+    if db.get(Ticket, ticket_id) is None:
+        return None
+    record = db.get(StoredFile, file_id)
+    if (
+        record is None
+        or record.is_deleted
+        or record.entity_type not in TICKET_ATTACHMENT_ENTITY_TYPES
+        or record.entity_id != str(ticket_id)
+    ):
+        return None
+    return record
+
+
+def get_customer_visible_ticket_attachment_file(
+    db: Session, *, ticket_id: UUID, file_id: UUID
+) -> StoredFile | None:
+    """Resolve only attachments visible on a customer's ticket detail page."""
+    record = get_ticket_attachment_file(db, ticket_id=ticket_id, file_id=file_id)
+    if record is None:
+        return None
+    ticket = db.get(Ticket, ticket_id)
+    if ticket is None:
+        return None
+    visible_attachment_lists = (
+        [] if ticket.description_is_internal else [ticket.attachments or []]
+    )
+    visible_attachment_lists.extend(
+        comment.attachments or []
+        for comment in ticket.comments
+        if not comment.is_internal
+    )
+    expected_id = str(file_id)
+    if any(
+        str(item.get("stored_file_id") or "") == expected_id
+        for attachments in visible_attachment_lists
+        for item in attachments
+        if isinstance(item, Mapping)
+    ):
+        return record
+    return None
 
 
 def _ticket_customer_context(
@@ -164,7 +219,7 @@ _TICKET_STATUS_FILTERS = frozenset(
 
 
 def _ticket_status_scope(value: str | None) -> support_service.TicketStatusScope:
-    normalized = str(value or "").strip().lower()
+    normalized = canonical_ticket_status_value(str(value or "").strip().lower())
     if not normalized:
         return support_service.TicketStatusScope.all()
     if normalized == NOT_CLOSED_TICKET_STATUS_FILTER:
@@ -223,7 +278,9 @@ def build_ticket_list_query(
 ) -> ListQuery:
     """Normalize the admin support queue through its declared capabilities."""
 
-    normalized_status = str(status or "").strip().lower() or None
+    normalized_status = (
+        canonical_ticket_status_value(str(status or "").strip().lower()) or None
+    )
     if normalized_status and normalized_status not in _TICKET_STATUS_FILTERS:
         raise ValueError(f"Unsupported ticket status: {normalized_status}")
     return SUPPORT_TICKET_LIST_DEFINITION.build_query(
@@ -231,7 +288,8 @@ def build_ticket_list_query(
         filters={
             "status": normalized_status,
             "ticket_type": str(ticket_type or "").strip() or None,
-            "region": str(region or "").strip() or None,
+            "region": support_ticket_region_projection.normalize_region_value(region)
+            or None,
             "assigned_to_me": "true" if assigned_to_me else None,
             "project_manager_person_id": _normalize_ticket_uuid_filter(
                 project_manager_person_id, "project_manager_person_id"
@@ -309,6 +367,49 @@ def _append_missing_option(options: list[str], value: str | None) -> list[str]:
     if not text or text in options:
         return options
     return [*options, text]
+
+
+def _unavailable_status_presentation(
+    options: list[str], value: str | None
+) -> StatusPresentation | None:
+    text = str(value or "").strip()
+    if not text or text in options:
+        return None
+    return ticket_status_presentation(text)
+
+
+def _admin_status_value(
+    db: Session,
+    value: str,
+    *,
+    surface: support_ticket_settings_service.OperatorTicketStatusSurface,
+    current_status: str | None = None,
+) -> str:
+    normalized = support_ticket_settings_service.normalize_system_value(value)
+    try:
+        selection = support_ticket_settings_service.OperatorTicketStatusSelection(
+            requested_status=parse_ticket_status(normalized),
+            current_status=(
+                parse_ticket_status(current_status) if current_status else None
+            ),
+            surface=surface,
+        )
+        outcome = (
+            support_ticket_settings_service.resolve_operator_ticket_status_selection(
+                db, selection
+            )
+        )
+    except (
+        ValueError,
+        support_ticket_settings_service.SupportTicketConfigurationError,
+    ):
+        db_session_adapter.release_read_transaction(db)
+        raise WebSupportTicketInputError(
+            code="support_ticket_status_not_selectable",
+            message="Select an available ticket status",
+            details={"status": normalized, "surface": surface.value},
+        ) from None
+    return outcome.status.value
 
 
 def _ticket_sla_state(
@@ -458,9 +559,15 @@ def build_ticket_form_context(
     ]
     assignment_ids = current_assignees + _non_empty_ids(
         [
-            ticket.technician_person_id if ticket else None,
-            ticket.ticket_manager_person_id if ticket else None,
-            ticket.site_coordinator_person_id if ticket else None,
+            ticket.technician_person_id
+            if ticket
+            else params.get("technician_person_id"),
+            ticket.ticket_manager_person_id
+            if ticket
+            else params.get("ticket_manager_person_id"),
+            ticket.site_coordinator_person_id
+            if ticket
+            else params.get("site_coordinator_person_id"),
         ]
     )
     staff = support_service.list_assignment_people(db, include_ids=assignment_ids)
@@ -469,6 +576,11 @@ def build_ticket_form_context(
         "description": ticket.description
         if ticket
         else str(params.get("description", "") or ""),
+        "description_is_internal": (
+            ticket.description_is_internal
+            if ticket
+            else not bool(params.get("publish_description", False))
+        ),
         "subscriber_id": str(ticket.subscriber_id)
         if ticket and ticket.subscriber_id
         else str(params.get("subscriber_id", "") or ""),
@@ -491,11 +603,13 @@ def build_ticket_form_context(
         "channel": ticket.channel.value
         if ticket
         else str(params.get("channel", TicketChannel.web.value) or ""),
-        "status": ticket.status
+        "status": canonical_ticket_status_value(ticket.status)
         if ticket
-        else str(
-            params.get("status", support_ticket_settings_service.default_status(db))
-            or ""
+        else canonical_ticket_status_value(
+            str(
+                params.get("status", support_ticket_settings_service.default_status(db))
+                or ""
+            )
         ),
         "due_at": ticket.due_at.strftime("%Y-%m-%dT%H:%M")
         if ticket and ticket.due_at
@@ -508,16 +622,16 @@ def build_ticket_form_context(
         ),
         "technician_person_id": str(ticket.technician_person_id)
         if ticket and ticket.technician_person_id
-        else "",
+        else str(params.get("technician_person_id", "") or ""),
         "ticket_manager_person_id": str(ticket.ticket_manager_person_id)
         if ticket and ticket.ticket_manager_person_id
-        else "",
+        else str(params.get("ticket_manager_person_id", "") or ""),
         "site_coordinator_person_id": str(ticket.site_coordinator_person_id)
         if ticket and ticket.site_coordinator_person_id
-        else "",
+        else str(params.get("site_coordinator_person_id", "") or ""),
         "service_team_id": str(ticket.service_team_id)
         if ticket and ticket.service_team_id
-        else "",
+        else str(params.get("service_team_id", "") or ""),
         "assignee_person_ids": current_assignees,
     }
     customer_person_id = str(prefill["customer_person_id"] or "")
@@ -531,8 +645,10 @@ def build_ticket_form_context(
     prefill["subscriber_label"] = (
         subscriber_person["label"] if subscriber_person else ""
     )
-    status_options = _append_missing_option(
-        status_options, str(prefill["status"] or "")
+    if ticket is None and str(prefill["status"] or "") not in status_options:
+        prefill["status"] = support_ticket_settings_service.default_status(db)
+    unavailable_status_presentation = _unavailable_status_presentation(
+        status_options, str(prefill["status"]) if ticket is not None else None
     )
     priority_options = _append_missing_option(
         priority_options, str(prefill["priority"] or "")
@@ -540,13 +656,20 @@ def build_ticket_form_context(
     ticket_type_options = _append_missing_option(
         ticket_type_options, str(prefill["ticket_type"] or "")
     )
+    manager_routing_preview = {
+        rule.region: str(rule.ticket_manager_person_id)
+        for rule in support_ticket_settings_service.region_manager_routing_preview(db)
+        if rule.ticket_manager_person_id is not None
+    }
     return {
         "all_statuses": status_options,
+        "unavailable_status_presentation": unavailable_status_presentation,
         "all_priorities": priority_options,
         "all_channels": [item.value for item in TicketChannel],
         "region_options": support_service.regions(db),
         "ticket_type_options": ticket_type_options,
         "service_team_options": service_team_options(db),
+        "region_manager_routing": manager_routing_preview,
         "staff_options": staff,
         "subscriber_options": support_service.list_people(
             db,
@@ -583,6 +706,7 @@ def build_ticket_create_payload(**kwargs) -> TicketCreate:
     return TicketCreate(
         title=kwargs["title"],
         description=kwargs["description"] or None,
+        description_is_internal=not bool(kwargs.get("publish_description")),
         subscriber_id=parse_uuid_or_none(kwargs.get("subscriber_id")),
         customer_account_id=parse_uuid_or_none(kwargs.get("customer_account_id")),
         customer_person_id=parse_uuid_or_none(kwargs.get("customer_person_id")),
@@ -592,9 +716,7 @@ def build_ticket_create_payload(**kwargs) -> TicketCreate:
         ticket_manager_person_id=parse_uuid_or_none(
             kwargs.get("ticket_manager_person_id")
         ),
-        site_coordinator_person_id=parse_uuid_or_none(
-            kwargs.get("site_coordinator_person_id")
-        ),
+        site_coordinator_person_id=None,
         service_team_id=parse_uuid_or_none(kwargs.get("service_team_id")),
         ticket_type=kwargs.get("ticket_type") or None,
         priority=kwargs["priority"],
@@ -619,6 +741,7 @@ def build_ticket_update_payload(**kwargs) -> TicketUpdate:
     return TicketUpdate(
         title=kwargs["title"],
         description=kwargs["description"] or None,
+        description_is_internal=not bool(kwargs.get("publish_description")),
         subscriber_id=parse_uuid_or_none(kwargs.get("subscriber_id")),
         customer_account_id=parse_uuid_or_none(kwargs.get("customer_account_id")),
         customer_person_id=parse_uuid_or_none(kwargs.get("customer_person_id")),
@@ -703,6 +826,11 @@ def create_ticket_from_form(
     server-side on submit; without the operator's ``duplicate_override``
     confirmation a warning is raised so the route can re-render the form.
     """
+    form["status"] = _admin_status_value(
+        db,
+        str(form.get("status") or ""),
+        surface=support_ticket_settings_service.OperatorTicketStatusSurface.create,
+    )
     payload = build_ticket_create_payload(actor_id=actor_id, **form)
     duplicate_result = ticket_validation.find_duplicate_ticket_candidates(
         db, _duplicate_input_from_payload(payload)
@@ -753,6 +881,13 @@ def update_ticket_from_form(
     actor_id: str | None,
     **form,
 ):
+    ticket = support_service.tickets.get(db, ticket_id)
+    form["status"] = _admin_status_value(
+        db,
+        str(form.get("status") or ""),
+        surface=support_ticket_settings_service.OperatorTicketStatusSurface.edit,
+        current_status=ticket.status,
+    )
     payload = build_ticket_update_payload(**form)
     db_session_adapter.release_read_transaction(db)
     return support_service.tickets.update(
@@ -786,6 +921,7 @@ def quick_update_ticket(
         "service_team_id",
         "assigned_to_person_id",
     }
+    ticket = support_service.tickets.get(db, ticket_id)
     payload_data: dict = {}
     for key, value in fields.items():
         if value in (None, ""):
@@ -798,7 +934,16 @@ def quick_update_ticket(
                     code="support_ticket_form_invalid",
                     message=f"{key} must be a valid UUID",
                 ) from exc
-        elif key in ("status", "priority"):
+        elif key == "status":
+            payload_data[key] = _admin_status_value(
+                db,
+                str(value),
+                surface=(
+                    support_ticket_settings_service.OperatorTicketStatusSurface.quick_status
+                ),
+                current_status=ticket.status,
+            )
+        elif key == "priority":
             payload_data[key] = str(value).strip()
         else:
             payload_data[key] = value
@@ -1077,7 +1222,9 @@ def build_tickets_list_context(
     selected_status = list_query.filter_value("status")
     status_options = support_ticket_settings_service.list_status_options(db)
     priority_options = support_ticket_settings_service.list_priority_options(db)
-    status_options = _append_missing_option(status_options, selected_status)
+    unavailable_status_filter = _unavailable_status_presentation(
+        status_options, selected_status
+    )
     total = _ticket_scope_count(
         db,
         list_query=list_query,
@@ -1187,6 +1334,7 @@ def build_tickets_list_context(
         "visible_columns": visible_ticket_columns(visible_columns_cookie),
         "ticket_columns": TICKET_COLUMNS,
         "all_statuses": status_options,
+        "unavailable_status_filter": unavailable_status_filter,
         "all_priorities": priority_options,
         "ticket_type_options": support_service.ticket_types(db),
         "region_options": support_service.regions(db),
@@ -1420,7 +1568,9 @@ def build_ticket_detail_context(
     comments = support_service.ticket_comments.list(
         db, str(ticket.id), limit=500, offset=0
     )
-    status_options = _append_missing_option(status_options, ticket.status)
+    unavailable_status_presentation = _unavailable_status_presentation(
+        status_options, ticket.status
+    )
     priority_options = _append_missing_option(priority_options, ticket.priority)
     staff = support_service.list_assignment_people(
         db,
@@ -1467,6 +1617,7 @@ def build_ticket_detail_context(
             db, "support_ticket", str(ticket.id), limit=100
         ),
         "all_statuses": status_options,
+        "unavailable_status_presentation": unavailable_status_presentation,
         "all_priorities": priority_options,
         "all_channels": [item.value for item in TicketChannel],
         "people_options": subscribers,
@@ -1484,7 +1635,8 @@ def build_ticket_detail_context(
             ),
         ),
         "status_presentations": {
-            value: ticket_status_presentation(value) for value in status_options
+            value: ticket_status_presentation(value)
+            for value in {*status_options, ticket.status}
         },
         "is_merged_source": bool(
             ticket.merged_into_ticket_id

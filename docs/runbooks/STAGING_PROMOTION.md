@@ -21,28 +21,105 @@ Overridden work reaches production without staging having run it, so reconcile
    Do not edit `VERSION` in the source pull request; the version-bump workflow
    owns the separate rolling bump pull request after merge.
 2. Require CI, Mobile CI, and Version Impact to pass before merging.
-3. Merge into `dev`. Push CI and the GHCR workflow then validate and build the
-   exact `origin/dev` commit.
-4. Deploy the immutable `sha-<short-commit>` image only to the staging host.
-5. Complete staging acceptance against `http://10.120.121.20:8001`.
-6. Merge the rolling version-bump PR for `dev`, when one exists, and repeat the
-   staging gate for that final versioned dev commit.
+3. Merge into `dev` and let the rolling version-bump pull request be created
+   when the version-impact automation requires one.
+4. Select the exact `origin/dev` SHA intended for deployment and require CI and
+   Mobile CI to pass on that exact commit.
+   An open rolling version-bump pull request does not block
+   a digest-bound candidate for an already-selected source SHA; it governs
+   semver metadata and aliases, not deployment authority.
+5. Dispatch `Build release candidate once` on `dev`, supplying that full dev
+   SHA as `candidate_sha`. The workflow refuses a stale SHA or non-green source,
+   builds the application once on GitHub, and records its immutable OCI digest.
+6. Let `Deploy dev to staging` deploy that exact digest, then complete staging
+   acceptance against `http://10.120.121.20:8001`. **That acceptance covers
+   application behaviour only — it does not exercise network equipment.** See
+   "What staging acceptance does not cover" below.
 7. Promote the accepted dev tree to `main` without unrelated changes. The
    promotion PR uses `version:none` with a body explaining that the version was
    already established and validated on dev. **Merge it with a merge commit,
    never a squash** — see "Merge methods" below.
-8. **Fast-forward `dev` to `main` as soon as the promotion merges.** The merge
-   commit exists only on `main`, so `dev` is left one commit behind and the
-   ancestry check starts failing again until this is done — see "Fast-forward
-   `dev` to `main` immediately after a promotion merges" below.
-9. Require main CI and the main GHCR build to pass. Only the default branch may
-   receive the moving `latest` image tag.
-10. Deploy the immutable main image to production only after Michael explicitly
-    requests the named production host.
+8. Require CI and Mobile CI on the exact resulting `main` commit. Dispatch
+   `Promote staged digest for production` on `main` with the candidate build
+   run, staging run, and full main SHA. It proves tree equality and ancestry,
+   records typed authorization, and attaches version and `latest` aliases to
+   the staged digest without rebuilding.
+9. Synchronize `main` back into `dev` through a zero-file pull request and merge
+   it with a merge commit. Branch protection rejects direct ref updates even
+   when they are fast-forwards; see "Synchronize `dev` after promotion" below.
+10. Dispatch `Deploy authorized digest to production` only after Michael names
+    `dotmac-sub-prod`, supplies the authorization run ID, and the protected
+    production environment approves it. The default path takes a backup.
 
-The main build remains separate from the dev build. GitHub Actions layer
-caching makes the second build faster while preserving commit-specific OCI
-revision evidence.
+Invoke the candidate workflow only for the exact source SHA intended for this
+release. Do not build and stage every intermediate feature merge. The isolated
+GHCR workflow publishes only the pinned GenieACS runtime; it never builds an
+application image. If the rolling version-bump pull request remains open, the
+production promotion still authorizes and deploys the immutable digest; the
+existing semver tag is not moved when it already points at an older digest, and
+only `latest` is advanced to the authorized production digest.
+
+## Release Freeze
+
+Once release deployment is in flight, `dev` is frozen for merges until the
+candidate is deployed to production or the release is explicitly abandoned. The
+freeze is intentionally narrow: feature branch pushes, pull request creation,
+and pull request updates continue, but no pull request should merge into `dev`
+while `Build release candidate once`, `Deploy dev to staging`,
+`Promote staged digest for production`, or `Deploy authorized digest to
+production` is queued or running.
+
+The `Release Freeze Gate` workflow is the required pull-request check that
+enforces this boundary on `dev`. It reads active GitHub Actions runs and fails
+only when one of those release-control workflows is queued or in progress. It
+does not inspect open pull requests and does not reinterpret the selected
+candidate; the candidate SHA and OCI digest remain the deployment authority.
+
+### One-time workflow bootstrap
+
+GitHub accepts `workflow_dispatch` only after the workflow file exists on the
+default branch. Therefore, the promotion that first introduces
+`release-candidate.yml` cannot use that workflow to stage itself. Use the
+previously active dev-image staging path for that one promotion, with all of its
+existing CI, staging, and approval gates. Once the change reaches `main`, every
+later release uses the explicit candidate workflow. Do not fabricate an
+evidence artifact or bypass staging to shorten the bootstrap.
+
+## What staging acceptance does not cover
+
+Staging cannot execute any live OLT operation. Its OpenBao instance is reachable
+but unseeded — `/admin/system/secrets` reports **0 secret paths, 0 fields** —
+while the staging database carries `bao://` credential references inherited from
+a production copy. Every reference therefore 404s:
+
+```
+Autofind query failed: Failed to resolve credential secret reference:
+404: OpenBao secret not found
+```
+
+Confirmed 2026-08-08 against BOI and Gudu, on staging `v7.141.6`. Resolution
+happens in `credential_crypto.decrypt_credential` -> `secrets.resolve_openbao_ref`,
+inside `_open_shell` and before any SSH session opens, so no application change
+compensates and no amount of staging soak exercises device behaviour.
+
+**Consequence.** Changes to OLT/ONT device interaction — Huawei CLI transport,
+command construction, response classification, ONT authorization, service ports,
+TR-069 binding — reach production having been exercised against a shelf at **no
+point** in the pipeline, because CI cannot reach one either. Do not read a green
+staging acceptance as evidence that device-facing behaviour works.
+
+For such a change, either arrange verification another way before promoting, or
+promote deliberately with a named post-deploy check and record that decision in
+the promotion pull request.
+
+`scripts/setup/openbao_init.sh` seeds project-level secrets from environment
+variables. It does **not** create per-OLT credential paths and will not fix this.
+
+Tracked remediation: provision read-only accounts on the Huawei shelves and seed
+those at the referenced paths, giving staging real read acceptance (autofind,
+status, inventory, config readback) with no ability to write to production fibre
+plant. Seeding staging with the existing full-access credentials would let a
+staging bug mutate live plant, and is not recommended.
 
 ## Merge methods
 
@@ -108,21 +185,25 @@ validates the token and warns rather than falling back silently.
 Once automation is a separate identity, a review requirement becomes meaningful
 rather than ceremonial, and can be reconsidered.
 
-### Fast-forward `dev` to `main` immediately after a promotion merges
+### Synchronize `dev` after a promotion merges
 
 A merge-commit promotion creates a commit **on `main` only**. `main` becomes
 merge(`main`, `dev`), while `dev` stays at the commit that was promoted — one of
 that merge's own parents. So the moment the promotion lands, `main` is no longer
 an ancestor of `dev`, and the ancestry check above starts failing again.
 
-This is not divergence and does not need reconciliation. `dev` is simply behind
-by the merge commit, and `dev`'s head is still an ancestor of `main`'s. Close it
-with a fast-forward, which branch protection allows because it is not a force
-push:
+This is not content divergence. `dev` is simply behind by the merge commit and
+its head is still an ancestor of `main`. Close it with a zero-file
+reconciliation pull request from a short-lived branch at `main` into `dev`.
+GitHub branch protection requires every `dev` update to arrive through a pull
+request and rejects even a non-force fast-forward ref update:
 
 ```
-git fetch origin main
-git push origin "$(git rev-parse origin/main)":refs/heads/dev
+git fetch origin main dev
+git switch -c agent/reconcile-main-to-dev origin/main
+git push origin agent/reconcile-main-to-dev
+gh pr create --base dev --head agent/reconcile-main-to-dev \
+  --title "chore: reconcile main into dev" --label version:none
 ```
 
 Verify both invariants afterwards:
@@ -222,17 +303,64 @@ all of the following are true:
   deployment runner. Interactive development, agents, and diagnostic edits use
   separate worktrees and never write into the deployment worktree.
 - The tracked deployment worktree is clean. The workflow refuses to discard
-  tracked changes and updates local `dev` only by fast-forward.
+  tracked changes, verifies the exact fetched `origin/dev` candidate, checks it
+  out at detached `HEAD`, and leaves every local branch pointer unchanged. A
+  local development branch is preserved as a reference but never controls or
+  blocks deployment checkout state.
 
-The workflow accepts only a successful push-triggered GHCR build from this
-repository's current `dev` tip. It waits for the CI and Mobile CI push workflows
-for the exact same commit, rejects stale or failed candidates, verifies that
-Celery Beat is absent, verifies the private `10.120.121.20:8001` binding, and
-then invokes `scripts/deploy_staging.sh`. That staging-only adapter proves the
-exact environment, server name, and private health endpoint before delegating
-to the hardened deployment owner. The deployment owner independently repeats
-the GitHub API decision for the image's full OCI revision and requires green
-`CI` and `Mobile CI` push runs on `dev` before any database or service change.
+The workflow accepts only a successful manually dispatched `Build release
+candidate once` run from this repository's current `dev` tip. Start it with an
+exact full SHA, for example:
+
+```bash
+gh workflow run release-candidate.yml --ref dev -f candidate_sha=<full-dev-sha>
+```
+
+The candidate workflow requires the exact dev SHA to have green CI and Mobile
+CI, refuses to overwrite an existing `candidate-<full-sha>` bootstrap tag,
+builds only on a GitHub-hosted runner, and uploads
+`release-candidate-evidence`. That typed document binds the source commit, Git
+tree, OCI digest, source-CI conclusion, and build run ID.
+Open pull requests, including rolling version-bump pull requests,
+are not candidate authority once that immutable evidence exists.
+
+The staging workflow downloads evidence only from its triggering run,
+independently recomputes the candidate tree, waits for the exact source checks,
+rejects stale or mismatched evidence, verifies that Celery Beat is absent, and
+verifies the private `10.120.121.20:8001` binding. It invokes
+`scripts/deploy_staging.sh` with the digest and verifies the running image
+reference plus revision, source-tree, and build-run labels. After successful
+health checks, a GitHub-hosted job uploads `staging-acceptance-<source-sha>` for
+the same commit, tree, and digest. The deployment owner independently repeats
+the GitHub API decision for the image's full OCI revision before any database
+or service change.
+
+## Production workflow activation
+
+The production workflows are manual and run no repository test suite.
+`Promote staged digest for production` runs on a GitHub-hosted runner behind the
+protected `production` environment. It downloads exact candidate and staging
+artifacts by run ID, rechecks green `main`, tree equality, and ancestry, then
+registry-tags the same digest. It never invokes a Docker build.
+
+GitHub records the manually dispatched candidate run on `dev`, but records the
+downstream `Deploy dev to staging` `workflow_run` on the default `main` branch
+where that workflow executes. Production promotion validates those transport
+branches independently from the typed staging acceptance, which still binds the
+exact `dev` candidate revision, tree, digest, and build run.
+
+`Deploy authorized digest to production` remains fail-closed until the
+repository variable `PRODUCTION_DEPLOY_ENABLED` is exactly `true`. The
+`production` environment must define `PRODUCTION_DEPLOY_DIR`, and its runner
+must carry the dedicated `dotmac-sub-production` label. Each dispatch must name
+`dotmac-sub-prod` and provide the successful authorization run ID. Do not enable
+the variable or dispatch the workflow until Michael names and approves that
+production target.
+
+The GitHub-hosted verification job validates authorization before the production
+runner is scheduled. The host job checks out the exact authorized `main`
+revision in its runner workspace and uses the persistent directory only for
+host-owned `.env`, Compose overrides, and deployment state.
 
 ## Staging database-backup policy
 
@@ -244,25 +372,33 @@ application and workers of disk I/O without protecting production data.
 Every automatic or manual staging deployment must invoke
 `scripts/deploy_staging.sh`; operators must not call `scripts/deploy.sh`
 directly on staging. The adapter fails closed unless `.env` contains the exact
-staging host contract, then forces `SKIP_BACKUP=1` and the existing staging-only
+staging host contract, then selects `DEPLOY_BACKUP_MODE=skip_staging` and the staging-only
 proxy opt-out before delegating to `scripts/deploy.sh`. It also owns a fixed
 ten-minute health budget for candidate, primary, and rollback startup. Seabone
 has repeatedly needed more than three minutes to import the application under
 measured disk and swap pressure; the longer staging budget prevents a healthy
 cold start from being rolled back while preserving every health assertion.
 
-Production backup behavior remains unchanged. Production and other deployment
-targets continue to use `scripts/deploy.sh`, whose default remains to take the
-pre-migration backup and whose health budget remains 180 seconds. The offsite
-backup jobs under `scripts/backup/` are also unchanged. Existing staging backup
-files are retained until a separately approved retention action.
+Production requires a backup by default and rejects generic `SKIP_BACKUP=1`.
+Only `scripts/deploy_production.sh --hotfix-no-migrations` may request an
+exception, and it requires an incident/change reference plus reason. The
+adapter fingerprints the complete migration file set in the running and
+candidate images, derives both image-head sets, reads the exact database heads,
+and skips only when all comparisons match. Missing, changed, or malformed
+evidence keeps the backup enabled. The offsite jobs under `scripts/backup/` and
+existing staging backup files are unchanged.
 
 ## Failure behavior
 
 - A missing runner, disabled repository switch, wrong host path, dirty tracked
-  checkout, stale dev SHA, failed check, missing image, unexpected port, or
-  active Celery Beat prevents deployment.
+  checkout, stale dev SHA, failed check, malformed or mismatched evidence,
+  missing digest, unexpected port, or active Celery Beat prevents deployment.
+- The deployment checkout never moves, merges, resets, or force-updates a local
+  branch. It detaches at the verified candidate so an unrelated local branch
+  cannot diverge from `origin/dev` and block or influence a release.
 - `scripts/deploy.sh` still owns backup, migration, candidate health, primary
   health, worker readiness, rollback, and image-retention behavior; the guarded
   staging adapter supplies only the staging-specific backup and proxy opt-outs.
 - A failed staging deployment never authorizes promotion to `main`.
+- Production deploys only a typed, authorized digest. The self-hosted production
+  job runs bounded operational checks and no repository test suite.

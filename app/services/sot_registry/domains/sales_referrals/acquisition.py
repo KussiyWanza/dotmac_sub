@@ -116,7 +116,9 @@ SERVICES: tuple[SOTService, ...] = (
                 boundary=(
                     "Direct capture owns one optional root transaction; verified "
                     "receipt capture locks receipt, stages Party, Lead, origin, "
-                    "receipt consequence and events, then commits once."
+                    "receipt consequence and events, then commits once. The signed "
+                    "fiber inquiry coordinator may invoke the flush-only participant "
+                    "so Inbox and prospect evidence commit atomically."
                 ),
                 locking=(
                     "Verified receipts are selected FOR UPDATE; unique interaction "
@@ -196,6 +198,7 @@ SERVICES: tuple[SOTService, ...] = (
             ),
             test_refs=(
                 "tests/test_lead_capture_webhook.py",
+                "tests/test_fiber_inquiry_webhook.py",
                 "tests/test_sales_capture_account_conversion.py",
                 "tests/architecture/test_service_http_boundary.py",
             ),
@@ -954,10 +957,11 @@ SERVICES: tuple[SOTService, ...] = (
             "This owner snapshots the authoritative Quote, lines, recipient "
             "display identity, resolved company brand, primary currency-eligible "
             "Direct Transfer account, internal collection-account provenance, and "
-            "absolute company-hosted quotation payment URL into one immutable, "
+            "optional absolute company-hosted quotation payment URL into one immutable, "
             "content-addressed PDF artifact. Repeated exports of the same snapshot "
             "reuse the canonical artifact; rendering never rereads mutable account "
-            "configuration."
+            "configuration. Active Lead-only Quotes omit online payment without "
+            "creating or inferring a customer identity."
         ),
         contract=ServiceContract(
             concerns=(
@@ -1035,7 +1039,6 @@ SERVICES: tuple[SOTService, ...] = (
                     "sales.quote_documents.invalid_pdf",
                     "sales.quote_documents.invalid_snapshot",
                     "sales.quote_documents.owner_command_required",
-                    "sales.quote_documents.payment_identity_required",
                     "sales.quote_documents.payment_url_unavailable",
                     "sales.quote_documents.quote_not_found",
                     "sales.quote_documents.renderer_unavailable",
@@ -1043,9 +1046,8 @@ SERVICES: tuple[SOTService, ...] = (
                 mapping_owner="admin Quote detail adapter",
                 fail_closed_on=(
                     "missing or inactive Quote",
-                    "Quote without a compatible customer portal identity",
                     "missing eligible Direct Transfer account for the Quote currency",
-                    "missing or invalid absolute company portal URL",
+                    "missing or invalid absolute company portal URL for a linked Quote",
                     "missing stored artifact",
                     "unavailable or invalid PDF renderer output",
                 ),

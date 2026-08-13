@@ -115,6 +115,13 @@ class TopupIntentFailureReason(str, Enum):
     gateway_charge_failed = "gateway_charge_failed"
 
 
+class DirectTransferCancellationSource(str, Enum):
+    """Named callers allowed to abandon an unsubmitted transfer request."""
+
+    customer_selfcare = "customer_selfcare"
+    admin_customer_billing = "admin_customer_billing"
+
+
 class DirectTransferProofResolutionOutcome(str, Enum):
     """Terminal proof observations admitted by the intent projection owner."""
 
@@ -150,6 +157,99 @@ def _error(suffix: str, message: str, **details: object) -> TopupIntentError:
         code=f"financial.topup_intents.{suffix}",
         message=message,
         details=details,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class DirectTransferCancellationOutcome:
+    intent_id: UUID
+    account_id: UUID
+    status: TopupIntentStatus
+    changed: bool
+
+
+def stage_cancel_unsubmitted_direct_transfer(
+    db: Session,
+    *,
+    intent_id: UUID,
+    account_id: UUID,
+    source: DirectTransferCancellationSource,
+    context: CommandContext,
+) -> DirectTransferCancellationOutcome:
+    """Cancel one pending direct-transfer intent with no receipt evidence."""
+    intent = db.scalar(
+        select(TopupIntent).where(TopupIntent.id == intent_id).with_for_update()
+    )
+    if intent is None:
+        raise _error(
+            "not_found", "Payment intent was not found", intent_id=str(intent_id)
+        )
+    if intent.account_id != account_id:
+        raise _error(
+            "account_mismatch", "Payment intent does not belong to this account"
+        )
+    if intent.provider_type != DIRECT_TRANSFER_PROVIDER:
+        raise _error(
+            "provider_mismatch", "Only bank-transfer intents can be canceled here"
+        )
+
+    metadata = dict(intent.metadata_ or {})
+    cancellation = metadata.get("cancellation")
+    if intent.status == TopupIntentStatus.canceled.value and isinstance(
+        cancellation, dict
+    ):
+        return DirectTransferCancellationOutcome(
+            intent_id=intent.id,
+            account_id=account_id,
+            status=TopupIntentStatus.canceled,
+            changed=False,
+        )
+    if intent.status != TopupIntentStatus.pending.value:
+        raise _error(
+            "invalid_transition",
+            "Only a pending bank-transfer intent can be canceled",
+            status=intent.status,
+        )
+    if intent.completed_payment_id or metadata.get("payment_proof_id"):
+        raise _error(
+            "proof_link_conflict",
+            "A payment intent with submitted payment evidence cannot be canceled",
+        )
+
+    set_topup_intent_status(intent, TopupIntentStatus.canceled, source=source.value)
+    metadata["cancellation"] = {
+        "source": source.value,
+        "actor": context.actor,
+        "reason": context.reason,
+        "command_id": str(context.command_id),
+        "correlation_id": str(context.correlation_id),
+        "canceled_at": datetime.now(UTC).isoformat(),
+    }
+    metadata["canceled_reason"] = context.reason
+    intent.metadata_ = metadata
+    db.add(intent)
+    emit_event(
+        db,
+        EventType.topup_intent_direct_transfer_canceled,
+        {
+            "schema_version": 1,
+            "topup_intent_id": str(intent.id),
+            "account_id": str(account_id),
+            "status": intent.status,
+            "reason": context.reason,
+            "source": source.value,
+            "command_id": str(context.command_id),
+            "correlation_id": str(context.correlation_id),
+        },
+        actor=context.actor,
+        subscriber_id=account_id,
+        account_id=account_id,
+    )
+    return DirectTransferCancellationOutcome(
+        intent_id=intent.id,
+        account_id=account_id,
+        status=TopupIntentStatus.canceled,
+        changed=True,
     )
 
 

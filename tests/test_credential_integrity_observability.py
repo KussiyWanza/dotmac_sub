@@ -421,7 +421,7 @@ def test_daily_rotation_blocks_on_undecryptable_inventory(db_session, monkeypatc
     monkeypatch.setattr(
         rotation_schedule,
         "_managed_key_source",
-        lambda _db: (True, "openbao_env_ref"),
+        lambda: (True, "openbao_env_ref"),
     )
     monkeypatch.setattr(
         rotation_schedule,

@@ -13,14 +13,15 @@ Signals:
   the count of active subscriptions; a sharp drop means the cycle silently
   stopped scanning a cohort (the 4,041->108 incident).
 * payment-volume — last-24h succeeded payments vs the trailing-7-day daily
-  average; a collapse means intake broke (the Splynx-cutover recording gap),
-  using a REAL baseline rather than a static floor.
+  average; a collapse means intake broke (the handoff recording gap), using a
+  REAL baseline rather than a static floor.
 """
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -185,6 +186,23 @@ class BillingHealthSnapshot:
     billing_profile_mismatch_count: int = 0
     billing_profile_mixed_count: int = 0
     account_credit_invariant_count: int = 0
+    # The seven invariants behind that total, kept apart because they are not
+    # the same defect: unapplied credit while an invoice is payable is a
+    # customer-visible billing error, an over-allocated payment or a duplicate
+    # provider reference is money correctness, and an unresolved deposit
+    # webhook is an integration gap. Summed into one integer the count says
+    # something is wrong and nothing about what, so no one can act on it.
+    account_credit_invariant_breakdown: Mapping[str, int] = field(default_factory=dict)
+    # Drafts nobody has come back to. Reported, never acted on.
+    aged_draft_count: int = 0
+    aged_draft_total: Decimal = Decimal("0.00")
+    # Invoices past draft with no issue date. They cannot age, cannot go
+    # overdue, and drop out of anything filtering on issue date.
+    paid_without_issue_count: int = 0
+    # The opening balance carried in at the handoff. Observed so the boundary
+    # stays visible, but never an anomaly: no reconciler can produce
+    # allocations for invoices that were carried in already settled.
+    account_credit_invariant_opening_balance_count: int = 0
     prepaid_coverage_unresolved_count: int = 0
     prepaid_coverage_repairable_count: int = 0
     prepaid_coverage_quarantined_count: int = 0
@@ -201,6 +219,10 @@ class BillingHealthSnapshot:
         out: list[str] = []
         if self.paid_with_balance_count > 0:
             out.append("paid_invoices_with_balance")
+        if self.aged_draft_count > 0:
+            out.append("aged_draft_invoices")
+        if self.paid_without_issue_count > 0:
+            out.append("invoices_paid_without_issue")
         if self.scan_ratio is not None and self.scan_ratio < self.scan_min_ratio:
             out.append("invoice_scan_count_low")
         if self.payment_volume_collapsed:
@@ -238,6 +260,9 @@ def billing_health_observations(snapshot: BillingHealthSnapshot):  # noqa: ANN20
 
     values: list[tuple[str, str, int | float | Decimal]] = [
         ("paid_invoices_with_balance", "all", snapshot.paid_with_balance_count),
+        ("aged_draft_invoices", "all", snapshot.aged_draft_count),
+        ("aged_draft_invoice_total", "all", snapshot.aged_draft_total),
+        ("invoices_paid_without_issue", "all", snapshot.paid_without_issue_count),
         ("invoice_last_scanned", "all", snapshot.last_scanned or 0),
         ("active_subscriptions", "all", snapshot.eligible_active_subs),
         ("payments_succeeded_24h", "all", snapshot.payments_24h),
@@ -290,6 +315,20 @@ def billing_health_observations(snapshot: BillingHealthSnapshot):  # noqa: ANN20
             "account_credit_invariant_violations",
             "all",
             snapshot.account_credit_invariant_count,
+        ),
+        (
+            "account_credit_invariant_violations",
+            "opening_balance",
+            snapshot.account_credit_invariant_opening_balance_count,
+        ),
+        # Per-invariant scopes. Without these the `all` total names a number and
+        # not a defect, so the first question an operator asks — which invariant
+        # is failing — cannot be answered from the metric at all.
+        *(
+            ("account_credit_invariant_violations", scope, count)
+            for scope, count in sorted(
+                snapshot.account_credit_invariant_breakdown.items()
+            )
         ),
         (
             "unbilled_active_subscriptions",
@@ -360,6 +399,39 @@ def publish_billing_health_snapshot(
         status="degraded" if snapshot.anomalies else "ok",
         now=now,
     )
+
+
+AGED_DRAFT_DAYS = 30
+
+
+def aged_draft_invoices(
+    db: Session, now: datetime | None = None
+) -> tuple[int, Decimal]:
+    """Count + sum of drafts old enough that nobody is coming back for them.
+
+    A draft is a legitimate holding state: awaiting confirmation, provisioning,
+    or a quote nobody has accepted. So this reports and never acts — auto
+    issuing would send bills nobody meant to send, and the data cannot tell a
+    deliberate hold from an abandoned one.
+
+    What it prevents is the third case: a draft that is simply forgotten. One
+    hand-made invoice for over a million naira sat unissued for days because
+    nothing counted drafts, so nothing could notice. An aged draft has three
+    honest dispositions — issue it, void it, or keep holding it deliberately —
+    and all three are fine. Not knowing it exists is not.
+    """
+    cutoff = (now or datetime.now(UTC)) - timedelta(days=AGED_DRAFT_DAYS)
+    count_, total = db.execute(
+        select(
+            func.count(Invoice.id),
+            func.coalesce(func.sum(Invoice.total), 0),
+        )
+        .where(Invoice.is_active.is_(True))
+        .where(Invoice.status == InvoiceStatus.draft)
+        .where(Invoice.total > 0)
+        .where(Invoice.created_at < cutoff)
+    ).one()
+    return int(count_ or 0), Decimal(str(total or 0))
 
 
 def paid_with_balance(db: Session) -> tuple[int, Decimal]:
@@ -728,6 +800,29 @@ def billing_profile_integrity(db: Session) -> tuple[int, int]:
     return mismatch, mixed
 
 
+def invoices_past_draft_without_issue_date(db: Session) -> int:
+    """Count invoices that left draft without an issue date.
+
+    An invoice past draft is asserting it was issued, so it must carry the date
+    that makes that true: ageing, dunning runway, statements and every
+    issue-date filter read it. A NULL there is not cosmetic — the invoice simply
+    stops existing for those questions, quietly, without failing anything.
+
+    Voided invoices are excluded: void is terminal and may be reached from
+    states that never issued.
+    """
+    return int(
+        db.query(func.count(Invoice.id))
+        .filter(
+            Invoice.is_active.is_(True),
+            Invoice.status.not_in([InvoiceStatus.draft, InvoiceStatus.void]),
+            Invoice.issued_at.is_(None),
+        )
+        .scalar()
+        or 0
+    )
+
+
 def billing_health_snapshot(
     db: Session, now: datetime | None = None
 ) -> BillingHealthSnapshot:
@@ -735,6 +830,8 @@ def billing_health_snapshot(
         _health_thresholds(db)
     )
     pwb_count, pwb_total = paid_with_balance(db)
+    aged_draft_count, aged_draft_total = aged_draft_invoices(db, now=now)
+    paid_without_issue_count = invoices_past_draft_without_issue_date(db)
     last_scanned, eligible, scan_ratio = invoice_scan_coverage(db)
     c24, avg7, ratio, collapsed = payment_volume(db, now=now)
     no_path, terminal = billing_path_coverage(db)
@@ -746,14 +843,19 @@ def billing_health_snapshot(
     profile_mismatch_count, profile_mixed_count = billing_profile_integrity(db)
     from app.services.billing.account_credit import AccountCreditApplications
 
-    account_credit_invariant_count = AccountCreditApplications.summarize_invariants(
-        db
-    ).total
+    account_credit_invariants = AccountCreditApplications.summarize_invariants(db)
+    account_credit_invariant_count = account_credit_invariants.total
+    account_credit_invariant_opening_balance_count = (
+        AccountCreditApplications.count_opening_balance_underfunded_invoices(db)
+    )
     coverage_repairable_count, coverage_quarantined_count = (
         prepaid_coverage_reconciliation_counts(db)
     )
     return BillingHealthSnapshot(
         paid_with_balance_count=pwb_count,
+        aged_draft_count=aged_draft_count,
+        aged_draft_total=aged_draft_total,
+        paid_without_issue_count=paid_without_issue_count,
         paid_with_balance_total=pwb_total,
         last_scanned=last_scanned,
         eligible_active_subs=eligible,
@@ -775,6 +877,30 @@ def billing_health_snapshot(
         billing_profile_mismatch_count=profile_mismatch_count,
         billing_profile_mixed_count=profile_mixed_count,
         account_credit_invariant_count=account_credit_invariant_count,
+        account_credit_invariant_breakdown={
+            "eligible_invoice_with_unused_credit": (
+                account_credit_invariants.eligible_invoice_with_unused_credit
+            ),
+            "payment_overallocated": account_credit_invariants.payment_overallocated,
+            "negative_payment_credit_source_availability": (
+                account_credit_invariants.negative_payment_credit_source_availability
+            ),
+            "paid_invoice_underfunded": (
+                account_credit_invariants.paid_invoice_underfunded
+            ),
+            "settled_deposit_without_exact_payment": (
+                account_credit_invariants.settled_deposit_without_exact_payment
+            ),
+            "duplicate_provider_reference": (
+                account_credit_invariants.duplicate_provider_reference
+            ),
+            "deposit_webhook_unresolved": (
+                account_credit_invariants.deposit_webhook_unresolved
+            ),
+        },
+        account_credit_invariant_opening_balance_count=(
+            account_credit_invariant_opening_balance_count
+        ),
         scan_min_ratio=scan_min_ratio,
         payment_volume_min_ratio=payment_volume_min_ratio,
         payment_baseline_min_daily=payment_baseline_min_daily,

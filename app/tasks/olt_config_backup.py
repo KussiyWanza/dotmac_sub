@@ -9,8 +9,10 @@ from __future__ import annotations
 import hashlib
 import logging
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from billiard.exceptions import SoftTimeLimitExceeded
 
@@ -19,42 +21,101 @@ from app.models.network import OltConfigBackup, OltConfigBackupType, OLTDevice
 from app.services import backup_alerts
 from app.services.db_session_adapter import db_session_adapter
 
+if TYPE_CHECKING:
+    from app.services.network.olt_protocol_adapters import OltConnectionConfig
+
 logger = logging.getLogger(__name__)
 
 BACKUP_DIR = Path("/app/uploads/olt_config_backups")
 
 
-def _fetch_running_config_via_ssh(olt: OLTDevice) -> str | None:
+@dataclass(frozen=True)
+class _BackupTarget:
+    """One OLT's detached values, safe to use with no transaction open.
+
+    ``connection`` carries every attribute the SSH chain reads; ``serial``
+    is the only additional value this task needs, and it is for the file
+    header rather than for connecting.
+    """
+
+    connection: OltConnectionConfig
+    serial: str | None
+
+    @property
+    def name(self) -> str:
+        return self.connection.name
+
+    @property
+    def mgmt_ip(self) -> str | None:
+        return self.connection.mgmt_ip
+
+
+def _load_backup_targets() -> list[_BackupTarget]:
+    """Project the active OLTs into detached values and end the read.
+
+    The session is closed before any SSH runs. Holding it open across the
+    fleet's serial SSH is what exceeded ``idle_in_transaction_session_timeout``
+    and lost the whole run's writes after the devices had already answered.
+    """
+    from sqlalchemy import select
+
+    from app.services.network.olt_protocol_adapters import OltConnectionConfig
+
+    db = db_session_adapter.create_session()
+    try:
+        olts = list(
+            db.scalars(select(OLTDevice).where(OLTDevice.is_active.is_(True))).all()
+        )
+        return [
+            _BackupTarget(
+                connection=OltConnectionConfig.from_model(olt),
+                serial=olt.serial_number,
+            )
+            for olt in olts
+        ]
+    finally:
+        db.close()
+
+
+def _fetch_running_config_via_ssh(target: _BackupTarget) -> str | None:
     """Fetch full running configuration from an OLT via SSH.
 
     Uses `display current-configuration` which returns the complete config
     (Tconts, GEM ports, service-ports, VLANs, interfaces, etc.).
 
+    Takes detached values, not an ORM entity, so it cannot be called with a
+    transaction open behind it.
+
     Returns the config text or None if SSH is unavailable.
     """
+    connection = target.connection
     try:
-        from app.services.network.olt_protocol_adapters import get_protocol_adapter
+        from app.services.network.olt_protocol_adapters import (
+            get_protocol_adapter_from_config,
+        )
 
-        result = get_protocol_adapter(olt).fetch_running_config()
+        result = get_protocol_adapter_from_config(connection).fetch_running_config()
         raw_config_text = result.data.get("config_text") if result.success else ""
         config_text = raw_config_text if isinstance(raw_config_text, str) else ""
         if result.success and config_text:
             # Add metadata header
             header = (
-                f"# OLT Full Running Config: {olt.name}\n"
-                f"# IP: {olt.mgmt_ip}\n"
-                f"# Vendor: {olt.vendor or 'unknown'}\n"
-                f"# Model: {olt.model or 'unknown'}\n"
-                f"# Serial: {olt.serial_number or 'unknown'}\n"
+                f"# OLT Full Running Config: {connection.name}\n"
+                f"# IP: {connection.mgmt_ip}\n"
+                f"# Vendor: {connection.vendor or 'unknown'}\n"
+                f"# Model: {connection.model or 'unknown'}\n"
+                f"# Serial: {target.serial or 'unknown'}\n"
                 f"# Method: SSH (display current-configuration)\n"
                 f"# Captured: {datetime.now(UTC).isoformat()}\n"
                 f"#\n"
             )
             return header + config_text + "\n"
-        logger.warning("SSH config fetch for OLT %s: %s", olt.name, result.message)
+        logger.warning(
+            "SSH config fetch for OLT %s: %s", connection.name, result.message
+        )
         return None
     except Exception as e:
-        logger.warning("SSH config backup failed for OLT %s: %s", olt.name, e)
+        logger.warning("SSH config backup failed for OLT %s: %s", connection.name, e)
         return None
 
 
@@ -126,63 +187,74 @@ def _cleanup_old_backups(db, max_age_days: int = 90, max_per_olt: int = 50) -> i
 def backup_all_olts() -> dict[str, int]:
     """Backup running config for all active OLTs."""
     logger.info("Starting OLT config backup run")
-    db = db_session_adapter.create_session()
     backed_up = 0
     errors = 0
     skipped = 0
     cleaned = 0
     error_details: list[dict[str, str | None]] = []
+    timed_out = False
 
+    # Phase 1 — read, then end the transaction.
+    targets = _load_backup_targets()
+
+    # Phase 2 — fleet SSH with no session bound. Failures are collected rather
+    # than recorded, so nothing here needs a transaction.
+    fetched: list[tuple[_BackupTarget, str]] = []
+    failures: list[tuple[_BackupTarget, str]] = []
     try:
-        from sqlalchemy import select
-
-        olts = list(
-            db.scalars(select(OLTDevice).where(OLTDevice.is_active.is_(True))).all()
-        )
-
-        for olt in olts:
+        for target in targets:
             try:
-                config_text = _fetch_running_config_via_ssh(olt)
-                if config_text is None:
-                    skipped += 1
-                    error_details.append(
-                        {
-                            "olt": olt.name,
-                            "mgmt_ip": olt.mgmt_ip,
-                            "error": "Could not fetch running configuration",
-                        }
-                    )
-                    backup_alerts.queue_backup_failure_notification(
-                        db,
-                        device_kind="olt",
-                        device_name=olt.name,
-                        device_ip=olt.mgmt_ip,
-                        error_message="Could not fetch running configuration",
-                        run_type="scheduled",
-                    )
-                    continue
+                config_text = _fetch_running_config_via_ssh(target)
             except Exception as e:
-                logger.error("Failed to fetch backup for OLT %s: %s", olt.name, e)
+                logger.error("Failed to fetch backup for OLT %s: %s", target.name, e)
                 errors += 1
                 error_details.append(
-                    {"olt": olt.name, "mgmt_ip": olt.mgmt_ip, "error": str(e)}
+                    {"olt": target.name, "mgmt_ip": target.mgmt_ip, "error": str(e)}
                 )
-                backup_alerts.queue_backup_failure_notification(
-                    db,
-                    device_kind="olt",
-                    device_name=olt.name,
-                    device_ip=olt.mgmt_ip,
-                    error_message=str(e),
-                    run_type="scheduled",
-                )
+                failures.append((target, str(e)))
                 continue
+            if config_text is None:
+                skipped += 1
+                error_details.append(
+                    {
+                        "olt": target.name,
+                        "mgmt_ip": target.mgmt_ip,
+                        "error": "Could not fetch running configuration",
+                    }
+                )
+                failures.append((target, "Could not fetch running configuration"))
+                continue
+            fetched.append((target, config_text))
+    except SoftTimeLimitExceeded:
+        # Out of time mid-fleet — persist what was already fetched rather than
+        # losing the run. Retention cleanup is skipped until the next run.
+        timed_out = True
+        logger.warning(
+            "olt_config_backup soft time limit hit during SSH; persisting %d fetched "
+            "backup(s)",
+            len(fetched),
+        )
 
+    # Phase 3 — persist in a fresh, short transaction.
+    db = db_session_adapter.create_session()
+    try:
+        for target, reason in failures:
+            backup_alerts.queue_backup_failure_notification(
+                db,
+                device_kind="olt",
+                device_name=target.name,
+                device_ip=target.mgmt_ip,
+                error_message=reason,
+                run_type="scheduled",
+            )
+
+        for target, config_text in fetched:
             try:
                 # Write to file
                 timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
-                safe_name = olt.name.replace(" ", "_").replace("/", "_")[:60]
+                safe_name = target.name.replace(" ", "_").replace("/", "_")[:60]
                 filename = f"{safe_name}_{timestamp}.txt"
-                olt_dir = BACKUP_DIR / str(olt.id)
+                olt_dir = BACKUP_DIR / str(target.connection.id)
                 olt_dir.mkdir(parents=True, exist_ok=True)
                 filepath = olt_dir / filename
                 filepath.write_text(config_text)
@@ -192,7 +264,7 @@ def backup_all_olts() -> dict[str, int]:
                 file_hash = hashlib.sha256(config_bytes).hexdigest()
                 backup = OltConfigBackup(
                     id=uuid.uuid4(),
-                    olt_device_id=olt.id,
+                    olt_device_id=target.connection.id,
                     backup_type=OltConfigBackupType.auto,
                     file_path=str(filepath.relative_to(BACKUP_DIR)),
                     file_size_bytes=len(config_bytes),
@@ -202,25 +274,24 @@ def backup_all_olts() -> dict[str, int]:
                 backed_up += 1
 
             except Exception as e:
-                logger.error("Failed to save backup for OLT %s: %s", olt.name, e)
+                logger.error("Failed to save backup for OLT %s: %s", target.name, e)
                 errors += 1
                 backup_alerts.queue_backup_failure_notification(
                     db,
                     device_kind="olt",
-                    device_name=olt.name,
-                    device_ip=olt.mgmt_ip,
+                    device_name=target.name,
+                    device_ip=target.mgmt_ip,
                     error_message=str(e),
                     run_type="scheduled",
                 )
 
         db.commit()
 
-        # Retention cleanup: remove backups older than configured age
-        cleaned = _cleanup_old_backups(db, max_age_days=90, max_per_olt=50)
+        if not timed_out:
+            # Retention cleanup: remove backups older than configured age
+            cleaned = _cleanup_old_backups(db, max_age_days=90, max_per_olt=50)
 
     except SoftTimeLimitExceeded:
-        # Out of time — keep the backups that finished rather than losing the
-        # whole run. Retention cleanup is skipped until the next run.
         logger.warning(
             "olt_config_backup soft time limit hit; committing %d backups", backed_up
         )

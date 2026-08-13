@@ -37,6 +37,20 @@ line and period remained unlinked. Ordinary draft adoption cannot reopen a paid
 financial document, and coverage reconciliation cannot infer a subscription
 from customer or timing proximity.
 
+A sixth case is a successful native Payment whose intended prepaid service
+invoice was never created. The money remains reusable account credit, the
+subscription anchor remains stale, and there is no document from which the
+entitlement owner can project coverage. A generic invoice form cannot atomically
+bind the selected settlement, exact contract charge, reviewed business dates,
+expected residual credit, entitlement, and billing-anchor consequence.
+
+A seventh case occurs when an invoice was issued after the reviewed prepaid
+funding baseline but before the later customer-subledger opening. The opening
+therefore already carries the invoice's full debit. If a later payment
+allocation is posted to the same document, its ledger consumption and
+customer-subledger settlement duplicate an economic effect that the opening
+already absorbed, leaving false partial debt and understating customer credit.
+
 ## Canonical policy
 
 - `financial.invoices` owns invoice lifecycle and document state.
@@ -53,6 +67,24 @@ from customer or timing proximity.
 The same reconciliation owner coordinates reviewed adoption of a funded
 onboarding proforma. Adoption is deliberately narrower than generic proforma
 conversion. It requires all of the following exact evidence:
+
+For a pre-opening invoice, the owner accepts only one operator-named invoice
+and allocation whose exact reconstruction proves that the invoice falls
+between the approved baseline and customer opening, the opening equals the
+baseline plus all intervening canonical facts, the allocation occurred later,
+and its one unreversed authoritative posting contains exactly one
+`customer_credit_consumed` and one `receivable_settled` effect for the selected
+payment and invoice. The expected confirmed balance is part of the fingerprint.
+
+Confirmation appends reversals for the allocation's two structural ledger
+entries, retires only the active allocation projection, records the invoice's
+full total as immutable approved-opening consumption, and links a reversal to
+the duplicate customer-subledger posting. Invoice totals then recompute to
+paid. No Payment, invoice, allocation, ledger entry, opening, or posting is
+deleted; no funding-change event is emitted; the final customer-position delta
+is zero. Any competing allocation, changed amount, incomplete posting, failed
+opening reconstruction, prior reversal, or changed confirmed balance fails
+closed.
 
 - one operator-named subscription belonging to the invoice account;
 - active prepaid state with no billing anchor or active entitlement;
@@ -99,6 +131,36 @@ reviewed anchor projection, and submits a typed flush-only restoration command
 to the financial-access owner. Those projections, their consequence evidence,
 audit, event, metadata, and idempotency reservation commit atomically.
 
+The owner also has one entity-scoped command for an entirely missing prepaid
+invoice. Preview requires an operator-named account, subscription, and
+successful native Payment, plus exact issue, due, and next-billing dates,
+contract total, and expected remaining account credit. It accepts only an
+eligible matching prepaid contract, a successful unreturned settlement paid on
+the issue business date, enough capacity on that selected Payment to fund the
+whole invoice, exact equality with the shared taxed contract charge, and no
+overlapping invoice or entitlement. A current billing anchor may be stale
+before the reviewed period; it may not already claim time inside that period.
+
+Confirmation locks and re-previews those facts, then creates one draft and base
+subscription line through the invoice participant, issues it at the selected
+Payment timestamp, allocates only that Payment, creates the exact entitlement,
+and asks the renewal owner for a reviewed billing-anchor projection. Date-only
+period and due boundaries use Africa/Lagos midnight converted to UTC. The
+invoice, allocation ledger evidence, entitlement, anchor, audit, metadata, and
+idempotency reservation commit together.
+
+The selected-payment allocation uses a typed reviewed-document finalization.
+It creates the canonical paid-invoice and entitlement evidence but does not
+emit a second funding-increase observation or invoke financial-access
+restoration. The money was already settled before this correction, and the
+repair owner projects the reviewed billing anchor; existing funding-event
+owners remain responsible for access decisions.
+
+This path neither reconstructs nor consumes a prepaid opening baseline. When
+the selected native Payment alone fully backs the invoice, the missing
+historical baseline is unrelated to that exact cash application. Mixed or
+underfunded repairs continue to require the reviewed opening-funding workflow.
+
 An existing prepaid draft has first claim on the service-period document
 boundary. A funding-change consequence checks it before an invoice-less direct
 renewal:
@@ -106,11 +168,10 @@ renewal:
 - exact native payment-backed funding equal to or above the full balance:
   issue and fully settle the draft atomically;
 - exact payment-backed funding plus enough unused reviewed opening funding:
-  require operator confirmation, allocate Payments first, consume only the
-  remaining opening amount, and settle the invoice atomically;
-- an automatic funding event that reaches the mixed-source case: create or
-  refresh one durable reconciliation exception and one operator alert without
-  spending either source;
+  allocate Payments first, consume only the remaining approved opening amount,
+  and settle the invoice atomically. A funding-change event may perform this
+  automatically because the opening baseline already carries reviewed approval
+  evidence;
 - any shortfall, including NGN 0.50: keep the draft unchanged and do not create
   entitlement;
 - unbacked credit whose economic timestamp or Sub creation time crosses the
@@ -132,7 +193,7 @@ No path rounds a shortfall, invents a payment, represents opening funding as a
 Payment, marks an underfunded invoice paid, double-spends an opening baseline,
 or creates a second entitlement.
 
-## Atomic mixed-source confirmation
+## Atomic mixed-source settlement
 
 The owner locks the customer account, invoice, eligible payment/settlement
 records, and opening baseline in that order. Inside one owner transaction it:
@@ -228,6 +289,62 @@ poetry run python -m scripts.billing.reconcile_prepaid_drafts \
   --reason "Reviewed exact paid invoice, allocation, and settlement evidence"
 ```
 
+For a completely missing document, preview the exact entity and reviewed
+outcome first. Apply repeats every argument and requires the returned
+fingerprint:
+
+```bash
+poetry run python -m scripts.billing.reconcile_prepaid_drafts \
+  --repair-missing-paid-invoice \
+  --account-id ACCOUNT_UUID \
+  --subscription-id SUBSCRIPTION_UUID \
+  --payment-id PAYMENT_UUID \
+  --issued-on 2026-08-06 \
+  --due-on 2026-09-05 \
+  --next-billing-on 2026-09-05 \
+  --expected-total 18812.50 \
+  --expected-remaining-credit 75.00
+
+poetry run python -m scripts.billing.reconcile_prepaid_drafts \
+  --repair-missing-paid-invoice \
+  --apply \
+  --account-id ACCOUNT_UUID \
+  --subscription-id SUBSCRIPTION_UUID \
+  --payment-id PAYMENT_UUID \
+  --issued-on 2026-08-06 \
+  --due-on 2026-09-05 \
+  --next-billing-on 2026-09-05 \
+  --expected-total 18812.50 \
+  --expected-remaining-credit 75.00 \
+  --fingerprint REVIEWED_SHA256 \
+  --idempotency-key missing-prepaid-invoice-SUBSCRIPTION_UUID-v1 \
+  --actor operator@example.com \
+  --reason "Reviewed exact missing invoice and native settlement evidence"
+```
+
+For an invoice already absorbed by its approved opening, preview the exact
+invoice/allocation pair and reviewed balance before any apply:
+
+```bash
+poetry run python -m scripts.billing.reconcile_prepaid_drafts \
+  --repair-opening-settlement \
+  --invoice-id INVOICE_UUID \
+  --allocation-id ALLOCATION_UUID \
+  --expected-confirmed-balance 197129.03
+
+poetry run python -m scripts.billing.reconcile_prepaid_drafts \
+  --repair-opening-settlement \
+  --apply \
+  --invoice-id INVOICE_UUID \
+  --allocation-id ALLOCATION_UUID \
+  --expected-confirmed-balance 197129.03 \
+  --fingerprint REVIEWED_SHA256 \
+  --effective-at 2026-08-12T15:34:20Z \
+  --idempotency-key preopening-invoice-INVOICE_UUID-v1 \
+  --actor operator@example.com \
+  --reason "Reviewed invoice already absorbed by approved opening"
+```
+
 Apply is limited to one reviewed invoice and requires:
 
 - the exact preview fingerprint;
@@ -285,7 +402,12 @@ which approved path created it.
    re-preview.
 10. Leave insufficient, multiple-draft, reversed/refunded, and ambiguous cases
    unchanged.
-11. After every canary, verify invoice and ledger facts, opening consumption,
+11. Apply missing-invoice repair only to one explicitly reviewed entity at a
+    time, and verify the exact residual credit before continuing.
+12. Apply a pre-opening invoice correction only after its dry-run proves the
+    exact opening reconstruction, allocation posting, and expected confirmed
+    balance; verify zero receivable and the unchanged confirmed balance.
+13. After every canary, verify invoice and ledger facts, opening consumption,
    entitlement and billing anchor, enforcement locks, billing events, and
    RADIUS access. Stop on any mismatch.
 

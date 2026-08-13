@@ -61,7 +61,14 @@ def upgrade() -> None:
                 'json', NULL,
                 CAST(:policy AS jsonb), false, true, now(), now()
             )
-            ON CONFLICT (domain, key) DO NOTHING
+            -- No conflict TARGET. A target must match a unique index existing
+            -- when this runs, and `(domain, key)` no longer does: migration 507
+            -- replaced it with `uq_domain_settings_scope_domain_key`, and
+            -- `001_squashed_initial_schema` builds the baseline from the
+            -- CURRENT model metadata, so the model is this chain's history.
+            -- Untargeted `DO NOTHING` needs no arbiter and means exactly what
+            -- this wanted: skip the insert if any constraint would reject it.
+            ON CONFLICT DO NOTHING
             """
         ).bindparams(
             policy=(

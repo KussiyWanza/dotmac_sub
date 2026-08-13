@@ -45,7 +45,9 @@ def _setting_key(node: ast.Call) -> tuple[SettingDomain, str]:
         and domain_node.value.id == "SettingDomain"
     )
     assert isinstance(key_node, ast.Constant) and isinstance(key_node.value, str)
-    return SettingDomain[domain_node.attr], key_node.value
+    # `getattr`, not `SettingDomain[...]`: the member type is an open `str`
+    # subclass now, so it has no enum-style subscript lookup.
+    return getattr(SettingDomain, domain_node.attr), key_node.value
 
 
 def test_every_scheduler_setting_boolean_is_registered() -> None:
@@ -60,7 +62,8 @@ def test_every_scheduler_setting_boolean_is_registered() -> None:
     for domain, key in calls:
         spec = get_spec(domain, key)
         assert spec is not None
-        assert spec.value_type is SettingValueType.boolean
+        # `==`, not `is`: the value-type vocabulary is open and not interned.
+        assert spec.value_type == SettingValueType.boolean
         assert isinstance(spec.default, bool)
 
 

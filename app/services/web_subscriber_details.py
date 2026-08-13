@@ -970,7 +970,7 @@ def _build_subscriber_enrichment(db: Session, subscriber) -> dict:
 def _build_billing_config(subscriber) -> dict[str, object]:
     metadata = dict(getattr(subscriber, "metadata_", None) or {})
     auto_create = bool(metadata.get("auto_create_invoices", True))
-    send_notifications = bool(metadata.get("send_billing_notifications", True))
+    send_notifications = _billing_notification_flag_enabled(metadata)
 
     return {
         "category": getattr(subscriber, "category", None),
@@ -982,6 +982,17 @@ def _build_billing_config(subscriber) -> dict[str, object]:
         "auto_create_invoices": auto_create,
         "send_billing_notifications": send_notifications,
     }
+
+
+def _billing_notification_flag_enabled(metadata: dict | None) -> bool:
+    raw_value = (metadata or {}).get("send_billing_notifications")
+    if raw_value is None:
+        return True
+    if isinstance(raw_value, bool):
+        return raw_value
+    if isinstance(raw_value, str):
+        return raw_value.strip().lower() not in {"0", "false", "no", "off"}
+    return bool(raw_value)
 
 
 def list_communication_logs(

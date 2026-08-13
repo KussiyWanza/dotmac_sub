@@ -98,6 +98,7 @@ logger = logging.getLogger(__name__)
 _ORIGIN = AccountAdjustmentOrigin.prepaid_service_renewal
 _OWNER = "financial.prepaid_service_renewals"
 _EXECUTION_CONCERN = "prepaid service renewal execution"
+_REVIEWED_RENEWAL_CONCERN = "fingerprint-approved missed renewal execution"
 _EVALUATE_SETTLEMENT_COMMAND = OwnerCommandDefinition(
     owner=_OWNER,
     concern=_EXECUTION_CONCERN,
@@ -107,6 +108,11 @@ _RUN_DUE_COMMAND = OwnerCommandDefinition(
     owner=_OWNER,
     concern=_EXECUTION_CONCERN,
     name="execute_due_prepaid_service_renewals",
+)
+_EXECUTE_REVIEWED_COMMAND = OwnerCommandDefinition(
+    owner=_OWNER,
+    concern=_REVIEWED_RENEWAL_CONCERN,
+    name="execute_reviewed_prepaid_service_renewal",
 )
 PREPAID_SERVICE_RENEWAL_ELIGIBLE_STATUSES = frozenset(
     {
@@ -248,17 +254,46 @@ def _idempotency_key(origin_ref: str) -> str:
     return "prepaid-renewal-" + hashlib.sha256(origin_ref.encode("utf-8")).hexdigest()
 
 
+@dataclass(frozen=True, slots=True)
+class PrepaidMonthlyChargeDetail:
+    """Exact invoice-ready components of one canonical prepaid charge."""
+
+    subscription_id: UUID
+    unit_price: Decimal
+    subtotal: Decimal
+    tax_total: Decimal
+    total: Decimal
+    currency: str
+    billing_cycle: BillingCycle
+    tax_rate_id: UUID | None
+    tax_application: TaxApplication
+
+
+def resolve_prepaid_monthly_charge_detail(
+    db: Session,
+    subscription: Subscription,
+    effective_at: datetime,
+) -> PrepaidMonthlyChargeDetail | None:
+    """Resolve one canonical prepaid charge without losing tax provenance."""
+
+    return _resolve_prepaid_monthly_charge_details(
+        db,
+        [subscription],
+        effective_at,
+    )[subscription.id]
+
+
 def resolve_prepaid_monthly_charge(
     db: Session,
     subscription: Subscription,
     effective_at: datetime,
 ) -> tuple[Decimal, str, BillingCycle] | None:
     """Resolve one canonical taxed monthly renewal amount."""
-    return resolve_prepaid_monthly_charges(
-        db,
-        [subscription],
-        effective_at,
-    )[subscription.id]
+
+    detail = resolve_prepaid_monthly_charge_detail(db, subscription, effective_at)
+    if detail is None:
+        return None
+    return detail.total, detail.currency, detail.billing_cycle
 
 
 def _newest_price(rows: Sequence[OfferPrice | OfferVersionPrice]):
@@ -284,11 +319,11 @@ def _matching_catalog_tax_rate_id(
     return None
 
 
-def resolve_prepaid_monthly_charges(
+def _resolve_prepaid_monthly_charge_details(
     db: Session,
     subscriptions: Sequence[Subscription],
     effective_at: datetime,
-) -> dict[UUID, tuple[Decimal, str, BillingCycle] | None]:
+) -> dict[UUID, PrepaidMonthlyChargeDetail | None]:
     """Resolve exact contracted renewal charges with bounded query cost.
 
     Both renewal and enforcement consume this owner. Contract amount lives on
@@ -304,7 +339,7 @@ def resolve_prepaid_monthly_charges(
     )
 
     rows = list(subscriptions)
-    result: dict[UUID, tuple[Decimal, str, BillingCycle] | None] = {
+    result: dict[UUID, PrepaidMonthlyChargeDetail | None] = {
         subscription.id: None for subscription in rows
     }
     eligible = [
@@ -416,8 +451,11 @@ def resolve_prepaid_monthly_charges(
                     tax_rate_id = default_tax_rate_id
         tax_rate = rates_by_id.get(tax_rate_id) if tax_rate_id is not None else None
         if tax_rate is None or tax_application == TaxApplication.exempt:
+            effective_tax_application = TaxApplication.exempt
+            tax_amount = Decimal("0.00")
             total = base
         else:
+            effective_tax_application = tax_application
             tax_amount = _calculate_tax_amount(
                 base,
                 Decimal(str(tax_rate.rate)),
@@ -428,8 +466,45 @@ def resolve_prepaid_monthly_charges(
                 if tax_application == TaxApplication.inclusive
                 else round_money(base + tax_amount)
             )
-        result[subscription.id] = (total, price.currency or "NGN", cycle)
+        subtotal = (
+            round_money(base - tax_amount)
+            if effective_tax_application == TaxApplication.inclusive
+            else round_money(base)
+        )
+        result[subscription.id] = PrepaidMonthlyChargeDetail(
+            subscription_id=subscription.id,
+            unit_price=round_money(base),
+            subtotal=subtotal,
+            tax_total=round_money(tax_amount),
+            total=round_money(total),
+            currency=(price.currency or "NGN").upper(),
+            billing_cycle=cycle,
+            tax_rate_id=tax_rate.id if tax_rate is not None else None,
+            tax_application=effective_tax_application,
+        )
     return result
+
+
+def resolve_prepaid_monthly_charges(
+    db: Session,
+    subscriptions: Sequence[Subscription],
+    effective_at: datetime,
+) -> dict[UUID, tuple[Decimal, str, BillingCycle] | None]:
+    """Resolve canonical taxed monthly renewal amounts in bounded queries."""
+
+    details = _resolve_prepaid_monthly_charge_details(
+        db,
+        subscriptions,
+        effective_at,
+    )
+    return {
+        subscription_id: (
+            (detail.total, detail.currency, detail.billing_cycle)
+            if detail is not None
+            else None
+        )
+        for subscription_id, detail in details.items()
+    }
 
 
 @dataclass(frozen=True)
@@ -473,10 +548,34 @@ class PrepaidServiceRenewalResult:
     replayed: bool
 
 
+@dataclass(frozen=True, slots=True)
+class ExecuteReviewedPrepaidServiceRenewalCommand:
+    """Fingerprint-bound execution of one explicitly reviewed missed cycle."""
+
+    context: CommandContext
+    subscription_id: UUID
+    starts_at: datetime
+    ends_at: datetime
+    amount: Decimal
+    currency: str
+    expected_preview_fingerprint: str
+    evidence_ref: str
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewedPrepaidServiceRenewalResult:
+    """Canonical financial and service effects of the reviewed execution."""
+
+    renewal: PrepaidServiceRenewalResult
+    outcome: PrepaidServiceRenewedOutcome | None
+    restored_service_count: int
+
+
 class PrepaidServiceRenewalSource(enum.StrEnum):
     direct_payment = "direct_payment"
     account_credit = "account_credit"
     scheduled = "scheduled"
+    reviewed_repair = "reviewed_repair"
 
 
 @dataclass(frozen=True)
@@ -1048,6 +1147,94 @@ def confirm_prepaid_service_renewal(
         ledger_entry=adjustment_result.ledger_entry,
         entitlement=entitlement,
         replayed=adjustment_result.replayed,
+    )
+
+
+def execute_reviewed_prepaid_service_renewal(
+    db: Session,
+    command: ExecuteReviewedPrepaidServiceRenewalCommand,
+) -> ReviewedPrepaidServiceRenewalResult:
+    """Execute one reviewed missed period through the canonical renewal owner."""
+
+    return execute_owner_command(
+        db,
+        definition=_EXECUTE_REVIEWED_COMMAND,
+        context=command.context,
+        operation=lambda: _execute_reviewed_prepaid_service_renewal(db, command),
+    )
+
+
+def _execute_reviewed_prepaid_service_renewal(
+    db: Session,
+    command: ExecuteReviewedPrepaidServiceRenewalCommand,
+) -> ReviewedPrepaidServiceRenewalResult:
+    if not command.context.idempotency_key:
+        _error(
+            "missing_idempotency_key",
+            "Reviewed prepaid renewal requires an idempotency key.",
+        )
+    expected = command.expected_preview_fingerprint.strip().lower()
+    if len(expected) != 64 or any(
+        character not in "0123456789abcdef" for character in expected
+    ):
+        _error(
+            "invalid_preview_fingerprint",
+            "Reviewed prepaid renewal requires a SHA-256 preview fingerprint.",
+        )
+    preview = preview_prepaid_service_renewal(
+        db,
+        subscription_id=command.subscription_id,
+        starts_at=command.starts_at,
+        ends_at=command.ends_at,
+        amount=command.amount,
+        currency=command.currency,
+    )
+    if preview.fingerprint != expected:
+        _error(
+            "stale_preview",
+            "Prepaid funding or reviewed renewal terms changed after preview.",
+        )
+    if not preview.allowed:
+        _error(
+            "insufficient_funding",
+            "Insufficient prepaid funding for the reviewed service renewal.",
+        )
+    renewal = confirm_prepaid_service_renewal(
+        db,
+        preview,
+        evidence_ref=command.evidence_ref,
+    )
+    outcome = None
+    if not renewal.replayed:
+        outcome = stage_prepaid_service_renewed_outcome(
+            db,
+            account_id=renewal.preview.account_id,
+            subscription_id=renewal.preview.subscription_id,
+            entitlement_id=renewal.entitlement.id,
+            ledger_entry_id=renewal.ledger_entry.id,
+            period_start=renewal.preview.starts_at,
+            renewed_through=renewal.preview.ends_at,
+            amount=renewal.preview.amount,
+            currency=renewal.preview.currency,
+            source=PrepaidServiceRenewalSource.reviewed_repair,
+        )
+    from app.models.collections import FinancialAccessOrigin
+    from app.services.collections._core import restore_account_services
+
+    restored = restore_account_services(
+        db,
+        str(renewal.preview.account_id),
+        origin=FinancialAccessOrigin.prepaid_enforcement,
+        resolved_by=(
+            "reviewed_prepaid_service_renewal:"
+            f"{renewal.preview.subscription_id}:"
+            f"{renewal.preview.starts_at.isoformat()}"
+        ),
+    )
+    return ReviewedPrepaidServiceRenewalResult(
+        renewal=renewal,
+        outcome=outcome,
+        restored_service_count=restored,
     )
 
 
@@ -1857,14 +2044,18 @@ def apply_due_prepaid_service_after_funding_change(
     # shortfall (including NGN 0.50), unbacked credit, overlap, or ambiguity
     # leaves it unchanged and blocks the parallel invoice-less renewal path.
     from app.services.prepaid_draft_reconciliation import (
+        FundingChangeDraftCommand,
         stage_prepaid_draft_after_funding_change,
     )
 
     draft_result = stage_prepaid_draft_after_funding_change(
         db,
-        account_id=account_id,
-        currency=currency,
-        effective_at=evaluated_at,
+        FundingChangeDraftCommand(
+            account_id=account_id,
+            currency=currency,
+            effective_at=evaluated_at,
+            evidence_ref=evidence,
+        ),
     )
     if draft_result.drafts_found:
         settled = draft_result.drafts_settled
@@ -2325,11 +2516,13 @@ __all__ = [
     "BillingAnchorAuthority",
     "BillingAnchorProjection",
     "EvaluatePrepaidServiceAfterSettlementCommand",
+    "ExecuteReviewedPrepaidServiceRenewalCommand",
     "FundingChangeEvaluation",
     "FundingChangeEvaluationDisposition",
     "FundingChangeRenewalDisposition",
     "FundingChangeRenewalResult",
     "PREPAID_SERVICE_RENEWAL_ELIGIBLE_STATUSES",
+    "PrepaidMonthlyChargeDetail",
     "PrepaidRecurringChargePreview",
     "PrepaidSettlementPeriod",
     "PrepaidSettlementPeriodQuery",
@@ -2339,6 +2532,7 @@ __all__ = [
     "PrepaidServiceRenewalSource",
     "PrepaidServiceRenewedOutcome",
     "RunDuePrepaidServiceRenewalsCommand",
+    "ReviewedPrepaidServiceRenewalResult",
     "StaleBillingAnchorCandidate",
     "StaleBillingAnchorRepairPreview",
     "StaleBillingAnchorRepairResult",
@@ -2347,6 +2541,7 @@ __all__ = [
     "confirm_prepaid_service_renewal",
     "evaluate_prepaid_service_after_settlement",
     "execute_due_prepaid_service_renewals",
+    "execute_reviewed_prepaid_service_renewal",
     "execute_prepaid_service_after_settlement",
     "preview_prepaid_service_renewal",
     "preview_prepaid_recurring_charge",
@@ -2355,6 +2550,7 @@ __all__ = [
     "renewal_outcomes_for_payment",
     "retract_prepaid_billing_anchors_after_funding_reversal",
     "resolve_prepaid_monthly_charge",
+    "resolve_prepaid_monthly_charge_detail",
     "resolve_prepaid_monthly_charges",
     "resolve_prepaid_settlement_period",
     "run_due_prepaid_service_renewals",

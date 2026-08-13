@@ -161,8 +161,20 @@ def test_publish_uploads_object_before_its_first_database_query(
         object_uploaded = True
         return original_prepare(**kwargs)
 
-    def assert_upload_precedes_sql(*_args, **_kwargs) -> None:
-        assert object_uploaded is True
+    # The owner command guards a connection-bound session with a savepoint, so
+    # this suite's Connection-bound fixture emits SAVEPOINT before the command
+    # body runs. Production binds a Session to an Engine and never issues it.
+    # Transaction control is not the idle-in-transaction query this guards.
+    def assert_upload_precedes_sql(_conn, _cursor, statement, *_args, **_kwargs):
+        if (
+            statement.strip()
+            .upper()
+            .startswith(("SAVEPOINT", "RELEASE SAVEPOINT", "ROLLBACK TO SAVEPOINT"))
+        ):
+            return
+        assert object_uploaded is True, (
+            f"query ran before the object upload: {statement.strip()[:120]}"
+        )
 
     monkeypatch.setattr(
         plan_family_catalogues.file_uploads, "prepare_upload", prepare_upload
@@ -251,6 +263,13 @@ def test_lead_form_is_hidden_for_customer_contacts_and_resolved_threads(
     contact = lead_intake.manual_invitation_eligibility(db_session, conversation.id)
     assert contact.eligible is False
     assert "customer contact" in contact.reason
+
+    display = lead_intake.manual_invitation_eligibility(
+        db_session,
+        conversation.id,
+        verify_customer_identity=False,
+    )
+    assert display.eligible is True
 
     conversation.status = "resolved"
     db_session.commit()

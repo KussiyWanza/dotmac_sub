@@ -1,0 +1,226 @@
+name: Promote staged digest for production
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_build_run_id:
+        description: Successful Build release candidate once run ID
+        required: true
+        type: string
+      staging_deployment_run_id:
+        description: Successful Deploy dev to staging run ID
+        required: true
+        type: string
+      release_sha:
+        description: Exact full SHA of the current green main tip
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+  packages: write
+
+concurrency:
+  group: production-promotion-${{ inputs.release_sha }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  authorize-and-promote:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact current main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Require exact current green main release
+        id: release
+        env:
+          EXPECTED_SHA: ${{ inputs.release_sha }}
+          WORKFLOW_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          test "$WORKFLOW_REF" = "refs/heads/main" || {
+            echo "Dispatch this workflow with --ref main." >&2
+            exit 1
+          }
+          printf '%s' "$EXPECTED_SHA" | grep -Eq '^[0-9a-f]{40}$' || {
+            echo "release_sha must be a full lowercase Git SHA." >&2
+            exit 1
+          }
+          release_sha="$(git rev-parse HEAD)"
+          test "$release_sha" = "$EXPECTED_SHA" || {
+            echo "Refusing stale production promotion: main is $release_sha, requested $EXPECTED_SHA." >&2
+            exit 1
+          }
+          echo "sha=$release_sha" >> "$GITHUB_OUTPUT"
+          echo "tree=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
+
+      - name: Require exact successful source, staging, and main runs
+        uses: actions/github-script@v7
+        env:
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_build_run_id }}
+          STAGING_RUN_ID: ${{ inputs.staging_deployment_run_id }}
+          RELEASE_SHA: ${{ steps.release.outputs.sha }}
+        with:
+          script: |
+            const candidateId = Number(process.env.CANDIDATE_RUN_ID);
+            const stagingId = Number(process.env.STAGING_RUN_ID);
+            const expectedRepository = `${context.repo.owner}/${context.repo.repo}`;
+            if (!Number.isSafeInteger(candidateId) || candidateId <= 0 ||
+                !Number.isSafeInteger(stagingId) || stagingId <= 0) {
+              core.setFailed("Candidate and staging run IDs must be positive integers.");
+              return;
+            }
+            for (const expected of [
+              [candidateId, "Build release candidate once", "dev", "workflow_dispatch"],
+              [stagingId, "Deploy dev to staging", "main", "workflow_run"],
+            ]) {
+              const response = await github.rest.actions.getWorkflowRun({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: expected[0],
+              });
+              const run = response.data;
+              if (run.name !== expected[1] || run.head_branch !== expected[2] ||
+                  run.event !== expected[3] || run.status !== "completed" ||
+                  run.conclusion !== "success" ||
+                  run.head_repository?.full_name !== expectedRepository) {
+                core.setFailed(`Run ${expected[0]} is not accepted ${expected[1]} evidence.`);
+                return;
+              }
+            }
+            const runs = await github.rest.actions.listWorkflowRunsForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              head_sha: process.env.RELEASE_SHA,
+              event: "push",
+              per_page: 100,
+            });
+            const failures = [];
+            for (const workflowName of ["CI", "Mobile CI"]) {
+              const run = runs.data.workflow_runs
+                .filter((item) => item.name === workflowName &&
+                  item.head_sha === process.env.RELEASE_SHA &&
+                  item.head_branch === "main" && item.event === "push")
+                .sort((left, right) => right.id - left.id)[0];
+              if (!run || run.status !== "completed" || run.conclusion !== "success") {
+                failures.push(`${workflowName}=not-green`);
+              }
+            }
+            if (failures.length) core.setFailed(`Main checks are not green: ${failures.join(", ")}`);
+
+      - name: Download candidate evidence from exact build run
+        uses: actions/download-artifact@v4
+        with:
+          name: release-candidate-evidence
+          path: ${{ runner.temp }}/candidate
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.candidate_build_run_id }}
+
+      - name: Download acceptance from exact staging run
+        uses: actions/download-artifact@v4
+        with:
+          pattern: staging-acceptance-*
+          path: ${{ runner.temp }}/staging
+          merge-multiple: true
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.staging_deployment_run_id }}
+
+      - name: Authorize exact staged digest
+        id: authorization
+        env:
+          RELEASE_SHA: ${{ steps.release.outputs.sha }}
+          RELEASE_TREE: ${{ steps.release.outputs.tree }}
+          AUTHORIZATION_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          mapfile -t acceptance_files < <(find "$RUNNER_TEMP/staging" -type f -name acceptance.json)
+          test "${#acceptance_files[@]}" -eq 1 || {
+            echo "Expected exactly one staging acceptance document." >&2
+            exit 1
+          }
+          candidate_outputs="$RUNNER_TEMP/candidate-outputs"
+          python -m scripts.release_candidate_evidence read-candidate \
+            --path "$RUNNER_TEMP/candidate/candidate.json" \
+            --github-output "$candidate_outputs"
+          source_revision="$(sed -n 's/^source_revision=//p' "$candidate_outputs")"
+          git merge-base --is-ancestor "$source_revision" "$RELEASE_SHA" || {
+            echo "Staged source revision is not an ancestor of main." >&2
+            exit 1
+          }
+          mkdir -p "$RUNNER_TEMP/production-authorization"
+          python -m scripts.release_candidate_evidence authorize-production \
+            --candidate "$RUNNER_TEMP/candidate/candidate.json" \
+            --staging "${acceptance_files[0]}" \
+            --expected-build-run-id "${{ inputs.candidate_build_run_id }}" \
+            --expected-staging-deployment-id "${{ inputs.staging_deployment_run_id }}" \
+            --authorization-run-id "$AUTHORIZATION_RUN_ID" \
+            --release-revision "$RELEASE_SHA" \
+            --release-tree "$RELEASE_TREE" \
+            --source-revision-is-ancestor \
+            --output "$RUNNER_TEMP/production-authorization/authorization.json" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Attach production aliases without rebuilding
+        env:
+          IMAGE_DIGEST: ${{ steps.authorization.outputs.image_digest }}
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < VERSION)"
+          printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
+          source_ref="${REGISTRY}/${IMAGE_NAME}@${IMAGE_DIGEST}"
+          version_ref="${REGISTRY}/${IMAGE_NAME}:${version}"
+          latest_ref="${REGISTRY}/${IMAGE_NAME}:latest"
+          existing="$(docker buildx imagetools inspect "$version_ref" --format '{{json .Manifest}}' 2>/dev/null || true)"
+          alias_args=(--tag "$latest_ref")
+          if [ -n "$existing" ]; then
+            existing_digest="$(jq -r '.digest' <<<"$existing")"
+            if [ "$existing_digest" = "$IMAGE_DIGEST" ]; then
+              alias_args+=(--tag "$version_ref")
+            else
+              echo "::warning title=Version alias not moved::$version_ref already points to $existing_digest; production authorization remains bound to $IMAGE_DIGEST."
+            fi
+          else
+            alias_args+=(--tag "$version_ref")
+          fi
+          docker buildx imagetools create \
+            --prefer-index=false \
+            "${alias_args[@]}" \
+            "$source_ref"
+          for alias in "${alias_args[@]}"; do
+            [ "$alias" = "--tag" ] && continue
+            alias_digest="$(docker buildx imagetools inspect "$alias" --format '{{json .Manifest}}' | jq -r '.digest')"
+            test "$alias_digest" = "$IMAGE_DIGEST" || {
+              echo "Alias $alias resolved to $alias_digest, expected $IMAGE_DIGEST." >&2
+              exit 1
+            }
+          done
+
+      - name: Upload production authorization
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-authorization-${{ steps.release.outputs.sha }}
+          path: ${{ runner.temp }}/production-authorization/authorization.json
+          if-no-files-found: error
+          retention-days: 90

@@ -107,6 +107,18 @@ def _sync_scheduled_task(
         db.commit()
 
 
+def sync_erp_operational_schedule(db, *, enabled: bool) -> None:
+    """Apply the capability-owned ERP operational cadence immediately."""
+
+    _sync_scheduled_task(
+        db,
+        name="dotmac_erp_operational_domain_sync",
+        task_name="app.tasks.dotmac_erp_outbox.sync_erp_operational_domains",
+        enabled=enabled,
+        interval_seconds=300,
+    )
+
+
 def _retire_scheduled_task(db, task_name: str) -> None:
     tasks = db.query(ScheduledTask).filter(ScheduledTask.task_name == task_name).all()
     changed = False
@@ -2083,6 +2095,7 @@ def build_beat_schedule() -> dict:
         # ERP schedules derive from validated capability bindings. Per-flow
         # single-writer ownership remains the independent business cutover gate.
         from app.services.integrations.backoffice_contracts import (
+            ERP_INVENTORY_CAPABILITY,
             ERP_OPERATIONAL_SYNC_CAPABILITY,
             ERP_OUTBOX_CAPABILITY,
             ERP_STATUS_CAPABILITY,
@@ -2090,6 +2103,7 @@ def build_beat_schedule() -> dict:
         from app.services.integrations.erp_capability import capability_enabled
 
         erp_outbox_enabled = capability_enabled(session, ERP_OUTBOX_CAPABILITY)
+        erp_inventory_enabled = capability_enabled(session, ERP_INVENTORY_CAPABILITY)
         erp_status_enabled = capability_enabled(session, ERP_STATUS_CAPABILITY)
         erp_operational_sync_enabled = capability_enabled(
             session, ERP_OPERATIONAL_SYNC_CAPABILITY
@@ -2098,6 +2112,13 @@ def build_beat_schedule() -> dict:
             session, SettingDomain.integration, "dotmac_erp_outbox_interval_seconds"
         )
         dotmac_erp_outbox_interval = max(dotmac_erp_outbox_interval, 30)
+        _sync_scheduled_task(
+            session,
+            name="dotmac_erp_material_catalog_refresh",
+            task_name="app.tasks.dotmac_erp_outbox.refresh_material_catalog",
+            enabled=erp_inventory_enabled,
+            interval_seconds=86400,
+        )
         _sync_scheduled_task(
             session,
             name="dotmac_erp_outbox_delivery",

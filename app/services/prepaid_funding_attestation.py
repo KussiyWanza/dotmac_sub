@@ -18,15 +18,13 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 from sqlalchemy.orm import Session
 
-from app.models.domain_settings import SettingDomain
-from app.services import settings_spec
-from app.services.secrets import is_openbao_ref, resolve_secret
-
 SEALED_MANIFEST_SCHEMA = "dotmac.prepaid_funding_sealed_manifest.v1"
 RECONSTRUCTION_MANIFEST_SCHEMA = "dotmac.prepaid_funding_reconstruction.v1"
 ATTESTATION_SCHEMA = "dotmac.prepaid_funding_replay_attestation.v1"
 ATTESTATION_ALGORITHM = "ed25519"
-TRUST_KEY_SETTING = "prepaid_reconstruction_attestation_public_key_ref"
+#: The held-secret NAME, not a settings key. The value moved out of
+#: `domain_settings` — see `resolve_trusted_public_key_pem`.
+TRUST_KEY_NAME = "prepaid_attestation_public_key"
 
 _SEALED_FIELDS = {"schema", "manifest", "attestation"}
 _ATTESTATION_FIELDS = {
@@ -170,19 +168,35 @@ def sign_prepaid_funding_manifest(
 
 
 def resolve_trusted_public_key_pem(db: Session) -> str:
-    """Resolve the config-owned trust anchor; plaintext fallback is forbidden."""
-    raw = settings_spec.resolve_value(db, SettingDomain.billing, TRUST_KEY_SETTING)
-    reference = str(raw or "").strip()
-    if not is_openbao_ref(reference):
-        raise PrepaidFundingAttestationError(
-            "billing.prepaid_reconstruction_attestation_public_key_ref must be "
-            "an OpenBao reference"
-        )
-    resolved = resolve_secret(reference)
-    public_key = str(resolved or "").strip()
+    """The trust anchor, from material held at boot rather than a settings row.
+
+    This anchor decides whether a signed reconstruction manifest is believed,
+    so what protects it is not confidentiality — it is a public key — but
+    AUTHORITY: only someone with OpenBao access may replace it, because
+    replacing it means forged manifests verify.
+
+    It used to be a `billing` setting holding a `bao://` reference, guarded by
+    "must be an OpenBao reference". That guard checked the value WAS a
+    reference and never WHICH reference, so anyone able to write settings could
+    repoint it at a key they controlled — the protection it appeared to give
+    was not there. It is now held from a path named in
+    `kernel_secret_source.OPTIONAL_SECRET_REFS`, which the settings surface
+    cannot reach at all.
+
+    `db` is kept in the signature: every caller has one, the change is not
+    theirs to care about, and a later anchor that IS per-something will need it.
+    """
+
+    from dotmac_kernel.secret_sources import get_secret
+
+    public_key = str(get_secret(TRUST_KEY_NAME) or "").strip()
     if not public_key:
+        # Same outcome as before for an unconfigured deployment: verification
+        # fails loudly at use, rather than the boot failing over material a
+        # deployment not using this feature never had.
         raise PrepaidFundingAttestationError(
-            "configured reconstruction attestation public key is empty"
+            "no reconstruction attestation public key is held — provision "
+            "the OpenBao path in kernel_secret_source.OPTIONAL_SECRET_REFS"
         )
     return public_key
 

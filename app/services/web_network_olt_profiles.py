@@ -29,7 +29,11 @@ from app.models.network import (
     OltServiceProfile,
     OntProvisioningProfile,
 )
-from app.services.audit_helpers import log_audit_event
+from app.services.audit_helpers import (
+    humanize_action,
+    log_audit_event,
+    resolve_actor_display_names,
+)
 from app.services.network import olt as olt_service
 from app.services.network.imported_service_ports import imported_service_port_summary
 from app.services.network.olt_command_gen import (
@@ -216,6 +220,18 @@ def profile_sync_tasks_context(
             .limit(25)
         )
     )
+    actor_labels = resolve_actor_display_names(
+        db,
+        {
+            actor
+            for actor in (
+                *(event.actor_id for event in audit_events),
+                *(task.requested_by for task in tasks),
+                *(task.approved_by for task in tasks),
+            )
+            if actor
+        },
+    )
     return {
         "tasks": tasks,
         "selected_status": selected_status,
@@ -234,6 +250,10 @@ def profile_sync_tasks_context(
         "profile_bundle_count": sum(drift_counts.values()),
         "drift_counts": drift_counts,
         "audit_events": audit_events,
+        "actor_labels": actor_labels,
+        "audit_action_labels": {
+            str(event.id): humanize_action(event.action) for event in audit_events
+        },
     }
 
 

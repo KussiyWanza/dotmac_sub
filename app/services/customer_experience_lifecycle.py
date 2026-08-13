@@ -77,14 +77,7 @@ def ticket_actions(ticket: Any) -> list[CustomerSelfCareAction]:
                 ),
             ]
         )
-    if (
-        ticket.status
-        in {
-            TicketStatus.resolved.value,
-            TicketStatus.closed.value,
-        }
-        and ticket.csat_rating is None
-    ):
+    if ticket.status == TicketStatus.closed.value and ticket.csat_rating is None:
         actions.append(
             CustomerSelfCareAction(
                 key=CustomerActionKey.rate_support,

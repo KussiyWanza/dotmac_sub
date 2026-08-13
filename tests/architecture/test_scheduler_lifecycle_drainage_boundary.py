@@ -56,7 +56,9 @@ def _setting_key(node: ast.Call) -> tuple[SettingDomain, str]:
         and domain_node.value.id == "SettingDomain"
     )
     assert isinstance(key_node, ast.Constant) and isinstance(key_node.value, str)
-    return SettingDomain[domain_node.attr], key_node.value
+    # `getattr`, not `SettingDomain[...]`: the member type is an open `str`
+    # subclass now, so it has no enum-style subscript lookup.
+    return getattr(SettingDomain, domain_node.attr), key_node.value
 
 
 def test_scheduler_tuning_uses_only_registered_typed_settings() -> None:
@@ -77,7 +79,9 @@ def test_scheduler_tuning_uses_only_registered_typed_settings() -> None:
             if _call_name(call) == "resolve_integer"
             else SettingValueType.string
         )
-        assert spec.value_type is expected
+        # `==`, not `is`: the value-type vocabulary is an open `str`
+        # subclass and deliberately not interned (migration 512).
+        assert spec.value_type == expected
 
     source = SCHEDULER_PATH.read_text(encoding="utf-8")
     for retired in (

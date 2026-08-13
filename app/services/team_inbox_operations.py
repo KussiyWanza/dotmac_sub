@@ -26,7 +26,12 @@ from app.models.team_inbox import (
     InboxTeamRole,
     InboxTeamSource,
 )
-from app.services import team_inbox_assignment, team_inbox_outbound, team_inbox_status
+from app.services import (
+    team_inbox_assignment,
+    team_inbox_filters,
+    team_inbox_outbound,
+    team_inbox_status,
+)
 from app.services.common import coerce_uuid
 
 _ALLOWED_LABEL_COLORS = {
@@ -122,9 +127,15 @@ class MessageTemplateOption:
 class SavedFilterOption:
     id: str
     name: str
-    filter_payload: dict[str, Any]
+    filter_payload: team_inbox_filters.InboxSavedFilterPayload
     is_shared: bool
     owner_person_id: str | None
+
+    @property
+    def filter_payload_transport(
+        self,
+    ) -> team_inbox_filters.InboxSavedFilterTransport:
+        return self.filter_payload.to_storage()
 
 
 @dataclass(frozen=True)
@@ -156,20 +167,27 @@ def _label_color(value: str | None) -> str:
     return color if color in _ALLOWED_LABEL_COLORS else "slate"
 
 
-def list_labels(db: Session, *, active_only: bool = True) -> list[LabelOption]:
+def list_labels(
+    db: Session,
+    *,
+    active_only: bool = True,
+    include_usage_counts: bool = True,
+) -> list[LabelOption]:
     query = db.query(InboxLabel)
     if active_only:
         query = query.filter(InboxLabel.is_active.is_(True))
-    usage_rows = (
-        db.query(
-            InboxConversationLabel.label_id,
-            func.count(InboxConversationLabel.id).label("usage_count"),
+    usage_by_label = {}
+    if include_usage_counts:
+        usage_rows = (
+            db.query(
+                InboxConversationLabel.label_id,
+                func.count(InboxConversationLabel.id).label("usage_count"),
+            )
+            .filter(InboxConversationLabel.is_active.is_(True))
+            .group_by(InboxConversationLabel.label_id)
+            .all()
         )
-        .filter(InboxConversationLabel.is_active.is_(True))
-        .group_by(InboxConversationLabel.label_id)
-        .all()
-    )
-    usage_by_label = {row.label_id: int(row.usage_count or 0) for row in usage_rows}
+        usage_by_label = {row.label_id: int(row.usage_count or 0) for row in usage_rows}
     return [
         LabelOption(
             id=str(label.id),
@@ -786,7 +804,7 @@ def save_filter(
     db: Session,
     *,
     name: str,
-    filter_payload: dict[str, Any],
+    filter_payload: team_inbox_filters.InboxSavedFilterPayload,
     owner_person_id: str | UUID | None = None,
     is_shared: bool = False,
 ) -> InboxSavedFilter:
@@ -795,11 +813,7 @@ def save_filter(
         raise InboxOperationError("Filter name is required.")
     saved_filter = InboxSavedFilter(
         name=clean_name[:120],
-        filter_payload={
-            key: value
-            for key, value in filter_payload.items()
-            if value not in (None, "")
-        },
+        filter_payload=filter_payload.to_storage(),
         owner_person_id=coerce_uuid(owner_person_id),
         is_shared=bool(is_shared),
         is_active=True,
@@ -829,7 +843,9 @@ def list_saved_filters(
         SavedFilterOption(
             id=str(row.id),
             name=row.name,
-            filter_payload=dict(row.filter_payload or {}),
+            filter_payload=team_inbox_filters.saved_filter_payload_from_storage(
+                row.filter_payload
+            ),
             is_shared=row.is_shared,
             owner_person_id=str(row.owner_person_id) if row.owner_person_id else None,
         )
@@ -931,6 +947,7 @@ def bulk_escalate(
     auto_assign: bool = True,
     actor_person_id: str | UUID | None = None,
     reason: str | None = None,
+    require_team_membership: bool = True,
 ) -> dict[str, object]:
     updated: list[str] = []
     skipped: list[dict[str, str]] = []
@@ -952,6 +969,7 @@ def bulk_escalate(
                 person_id=assigned_person_id,
                 assigned_by_person_id=actor_person_id,
                 reason=reason,
+                require_team_membership=require_team_membership,
             )
         elif auto_assign:
             result = team_inbox_assignment.assign_conversation_to_available_agent(
@@ -1049,9 +1067,7 @@ def queue_metrics(db: Session) -> InboxQueueMetrics:
     ).where(InboxConversationAssignment.is_active.is_(True))
     return InboxQueueMetrics(
         total_open=count_open(),
-        needs_response=team_inbox_read.list_conversations(
-            db, needs_response=True, limit=1
-        ).count,
+        needs_response=team_inbox_read.needs_response_conversation_count(db),
         failed_outbound=int(
             db.query(func.count(InboxMessage.id))
             .filter(InboxMessage.direction == "outbound")

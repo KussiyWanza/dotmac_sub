@@ -4,6 +4,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
+from urllib.parse import urlencode
 from uuid import UUID
 
 from sqlalchemy import and_, false, func, or_, select
@@ -13,6 +14,7 @@ from sqlalchemy.sql.elements import ColumnElement
 from app.models.party import Party
 from app.models.service_team import ServiceTeam
 from app.models.subscriber import Subscriber
+from app.models.system_user import SystemUser
 from app.models.team_inbox import (
     InboxChannelType,
     InboxComment,
@@ -32,7 +34,9 @@ from app.services import (
     service_team_composition,
     team_inbox_assignment,
     team_inbox_field_job,
+    team_inbox_filters,
     team_inbox_media,
+    team_inbox_observations,
     team_inbox_read_state,
 )
 
@@ -57,6 +61,49 @@ class InboxTimelineAssignment:
     is_active: bool
 
 
+class InboxTimelineSenderSource(StrEnum):
+    staff = "staff"
+    fallback = "fallback"
+
+
+@dataclass(frozen=True, slots=True)
+class InboxTimelineSenderIdentity:
+    system_user_id: str | None
+    display_name: str
+    initials: str
+    source: InboxTimelineSenderSource
+
+
+@dataclass(frozen=True)
+class InboxTimelineLocation:
+    latitude: float
+    longitude: float
+    name: str | None
+    address: str | None
+    map_url: str
+
+
+@dataclass(frozen=True)
+class InboxTimelineAttachment:
+    id: str | None
+    type: str
+    filename: str | None
+    file_name: str | None
+    mime_type: str | None
+    file_size: int | None
+    caption: str | None
+    url: str | None
+    source_url: str | None
+    storage_url: str | None
+    provider: str | None
+    provider_media_id: str | None
+    download_status: str | None
+    download_error: str | None
+    content_available: bool
+    metadata: dict[str, object] | None
+    location: InboxTimelineLocation | None
+
+
 @dataclass(frozen=True)
 class InboxTimelineMessage:
     id: str
@@ -65,13 +112,14 @@ class InboxTimelineMessage:
     subject: str | None
     body: str | None
     from_address: str | None
-    to_addresses: list
-    cc_addresses: list
+    to_addresses: list[str]
+    cc_addresses: list[str]
     sent_at: datetime | None
     received_at: datetime | None
     created_at: datetime
-    metadata: dict | None
-    attachments: list[dict]
+    metadata: dict[str, object] | None
+    attachments: list[InboxTimelineAttachment]
+    sender: InboxTimelineSenderIdentity | None
 
 
 @dataclass(frozen=True)
@@ -85,7 +133,7 @@ class InboxTimelineComment:
     resolved_by_person_id: str | None
     resolved_at: datetime | None
     created_at: datetime
-    metadata: dict | None
+    metadata: dict[str, object] | None
 
 
 @dataclass(frozen=True)
@@ -108,7 +156,7 @@ class InboxConversationTimeline:
     last_message_at: datetime | None
     created_at: datetime
     updated_at: datetime
-    metadata: dict | None
+    metadata: dict[str, object] | None
     queue_position: int | None
     queued_at: datetime | None
     estimated_wait_minutes: int | None
@@ -262,6 +310,65 @@ def _latest_visible_direction():
         .correlate(InboxConversation)
         .scalar_subquery()
     )
+
+
+def _base_queue_query(db: Session):
+    query = db.query(InboxConversation).filter(InboxConversation.is_active.is_(True))
+    followup = InboxConversation.metadata_[
+        team_inbox_field_job.QUEUE_FOLLOWUP_KEY
+    ].as_boolean()
+    return query.filter(
+        or_(
+            InboxConversation.channel_type != InboxChannelType.field_job.value,
+            followup.is_(True),
+        )
+    )
+
+
+def queue_conversation_count(db: Session) -> int:
+    return int(
+        _base_queue_query(db).with_entities(func.count(InboxConversation.id)).scalar()
+        or 0
+    )
+
+
+def assigned_conversation_count(
+    db: Session,
+    *,
+    assigned_person_id: str | UUID | None,
+) -> int:
+    assignee_uuid = _optional_uuid(assigned_person_id)
+    if assignee_uuid is None:
+        return 0
+    return int(
+        _base_queue_query(db)
+        .filter(
+            InboxConversation.id.in_(
+                select(InboxConversationAssignment.conversation_id).where(
+                    InboxConversationAssignment.person_id == assignee_uuid,
+                    InboxConversationAssignment.is_active.is_(True),
+                )
+            )
+        )
+        .with_entities(func.count(InboxConversation.id))
+        .scalar()
+        or 0
+    )
+
+
+def needs_response_conversation_count(db: Session) -> int:
+    return int(
+        _base_queue_query(db)
+        .filter(InboxConversation.status != InboxConversationStatus.resolved.value)
+        .filter(_latest_visible_direction() == InboxMessageDirection.inbound.value)
+        .with_entities(func.count(InboxConversation.id))
+        .scalar()
+        or 0
+    )
+
+
+def needs_attention_conversation_count(db: Session) -> int:
+    return len(needs_attention_conversation_ids(db))
 
 
 def _timestamp(value: datetime) -> float:
@@ -567,6 +674,68 @@ def _display_initials(display_name: str) -> str:
     return display_name[:2].upper() or "?"
 
 
+_FALLBACK_OUTBOUND_SENDER = InboxTimelineSenderIdentity(
+    system_user_id=None,
+    display_name="Support agent",
+    initials="AG",
+    source=InboxTimelineSenderSource.fallback,
+)
+
+
+def _outbound_sender_system_user_id(message: InboxMessage) -> UUID | None:
+    if message.direction != InboxMessageDirection.outbound.value:
+        return None
+    raw_value = (message.metadata_ or {}).get("sent_by_person_id")
+    try:
+        return UUID(str(raw_value)) if raw_value else None
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def _staff_display_name(user: SystemUser) -> str:
+    return (
+        str(user.display_name or "").strip()
+        or f"{user.first_name} {user.last_name}".strip()
+        or str(user.email or "").strip()
+        or "Support agent"
+    )
+
+
+def _outbound_sender_identities(
+    db: Session,
+    messages: Sequence[InboxMessage],
+) -> dict[UUID, InboxTimelineSenderIdentity]:
+    sender_ids = {
+        sender_id
+        for message in messages
+        if (sender_id := _outbound_sender_system_user_id(message)) is not None
+    }
+    if not sender_ids:
+        return {}
+    users = db.query(SystemUser).filter(SystemUser.id.in_(sender_ids)).all()
+    return {
+        user.id: InboxTimelineSenderIdentity(
+            system_user_id=str(user.id),
+            display_name=(display_name := _staff_display_name(user)),
+            initials=_display_initials(display_name),
+            source=InboxTimelineSenderSource.staff,
+        )
+        for user in users
+    }
+
+
+def _timeline_sender_identity(
+    message: InboxMessage,
+    sender_identities: Mapping[UUID, InboxTimelineSenderIdentity],
+) -> InboxTimelineSenderIdentity | None:
+    if message.direction != InboxMessageDirection.outbound.value:
+        return None
+    sender_id = _outbound_sender_system_user_id(message)
+    if sender_id is None:
+        return _FALLBACK_OUTBOUND_SENDER
+    return sender_identities.get(sender_id, _FALLBACK_OUTBOUND_SENDER)
+
+
 def _legacy_subscriber_name(subscriber: Subscriber) -> str | None:
     return next(
         (
@@ -716,32 +885,134 @@ def _delivery_error(message: InboxMessage | None) -> str | None:
     return value or None
 
 
-def _message_attachments(message: InboxMessage) -> list[dict]:
+def _optional_text(value: object) -> str | None:
+    text = str(value).strip() if value is not None else ""
+    return text or None
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _location_presentation(value: object) -> InboxTimelineLocation | None:
+    if not isinstance(value, Mapping):
+        return None
+    try:
+        location = team_inbox_observations.inbound_location_observation(
+            latitude=value.get("latitude"),
+            longitude=value.get("longitude"),
+            name=value.get("name"),
+            address=value.get("address"),
+        )
+    except team_inbox_observations.TeamInboxObservationError:
+        return None
+    if location is None:
+        return None
+    latitude = format(location.latitude, ".7f").rstrip("0").rstrip(".")
+    longitude = format(location.longitude, ".7f").rstrip("0").rstrip(".")
+    query = urlencode({"api": "1", "query": f"{latitude},{longitude}"})
+    return InboxTimelineLocation(
+        latitude=location.latitude,
+        longitude=location.longitude,
+        name=location.name,
+        address=location.address,
+        map_url=f"https://www.google.com/maps/search/?{query}",
+    )
+
+
+def _attachment_from_mapping(item: Mapping[str, object]) -> InboxTimelineAttachment:
+    asset_type = _optional_text(item.get("type") or item.get("asset_type")) or "file"
+    location = (
+        _location_presentation(item.get("location"))
+        if asset_type == "location"
+        else None
+    )
+    raw_url = _optional_text(
+        item.get("url") or item.get("storage_url") or item.get("source_url")
+    )
+    url = (
+        location.map_url
+        if location
+        else (None if asset_type == "location" else raw_url)
+    )
+    raw_metadata = item.get("metadata")
+    return InboxTimelineAttachment(
+        id=_optional_text(item.get("id")),
+        type=asset_type,
+        filename=_optional_text(item.get("filename") or item.get("file_name")),
+        file_name=_optional_text(item.get("file_name") or item.get("filename")),
+        mime_type=_optional_text(item.get("mime_type")),
+        file_size=_optional_int(item.get("file_size")),
+        caption=_optional_text(item.get("caption")),
+        url=url,
+        source_url=_optional_text(item.get("source_url")),
+        storage_url=_optional_text(item.get("storage_url")),
+        provider=_optional_text(item.get("provider")),
+        provider_media_id=_optional_text(
+            item.get("provider_media_id") or item.get("id")
+        ),
+        download_status=_optional_text(item.get("download_status")),
+        download_error=_optional_text(item.get("download_error")),
+        content_available=bool(url),
+        metadata=(
+            {str(key): nested for key, nested in raw_metadata.items()}
+            if isinstance(raw_metadata, Mapping)
+            else None
+        ),
+        location=location,
+    )
+
+
+def _message_attachments(message: InboxMessage) -> list[InboxTimelineAttachment]:
     metadata = message.metadata_ or {}
     attachments = metadata.get("attachments")
     if not isinstance(attachments, list):
         return []
-    return [item for item in attachments if isinstance(item, dict)]
+    return [
+        _attachment_from_mapping(item) for item in attachments if isinstance(item, dict)
+    ]
 
 
-def _asset_attachment(asset: InboxMediaAsset) -> dict:
-    return {
-        "id": str(asset.id),
-        "type": asset.asset_type,
-        "filename": asset.file_name,
-        "file_name": asset.file_name,
-        "mime_type": asset.mime_type,
-        "file_size": asset.file_size,
-        "caption": asset.caption,
-        "url": asset.storage_url or asset.source_url,
-        "source_url": asset.source_url,
-        "storage_url": asset.storage_url,
-        "provider": asset.provider,
-        "provider_media_id": asset.provider_media_id,
-        "download_status": asset.download_status,
-        "download_error": asset.download_error,
-        "metadata": asset.metadata_,
-    }
+def _asset_attachment(asset: InboxMediaAsset) -> InboxTimelineAttachment:
+    metadata = asset.metadata_ or {}
+    location = (
+        _location_presentation(metadata.get("location"))
+        if asset.asset_type == "location"
+        else None
+    )
+    url = None
+    if location is not None:
+        url = location.map_url
+    elif asset.asset_type != "location":
+        url = (
+            team_inbox_media.media_content_url(asset.id)
+            if asset.download_status in {"stored", "remote_available", "metadata_only"}
+            else (asset.storage_url or asset.source_url)
+        )
+    return InboxTimelineAttachment(
+        id=str(asset.id),
+        type=asset.asset_type,
+        filename=asset.file_name,
+        file_name=asset.file_name,
+        mime_type=asset.mime_type,
+        file_size=asset.file_size,
+        caption=asset.caption,
+        url=url,
+        source_url=asset.source_url,
+        storage_url=asset.storage_url,
+        provider=asset.provider,
+        provider_media_id=asset.provider_media_id,
+        download_status=asset.download_status,
+        download_error=asset.download_error,
+        content_available=bool(url),
+        metadata={str(key): value for key, value in metadata.items()},
+        location=location,
+    )
 
 
 def list_conversations(
@@ -750,9 +1021,11 @@ def list_conversations(
     search: str | None = None,
     status: str | None = None,
     channel_type: str | None = None,
+    channel_types: Sequence[str] | None = None,
     subscriber_id: str | UUID | None = None,
     service_team_id: str | UUID | None = None,
     service_team_ids: Sequence[str | UUID] | None = None,
+    advanced_filters: team_inbox_filters.InboxAdvancedFilterQuery | None = None,
     assigned_person_id: str | UUID | None = None,
     needs_response: bool = False,
     needs_attention: bool = False,
@@ -772,6 +1045,7 @@ def list_conversations(
     order_dir: str = "desc",
     limit: int = 50,
     offset: int = 0,
+    include_total_count: bool = True,
 ) -> InboxConversationListResult:
     query = (
         db.query(InboxConversation, ServiceTeam)
@@ -834,8 +1108,13 @@ def list_conversations(
         query = query.filter(InboxConversation.status == status)
     if open_only:
         query = query.filter(InboxConversation.status != "resolved")
+    clean_channel_types = tuple(
+        str(item).strip() for item in (channel_types or ()) if str(item).strip()
+    )
     if channel_type:
         query = query.filter(InboxConversation.channel_type == channel_type)
+    elif clean_channel_types:
+        query = query.filter(InboxConversation.channel_type.in_(clean_channel_types))
     if priority_at_most is not None:
         query = query.filter(InboxConversation.priority <= int(priority_at_most))
     if muted is not None:
@@ -920,6 +1199,13 @@ def list_conversations(
             )
         )
 
+    if advanced_filters is not None:
+        advanced_filter_expression = team_inbox_filters.build_filter_expression(
+            advanced_filters
+        )
+        if advanced_filter_expression is not None:
+            query = query.filter(advanced_filter_expression)
+
     assignee_uuid = _optional_uuid(assigned_person_id)
     if assignee_uuid is not None:
         query = query.filter(
@@ -952,11 +1238,14 @@ def list_conversations(
             == contact_resolution_status
         )
     if unread_only:
-        # The unread rule stays with its owner; this only asks for it in SQL.
+        # The unread rule stays with its owner; this only asks for its grouped
+        # set selector. No correlated per-conversation probe is admitted here.
         # Without an operator nothing can be unread, and an empty page is the
         # honest answer rather than the whole queue.
         query = query.filter(
-            team_inbox_read_state.unread_conversation_clause(operator_person_id)
+            InboxConversation.id.in_(
+                team_inbox_read_state.unread_conversation_ids_select(operator_person_id)
+            )
             if operator_person_id is not None
             else false()
         )
@@ -996,18 +1285,26 @@ def list_conversations(
             InboxConversation.created_at.desc(),
             InboxConversation.id.asc(),
         )
-    total = query.count()
+    total = query.count() if include_total_count else 0
     # `needs_response` and `contact_resolution_status` are already SQL filters
     # above, so listing them here too would load the whole filtered set before a
     # The Python-only attention classifier now runs on a selective candidate
     # set in fixed-size batches before this query. Pagination remains in SQL;
     # the row-level checks below stay as a safety net.
     needs_python_filter = False
+    row_limit = limit if include_total_count else limit + 1
     rows = (
         ordered_query.all()
         if needs_python_filter
-        else ordered_query.limit(limit).offset(offset).all()
+        else ordered_query.limit(row_limit).offset(offset).all()
     )
+    has_next_page = not include_total_count and len(rows) > limit
+    if has_next_page:
+        rows = rows[:limit]
+    if not include_total_count:
+        total = offset + len(rows) + (1 if has_next_page else 0)
+        if not rows and offset > 0:
+            total = query.count()
     conversations = [conversation for conversation, _team in rows]
     conversation_ids = [conversation.id for conversation in conversations]
     messages_by_conversation = _messages_by_conversation(db, conversation_ids)
@@ -1252,12 +1549,12 @@ def get_conversation_timeline(
         db.query(InboxMessage)
         .filter(InboxMessage.conversation_id == conversation.id)
         .order_by(
-            InboxMessage.created_at.asc(),
-            InboxMessage.received_at.asc(),
-            InboxMessage.sent_at.asc(),
+            _message_time_column().asc(),
+            InboxMessage.id.asc(),
         )
         .all()
     )
+    outbound_sender_identities = _outbound_sender_identities(db, messages)
     assets_by_message = team_inbox_media.assets_for_messages(
         db,
         [message.id for message in messages],
@@ -1381,8 +1678,8 @@ def get_conversation_timeline(
                 subject=message.subject,
                 body=message.body,
                 from_address=message.from_address,
-                to_addresses=list(message.to_addresses or []),
-                cc_addresses=list(message.cc_addresses or []),
+                to_addresses=[str(value) for value in (message.to_addresses or [])],
+                cc_addresses=[str(value) for value in (message.cc_addresses or [])],
                 sent_at=message.sent_at,
                 received_at=message.received_at,
                 created_at=message.created_at,
@@ -1393,6 +1690,10 @@ def get_conversation_timeline(
                         for asset in assets_by_message.get(message.id, [])
                     ]
                     or _message_attachments(message)
+                ),
+                sender=_timeline_sender_identity(
+                    message,
+                    outbound_sender_identities,
                 ),
             )
             for message in messages

@@ -118,6 +118,8 @@ class WanServiceIntentSpec:
     is_primary: bool
     name: str | None = None
     priority: int = 1
+    s_vlan: int | None = None
+    c_vlan: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +131,7 @@ class WanServiceIntentOutcome:
     revision: int
     is_primary: bool
     replaced_instance_id: UUID | None = None
+    replayed: bool = False
 
 
 def _enum_value(value: Any) -> str:
@@ -255,6 +258,8 @@ def _declare(
         connection_type=spec.connection_type,
         priority=spec.priority,
         is_primary=spec.is_primary,
+        s_vlan=spec.s_vlan,
+        c_vlan=spec.c_vlan,
         # Declared, not authorised. Activation is a separate, evidenced step so
         # that recording an intention can never by itself permit a device write.
         lifecycle_state=OntWanServiceLifecycle.planned,
@@ -516,6 +521,48 @@ def retire_ont_intents_in_transaction(
     return tuple(
         _retire(db, instance.id, context, replaced_by=None) for instance in live
     )
+
+
+def ensure_active_wan_service_intent_in_transaction(
+    db: Session,
+    *,
+    spec: WanServiceIntentSpec,
+    context: CommandContext,
+) -> WanServiceIntentOutcome:
+    """Flush-only participant for a coordinator-owned configuration command.
+
+    Preserves an exact matching declaration. A material WAN change creates a
+    replacement so the previous declaration remains historical evidence.
+    """
+
+    _validate_context(context)
+    current = active_primary_internet_intent(
+        db,
+        ont_id=spec.ont_id,
+        subscription_id=spec.subscription_id,
+        for_update=True,
+    )
+    if current is not None:
+        matches = (
+            _enum_value(current.service_type) == _enum_value(spec.service_type)
+            and _enum_value(current.connection_type)
+            == _enum_value(spec.connection_type)
+            and bool(current.is_primary) is bool(spec.is_primary)
+            and int(current.priority or 0) == int(spec.priority)
+            and current.s_vlan == spec.s_vlan
+            and current.c_vlan == spec.c_vlan
+        )
+        if matches:
+            return WanServiceIntentOutcome(
+                instance_id=current.id,
+                lifecycle_state=current.lifecycle_state,
+                revision=current.revision,
+                is_primary=current.is_primary,
+                replayed=True,
+            )
+        return _replace(db, current.id, spec, context)
+    declared = _declare(db, spec, context)
+    return _activate(db, declared.instance_id, context, declared.revision)
 
 
 def active_primary_internet_intent(

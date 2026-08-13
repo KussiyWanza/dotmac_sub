@@ -1,16 +1,17 @@
 # Materials / Vendor / ERP Owner Chain
 
-**Status:** Implemented (owner-output chain slice, 2026-07-27)
-**System of record:** Sub (operational need, approval, allocation, consumption evidence); Dotmac ERP (inventory and accounting outcomes)
+**Status:** ERP submission redesign in implementation (2026-08-10)
+**System of record:** Sub (contextual need, field eligibility, consumption evidence); Dotmac ERP (items, warehouses, stock, serials, issuance, and refusal)
 **Decision owner:** Michael
+
+ERP-channel requests leave Sub immediately with no separate Sub approval. Requests may originate from a ticket, project, project task, or work order, and work-order linkage is optional. Manual-channel requests are permanently excluded from ERP delivery. ERP outcomes return through a signed idempotent webhook, with scheduled status reconciliation as fallback. The production activation sequence is in `docs/runbooks/MATERIAL_REQUEST_ERP_CUTOVER.md`.
 
 ## Contract
 
 ```text
 ticket / project / project task requires material
   -> assigned native work order selected   [context projection; one owner]
-  -> work order requires material          [field request]
-  -> material request approved            [operations.material_dependencies]
+  -> material request submitted            [operations.material_dependencies]
   -> ERP issue requested                  [receipted consumer -> durable outbox]
   -> ERP issue observed                   [polling write-back, fail-atomic]
   -> material allocated                   [allocation rows + fulfilled output]
@@ -45,6 +46,11 @@ best-effort enqueue whose only trace was a metadata breadcrumb.
   fulfil actions. ERP remains the owner of availability, serial allocation,
   issuance, and refusal; Sub displays only the observed support reference and
   outcome projected through the existing adapter.
+- The material item control is a permission-scoped server-backed typeahead.
+  It searches only active, Sub-eligible ERP catalogue projections by name, SKU,
+  or category, returns a bounded result set, and submits only the canonical item
+  UUID. Additional request lines initialize independent typeahead controls and
+  never preload the complete ERP catalogue into the page.
 - ERP failures remain durable pending deliveries in the `field_erp_sync`
   outbox (8-attempt dead-letter). Sub never infers issuance or payment;
   ERP outcomes return only through the fail-atomic write-back and polling

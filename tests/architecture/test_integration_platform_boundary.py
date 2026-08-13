@@ -49,6 +49,7 @@ CURRENT_INTEGRATION_SERVICES = (
     "integration.jobs",
     "integration.sync",
     "integration.backoffice_adapter",
+    "integration.workforce_attendance_adapter",
     "integration.dotmac_erp_payables_adapter",
     "integration.dotmac_erp_material_support_adapter",
 )
@@ -138,12 +139,19 @@ def test_connector_versions_are_immutable_reviewed_manifest_pins() -> None:
     }
     assert legacy_collisions == {
         (
+            "meta.social",
+            "1.0.0",
+        ): {
+            "1186a1b861b561480e609363baf2822dbc7091857054ef076fb686e581e4bc5b",
+            "c2a13ab30bebb90b312ab4bbcf1d2feaa23ea706100b3e5ea35a101ec566cf08",
+        },
+        (
             "paystack",
             "1.0.0",
         ): {
             "53791d3e2e06fe1ca128a0e3e8ced86549392af7b6131f61bd21044d71aafc6e",
             "9f1e314860294696c825d8d49d300df903ced6c319b406f295047d25585e836c",
-        }
+        },
     }
 
 
@@ -253,6 +261,17 @@ def test_integration_sot_names_the_live_cutover_owners() -> None:
         "integration.installations",
         "integration.runtime",
     )
+    assert sot_relationships.dependencies_for(
+        "integration.workforce_attendance_adapter"
+    ) == (
+        "auth.permission_gate",
+        "integration.backoffice_adapter",
+    )
+    attendance = sot_relationships.service_relationship(
+        "integration.workforce_attendance_adapter"
+    )
+    assert attendance.contract is not None
+    assert attendance.contract.transaction.mode.value == "read_only"
     assert sot_relationships.dependencies_for(
         "integration.dotmac_erp_payables_adapter"
     ) == ("integration.backoffice_adapter",)

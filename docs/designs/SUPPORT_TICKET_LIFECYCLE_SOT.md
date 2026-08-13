@@ -14,6 +14,8 @@ The lifecycle owner controls, in one root owner command:
 - guarded status transitions and their resolved/closed timestamps;
 - team, technician, manager, coordinator, and additional-assignee state;
 - comments, explicit mentions, attachment metadata, and the official timeline;
+- explicit customer-publication decisions for descriptions, comments, and their
+  attachments;
 - links, duplicate evidence, merges, and merged-source immutability;
 - resolution requests, active confirmation capabilities, confirmation, disputes,
   and automatic confirmation after the configured grace period;
@@ -32,6 +34,13 @@ commit lifecycle changes. Every public mutation enters
 terminal-state semantics consumed by both lifecycle and configuration. It is a
 pure value boundary and owns no Ticket or configuration rows.
 
+`closed` is the only Ticket status meaning that the reported issue has been
+resolved. The retired stored value `resolved` is accepted only as a legacy
+admission alias and is canonicalized to `closed` before any write or response.
+Migration 517 repairs matching Ticket rows plus exact status fields in operator
+configuration and automation JSON; it does not rewrite Ticket timestamps,
+timeline records, tags, comments, attachments, metadata, or audit history.
+
 `support.ticket_configuration` owns operator-managed status choices,
 priorities, types, routing inputs, service-team membership configuration, and
 priority/type SLA targets. It may only expose statuses from the ticket
@@ -39,6 +48,28 @@ vocabulary owner. `support.ticket_region_projection` separately resolves the
 current region choices from configured values and canonical Ticket observations.
 This separation prevents lifecycle and configuration from depending on each
 other while preserving the provenance of both inputs.
+
+The operator-selectable subset contains only canonical typed `TicketStatus`
+values. The configuration owner and admin adapters canonicalize legacy
+`resolved` input to `closed` before storage or response. Admin selection crosses
+the typed `OperatorTicketStatusSelection` /
+`OperatorTicketStatusSelectionOutcome` resolver owned by ticket configuration.
+Admin create, edit, quick-status, bulk-update, automation, list-filter, and
+advanced-filter controls consume that one subset. A Ticket whose canonical
+current status is later removed from the configured subset remains displayable
+and may preserve that unchanged value while another field is edited; the UI
+presents it as a non-selectable current value. The `not_closed` list scope
+remains a separate read contract that excludes canonical `closed`.
+
+Regional routing configuration is replaced through the typed
+`TicketConfigurationUpdate` command. Region keys are normalized to lowercase.
+A completely blank routing row is ignored, but assignment data without a Region
+is rejected. The settings page keeps stale saved staff or team selections
+visible and labels them inactive or unavailable so an administrator can repair
+the rule. The new-ticket page receives only the current typed regional Manager
+projection and previews it when the Manager field is empty. That preview never
+overwrites a manual selection and is disabled in edit mode. The lifecycle owner
+re-resolves the rule and remains the only writer of final Ticket assignments.
 
 Assignment is split deliberately:
 
@@ -73,8 +104,12 @@ The region projection is recomputed from workflow configuration and distinct
 non-empty Region values on active Tickets in the caller's current database
 transaction; it has no cache or stale fallback. Re-reading is its idempotent
 rebuild path, and form-context parity tests are its drift signal.
-The database deduplicates the combined inputs and orders the result by region
-value ascending before it reaches forms and filters.
+The database normalizes configured and observed values to a trimmed lowercase
+identity, deduplicates the combined inputs, and orders the result by region
+value ascending before it reaches forms and filters. Ticket list, count,
+summary, and export queries compare that same normalized identity, so legacy
+case variants such as `Garki` and `garki` remain one operational cohort even
+before stored values are repaired.
 `TicketCreationRoutingMode.preserve_requested_team` then prevents assignment
 rules and `assign_team` creation automation from replacing either the resolved
 team or the intentional unassigned result. Other creation automation continues
@@ -97,6 +132,16 @@ change. Missing customer identity or disabled support notifications produces no
 email. Queue failure is isolated in an owner savepoint and recorded as durable
 Ticket audit evidence without rolling back the Ticket.
 
+Internal operational queues use the closed
+`TicketCreationConsequenceMode.silent_internal` path rather than constructing a
+Ticket row. The unmatched-radio coordinator is the only approved caller. The
+lifecycle participant allocates the human-readable number and stages creation
+audit/event evidence, while suppressing assignment policy, SLA clocks,
+automation, staff assignment notifications, and customer acknowledgement. A
+repeat observation repairs a legacy open queue item whose number is missing and
+records that repair in audit/event evidence. The per-radio advisory lock remains
+the deduplication authority; the Ticket owner remains the only identity writer.
+
 Customer-authored public replies have one staff-email consequence owned by the
 lifecycle command. After the comment is staged, the owner resolves active
 individual assignees from current Ticket assignment fields and queues one email
@@ -107,6 +152,15 @@ helpdesk fallback. Internal, staff, system, or customer-identity-mismatched
 comments do not trigger this consequence. The durable notification queue owns
 post-commit SMTP delivery and retry; transport failure never removes the saved
 reply.
+
+Ticket assignment consequences are independent of the legacy customer-support
+notification toggle. Newly assigned direct users and active members of an
+assigned Service Team receive an in-app notification and, when an email address
+exists, a queued email. Explicit comment mentions use the same individual and
+Service Team group semantics and the same two channels. The retired Site
+Project Coordinator column remains readable and filterable on historical
+Tickets, but new-ticket input and assignment configuration no longer populate
+it.
 
 ## Related owners
 
@@ -125,15 +179,43 @@ External CRM and communications products are observations, transports, or
 provenance. Imported identifiers do not own Ticket status, assignment,
 comments, resolution, or native Work-Order issuance.
 
+## Customer portal publication boundary
+
+Selfcare is the authoritative origin for new customer tickets and replies. A
+customer-authored Selfcare description or reply is customer-visible. Staff and
+system descriptions, comments, and their attachments are internal unless a
+staff command explicitly publishes them. Portal adapters consume these stored
+decisions; they never infer publication from subscriber linkage, CRM metadata,
+or the absence of an internal-note checkbox.
+
+CRM ticket import is retired as an authority. Any residual retry or historical
+observation is provenance-only and is forced internal; it cannot publish
+narrative into the customer portal.
+
+Legacy CRM-era narrative has no evidence of customer publication because the
+old system exposed no customer ticket timeline. Migration 503 therefore marks
+every description and comment already stored at cutover as internal. Ticket
+identity, number, status, priority, and dates remain available for customer
+reference. Operators may deliberately publish a reviewed description or post a
+new reviewed customer reply after the cutover through the normal Selfcare
+controls.
+
 ## List and bulk UI contracts
 
 `ui.support_ticket_list_projection` declares searchable fields, filters,
 stable sorting, pagination, summaries, and export scope through one typed
-`ListQuery`. `ui.support_ticket_bulk_action_projection` declares page-only
-selection and action presentation. `support.ticket_bulk_commands` resolves
-membership, normalizes the shared changes, previews eligibility, binds the
-preview to a deterministic scope token, and detects drift. Confirmed mutations
-delegate to `support.ticket_lifecycle`; there is no second bulk writer.
+`ListQuery`. Targeted HTMX refreshes replace the result table and refresh its
+summary, sort state, and export URL without rebuilding the filter and column
+controls. The control layer announces loading in place, retains the current
+results when a read fails, and offers retry. After a successful list read, the
+browser stores the canonical `ListQuery` URL under a signed-in-user-specific
+key. A bare return to the list restores that applied URL; an explicit URL wins
+and replaces the stored view. The browser cache controls navigation only and is
+never authoritative for Ticket facts. `ui.support_ticket_bulk_action_projection`
+declares page-only selection and action presentation. `support.ticket_bulk_commands`
+resolves membership, normalizes the shared changes, previews eligibility, binds
+the preview to a deterministic scope token, and detects drift. Confirmed
+mutations delegate to `support.ticket_lifecycle`; there is no second bulk writer.
 
 ## Cutover and repair
 
@@ -148,9 +230,25 @@ The migration is complete only while architecture guards prove that:
 - Work-Order provenance is preserved and verified as described in
   `docs/runbooks/TICKET_WORK_ORDER_PROVENANCE_CUTOVER.md`; and
 - Support/Inbox remain separate unless a later approved workspace contract is
-  checked in.
+  checked in; and
+- unmatched-radio code cannot construct a Ticket directly or call the
+  silent-internal lifecycle participants from any other service module.
 
 Repair reruns deterministic list/preview queries, SLA reconciliation, or the
 provenance verifier from canonical records. It never re-enables a legacy writer
 or infers lifecycle authority from CRM, tags, templates, cached UI state, or
 communication delivery.
+
+Migration 517 is also the idempotent drift repair for the retired `resolved`
+status: rerunning it updates only exact legacy status values that reappeared and
+leaves canonical `closed` rows untouched.
+
+## Staff Talk consequences
+
+Assignment changes and explicit ticket-comment mentions stage a durable
+`nextcloud_talk` staff notification inside the Ticket owner command. The
+assignment command ID or comment ID is part of the delivery dedupe identity,
+and the comment author is excluded. The Ticket owner does not resolve
+Nextcloud credentials, create rooms, or perform HTTP; those consequences belong
+to `communications.nextcloud_talk_staff` after commit. Staging failure is
+isolated in an owner savepoint and cannot reject the ticket mutation.

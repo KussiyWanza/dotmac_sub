@@ -3,45 +3,29 @@ from __future__ import annotations
 import logging
 
 from fastapi import HTTPException, UploadFile
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.imports.loader import load_csv_content
-from app.models.domain_settings import DomainSetting, SettingDomain
+from app.models.domain_settings import SettingDomain
 from app.schemas.imports import SubscriberCustomFieldImportRow
 from app.schemas.subscriber import SubscriberCustomFieldCreate
+from app.services import settings_spec
 from app.services import subscriber as subscriber_service
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_MAX_FILE_BYTES = 5 * 1024 * 1024
-_DEFAULT_MAX_ROWS = 5000
 
+def _imports_int_setting(db: Session, key: str) -> int:
+    """Resolve an imports integer through its spec.
 
-def _imports_int_setting(db: Session, key: str, default: int) -> int:
-    setting = db.scalars(
-        select(DomainSetting)
-        .where(DomainSetting.domain == SettingDomain.imports)
-        .where(DomainSetting.key == key)
-        .where(DomainSetting.is_active.is_(True))
-    ).first()
-    if not setting:
-        return default
-    value = setting.value_text if setting.value_text is not None else setting.value_json
-    if value is None:
-        return default
-    try:
-        if isinstance(value, int):
-            parsed = value
-        elif isinstance(value, float):
-            parsed = int(value)
-        elif isinstance(value, str):
-            parsed = int(value)
-        else:
-            return default
-    except (TypeError, ValueError):
-        return default
-    return parsed
+    Was a raw `DomainSetting` query with a caller-supplied fallback, which made
+    `_DEFAULT_MAX_FILE_BYTES` / `_DEFAULT_MAX_ROWS` a second statement of
+    defaults the specs already declare — and skipped the specs' bounds
+    entirely. `control.settings_spec` owns the shape; this is a read through
+    the owner (docs/SOT_RELATIONSHIP_MAP.md).
+    """
+
+    return settings_spec.resolve_integer(db, SettingDomain.imports, key)
 
 
 def import_subscriber_custom_fields_from_csv(
@@ -70,7 +54,7 @@ def import_subscriber_custom_fields_upload(
     if not file.filename or not file.filename.lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="CSV file required")
     payload = file.file.read()
-    max_file_bytes = _imports_int_setting(db, "max_file_bytes", _DEFAULT_MAX_FILE_BYTES)
+    max_file_bytes = _imports_int_setting(db, "max_file_bytes")
     if len(payload) > max_file_bytes:
         raise HTTPException(status_code=413, detail="CSV file too large")
     try:
@@ -79,7 +63,7 @@ def import_subscriber_custom_fields_upload(
         raise HTTPException(
             status_code=400, detail="Invalid UTF-8 CSV content"
         ) from exc
-    max_rows = _imports_int_setting(db, "max_rows", _DEFAULT_MAX_ROWS)
+    max_rows = _imports_int_setting(db, "max_rows")
     created, errors = import_subscriber_custom_fields_from_csv(
         db, content, max_rows=max_rows
     )

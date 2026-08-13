@@ -18,7 +18,11 @@ from app.models.notification import (
     NotificationDelivery,
     NotificationStatus,
 )
-from app.services import communication_attachments, communication_eligibility
+from app.services import (
+    communication_attachments,
+    communication_eligibility,
+    team_inbox_media,
+)
 from app.services import email as email_service
 from app.services import push as push_service
 from app.services import sms as sms_service
@@ -31,6 +35,7 @@ from app.services.ephemeral_communication_actions import (
     materialize_email,
 )
 from app.services.integrations import whatsapp_capability as whatsapp_service
+from app.services.nextcloud_talk_staff import deliver_due_staff_talk_notifications
 from app.services.observability import record_notification_queue_result
 from app.services.settings_spec import resolve_value
 from app.services.whatsapp_notification_templates import provider_template_from_template
@@ -304,6 +309,12 @@ def _deliver_notification_queue_stats(db, batch_size: int = 50) -> dict[str, int
         subject = notification.subject or "Notification"
         body = notification.body or ""
         delivery_metadata = dict(notification.metadata_ or {})
+        raw_inbox_attachment_ids = delivery_metadata.get("inbox_attachment_ids")
+        inbox_attachment_ids = (
+            [str(value) for value in raw_inbox_attachment_ids if isinstance(value, str)]
+            if isinstance(raw_inbox_attachment_ids, list)
+            else []
+        )
         ephemeral_delivery = has_ephemeral_action(notification)
         try:
             if notification.channel == NotificationChannel.email:
@@ -348,6 +359,9 @@ def _deliver_notification_queue_stats(db, batch_size: int = 50) -> dict[str, int
                 resolved_attachments = (
                     communication_attachments.resolve_email_attachments(
                         db, notification
+                    )
+                    + team_inbox_media.resolve_delivery_attachments(
+                        db, tuple(inbox_attachment_ids)
                     )
                 )
                 success = email_service.send_email(
@@ -397,6 +411,13 @@ def _deliver_notification_queue_stats(db, batch_size: int = 50) -> dict[str, int
                     notification_id=str(notification.id),
                 )
             elif notification.channel == NotificationChannel.whatsapp:
+                resolved_inbox_attachments = (
+                    team_inbox_media.resolve_delivery_attachments(
+                        db, tuple(inbox_attachment_ids)
+                    )
+                    if inbox_attachment_ids
+                    else ()
+                )
                 whatsapp_payload = None
                 configured_template = delivery_metadata.get("whatsapp_template")
                 if isinstance(configured_template, dict) and configured_template.get(
@@ -414,6 +435,7 @@ def _deliver_notification_queue_stats(db, batch_size: int = 50) -> dict[str, int
                             whatsapp_payload = parsed_body
                     except json.JSONDecodeError:
                         whatsapp_payload = None
+                provider_messages: list[str] = []
                 if whatsapp_payload:
                     result = whatsapp_service.send_template_message(
                         db=db,
@@ -428,6 +450,8 @@ def _deliver_notification_queue_stats(db, batch_size: int = 50) -> dict[str, int
                             f"attempt:{notification.retry_count}"
                         ),
                     )
+                    if result.get("provider_message_id"):
+                        provider_messages.append(str(result["provider_message_id"]))
                 elif notification.template:
                     provider_template = provider_template_from_template(
                         notification.template
@@ -448,23 +472,55 @@ def _deliver_notification_queue_stats(db, batch_size: int = 50) -> dict[str, int
                             f"attempt:{notification.retry_count}"
                         ),
                     )
+                    if result.get("provider_message_id"):
+                        provider_messages.append(str(result["provider_message_id"]))
                 else:
-                    result = whatsapp_service.send_text_message(
-                        db=db,
-                        recipient=notification.recipient,
-                        body=body,
-                        dry_run=False,
-                        correlation_id=(
-                            f"notification:{notification.id}:"
-                            f"attempt:{notification.retry_count}"
-                        ),
-                    )
+                    result = {"ok": True, "provider": "whatsapp"}
+                    if body and not resolved_inbox_attachments:
+                        result = whatsapp_service.send_text_message(
+                            db=db,
+                            recipient=notification.recipient,
+                            body=body,
+                            dry_run=False,
+                            correlation_id=(
+                                f"notification:{notification.id}:"
+                                f"attempt:{notification.retry_count}:text"
+                            ),
+                        )
+                        if result.get("provider_message_id"):
+                            provider_messages.append(str(result["provider_message_id"]))
+                    if result.get("ok"):
+                        for index, attachment in enumerate(
+                            resolved_inbox_attachments, start=1
+                        ):
+                            result = whatsapp_service.send_media_message(
+                                db=db,
+                                recipient=notification.recipient,
+                                media_type=attachment.asset_type,
+                                content=attachment.content,
+                                content_type=attachment.content_type,
+                                filename=attachment.filename,
+                                caption=body if index == 1 else None,
+                                dry_run=False,
+                                correlation_id=(
+                                    f"notification:{notification.id}:"
+                                    f"attempt:{notification.retry_count}:media:{index}"
+                                ),
+                            )
+                            if result.get("provider_message_id"):
+                                provider_messages.append(
+                                    str(result["provider_message_id"])
+                                )
+                            if not result.get("ok"):
+                                break
                 success = bool(result.get("ok"))
                 db.add(
                     NotificationDelivery(
                         notification_id=notification.id,
                         provider=str(result.get("provider") or "whatsapp"),
-                        provider_message_id=None,
+                        provider_message_id=provider_messages[-1]
+                        if provider_messages
+                        else None,
                         status=DeliveryStatus.delivered
                         if success
                         else DeliveryStatus.failed,
@@ -479,6 +535,20 @@ def _deliver_notification_queue_stats(db, batch_size: int = 50) -> dict[str, int
                     notification.last_error = str(
                         result.get("response") or "whatsapp_send_failed"
                     )
+                elif provider_messages:
+                    from app.models.team_inbox import InboxMessage
+
+                    message = (
+                        db.query(InboxMessage)
+                        .filter(InboxMessage.notification_id == notification.id)
+                        .one_or_none()
+                    )
+                    if message is not None:
+                        message.external_message_id = provider_messages[-1]
+                        message_metadata = dict(message.metadata_ or {})
+                        message_metadata["provider_message_ids"] = provider_messages
+                        message_metadata["provider_message_id"] = provider_messages[-1]
+                        message.metadata_ = message_metadata
             elif notification.channel in {
                 NotificationChannel.facebook_messenger,
                 NotificationChannel.instagram_dm,
@@ -778,6 +848,16 @@ def deliver_notification_queue() -> dict[str, int]:
     started = time.monotonic()
     with db_session_adapter.session() as session:
         result = _deliver_notification_queue_stats(session)
+        talk_result = deliver_due_staff_talk_notifications(session)
+        result.update(
+            {
+                "talk_claimed": talk_result.claimed,
+                "talk_delivered": talk_result.delivered,
+                "talk_retried": talk_result.retried,
+                "talk_failed": talk_result.failed,
+                "talk_reconciled": talk_result.reconciled,
+            }
+        )
         record_notification_queue_result(
             session,
             task_name="app.tasks.notifications.deliver_notification_queue",

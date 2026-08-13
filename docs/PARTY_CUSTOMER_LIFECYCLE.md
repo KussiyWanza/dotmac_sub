@@ -154,6 +154,15 @@ capability and an authenticated staff capture command. Provider-specific raw
 payload mapping remains connector configuration/code at the edge and submits
 the canonical capture contract; it is not embedded in the lifecycle owner.
 
+The signed fiber-website inquiry path participates in that owner inside the
+Team Inbox observation-processing transaction. An inquiry with no exact active
+Subscriber match creates or reuses a prospect Party and Lead through
+`sales.capture` and links that Lead to the resulting Inbox conversation. It
+never creates a Subscriber. Conflicting, ambiguous, or suppressed Subscriber
+evidence creates neither a Party nor a Lead automatically; the conversation is
+retained with explicit identity-review metadata so a human can adjudicate the
+identity without merging contact evidence by inference.
+
 Revision 356 activates the referral adapter contract. Referral capture creates
 a quarantined Party and unverified Party contact points, then delegates Lead
 creation and immutable origin to `sales.lead_lifecycle`; it does not create a

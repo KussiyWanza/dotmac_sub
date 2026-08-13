@@ -38,6 +38,7 @@ from __future__ import annotations
 import enum as enum_module
 import html
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, ClassVar, TypeVar
@@ -47,8 +48,13 @@ from sqlalchemy import exists, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.sql.elements import ColumnElement
 
-from app.models.audit import AuditActorType, AuditEvent
+from app.models.audit import AuditActorType
 from app.models.domain_settings import SettingDomain
+from app.models.notification import (
+    Notification,
+    NotificationChannel,
+    NotificationStatus,
+)
 from app.models.project import (
     Project,
     ProjectComment,
@@ -94,6 +100,7 @@ from app.schemas.project import (
 from app.services import domain_settings as domain_settings_service
 from app.services import numbering as numbering_service
 from app.services import settings_spec
+from app.services.audit_adapter import stage_audit_event
 from app.services.common import (
     apply_ordering,
     apply_pagination,
@@ -118,6 +125,7 @@ from app.services.staff_notifications import queue_staff_email, queue_staff_push
 logger = logging.getLogger(__name__)
 
 _EnumT = TypeVar("_EnumT", bound=enum_module.Enum)
+_ProjectCommandResultT = TypeVar("_ProjectCommandResultT")
 
 _TEMPLATE_AUTO_CREATE_WORK_ORDER = "template_auto_create_work_order"
 _TEMPLATE_WORK_ORDER_REQUIRES_AS_BUILT = (
@@ -295,6 +303,30 @@ def _project_command_context(
     )
 
 
+def execute_project_mutation(
+    db: Session,
+    *,
+    action: str,
+    actor: UUID | str | None,
+    aggregate_id: UUID | str | None,
+    operation: Callable[[CommandContext], _ProjectCommandResultT],
+) -> _ProjectCommandResultT:
+    """Run an adapter-composed Project mutation inside the canonical owner."""
+
+    context = _project_command_context(
+        action=action,
+        actor=actor,
+        aggregate_id=aggregate_id,
+    )
+    db_session_adapter.release_read_transaction(db)
+    return execute_owner_command(
+        db,
+        definition=_PROJECT_MUTATION,
+        context=context,
+        operation=lambda: operation(context),
+    )
+
+
 def _stage_project_audit(
     db: Session,
     *,
@@ -305,24 +337,23 @@ def _stage_project_audit(
     changed_fields: list[str] | None = None,
 ) -> None:
     actor = context.actor.strip()
-    db.add(
-        AuditEvent(
-            actor_type=(
-                AuditActorType.system
-                if actor.startswith("system:")
-                else AuditActorType.user
-            ),
-            actor_id=actor,
-            action=action,
-            entity_type=entity_type,
-            entity_id=str(entity_id),
-            request_id=str(context.correlation_id),
-            metadata_={
-                "command_id": str(context.command_id),
-                "reason": context.reason,
-                "changed_fields": sorted(changed_fields or []),
-            },
-        )
+    stage_audit_event(
+        db,
+        actor_type=(
+            AuditActorType.system
+            if actor.startswith("system:")
+            else AuditActorType.user
+        ),
+        actor_id=actor,
+        action=action,
+        entity_type=entity_type,
+        entity_id=str(entity_id),
+        request_id=str(context.correlation_id),
+        metadata={
+            "command_id": str(context.command_id),
+            "reason": context.reason,
+            "changed_fields": sorted(changed_fields or []),
+        },
     )
     db.flush()
 
@@ -1213,6 +1244,96 @@ def _notify_customer_project_completed(db: Session, project: Project) -> None:
     )
 
 
+def _project_completion_finance_recipients(db: Session) -> tuple[str, ...]:
+    enabled = settings_spec.resolve_boolean(
+        db, SettingDomain.projects, "project_completion_finance_email_enabled"
+    )
+    if not enabled:
+        return ()
+    configured = settings_spec.resolve_value(
+        db, SettingDomain.projects, "project_completion_finance_email_recipients"
+    )
+    emails: list[str] = []
+    if isinstance(configured, list):
+        emails.extend(str(item).strip().lower() for item in configured if item)
+    elif isinstance(configured, str):
+        emails.extend(
+            item.strip().lower() for item in configured.split(",") if item.strip()
+        )
+    if not emails:
+        permission_key = str(
+            settings_spec.resolve_value(
+                db,
+                SettingDomain.projects,
+                "project_completion_finance_permission_key",
+            )
+            or ""
+        ).strip()
+        if permission_key:
+            from app.services.staff_notifications import system_users_with_permission
+
+            emails.extend(
+                str(user.email).strip().lower()
+                for user in system_users_with_permission(db, permission_key)
+                if user.email
+            )
+    return tuple(dict.fromkeys(item for item in emails if "@" in item))
+
+
+def _notify_finance_project_completed(db: Session, project: Project) -> int:
+    recipients = _project_completion_finance_recipients(db)
+    if not recipients:
+        return 0
+    project_ref = project.number or str(project.id)
+    subject = f"Project completed: {project_ref}"
+    customer_name = _subscriber_name(project.subscriber)
+    body_lines = [
+        f"Project {project_ref} has been marked completed.",
+        "",
+        f"Project: {project.name}",
+    ]
+    if customer_name:
+        body_lines.append(f"Customer: {customer_name}")
+    if project.completed_at:
+        body_lines.append(f"Completed at: {project.completed_at.isoformat()}")
+    body = "\n".join(body_lines)
+    queued = 0
+    for recipient in recipients:
+        dedupe_key = f"project-completed-finance:{project.id}:{recipient}"
+        existing = (
+            db.query(Notification.id)
+            .filter(Notification.channel == NotificationChannel.email)
+            .filter(Notification.dedupe_key == dedupe_key)
+            .first()
+        )
+        if existing is not None:
+            continue
+        db.add(
+            Notification(
+                channel=NotificationChannel.email,
+                event_type="project_completed_finance",
+                category="project",
+                recipient=recipient,
+                subject=subject,
+                body=body,
+                status=NotificationStatus.queued,
+                dedupe_key=dedupe_key,
+                audience_type="finance",
+                metadata_={
+                    "project_id": str(project.id),
+                    "project_ref": project_ref,
+                    "project_name": project.name,
+                    "subscriber_id": str(project.subscriber_id)
+                    if project.subscriber_id
+                    else None,
+                },
+            )
+        )
+        queued += 1
+    db.flush()
+    return queued
+
+
 def _queue_customer_status_transition(
     db: Session,
     *,
@@ -1306,6 +1427,7 @@ def _stage_customer_status_transition(
             return project.subscriber_id is not None
         if task is None and new_status == ProjectStatus.completed.value:
             _notify_customer_project_completed(db, project)
+            _notify_finance_project_completed(db, project)
             return project.subscriber_id is not None
         return _queue_customer_status_transition(
             db,
@@ -1827,14 +1949,14 @@ def _notify_project_roles_created_in_app(db: Session, project: Project) -> None:
     site = (project.customer_address or project.region or "").strip()
 
     subject = f"New Project Assignment: {project.name}"
-    # De-dupe by recipient email so one person with multiple roles gets one
+    # De-dupe by staff identity so one person with multiple roles gets one
     # notification.
     created_for: set[str] = set()
     for person_id, roles in roles_by_person_id.items():
         user = users_by_id.get(person_id)
-        if not user or not isinstance(user.email, str) or not user.email.strip():
+        if not user:
             continue
-        recipient = user.email.strip()
+        recipient = str(user.id)
         if recipient in created_for:
             continue
         created_for.add(recipient)
@@ -1850,6 +1972,7 @@ def _notify_project_roles_created_in_app(db: Session, project: Project) -> None:
             recipient=recipient,
             subject=subject,
             body="\n".join(body_lines),
+            target_url=f"/admin/projects/{project_ref}",
         )
 
     db.flush()
@@ -1945,6 +2068,50 @@ def _person_label(user: SystemUser | None) -> str:
     return user.email
 
 
+def _project_assignment_users(db: Session, project: Project) -> list[SystemUser]:
+    from app.services.staff_notifications import resolve_assignment_users
+
+    return resolve_assignment_users(
+        db,
+        person_ids={
+            str(value)
+            for value in (
+                project.owner_person_id,
+                project.manager_person_id,
+                project.project_manager_person_id,
+            )
+            if value
+        },
+        service_team_ids=(str(project.service_team_id),)
+        if project.service_team_id
+        else (),
+    )
+
+
+def _notify_project_assignments(
+    db: Session,
+    project: Project,
+    *,
+    actor_id: str | None,
+    previous_user_ids: frozenset[str] = frozenset(),
+) -> None:
+    from app.services.staff_notifications import queue_staff_assignment_notifications
+
+    users = [
+        user
+        for user in _project_assignment_users(db, project)
+        if str(user.id) not in previous_user_ids
+    ]
+    reference = project.number or str(project.id)
+    queue_staff_assignment_notifications(
+        db,
+        users=users,
+        subject=f"Project assigned: {reference}",
+        body=f"You were assigned to project {reference}: {project.name}.",
+        actor_id=actor_id,
+    )
+
+
 def _format_dt(value: datetime | None) -> str | None:
     if not value:
         return None
@@ -1961,10 +2128,6 @@ def _notify_project_task_assigned(
     *,
     include_push: bool = True,
 ) -> bool:
-    if not assigned_to.email:
-        logger.warning("project_task_assigned_missing_email task_id=%s", task.id)
-        return False
-
     assignee_name = html.escape(_person_label(assigned_to))
     due_label = _format_dt(task.due_at)
     start_label = _format_dt(task.start_at)
@@ -2074,19 +2237,21 @@ def _notify_project_task_assigned(
         "</div>"
     )
 
-    queue_staff_email(
-        db,
-        recipient=assigned_to.email,
-        subject=subject,
-        body=body,
-    )
+    if assigned_to.email:
+        queue_staff_email(
+            db,
+            recipient=str(assigned_to.id),
+            subject=subject,
+            body=body,
+        )
     if include_push:
         queue_staff_push(
             db,
-            recipient=assigned_to.email,
+            recipient=str(assigned_to.id),
             subject=subject,
             body=f"You have been assigned a project task: {task.title or 'Task'}",
             delivered=False,
+            target_url=f"/admin/projects/tasks/{task.id}",
         )
     db.flush()
     return True
@@ -2104,15 +2269,43 @@ def _stage_project_task_assignment_notification(
     """Isolate an optional delivery and record durable failure evidence."""
 
     try:
-        return execute_owner_savepoint(
-            db,
-            lambda: _notify_project_task_assigned(
+
+        def stage_notifications() -> bool:
+            from app.services.nextcloud_talk_staff import (
+                StaffTalkEventType,
+                StageStaffTalkNotification,
+                stage_staff_talk_notification,
+            )
+
+            email_or_push_staged = _notify_project_task_assigned(
                 db,
                 task,
                 project,
                 assigned_to,
                 include_push=include_push,
-            ),
+            )
+            talk_notification = stage_staff_talk_notification(
+                db,
+                StageStaffTalkNotification(
+                    system_user_id=assigned_to.id,
+                    source_event_id=context.command_id,
+                    event_type=StaffTalkEventType.project_task_assignment,
+                    subject=f"Project task assigned: {task.title or 'Task'}",
+                    body=(
+                        f"You have been assigned project task "
+                        f"{task.number or task.id} in "
+                        f"{project.number or project.name or project.id}."
+                    ),
+                    target_url=f"/admin/projects/tasks/{task.id}",
+                    source_entity_type="project_task",
+                    source_entity_id=task.id,
+                ),
+            )
+            return email_or_push_staged or talk_notification is not None
+
+        return execute_owner_savepoint(
+            db,
+            stage_notifications,
         )
     except Exception as exc:  # noqa: BLE001 - assignment must remain successful
         logger.error(
@@ -2140,7 +2333,7 @@ def _notify_new_project_task_assignees(
     previous_assignee_ids: frozenset[UUID],
     context: CommandContext,
 ) -> ProjectTaskReassignmentNotificationOutcome:
-    """Email active staff newly added to an already-existing project task."""
+    """Notify active staff newly added to an already-existing project task."""
 
     added_assignee_ids = tuple(
         sorted(
@@ -2177,7 +2370,7 @@ def _notify_new_project_task_assignees(
             project=project,
             assigned_to=user,
             context=context,
-            include_push=False,
+            include_push=True,
         ):
             queued_email_user_ids.append(user.id)
         else:
@@ -2370,14 +2563,13 @@ class Projects(ListResponseMixin):
                 data["service_team_id"] = creation_rule.team_id
         # Auto-assign PM based on region if not already specified
         if data.get("region") and not creation_rule:
-            auto_pm, auto_spc = Projects._get_region_pm_assignments(db, data["region"])
+            auto_pm, _auto_spc = Projects._get_region_pm_assignments(db, data["region"])
             if auto_pm:
                 if not data.get("project_manager_person_id"):
                     data["project_manager_person_id"] = coerce_uuid(auto_pm)
                 if not data.get("manager_person_id"):
                     data["manager_person_id"] = coerce_uuid(auto_pm)
-            if auto_spc and not data.get("assistant_manager_person_id"):
-                data["assistant_manager_person_id"] = coerce_uuid(auto_spc)
+            # Site Project Coordinator is retained only on historical records.
         fields_set = payload.model_fields_set
         if "status" not in fields_set:
             default_status = _read_text_setting(
@@ -2407,6 +2599,25 @@ class Projects(ListResponseMixin):
         project = Project(**data)
         db.add(project)
         db.flush()
+        vendor_scope_template = (
+            db.get(ProjectTemplate, project.project_template_id)
+            if project.project_template_id
+            else None
+        )
+        if (
+            vendor_scope_template is not None
+            and vendor_scope_template.creates_vendor_assignment_scope
+            and project.subscriber_id is not None
+        ):
+            from app.services import installation_projects
+
+            installation_projects.ensure_for_project(
+                db,
+                project_id=project.id,
+                subscriber_id=project.subscriber_id,
+                actor_id=context.actor,
+                created_by_person_id=project.created_by_person_id,
+            )
         _sync_project_sla_clock(db, project)
         db.flush()
         db.refresh(project)
@@ -2429,6 +2640,14 @@ class Projects(ListResponseMixin):
             _maybe_auto_assign_project(db, project, context=context)
         else:
             _maybe_auto_assign_project(db, project, context=context)
+
+        _notify_project_assignments(
+            db,
+            project,
+            actor_id=str(payload.created_by_person_id)
+            if payload.created_by_person_id
+            else None,
+        )
 
         # Emit project created event after core project setup so failed
         # handlers cannot prevent template task creation or other intrinsic
@@ -2759,6 +2978,9 @@ class Projects(ListResponseMixin):
         )
         if not project:
             raise _project_error("not_found", "Project not found")
+        previous_assignment_user_ids = frozenset(
+            str(user.id) for user in _project_assignment_users(db, project)
+        )
         previous_status = project.status
         previous_template_id = (
             str(project.project_template_id) if project.project_template_id else None
@@ -2791,7 +3013,7 @@ class Projects(ListResponseMixin):
             else project.manager_person_id
         )
         if new_region:
-            auto_pm, auto_spc = Projects._get_region_pm_assignments(db, new_region)
+            auto_pm, _auto_spc = Projects._get_region_pm_assignments(db, new_region)
             if auto_pm and not current_pm:
                 data["manager_person_id"] = coerce_uuid(auto_pm)
             if (
@@ -2800,12 +3022,6 @@ class Projects(ListResponseMixin):
                 and "project_manager_person_id" not in data
             ):
                 data["project_manager_person_id"] = coerce_uuid(auto_pm)
-            if (
-                auto_spc
-                and not project.assistant_manager_person_id
-                and "assistant_manager_person_id" not in data
-            ):
-                data["assistant_manager_person_id"] = coerce_uuid(auto_spc)
         changed_fields = [
             key for key, value in data.items() if getattr(project, key) != value
         ]
@@ -2819,6 +3035,18 @@ class Projects(ListResponseMixin):
         _sync_project_sla_clock(db, project)
         db.flush()
         db.refresh(project)
+        if {
+            "owner_person_id",
+            "manager_person_id",
+            "project_manager_person_id",
+            "service_team_id",
+        }.intersection(changed_fields):
+            _notify_project_assignments(
+                db,
+                project,
+                actor_id=str(actor_id) if actor_id else None,
+                previous_user_ids=previous_assignment_user_ids,
+            )
 
         # Emit events based on status changes
         new_status = project.status
@@ -3893,7 +4121,33 @@ class ProjectTasks(ListResponseMixin):
 
 class ProjectTaskComments(ListResponseMixin):
     @staticmethod
-    def create(db: Session, payload: ProjectTaskCommentCreate):
+    def create(
+        db: Session,
+        payload: ProjectTaskCommentCreate,
+        *,
+        mentioned_agent_ids: list[str] | None = None,
+        actor_person_id: str | None = None,
+        context: CommandContext | None = None,
+    ):
+        if context is None:
+            context = _project_command_context(
+                action="create_project_task_comment",
+                actor=actor_person_id or payload.author_person_id,
+                aggregate_id=payload.task_id,
+            )
+            db_session_adapter.release_read_transaction(db)
+            return execute_owner_command(
+                db,
+                definition=_PROJECT_MUTATION,
+                context=context,
+                operation=lambda: ProjectTaskComments.create(
+                    db,
+                    payload,
+                    mentioned_agent_ids=mentioned_agent_ids,
+                    actor_person_id=actor_person_id,
+                    context=context,
+                ),
+            )
         task = db.get(ProjectTask, coerce_uuid(str(payload.task_id)))
         if not task:
             raise _project_error("not_found", "Project task not found")
@@ -3901,7 +4155,29 @@ class ProjectTaskComments(ListResponseMixin):
             _ensure_staff_uuid(str(payload.author_person_id))
         comment = ProjectTaskComment(**payload.model_dump())
         db.add(comment)
-        db.commit()
+        db.flush()
+        if mentioned_agent_ids:
+            from app.services import project_mentions
+
+            try:
+                execute_owner_savepoint(
+                    db,
+                    lambda: project_mentions.notify_project_comment_mentions(
+                        db,
+                        target_kind="project_task",
+                        target_ref=task.number or str(task.id),
+                        target_title=task.title,
+                        comment_preview=payload.body[:140],
+                        mentioned_agent_ids=mentioned_agent_ids,
+                        actor_person_id=actor_person_id,
+                        source_event_id=comment.id,
+                    ),
+                )
+            except Exception:  # noqa: BLE001 - comment remains authoritative
+                logger.exception(
+                    "project_task_comment_mention_staging_failed comment_id=%s",
+                    comment.id,
+                )
         db.refresh(comment)
         return comment
 
@@ -3928,7 +4204,33 @@ class ProjectTaskComments(ListResponseMixin):
 
 class ProjectComments(ListResponseMixin):
     @staticmethod
-    def create(db: Session, payload: ProjectCommentCreate):
+    def create(
+        db: Session,
+        payload: ProjectCommentCreate,
+        *,
+        mentioned_agent_ids: list[str] | None = None,
+        actor_person_id: str | None = None,
+        context: CommandContext | None = None,
+    ):
+        if context is None:
+            context = _project_command_context(
+                action="create_project_comment",
+                actor=actor_person_id or payload.author_person_id,
+                aggregate_id=payload.project_id,
+            )
+            db_session_adapter.release_read_transaction(db)
+            return execute_owner_command(
+                db,
+                definition=_PROJECT_MUTATION,
+                context=context,
+                operation=lambda: ProjectComments.create(
+                    db,
+                    payload,
+                    mentioned_agent_ids=mentioned_agent_ids,
+                    actor_person_id=actor_person_id,
+                    context=context,
+                ),
+            )
         project = db.get(Project, coerce_uuid(str(payload.project_id)))
         if not project:
             raise _project_error("not_found", "Project not found")
@@ -3936,7 +4238,29 @@ class ProjectComments(ListResponseMixin):
             _ensure_staff_uuid(str(payload.author_person_id))
         comment = ProjectComment(**payload.model_dump())
         db.add(comment)
-        db.commit()
+        db.flush()
+        if mentioned_agent_ids:
+            from app.services import project_mentions
+
+            try:
+                execute_owner_savepoint(
+                    db,
+                    lambda: project_mentions.notify_project_comment_mentions(
+                        db,
+                        target_kind="project",
+                        target_ref=project.number or str(project.id),
+                        target_title=project.name,
+                        comment_preview=payload.body[:140],
+                        mentioned_agent_ids=mentioned_agent_ids,
+                        actor_person_id=actor_person_id,
+                        source_event_id=comment.id,
+                    ),
+                )
+            except Exception:  # noqa: BLE001 - comment remains authoritative
+                logger.exception(
+                    "project_comment_mention_staging_failed comment_id=%s",
+                    comment.id,
+                )
         db.refresh(comment)
         return comment
 

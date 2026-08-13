@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import importlib
 import logging
 import os
-import resource
 import shutil
 from datetime import UTC, datetime
 from typing import Any
+
+try:
+    _resource: Any | None = importlib.import_module("resource")
+except ModuleNotFoundError:
+    _resource = None
 
 logger = logging.getLogger(__name__)
 
@@ -86,15 +91,17 @@ def get_system_health() -> dict[str, Any]:
 
     load_avg = None
     try:
-        load_avg = os.getloadavg()
+        getloadavg = getattr(os, "getloadavg", None)
+        load_avg = getloadavg() if callable(getloadavg) else None
     except OSError:
         load_avg = None
 
     process_rss_kb = None
-    try:
-        process_rss_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    except (ValueError, OSError):
-        process_rss_kb = None
+    if _resource is not None:
+        try:
+            process_rss_kb = _resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss
+        except (ValueError, OSError):
+            process_rss_kb = None
 
     return {
         "generated_at": now,

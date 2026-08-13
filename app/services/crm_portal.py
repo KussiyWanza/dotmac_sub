@@ -17,7 +17,7 @@ from fastapi import Request
 from sqlalchemy.orm import Session
 
 from app.models.subscriber import Subscriber
-from app.models.support import TicketCommentAuthorType
+from app.models.support import TicketCommentAuthorType, canonical_ticket_status_value
 from app.services.common import coerce_uuid
 from app.services.crm_client import CRMClientError
 from app.services.db_session_adapter import db_session_adapter
@@ -168,12 +168,17 @@ def _ticket_to_dict(ticket: Any) -> dict[str, Any]:
     due_at = getattr(ticket, "due_at", None)
     resolved_at = getattr(ticket, "resolved_at", None)
     closed_at = getattr(ticket, "closed_at", None)
+    description_is_internal = bool(getattr(ticket, "description_is_internal", True))
     return {
         "id": str(ticket.id),
         "ticket_number": ticket.number,
         "title": ticket.title,
-        "description": ticket.description or "",
-        "status": ticket.status,
+        "description": "" if description_is_internal else (ticket.description or ""),
+        "description_available_to_customer": not description_is_internal,
+        "attachments": (
+            [] if description_is_internal else list(ticket.attachments or [])
+        ),
+        "status": canonical_ticket_status_value(ticket.status),
         "status_presentation": ticket_status_presentation(ticket.status).model_dump(
             mode="json"
         ),
@@ -219,7 +224,7 @@ def handle_ticket_rating(
             comment=(comment or "")[:2000] or None,
         )
     except DomainError:
-        return {"success": False, "error": "You can rate support once resolved."}
+        return {"success": False, "error": "You can rate support once closed."}
     return {"success": True}
 
 
@@ -271,6 +276,7 @@ def _comment_to_dict(comment: Any, customer_subscriber_ids: set[str]) -> dict[st
         is_customer = str(author_person_id) in customer_subscriber_ids
     return {
         "body": comment.body,
+        "attachments": list(comment.attachments or []),
         "author_name": "You" if is_customer else "Support Team",
         "is_internal": comment.is_internal,
         "created_at": comment.created_at.isoformat() if comment.created_at else None,
@@ -467,6 +473,7 @@ def handle_ticket_create(
                 subscriber_id=sid,
                 title=title,
                 description=description or "",
+                description_is_internal=False,
                 priority=priority if priority in TICKET_PRIORITY_DISPLAY else "normal",
                 region=region,
                 service_team_id=team_routing.service_team_id,
@@ -614,6 +621,9 @@ def reseller_account_tickets_context(
         "tickets": [
             {
                 **ticket,
+                "status": canonical_ticket_status_value(
+                    str(ticket.get("status") or "")
+                ),
                 "status_presentation": ticket_status_presentation(
                     ticket.get("status")
                 ).model_dump(mode="json"),

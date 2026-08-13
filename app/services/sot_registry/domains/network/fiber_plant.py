@@ -35,6 +35,147 @@ SERVICES: tuple[SOTService, ...] = (
         ),
     ),
     SOTService(
+        name="network.fiber_cost_items",
+        module="app.services.fiber_cost_items",
+        owns=(
+            "fiber drop-cost components and their prices",
+            "whether a drop estimate can be produced, and what it totals",
+        ),
+        notes=(
+            "Currency is the deployment's own `billing/default_currency`, read "
+            "as a setting rather than declared as a dependency: one estimate "
+            "mixing currencies is meaningless, and the screen already labels "
+            "the whole estimate with one. "
+            "The components were four hardcoded settings, each restated in a "
+            "spec, a service reader and the map template's JavaScript — so a "
+            "new one meant editing three layers, and no layer owned the cost "
+            "model. They are rows now. The estimate is computed here rather "
+            "than in the browser, so the breakdown a user reads has one "
+            "implementation. An active component with no price does not "
+            "contribute and makes the estimate incomplete: a total built from "
+            "only the priced components would be a number nobody chose, which "
+            "is how the retired defaults came to quote NGN 85 for an ONT."
+        ),
+        contract=ServiceContract(
+            concerns=(
+                ConcernContract(
+                    name="fiber drop-cost components and their prices",
+                    role=OwnerRole.COMMAND_WRITER,
+                    input_names=("operator-priced fiber cost components",),
+                    canonical_writer="network.fiber_cost_items",
+                ),
+                ConcernContract(
+                    name=(
+                        "whether a drop estimate can be produced, and what it totals"
+                    ),
+                    role=OwnerRole.RESOLVER,
+                    input_names=("operator-priced fiber cost components",),
+                ),
+            ),
+            authoritative_inputs=(
+                AuthorityInput(
+                    name="operator-priced fiber cost components",
+                    owner="network.fiber_cost_items",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source=(
+                        "FiberCostItem rows: the component, how its amount is "
+                        "applied, and whether it has been priced at all"
+                    ),
+                ),
+            ),
+            transaction=TransactionContract(
+                mode=TransactionMode.OWNER_MANAGED,
+                boundary=(
+                    "create_item and update_item each enter execute_owner_command "
+                    "once on a transaction-free session. The row, immutable "
+                    "before/after audit evidence and durable change event stage "
+                    "inside that transaction and commit together. Estimation is "
+                    "a pure read over committed state and writes nothing."
+                ),
+                locking=(
+                    "Updates lock the exact FiberCostItem row and compare the "
+                    "submitted version before replacing any values. The unique "
+                    "code constraint arbitrates concurrent creates."
+                ),
+                idempotency=(
+                    "A create is refused on its stable unique code. An update is "
+                    "bound to one expected row version, so a replay or stale form "
+                    "cannot quietly reprice a component. An estimate is "
+                    "deterministic for identical committed inputs."
+                ),
+                retries=(
+                    "A duplicate create and a stale update fail with stable domain "
+                    "codes. The operator must reload current evidence before "
+                    "submitting a replacement decision."
+                ),
+            ),
+            errors=ErrorContract(
+                domain_codes=(
+                    *owner_command_boundary_error_codes("network.fiber_cost_items"),
+                    "network.fiber_cost_items.code_required",
+                    "network.fiber_cost_items.invalid_code",
+                    "network.fiber_cost_items.label_required",
+                    "network.fiber_cost_items.label_too_long",
+                    "network.fiber_cost_items.duplicate_code",
+                    "network.fiber_cost_items.unknown_unit",
+                    "network.fiber_cost_items.invalid_amount",
+                    "network.fiber_cost_items.negative_amount",
+                    "network.fiber_cost_items.amount_too_large",
+                    "network.fiber_cost_items.description_too_long",
+                    "network.fiber_cost_items.invalid_sort_order",
+                    "network.fiber_cost_items.invalid_distance",
+                    "network.fiber_cost_items.invalid_scope",
+                    "network.fiber_cost_items.invalid_actor",
+                    "network.fiber_cost_items.invalid_version",
+                    "network.fiber_cost_items.stale_version",
+                    "network.fiber_cost_items.not_found",
+                ),
+                mapping_owner="app.web.admin.network_fiber_costs",
+            ),
+            migration=MigrationContract(
+                state=AuthorityMigrationState.NATIVE,
+                new_owner="network.fiber_cost_items",
+                # No `old_owner`: native authority has none by definition, and
+                # the four settings this replaced were never an OWNER — they
+                # were the same fact restated in three layers, which is why
+                # nothing could be pointed at when the estimate went wrong.
+                verification=(
+                    "Per-metre and flat components sum correctly; an unpriced "
+                    "active component makes the estimate incomplete rather "
+                    "than contributing zero; an inactive unpriced component "
+                    "does not; zero is a price and empty is not."
+                ),
+                fallback_retirement=(
+                    "The four settings and their seed entries are removed in "
+                    "the same change, so no parallel price source survives."
+                ),
+            ),
+            events=EventContract(
+                event_types=("fiber.cost_item_changed",),
+                schema_version=1,
+                delivery_owner="events.dispatcher",
+                compatibility=(
+                    "The AMOUNT is deliberately absent from the payload. A "
+                    "subscriber that needs it asks for an estimate, which "
+                    "keeps one reader of the price and stops what an install "
+                    "costs travelling through a delivery pipeline with its own "
+                    "retention and logging."
+                ),
+                replay=(
+                    "Safe to replay: the event names what changed, not what it "
+                    "became, and an estimate is recomputed from committed rows "
+                    "on every request."
+                ),
+            ),
+            steward="network operations",
+            design_refs=("docs/SOT_RELATIONSHIP_MAP.md",),
+            test_refs=(
+                "tests/test_fiber_cost_items.py",
+                "tests/architecture/test_fiber_cost_items_boundary.py",
+            ),
+        ),
+    ),
+    SOTService(
         name="network.fiber_topology",
         module="app.services.fiber_topology",
         owns=(
@@ -330,6 +471,198 @@ SERVICES: tuple[SOTService, ...] = (
             "and splitter invariants, exact core materialization, physical "
             "inventory, and splice execution to their named owners instead "
             "of maintaining parallel mutation rules."
+        ),
+    ),
+    SOTService(
+        name="network.map_asset_change_governance",
+        module="app.services.network_map_asset_changes",
+        owns=(
+            "governed Network Map V2 asset proposal lifecycle and review coordination",
+        ),
+        depends_on=(
+            "auth.permission_gate",
+            "network.fiber_asset_changes",
+            "network.fiber_topology",
+            "network.fiber_support_structures",
+            "observability.audit_log",
+        ),
+        notes=(
+            "The coordinator owns immutable V2 proposal evidence, independent "
+            "review, and the approval transaction. Canonical passive assets "
+            "remain owned by network.fiber_asset_changes. Movement eligibility "
+            "reads only explicit termination, segment, and support-mount edges; "
+            "geographic proximity never creates connectivity or approval."
+        ),
+        contract=ServiceContract(
+            concerns=(
+                ConcernContract(
+                    name=(
+                        "governed Network Map V2 asset proposal lifecycle and "
+                        "review coordination"
+                    ),
+                    role=OwnerRole.APPLICATION_COORDINATOR,
+                    input_names=(
+                        "authenticated map asset change intent",
+                        "canonical passive network asset state",
+                        "explicit active fiber topology relationships",
+                        "durable map asset proposal evidence",
+                    ),
+                ),
+            ),
+            authoritative_inputs=(
+                AuthorityInput(
+                    name="authenticated map asset change intent",
+                    owner="auth.permission_gate",
+                    kind=AuthorityKind.CONTROL_INPUT,
+                    source=(
+                        "network:fiber:write submission and separately granted "
+                        "network:fiber:review decision with exact actor identity"
+                    ),
+                ),
+                AuthorityInput(
+                    name="canonical passive network asset state",
+                    owner="network.fiber_asset_changes",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source=(
+                        "typed snapshots and explicit participant application for "
+                        "FDH, closure, access-point, and support-structure records"
+                    ),
+                ),
+                AuthorityInput(
+                    name="explicit active fiber topology relationships",
+                    owner="network.fiber_topology",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source=(
+                        "active FiberTerminationPoint references, FiberSegment "
+                        "endpoint IDs, and reviewed support mounts"
+                    ),
+                ),
+                AuthorityInput(
+                    name="durable map asset proposal evidence",
+                    owner="network.map_asset_change_governance",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source=(
+                        "NetworkMapAssetChangeProposal before/after snapshots, "
+                        "digests, actors, comments, outcomes, and idempotency evidence"
+                    ),
+                ),
+            ),
+            transaction=TransactionContract(
+                mode=TransactionMode.COORDINATOR_MANAGED,
+                boundary=(
+                    "submit_proposal and review_proposal each enter "
+                    "execute_owner_command once on a transaction-free session. "
+                    "Proposal state, audit, event, and any approved canonical "
+                    "participant mutation commit atomically."
+                ),
+                locking=(
+                    "Submission locks an existing target snapshot. Review locks "
+                    "the exact proposal and target, verifies its source digest, "
+                    "and reads explicit topology blockers before application."
+                ),
+                idempotency=(
+                    "Hashed submit and review keys are unique and bound to "
+                    "material-input fingerprints. Exact replay returns the prior "
+                    "outcome; key reuse with different inputs fails closed."
+                ),
+                retries=(
+                    "Stale target evidence, digest mismatch, uniqueness conflict, "
+                    "self-review, and topology blockers require a fresh operator "
+                    "decision; no command silently retries a changed proposal."
+                ),
+            ),
+            errors=ErrorContract(
+                domain_codes=(
+                    *owner_command_boundary_error_codes(
+                        "network.map_asset_change_governance"
+                    ),
+                    "network.map_asset_change_governance.idempotency_key_required",
+                    "network.map_asset_change_governance.idempotency_conflict",
+                    "network.map_asset_change_governance.invalid_scope",
+                    "network.map_asset_change_governance.invalid_actor",
+                    "network.map_asset_change_governance.invalid_target",
+                    "network.map_asset_change_governance.name_required",
+                    "network.map_asset_change_governance.name_too_long",
+                    "network.map_asset_change_governance.code_required",
+                    "network.map_asset_change_governance.code_too_long",
+                    "network.map_asset_change_governance.notes_too_long",
+                    "network.map_asset_change_governance.support_type_too_long",
+                    "network.map_asset_change_governance.access_point_type_too_long",
+                    "network.map_asset_change_governance.placement_too_long",
+                    "network.map_asset_change_governance.street_too_long",
+                    "network.map_asset_change_governance.city_too_long",
+                    "network.map_asset_change_governance.coordinates_required",
+                    "network.map_asset_change_governance.invalid_coordinates",
+                    "network.map_asset_change_governance.unsupported_fields",
+                    "network.map_asset_change_governance.invalid_support_type",
+                    "network.map_asset_change_governance.canonical_asset_unavailable",
+                    "network.map_asset_change_governance.no_change",
+                    "network.map_asset_change_governance.edit_cannot_move",
+                    "network.map_asset_change_governance.move_cannot_edit",
+                    "network.map_asset_change_governance.invalid_persisted_snapshot",
+                    "network.map_asset_change_governance.proposal_not_found",
+                    "network.map_asset_change_governance.proposal_digest_mismatch",
+                    "network.map_asset_change_governance.proposal_already_reviewed",
+                    "network.map_asset_change_governance.independent_review_required",
+                    "network.map_asset_change_governance.review_notes_required",
+                    "network.map_asset_change_governance.review_notes_too_long",
+                    "network.map_asset_change_governance.stale_asset",
+                    "network.map_asset_change_governance.topology_review_required",
+                    "network.map_asset_change_governance.canonical_change_refused",
+                ),
+                mapping_owner="app.web.admin.network",
+                fail_closed_on=(
+                    "network.map_asset_change_governance.invalid_scope",
+                    "network.map_asset_change_governance.invalid_actor",
+                    "network.map_asset_change_governance.proposal_digest_mismatch",
+                    "network.map_asset_change_governance.stale_asset",
+                    "network.map_asset_change_governance.topology_review_required",
+                ),
+            ),
+            events=EventContract(
+                event_types=(
+                    "network_map_asset_change.proposed",
+                    "network_map_asset_change.applied",
+                    "network_map_asset_change.rejected",
+                ),
+                schema_version=1,
+                delivery_owner="events.dispatcher",
+                compatibility=(
+                    "Events carry proposal and canonical identifiers, closed "
+                    "asset/operation/status vocabularies, and the proposal digest. "
+                    "Coordinates, comments, and free-form asset data remain in "
+                    "the governed record and audit boundary."
+                ),
+                replay=(
+                    "Consumers treat proposal_id plus status as stable evidence. "
+                    "Replaying a signal never reapplies an asset mutation; command "
+                    "idempotency and the committed proposal status own that decision."
+                ),
+            ),
+            migration=MigrationContract(
+                state=AuthorityMigrationState.NATIVE,
+                new_owner="network.map_asset_change_governance",
+                verification=(
+                    "Controlled-fixture tests cover delayed mutation, independent "
+                    "approval/rejection, before/after audit, coordinate validation, "
+                    "stale evidence, connected movement refusal, and proximity abstention."
+                ),
+                fallback_retirement=(
+                    "No legacy map mutation path exists. V2 never writes the legacy "
+                    "free-form FiberChangeRequest payload for this workflow."
+                ),
+            ),
+            steward="network operations",
+            design_refs=(
+                "docs/designs/NETWORK_MAP_V2_GOVERNED_ASSET_CHANGES.md",
+                "docs/SOT_RELATIONSHIP_MAP.md",
+                "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+            ),
+            test_refs=(
+                "tests/test_network_map_asset_changes.py",
+                "tests/js/network_map_v2_asset_changes.test.js",
+                "tests/architecture/test_network_map_v2_asset_change_boundary.py",
+            ),
         ),
     ),
     SOTService(

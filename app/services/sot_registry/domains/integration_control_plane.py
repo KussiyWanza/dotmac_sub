@@ -22,6 +22,7 @@ from app.services.sot_registry.model import DomainSOT
 
 DOMAIN = DomainSOT(
     domain="integration_control_plane",
+    setting_domains=("imports",),
     services=(
         SOTService(
             name="integration.registry",
@@ -1183,6 +1184,155 @@ DOMAIN = DomainSOT(
                 "enabled binding selects a replaceable connector, which has no "
                 "authority over Sub customer, subscriber, service, workflow, or "
                 "operational state."
+            ),
+        ),
+        SOTService(
+            name="integration.workforce_attendance_adapter",
+            module="app.services.workforce_attendance",
+            owns=(
+                "provider-neutral workforce attendance query translation",
+                "provider-neutral workforce attendance punch transport",
+                "ERP attendance response normalization",
+            ),
+            depends_on=(
+                "auth.permission_gate",
+                "integration.backoffice_adapter",
+            ),
+            notes=(
+                "Selfcare authenticates the staff subject and transports fresh, "
+                "untrusted browser location evidence through the enabled attendance "
+                "capability. Dotmac ERP alone owns employee resolution, shift and "
+                "timezone policy, geofence decisions, attendance state, and persistence."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name=(
+                            "provider-neutral workforce attendance query translation"
+                        ),
+                        role=OwnerRole.TRANSPORT,
+                        input_names=(
+                            "authenticated Selfcare staff subject",
+                            "enabled workforce attendance capability binding",
+                            "ERP attendance observation",
+                        ),
+                    ),
+                    ConcernContract(
+                        name=("provider-neutral workforce attendance punch transport"),
+                        role=OwnerRole.TRANSPORT,
+                        input_names=(
+                            "authenticated Selfcare staff subject",
+                            "fresh browser location observation",
+                            "enabled workforce attendance capability binding",
+                            "ERP attendance observation",
+                        ),
+                    ),
+                    ConcernContract(
+                        name="ERP attendance response normalization",
+                        role=OwnerRole.RESOLVER,
+                        input_names=("ERP attendance observation",),
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="authenticated Selfcare staff subject",
+                        owner="auth.permission_gate",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "active SystemUser principal identity whose authenticated "
+                            "principal id exactly matches the request user"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="fresh browser location observation",
+                        owner="external:staff_browser",
+                        kind=AuthorityKind.EXTERNAL_OBSERVATION,
+                        source=(
+                            "schema-validated latitude, longitude, accuracy, and browser "
+                            "observation time captured for the individual punch"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="enabled workforce attendance capability binding",
+                        owner="integration.installations",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "enabled version-pinned workforce.attendance.read.v1 and "
+                            "workforce.attendance.punch.v1 capability bindings"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="ERP attendance observation",
+                        owner="external:dotmac_erp",
+                        kind=AuthorityKind.EXTERNAL_OBSERVATION,
+                        source=(
+                            "ERP-owned daily attendance state, policy reason, permitted "
+                            "actions, timestamps, status, timezone, and working hours"
+                        ),
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.READ_ONLY,
+                    boundary=(
+                        "Selfcare reads the capability binding and performs no local "
+                        "attendance mutation; ERP owns and completes the punch transaction."
+                    ),
+                    locking=(
+                        "No Sub attendance row exists to lock; ERP locks its employee and "
+                        "daily attendance state before deciding the punch."
+                    ),
+                    idempotency=(
+                        "The browser idempotency key passes unchanged through the "
+                        "capability runtime to ERP; duplicate or ambiguous results are "
+                        "resolved by reading ERP's authoritative state."
+                    ),
+                    retries=(
+                        "Interactive transport uses bounded connector retries; transient "
+                        "or ambiguous failure returns unavailable and requests a fresh ERP "
+                        "read rather than inferring success."
+                    ),
+                ),
+                errors=ErrorContract(
+                    domain_codes=(
+                        "attendance_unavailable",
+                        "invalid_provider_response",
+                        "employee_not_linked",
+                        "employee_mapping_ambiguous",
+                        "employee_inactive",
+                        "attendance_disabled",
+                        "outside_geofence",
+                        "invalid_location",
+                        "location_required",
+                        "already_checked_in",
+                        "already_checked_out",
+                        "check_in_required",
+                        "overnight_shift_not_supported",
+                        "authorization_failed",
+                    ),
+                    mapping_owner="app.services.web_admin_attendance",
+                    retryable_codes=("attendance_unavailable",),
+                    fail_closed_on=(
+                        "missing or mismatched authenticated staff subject",
+                        "missing or disabled capability binding",
+                        "invalid ERP response",
+                        "missing or rejected browser location",
+                        "ambiguous employee identity",
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.NATIVE,
+                    new_owner="integration.workforce_attendance_adapter",
+                ),
+                steward="workforce integrations",
+                design_refs=(
+                    "docs/designs/WORKFORCE_ATTENDANCE_INTEGRATION.md",
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                ),
+                test_refs=(
+                    "tests/test_workforce_attendance_capability.py",
+                    "tests/test_admin_dashboard_attendance.py",
+                    "tests/architecture/test_integration_platform_boundary.py",
+                ),
             ),
         ),
         SOTService(

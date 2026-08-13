@@ -18,6 +18,26 @@ from app.services.sot_manifest import (
 )
 from app.services.sot_registry.model import DomainSOT
 
+_CRM_REPORT_CONCERNS = (
+    "network infrastructure report projection",
+    "subscriber overview report projection",
+    "churned subscriber report projection",
+    "technician performance report projection",
+    "online customer activity report projection",
+    "subscriber billing-risk report projection",
+    "subscriber revenue and pipeline report projection",
+    "postpaid customer report projection",
+    "CRM team performance report projection",
+    "administrative agent performance report projection",
+    "personal agent performance report projection",
+    "operations SLA violation report projection",
+    "inbox queue and issue-classification report projection",
+    "subscriber lifecycle report projection",
+    "subscriber service-quality report projection",
+    "revenue and service downtime report projection",
+    "project and task people-performance report projection",
+)
+
 DOMAIN = DomainSOT(
     domain="ui_list_projection",
     services=(
@@ -29,6 +49,329 @@ DOMAIN = DomainSOT(
                 "page metadata derivation",
                 "canonical list URL serialization",
                 "list capability declarations",
+            ),
+        ),
+        SOTService(
+            name="ui.crm_operational_reports",
+            module="app.services.crm_reporting",
+            owns=_CRM_REPORT_CONCERNS,
+            depends_on=(
+                "auth.permission_gate",
+                "communications.team_inbox_projection",
+                "customer.accounts",
+                "financial.invoices",
+                "financial.payments",
+                "network.customer_outage_accrual",
+                "network.fiber_topology",
+                "network.identity",
+                "network.ip_pool_utilization",
+                "network.radius_sessions",
+                "network.ont_runtime_status",
+                "operations.project_lifecycle",
+                "operations.provisioning_workflow",
+                "operations.work_orders",
+                "service_intent.subscription_lifecycle",
+                "support.ticket_lifecycle",
+                "ui.list_contracts",
+            ),
+            notes=(
+                "Read-only Self-Care report projections compose native owner facts. "
+                "They never copy CRM retention notes, dispositions, follow-ups, "
+                "campaign state, outreach history, or engagement records."
+            ),
+            contract=ServiceContract(
+                concerns=tuple(
+                    ConcernContract(
+                        name=concern,
+                        role=OwnerRole.RESOLVER,
+                        input_names=(
+                            "typed CRM report query",
+                            "authorized report scope",
+                            "native customer and subscription records",
+                            "native billing records",
+                            "native network inventory records",
+                            "native ONT runtime observations",
+                            "native IP pool utilization",
+                            "native fiber plant records",
+                            "native RADIUS records",
+                            "native customer outage intervals",
+                            "native inbox records",
+                            "native support records",
+                            "native work-order and project records",
+                            "native provisioning records",
+                        ),
+                    )
+                    for concern in _CRM_REPORT_CONCERNS
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="typed CRM report query",
+                        owner="ui.list_contracts",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source="inclusive dates, pagination, and personal-agent scope",
+                    ),
+                    AuthorityInput(
+                        name="authorized report scope",
+                        owner="auth.permission_gate",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source="exact customer, billing-report, or support-report permission",
+                    ),
+                    AuthorityInput(
+                        name="native customer and subscription records",
+                        owner="customer.accounts",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="customer accounts and canonical subscription lifecycle",
+                    ),
+                    AuthorityInput(
+                        name="native billing records",
+                        owner="financial.invoices",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="Invoices and settled Payments",
+                    ),
+                    AuthorityInput(
+                        name="native RADIUS records",
+                        owner="network.radius_sessions",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="fresh RADIUS accounting sessions",
+                    ),
+                    AuthorityInput(
+                        name="native network inventory records",
+                        owner="network.identity",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="OLT, ONT, IP-pool, VLAN, and PON inventory identity",
+                    ),
+                    AuthorityInput(
+                        name="native ONT runtime observations",
+                        owner="network.ont_runtime_status",
+                        kind=AuthorityKind.OBSERVATION,
+                        source="latest persisted OLT-observed ONT runtime status",
+                    ),
+                    AuthorityInput(
+                        name="native IP pool utilization",
+                        owner="network.ip_pool_utilization",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source="live IP pool used and total counts",
+                    ),
+                    AuthorityInput(
+                        name="native fiber plant records",
+                        owner="network.fiber_topology",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="fibre strand, cabinet, and splitter inventory",
+                    ),
+                    AuthorityInput(
+                        name="native customer outage intervals",
+                        owner="network.customer_outage_accrual",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="customer outage impact intervals",
+                    ),
+                    AuthorityInput(
+                        name="native inbox records",
+                        owner="communications.team_inbox_projection",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source="inbox conversations, assignments, queues, messages, and recorded classifications",
+                    ),
+                    AuthorityInput(
+                        name="native support records",
+                        owner="support.ticket_lifecycle",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="support Tickets and SLA clocks",
+                    ),
+                    AuthorityInput(
+                        name="native work-order and project records",
+                        owner="operations.work_orders",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="work orders, projects, project tasks, and assignment facts",
+                    ),
+                    AuthorityInput(
+                        name="native provisioning records",
+                        owner="operations.provisioning_workflow",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="installation appointments, provisioning tasks, and service orders",
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.READ_ONLY,
+                    boundary="The adapter supplies a read session; the projection never flushes or commits.",
+                    locking="Committed operational facts require no mutation lock.",
+                    idempotency="The same committed facts and typed query produce the same report rows.",
+                    retries="Bounded report reads and CSV serialization are safe to retry.",
+                ),
+                errors=ErrorContract(
+                    domain_codes=("ui.crm_operational_reports.invalid_query",),
+                    mapping_owner="app.web.admin.reports operational report adapter",
+                    fail_closed_on=(
+                        "missing exact report permission",
+                        "invalid report slug, date, or pagination input",
+                        "missing signed-in identity for personal reporting",
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.SHADOWING,
+                    old_owner="dotmac_crm report projection routes and templates",
+                    new_owner="ui.crm_operational_reports",
+                    verification="typed owner, route, permission, render, empty-state, pagination, and export tests",
+                    cutover_gate="report-by-report comparison against the retained CRM surface",
+                    fallback_retirement="CRM routes retire only under the CRM web retirement gate",
+                ),
+                steward="Self-Care reporting",
+                design_refs=(
+                    "docs/designs/CRM_WEB_RETIREMENT.md",
+                    "docs/designs/CRM_REPORT_CAPABILITY_MATRIX.md",
+                    "docs/designs/CRM_REPORT_DATA_FLOW_GUIDE.md",
+                    "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                ),
+                test_refs=("tests/test_crm_reporting.py",),
+            ),
+        ),
+        SOTService(
+            name="ui.document_discount_report",
+            module="app.services.web_document_discount_report",
+            owns=(
+                "admin Invoice and Quote discount report projection",
+                "Quote-inherited Invoice discount double-count disclosure",
+            ),
+            depends_on=(
+                "auth.permission_gate",
+                "financial.invoice_discounts",
+                "sales.quote_discount_reporting",
+                "ui.display_formatting",
+                "ui.list_contracts",
+                "ui.status_presentation",
+            ),
+            notes=(
+                "The Reports UI composes the two canonical append-only history "
+                "owners into separate typed tabs. It labels source-Quote provenance "
+                "and never adds Quote and inherited Invoice amounts into one total."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name="admin Invoice and Quote discount report projection",
+                        role=OwnerRole.RESOLVER,
+                        input_names=(
+                            "normalized document discount report query",
+                            "canonical Invoice discount history",
+                            "canonical Quote discount history projection",
+                            "canonical financial display formatting",
+                            "canonical document status presentation",
+                            "authorized billing-report scope",
+                        ),
+                    ),
+                    ConcernContract(
+                        name="Quote-inherited Invoice discount double-count disclosure",
+                        role=OwnerRole.RESOLVER,
+                        input_names=(
+                            "canonical Invoice discount history",
+                            "canonical Quote discount history projection",
+                        ),
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="normalized document discount report query",
+                        owner="ui.list_contracts",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "typed tab, inclusive date range, customer, actor, "
+                            "discount type, document status, source, and pagination"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical Invoice discount history",
+                        owner="financial.invoice_discounts",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "append-only Invoice discount revisions including manual "
+                            "or Quote source identity"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical Quote discount history projection",
+                        owner="sales.quote_discount_reporting",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source="typed filtered append-only Quote discount history",
+                    ),
+                    AuthorityInput(
+                        name="canonical financial display formatting",
+                        owner="ui.display_formatting",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source=(
+                            "currency-explicit money and configured-timezone timestamp "
+                            "formatting"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical document status presentation",
+                        owner="ui.status_presentation",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source="Invoice and Quote status labels, tones, and icon keys",
+                    ),
+                    AuthorityInput(
+                        name="authorized billing-report scope",
+                        owner="auth.permission_gate",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source="reports:billing:read route authorization",
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.READ_ONLY,
+                    boundary=(
+                        "The typed report reads one selected history owner on the "
+                        "adapter session and never mutates, flushes, commits, or rolls back."
+                    ),
+                    locking="Append-only history reporting requires no mutation lock.",
+                    idempotency=(
+                        "The same committed histories and normalized query produce the "
+                        "same deterministic rows, provenance labels, and pagination."
+                    ),
+                    retries="The bounded read-only report is safe to retry.",
+                ),
+                errors=ErrorContract(
+                    domain_codes=(
+                        "financial.invoice_discounts.date_range_invalid",
+                        "financial.invoice_discounts.page_invalid",
+                        "financial.invoice_discounts.page_size_invalid",
+                        "sales.quote_discount_reporting.date_range_invalid",
+                        "sales.quote_discount_reporting.page_invalid",
+                        "sales.quote_discount_reporting.page_size_invalid",
+                    ),
+                    mapping_owner="app.web.admin.reports discount adapter",
+                    fail_closed_on=(
+                        "missing reports:billing:read permission",
+                        "invalid date range",
+                        "invalid pagination",
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.COMPLETE,
+                    old_owner=(
+                        "separate billing and sales operational history pages and "
+                        "untyped web context builders"
+                    ),
+                    new_owner="ui.document_discount_report",
+                    verification=(
+                        "typed Invoice/Quote delegation, source provenance, route "
+                        "redirect, template render, permission, and architecture tests"
+                    ),
+                    cutover_gate=(
+                        "The Reports hub is the only rendered discount-history UI and "
+                        "both legacy URLs redirect to its typed tabs."
+                    ),
+                    fallback_retirement=(
+                        "Operational-page links, old templates, and untyped discount "
+                        "context builders are removed."
+                    ),
+                ),
+                steward="billing reports UI",
+                design_refs=(
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                    "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                    "docs/designs/DOCUMENT_DISCOUNT_REPORT.md",
+                ),
+                test_refs=(
+                    "tests/test_document_discount_report.py",
+                    "tests/architecture/test_invoice_discount_ownership.py",
+                ),
             ),
         ),
         SOTService(
@@ -422,6 +765,7 @@ DOMAIN = DomainSOT(
             owns=(
                 "admin support-ticket searchable fields",
                 "admin support-ticket filter semantics",
+                "admin support-ticket per-user applied-list restoration",
                 "admin support-ticket stable sort semantics",
                 "admin support-ticket page and status-summary projection",
                 "admin support-ticket export scope",
@@ -434,9 +778,16 @@ DOMAIN = DomainSOT(
             notes=(
                 "app.services.support.Tickets owns the canonical filtered "
                 "domain query. The web projection declares list capabilities, "
-                "normalizes request state, and renders full-page and HTMX "
-                "reads through one partial. Exports consume the same complete "
-                "scope without a silent row cap."
+                "normalizes request state, and renders full-page and targeted "
+                "HTMX result reads from the same table projection. Targeted "
+                "refreshes update the status summary and export URL while "
+                "leaving the filter and column controls mounted, expose loading "
+                "state, and retain current results with retry feedback on failure. "
+                "The browser stores the canonical typed ListQuery URL per signed-in "
+                "user after successful full-page or HTMX reads; a bare list visit "
+                "restores that URL, explicit query parameters take precedence, and "
+                "the cache never becomes authoritative for Ticket facts. "
+                "Exports consume the same complete scope without a silent row cap."
             ),
             contract=ServiceContract(
                 concerns=tuple(
@@ -452,6 +803,7 @@ DOMAIN = DomainSOT(
                     for name in (
                         "admin support-ticket searchable fields",
                         "admin support-ticket filter semantics",
+                        "admin support-ticket per-user applied-list restoration",
                         "admin support-ticket stable sort semantics",
                         "admin support-ticket page and status-summary projection",
                         "admin support-ticket export scope",
@@ -508,7 +860,7 @@ DOMAIN = DomainSOT(
                 ),
                 test_refs=(
                     "tests/test_support_ticket_list_ui_contract.py",
-                    "tests/playwright/e2e/test_customer_portal.py",
+                    "tests/playwright/e2e/test_support_tickets.py",
                 ),
             ),
         ),
@@ -527,6 +879,154 @@ DOMAIN = DomainSOT(
                 "The admin reseller surface is granularly gated by reseller:read "
                 "(list) and reseller:write (create/edit), split off the shared "
                 "customer:read/write."
+            ),
+        ),
+        SOTService(
+            name="ui.field_live_map_projection",
+            module="app.services.field_maps",
+            owns=(
+                "admin field-map sharing-authorized technician position projection",
+                "admin field-map searchable fields and focus coordinates",
+                "admin field-map stale-position semantics",
+            ),
+            depends_on=(
+                "customer.accounts",
+                "operations.work_orders",
+            ),
+            notes=(
+                "field_maps owns the typed admin live-map feed and search "
+                "projection. Technician visibility fails closed when location "
+                "sharing is disabled. Search resolves technician identity and "
+                "native work-order/customer/service-address facts before "
+                "returning only results with focusable coordinates. The admin "
+                "web adapter enforces operations:dispatch:read and the sidebar "
+                "uses the same permission for discoverability."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name=(
+                            "admin field-map sharing-authorized technician "
+                            "position projection"
+                        ),
+                        role=OwnerRole.RESOLVER,
+                        input_names=("native field-technician presence facts",),
+                    ),
+                    ConcernContract(
+                        name="admin field-map searchable fields and focus coordinates",
+                        role=OwnerRole.RESOLVER,
+                        input_names=(
+                            "native field-technician presence facts",
+                            "canonical work-order map facts",
+                            "canonical subscriber service-address facts",
+                            "admin field-map search input",
+                        ),
+                    ),
+                    ConcernContract(
+                        name="admin field-map stale-position semantics",
+                        role=OwnerRole.POLICY,
+                        input_names=(
+                            "native field-technician presence facts",
+                            "admin field-map freshness input",
+                        ),
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="native field-technician presence facts",
+                        owner="ui.field_live_map_projection",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source=(
+                            "FieldTechPresence technician/person identity, sharing "
+                            "preference, status, latest coordinates, accuracy, and "
+                            "observation time"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical work-order map facts",
+                        owner="operations.work_orders",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "active native WorkOrder public identity, searchable "
+                            "dispatch fields, subscriber binding, and mapped location"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical subscriber service-address facts",
+                        owner="customer.accounts",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "native Subscriber identity/contact fields and canonical "
+                            "Address street, locality, and coordinates"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="admin field-map search input",
+                        owner="ui.field_live_map_projection",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source="typed normalized search text and bounded result limit",
+                    ),
+                    AuthorityInput(
+                        name="admin field-map freshness input",
+                        owner="ui.field_live_map_projection",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source="typed bounded stale-after duration",
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.READ_ONLY,
+                    boundary=(
+                        "Feed and search queries read one adapter-owned session and "
+                        "perform no ORM mutation or transaction completion."
+                    ),
+                    locking="No locks; the projection is observational and read-only.",
+                    idempotency=(
+                        "Equivalent search/freshness inputs return the same typed "
+                        "projection for the same database snapshot."
+                    ),
+                    retries="Read availability failures may be retried safely.",
+                ),
+                errors=ErrorContract(
+                    domain_codes=(
+                        "ui.field_live_map_projection.invalid_search",
+                        "ui.field_live_map_projection.unauthorized",
+                    ),
+                    mapping_owner="admin field-map web adapter",
+                    fail_closed_on=(
+                        "missing operations:dispatch:read permission",
+                        "disabled technician location sharing",
+                        "missing focus coordinates",
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.COMPLETE,
+                    old_owner=(
+                        "untyped field-map feed and template-local visibility/search "
+                        "behavior"
+                    ),
+                    new_owner="ui.field_live_map_projection",
+                    verification=(
+                        "typed feed/search contracts, sharing/privacy tests, street "
+                        "search tests, route permission tests, and UI focus tests"
+                    ),
+                    cutover_gate=(
+                        "Routes return owner-provided typed outcomes and the template "
+                        "only renders or focuses those outcomes."
+                    ),
+                    fallback_retirement=(
+                        "The feed no longer exposes non-sharing technicians and no "
+                        "template-only street filtering or ungated navigation remains."
+                    ),
+                ),
+                steward="field operations UI",
+                design_refs=(
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                    "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                ),
+                test_refs=(
+                    "tests/test_admin_maps_web.py",
+                    "tests/architecture/test_field_live_map_boundary.py",
+                ),
             ),
         ),
         SOTService(
@@ -1715,11 +2215,14 @@ DOMAIN = DomainSOT(
         "app.api.tables",
         "app.services.subscriber",
         "app.services.table_config",
+        "app.services.web_document_discount_report",
         "app.web.admin.customers",
         "app.web.admin.billing_invoices",
+        "app.web.admin.reports",
         "app.web.admin.support_tickets",
         "templates.admin.billing.invoices",
         "templates.admin.customers",
+        "templates.admin.reports.discounts",
         "templates.admin.support.tickets",
     ),
     rule="List routes normalize request parameters through one declared list "

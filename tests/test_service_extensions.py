@@ -88,6 +88,17 @@ def _create(db_session, **values):
         ),
     )
     subscriber_ids = values.pop("subscriber_ids", None)
+    scope_type = values.pop("scope_type")
+    # Most lifecycle tests historically used network as a convenient broad
+    # fixture. New commands must use an allowed scope; resolve that fixture
+    # cohort explicitly unless a test is exercising historical network data.
+    if scope_type == ServiceExtensionScope.network:
+        scope_type = ServiceExtensionScope.subscribers
+        subscriber_ids = [
+            str(item) for item in db_session.scalars(select(Subscriber.id)).all()
+        ]
+        values["subscriber_ids_resolved"] = True
+        db_session.commit()
     outcome = svc.create_service_extension(
         db_session,
         svc.CreateServiceExtensionCommand(
@@ -96,7 +107,7 @@ def _create(db_session, **values):
             window_start=values.pop("window_start"),
             window_end=values.pop("window_end"),
             days=values.pop("days"),
-            scope_type=values.pop("scope_type"),
+            scope_type=scope_type,
             scope_id=(
                 UUID(str(raw_scope_id))
                 if (raw_scope_id := values.pop("scope_id", None))
@@ -109,6 +120,24 @@ def _create(db_session, **values):
     extension = svc.get_extension(db_session, outcome.extension_id)
     db_session.expunge(extension)
     db_session.commit()
+    return extension
+
+
+def _existing_network_extension(db_session, **values) -> ServiceExtension:
+    """Persist a pre-retirement network aggregate for compatibility tests."""
+    extension = ServiceExtension(
+        reason=values.pop("reason"),
+        window_start=values.pop("window_start"),
+        window_end=values.pop("window_end"),
+        days=values.pop("days"),
+        scope_type=ServiceExtensionScope.network,
+        status=ServiceExtensionStatus.pending,
+        created_by=values.pop("created_by", "admin-1"),
+        created_at=_APPLIED_AT,
+    )
+    db_session.add(extension)
+    db_session.commit()
+    db_session.refresh(extension)
     return extension
 
 
@@ -260,6 +289,45 @@ def test_service_extension_max_days_setting(db_session, subscriber, catalog_offe
     assert "between 1 and 3" in exc.value.message
 
 
+def test_new_network_scope_is_absent_and_rejected_without_evidence(
+    db_session, subscriber, catalog_offer
+):
+    _sub(db_session, subscriber, catalog_offer)
+    db_session.commit()
+
+    assert (
+        ServiceExtensionScope.network not in svc.scope_options(db_session).scope_types
+    )
+    db_session.commit()
+    command = svc.CreateServiceExtensionCommand(
+        context=_command_context(svc.CREATE_SCOPE),
+        reason="Retired broad grant",
+        window_start=_WIN_START,
+        window_end=_WIN_END,
+        days=2,
+        scope_type=ServiceExtensionScope.network,
+    )
+
+    with pytest.raises(ServiceExtensionError) as exc:
+        svc.create_service_extension(db_session, command)
+
+    assert exc.value.code.endswith("network_scope_retired")
+    assert not db_session.in_transaction()
+    assert db_session.query(ServiceExtension).count() == 0
+    assert (
+        db_session.query(AuditEvent)
+        .filter(AuditEvent.entity_type == "service_extension")
+        .count()
+        == 0
+    )
+    assert (
+        db_session.query(EventStore)
+        .filter(EventStore.event_type == "billing.service_extension_created")
+        .count()
+        == 0
+    )
+
+
 def test_apply_network_scope_extends_all_active(db_session, subscriber, catalog_offer):
     s1 = _sub(
         db_session,
@@ -274,13 +342,12 @@ def test_apply_network_scope_extends_all_active(db_session, subscriber, catalog_
         next_billing_at=datetime(2026, 7, 15, tzinfo=UTC),
     )
 
-    ext = _create(
+    ext = _existing_network_extension(
         db_session,
         reason="Backbone outage",
         window_start=_WIN_START,
         window_end=_WIN_END,
         days=2,
-        scope_type=ServiceExtensionScope.network,
         created_by="admin-1",
     )
     applied = _apply(db_session, ext.id, actor_id="approver-1")
@@ -1169,6 +1236,7 @@ def test_create_stages_one_atomic_audit_and_domain_event(
     db_session, subscriber, catalog_offer
 ):
     _sub(db_session, subscriber, catalog_offer)
+    subscriber_id = str(subscriber.id)
     db_session.commit()
     idempotency_key = str(uuid4())
     context = _command_context(
@@ -1181,7 +1249,9 @@ def test_create_stages_one_atomic_audit_and_domain_event(
         window_start=_WIN_START,
         window_end=_WIN_END,
         days=2,
-        scope_type=ServiceExtensionScope.network,
+        scope_type=ServiceExtensionScope.subscribers,
+        subscriber_identifiers=(subscriber_id,),
+        subscriber_ids_resolved=True,
     )
 
     outcome = svc.create_service_extension(db_session, command)
@@ -1225,6 +1295,7 @@ def test_create_rejects_changed_inputs_for_same_idempotency_key(
     db_session, subscriber, catalog_offer
 ):
     _sub(db_session, subscriber, catalog_offer)
+    subscriber_id = str(subscriber.id)
     db_session.commit()
     context = _command_context(
         svc.CREATE_SCOPE,
@@ -1236,7 +1307,9 @@ def test_create_rejects_changed_inputs_for_same_idempotency_key(
         window_start=_WIN_START,
         window_end=_WIN_END,
         days=1,
-        scope_type=ServiceExtensionScope.network,
+        scope_type=ServiceExtensionScope.subscribers,
+        subscriber_identifiers=(subscriber_id,),
+        subscriber_ids_resolved=True,
     )
     changed = svc.CreateServiceExtensionCommand(
         context=context,
@@ -1244,7 +1317,9 @@ def test_create_rejects_changed_inputs_for_same_idempotency_key(
         window_start=_WIN_START,
         window_end=_WIN_END,
         days=2,
-        scope_type=ServiceExtensionScope.network,
+        scope_type=ServiceExtensionScope.subscribers,
+        subscriber_identifiers=(subscriber_id,),
+        subscriber_ids_resolved=True,
     )
 
     svc.create_service_extension(db_session, first)
@@ -1259,6 +1334,7 @@ def test_forced_create_failure_rolls_back_aggregate_audit_and_event(
     db_session, subscriber, catalog_offer, monkeypatch
 ):
     _sub(db_session, subscriber, catalog_offer)
+    subscriber_id = str(subscriber.id)
     db_session.commit()
     command = svc.CreateServiceExtensionCommand(
         context=_command_context(svc.CREATE_SCOPE),
@@ -1266,7 +1342,9 @@ def test_forced_create_failure_rolls_back_aggregate_audit_and_event(
         window_start=_WIN_START,
         window_end=_WIN_END,
         days=1,
-        scope_type=ServiceExtensionScope.network,
+        scope_type=ServiceExtensionScope.subscribers,
+        subscriber_identifiers=(subscriber_id,),
+        subscriber_ids_resolved=True,
     )
 
     def fail_evidence(*_args, **_kwargs):

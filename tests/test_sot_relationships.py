@@ -20,6 +20,7 @@ def test_domain_sot_relationships_cover_expected_domains():
         "observability",
         "workforce_operations",
         "support_operations",
+        "tenancy",
         "ai_advisory",
         "provisioning_operations",
         "feature_control_plane",
@@ -752,6 +753,7 @@ def test_domain_sot_relationships_encode_cross_domain_dependencies():
         "events.dispatcher",
         "communications.notification_service",
         "communications.staff_notifications",
+        "communications.nextcloud_talk_staff",
         "operations.work_order_commands",
     )
     assert sot_relationships.dependencies_for("operations.work_order_commands") == (

@@ -180,6 +180,11 @@ default-off controls and never send automatically.
   zero-retention provider transport governed by
   `docs/designs/VOICE_TRANSCRIPTION_DATA_PROTECTION.md`. It writes no AI or
   domain row and inserts returned text only into an unsent browser composer.
+- **Manager Inbox AI.** `app.services.team_inbox_manager_ai_chat` is a
+  read-only advisory view behind `support:inbox_ai:read` and the
+  `ai.generation` control. It may answer manager questions from a bounded
+  Team Inbox conversation or recent-queue projection, but it cannot assign,
+  reply, close, refund, profile-update, or otherwise mutate a domain row.
 
 ## Open work
 

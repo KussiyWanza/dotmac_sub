@@ -1,10 +1,4 @@
-"""Admin inbox queue routed through list_query — default ordering preserved.
-
-The inbox default is a composite (priority asc, then last_message_at desc): the
-migration must NOT change it. list_conversations gains an additive order_by that
-maps "priority"/None to that composite, and last_message_at/created_at to single
-columns.
-"""
+"""Admin inbox queue list_query contract."""
 
 from __future__ import annotations
 
@@ -32,13 +26,20 @@ def test_inbox_definition_declares_its_capabilities():
         "last_message_at",
         "created_at",
     }
-    assert definition.default_sort == "priority"
-    assert definition.default_sort_dir == "asc"
-    for key in ("status", "needs_response", "muted", "snoozed", "service_team_id"):
+    assert definition.default_sort == "last_message_at"
+    assert definition.default_sort_dir == "desc"
+    for key in (
+        "status",
+        "needs_response",
+        "muted",
+        "snoozed",
+        "service_team_id",
+        "priority_at_most",
+    ):
         assert key in definition.filterable_keys
 
 
-def test_default_order_is_the_unchanged_priority_composite(db_session):
+def test_projection_default_order_is_newest_activity_first(db_session):
     now = datetime(2026, 7, 19, 12, 0, tzinfo=UTC)
     a = _conv(db_session, priority=1, last_message_at=now, thread="a")
     b = _conv(
@@ -49,11 +50,11 @@ def test_default_order_is_the_unchanged_priority_composite(db_session):
     )
     db_session.commit()
 
-    # No order_by → the composite: priority asc (b first), then within equal
-    # priority by last_message_at desc (a before c). This is the pre-migration
-    # default and must be unchanged.
-    result = team_inbox_read.list_conversations(db_session)
-    assert [row.id for row in result.items] == [str(b.id), str(a.id), str(c.id)]
+    result = team_inbox_projection.build_queue_projection(
+        db_session,
+        team_inbox_projection.InboxQueueRequest(),
+    )
+    assert [row.id for row in result.rows] == [str(a.id), str(c.id), str(b.id)]
 
 
 def test_order_by_last_message_at_ignores_priority(db_session):
@@ -69,3 +70,48 @@ def test_order_by_last_message_at_ignores_priority(db_session):
     )
     # Sorted by recency only — the more-recent a (despite lower urgency) leads.
     assert [row.id for row in result.items] == [str(a.id), str(b.id)]
+
+
+def test_list_conversations_can_skip_exact_total_count(db_session):
+    now = datetime(2026, 7, 19, 12, 0, tzinfo=UTC)
+    newest = _conv(db_session, priority=1, last_message_at=now, thread="newest")
+    middle = _conv(
+        db_session,
+        priority=1,
+        last_message_at=now - timedelta(minutes=1),
+        thread="middle",
+    )
+    _conv(
+        db_session,
+        priority=1,
+        last_message_at=now - timedelta(minutes=2),
+        thread="oldest",
+    )
+    db_session.commit()
+
+    result = team_inbox_read.list_conversations(
+        db_session,
+        order_by="last_message_at",
+        order_dir="desc",
+        limit=2,
+        include_total_count=False,
+    )
+
+    assert [row.id for row in result.items] == [str(newest.id), str(middle.id)]
+    assert result.count == 3
+
+
+def test_list_conversations_counts_when_bounded_page_is_out_of_range(db_session):
+    now = datetime(2026, 7, 19, 12, 0, tzinfo=UTC)
+    _conv(db_session, priority=1, last_message_at=now, thread="only")
+    db_session.commit()
+
+    result = team_inbox_read.list_conversations(
+        db_session,
+        limit=25,
+        offset=250,
+        include_total_count=False,
+    )
+
+    assert result.items == []
+    assert result.count == 1

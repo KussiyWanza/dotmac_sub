@@ -47,6 +47,8 @@ DEFAULT_PERMISSIONS = [
     ("*", "Full access (wildcard) — grants every permission"),
     # Audit
     ("audit:read", "Read audit events"),
+    # Workforce attendance (pilot: intentionally not granted to seeded roles)
+    ("attendance:self:use", "Use personal ERP attendance from the dashboard"),
     # Integrations (service ApiKey scopes)
     ("integration:crm", "CRM service integration API access"),
     # Auth & System
@@ -92,6 +94,11 @@ DEFAULT_PERMISSIONS = [
     ("billing:payment:create", "Record payments"),
     ("billing:payment:update", "Update payments"),
     ("billing:payment:delete", "Delete/refund payments"),
+    ("billing:payment_intent:read", "View customer payment intents"),
+    (
+        "billing:payment_intent:cancel",
+        "Cancel unsubmitted customer bank-transfer intents",
+    ),
     ("billing:reconciliation:read", "View billing reconciliation queues"),
     (
         "billing:reconciliation:write",
@@ -203,6 +210,10 @@ DEFAULT_PERMISSIONS = [
     # Network - Fiber
     ("network:fiber:read", "View fiber infrastructure"),
     ("network:fiber:write", "Manage fiber infrastructure"),
+    (
+        "network:fiber:review",
+        "Independently review governed fiber asset proposals",
+    ),
     # Network - RADIUS
     ("network:radius:read", "View RADIUS configuration"),
     ("network:radius:write", "Manage RADIUS configuration"),
@@ -244,8 +255,10 @@ DEFAULT_PERMISSIONS = [
     ("support:ticket:update", "Update tickets"),
     ("support:ticket:delete", "Delete tickets"),
     ("support:ticket:assign", "Assign tickets"),
+    ("support:inbox:self_assign", "Assign inbox conversations to yourself"),
     ("support:automation:read", "View ticket automation rules"),
     ("support:automation:write", "Manage ticket automation rules"),
+    ("support:inbox_ai:read", "Use manager AI for Team Inbox insight"),
     # CRM
     ("crm:contact:read", "View CRM contacts"),
     ("crm:contact:write", "Manage CRM contacts"),
@@ -349,6 +362,7 @@ ROLE_PERMISSIONS = {
         "audit:read",
         "billing:invoice:read",
         "billing:payment:read",
+        "billing:payment_intent:read",
         "billing:reconciliation:read",
         "billing:credit_note:read",
         "billing:account:read",
@@ -441,6 +455,8 @@ ROLE_PERMISSIONS = {
         "billing:invoice:read",
         "billing:payment:read",
         "billing:payment:create",
+        "billing:payment_intent:read",
+        "billing:payment_intent:cancel",
         "billing:credit_note:read",
         "billing:account:read",
         "billing:dunning:read",
@@ -452,8 +468,10 @@ ROLE_PERMISSIONS = {
         "operations:service_team:read",
         "support:ticket:create",
         "support:ticket:update",
+        "support:inbox:self_assign",
         "support:automation:read",
         "support:automation:write",
+        "support:inbox_ai:read",
         "crm:contact:read",
         "crm:conversation:read",
         "crm:conversation:write",
@@ -469,6 +487,8 @@ ROLE_PERMISSIONS = {
         "billing:payment:create",
         "billing:payment:update",
         "billing:payment:delete",
+        "billing:payment_intent:read",
+        "billing:payment_intent:cancel",
         "billing:reconciliation:read",
         "billing:reconciliation:write",
         "billing:credit_note:read",

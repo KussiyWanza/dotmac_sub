@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 from ipaddress import IPv4Network, ip_address, ip_network
-from typing import Any
+from typing import Any, TypedDict
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, joinedload
@@ -22,6 +22,8 @@ from app.models.network import (
     VlanPurpose,
 )
 from app.models.tr069 import Tr069AcsServer
+from app.schemas.status_presentation import StatusPresentation
+from app.services.device_operational_status import derive_ont_operational_status
 from app.services.network.effective_ont_config import resolve_effective_ont_config
 from app.services.network.ont_status import resolve_effective_ont_status
 from app.services.network.onu_types import onu_types
@@ -29,6 +31,14 @@ from app.services.network.speed_profiles import speed_profiles
 from app.services.network.zones import network_zones
 
 logger = logging.getLogger(__name__)
+
+
+class OntProvisionSignalInfo(TypedDict):
+    """Typed operational-status projection rendered by the provision page."""
+
+    olt_status: str
+    olt_rx_dbm: float | None
+    status_presentation: StatusPresentation
 
 
 _OLT_MANAGEMENT_NETWORKS_BY_MGMT_IP: dict[str, str] = {
@@ -802,7 +812,13 @@ def bulk_action_summary_context(
     }
 
 
-def provision_wizard_context(request: Any, db: Session, ont_id: str) -> dict[str, Any]:
+def provision_wizard_context(
+    request: Any,
+    db: Session,
+    ont_id: str,
+    *,
+    operation_id: str | None = None,
+) -> dict[str, Any]:
     """Build template context for the ONT provisioning wizard page."""
     from app.services import network as network_service
     from app.services import web_admin as web_admin_service
@@ -810,6 +826,7 @@ def provision_wizard_context(request: Any, db: Session, ont_id: str) -> dict[str
         preflight_result,
         validate_provision_form_fields,
     )
+    from app.services.web_network_operations import get_provision_operation_progress
 
     try:
         ont = network_service.ont_units.get_including_inactive(db=db, entity_id=ont_id)
@@ -949,6 +966,12 @@ def provision_wizard_context(request: Any, db: Session, ont_id: str) -> dict[str
                 else None
             )
 
+    signal_info: OntProvisionSignalInfo = {
+        "olt_status": resolve_effective_ont_status(ont).status.value,
+        "olt_rx_dbm": getattr(ont, "olt_rx_signal_dbm", None),
+        "status_presentation": derive_ont_operational_status(ont).presentation,
+    }
+
     context: dict[str, Any] = {
         "request": request,
         "active_page": "onts",
@@ -976,10 +999,7 @@ def provision_wizard_context(request: Any, db: Session, ont_id: str) -> dict[str
         "tr069_servers": get_tr069_servers(db),
         "speed_profiles_download": get_speed_profiles(db, "download"),
         "speed_profiles_upload": get_speed_profiles(db, "upload"),
-        "signal_info": {
-            "olt_status": resolve_effective_ont_status(ont).status.value,
-            "olt_rx_dbm": getattr(ont, "olt_rx_signal_dbm", None),
-        },
+        "signal_info": signal_info,
         "pon_label": (
             f"{ont.board}/{ont.port}"
             if getattr(ont, "board", None) and getattr(ont, "port", None)
@@ -994,6 +1014,11 @@ def provision_wizard_context(request: Any, db: Session, ont_id: str) -> dict[str
         "ont_plan": {},
         "provision_gate_issues": provision_gate_issues,
         "provision_preflight": provision_preflight,
+        "provision_operation": get_provision_operation_progress(
+            db,
+            ont_id=ont_id,
+            operation_id=operation_id,
+        ),
         "config_pack": config_pack.to_dict() if config_pack else None,
         "config_pack_validation": config_pack_validation.to_dict()
         if config_pack_validation

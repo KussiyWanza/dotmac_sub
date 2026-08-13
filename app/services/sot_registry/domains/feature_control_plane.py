@@ -9,6 +9,7 @@ from app.services.sot_registry.model import DomainSOT
 
 DOMAIN = DomainSOT(
     domain="feature_control_plane",
+    setting_domains=("modules",),
     services=(
         SOTService(
             name="control.feature_registry",

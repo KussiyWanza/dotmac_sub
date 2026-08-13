@@ -30,10 +30,32 @@ class TicketStatus(enum.Enum):
     site_under_construction = "site_under_construction"
     on_hold = "on_hold"
     pending_confirmation = "pending_confirmation"
-    resolved = "resolved"
     closed = "closed"
     canceled = "canceled"
     merged = "merged"
+
+
+LEGACY_TICKET_STATUS_ALIASES: dict[str, str] = {
+    "resolved": TicketStatus.closed.value,
+}
+
+
+def canonical_ticket_status_value(value: TicketStatus | str) -> str:
+    """Return the canonical stored value for a ticket-status input.
+
+    ``resolved`` was historically persisted as a separate status. It is now an
+    admission-only compatibility alias for ``closed`` and must never be
+    returned to a caller or written to a Ticket row.
+    """
+
+    raw = value.value if isinstance(value, TicketStatus) else str(value).strip().lower()
+    return LEGACY_TICKET_STATUS_ALIASES.get(raw, raw)
+
+
+def parse_ticket_status(value: TicketStatus | str) -> TicketStatus:
+    """Parse a canonical or legacy ticket-status input into the closed enum."""
+
+    return TicketStatus(canonical_ticket_status_value(value))
 
 
 class TicketPriority(enum.Enum):
@@ -115,6 +137,9 @@ class Ticket(Base):
     number: Mapped[str | None] = mapped_column(String(50), unique=True)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
+    description_is_internal: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )
     region: Mapped[str | None] = mapped_column(String(80))
     status: Mapped[str] = mapped_column(
         String(80),
@@ -233,7 +258,7 @@ class TicketComment(Base):
         UUID(as_uuid=True), ForeignKey("system_users.id")
     )
     body: Mapped[str] = mapped_column(Text, nullable=False)
-    is_internal: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_internal: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     attachments: Mapped[list[dict] | None] = mapped_column(
         MutableList.as_mutable(JSON()), default=list
     )

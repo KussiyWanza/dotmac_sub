@@ -14,15 +14,59 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
+from cryptography.fernet import Fernet
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.models.network import OLTDevice, OntSyncStatus, OntUnit
 from app.models.ont_observation import OntObservation
+from app.services.credential_crypto import (
+    decrypt_credential,
+    encrypt_credential_with_key,
+)
 from app.services.network.reconcile import (
     OntDesiredState,
+    OntWanProposedChange,
     ReconcileFailureReason,
     reconcile_ont,
 )
+from app.services.network.reconcile import core as reconcile_core
+
+
+class _PostgresSessionStub:
+    bind = SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+
+    def __init__(self, *, error: SQLAlchemyError | None = None) -> None:
+        self.error = error
+        self.calls: list[tuple[object, dict[str, str]]] = []
+
+    def execute(self, statement: object, params: dict[str, str]) -> None:
+        self.calls.append((statement, params))
+        if self.error is not None:
+            raise self.error
+
+
+def test_reconcile_timeout_uses_parameterizable_transaction_local_setting():
+    session = _PostgresSessionStub()
+
+    reconcile_core._widen_idle_in_transaction_timeout(session, 60)  # type: ignore[arg-type]
+
+    statement, params = session.calls[0]
+    assert str(statement) == (
+        "SELECT set_config('idle_in_transaction_session_timeout', :timeout_value, true)"
+    )
+    assert params == {"timeout_value": "90000ms"}
+
+
+def test_reconcile_timeout_setup_error_is_not_silently_swallowed():
+    error = SQLAlchemyError("timeout setting failed")
+    session = _PostgresSessionStub(error=error)
+
+    with pytest.raises(SQLAlchemyError, match="timeout setting failed"):
+        reconcile_core._widen_idle_in_transaction_timeout(  # type: ignore[arg-type]
+            session, 60
+        )
+
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -486,18 +530,28 @@ def test_dual_stack_tr181_reconciles_and_persists_verified_observation(
 
 
 def test_wifi_password_change_on_synced_ont_pushes_once(
-    db_session, ont, stub_desired, stub_ont_status
+    db_session, ont, stub_desired, stub_ont_status, monkeypatch
 ):
     """Operator password changes are explicit writes even though PSK is
     write-only. Verification should not re-emit the password write.
     """
     olt = _StubOltAdapter(present=True)
     acs = _StubAcsClient(device=_synced_acs_device(ont))
+    encryption_key = Fernet.generate_key()
+    monkeypatch.setattr(
+        "app.services.credential_crypto.get_encryption_key",
+        lambda: encryption_key,
+    )
+    protected_password = encrypt_credential_with_key(
+        "kursimining@98765",
+        encryption_key,
+    )
+    assert protected_password is not None
 
     result = reconcile_ont(
         db_session,
         ont.id,
-        proposed_change={"wifi_password_ref": "kursimining@98765"},
+        proposed_change={"wifi_password_ref": protected_password},
         mode="sync",
         olt_adapter=olt,
         acs_client=acs,
@@ -512,7 +566,52 @@ def test_wifi_password_change_on_synced_ont_pushes_once(
     assert len(psk_writes) == 1
     # apply_proposed_change writes the new password into desired_config.
     db_session.refresh(ont)
-    assert ont.desired_config["wifi"]["password"] == "kursimining@98765"
+    stored_password = ont.desired_config["wifi"]["password"]
+    assert stored_password.startswith("enc:")
+    assert decrypt_credential(stored_password) == "kursimining@98765"
+
+
+def test_persisted_admin_wan_change_scopes_delivery_without_writing_back(
+    db_session, ont, stub_desired, stub_ont_status, monkeypatch
+):
+    """The admin action persists WAN intent before entering reconciliation.
+
+    Effective config values in the typed command scope delivery only. Writing
+    them back would turn inherited config-pack values into per-ONT overrides.
+    """
+    persisted = []
+
+    def _capture_persistence(*args, **kwargs):
+        persisted.append((args, kwargs))
+
+    monkeypatch.setattr(
+        "app.services.network.reconcile.core.apply_proposed_change",
+        _capture_persistence,
+    )
+
+    result = reconcile_ont(
+        db_session,
+        ont.id,
+        proposed_change=OntWanProposedChange(
+            changed_fields=frozenset({"wan_mode"}),
+            wan_mode="pppoe",
+            wan_pppoe_username="100024456",
+            wan_pppoe_password_ref="bao://pppoe",
+            wan_pppoe_wcd_index=1,
+            wan_static_ip=None,
+            wan_static_subnet=None,
+            wan_static_gateway=None,
+            wan_static_dns=None,
+            wan_static_ip_is_public=None,
+            ipv6_enabled=False,
+        ),
+        mode="sync",
+        olt_adapter=_StubOltAdapter(present=True),
+        acs_client=_StubAcsClient(device=_synced_acs_device(ont)),
+    )
+
+    assert result.success is True
+    assert persisted == []
 
 
 def test_bootstrap_mode_pushes_wifi_password_on_synced_ont(

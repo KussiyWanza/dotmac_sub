@@ -531,6 +531,39 @@ def test_sales_dashboard_uses_native_currency_safe_reporting(db_session):
     assert context["metrics"]["pipeline_value"] == "NGN 1,000.00"
     assert context["metrics"]["weighted_value"] == "NGN 250.00"
     assert context["metrics"]["average_deal_size"] == "USD 600.00"
+    assert context["agent_rows"][0]["name"] == "Unavailable sales agent"
+
+
+def test_sales_dashboard_resolves_historical_agent_system_user_name(db_session):
+    pipeline = _make_pipeline(db_session, name=f"Agent-{uuid.uuid4().hex[:6]}")
+    stage = _make_stage(db_session, pipeline, default_probability=100)
+    agent = SystemUser(
+        first_name="Samuel",
+        last_name="Ojo",
+        display_name="Samuel Ojo",
+        email=f"samuel-{uuid.uuid4().hex[:8]}@example.com",
+        is_active=False,
+    )
+    db_session.add(agent)
+    db_session.flush()
+    _make_lead(
+        db_session,
+        _make_subscriber(db_session),
+        pipeline_id=pipeline.id,
+        stage_id=stage.id,
+        owner_agent_id=agent.id,
+        status="won",
+        estimated_value=Decimal("600.00"),
+        currency="NGN",
+    )
+
+    context = web_sales_dashboard.build_dashboard_data_context(
+        db_session,
+        pipeline_id=str(pipeline.id),
+        period_days=30,
+    )
+
+    assert context["agent_rows"][0]["name"] == "Samuel Ojo"
 
 
 # ---------------------------------------------------------------------------

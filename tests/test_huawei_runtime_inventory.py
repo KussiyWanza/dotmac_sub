@@ -5,6 +5,10 @@ from types import SimpleNamespace
 import pytest
 
 from app.models.network import OLTDevice
+from app.services.network.huawei_cli_response import (
+    HuaweiCliErrorCode,
+    classify_huawei_cli_response,
+)
 from app.services.network.olt_ssh_ont.status import (
     get_registered_ont_serials,
     parse_registered_ont_inventory,
@@ -124,7 +128,15 @@ def test_registered_inventory_rejects_cli_errors(monkeypatch) -> None:
     )
 
     assert ok is False
-    assert "rejected inventory read for 0/2/1" in message
+    # The rejection uses the canonical envelope owned by huawei_cli_response,
+    # so the wrapped message still classifies; the port stays named in the
+    # annotation that follows the device text.
+    assert message.startswith("OLT rejected: ")
+    assert "inventory read 0/2/1" in message
+    assert (
+        classify_huawei_cli_response(message).error_code
+        == HuaweiCliErrorCode.PARAMETER_ERROR
+    )
     assert entries == []
 
 

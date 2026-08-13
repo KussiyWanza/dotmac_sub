@@ -74,3 +74,24 @@ def test_live_chat_css_covers_contrast_pending_and_safe_area_states() -> None:
     assert ".dm-chat-msg-out" in css and "background: #dbeafe !important" in css
     assert ".dm-chat-msg-in" in css and "background: #e2e8f0 !important" in css
     assert ".dark .dm-chat-msg-in" in css and "-webkit-text-fill-color: #f8fafc" in css
+
+
+def test_public_fiber_widget_uses_native_team_inbox_contract() -> None:
+    js = _read("static/js/fiber-chat-widget.js")
+
+    assert 'absoluteHttp("/widget/fiber/session")' in js
+    assert 'form_version: "fiber-chat-v1"' in js
+    assert "client_session_id: clientId" in js
+    assert 'values.get("company_website")' in js
+    assert 'topic: "conversation:" + session.conversation_id' in js
+    assert "session.api_base + path" in js
+    assert "session.ws_url" in js
+    assert "crm.dotmac.io" not in js
+
+
+def test_public_fiber_widget_websocket_is_origin_scoped() -> None:
+    router = _read("app/websocket/router.py")
+
+    assert 'auth_result.get("surface") == "fiber_website"' in router
+    assert "settings.fiber_chat_allowed_origin" in router
+    assert 'close(code=4003, reason="Origin not allowed")' in router

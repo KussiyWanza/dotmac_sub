@@ -1160,6 +1160,17 @@ def _mark_invoice_metadata_flag(invoice: Invoice, key: str) -> None:
     invoice.metadata_ = metadata
 
 
+def _billing_notification_flag_enabled(metadata: dict | None) -> bool:
+    raw_value = (metadata or {}).get("send_billing_notifications")
+    if raw_value is None:
+        return True
+    if isinstance(raw_value, bool):
+        return raw_value
+    if isinstance(raw_value, str):
+        return raw_value.strip().lower() not in {"0", "false", "no", "off"}
+    return bool(raw_value)
+
+
 def _emit_invoice_reminders(
     db: Session,
     run_at: datetime,
@@ -1181,11 +1192,19 @@ def _emit_invoice_reminders(
         )
         .all()
     )
+    account_ids = {invoice.account_id for invoice in invoices if invoice.account_id}
+    suppressed_account_ids = {
+        account.id
+        for account in db.query(Subscriber).filter(Subscriber.id.in_(account_ids)).all()
+        if not _billing_notification_flag_enabled(account.metadata_)
+    }
     for invoice in invoices:
         # Don't remind on balances for accounts whose services are all
         # paused or terminal (disabled/canceled/expired/…) — a service that is
         # not being billed should not keep receiving collection reminders.
         if invoice.account_id not in collectible_accounts:
+            continue
+        if invoice.account_id in suppressed_account_ids:
             continue
         if not invoice.due_at or (invoice.balance_due or Decimal("0.00")) <= Decimal(
             "0.00"
@@ -1232,6 +1251,7 @@ def _log_billing_run_audit(
 ) -> None:
     """Log billing run results to audit log."""
     from app.models.audit import AuditActorType, AuditEvent
+    from app.services.audit_adapter import stage_audit_event
 
     run_id = None
     if run:
@@ -1276,7 +1296,8 @@ def _log_billing_run_audit(
     if existing is not None:
         return
 
-    audit_event = AuditEvent(
+    stage_audit_event(
+        db,
         actor_type=(
             AuditActorType.user if run and run.requested_by else AuditActorType.system
         ),
@@ -1287,9 +1308,8 @@ def _log_billing_run_audit(
         entity_type="billing_run",
         entity_id=run_id,
         is_success=status == "success",
-        metadata_=metadata,
+        metadata=metadata,
     )
-    db.add(audit_event)
 
 
 def reconcile_billing_run_audit(db: Session, run_id: UUID) -> bool:

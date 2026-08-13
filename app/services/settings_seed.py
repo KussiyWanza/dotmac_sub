@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.models.domain_settings import SettingDomain
 from app.models.subscription_engine import SettingValueType
+from app.schemas.settings import DomainSettingCreate
 from app.services.channel_health_contracts import DEFAULT_CHANNEL_HEALTH_CONTRACTS
 from app.services.domain_settings import (
     DomainSettings,
@@ -28,7 +29,6 @@ from app.services.domain_settings import (
     tr069_settings,
     usage_settings,
 )
-from app.services.secrets import is_openbao_ref
 from app.services.settings_spec import (
     DOMAIN_SETTINGS_SERVICE,
     SCHEDULER_BOOLEAN_SETTING_KEYS,
@@ -69,7 +69,9 @@ def seed_scheduler_runtime_settings(db: Session) -> None:
             )
         value_text = str(value)
         value_json: bool | None = None
-        if spec.value_type is SettingValueType.boolean:
+        # `==`, not `is`: SettingValueType is an open `str` subclass and is
+        # deliberately not interned (migration 512).
+        if spec.value_type == SettingValueType.boolean:
             if not isinstance(value, bool):
                 raise RuntimeError(
                     f"Invalid scheduler bootstrap boolean: {domain.value}.{key}"
@@ -195,24 +197,10 @@ def seed_auth_settings(db: Session) -> None:
         value_type=SettingValueType.integer,
         value_text=os.getenv("API_KEY_MAX_PER_OWNER", "0"),
     )
-    jwt_secret = os.getenv("JWT_SECRET")
-    if jwt_secret and is_openbao_ref(jwt_secret):
-        auth_settings.ensure_by_key(
-            db,
-            key="jwt_secret",
-            value_type=SettingValueType.string,
-            value_text=jwt_secret,
-            is_secret=True,
-        )
-    totp_key = os.getenv("TOTP_ENCRYPTION_KEY")
-    if totp_key and is_openbao_ref(totp_key):
-        auth_settings.ensure_by_key(
-            db,
-            key="totp_encryption_key",
-            value_type=SettingValueType.string,
-            value_text=totp_key,
-            is_secret=True,
-        )
+    # No `jwt_secret` or `totp_encryption_key` rows: both are held from OpenBao
+    # at boot (`app/services/kernel_secret_source.py`) and read from there, so
+    # a row would be a reference nothing follows and a control an operator can
+    # edit to no effect. Their specs are retired for the same reason.
 
 
 def seed_audit_settings(db: Session) -> None:
@@ -444,6 +432,41 @@ def seed_usage_settings(db: Session) -> None:
 
 
 def seed_notification_settings(db: Session) -> None:
+    # SMS channel controls. `env_var` is a BOOTSTRAP input: it is materialised
+    # into a row here and never consulted again at runtime, which is what
+    # replaced `sms._get_setting`'s env-above-row read. The credentials are not
+    # seeded — they are held in app.config (ADR-0009).
+    sms_enabled_raw = os.getenv("SMS_ENABLED", "false")
+    notification_settings.ensure_by_key(
+        db,
+        key="sms_enabled",
+        value_type=SettingValueType.boolean,
+        value_text=sms_enabled_raw,
+        value_json=sms_enabled_raw.lower() in {"1", "true", "yes", "on", "enabled"},
+    )
+    for key, env_key, fallback in (
+        ("sms_provider", "SMS_PROVIDER", ""),
+        ("sms_from_number", "SMS_FROM_NUMBER", ""),
+        ("sms_username", "SMS_USERNAME", ""),
+        ("sms_webhook_url", "SMS_WEBHOOK_URL", ""),
+    ):
+        notification_settings.ensure_by_key(
+            db,
+            key=key,
+            value_type=SettingValueType.string,
+            value_text=os.getenv(env_key, fallback),
+        )
+    for key, env_key, fallback in (
+        ("sms_api_timeout_seconds", "SMS_API_TIMEOUT_SECONDS", "30"),
+        ("sms_max_length", "SMS_MAX_LENGTH", "160"),
+    ):
+        notification_settings.ensure_by_key(
+            db,
+            key=key,
+            value_type=SettingValueType.integer,
+            value_text=os.getenv(env_key, fallback),
+        )
+
     enabled_raw = os.getenv("ALERT_NOTIFICATIONS_ENABLED", "true")
     notification_settings.ensure_by_key(
         db,
@@ -522,8 +545,6 @@ def seed_notification_settings(db: Session) -> None:
             "NOTIFICATION_PER_CHANNEL_RATE_LIMIT",
             "50",
         ),
-        ("sms_api_timeout_seconds", "SMS_API_TIMEOUT_SECONDS", "30"),
-        ("sms_max_length", "SMS_MAX_LENGTH", "160"),
         ("notification_quiet_hours_start", "NOTIFICATION_QUIET_HOURS_START", "22:00"),
         ("notification_quiet_hours_end", "NOTIFICATION_QUIET_HOURS_END", "07:00"),
         (
@@ -1334,12 +1355,6 @@ def seed_scheduler_settings(db: Session) -> None:
     )
     scheduler_settings.ensure_by_key(
         db,
-        key="refresh_minutes",
-        value_type=SettingValueType.integer,
-        value_text=os.getenv("CELERY_BEAT_REFRESH_MINUTES", "5"),
-    )
-    scheduler_settings.ensure_by_key(
-        db,
         key="event_dispatch_interval_seconds",
         value_type=SettingValueType.integer,
         value_text=os.getenv("EVENT_DISPATCH_INTERVAL_SECONDS", "60"),
@@ -1377,13 +1392,11 @@ def seed_radius_settings(db: Session) -> None:
         value_type=SettingValueType.string,
         value_text=os.getenv("RADIUS_AUTH_SERVER_ID", ""),
     )
-    radius_settings.ensure_by_key(
-        db,
-        key="auth_shared_secret",
-        value_type=SettingValueType.string,
-        value_text=os.getenv("RADIUS_AUTH_SHARED_SECRET", ""),
-        is_secret=True,
-    )
+    # No `auth_shared_secret` row: it is no longer a setting. It is held from
+    # OpenBao at boot (`app/services/kernel_secret_source.py`) and read there by
+    # `radius_auth.authenticate`, so seeding one would recreate the row whose
+    # only content was a `bao://` reference — and whose spec was retired for
+    # having no reader.
     radius_settings.ensure_by_key(
         db,
         key="auth_dictionary_path",
@@ -1536,13 +1549,9 @@ def seed_billing_settings(db: Session) -> None:
         value_type=SettingValueType.string,
         value_text=os.getenv("BILLING_DEFAULT_CURRENCY", "NGN"),
     )
-    billing_settings.ensure_by_key(
-        db,
-        key="prepaid_reconstruction_attestation_public_key_ref",
-        value_type=SettingValueType.string,
-        value_text=os.getenv("PREPAID_RECONSTRUCTION_ATTESTATION_PUBLIC_KEY_REF", ""),
-        is_secret=True,
-    )
+    # No `prepaid_reconstruction_attestation_public_key_ref` row: the trust
+    # anchor is held from a path named in code, so the settings surface cannot
+    # repoint it — see `prepaid_funding_attestation.resolve_trusted_public_key_pem`.
     billing_settings.ensure_by_key(
         db,
         key="default_invoice_status",
@@ -2188,6 +2197,45 @@ def seed_projects_settings(db: Session) -> None:
     )
     projects_settings.ensure_by_key(
         db,
+        key="project_completion_finance_email_enabled",
+        value_type=SettingValueType.boolean,
+        value_text=os.getenv("PROJECTS_COMPLETION_FINANCE_EMAIL_ENABLED", "true"),
+        value_json=(
+            os.getenv("PROJECTS_COMPLETION_FINANCE_EMAIL_ENABLED", "true")
+            .strip()
+            .lower()
+            in {"1", "true", "yes", "on"}
+        ),
+    )
+    recipients = [
+        item.strip()
+        for item in os.getenv("PROJECTS_COMPLETION_FINANCE_EMAIL_RECIPIENTS", "").split(
+            ","
+        )
+        if item.strip()
+    ]
+    if not projects_settings.get_optional_by_key(
+        db, "project_completion_finance_email_recipients"
+    ):
+        projects_settings.create(
+            db,
+            DomainSettingCreate(
+                domain=SettingDomain.projects,
+                key="project_completion_finance_email_recipients",
+                value_type=SettingValueType.list,
+                value_json=recipients,
+            ),
+        )
+    projects_settings.ensure_by_key(
+        db,
+        key="project_completion_finance_permission_key",
+        value_type=SettingValueType.string,
+        value_text=os.getenv(
+            "PROJECTS_COMPLETION_FINANCE_PERMISSION_KEY", "finance:ap:read"
+        ),
+    )
+    projects_settings.ensure_by_key(
+        db,
         key="default_labor_hourly_rate",
         value_type=SettingValueType.string,
         value_text=os.getenv("PROJECTS_DEFAULT_LABOR_HOURLY_RATE", "0.00"),
@@ -2278,31 +2326,11 @@ def seed_network_policy_settings(db: Session) -> None:
         value_type=SettingValueType.string,
         value_text=os.getenv("NETWORK_DEFAULT_FIBER_STRAND_STATUS", "available"),
     )
-    # Fiber installation planning cost rates
-    network_settings.ensure_by_key(
-        db,
-        key="fiber_drop_cable_cost_per_meter",
-        value_type=SettingValueType.string,
-        value_text=os.getenv("NETWORK_FIBER_DROP_CABLE_COST_PER_METER", "2.50"),
-    )
-    network_settings.ensure_by_key(
-        db,
-        key="fiber_labor_cost_per_meter",
-        value_type=SettingValueType.string,
-        value_text=os.getenv("NETWORK_FIBER_LABOR_COST_PER_METER", "1.50"),
-    )
-    network_settings.ensure_by_key(
-        db,
-        key="fiber_ont_device_cost",
-        value_type=SettingValueType.string,
-        value_text=os.getenv("NETWORK_FIBER_ONT_DEVICE_COST", "85.00"),
-    )
-    network_settings.ensure_by_key(
-        db,
-        key="fiber_installation_base_fee",
-        value_type=SettingValueType.string,
-        value_text=os.getenv("NETWORK_FIBER_INSTALLATION_BASE_FEE", "50.00"),
-    )
+    # No fiber installation cost rates here. They are `fiber_cost_items` rows
+    # now — a component is data, so adding a splice closure or a permit fee no
+    # longer means editing a spec, a service and a template. Their defaults
+    # (2.50/m, 1.50/m, 85.00, 50.00) were USD-shaped values rendered as naira,
+    # which is why the seeded rows arrive unpriced: see migration 519.
 
 
 def seed_network_settings(db: Session) -> None:
@@ -2484,16 +2512,10 @@ def seed_comms_settings(db: Session) -> None:
 
 def seed_wireguard_settings(db: Session) -> None:
     """Seed WireGuard VPN settings from environment variables."""
-    # Encryption key for storing WireGuard private keys at rest
-    wg_key = os.getenv("WIREGUARD_KEY_ENCRYPTION_KEY")
-    if wg_key and is_openbao_ref(wg_key):
-        network_settings.ensure_by_key(
-            db,
-            key="wireguard_key_encryption_key",
-            value_type=SettingValueType.string,
-            value_text=wg_key,
-            is_secret=True,
-        )
+    # No `wireguard_key_encryption_key` row: the key that encrypts WireGuard
+    # private keys at rest is held from OpenBao at boot
+    # (`app/services/kernel_secret_source.py`) and read from there. A row would
+    # be a reference nothing follows, in the same database the key protects.
     # Log retention
     network_settings.ensure_by_key(
         db,

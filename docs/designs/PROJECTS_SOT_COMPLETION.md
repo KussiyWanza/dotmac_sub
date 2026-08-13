@@ -34,15 +34,36 @@ deliverable. Queue failure rolls back only the optional participant savepoint;
 the transition remains authoritative and the owner records durable
 `customer_status_notification_failed` audit evidence.
 
+When a Project enters `completed`, `operations.project_lifecycle` may also queue
+one internal finance email per resolved recipient. The projects-domain
+`project_completion_finance_email_enabled` setting gates the automation. The
+`project_completion_finance_email_recipients` list may name explicit recipients;
+otherwise the owner resolves active staff through the configured
+`project_completion_finance_permission_key` permission, defaulting to
+`finance:ap:read`. The consequence records `project_completed_finance`
+Notification rows with per-project/per-recipient dedupe keys and never embeds a
+hardcoded email address. It runs inside the same optional completion consequence
+savepoint as customer completion messaging, so failure cannot roll back the
+authoritative Project transition.
+
 When an existing task gains an assignee through the lifecycle update command,
-the owner queues one email for each newly added active staff member whose
+the owner queues one in-app notification and one email for each newly added
+active staff member whose
 assignment identifier resolves to either their `SystemUser` or canonical Person
 identity. Staff who were already assigned are not emailed again. Removing an
 assignee, changing any non-assignment task field, or assigning an unresolved or
-inactive identity does not queue this email. This consequence is part of the
-same owner transaction and does not add a push notification. Queue failures are
+inactive identity does not queue these notifications. This consequence is part
+of the same owner transaction. Queue failures are
 isolated in the approved owner savepoint and recorded as durable project-task
 audit evidence after rollback, so the reassignment itself remains valid.
+
+Project-level assignment and task-assignment consequences now use the shared
+staff audience resolver. Direct users and active members of an assigned Service
+Team receive an in-app notification and, when an email address exists, a queued
+email. Comment mentions use the same individual and Service Team group
+semantics across projects and tasks. The retired Site Project Coordinator
+column remains readable on historical records but is absent from new-project
+input and is no longer populated by regional or assignment rules.
 
 `operations.work_order_commands` remains the writer of WorkOrder bindings. The
 project owner validates the native Project-to-ProjectTask side; neither owner
@@ -125,6 +146,11 @@ the project aggregate. This makes preserved imports authoritative inputs to the
 counter and prevents a stale local sequence from restarting the series. The
 476 cutover repairs the native `4` through `7` drift as `PROJ-1104` through
 `PROJ-1107` and advances, but never rewinds, the sequence to at least 1108.
+The 496 follow-up repairs numeric `8` through `10` rows created during that
+cutover window. It locks numbering and project creation, assigns those rows in
+numeric order after both the highest canonical suffix and any value already
+reserved by the sequence when the migration runs, and then advances the
+sequence without rewinding it.
 
 State-changing commands stage audit and versioned domain-event evidence in the
 same transaction as authoritative state. Events are delivered after commit by
@@ -148,3 +174,11 @@ adapters delegate to the typed transition command. A task cannot transition to
 is inactive or not itself `done`. Dependency replacement is atomic, replaces
 the full reviewed set, records audit evidence, and emits
 `project_task.dependencies_replaced` in the same owner transaction.
+
+Project and task comment creation now participates in the same typed Project
+owner boundary as attachment staging, audit evidence, and explicit-mention
+notification staging. Task assignment and explicit project/task comment
+mentions may stage one deduplicated `nextcloud_talk` row per mapped staff user.
+The feature defaults disabled, and no Nextcloud HTTP occurs before the Project
+transaction commits; delivery, room reuse, stale-room repair, and retry policy
+belong to `communications.nextcloud_talk_staff`.

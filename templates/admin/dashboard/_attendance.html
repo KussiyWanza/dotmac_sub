@@ -1,0 +1,60 @@
+<section id="attendance-widget"
+         aria-label="Attendance"
+         class="rounded-2xl border border-slate-200/60 bg-white p-5 shadow-sm dark:border-slate-700/60 dark:bg-slate-800">
+    <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+            <p class="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500 dark:text-slate-400">Attendance</p>
+
+            {% if attendance %}
+                {% if attendance.state == attendance_state.NOT_CHECKED_IN %}
+                <p class="mt-1 text-sm font-medium text-slate-800 dark:text-slate-100">Not checked in today</p>
+                {% elif attendance.state == attendance_state.CHECKED_IN %}
+                <p class="mt-1 text-sm font-medium text-slate-800 dark:text-slate-100">
+                    Checked in: <span class="font-mono">{{ attendance.check_in_at | app_datetime('%H:%M') }}</span>
+                </p>
+                {% elif attendance.state == attendance_state.CHECKED_OUT %}
+                <div class="mt-1 space-y-0.5 text-sm font-medium text-slate-800 dark:text-slate-100">
+                    <p>Checked in: <span class="font-mono">{{ attendance.check_in_at | app_datetime('%H:%M') }}</span></p>
+                    <p>Checked out: <span class="font-mono">{{ attendance.check_out_at | app_datetime('%H:%M') }}</span></p>
+                </div>
+                {% else %}
+                <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">
+                    {% if attendance.reason == 'overnight_shift_not_supported' %}
+                    Selfcare attendance is not yet available for overnight shifts.
+                    {% else %}
+                    Attendance is not available for this account.
+                    {% endif %}
+                </p>
+                {% endif %}
+            {% else %}
+            <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">
+                {{ error_message or 'Attendance is not available for this account.' }}
+            </p>
+            {% endif %}
+
+            <p data-attendance-error
+               class="mt-2 text-xs text-rose-600 dark:text-rose-400"
+               role="alert">{% if attendance and error_message %}{{ error_message }}{% endif %}</p>
+        </div>
+
+        {% if attendance and 'check_in' in attendance.allowed_actions %}
+        <button type="button"
+                data-attendance-action="check-in"
+                class="inline-flex min-h-10 items-center justify-center rounded-xl bg-amber-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-amber-400 disabled:cursor-wait disabled:opacity-60">
+            Check In
+        </button>
+        {% elif attendance and 'check_out' in attendance.allowed_actions %}
+        <button type="button"
+                data-attendance-action="check-out"
+                class="inline-flex min-h-10 items-center justify-center rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:cursor-wait disabled:opacity-60 dark:bg-amber-500 dark:text-slate-950 dark:hover:bg-amber-400">
+            Check Out
+        </button>
+        {% elif attendance_unavailable %}
+        <button type="button"
+                data-attendance-refresh
+                class="inline-flex min-h-10 items-center justify-center rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-700">
+            Try again
+        </button>
+        {% endif %}
+    </div>
+</section>

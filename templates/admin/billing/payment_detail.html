@@ -26,7 +26,7 @@
         back_label="Payments",
         status=status_html
     ) %}
-        {% if status_val == 'succeeded' %}
+        {% if receipt_available %}
         {{ action_button("Download receipt", href="/admin/billing/payments/" ~ payment.id ~ "/receipt/pdf", variant="secondary", color="emerald") }}
         {% endif %}
         {% if edit_capability.allowed %}

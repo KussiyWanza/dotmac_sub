@@ -111,6 +111,10 @@ class TestWifiConfig:
                 "app.services.network.reconcile.reconcile_ont",
                 side_effect=_reconcile,
             ),
+            patch(
+                "app.services.network.ont_features.encrypt_credential",
+                return_value="enc:wrapped-test-value",
+            ),
             patch("app.services.network.ont_features._emit_feature_event"),
         ):
             result = OntFeatureService.set_wifi_config(
@@ -127,7 +131,7 @@ class TestWifiConfig:
         assert captured == {
             "wifi_enabled": False,
             "wifi_ssid": "DOTMAC",
-            "wifi_password_ref": "Secret123",
+            "wifi_password_ref": "enc:wrapped-test-value",
             "wifi_channel": 6,
             "wifi_security_mode": "WPA2-Personal",
             "mode": "bootstrap",

@@ -26,6 +26,7 @@ from app.services.network.ont_olt_context import (
     OntOltWriteContext,
     resolve_ont_olt_write_context,
 )
+from app.services.network.parsers.cli import canonical_fsp
 from app.services.network.provisioning_events import (
     current_provisioning_correlation_key,
 )
@@ -554,8 +555,20 @@ class OntWriteService:
                 message="Cross-OLT moves not yet supported. Please deauthorize and re-authorize manually.",
             )
 
-        # Build target FSP string from PonPort.name (format: "0/2/1")
-        target_fsp = target_port.name
+        # PonPort.name is not guaranteed to be a bare F/S/P — olt_pon_port_control
+        # normalizes the same field because names carry prefixes like
+        # "gpon-0/2/1". Canonicalize here so the OLT command is never built from
+        # a prefixed string ("interface gpon gpon-0/2").
+        target_parts = canonical_fsp(target_port.name)
+        if target_parts is None:
+            return ActionResult(
+                success=False,
+                message=(
+                    f"Target PON port name {target_port.name!r} is not a valid "
+                    "Frame/Slot/Port."
+                ),
+            )
+        target_fsp = target_parts.fsp
 
         if ctx is None:
             return ActionResult(success=False, message="ONT OLT context is incomplete.")
@@ -640,15 +653,48 @@ class OntWriteService:
             return result.success, result.message
 
         def verify_deauthorize() -> tuple[bool, str]:
-            # Verify ONT is no longer on the old port by checking autofind
-            # For now, trust the deauthorize succeeded if no error
+            # ``OltProtocolAdapter.deauthorize_ont`` only reports success after
+            # reading the ONT back as absent, so the removal is already
+            # device-verified by the time this runs.
             return True, "ONT deauthorized from old port"
+
+        def rollback_deauthorize() -> None:
+            # Without this the operation is not actually all-or-nothing: a
+            # failure in step 2 left a working subscriber ONT deleted from the
+            # OLT with nothing restoring it on the source port.
+            if not ont.serial_number:
+                logger.error(
+                    "Cannot restore ONT %s on %s: no serial number recorded",
+                    ont.id,
+                    ctx.fsp,
+                )
+                return
+            restore = adapter.authorize_ont(
+                ctx.fsp,
+                ont.serial_number,
+                line_profile_id=line_profile_id,
+                service_profile_id=service_profile_id,
+            )
+            if restore.success:
+                logger.info(
+                    "Restored ONT %s on source port %s after failed move",
+                    ont.serial_number,
+                    ctx.fsp,
+                )
+            else:
+                logger.error(
+                    "ONT %s remains deauthorized: restore on %s failed: %s",
+                    ont.serial_number,
+                    ctx.fsp,
+                    restore.message,
+                )
 
         op.add_step(
             DeviceOperationStep(
                 name="deauthorize_old",
                 apply_fn=apply_deauthorize,
                 verify_fn=verify_deauthorize,
+                rollback_fn=rollback_deauthorize,
                 timeout_seconds=30.0,
             )
         )

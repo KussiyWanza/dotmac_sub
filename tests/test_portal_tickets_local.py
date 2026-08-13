@@ -13,7 +13,7 @@ from app.models.event_store import EventStatus, EventStore
 from app.models.sequence import DocumentSequence
 from app.models.service_team import ServiceTeam, ServiceTeamType
 from app.models.support import Ticket, TicketChannel, TicketCommentAuthorType
-from app.schemas.support import TicketCommentCreate
+from app.schemas.support import TicketCommentCreate, TicketCreate
 from app.services import crm_portal
 from app.services import support as support_service
 from app.services import support_ticket_settings as support_ticket_settings_service
@@ -220,6 +220,30 @@ def test_list_and_detail_round_trip(db_session, subscriber):
     )
     assert detail["ticket"] is not None
     assert detail["ticket"]["id"] == tid
+    assert detail["ticket"]["description"] == "details"
+
+
+def test_legacy_internal_description_is_hidden_but_ticket_reference_remains(
+    db_session, subscriber
+):
+    ticket = support_service.Tickets.create(
+        db_session,
+        TicketCreate(
+            subscriber_id=subscriber.id,
+            title="Historical issue",
+            description="Internal legacy diagnosis",
+        ),
+        actor_id=None,
+    )
+
+    detail = crm_portal.ticket_detail_context(
+        None, db_session, {}, [str(subscriber.id)], str(ticket.id)
+    )
+
+    assert detail["ticket"]["ticket_number"] == ticket.number
+    assert detail["ticket"]["status"] == ticket.status
+    assert detail["ticket"]["description"] == ""
+    assert detail["ticket"]["description_available_to_customer"] is False
 
 
 def test_detail_enforces_ownership(db_session, subscriber):

@@ -6,11 +6,14 @@ import logging
 import re
 
 from app.models.network import OLTDevice
+from app.services.network.huawei_cli_response import describe_huawei_rejection
 from app.services.network.olt_ssh_ont._common import (
     _SSH_CONNECTION_ERRORS,
     _run_ont_config_command,
-    _send_slow,
+    invalid_fsp_message,
+    send_ont_command,
 )
+from app.services.network.parsers.cli import canonical_fsp
 
 logger = logging.getLogger(__name__)
 
@@ -20,8 +23,8 @@ def _is_ma5800(olt: OLTDevice) -> bool:
 
 
 def _wan_config_display_commands(olt: OLTDevice, fsp: str, ont_id: int) -> list[str]:
-    parts = fsp.split("/")
-    port_num = parts[2] if len(parts) > 2 else "0"
+    parts = canonical_fsp(fsp)
+    port_num = parts.port if parts else "0"
     full_cmd = f"display ont wan-config {fsp} {ont_id}"
     short_cmd = f"display ont wan-config {port_num} {ont_id}"
     if _is_ma5800(olt):
@@ -92,8 +95,8 @@ def configure_ont_internet_config(
     ip_index: int = 0,
 ) -> tuple[bool, str]:
     """Activate TCP stack on ONT management WAN via internet-config."""
-    parts = fsp.split("/")
-    port_num = parts[2] if len(parts) > 2 else "0"
+    parts = canonical_fsp(fsp)
+    port_num = parts.port if parts else "0"
     return _run_ont_config_command(
         olt,
         fsp,
@@ -110,8 +113,8 @@ def clear_ont_internet_config(
     ip_index: int = 0,
 ) -> tuple[bool, str]:
     """Best-effort removal of ONT internet-config state."""
-    parts = fsp.split("/")
-    port_num = parts[2] if len(parts) > 2 else "0"
+    parts = canonical_fsp(fsp)
+    port_num = parts.port if parts else "0"
     return _run_ont_config_command(
         olt,
         fsp,
@@ -129,8 +132,8 @@ def configure_ont_wan_config(
     profile_id: int = 0,
 ) -> tuple[bool, str]:
     """Set route+NAT mode on ONT management WAN via wan-config."""
-    parts = fsp.split("/")
-    port_num = parts[2] if len(parts) > 2 else "0"
+    parts = canonical_fsp(fsp)
+    port_num = parts.port if parts else "0"
     ok, message = _run_ont_config_command(
         olt,
         fsp,
@@ -164,8 +167,8 @@ def clear_ont_wan_config(
     ip_index: int = 0,
 ) -> tuple[bool, str]:
     """Best-effort removal of ONT wan-config state."""
-    parts = fsp.split("/")
-    port_num = parts[2] if len(parts) > 2 else "0"
+    parts = canonical_fsp(fsp)
+    port_num = parts.port if parts else "0"
     return _run_ont_config_command(
         olt,
         fsp,
@@ -197,13 +200,12 @@ def configure_ont_pppoe_omci(
     """
     from app.services.network import olt_ssh as core
 
-    ok, err = core._validate_fsp(fsp)
-    if not ok:
-        return False, err
+    parts = canonical_fsp(fsp)
+    if parts is None:
+        return False, invalid_fsp_message(fsp)
 
-    parts = fsp.split("/")
-    frame_slot = f"{parts[0]}/{parts[1]}"
-    port_num = parts[2]
+    frame_slot = parts.frame_slot
+    port_num = parts.port
 
     try:
         transport, channel, _policy = core._open_shell(olt)
@@ -217,8 +219,7 @@ def configure_ont_pppoe_omci(
         config_prompt = r"[#)]\s*$"
         core._run_huawei_cmd(channel, "config", prompt=config_prompt)
 
-        # Use slow send for interface and command to avoid MA5608T terminal corruption
-        _send_slow(channel, f"interface gpon {frame_slot}")
+        send_ont_command(olt, channel, f"interface gpon {frame_slot}")
         core._read_until_prompt(channel, config_prompt, timeout_sec=8)
 
         # Huawei MA5608T/MA5800 syntax for PPPoE via OMCI
@@ -227,7 +228,7 @@ def configure_ont_pppoe_omci(
             f"pppoe vlan {vlan_id} priority {priority} "
             f"user-account username {username} password {password}"
         )
-        _send_slow(channel, cmd)
+        send_ont_command(olt, channel, cmd)
         output = core._read_until_prompt(channel, config_prompt, timeout_sec=12)
 
         core._run_huawei_cmd(channel, "quit", prompt=config_prompt)
@@ -241,7 +242,7 @@ def configure_ont_pppoe_omci(
                 olt.name,
                 clean_output,
             )
-            return False, f"OLT rejected: {clean_output}"
+            return False, describe_huawei_rejection(clean_output)
 
         logger.info(
             "Configured PPPoE via OMCI for ONT %d on OLT %s (VLAN %d, user %s)",
@@ -270,8 +271,8 @@ def configure_ont_port_native_vlan(
     priority: int = 0,
 ) -> tuple[bool, str]:
     """Set native VLAN on ONT Ethernet port for bridging mode."""
-    parts = fsp.split("/")
-    port_num = parts[2] if len(parts) > 2 else "0"
+    parts = canonical_fsp(fsp)
+    port_num = parts.port if parts else "0"
     return _run_ont_config_command(
         olt,
         fsp,

@@ -56,7 +56,7 @@ from app.models.splynx_transaction import SplynxBillingTransaction
 from app.models.subscriber import Subscriber
 from app.schemas.billing import CreditNoteIssuePreviewRequest
 from app.services.billing.credit_notes import CreditNotes
-from app.services.billing.splynx_history_opening import SplynxHistoryOpeningError
+from app.services.billing.opening_balance_history import OpeningBalanceHistoryError
 from app.services.customer_financial_ledger import calculate_customer_balance
 from scripts.one_off.billing_alignment_audit import (
     LEGACY_LEDGER_CUTOVER,
@@ -644,8 +644,8 @@ def test_funding_export_fails_complete_batch_without_source_history(
     db_session.commit()
     try:
         with pytest.raises(
-            SplynxHistoryOpeningError,
-            match="frozen Splynx history does not cover the complete customer cohort",
+            OpeningBalanceHistoryError,
+            match="frozen opening-balance history does not cover the complete customer cohort",
         ):
             build_prepaid_funding_snapshot(
                 db_session,
@@ -1515,7 +1515,23 @@ def test_d12_query_count_does_not_scale_with_prepaid_accounts(db_session):
     finally:
         event.remove(bind, "before_cursor_execute", count_statement)
 
-    assert statements < 25, (
+    # Raised from 25 to 32 by the settings cutover, and deliberately not
+    # quietly. Kernel resolution walks a SCOPE CHAIN — the operator tenant's
+    # row, then the platform row — where Sub's former resolver did one flat
+    # lookup, so each distinct setting read costs one statement more. That is
+    # the price of tenant-scoped settings (ADR-0009: the operator IS a tenant),
+    # not a regression in this code path.
+    #
+    # What guards the bug class is the SLOPE assertion above, and it is
+    # untouched: the message names the batching
+    # invariant, and D12 still runs 4 batches over 20 accounts. A budget raised whenever it
+    # fails is worthless, so the constant moves only with a named cause and the
+    # proportional check stays exactly as strict.
+    #
+    # It comes back down when settings caching is settled — Redis fronts this
+    # in production but is deliberately dead in the unit suite (conftest points
+    # REDIS_URL at a refusing port), so these numbers are the uncached cost.
+    assert statements < 32, (
         f"D12 issued {statements} statements for {len(accounts)} accounts; "
         "the threshold or balance derivation is no longer batched"
     )

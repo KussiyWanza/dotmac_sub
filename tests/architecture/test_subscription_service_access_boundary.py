@@ -42,3 +42,14 @@ def test_legacy_bulk_migration_cannot_write_router_or_address_pool() -> None:
     assert "current.provisioning_nas_device_id =" not in source
     assert "assignment.ipv4_address.pool_id =" not in source
     assert "assignment.ipv6_address.pool_id =" not in source
+
+
+def test_pool_link_backfill_excludes_demo_and_uses_active_service_evidence() -> None:
+    migration = (
+        ROOT / "alembic/versions/521_backfill_nas_radius_pool_links.py"
+    ).read_text(encoding="utf-8")
+
+    assert "lower(trim(p.name)) <> 'demo'" in migration
+    assert "a.is_active IS TRUE" in migration
+    assert "s.provisioning_nas_device_id IS NOT NULL" in migration
+    assert 'f"radius_pool:{pool_id}"' in migration

@@ -1,4 +1,5 @@
 {% extends "layouts/admin.html" %}
+{% from "components/ui/list_macros.html" import list_pagination %}
 
 {% block title %}Fiber Field Verification - Admin{% endblock %}
 
@@ -29,11 +30,11 @@
     <section class="grid gap-3 lg:grid-cols-3">
         <div class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-800">
             <h2 class="text-sm font-semibold text-slate-900 dark:text-white">Evidence states</h2>
-            <dl class="mt-3 space-y-2 text-xs">{% for state, count in worklist.state_counts.items() %}<div class="flex justify-between gap-3"><dt class="text-slate-500">{{ state | replace('_', ' ') | title }}</dt><dd class="font-semibold text-slate-900 dark:text-white">{{ count }}</dd></div>{% endfor %}</dl>
+            <dl class="mt-3 space-y-2 text-xs">{% for state, count in worklist.state_counts %}<div class="flex justify-between gap-3"><dt class="text-slate-500">{{ state | replace('_', ' ') | title }}</dt><dd class="font-semibold text-slate-900 dark:text-white">{{ count }}</dd></div>{% endfor %}</dl>
         </div>
         <div class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-800">
             <h2 class="text-sm font-semibold text-slate-900 dark:text-white">Priority queue</h2>
-            <dl class="mt-3 space-y-2 text-xs">{% for priority, count in worklist.priority_counts.items() %}<div class="flex justify-between gap-3"><dt class="text-slate-500">{{ priority | replace('_', ' ') | title }}</dt><dd class="font-semibold text-slate-900 dark:text-white">{{ count }}</dd></div>{% endfor %}</dl>
+            <dl class="mt-3 space-y-2 text-xs">{% for priority, count in worklist.priority_counts %}<div class="flex justify-between gap-3"><dt class="text-slate-500">{{ priority | replace('_', ' ') | title }}</dt><dd class="font-semibold text-slate-900 dark:text-white">{{ count }}</dd></div>{% endfor %}</dl>
         </div>
         <div class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-800">
             <h2 class="text-sm font-semibold text-slate-900 dark:text-white">Work-order context</h2>
@@ -42,20 +43,21 @@
         </div>
     </section>
 
-    <section class="space-y-3">
+    <section id="latest-staged-source-identities" class="scroll-mt-6 space-y-3">
         <div>
             <h2 class="text-lg font-semibold text-slate-900 dark:text-white">Latest staged source identities</h2>
-            <p class="text-sm text-slate-500 dark:text-slate-400">The report and counts always use the complete cohort; this table displays the first 500 rows in deterministic evidence-priority order. Use the read-only CLI for complete JSON.</p>
+            <p class="text-sm text-slate-500 dark:text-slate-400">The report and counts always use the complete cohort; this table paginates the same deterministic evidence-priority order. Use the read-only CLI for complete JSON.</p>
         </div>
-        <div class="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
+        <div class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
+            <div class="overflow-x-auto">
             <table class="min-w-full text-sm">
                 <thead class="border-b border-slate-200 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500 dark:border-slate-700 dark:bg-slate-900/50"><tr><th class="px-4 py-3">Priority</th><th class="px-4 py-3">Source feature</th><th class="px-4 py-3">Evidence</th><th class="px-4 py-3">Work orders</th><th class="px-4 py-3">Next evidence step</th></tr></thead>
                 <tbody class="divide-y divide-slate-200 dark:divide-slate-700">
-                    {% for row in worklist.rows[:500] %}
+                    {% for row in worklist_rows %}
                     <tr class="align-top">
                         <td class="px-4 py-4"><span class="rounded-full px-2 py-1 text-xs font-semibold {{ 'bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-200' if row.priority_rank <= 2 else 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200' if row.priority_rank <= 5 else 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200' }}">{{ row.priority | replace('_', ' ') | title }}</span></td>
                         <td class="px-4 py-4 text-xs"><div class="font-semibold text-slate-900 dark:text-white">{{ row.display_name or row.external_id or row.staged_feature_id }}</div><div class="mt-1 font-mono text-slate-500">{{ row.source_system }} / {{ row.source_profile }}</div><div class="mt-1 text-slate-500">{{ row.asset_type | replace('_', ' ') }} · {{ row.content_sha256[:16] }}…</div>{% if row.blocker_codes %}<div class="mt-1 text-rose-600">Source blockers: {{ row.blocker_codes | join(', ') }}</div>{% endif %}</td>
-                        <td class="px-4 py-4 text-xs"><div class="font-semibold text-slate-800 dark:text-slate-200">{{ row.verification_state | replace('_', ' ') | title }}</div><div class="mt-1 text-slate-500">Current {{ row.field_verification.current_observation_count }} · superseded {{ row.field_verification.superseded_observation_count }}</div>{% if row.field_verification.scope_states %}<div class="mt-1 text-slate-500">{% for scope, state in row.field_verification.scope_states.items() %}{{ scope | replace('_', ' ') }}: {{ state | replace('_', ' ') }}{% if not loop.last %}<br>{% endif %}{% endfor %}</div>{% endif %}</td>
+                        <td class="px-4 py-4 text-xs"><div class="font-semibold text-slate-800 dark:text-slate-200">{{ row.verification_state | replace('_', ' ') | title }}</div><div class="mt-1 text-slate-500">Current {{ row.field_verification.current_observation_count }} · superseded {{ row.field_verification.superseded_observation_count }}</div>{% if row.field_verification.scope_states %}<div class="mt-1 text-slate-500">{% for scope, state in row.field_verification.scope_states %}{{ scope | replace('_', ' ') }}: {{ state | replace('_', ' ') }}{% if not loop.last %}<br>{% endif %}{% endfor %}</div>{% endif %}</td>
                         <td class="px-4 py-4 text-xs text-slate-500">{% for job in row.current_work_orders %}<div><span class="font-semibold text-slate-700 dark:text-slate-300">Current</span> {{ job.work_order_public_id }}</div>{% endfor %}{% for job in row.superseded_work_orders %}<div><span class="font-semibold text-amber-700 dark:text-amber-300">Superseded</span> {{ job.work_order_public_id }}</div>{% endfor %}{% if not row.current_work_orders and not row.superseded_work_orders %}<span>No observation job</span>{% endif %}</td>
                         <td class="max-w-md px-4 py-4 text-xs text-slate-600 dark:text-slate-300">{{ row.next_evidence_step }}<div class="mt-2 font-mono text-[10px] text-slate-400" title="Row evidence SHA-256">{{ row.row_sha256 }}</div></td>
                     </tr>
@@ -64,6 +66,8 @@
                     {% endfor %}
                 </tbody>
             </table>
+            </div>
+            {{ list_pagination(list_query, page_meta, '/admin/network/fiber-field-verification', entity='identities', anchor='latest-staged-source-identities', compact_range=true) }}
         </div>
     </section>
 </div>

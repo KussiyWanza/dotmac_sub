@@ -94,8 +94,7 @@ class Ticket {
   final int? csatRating;
   final List<TicketSelfCareAction> resolutionActions;
 
-  bool get isOpen =>
-      closedAt == null && status != 'closed' && status != 'resolved';
+  bool get isOpen => closedAt == null && status != 'closed';
 
   /// The server decides whether CSAT is currently available.
   bool get canRate => resolutionActions.any(

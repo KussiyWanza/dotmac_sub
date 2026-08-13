@@ -27,6 +27,129 @@
   const csrfToken = () =>
     document.querySelector('meta[name="csrf-token"]')?.content || "";
 
+  window.inboxTeamFilterBuilder = function inboxTeamFilterBuilder(initialJson) {
+    const blankCondition = (bucket = "and") => ({
+      id: `${Date.now()}-${Math.random()}`,
+      bucket,
+      operator: "=",
+      value: "",
+      values: [],
+    });
+    const rowCondition = (row, bucket) => {
+      if (!Array.isArray(row) || row.length < 4) return null;
+      if (row[0] !== "InboxConversation" || row[1] !== "service_team_id") {
+        return null;
+      }
+      const operator = String(row[2] || "=");
+      const rawValue = row[3];
+      return {
+        id: `${Date.now()}-${Math.random()}`,
+        bucket,
+        operator,
+        value: Array.isArray(rawValue) ? "" : String(rawValue || ""),
+        values: Array.isArray(rawValue) ? rawValue.map(String) : [],
+      };
+    };
+    const parseConditions = () => {
+      if (!initialJson) return [];
+      try {
+        const parsed =
+          typeof initialJson === "string" ? JSON.parse(initialJson) : initialJson;
+        const entries = Array.isArray(parsed) ? parsed : [];
+        const conditions = [];
+        entries.forEach((entry) => {
+          if (Array.isArray(entry)) {
+            const condition = rowCondition(entry, "and");
+            if (condition) conditions.push(condition);
+            return;
+          }
+          if (entry && Array.isArray(entry.or)) {
+            entry.or.forEach((row) => {
+              const condition = rowCondition(row, "or");
+              if (condition) conditions.push(condition);
+            });
+          }
+        });
+        return conditions;
+      } catch (_error) {
+        return [];
+      }
+    };
+    const initialConditions = parseConditions();
+    return {
+      conditions: initialConditions,
+      filtersJson: typeof initialJson === "string" ? initialJson : "",
+
+      usesMany(condition) {
+        return ["in", "not in"].includes(condition.operator);
+      },
+
+      needsTeam(condition) {
+        return !["is", "is not"].includes(condition.operator);
+      },
+
+      addCondition() {
+        this.conditions.push(
+          blankCondition(
+            this.conditions.some((item) => item.bucket === "and") ? "or" : "and",
+          ),
+        );
+      },
+
+      removeCondition(id) {
+        this.conditions = this.conditions.filter((item) => item.id !== id);
+        this.syncFilters();
+      },
+
+      operatorChanged(condition) {
+        condition.value = "";
+        condition.values = [];
+        this.syncFilters();
+      },
+
+      transportRow(condition) {
+        let value = null;
+        if (this.usesMany(condition)) value = condition.values;
+        else if (this.needsTeam(condition)) value = condition.value;
+        return [
+          "InboxConversation",
+          "service_team_id",
+          condition.operator,
+          value,
+        ];
+      },
+
+      syncFilters() {
+        const ready = this.conditions.filter((condition) => {
+          if (!this.needsTeam(condition)) return true;
+          return this.usesMany(condition)
+            ? condition.values.length > 0
+            : Boolean(condition.value);
+        });
+        const andRows = ready
+          .filter((condition) => condition.bucket === "and")
+          .map((condition) => this.transportRow(condition));
+        const orRows = ready
+          .filter((condition) => condition.bucket === "or")
+          .map((condition) => this.transportRow(condition));
+        const payload = [...andRows];
+        if (orRows.length) payload.push({ or: orRows });
+        this.filtersJson = payload.length ? JSON.stringify(payload) : "";
+      },
+
+      apply(form) {
+        this.syncFilters();
+        form.requestSubmit();
+      },
+
+      clear(form) {
+        this.conditions = [];
+        this.filtersJson = "";
+        form.requestSubmit();
+      },
+    };
+  };
+
   window.inboxWorkspace = function inboxWorkspace(config) {
     const crmPreview =
       new URLSearchParams(window.location.search).get("crm_preview") || "";
@@ -65,6 +188,8 @@
       shortcutHelpOpen: false,
       commandQuery: "",
       presenceText: "",
+      typingAgents: {},
+      typingPruneTimer: null,
       newMessagesAvailable: false,
       newListActivityAvailable: false,
       toastMessage: "",
@@ -98,6 +223,7 @@
       typingTimer: null,
       inFlight: new Set(),
       filterLoading: false,
+      conversationOpening: false,
       activeFilterXhr: null,
       pendingStatusFilter: null,
       listRequestSequence: 0,
@@ -109,6 +235,7 @@
         channel: "email",
         contactName: "",
         contactId: "",
+        subscriberId: "",
         contactQuery: "",
         contactResults: [],
         contactLoading: false,
@@ -277,6 +404,10 @@
             }
             return;
           }
+          if (target === "triage-detail") {
+            this.conversationOpening = true;
+            event.detail.xhr.__inboxConversationRequest = true;
+          }
           const key = `${event.detail?.requestConfig?.verb || "GET"}:${path}:${target}`;
           if (this.inFlight.has(key)) {
             event.preventDefault();
@@ -300,6 +431,10 @@
           if (failed && sequence === this.listRequestSequence) {
             this.listRequestError = "Could not update conversations. Try again.";
             history.replaceState({}, "", this.lastSuccessfulListUrl);
+          }
+          if (event.detail?.xhr?.__inboxConversationRequest && failed) {
+            this.conversationOpening = false;
+            this.showToast("Could not open conversation. Try again.");
           }
           const key = event.detail?.xhr?.__inboxRequestKey;
           if (key) this.inFlight.delete(key);
@@ -326,12 +461,14 @@
           if (!target) return;
           if (target.id === "triage-detail") {
             this.mode = "detail";
+            this.conversationOpening = false;
             document
               .querySelector("[data-triage-shell]")
               ?.setAttribute("data-triage-mode", "detail");
             const thread = target.querySelector("[data-conversation-thread]");
             if (thread) {
               this.selectedId = thread.dataset.conversationThread || "";
+              this.clearTypingPresence();
               this.subscribeVisibleTopics();
               this.updateSelectedHighlight();
               this.scrollThread();
@@ -382,6 +519,7 @@
           const selected =
             url.searchParams.get("conversation_id") || url.searchParams.get("c");
           this.selectedId = selected || "";
+          this.clearTypingPresence();
           this.requestInboxList(url, {
             intent: "history",
             historyMode: "none",
@@ -444,6 +582,7 @@
 
       showList() {
         this.mode = "list";
+        this.clearTypingPresence();
         document
           .querySelector("[data-triage-shell]")
           ?.setAttribute("data-triage-mode", "list");
@@ -463,11 +602,9 @@
         returnUrl.searchParams.set("c", id);
         window.__inboxReturnUrl = `${returnUrl.pathname}${returnUrl.search}`;
         this.selectedId = id;
-        this.mode = "detail";
+        this.conversationOpening = true;
         this.newMessagesAvailable = false;
-        document
-          .querySelector("[data-triage-shell]")
-          ?.setAttribute("data-triage-mode", "detail");
+        this.clearTypingPresence();
         this.updateSelectedHighlight();
       },
 
@@ -523,6 +660,7 @@
           "search",
           "channel_type",
           "service_team_id",
+          "filters",
           "contact_resolution_status",
           "priority_at_most",
           "muted",
@@ -667,6 +805,7 @@
           "channel_type",
           "service_team_id",
           "service_team_ids",
+          "filters",
           "assigned_person_id",
           "needs_response",
           "needs_attention",
@@ -707,6 +846,7 @@
           channel_type: "channel_type",
           service_team_id: "service_team_id",
           service_team_ids: "service_team_ids",
+          filters: "filters",
           assigned_person_id: "assigned_person_id",
           needs_response: "needs_response",
           needs_attention: "needs_attention",
@@ -768,6 +908,7 @@
       },
       newConversationChannelChanged() {
         this.newConversation.contactId = "";
+        this.newConversation.subscriberId = "";
         this.newConversation.contactResults = [];
         this.newConversation.contactError = "";
         if (this.newConversation.channel === "whatsapp") {
@@ -777,6 +918,7 @@
       async searchWhatsAppContacts() {
         const term = this.newConversation.contactQuery.trim();
         this.newConversation.contactId = "";
+        this.newConversation.subscriberId = "";
         this.newConversation.contactName = term;
         if (term.length < 2) {
           this.newConversation.contactResults = [];
@@ -800,7 +942,8 @@
         }
       },
       selectWhatsAppContact(contact) {
-        this.newConversation.contactId = contact.id || "";
+        this.newConversation.contactId = contact.party_id || "";
+        this.newConversation.subscriberId = contact.subscriber_id || "";
         this.newConversation.contactName = contact.name || "";
         this.newConversation.contactQuery = contact.name || "";
         this.newConversation.recipient = contact.whatsapp_address || "";
@@ -808,6 +951,7 @@
       },
       clearWhatsAppContactSelection() {
         this.newConversation.contactId = "";
+        this.newConversation.subscriberId = "";
       },
       async loadWhatsAppTemplates() {
         if (this.newConversation.templateLoading) return;
@@ -1108,10 +1252,12 @@
         });
         this.socket.addEventListener("close", () => {
           this.realtimeConnected = false;
+          this.clearTypingPresence();
           this.scheduleReconnect();
         });
         this.socket.addEventListener("error", () => {
           this.realtimeConnected = false;
+          this.clearTypingPresence();
         });
       },
 
@@ -1148,13 +1294,66 @@
         );
       },
 
+      clearTypingPresence() {
+        this.typingAgents = {};
+        this.presenceText = "";
+        window.clearTimeout(this.typingPruneTimer);
+        this.typingPruneTimer = null;
+      },
+
+      updateTypingPresenceText(now = Date.now()) {
+        Object.entries(this.typingAgents).forEach(([userId, agent]) => {
+          if (!agent || agent.expiresAt <= now) delete this.typingAgents[userId];
+        });
+        const names = Object.values(this.typingAgents).map((agent) => agent.name);
+        if (!names.length) {
+          this.presenceText = "";
+        } else if (names.length === 1) {
+          this.presenceText = `${names[0]} is replying`;
+        } else if (names.length === 2) {
+          this.presenceText = `${names[0]} and ${names[1]} are replying`;
+        } else {
+          this.presenceText = `${names[0]} and ${names.length - 1} others are replying`;
+        }
+      },
+
+      scheduleTypingPrune() {
+        window.clearTimeout(this.typingPruneTimer);
+        const expiries = Object.values(this.typingAgents)
+          .map((agent) => agent.expiresAt)
+          .filter(Boolean);
+        if (!expiries.length) {
+          this.typingPruneTimer = null;
+          return;
+        }
+        const delay = Math.max(50, Math.min(...expiries) - Date.now());
+        this.typingPruneTimer = window.setTimeout(() => {
+          this.updateTypingPresenceText();
+          this.scheduleTypingPrune();
+        }, delay);
+      },
+
       handleRealtimeEvent(envelope) {
         const eventType = envelope.event || envelope.type;
         const data = envelope.data || {};
         if (eventType === "heartbeat" || eventType === "connection_ack") return;
         if (eventType === "user_typing") {
-          if (data.conversation_id === this.selectedId && data.user_id !== this.actorId) {
-            this.presenceText = data.is_typing ? "Another agent is replying" : "";
+          if (
+            data.conversation_id === this.selectedId &&
+            data.user_id !== this.actorId
+          ) {
+            const agentName = String(data.agent_name || "").trim();
+            const userId = String(data.user_id || agentName || "unknown");
+            if (data.is_typing) {
+              this.typingAgents[userId] = {
+                name: agentName || "Another agent",
+                expiresAt: Date.now() + 3500,
+              };
+            } else {
+              delete this.typingAgents[userId];
+            }
+            this.updateTypingPresenceText();
+            this.scheduleTypingPrune();
           }
           return;
         }
@@ -1555,11 +1754,57 @@
         this.replyTo = null;
       },
       setReply(detail) {
-        this.replyTo = detail || null;
+        const id = String(detail?.id || "").trim();
+        if (!id) {
+          this.workspace()?.showToast?.("Could not quote that message. Reload the conversation and try again.");
+          return;
+        }
+        this.replyTo = {
+          id,
+          author: String(detail?.author || "Customer"),
+          excerpt: String(detail?.excerpt || "").slice(0, 160),
+        };
+        this.workspace()?.showToast?.("Quoted message selected.");
         this.$nextTick(() => this.$refs.textarea?.focus());
       },
       submitFromKeyboard(event) {
         event.currentTarget.form?.requestSubmit();
+      },
+
+      completeSend(result) {
+        if (
+          !result ||
+          String(result.conversation_id || "") !== String(this.conversationId)
+        ) {
+          return;
+        }
+        this.sending = false;
+        this.workspace()?.showToast?.(
+          result.message ||
+            (result.status === "success" ? "Reply sent." : "Reply failed."),
+        );
+        if (result.status !== "success") return;
+
+        this.draft = "";
+        this.files = [];
+        this.replyTo = null;
+        this.scheduled = false;
+        this.scheduledAt = "";
+        this.macroId = "";
+        this.templateId = "";
+        this.identityBody = "";
+        this.polishSuggestion = null;
+        localStorage.removeItem(`${KEYS.draftPrefix}${this.conversationId}`);
+
+        const workspace = this.workspace();
+        workspace?.refreshThread?.(this.conversationId, true);
+        workspace?.refreshConversationList?.("reply");
+      },
+
+      finishSendRequest(event) {
+        if (event.detail?.successful) return;
+        this.sending = false;
+        this.workspace()?.showToast?.("Could not send reply. Try again.");
       },
 
       prepareSend(event) {
@@ -1593,6 +1838,10 @@
           '[name="idempotency_key"]',
         );
         if (keyInput) keyInput.value = this.idempotencyKey;
+        const replyInput = event.currentTarget.querySelector(
+          '[name="reply_to_message_id"]',
+        );
+        if (replyInput) replyInput.value = this.replyTo?.id || "";
         this.sending = true;
         this.workspace()?.publishTyping?.(this.conversationId, false);
       },

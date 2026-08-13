@@ -23,6 +23,7 @@ from app.models.network import (
 )
 from app.services.network.equipment_identity import normalize_ont_equipment_id
 from app.services.network.olt_ssh_profiles import OltProfileEntry, _parse_profile_table
+from app.services.network.parsers.cli import canonical_fsp
 from app.services.network.profile_sync import resolve_profile_bundle_for_offer
 
 logger = logging.getLogger(__name__)
@@ -409,11 +410,11 @@ def ensure_ont_service_profile_match(
     """Fix service-profile mismatch after authorization using live capability."""
     from app.services.network import olt_ssh as core
 
-    parts = fsp.split("/")
-    if len(parts) != 3:
+    parts = canonical_fsp(fsp)
+    if parts is None:
         return False, f"Invalid F/S/P format: {fsp!r}"
-    frame_slot = f"{parts[0]}/{parts[1]}"
-    port_num = parts[2]
+    frame_slot = parts.frame_slot
+    port_num = parts.port
 
     try:
         transport, channel, _policy = core._open_shell(olt)

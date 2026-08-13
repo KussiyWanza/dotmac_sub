@@ -39,7 +39,6 @@ from app.services.ui_contracts import Action
 HandoffErrorKind = Literal["invalid", "forbidden", "not_found", "conflict"]
 _NON_ISSUABLE_STATUSES = frozenset(
     {
-        TicketStatus.resolved.value,
         TicketStatus.closed.value,
         TicketStatus.canceled.value,
         TicketStatus.merged.value,

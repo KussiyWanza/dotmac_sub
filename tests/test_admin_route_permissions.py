@@ -601,6 +601,9 @@ def test_report_routes_require_domain_permissions():
         admin_reports.router, "/reports/revenue", "GET", "reports:billing:read"
     )
     assert _route_has_permission(
+        admin_reports.router, "/reports/discounts", "GET", "reports:billing:read"
+    )
+    assert _route_has_permission(
         admin_reports.router, "/reports/subscribers", "GET", "customer:read"
     )
     assert _route_has_permission(
@@ -656,6 +659,18 @@ def test_team_inbox_routes_require_support_permissions():
         "/inbox/{conversation_id}/reply",
         "POST",
         "support:ticket:update",
+    )
+    assert not _route_has_permission(
+        admin_inbox.router,
+        "/inbox/{conversation_id}/assign-to-me",
+        "POST",
+        "support:ticket:update",
+    )
+    assert _route_has_permission(
+        admin_inbox.router,
+        "/inbox/{conversation_id}/assign-to-me",
+        "POST",
+        "support:inbox:self_assign",
     )
 
 

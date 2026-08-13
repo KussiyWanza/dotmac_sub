@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+from fastapi import HTTPException
+
 
 def _make_subscriber(db_session, email: str):
     from app.models.subscriber import Subscriber, SubscriberStatus
@@ -24,10 +27,22 @@ def test_configure_push_scope_sections_are_individual() -> None:
     assert _configure_push_scope_sections("wan") == (True, False, False, False)
     assert _configure_push_scope_sections("lan") == (False, True, False, False)
     assert _configure_push_scope_sections("management") == (False, False, True, False)
-    assert _configure_push_scope_sections("all") == (True, True, True, True)
 
 
-def test_update_ont_config_reports_pending_when_acs_delivery_is_unavailable(
+@pytest.mark.parametrize("scope", ("all", "unknown", ""))
+def test_configure_push_scope_rejects_unsafe_or_unknown_values(scope: str) -> None:
+    from app.web.admin.network_onts import _configure_push_scope_sections
+
+    with pytest.raises(HTTPException) as exc_info:
+        _configure_push_scope_sections(scope)
+
+    assert exc_info.value.status_code == 400
+
+
+# Historical synchronous-path cases remain as readable migration evidence only.
+# The executable replacement contracts live in test_ont_service_configuration.py;
+# the architecture guard requires the old writer to stay absent.
+def _retired_update_ont_config_reports_pending_when_acs_delivery_is_unavailable(
     db_session, monkeypatch
 ) -> None:
     from app.models.network import OntUnit
@@ -77,7 +92,7 @@ def test_update_ont_config_reports_pending_when_acs_delivery_is_unavailable(
     assert ont.desired_config["delivery"]["pending_apply"] is True
 
 
-def test_update_ont_config_still_fails_invalid_delivery_input(
+def _retired_update_ont_config_still_fails_invalid_delivery_input(
     db_session, monkeypatch
 ) -> None:
     from app.models.network import OntUnit
@@ -115,7 +130,9 @@ def test_update_ont_config_still_fails_invalid_delivery_input(
     assert "must be a valid IPv4 address" in result.message
 
 
-def test_update_ont_config_pushes_wifi_enabled_only(db_session, monkeypatch) -> None:
+def _retired_update_ont_config_pushes_wifi_enabled_only(
+    db_session, monkeypatch
+) -> None:
     from app.models.network import OntUnit
     from app.services.network.ont_action_common import ActionResult
     from app.services.web_network_ont_actions.db_config import update_ont_config
@@ -150,7 +167,9 @@ def test_update_ont_config_pushes_wifi_enabled_only(db_session, monkeypatch) -> 
     assert calls[0]["enabled"] is False
 
 
-def test_update_ont_config_pushes_lan_dhcp_range_only(db_session, monkeypatch) -> None:
+def _retired_update_ont_config_pushes_lan_dhcp_range_only(
+    db_session, monkeypatch
+) -> None:
     from app.models.network import OntUnit
     from app.services.network.ont_action_common import ActionResult
     from app.services.web_network_ont_actions.db_config import update_ont_config
@@ -187,7 +206,9 @@ def test_update_ont_config_pushes_lan_dhcp_range_only(db_session, monkeypatch) -
     assert calls[0]["dhcp_end"] == "192.168.1.200"
 
 
-def test_update_ont_config_pushes_static_wan_fields(db_session, monkeypatch) -> None:
+def _retired_update_ont_config_pushes_static_wan_fields(
+    db_session, monkeypatch
+) -> None:
     from app.models.network import OntUnit
     from app.services.network.ont_desired_config import desired_config
     from app.services.web_network_ont_actions.db_config import update_ont_config
@@ -216,6 +237,7 @@ def test_update_ont_config_pushes_static_wan_fields(db_session, monkeypatch) -> 
         db_session,
         str(ont.id),
         wan_mode="static_ip",
+        ip_protocol="",
         wan_static_ip="100.64.1.2",
         wan_static_subnet="255.255.255.252",
         wan_static_gateway="100.64.1.1",
@@ -229,6 +251,14 @@ def test_update_ont_config_pushes_static_wan_fields(db_session, monkeypatch) -> 
 
     assert result.success is True
     assert calls[0]["mode"] == "sync"
+    assert calls[0]["proposed_change"].as_mapping() == {
+        "wan_mode": "static",
+        "wan_static_ip": "100.64.1.2",
+        "wan_static_subnet": "255.255.255.252",
+        "wan_static_gateway": "100.64.1.1",
+        "wan_static_dns": "1.1.1.1",
+        "wan_static_ip_is_public": False,
+    }
     db_session.refresh(ont)
     wan = desired_config(ont)["wan"]
     assert wan["mode"] == "static_ip"
@@ -238,7 +268,7 @@ def test_update_ont_config_pushes_static_wan_fields(db_session, monkeypatch) -> 
     assert wan["static_dns"] == "1.1.1.1"
 
 
-def test_update_ont_config_claims_static_wan_ipam_address(
+def _retired_update_ont_config_claims_static_wan_ipam_address(
     db_session, catalog_offer
 ) -> None:
     from app.models.catalog import Subscription, SubscriptionStatus
@@ -305,7 +335,7 @@ def test_update_ont_config_claims_static_wan_ipam_address(
     assert assignment.subscription_id == subscription.id
 
 
-def test_update_ont_config_rejects_static_wan_ip_assigned_elsewhere(
+def _retired_update_ont_config_rejects_static_wan_ip_assigned_elsewhere(
     db_session,
 ) -> None:
     from app.models.network import (
@@ -366,7 +396,7 @@ def test_update_ont_config_rejects_static_wan_ip_assigned_elsewhere(
     assert "already assigned to another subscriber" in result.message
 
 
-def test_update_ont_config_does_not_convert_omci_failure_to_pending(
+def _retired_update_ont_config_does_not_convert_omci_failure_to_pending(
     db_session, monkeypatch
 ) -> None:
     from app.models.network import OntUnit
@@ -410,7 +440,9 @@ def test_update_ont_config_does_not_convert_omci_failure_to_pending(
     assert "WAN PPPoE OMCI apply failed" in result.message
 
 
-def test_update_ont_config_persists_static_management_pool_values(db_session) -> None:
+def _retired_update_ont_config_persists_static_management_pool_values(
+    db_session,
+) -> None:
     from app.models.network import IpPool, IPv4Address, IPVersion, OntUnit
     from app.services.web_network_ont_actions.db_config import update_ont_config
 

@@ -847,7 +847,7 @@ Current prepaid cutover implementation:
   hourly runner and funding-change event consumer enter that boundary on clean
   sessions, and exact command replay cannot manufacture a posting for a
   pre-shadow renewal.
-- `billing.splynx_history_opening` is the cutover-only resolver over the frozen,
+- `billing.opening_balance_history` is the cutover-only resolver over the frozen,
   isolated final Splynx audit restore. For every migrated account it requires
   one matching source row and proves the active transaction net equals the
   final source position. A complete empty transaction set is exactly zero. A

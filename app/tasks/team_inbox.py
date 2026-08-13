@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from uuid import UUID
 
 from app.celery_app import celery_app
 from app.models.domain_settings import SettingDomain
@@ -18,9 +19,55 @@ from app.services.settings_spec import resolve_integer
 logger = logging.getLogger(__name__)
 
 
+@celery_app.task(name="app.tasks.team_inbox.repair_whatsapp_locations")
+def repair_whatsapp_locations(
+    *,
+    conversation_ids: list[str],
+    receipt_limit: int = 5000,
+) -> dict[str, int]:
+    """Repair exact conversations from their verified WhatsApp receipts."""
+
+    typed_conversation_ids = tuple(UUID(value) for value in conversation_ids)
+    with db_session_adapter.session() as session:
+        result = team_inbox_maintenance.repair_whatsapp_locations(
+            session,
+            team_inbox_maintenance.RepairWhatsAppLocationsCommand(
+                context=CommandContext.system(
+                    actor="task:team-inbox-whatsapp-location-repair",
+                    scope="team-inbox:maintenance",
+                    reason="restore typed WhatsApp location facts from verified receipts",
+                ),
+                conversation_ids=typed_conversation_ids,
+                receipt_limit=receipt_limit,
+            ),
+        )
+        payload = {
+            "repaired": result.repaired,
+            "already_complete": result.already_complete,
+            "missing_evidence": result.missing_evidence,
+            "receipts_scanned": result.receipts_scanned,
+        }
+        logger.info(
+            "team inbox WhatsApp location repair complete",
+            extra={"event": "team_inbox_whatsapp_location_repair", **payload},
+        )
+        return payload
+
+
 @celery_app.task(name="app.tasks.team_inbox.send_reply_reminders")
 def send_reply_reminders(*, limit: int = 200) -> dict[str, int]:
     with db_session_adapter.session() as session:
+        # Resolve decision inputs before entering the owner command. A settings
+        # miss reads the database, which opens a read transaction on this
+        # session, and the owner command requires a transaction-free session at
+        # entry. Release that read transaction before handing the session over.
+        delay_minutes = resolve_integer(
+            session, SettingDomain.comms, "inbox_reply_reminder_delay_minutes"
+        )
+        repeat_minutes = resolve_integer(
+            session, SettingDomain.comms, "inbox_reply_reminder_repeat_minutes"
+        )
+        db_session_adapter.release_read_transaction(session)
         result = team_inbox_reply_reminders.sweep_reply_reminders(
             session,
             team_inbox_reply_reminders.ReplyReminderSweepCommand(
@@ -29,12 +76,8 @@ def send_reply_reminders(*, limit: int = 200) -> dict[str, int]:
                     scope="team-inbox:reply-reminders",
                     reason="notify assigned agents about waiting inbound replies",
                 ),
-                delay_minutes=resolve_integer(
-                    session, SettingDomain.comms, "inbox_reply_reminder_delay_minutes"
-                ),
-                repeat_minutes=resolve_integer(
-                    session, SettingDomain.comms, "inbox_reply_reminder_repeat_minutes"
-                ),
+                delay_minutes=delay_minutes,
+                repeat_minutes=repeat_minutes,
                 limit=limit,
             ),
         )

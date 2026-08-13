@@ -1,0 +1,129 @@
+# Billing health alerts (companion to the billing_health snapshot).
+#
+# Deploy-ready Prometheus rule group for the dotmac-observe stack. The billing
+# health snapshot exports every signal as
+# observability_state{domain="billing_health"}, and raises a named anomaly for
+# each. Those anomalies now all reach a log line; these rules cover the ones
+# that had no alert at all.
+#
+# Threshold note, deliberate: two signals sit at a large non-zero steady state
+# (aged drafts and account-credit invariant violations). Alerting them at > 0
+# would fire permanently from the first evaluation and be tuned out, which is
+# worse than no alert. They alert on DETERIORATION instead — the backlog
+# growing rather than draining — and the absolute figure is carried by the log
+# line and the dashboard. Tighten to an absolute threshold once each backlog
+# has been worked down.
+groups:
+  - name: billing_health
+    rules:
+      # --- Signals currently at zero: any occurrence is a real regression.
+      - alert: SubInvoicesPaidWithoutIssue
+        expr: observability_state{domain="billing_health",signal="invoices_paid_without_issue"} > 0
+        for: 30m
+        labels:
+          severity: warning
+          area: billing
+          owner: financial-billing
+        annotations:
+          summary: "Invoices are past draft with no issue date"
+          description: >
+            {{ $value }} invoice(s) are past draft carrying no issue date. They
+            cannot age, cannot go overdue, and drop out of any read that filters
+            on issue date, so they are invisible to dunning.
+          runbook: "docs/adr/0007-end-to-end-billing-target-architecture.md"
+
+      - alert: SubBillingProfileMismatch
+        expr: observability_state{domain="billing_health",signal="billing_profile_mismatch"} > 0
+        for: 30m
+        labels:
+          severity: warning
+          area: billing
+          owner: financial-billing
+        annotations:
+          summary: "Account and subscription billing modes disagree"
+          description: >
+            {{ $value }} account/subscription billing-mode mismatch(es).
+            Enforcement reads a mode the subscription contradicts, so the wrong
+            policy can be applied to the account.
+
+      - alert: SubBillingProfileMixedModes
+        expr: observability_state{domain="billing_health",signal="billing_profile_mixed_modes"} > 0
+        for: 30m
+        labels:
+          severity: warning
+          area: billing
+          owner: financial-billing
+        annotations:
+          summary: "Accounts carry subscriptions in more than one billing mode"
+          description: >
+            {{ $value }} account(s) hold subscriptions in multiple billing
+            modes, so no single enforcement policy applies to the account.
+
+      - alert: SubActiveSubscriptionsWithoutBillingPath
+        expr: observability_state{domain="billing_health",signal="unbilled_active_subscriptions"} > 0
+        for: 1h
+        labels:
+          severity: warning
+          area: billing
+          owner: financial-billing
+        annotations:
+          summary: "Active subscriptions have no canonical billing path"
+          description: >
+            {{ $value }} active prepaid subscription(s) have no canonical
+            recurring billing path — service is being delivered that nothing
+            will ever invoice. Expected to be firing on adoption; drive to zero
+            rather than silencing.
+
+      # --- Backlogs at steady state: alert on deterioration, not on level.
+      - alert: SubAgedDraftInvoiceBacklogGrowing
+        expr: delta(observability_state{domain="billing_health",signal="aged_draft_invoices"}[24h]) > 25
+        for: 1h
+        labels:
+          severity: warning
+          area: billing
+          owner: financial-billing
+        annotations:
+          summary: "Aged draft invoice backlog is growing"
+          description: >
+            Drafts older than 30 days grew by {{ $value }} in 24h, so they are
+            ageing in faster than anyone is dispositioning them. A draft is a
+            legitimate hold — issue it, void it, or hold it deliberately — but
+            the backlog should not accumulate unattended.
+
+      # `scope` is load-bearing here. The signal carries several series: `all`
+      # is the live violation total, `opening_balance` is the balance carried
+      # in at the Splynx handoff — 13,312 rows that no reconciler can allocate
+      # and which the snapshot deliberately never raises as an anomaly. Without
+      # the selector this rule sums both and fires on migration carry-in.
+      - alert: SubAccountCreditInvariantViolationsGrowing
+        expr: delta(observability_state{domain="billing_health",signal="account_credit_invariant_violations",scope="all"}[6h]) > 0
+        for: 1h
+        labels:
+          severity: warning
+          area: billing
+          owner: financial-billing
+        annotations:
+          summary: "Account credit invariant violations are increasing"
+          description: >
+            Live violations grew by {{ $value }} in 6h, so something is still
+            writing them rather than only historical drift remaining. Break the
+            total down by scope to see which invariant:
+            observability_state{domain="billing_health",signal="account_credit_invariant_violations"}
+
+      # --- Exposure that cannot be measured is not the same as zero exposure.
+      - alert: SubNegativePrepaidExposureUnmeasurable
+        expr: >
+          absent(observability_state{domain="billing_health",signal="negative_prepaid_balance_accounts"})
+          and on() observability_state{domain="billing_health",signal="active_subscriptions"} > 0
+        for: 2h
+        labels:
+          severity: warning
+          area: prepaid-enforcement
+          owner: financial-collections
+        annotations:
+          summary: "Prepaid exposure is being reported as unavailable"
+          description: >
+            The negative-prepaid-exposure gauge is absent while the snapshot is
+            otherwise publishing, which the resolver does deliberately when a
+            funding baseline is missing — reporting unavailable rather than a
+            false zero. The exposure figure is blind until it is repaired.

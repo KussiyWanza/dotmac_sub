@@ -133,6 +133,7 @@ celery_app.conf.task_routes = {
     "app.tasks.dotmac_erp_outbox.deliver_erp_sync_events": {"queue": "crm"},
     "app.tasks.dotmac_erp_outbox.refresh_expense_claim_statuses": {"queue": "crm"},
     "app.tasks.dotmac_erp_outbox.refresh_material_request_statuses": {"queue": "crm"},
+    "app.tasks.dotmac_erp_outbox.refresh_material_catalog": {"queue": "crm"},
     "app.tasks.dotmac_erp_outbox.repair_purchase_invoice_sync": {"queue": "crm"},
     "app.tasks.dotmac_erp_outbox.refresh_purchase_invoice_statuses": {"queue": "crm"},
     "app.tasks.dotmac_erp_outbox.sync_erp_operational_domains": {"queue": "crm"},
@@ -279,6 +280,39 @@ def _dispose_inherited_db_connections(**_kwargs):
     from app.db import dispose_engine
 
     dispose_engine()
+
+
+@worker_process_init.connect
+def _hold_boot_secrets(**_kwargs):
+    """Load this worker process's copy of the boot-held secrets.
+
+    A Celery worker runs no FastAPI lifespan, so `app.main._startup_preflight`
+    — which installs the secret source for the API — never fires here. Tasks
+    need the same material: `ont_reconcile` decrypts a device credential for
+    every device it touches, and without this the worker would hold nothing,
+    `get_encryption_key` would answer `None`, and the task would skip every
+    device with `credential_encryption_key_missing` while the API served the
+    same rows correctly.
+
+    In the CHILD, after fork, for the same reason the engine is disposed there:
+    a prefork child must not depend on whatever the parent happened to be
+    holding. Loading is once per process, not once per task.
+
+    Fails the worker process when OpenBao is configured and unreachable, which
+    is the same stance the API takes — a worker that silently cannot read
+    credentials writes them back in the clear.
+    """
+
+    from app.services.kernel_key_provider import (
+        install_if_configured as install_settings_keyring,
+    )
+    from app.services.kernel_secret_source import install_if_configured
+
+    install_if_configured()
+    # The settings-encryption keyring too: a worker writes secret settings (the
+    # rotation task does) and would otherwise fail every one of those writes
+    # with "no active key" while the API succeeded at the same moment.
+    install_settings_keyring()
 
 
 @celeryd_after_setup.connect

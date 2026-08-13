@@ -71,6 +71,12 @@ SETTINGS_CATEGORIES: list[dict] = [
                 "description": "Capability-bound event delivery endpoints",
             },
             {
+                "name": "ERP Material Catalogue",
+                "url": "/admin/integrations/erp-material-catalog",
+                "description": "Review ERP items, warehouses, eligibility, and synchronization",
+                "permission": "system:settings:read",
+            },
+            {
                 "name": "System Information",
                 "url": "/admin/system/about",
                 "description": "Version, environment, diagnostics",

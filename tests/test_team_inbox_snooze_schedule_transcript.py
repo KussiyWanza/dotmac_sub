@@ -434,8 +434,34 @@ def test_an_invalid_recipient_is_refused(db_session):
 
     with pytest.raises(team_inbox_commands.InboxCommandError):
         team_inbox_commands.email_transcript(
-            db_session, conversation_id=conversation_id, recipient="not-an-address"
+            db_session,
+            conversation_id=conversation_id,
+            recipient="not-an-address",
+            actor_person_id=uuid.uuid4(),
         )
+
+
+def test_a_transcript_export_without_an_actor_is_refused_before_delivery(
+    db_session, monkeypatch
+):
+    conversation_id = _conversation_id(db_session)
+    delivered = False
+
+    def _unexpected_delivery(*args, **kwargs):
+        nonlocal delivered
+        delivered = True
+        raise AssertionError("delivery must not start without an audit actor")
+
+    monkeypatch.setattr(team_inbox_outbound, "send_transcript", _unexpected_delivery)
+
+    with pytest.raises(team_inbox_commands.InboxCommandError, match="audit actor"):
+        team_inbox_commands.email_transcript(
+            db_session,
+            conversation_id=conversation_id,
+            recipient="auditor@example.org",
+        )
+
+    assert delivered is False
 
 
 def _transcript_audits(db_session):
@@ -482,16 +508,19 @@ def test_the_audit_records_whether_the_recipient_was_already_on_the_record(db_se
     conversation = db_session.get(InboxConversation, conversation_id)
     conversation.contact_address = "customer@example.com"
     db_session.commit()
+    actor = uuid.uuid4()
 
     team_inbox_commands.email_transcript(
         db_session,
         conversation_id=conversation_id,
         recipient="Customer <customer@example.com>",
+        actor_person_id=actor,
     )
     team_inbox_commands.email_transcript(
         db_session,
         conversation_id=conversation_id,
         recipient="someone-else@elsewhere.test",
+        actor_person_id=actor,
     )
 
     flags = sorted(
@@ -507,7 +536,10 @@ def test_a_refused_export_leaves_no_audit(db_session):
 
     with pytest.raises(team_inbox_commands.InboxCommandError):
         team_inbox_commands.email_transcript(
-            db_session, conversation_id=conversation_id, recipient="not-an-address"
+            db_session,
+            conversation_id=conversation_id,
+            recipient="not-an-address",
+            actor_person_id=uuid.uuid4(),
         )
 
     assert _transcript_audits(db_session) == []

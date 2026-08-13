@@ -99,11 +99,14 @@ def test_worklist_admin_is_get_only_bounded_display_of_complete_report():
     template_source = TEMPLATE.read_text()
 
     assert '"/fiber-field-verification"' in admin_source
-    assert "reconcile_fiber_field_worklist(db)" in admin_source
-    assert "worklist.rows[:500]" in template_source
+    assert "get_fiber_field_worklist_page" in admin_source
+    assert "worklist_rows" in template_source
+    assert "worklist.rows[:500]" not in template_source
+    assert "list_pagination" in template_source
+    assert "latest-staged-source-identities" in template_source
     assert "always use the complete cohort" in template_source
     assert "This worklist has no job writer" in template_source
-    for forbidden_form in ("<form", 'type="submit"', "bulk approve"):
+    for forbidden_form in ('type="submit"', "bulk approve"):
         assert forbidden_form not in template_source.lower()
 
 

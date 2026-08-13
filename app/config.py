@@ -43,9 +43,6 @@ class Settings:
     dashboard_global_max_stale_seconds: float = float(
         os.getenv("DASHBOARD_GLOBAL_MAX_STALE_SECONDS", "900")
     )
-    dashboard_infrastructure_cache_ttl_seconds: float = float(
-        os.getenv("DASHBOARD_INFRASTRUCTURE_CACHE_TTL_SECONDS", "60")
-    )
     infrastructure_health_skip_checks: str = os.getenv(
         "INFRASTRUCTURE_HEALTH_SKIP_CHECKS", ""
     )
@@ -113,13 +110,25 @@ class Settings:
     )
     avatar_url_prefix: str = os.getenv("AVATAR_URL_PREFIX", "/static/avatars")
 
-    # Splynx is decommissioned (2026-06-16; local ledger is the sole source of
-    # truth). The incremental-sync machinery and its sync-state tables are gone
-    # (migration 169). The remote-MySQL connection settings that fed that sync
-    # have been removed — nothing read them. Remove SPLYNX_MYSQL_* from .env too;
-    # rotate any value that was a live credential. Historical Splynx data
-    # (splynx_billing_transactions, id mappings, archives, splynx_* id columns)
-    # is retained READ-ONLY for audit/reconciliation only.
+    # The former billing system is decommissioned (2026-06-16; the local ledger
+    # is the sole source of truth). The incremental-sync machinery and its
+    # sync-state tables are gone (migration 169), the one-off importers that
+    # connected to its MySQL have been deleted, and the foreign-data wrapper
+    # onto its Postgres is dropped (migration 505). Nothing in the running
+    # application opens a connection to it.
+    #
+    # One tool still can: scripts/one_off/reconstruct_splynx_mirror.py, which
+    # rebuilds the frozen opening-balance evidence from a retained backup. It
+    # addresses a restore, not the decommissioned host, and is kept only until
+    # every account has a verified opening position.
+    #
+    # A deployed .env may still carry SPLYNX_MYSQL_* from the sync era. Remove
+    # it, and rotate any value that was ever a live credential.
+    #
+    # Historical data (the local splynx_* mirror tables, id mappings, archives
+    # and splynx_* id columns) is retained READ-ONLY for audit and
+    # reconciliation, and is covered by the separate rename to opening-balance
+    # vocabulary.
 
     # Cookie security
     secure_cookies: bool = os.getenv("SECURE_COOKIES", "true").lower() in (
@@ -151,6 +160,11 @@ class Settings:
         "yes",
         "on",
     )
+    # The anonymous native widget is deliberately scoped to the fiber site.
+    # This is a public origin, not a credential; keep the exact scheme + host.
+    fiber_chat_allowed_origin: str = os.getenv(
+        "FIBER_CHAT_ALLOWED_ORIGIN", "https://fiber.dotmac.ng"
+    ).rstrip("/")
     # Mono lookup API
     mono_secret_key: str = os.getenv("MONO_SECRET_KEY", "")
     mono_base_url: str = os.getenv("MONO_BASE_URL", "https://api.withmono.com")
@@ -164,6 +178,15 @@ class Settings:
     s3_region: str = os.getenv("S3_REGION", "us-east-1")
     redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     REDIS_URL: str = redis_url
+    # Ceiling on how stale a cached setting can be when an invalidation does
+    # NOT land — a Redis blip during a write, or a process that dies between
+    # commit and delete. Invalidation is the mechanism (one `after_commit`
+    # listener on `DomainSetting`); this is the bound on being wrong when it
+    # misses. Deployment-specific on purpose: a high-traffic instance can
+    # afford to raise it now that invalidation is explicit, and one that
+    # tolerates no staleness can lower it. 30s is what the retired
+    # `SettingsCache` used, so the default changes nothing.
+    settings_cache_ttl_seconds: int = int(os.getenv("SETTINGS_CACHE_TTL_SECONDS", "30"))
 
     # Router Management
     router_sync_interval_hours: int = int(os.getenv("ROUTER_SYNC_INTERVAL_HOURS", "6"))
@@ -210,6 +233,14 @@ class Settings:
         os.getenv("TR069_PERIODIC_INFORM_INTERVAL", "300")
     )  # seconds, default 5 minutes
     tr069_auth_shared_secret: str = os.getenv("TR069_AUTH_SHARED_SECRET", "")
+    # SMS provider credentials are HELD, not resolved (ADR-0009): materialised
+    # once at boot and never read from `domain_settings`, where they previously
+    # lived as a row nothing could write and a lookup that could never find one.
+    # The four operational SMS values ARE settings and are declared in
+    # settings_spec under the `notification` domain; only these two moved here,
+    # because a credential is not a setting.
+    sms_api_key: str = os.getenv("SMS_API_KEY", "")
+    sms_api_secret: str = os.getenv("SMS_API_SECRET", "")
     acs_routable_management_cidrs: str = os.getenv(
         "ACS_ROUTABLE_MANAGEMENT_CIDRS",
         "172.16.0.0/16",

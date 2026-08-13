@@ -9,11 +9,13 @@ from collections import defaultdict
 from paramiko.ssh_exception import SSHException
 
 from app.models.network import OLTDevice
+from app.services.network.huawei_cli_response import describe_huawei_rejection
 from app.services.network.olt_ssh_ont._common import (
     _SSH_CONNECTION_ERRORS,
     OntIphostConfig,
     OntIphostResult,
     _run_ont_config_command,
+    invalid_fsp_message,
 )
 from app.services.network.olt_validators import (
     ValidationError,
@@ -22,6 +24,7 @@ from app.services.network.olt_validators import (
     validate_subnet_mask,
     validate_vlan_id,
 )
+from app.services.network.parsers.cli import canonical_fsp
 
 logger = logging.getLogger(__name__)
 
@@ -84,9 +87,8 @@ def _configure_single_ont_in_session(
             serial_number=cfg.serial_number,
         )
 
-    # Extract port number from fsp
-    parts = cfg.fsp.split("/")
-    port_num = parts[2] if len(parts) > 2 else "0"
+    parts = canonical_fsp(cfg.fsp)
+    port_num = parts.port if parts else "0"
 
     # Derive gateway if not provided
     gateway = cfg.gateway
@@ -160,7 +162,7 @@ def _configure_single_ont_in_session(
             fsp=cfg.fsp,
             ont_id=cfg.ont_id,
             success=False,
-            message=f"OLT rejected: {output.strip()[-80:]}",
+            message=describe_huawei_rejection(output, detail_limit=80),
             serial_number=cfg.serial_number,
         )
 
@@ -246,10 +248,9 @@ def configure_ont_iphost_batch(
     # Group configs by frame/slot for efficient interface switching
     by_frame_slot: dict[str, list[OntIphostConfig]] = defaultdict(list)
     for cfg in configs:
-        parts = cfg.fsp.split("/")
-        if len(parts) >= 2:
-            frame_slot = f"{parts[0]}/{parts[1]}"
-            by_frame_slot[frame_slot].append(cfg)
+        parts = canonical_fsp(cfg.fsp)
+        if parts is not None:
+            by_frame_slot[parts.frame_slot].append(cfg)
 
     # Detect OLT model for terminal handling
     is_ma5800 = "ma5800" in (olt.model or "").lower()
@@ -385,8 +386,8 @@ def clear_ont_ipconfig(
     ip_index: int = 0,
 ) -> tuple[bool, str]:
     """Best-effort removal of ONT IP configuration for a given IP index."""
-    parts = fsp.split("/")
-    port_num = parts[2] if len(parts) > 2 else "0"
+    parts = canonical_fsp(fsp)
+    port_num = parts.port if parts else "0"
     return _run_ont_config_command(
         olt,
         fsp,
@@ -401,12 +402,11 @@ def get_ont_iphost_config(
     """Query current ONT IPHOST configuration from OLT."""
     from app.services.network import olt_ssh as core
 
-    ok, err = core._validate_fsp(fsp)
-    if not ok:
-        return False, err, {}
+    parts = canonical_fsp(fsp)
+    if parts is None:
+        return False, invalid_fsp_message(fsp), {}
 
-    parts = fsp.split("/")
-    port_num = parts[2]
+    port_num = parts.port
 
     try:
         transport, channel, _policy = core._open_shell(olt)
@@ -420,7 +420,7 @@ def get_ont_iphost_config(
         config_prompt = r"[#)]\s*$"
         core._run_huawei_cmd(channel, "config", prompt=config_prompt)
         core._run_huawei_cmd(
-            channel, f"interface gpon {parts[0]}/{parts[1]}", prompt=config_prompt
+            channel, f"interface gpon {parts.frame_slot}", prompt=config_prompt
         )
 
         cmd = f"display ont ipconfig {port_num} {ont_id}"

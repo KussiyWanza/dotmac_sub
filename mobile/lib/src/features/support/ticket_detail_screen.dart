@@ -241,7 +241,7 @@ class _TicketDetailScreenState extends ConsumerState<TicketDetailScreen> {
                           crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
                             Text(
-                              'Has this issue been resolved?',
+                              'Is this issue fixed?',
                               style: Theme.of(context).textTheme.titleMedium,
                             ),
                             const SizedBox(height: 6),
@@ -253,7 +253,7 @@ class _TicketDetailScreenState extends ConsumerState<TicketDetailScreen> {
                               FilledButton.icon(
                                 onPressed: () => _confirmResolution(t),
                                 icon: const Icon(Icons.check_circle_outline),
-                                label: const Text('Yes, it is resolved'),
+                                label: const Text('Yes, it is fixed'),
                               ),
                             if (t.canDisputeResolution)
                               OutlinedButton.icon(
@@ -489,7 +489,7 @@ class _AttachmentStrip extends StatelessWidget {
   }
 }
 
-/// Support-satisfaction (CSAT) card on a resolved/closed ticket: shows the
+/// Support-satisfaction (CSAT) card on a closed ticket: shows the
 /// score once rated, otherwise invites a rating.
 class _CsatCard extends StatelessWidget {
   const _CsatCard({required this.rating, required this.onRate});

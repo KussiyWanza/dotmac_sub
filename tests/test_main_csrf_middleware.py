@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from starlette.requests import Request
 from starlette.responses import Response
 
+from app.csrf import CSRF_COOKIE_NAME
 from app.main import (
     api_sync_pressure_guard_middleware,
     csrf_middleware,
@@ -220,3 +221,33 @@ def test_csrf_middleware_exempts_customer_logout_without_token():
 
     assert response.status_code == 303
     assert response.headers["location"] == "/portal/auth/login"
+
+
+def test_attendance_check_in_requires_csrf_header():
+    request = _build_request(path="/admin/dashboard/attendance/check-in", method="POST")
+
+    async def call_next(_request: Request) -> Response:
+        raise AssertionError("attendance POST without CSRF must not reach its route")
+
+    response = _run_async(csrf_middleware(request, call_next))
+
+    assert response.status_code == 403
+
+
+def test_attendance_check_out_accepts_matching_double_submit_csrf():
+    token = "attendance-csrf-token"
+    request = _build_request(
+        path="/admin/dashboard/attendance/check-out",
+        method="POST",
+        headers=[
+            (b"cookie", f"{CSRF_COOKIE_NAME}={token}".encode()),
+            (b"x-csrf-token", token.encode()),
+        ],
+    )
+
+    async def call_next(_request: Request) -> Response:
+        return Response(status_code=200)
+
+    response = _run_async(csrf_middleware(request, call_next))
+
+    assert response.status_code == 200

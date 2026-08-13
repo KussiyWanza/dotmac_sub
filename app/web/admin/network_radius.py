@@ -38,12 +38,30 @@ def _base_context(
     response_class=HTMLResponse,
     dependencies=[Depends(require_permission("network:radius:read"))],
 )
-def radius_page(request: Request, db: Session = Depends(get_db)):
+def radius_page(
+    request: Request,
+    clients_page: int = Query(1, ge=1),
+    profiles_page: int = Query(1, ge=1),
+    db: Session = Depends(get_db),
+):
     context = _base_context(request, db, active_page="radius")
-    state = web_network_radius_service.radius_page_data(db)
+    query = web_network_radius_service.RadiusOverviewQuery.from_pages(
+        clients_page=clients_page,
+        profiles_page=profiles_page,
+    )
+    state = web_network_radius_service.radius_page_data(db=db, query=query)
     context.update(
         {
-            **state,
+            "servers": state.servers,
+            "clients": state.clients.items,
+            "clients_page_meta": state.clients.page_meta,
+            "profiles": state.profiles.items,
+            "profiles_page_meta": state.profiles.page_meta,
+            "recent_sessions": state.recent_sessions,
+            "recent_errors": state.recent_errors,
+            "activities": state.activities,
+            "total_online": state.total_online,
+            "total_errors": state.total_errors,
             "notice": request.query_params.get("notice"),
             "error": request.query_params.get("error"),
         }

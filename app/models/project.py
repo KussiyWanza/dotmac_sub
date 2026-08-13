@@ -122,6 +122,9 @@ class ProjectTemplate(Base):
     name: Mapped[str] = mapped_column(String(160), nullable=False)
     project_type: Mapped[str | None] = mapped_column(String(60))
     description: Mapped[str | None] = mapped_column(Text)
+    creates_vendor_assignment_scope: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
     created_at: Mapped[datetime] = mapped_column(

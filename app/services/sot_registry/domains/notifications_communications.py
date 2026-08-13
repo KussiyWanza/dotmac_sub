@@ -29,6 +29,8 @@ def _team_inbox_contract(
     transaction_mode: TransactionMode,
     event_types: tuple[str, ...] = (),
     projections: tuple[str, ...] = (),
+    domain_error_codes: tuple[str, ...] = (),
+    retryable_codes: tuple[str, ...] = (),
     mapping_owner: str = "Team Inbox transport and web adapters",
     design_refs: tuple[str, ...] | None = None,
     test_refs: tuple[str, ...] | None = None,
@@ -96,10 +98,11 @@ def _team_inbox_contract(
                 f"{service_name}.identity_collision",
                 f"{service_name}.provider_event_identity_collision",
                 f"{service_name}.command_rejected",
+                *domain_error_codes,
                 *boundary_codes,
             ),
             mapping_owner=mapping_owner,
-            retryable_codes=(),
+            retryable_codes=retryable_codes,
             fail_closed_on=(
                 "unverified provider provenance",
                 "ambiguous contact identity",
@@ -182,6 +185,10 @@ def _team_inbox_contract(
 
 DOMAIN = DomainSOT(
     domain="notifications_communications",
+    setting_domains=(
+        "notification",
+        "comms",
+    ),
     services=(
         SOTService(
             name="communication.document_delivery",
@@ -1161,6 +1168,238 @@ DOMAIN = DomainSOT(
             ),
         ),
         SOTService(
+            name="communications.nextcloud_talk_staff",
+            module="app.services.nextcloud_talk_staff",
+            owns=(
+                "staff-to-Nextcloud username mapping",
+                "staff direct-room token projection",
+                "Nextcloud Talk staff delivery admission and idempotency",
+                "Nextcloud Talk staff delivery retry and reconciliation policy",
+            ),
+            depends_on=(
+                "auth.permission_gate",
+                "auth.staff_provisioning",
+                "communications.notification_service",
+                "events.dispatcher",
+                "integration.installations",
+                "integration.runtime",
+            ),
+            notes=(
+                "Ticket and project owners stage a notification row in their "
+                "own transaction. This owner resolves the explicit staff mapping "
+                "and calls only the version-pinned collaboration capability from "
+                "the asynchronous notification worker."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name="staff-to-Nextcloud username mapping",
+                        role=OwnerRole.AUTHORITATIVE_RECORD,
+                        input_names=(
+                            "validated staff Talk command",
+                            "canonical staff account identity",
+                            "enabled Talk installation and binding",
+                            "current staff Talk state",
+                        ),
+                        canonical_writer="communications.nextcloud_talk_staff",
+                    ),
+                    ConcernContract(
+                        name="staff direct-room token projection",
+                        role=OwnerRole.PROJECTION_WRITER,
+                        input_names=(
+                            "current staff Talk state",
+                            "version-pinned Talk operation outcome",
+                        ),
+                        canonical_writer="communications.nextcloud_talk_staff",
+                    ),
+                    ConcernContract(
+                        name=(
+                            "Nextcloud Talk staff delivery admission and idempotency"
+                        ),
+                        role=OwnerRole.COMMAND_WRITER,
+                        input_names=(
+                            "canonical staff account identity",
+                            "current staff notification delivery row",
+                            "enabled Talk installation and binding",
+                        ),
+                        canonical_writer="communications.nextcloud_talk_staff",
+                    ),
+                    ConcernContract(
+                        name=(
+                            "Nextcloud Talk staff delivery retry and reconciliation policy"
+                        ),
+                        role=OwnerRole.RECONCILER,
+                        input_names=(
+                            "current staff notification delivery row",
+                            "current staff Talk state",
+                            "version-pinned Talk operation outcome",
+                        ),
+                        canonical_writer="communications.nextcloud_talk_staff",
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="validated staff Talk command",
+                        owner="auth.permission_gate",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "Authorized system-user CommandContext plus the normalized "
+                            "exact Nextcloud user ID mapping, disable, or connection-test "
+                            "input."
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical staff account identity",
+                        owner="auth.staff_provisioning",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="Active SystemUser identity selected by the business owner.",
+                    ),
+                    AuthorityInput(
+                        name="current staff notification delivery row",
+                        owner="communications.notification_service",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "Pinned Nextcloud Talk Notification and NotificationDelivery "
+                            "outbox evidence."
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="enabled Talk installation and binding",
+                        owner="integration.installations",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "Enabled version-pinned Nextcloud Talk installation, "
+                            "capability binding, configuration, and secret reference."
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="version-pinned Talk operation outcome",
+                        owner="integration.runtime",
+                        kind=AuthorityKind.OBSERVATION,
+                        source=(
+                            "Sanitized room-create, message-post, and reconciliation "
+                            "outcomes returned by the pinned connector runtime."
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="current staff Talk state",
+                        owner="communications.nextcloud_talk_staff",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "NextcloudTalkStaffAccount mapping and the invalidatable "
+                            "NextcloudTalkNotificationRoom projection."
+                        ),
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.OWNER_MANAGED,
+                    boundary=(
+                        "Admin mapping and connection-test commands enter "
+                        "execute_owner_command on a transaction-free session. Business "
+                        "owners stage notification outbox rows as transaction-neutral "
+                        "participants, and the worker completes only delivery-owned rows."
+                    ),
+                    locking=(
+                        "Mapping and room rows use stable user/installation uniqueness; "
+                        "delivery claims use FOR UPDATE SKIP LOCKED and pinned binding ids."
+                    ),
+                    idempotency=(
+                        "Mapping uniqueness, channel/dedupe identity, deterministic "
+                        "message reference ids, and cached room identity make replay stable."
+                    ),
+                    retries=(
+                        "Only retryable connector outcomes receive bounded backoff; stale "
+                        "rooms are invalidated and recreated once before terminal failure."
+                    ),
+                ),
+                errors=ErrorContract(
+                    domain_codes=(
+                        "communications.nextcloud_talk_staff.invalid_mapping",
+                        "communications.nextcloud_talk_staff.installation_not_found",
+                        "communications.nextcloud_talk_staff.binding_unavailable",
+                        "communications.nextcloud_talk_staff.username_mapping_missing",
+                        "communications.nextcloud_talk_staff.room_create_failed",
+                        "communications.nextcloud_talk_staff.talk_connection_test_failed",
+                        "communications.nextcloud_talk_staff.delivery_failed",
+                        *owner_command_boundary_error_codes(
+                            "communications.nextcloud_talk_staff"
+                        ),
+                    ),
+                    mapping_owner=(
+                        "admin system routes and the notification delivery worker"
+                    ),
+                    retryable_codes=(
+                        "communications.nextcloud_talk_staff.room_create_failed",
+                        "communications.nextcloud_talk_staff.delivery_failed",
+                    ),
+                    fail_closed_on=(
+                        "missing explicit username mapping",
+                        "disabled or unpinned integration binding",
+                        "unsafe connector target",
+                        "ambiguous or stale room identity",
+                    ),
+                ),
+                events=EventContract(
+                    event_types=(
+                        "communications.nextcloud_talk_staff.delivery_changed.v1",
+                    ),
+                    schema_version=1,
+                    delivery_owner="events.dispatcher",
+                    compatibility=(
+                        "Version 1 identifies the notification, recipient, pinned "
+                        "binding, delivery state, and sanitized provider outcome without "
+                        "credentials or response bodies."
+                    ),
+                    replay=(
+                        "Notification, delivery, mapping, and room-cache rows rebuild "
+                        "pending, successful, retryable, and terminal delivery state."
+                    ),
+                ),
+                projections=(
+                    ProjectionContract(
+                        name="staff direct-room token projection",
+                        input_names=(
+                            "current staff Talk state",
+                            "version-pinned Talk operation outcome",
+                        ),
+                        writer="communications.nextcloud_talk_staff",
+                        freshness=(
+                            "Transaction-current until a mapping change or stale-room "
+                            "provider outcome invalidates the cached token."
+                        ),
+                        stale_behavior=(
+                            "The token is invalidated, recreated once, and never treated "
+                            "as successful delivery without a confirmed post outcome."
+                        ),
+                        drift_signal=(
+                            "A 403/404-style Talk outcome or invite-target mismatch marks "
+                            "the cached room stale."
+                        ),
+                        rebuild_operation=(
+                            "The next delivery or admin connection test creates a fresh "
+                            "one-to-one room and replaces the invalidated token."
+                        ),
+                        repair_owner="communications.nextcloud_talk_staff",
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.NATIVE,
+                    new_owner="communications.nextcloud_talk_staff",
+                ),
+                steward="customer experience platform",
+                design_refs=(
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                    "docs/designs/INTEGRATION_PLATFORM_SOT.md",
+                    "docs/designs/NOTIFICATION_CHANNEL_POLICY.md",
+                ),
+                test_refs=(
+                    "tests/test_nextcloud_talk_staff_notifications.py",
+                    "tests/architecture/test_sot_manifest_contracts.py",
+                    "tests/architecture/test_adapter_transaction_ownership.py",
+                ),
+            ),
+        ),
+        SOTService(
             name="communications.campaigns",
             module="app.services.comms_campaigns",
             owns=(
@@ -1238,7 +1477,11 @@ DOMAIN = DomainSOT(
                         name="verified normalized provider fact",
                         owner="external:communications_provider",
                         kind=AuthorityKind.EXTERNAL_OBSERVATION,
-                        source="Authenticated email, WhatsApp, social, or widget adapter output with bounded message or receipt fields.",
+                        source=(
+                            "Authenticated email, WhatsApp, social, widget, or signed "
+                            "fiber website adapter output with bounded message, typed "
+                            "latitude/longitude location, or receipt fields."
+                        ),
                     ),
                     AuthorityInput(
                         name="verified webhook admission",
@@ -1248,6 +1491,9 @@ DOMAIN = DomainSOT(
                     ),
                 ),
                 transaction_mode=TransactionMode.OWNER_MANAGED,
+                domain_error_codes=(
+                    "communications.team_inbox_observations.invalid_location",
+                ),
                 event_types=("team_inbox.provider_observation_recorded.v1",),
             ),
         ),
@@ -1296,6 +1542,8 @@ DOMAIN = DomainSOT(
                 "communications.team_inbox_contact_resolution",
                 "communications.team_inbox_routing",
                 "communications.team_inbox_delivery_receipts",
+                "communications.conversation_lead_relationships",
+                "sales.capture",
             ),
             contract=_team_inbox_contract(
                 service_name="communications.team_inbox_processing",
@@ -1341,6 +1589,18 @@ DOMAIN = DomainSOT(
                         owner="ai.intake",
                         kind=AuthorityKind.DERIVED_PROJECTION,
                         source="Bounded destination-team classification or explicit fallback status.",
+                    ),
+                    AuthorityInput(
+                        name="fiber prospect capture result",
+                        owner="sales.capture",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="Party-first Lead capture for a signed unmatched fiber website inquiry; ambiguous identity is excluded.",
+                    ),
+                    AuthorityInput(
+                        name="fiber conversation lead provenance",
+                        owner="communications.conversation_lead_relationships",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="Atomic Conversation-to-Lead-to-Party link created under the processing command.",
                     ),
                 ),
                 transaction_mode=TransactionMode.COORDINATOR_MANAGED,
@@ -1752,7 +2012,7 @@ DOMAIN = DomainSOT(
                 ),
                 transaction_mode=TransactionMode.OWNER_MANAGED,
                 event_types=("team_inbox.operator_read_state_changed.v1",),
-                projections=("per-operator unread conversation projection",),
+                projections=("set-based per-operator unread conversation projection",),
             ),
         ),
         SOTService(
@@ -1899,28 +2159,42 @@ DOMAIN = DomainSOT(
                     ),
                 ),
                 transaction_mode=TransactionMode.COORDINATOR_MANAGED,
+                domain_error_codes=(
+                    "communications.team_inbox_commands.conversation_busy",
+                ),
+                retryable_codes=(
+                    "communications.team_inbox_commands.conversation_busy",
+                ),
             ),
         ),
         SOTService(
             name="communications.team_inbox_widget",
             module="app.services.team_inbox_widget",
-            owns=("authenticated visitor message and read-state commands",),
+            owns=("visitor chat session, message, and read-state commands",),
             depends_on=(
                 "customer.identity_scope",
                 "communications.team_inbox_threads",
+                "communications.team_inbox_contact_resolution",
+                "communications.team_inbox_routing",
+                "communications.conversation_lead_relationships",
+                "sales.capture",
+                "party.registry",
                 "control.settings_spec",
             ),
             notes=(
                 "ADR 0006 temporarily assigns portal live-chat authority to CRM "
                 "when comms.chat_session_authority=crm. This native command owner "
                 "then fails closed for both new and previously issued widget tokens; "
-                "it never mirrors or falls back to a local write."
+                "it never mirrors or falls back to a local write. Anonymous fiber-site "
+                "sessions are exact-origin and rate controlled by the adapter, use "
+                "Party-first prospect capture only for unmatched identity, and retain "
+                "ambiguous identity for human review."
             ),
             contract=_team_inbox_contract(
                 service_name="communications.team_inbox_widget",
                 concerns=(
                     (
-                        "authenticated visitor message and read-state commands",
+                        "visitor chat session, message, and read-state commands",
                         OwnerRole.COMMAND_WRITER,
                     ),
                 ),
@@ -1929,7 +2203,34 @@ DOMAIN = DomainSOT(
                         name="authenticated visitor principal",
                         owner="customer.identity_scope",
                         kind=AuthorityKind.CONTROL_INPUT,
-                        source="Exact Subscriber or reseller principal and bounded signed widget-session identity.",
+                        source=(
+                            "Exact Subscriber or reseller principal and a bounded "
+                            "signed widget-session identity."
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="anonymous fiber visitor command",
+                        owner="communications.team_inbox_widget",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "Exact-origin typed name, email, optional phone, first "
+                            "message, page provenance, client session id, and spam evidence."
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="fiber visitor contact resolution",
+                        owner="communications.team_inbox_contact_resolution",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "Exact active Subscriber matches or fail-closed ambiguous "
+                            "identity requiring human review."
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="fiber visitor prospect capture",
+                        owner="sales.capture",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="Party-backed Lead and immutable website-chat origin for unmatched identity.",
                     ),
                     AuthorityInput(
                         name="widget conversation identity",
@@ -2119,6 +2420,9 @@ DOMAIN = DomainSOT(
             module="app.services.team_inbox_projection",
             owns=(
                 "Inbox list detail metrics response cohort unread and action projection",
+                "Inbox outbound message sender identity projection",
+                "Inbox media browser presentation projection",
+                "Inbox structured location browser presentation projection",
             ),
             depends_on=(
                 "communications.team_inbox_threads",
@@ -2127,12 +2431,26 @@ DOMAIN = DomainSOT(
                 "communications.team_inbox_delivery_receipts",
                 "communications.team_inbox_operator_state",
                 "communications.conversation_ticket_handoff",
+                "operations.service_team_lifecycle",
+                "auth.staff_provisioning",
             ),
             contract=_team_inbox_contract(
                 service_name="communications.team_inbox_projection",
                 concerns=(
                     (
                         "Inbox list detail metrics response cohort unread and action projection",
+                        OwnerRole.RESOLVER,
+                    ),
+                    (
+                        "Inbox outbound message sender identity projection",
+                        OwnerRole.RESOLVER,
+                    ),
+                    (
+                        "Inbox media browser presentation projection",
+                        OwnerRole.RESOLVER,
+                    ),
+                    (
+                        "Inbox structured location browser presentation projection",
                         OwnerRole.RESOLVER,
                     ),
                 ),
@@ -2173,14 +2491,56 @@ DOMAIN = DomainSOT(
                         kind=AuthorityKind.AUTHORITATIVE_RECORD,
                         source=("Ticket origin links issued from Inbox conversations."),
                     ),
+                    AuthorityInput(
+                        name="active service-team selector projection",
+                        owner="operations.service_team_lifecycle",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source="Current active native service-team identifiers and names.",
+                    ),
+                    AuthorityInput(
+                        name="canonical staff display identity",
+                        owner="auth.staff_provisioning",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "SystemUser identity resolved from outbound message "
+                            "sent_by_person_id provenance, including inactive staff."
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="Inbox media content facts",
+                        owner="communications.team_inbox_threads",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "Stored or provider-resolved media bytes, normalized MIME "
+                            "type, and safe filename for one authorized Inbox asset."
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="Inbox structured location facts",
+                        owner="communications.team_inbox_threads",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "Validated latitude, longitude, optional place name, and "
+                            "address preserved on one Inbox message attachment."
+                        ),
+                    ),
                 ),
                 transaction_mode=TransactionMode.READ_ONLY,
+                domain_error_codes=(
+                    "communications.team_inbox_projection.invalid_filter",
+                ),
                 projections=(
                     "Inbox queue detail metrics response cohorts actions and unread cohorts",
+                    "Outbound message sender display name initials and provenance source",
+                    "MIME-allowlisted inline image or download-only attachment presentation",
+                    "Google Maps link presentation for a validated structured location attachment",
                 ),
                 test_refs=(
                     "tests/test_team_inbox_sot_completion.py",
+                    "tests/test_team_inbox_read.py",
                     "tests/test_team_inbox_needs_attention.py",
+                    "tests/test_team_inbox_filters.py",
+                    "tests/test_team_inbox_attachments.py",
                     "tests/architecture/test_team_inbox_boundaries.py",
                     "tests/architecture/test_team_inbox_sot_contracts.py",
                 ),
@@ -2196,6 +2556,7 @@ DOMAIN = DomainSOT(
                 "communications.team_inbox_outbound_intents",
                 "communications.team_inbox_projection",
                 "communications.team_inbox_routing",
+                "integration.inbox",
             ),
             contract=_team_inbox_contract(
                 service_name="communications.team_inbox_maintenance",
@@ -2230,10 +2591,26 @@ DOMAIN = DomainSOT(
                         kind=AuthorityKind.DERIVED_PROJECTION,
                         source="Bounded classifying or awaiting-follow-up state and configured fallback deadline.",
                     ),
+                    AuthorityInput(
+                        name="verified WhatsApp webhook repair evidence",
+                        owner="integration.inbox",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "Exact processed receipt, consequence message identity, and "
+                            "original structured location payload for explicitly scoped "
+                            "historical repair."
+                        ),
+                    ),
                 ),
                 transaction_mode=TransactionMode.OWNER_MANAGED,
+                domain_error_codes=(
+                    "communications.team_inbox_maintenance.invalid_location_repair_scope",
+                ),
                 event_types=("team_inbox.projection_repaired.v1",),
-                projections=("repairable Inbox worklists and media projection",),
+                projections=(
+                    "repairable Inbox worklists and media projection",
+                    "verified historical WhatsApp location attachment repair",
+                ),
             ),
         ),
         SOTService(

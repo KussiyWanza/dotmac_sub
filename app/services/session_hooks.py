@@ -6,8 +6,11 @@ from time import monotonic
 from typing import Any
 
 from sqlalchemy import event
+from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.session import SessionTransaction
+
+from app.services.operator_tenant import apply_operator_tenant_transaction_scope
 
 logger = logging.getLogger(__name__)
 
@@ -16,8 +19,20 @@ _ROOT_TRANSACTION_SPAN_KEY = "_root_transaction_span"
 _TRANSACTION_WARN_SECONDS = 30.0
 
 
+def _observe_transaction_span(duration_seconds: float, *, slow: bool) -> None:
+    """Record bounded, process-local transaction telemetry for Prometheus."""
+    from app.metrics import (
+        DATABASE_TRANSACTION_SPANS,
+        DATABASE_TRANSACTION_SPANS_SLOW,
+    )
+
+    DATABASE_TRANSACTION_SPANS.observe(duration_seconds)
+    if slow:
+        DATABASE_TRANSACTION_SPANS_SLOW.inc()
+
+
 def install_session_hooks() -> None:
-    """Explicit import-time installation hook used by the session factory."""
+    """Import-time installation hook for tenant scope and session telemetry."""
     return None
 
 
@@ -99,10 +114,21 @@ def _cleanup_after_transaction_end(
 
 
 @event.listens_for(Session, "after_begin")
+def _apply_operator_tenant_scope(
+    _session: Session,
+    transaction: SessionTransaction,
+    connection: Connection,
+) -> None:
+    if transaction.parent is not None:
+        return
+    apply_operator_tenant_transaction_scope(connection)
+
+
+@event.listens_for(Session, "after_begin")
 def _start_root_transaction_span(
     session: Session,
     transaction: SessionTransaction,
-    _connection: Any,
+    _connection: Connection,
 ) -> None:
     if transaction.parent is not None or _ROOT_TRANSACTION_SPAN_KEY in session.info:
         return
@@ -133,7 +159,9 @@ def _finish_root_transaction_span(
     if not isinstance(started, (int, float)):
         return
     duration = max(0.0, monotonic() - float(started))
-    if duration < _TRANSACTION_WARN_SECONDS:
+    slow = duration >= _TRANSACTION_WARN_SECONDS
+    _observe_transaction_span(duration, slow=slow)
+    if not slow:
         return
     logger.warning(
         "database_transaction_span_slow",

@@ -4,7 +4,7 @@ import hashlib
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from sqlalchemy import func, text
@@ -52,6 +52,9 @@ from app.services.realtime_platform import EventType
 
 logger = logging.getLogger(__name__)
 
+if TYPE_CHECKING:
+    from app.services.team_inbox_observations import InboundAttachmentObservation
+
 _INACTIVE_SUBSCRIBER_STATUSES = {
     SubscriberStatus.disabled.value,
     SubscriberStatus.canceled.value,
@@ -59,8 +62,49 @@ _INACTIVE_SUBSCRIBER_STATUSES = {
 _OPAQUE_CONTACT_CHANNELS = {
     InboxChannelType.facebook_messenger.value,
     InboxChannelType.instagram_dm.value,
+    InboxChannelType.facebook_comment.value,
+    InboxChannelType.instagram_comment.value,
     InboxChannelType.chat_widget.value,
 }
+
+
+def _inbound_attachment_observation(
+    item: dict[str, object],
+) -> InboundAttachmentObservation:
+    from app.services import team_inbox_observations
+
+    return team_inbox_observations.InboundAttachmentObservation(
+        asset_type=str(item.get("type") or item.get("asset_type") or "file"),
+        file_name=(
+            str(item.get("filename") or item.get("file_name"))
+            if item.get("filename") or item.get("file_name")
+            else None
+        ),
+        mime_type=str(item["mime_type"]) if item.get("mime_type") else None,
+        provider_media_id=(
+            str(item.get("id") or item.get("provider_media_id"))
+            if item.get("id") or item.get("provider_media_id")
+            else None
+        ),
+        source_url=(
+            str(item.get("url") or item.get("source_url"))
+            if item.get("url") or item.get("source_url")
+            else None
+        ),
+        caption=str(item["caption"]) if item.get("caption") else None,
+        file_size=(
+            int(str(item["file_size"])) if item.get("file_size") is not None else None
+        ),
+        download_status=(
+            str(item["download_status"]) if item.get("download_status") else None
+        ),
+        location=team_inbox_observations.inbound_location_observation(
+            latitude=item.get("latitude"),
+            longitude=item.get("longitude"),
+            name=item.get("name"),
+            address=item.get("address"),
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -1025,26 +1069,7 @@ def receive_whatsapp_webhook_batch_committed(
                         {**metadata_data, **payload}
                     ),
                     attachments=tuple(
-                        team_inbox_observations.InboundAttachmentObservation(
-                            asset_type=str(item.get("type") or "file"),
-                            file_name=(
-                                str(item.get("filename") or item.get("file_name"))
-                                if item.get("filename") or item.get("file_name")
-                                else None
-                            ),
-                            mime_type=str(item["mime_type"])
-                            if item.get("mime_type")
-                            else None,
-                            provider_media_id=str(item.get("id"))
-                            if item.get("id")
-                            else None,
-                            source_url=str(item.get("url"))
-                            if item.get("url")
-                            else None,
-                            caption=str(item.get("caption"))
-                            if item.get("caption")
-                            else None,
-                        )
+                        _inbound_attachment_observation(item)
                         for item in (payload.get("attachments") or ())
                         if isinstance(item, dict)
                     ),
@@ -1210,10 +1235,13 @@ def receive_inbound_channel_batch_committed(
         provider_value = str(metadata.get("provider") or "meta_social")
         provider = team_inbox_observations.InboxProvider(provider_value)
         provider_scope = str(
-            metadata.get("page_or_account_id")
+            metadata.get("provider_account_scope")
+            or metadata.get("provider_account_id")
+            or metadata.get("page_or_account_id")
             or metadata.get("account_scope")
             or "default"
         )
+        contact_profile = metadata.get("contact_profile")
         recorded = team_inbox_observations.record_provider_observation(
             db,
             team_inbox_observations.RecordProviderObservationCommand(
@@ -1241,27 +1269,88 @@ def receive_inbound_channel_batch_committed(
                         payload.fallback_service_team_id
                     ),
                     campaign_attributed=_campaign_attributed(metadata),
-                    attachments=tuple(
-                        team_inbox_observations.InboundAttachmentObservation(
-                            asset_type=str(item.get("type") or "file"),
-                            file_name=(
-                                str(item.get("filename") or item.get("file_name"))
-                                if item.get("filename") or item.get("file_name")
+                    provider_account_id=(
+                        str(metadata["provider_account_id"])
+                        if metadata.get("provider_account_id")
+                        else None
+                    ),
+                    external_account_id=(
+                        str(metadata["external_account_id"])
+                        if metadata.get("external_account_id")
+                        else None
+                    ),
+                    page_id=str(metadata["page_id"])
+                    if metadata.get("page_id")
+                    else None,
+                    instagram_account_id=(
+                        str(metadata["instagram_account_id"])
+                        if metadata.get("instagram_account_id")
+                        else None
+                    ),
+                    provider_comment_id=(
+                        str(metadata["provider_comment_id"])
+                        if metadata.get("provider_comment_id")
+                        else None
+                    ),
+                    comment_id=str(metadata["comment_id"])
+                    if metadata.get("comment_id")
+                    else None,
+                    post_id=str(metadata["post_id"])
+                    if metadata.get("post_id")
+                    else None,
+                    media_id=str(metadata["media_id"])
+                    if metadata.get("media_id")
+                    else None,
+                    parent_provider_comment_id=(
+                        str(metadata["parent_provider_comment_id"])
+                        if metadata.get("parent_provider_comment_id")
+                        else None
+                    ),
+                    commenter_id=str(metadata["commenter_id"])
+                    if metadata.get("commenter_id")
+                    else None,
+                    commenter_name=str(metadata["commenter_name"])
+                    if metadata.get("commenter_name")
+                    else None,
+                    commenter_username=(
+                        str(metadata["commenter_username"])
+                        if metadata.get("commenter_username")
+                        else None
+                    ),
+                    surface=str(metadata["surface"])
+                    if metadata.get("surface")
+                    else None,
+                    permalink_url=(
+                        str(metadata["permalink_url"])
+                        if metadata.get("permalink_url")
+                        else None
+                    ),
+                    media_url=str(metadata["media_url"])
+                    if metadata.get("media_url")
+                    else None,
+                    contact_profile=(
+                        {
+                            "display_name": (
+                                str(contact_profile["display_name"])
+                                if contact_profile.get("display_name")
                                 else None
                             ),
-                            mime_type=str(item["mime_type"])
-                            if item.get("mime_type")
-                            else None,
-                            provider_media_id=str(item.get("id"))
-                            if item.get("id")
-                            else None,
-                            source_url=str(item.get("url"))
-                            if item.get("url")
-                            else None,
-                            caption=str(item.get("caption"))
-                            if item.get("caption")
-                            else None,
-                        )
+                            "username": (
+                                str(contact_profile["username"])
+                                if contact_profile.get("username")
+                                else None
+                            ),
+                            "profile_pic": (
+                                str(contact_profile["profile_pic"])
+                                if contact_profile.get("profile_pic")
+                                else None
+                            ),
+                        }
+                        if isinstance(contact_profile, dict)
+                        else None
+                    ),
+                    attachments=tuple(
+                        _inbound_attachment_observation(item)
                         for item in (metadata.get("attachments") or ())
                         if isinstance(item, dict)
                     ),

@@ -576,7 +576,7 @@ class TestAdminPagesRender:
         assert state["reviewer"].display_name == missing_user_id
         assert state["reviewer"].identity_resolved is False
 
-    def test_verified_outcome_card_displays_reviewer_name_and_actor_id(
+    def test_verified_outcome_card_displays_reviewer_name_without_actor_id(
         self, db_session, proof_env
     ) -> None:
         reviewer = _system_user(db_session, display_name="Ada Reviewer")
@@ -601,10 +601,10 @@ class TestAdminPagesRender:
         assert detail.status_code == 200
         assert "Review Outcome" in text
         assert "Ada Reviewer" in text
-        assert str(reviewer.id) in text
-        assert "Reviewer Actor ID" in text
+        assert str(reviewer.id) not in text
+        assert "Reviewer Actor ID" not in text
 
-    def test_rejected_outcome_card_displays_reviewer_name_and_actor_id(
+    def test_rejected_outcome_card_displays_reviewer_name_without_actor_id(
         self, db_session, proof_env
     ) -> None:
         reviewer = _system_user(
@@ -639,7 +639,7 @@ class TestAdminPagesRender:
         assert detail.status_code == 200
         assert "Review Outcome" in text
         assert "Linus Torvalds" in text
-        assert str(reviewer.id) in text
+        assert str(reviewer.id) not in text
 
     def test_list_and_detail_pages_render(self, db_session, proof_env) -> None:
         from app.web.admin.billing_payment_proofs import (

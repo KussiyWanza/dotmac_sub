@@ -26,6 +26,17 @@
         </div>
     </div>
 
+    {% if show_attendance %}
+    <section id="attendance-widget"
+             hx-get="/admin/dashboard/attendance"
+             hx-trigger="load"
+             hx-swap="outerHTML"
+             aria-label="Attendance"
+             class="rounded-2xl border border-slate-200/60 bg-white p-5 shadow-sm dark:border-slate-700/60 dark:bg-slate-800">
+        <div class="h-12 animate-pulse rounded-xl bg-slate-100 dark:bg-slate-700/50" aria-label="Loading attendance"></div>
+    </section>
+    {% endif %}
+
     {# ═══════════ Section 2: Needs Attention (single unified surface) ═══════════ #}
     {# The exception feed (inclusion, severity, order, tone) is owned by
        app.services.admin_attention; this template only applies RBAC visibility
@@ -174,6 +185,7 @@
 
 {% block scripts %}
 {{ super() }}
+{% if show_attendance %}<script src="/static/js/admin-attendance.js"></script>{% endif %}
 <script>
     document.body.addEventListener('htmx:responseError', function (event) {
         const section = event.detail.elt;

@@ -37,20 +37,20 @@ SERVICES: tuple[SOTService, ...] = (
             "opening balance plus post-cutover native funding projection",
         ),
         depends_on=(
-            "billing.splynx_history_opening",
+            "billing.opening_balance_history",
             "financial.ledger",
         ),
         notes=(
-            "The first approved batch permanently retires Splynx funding "
+            "The first approved batch permanently retires carried-in funding "
             "authority. The complete-history migration supersession requires "
             "one target for every funding candidate and aborts on any source "
             "integrity defect; later corrections are reviewed append-only "
-            "supersessions. The frozen Splynx snapshot is one-time migration "
+            "supersessions. The frozen opening-balance snapshot is one-time migration "
             "evidence, never a runtime money source or fallback. The separate "
             "customer.financial_position verifier owns the post-activation "
             "composition of an approved subledger opening with later native "
             "facts. For opening verification only, a customer created after "
-            "the fixed legacy handoff with no Splynx identity has a typed "
+            "the fixed handoff with no carried-in identity has a typed "
             "zero history component plus canonical native facts; runtime "
             "money actions remain quarantined until approved immutable "
             "opening capture. A post-cutover single-account review bounds "
@@ -343,12 +343,22 @@ SERVICES: tuple[SOTService, ...] = (
             "invoice-void release of exact account-credit allocations",
             "account-credit application invariant monitoring",
             "bounded account-credit invariant summary",
+            "unallocated account-credit creation",
+            "offer of settled account credit to open receivables",
         ),
-        depends_on=("financial.payments", "financial.invoices"),
+        depends_on=("financial.payments", "financial.invoices", "financial.ledger"),
         notes=(
             "Account credit is derived from exact unconsumed settlement "
             "evidence, never a wallet counter. This owner composes the "
-            "payment-allocation owner and does not write money directly."
+            "payment-allocation owner for application. It gained the creation "
+            "half in record_credit, so credit can no longer be minted without "
+            "this owner knowing it exists — which is how it got stranded while "
+            "the invoice it should have settled was dunned. The ledger row is "
+            "still written through financial.ledger; this owner supplies the "
+            "decision, not its own persistence. Minting and offering are "
+            "separate commands because credit is spendable only once its "
+            "settlement evidence exists; the settlement path calls "
+            "offer_available_credit once it does."
         ),
     ),
 )

@@ -23,6 +23,7 @@ AUTHORITATIVE_CONTEXT = Path(
 ).read_text()
 FLOATING_SURFACES = Path("templates/admin/inbox/_floating_surfaces.html").read_text()
 INDEX = Path("templates/admin/inbox/index.html").read_text()
+COMMENTS = Path("templates/admin/inbox/comments.html").read_text()
 LAYOUT = Path("templates/layouts/admin.html").read_text()
 OVERLAYS = Path("templates/admin/inbox/_overlays.html").read_text()
 QUEUE = Path("templates/admin/inbox/_queue_macros.html").read_text()
@@ -69,8 +70,10 @@ def test_crm_replication_surfaces_exclude_customer_placeholder_data():
     assert "data-social-comment-thread" in COMMENT_THREAD
     assert 'action="/admin/inbox/{{ timeline.id }}/reply"' in COMMENT_THREAD
     assert 'name="whatsapp_template_components"' in OVERLAYS
+    assert 'name="subscriber_id"' in OVERLAYS
     assert "newConversation.templateFields" in OVERLAYS
     assert "whatsapp-contacts" in JAVASCRIPT
+    assert "contact.subscriber_id" in JAVASCRIPT
 
     assert "inbox-ticket-panel" in TICKET_PANEL
     assert ':action="`/admin/inbox/${selectedId}/tickets`"' in TICKET_PANEL
@@ -87,6 +90,25 @@ def test_crm_replication_surfaces_exclude_customer_placeholder_data():
         "z-index: 200",
     ):
         assert contract in REPLICA_CSS
+
+
+def test_social_comments_have_dedicated_workspace_and_filter_entry_point():
+    main_channel_options = tuple(
+        item.value
+        for item in team_inbox_projection.InboxChannelType
+        if item.value not in team_inbox_projection.SOCIAL_COMMENT_CHANNELS
+    )
+
+    assert 'href="/admin/inbox/comments"' in SIDEBAR
+    assert "social_comment_count" in SIDEBAR
+    assert "facebook_comment" not in main_channel_options
+    assert "instagram_comment" not in main_channel_options
+    assert 'name="channel_type"' in COMMENTS
+    assert 'action="/admin/inbox/{{ selected.id }}/reply"' in COMMENTS
+    assert 'name="reply_to_message_id" value="{{ message.id }}"' in COMMENTS
+    assert "parent_provider_comment_id" in COMMENTS
+    assert "post media" in COMMENTS.lower()
+    assert '"/comments"' in ROUTES
 
 
 # --- Slice 1: read state -------------------------------------------------
@@ -120,6 +142,18 @@ def test_reply_form_submits_macro_and_template_identity():
     assert 'name="template_id"' in CONVERSATION
     assert "resolvedMacroId()" in CONVERSATION
     assert "resolvedTemplateId()" in CONVERSATION
+
+
+def test_reply_submission_refreshes_inbox_fragments_without_page_navigation():
+    assert 'hx-post="/admin/inbox/{{ timeline.id }}/reply"' in CONVERSATION
+    assert 'hx-swap="none"' in CONVERSATION
+    assert '@inbox-reply-completed.window="completeSend($event.detail)"' in CONVERSATION
+    assert "completeSend(result)" in JAVASCRIPT
+    assert "workspace?.refreshThread?.(this.conversationId, true)" in JAVASCRIPT
+    assert 'workspace?.refreshConversationList?.("reply")' in JAVASCRIPT
+    assert 'this.draft = ""' in JAVASCRIPT
+    assert "window.location.reload" not in JAVASCRIPT
+    assert "admin-inbox.js?v=20260811a" in INDEX
 
 
 def test_macro_menu_dispatches_identity_not_just_text():
@@ -225,15 +259,17 @@ def test_sidebar_shell_header_and_icon_use_the_page_scoped_contract():
 
 
 def test_header_actions_have_live_states_and_tooltips():
-    assert SIDEBAR.count('role="tooltip"') == 4
+    assert SIDEBAR.count('role="tooltip"') == 5
     assert "h-9 w-9" in SIDEBAR
     assert "hover:bg-amber-50 hover:text-amber-600" in SIDEBAR
     assert "text-emerald-600 hover:bg-emerald-50 hover:text-emerald-700" in SIDEBAR
     assert "text-slate-500 hover:bg-slate-100 hover:text-slate-700" in SIDEBAR
     assert "bg-amber-50 text-amber-700" in SIDEBAR
     assert "Manager dashboard" in SIDEBAR
+    assert "Manager AI" in SIDEBAR
     assert '@click="toggleManagerDashboard()"' in SIDEBAR
     assert "{% if can_manage_inbox %}" in SIDEBAR
+    assert "can(request, 'support:inbox_ai:read')" in SIDEBAR
     assert 'href="/admin/crm/inbox/settings"' in SIDEBAR
 
 
@@ -300,8 +336,28 @@ def test_sidebar_filters_replace_stale_requests_and_expose_busy_state():
     assert "if (this.filterLoading) return" in JAVASCRIPT
     assert 'document.body.addEventListener("htmx:sendAbort", release)' in JAVASCRIPT
     assert "InboxQueueComposition.sidebar" in ROUTES
-    assert "if can_manage_inbox and not is_list_fragment_request" in ROUTES
+    assert "manager_dashboard = None" in ROUTES
+    assert 'hx-get="/admin/inbox/manager-dashboard"' in SIDEBAR
+    assert "def team_inbox_manager_dashboard(" in ROUTES
     assert 'htmx_target == "inbox-conversation-queue"' in ROUTES
+
+
+def test_conversation_click_shows_loading_without_hiding_list_until_swap():
+    select_start = JAVASCRIPT.index("selectConversation(id) {")
+    select_end = JAVASCRIPT.index("updateSelectedHighlight()", select_start)
+    select_block = JAVASCRIPT[select_start:select_end]
+    assert "this.selectedId = id;" in select_block
+    assert "this.conversationOpening = true;" in select_block
+    assert 'setAttribute("data-triage-mode", "detail")' not in select_block
+
+    swap_start = JAVASCRIPT.index('if (target.id === "triage-detail")')
+    swap_end = JAVASCRIPT.index(
+        'if (\n            target.id === "inbox-sidebar-content"', swap_start
+    )
+    swap_block = JAVASCRIPT[swap_start:swap_end]
+    assert 'this.mode = "detail";' in swap_block
+    assert "this.conversationOpening = false;" in swap_block
+    assert 'setAttribute("data-triage-mode", "detail")' in swap_block
 
 
 def test_sidebar_resize_handle_has_exact_shape_states_and_tooltip():
@@ -586,7 +642,7 @@ def test_empty_state_and_inbox_pagination_are_scoped_to_the_queue():
     ):
         assert contract in SIDEBAR
     for contract in (
-        '@click.prevent="navigatePage(',
+        "@click.prevent='navigatePage(",
         "border border-slate-200 bg-white",
         "hover:bg-slate-50",
         "Page {{ page_meta.page }}",
@@ -594,6 +650,7 @@ def test_empty_state_and_inbox_pagination_are_scoped_to_the_queue():
         ">Next</a>",
     ):
         assert contract in QUEUE
+    assert '@click.prevent="navigatePage(' not in QUEUE
     assert "Rows per page" not in QUEUE
 
 

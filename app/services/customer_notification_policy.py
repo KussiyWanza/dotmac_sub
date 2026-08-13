@@ -17,6 +17,7 @@ from app.models.notification import (
     NotificationStatus,
 )
 from app.models.subscriber import Subscriber, SubscriberContact
+from app.services import settings_spec
 from app.services.customer_identity_normalization import (
     normalize_email_identifier,
     normalize_phone_identifier,
@@ -406,16 +407,17 @@ def channel_disabled_in_config(db: Session, channel: NotificationChannel | str) 
     if normalized_channel != NotificationChannel.sms:
         return False
     try:
-        from app.services.sms import _get_setting
-
         # Fail closed, matching sms.send_sms and the readiness probe: an
         # unconfigured SMS channel is disabled, so its notifications are
         # cancelled cleanly at queue time rather than created and left to fail.
         # SMS is retired by default; a future SMS plugin flips sms_enabled on.
-        value = _get_setting(db, "sms_enabled", "SMS_ENABLED", "false")
+        # The spec owns that default now — this call site no longer carries one.
+        enabled = settings_spec.resolve_boolean(
+            db, SettingDomain.notification, "sms_enabled"
+        )
     except Exception:
         return True
-    return str(value or "false").strip().lower() not in _ENABLED_VALUES
+    return not enabled
 
 
 def _setting_int(db: Session, key: str, default: int = 0) -> int:

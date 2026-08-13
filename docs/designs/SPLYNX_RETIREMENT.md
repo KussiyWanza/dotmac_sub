@@ -181,7 +181,7 @@ with it the ability to adjudicate pre-cutover money. It retires when that
 reconciliation is confirmed closed — the view is gone, the evidence path is not.
 
 ADR 0007 Phase 3 has one additional bounded evidence reader:
-`billing.splynx_history_opening`. It runs only in the isolated audit restore and
+`billing.opening_balance_history`. It runs only in the isolated audit restore and
 consumes `audit_splynx_final_balances`, which is generated from the retained
 final Splynx customer-billing and complete active-transaction snapshot. It
 requires one reconciled row for every migrated account; a complete empty

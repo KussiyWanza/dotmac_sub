@@ -44,6 +44,7 @@ from app.services.control_plane_intent import (
     DesiredValueProvenance,
     has_executable_desired_provenance,
 )
+from app.services.credential_crypto import encrypt_credential
 from app.services.network.acs_resolution import resolve_acs_for_ont
 from app.services.network.effective_ont_config import resolve_effective_ont_config
 from app.services.network.ont_provisioning_defaults import (
@@ -455,24 +456,36 @@ def apply_proposed_change(
     This is a side-effecting write on the passed ``OntUnit`` instance — the
     caller is responsible for the surrounding ``db.commit()``.
     """
-    # Configuration knobs that live in desired_config JSON sections
-    ont.pppoe_username = target.wan_pppoe_username
-    ont.pppoe_password = target.wan_pppoe_password_ref
 
-    if hasattr(ont, "mgmt_ip_address"):
+    def changed(field: str) -> bool:
+        # Empty keeps the historical direct-helper behavior used by legacy
+        # callers. Reconciler calls always provide the validated proposal
+        # fields and must persist only that explicit scope.
+        return not changed_fields or field in changed_fields
+
+    # Configuration knobs that live in desired_config JSON sections
+    if changed("wan_pppoe_username"):
+        ont.pppoe_username = target.wan_pppoe_username
+    if changed("wan_pppoe_password_ref"):
+        ont.pppoe_password = target.wan_pppoe_password_ref
+
+    if changed("mgmt_ip") and hasattr(ont, "mgmt_ip_address"):
         ont.mgmt_ip_address = target.mgmt_ip
     if "tr069_profile_id" in changed_fields:
         ont.desired_tr069_profile_id = target.tr069_profile_id
 
-    _set_desired_value(ont, "wifi", "ssid", target.wifi_ssid)
-    _set_desired_value(ont, "wifi", "password", target.wifi_password_ref)
+    if changed("wifi_ssid"):
+        _set_desired_value(ont, "wifi", "ssid", target.wifi_ssid)
+    if changed("wifi_password_ref"):
+        protected_wifi_password = encrypt_credential(target.wifi_password_ref)
+        _set_desired_value(ont, "wifi", "password", protected_wifi_password or "")
     existing_wifi = dict((ont.desired_config or {}).get("wifi") or {})
     for key, field, value in (
         ("enabled", "wifi_enabled", target.wifi_enabled),
         ("channel", "wifi_channel", target.wifi_channel),
         ("security_mode", "wifi_security_mode", target.wifi_security_mode),
     ):
-        if key in existing_wifi or field in changed_fields:
+        if field in changed_fields if changed_fields else key in existing_wifi:
             _set_desired_value(ont, "wifi", key, value)
 
     existing_access = dict((ont.desired_config or {}).get("access") or {})
@@ -494,14 +507,18 @@ def apply_proposed_change(
         ),
     )
     for key, field, value in access_values:
-        if key in existing_access or field in changed_fields:
+        if field in changed_fields if changed_fields else key in existing_access:
             _set_desired_value(ont, "access", key, value)
 
-    _set_desired_value(ont, "lan", "dhcp_enabled", target.dhcp_enabled)
-    _set_desired_value(ont, "lan", "dhcp_start", target.dhcp_pool_min)
-    _set_desired_value(ont, "lan", "dhcp_end", target.dhcp_pool_max)
-    if "ipv6_enabled" in changed_fields or has_executable_desired_provenance(
-        target.ipv6_enabled_provenance
+    if changed("dhcp_enabled"):
+        _set_desired_value(ont, "lan", "dhcp_enabled", target.dhcp_enabled)
+    if changed("dhcp_pool_min"):
+        _set_desired_value(ont, "lan", "dhcp_start", target.dhcp_pool_min)
+    if changed("dhcp_pool_max"):
+        _set_desired_value(ont, "lan", "dhcp_end", target.dhcp_pool_max)
+    if changed("ipv6_enabled") and (
+        "ipv6_enabled" in changed_fields
+        or has_executable_desired_provenance(target.ipv6_enabled_provenance)
     ):
         _set_desired_value(
             ont,
@@ -509,17 +526,28 @@ def apply_proposed_change(
             "ip_protocol",
             "dual_stack" if target.ipv6_enabled else "ipv4",
         )
-    _set_desired_value(ont, "wan", "static_ip", target.wan_static_ip)
-    _set_desired_value(ont, "wan", "static_subnet", target.wan_static_subnet)
-    _set_desired_value(ont, "wan", "static_gateway", target.wan_static_gateway)
-    _set_desired_value(ont, "wan", "static_dns", target.wan_static_dns)
-    _set_desired_value(ont, "lan", "subnet", target.dhcp_subnet_mask)
+    for key, field, value in (
+        ("static_ip", "wan_static_ip", target.wan_static_ip),
+        ("static_subnet", "wan_static_subnet", target.wan_static_subnet),
+        ("static_gateway", "wan_static_gateway", target.wan_static_gateway),
+        ("static_dns", "wan_static_dns", target.wan_static_dns),
+    ):
+        if changed(field):
+            _set_desired_value(ont, "wan", key, value)
+    if changed("dhcp_subnet_mask"):
+        _set_desired_value(ont, "lan", "subnet", target.dhcp_subnet_mask)
 
-    _set_desired_value(ont, "wan", "onu_mode", target.wan_mode)
-    _set_desired_value(ont, "wan", "instance_index", target.wan_pppoe_instance_index)
+    if changed("wan_mode"):
+        _set_desired_value(ont, "wan", "onu_mode", target.wan_mode)
+    if changed("wan_pppoe_instance_index"):
+        _set_desired_value(
+            ont, "wan", "instance_index", target.wan_pppoe_instance_index
+        )
 
-    _set_desired_value(ont, "management", "subnet", target.mgmt_subnet_mask)
-    _set_desired_value(ont, "management", "gateway", target.mgmt_gateway)
+    if changed("mgmt_subnet_mask"):
+        _set_desired_value(ont, "management", "subnet", target.mgmt_subnet_mask)
+    if changed("mgmt_gateway"):
+        _set_desired_value(ont, "management", "gateway", target.mgmt_gateway)
 
 
 # ── ACS delivery-fault bookkeeping ──────────────────────────────────────────

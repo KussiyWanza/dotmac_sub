@@ -23,9 +23,14 @@ def check_stale_infrastructure() -> dict[str, object]:
         from app.services.infrastructure_health import (
             check_all_services,
             publish_database_pressure_snapshot,
+            publish_health_snapshot,
         )
 
         services = check_all_services(db)
+
+    snapshot_stored = publish_health_snapshot(services)
+    if not snapshot_stored:
+        logger.error("Infrastructure health snapshot publication failed")
 
     postgres = next(
         (service for service in services if service.name == "PostgreSQL"), None
@@ -48,9 +53,10 @@ def check_stale_infrastructure() -> dict[str, object]:
             degraded,
         )
     return {
-        "status": "degraded" if degraded else "up",
+        "status": "degraded" if degraded or not snapshot_stored else "up",
         "degraded": degraded,
         "checked": len(services),
+        "snapshot_stored": snapshot_stored,
     }
 
 

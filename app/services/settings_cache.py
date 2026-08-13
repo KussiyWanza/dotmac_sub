@@ -28,10 +28,25 @@ def get_settings_redis() -> redis.Redis | None:
 
 
 class SettingsCache:
-    """Redis-based cache for domain settings.
+    """RETIRED as the settings cache. No `app/` module uses it.
 
-    Provides get/set/invalidate operations for settings values.
-    Uses a short TTL to balance performance with consistency.
+    `dotmac_kernel.settings_cache` owns settings caching — the key, the scope
+    segment, the TTL policy, what is never cached and what a write invalidates
+    — over the transport in `app/services/kernel_settings_cache_store.py`.
+    `tests/architecture/test_kernel_owned_facts_have_one_expression.py` holds
+    the "no `app/` user" line.
+
+    Its key is `settings:{domain}:{key}`, with NO SCOPE SEGMENT. That is the
+    cross-tenant leak `dotmac_kernel.settings_cache` cites `dotmac_erp` for:
+    Redis is shared across workers, so one tenant is served the entry another
+    populated. Dormant here because Sub provisions one tenant, and the reason
+    this class must not acquire a new caller.
+
+    It survives only because tests still call `invalidate` after writing a
+    setting, to make their next read fresh. Those calls now clear a cache
+    nobody reads — they are no-ops against the unit suite's refusing Redis, and
+    misleading either way. Removing them, and then this class, is a tidy-up
+    with no production effect.
     """
 
     PREFIX = "settings:"

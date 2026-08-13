@@ -4,15 +4,18 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import event
 
 from app.models.team_inbox import (
     InboxChannelType,
     InboxConversation,
+    InboxConversationReadState,
     InboxMessage,
     InboxMessageDirection,
     InboxObservationKind,
 )
 from app.services import (
+    team_inbox_maintenance,
     team_inbox_observations,
     team_inbox_processing,
     team_inbox_read_state,
@@ -46,6 +49,39 @@ def _message_observation(*, body: str = "Please help"):
             external_thread_id="whatsapp:+2348035550114",
         ),
     )
+
+
+def test_location_observation_requires_valid_coordinate_pair() -> None:
+    location = team_inbox_observations.inbound_location_observation(
+        latitude="6.5243793",
+        longitude="3.3792057",
+        name="Customer location",
+        address="Lagos, Nigeria",
+    )
+
+    assert location is not None
+    assert location.latitude == 6.5243793
+    assert location.longitude == 3.3792057
+
+    with pytest.raises(team_inbox_observations.TeamInboxObservationError) as exc:
+        team_inbox_observations.inbound_location_observation(
+            latitude=6.5243793,
+            longitude=None,
+        )
+    assert exc.value.code.endswith("invalid_location")
+
+
+def test_location_repair_requires_exact_conversation_scope(db_session) -> None:
+    with pytest.raises(team_inbox_maintenance.TeamInboxMaintenanceError) as exc:
+        team_inbox_maintenance.repair_whatsapp_locations(
+            db_session,
+            team_inbox_maintenance.RepairWhatsAppLocationsCommand(
+                context=_context("invalid-location-repair-scope"),
+                conversation_ids=(),
+            ),
+        )
+
+    assert exc.value.code.endswith("invalid_location_repair_scope")
 
 
 def test_provider_observation_exact_retry_and_changed_evidence(db_session) -> None:
@@ -179,6 +215,83 @@ def test_operator_read_cursor_and_unread_projection_are_idempotent(db_session) -
         team_inbox_read_state.unread_conversation_count(db_session, person_id=person_id)
         == 0
     )
+
+
+def test_operator_unread_queries_have_fixed_query_budget(db_session) -> None:
+    person_id = uuid4()
+    observed_at = datetime(2026, 8, 9, 8, 0, tzinfo=UTC)
+    conversation_ids = []
+    expected_counts = {}
+    for index in range(30):
+        conversation = InboxConversation(channel_type=InboxChannelType.email.value)
+        db_session.add(conversation)
+        db_session.flush()
+        conversation_ids.append(conversation.id)
+        db_session.add_all(
+            [
+                InboxMessage(
+                    conversation_id=conversation.id,
+                    channel_type=InboxChannelType.email.value,
+                    direction=InboxMessageDirection.inbound.value,
+                    body="First",
+                    received_at=observed_at,
+                ),
+                InboxMessage(
+                    conversation_id=conversation.id,
+                    channel_type=InboxChannelType.email.value,
+                    direction=InboxMessageDirection.inbound.value,
+                    body="Second",
+                    received_at=observed_at + timedelta(minutes=2),
+                ),
+            ]
+        )
+        if index % 3 == 0:
+            expected_counts[conversation.id] = 2
+        else:
+            cursor_at = observed_at + timedelta(minutes=1 if index % 3 == 1 else 3)
+            db_session.add(
+                InboxConversationReadState(
+                    conversation_id=conversation.id,
+                    person_id=person_id,
+                    last_read_at=cursor_at,
+                )
+            )
+            expected_counts[conversation.id] = 1 if index % 3 == 1 else 0
+    db_session.commit()
+
+    statements: list[str] = []
+
+    def capture(_conn, _cursor, statement, _params, _context, _executemany):
+        if statement.lstrip().upper().startswith("SELECT"):
+            statements.append(statement)
+
+    event.listen(db_session.bind, "before_cursor_execute", capture)
+    try:
+        counts = team_inbox_read_state.conversation_unread_message_counts(
+            db_session,
+            conversation_ids=conversation_ids,
+            person_id=person_id,
+        )
+        unread_ids = team_inbox_read_state.unread_conversation_ids(
+            db_session,
+            conversation_ids=conversation_ids,
+            person_id=person_id,
+        )
+        fleet_count = team_inbox_read_state.unread_conversation_count(
+            db_session,
+            person_id=person_id,
+        )
+    finally:
+        event.remove(db_session.bind, "before_cursor_execute", capture)
+
+    assert counts == expected_counts
+    assert unread_ids == {
+        conversation_id
+        for conversation_id, count in expected_counts.items()
+        if count > 0
+    }
+    assert fleet_count == 20
+    assert len(statements) == 3
 
 
 def test_realtime_rebuild_uses_durable_projection(db_session, monkeypatch) -> None:

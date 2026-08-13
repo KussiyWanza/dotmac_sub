@@ -46,6 +46,7 @@ SessionLocal = db_session_adapter.create_session
 
 # Make the white-label `brand` value available to every Jinja2 template. Must run
 # before the (lazily imported) web routers create their Jinja2Templates instances.
+from app.ui import UI_ASSET_DIRECTORY, UI_ASSET_MOUNT  # noqa: E402
 from app.web.brand_globals import install_brand_jinja_global  # noqa: E402
 
 install_brand_jinja_global()
@@ -76,6 +77,8 @@ _CORE_ROUTER_SPECS = [
     ("app.api.crm_webhooks", "router", "api", "none"),
     ("app.api.inbox_webhooks", "router", "api", "none"),
     ("app.api.meta_inbox_webhooks", "router", "api", "none"),
+    ("app.api.fiber_inquiry_webhooks", "router", "api", "none"),
+    ("app.api.erp_material_webhooks", "router", "api", "none"),
     ("app.api.lead_capture_webhooks", "router", "api", "none"),
     ("app.api.chat_widget", "router", "web", "none"),
     ("app.api.crm", "router", "api", "none"),
@@ -441,6 +444,13 @@ def _seed_startup_settings() -> None:
         )
     db = SessionLocal()
     try:
+        # Before every settings seed: settings are tenant-scoped (ADR-0009), so
+        # the tenant they belong to must exist first. Idempotent — an existing
+        # tenant is returned untouched, never reverted.
+        from app.services.operator_tenant import provision_operator_tenant
+
+        provision_operator_tenant(db)
+
         seed_auth_settings(db)
         seed_auth_policy_settings(db)
         seed_audit_settings(db)
@@ -485,13 +495,41 @@ def _seed_startup_settings() -> None:
 
 
 def _startup_preflight() -> None:
-    """Fast, fail-fast checks that MUST pass before serving traffic: credential
-    encryption enforcement and required schema. The slow, idempotent
-    default-settings seeding is deferred off the serving path — see
+    """Fast, fail-fast checks that MUST pass before serving traffic: the boot
+    secrets, credential encryption enforcement and required schema. The slow,
+    idempotent default-settings seeding is deferred off the serving path — see
     [_run_deferred_startup]."""
     _check_test_environment_leakage()
     from app.config import settings
     from app.services.credential_crypto import require_encryption_key
+    from app.services.kernel_key_provider import (
+        install_if_configured as install_settings_keyring,
+    )
+    from app.services.kernel_secret_source import install_if_configured
+
+    # BEFORE the encryption check below, which reads one of the secrets this
+    # loads. Held here, once, and never fetched again: nothing on a request
+    # path may reach OpenBao (starter ADR-0009). Fail-fast rather than
+    # deferred, because a process without its keys is not a process that
+    # should be serving — see `install_if_configured`.
+    held = install_if_configured()
+    logger.info(
+        "boot_secrets_held",
+        extra={"event": "boot_secrets_held", "names": list(held), "count": len(held)},
+    )
+
+    # The settings-encryption keyring, loaded on the same terms and for the
+    # same reason: the keys are in memory from now on, so a store outage later
+    # cannot reach a settings read. Ids only in the log — never material.
+    key_ids = install_settings_keyring()
+    logger.info(
+        "settings_keyring_held",
+        extra={
+            "event": "settings_keyring_held",
+            "key_ids": list(key_ids),
+            "count": len(key_ids),
+        },
+    )
 
     if settings.enforce_credential_encryption:
         require_encryption_key(enforce=True)
@@ -943,6 +981,42 @@ async def web_auth_refresh_middleware(request: Request, call_next):
                 _set_refresh_cookie(response, db, refresh_token, request)
         finally:
             db.close()
+    return response
+
+
+@app.middleware("http")
+async def fiber_widget_cors_middleware(request: Request, call_next):
+    """Expose only native widget routes to the exact fiber-site browser origin."""
+
+    if not request.url.path.startswith("/widget"):
+        return await call_next(request)
+
+    from app.config import settings
+
+    origin = str(request.headers.get("origin") or "").rstrip("/")
+    allowed_origin = settings.fiber_chat_allowed_origin
+    if request.method.upper() == "OPTIONS":
+        if origin != allowed_origin:
+            return Response(status_code=403)
+        return Response(
+            status_code=204,
+            headers={
+                "Access-Control-Allow-Origin": allowed_origin,
+                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type, X-Visitor-Token",
+                "Access-Control-Max-Age": "600",
+                "Vary": "Origin",
+            },
+        )
+
+    response = await call_next(request)
+    if origin == allowed_origin:
+        response.headers["Access-Control-Allow-Origin"] = allowed_origin
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = (
+            "Content-Type, X-Visitor-Token"
+        )
+        response.headers.append("Vary", "Origin")
     return response
 
 
@@ -1454,6 +1528,14 @@ def _include_api_router(router, dependencies=None):
     app.include_router(router, prefix="/api/v1", dependencies=dependencies)
 
 
+# The namespaced package mount MUST precede Sub's catch-all /static mount.
+# Serving the installed artifact directly keeps dotmac-ui the one writer of its
+# own compiled CSS; no copy of it is checked into this repository.
+app.mount(
+    UI_ASSET_MOUNT,
+    StaticFiles(directory=UI_ASSET_DIRECTORY),
+    name="dotmac_ui_static",
+)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 

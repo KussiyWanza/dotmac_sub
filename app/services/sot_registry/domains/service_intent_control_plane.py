@@ -20,6 +20,10 @@ from app.services.sot_registry.model import DomainSOT
 
 DOMAIN = DomainSOT(
     domain="service_intent_control_plane",
+    setting_domains=(
+        "catalog",
+        "lifecycle",
+    ),
     services=(
         SOTService(
             name="service_intent.catalog_policy",
@@ -328,8 +332,9 @@ DOMAIN = DomainSOT(
                         owner="network.ip_assignment_lifecycle",
                         kind=AuthorityKind.AUTHORITATIVE_RECORD,
                         source=(
-                            "active IpPool.nas_device_id, IPv4Address safety, and "
-                            "assignment availability evidence"
+                            "active legacy IpPool.nas_device_id or NAS radius_pool "
+                            "configuration, IPv4Address safety, and assignment "
+                            "availability evidence"
                         ),
                     ),
                     AuthorityInput(

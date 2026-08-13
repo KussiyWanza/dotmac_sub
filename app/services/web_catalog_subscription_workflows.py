@@ -47,6 +47,7 @@ from app.services.ip_assignment_lifecycle import (
     preview_service_ipv4_projection_repair,
     repair_service_ipv4_projection,
 )
+from app.services.nas import radius_pool_ids_from_tags
 from app.services.owner_commands import CommandContext
 from app.services.prepaid_funding_reconstruction import (
     PrepaidFundingBaselineMissingError,
@@ -564,18 +565,24 @@ def service_access_move_form_context(
             .where(
                 IpPool.is_active.is_(True),
                 IpPool.ip_version == IPVersion.ipv4,
-                IpPool.nas_device_id.is_not(None),
             )
             .order_by(IpPool.name, IpPool.id)
         ).all()
     )
+    target_pool_options = [
+        {"pool": pool, "nas_device_id": nas.id}
+        for nas in nas_devices
+        for pool in pools
+        if pool.nas_device_id == nas.id
+        or str(pool.id) in set(radius_pool_ids_from_tags(nas.tags))
+    ]
     current_ipv4 = core.active_service_ipv4_address(db, subscription_id)
     return {
         "subscription": subscription,
         "current_nas": current_nas,
         "current_ipv4": current_ipv4,
         "target_nas_devices": nas_devices,
-        "target_pools": pools,
+        "target_pool_options": target_pool_options,
         "preview": preview,
         "reason": reason,
         "error": error,
@@ -592,11 +599,18 @@ def service_access_move_available_ipv4(
     """List materialized, currently free IPv4 addresses for one linked pool."""
 
     pool = db.get(IpPool, target_pool_id)
+    target_nas = db.get(NasDevice, target_nas_device_id)
+    tagged_pool_ids = set(
+        radius_pool_ids_from_tags(target_nas.tags if target_nas else None)
+    )
     if (
         pool is None
         or not pool.is_active
         or pool.ip_version is not IPVersion.ipv4
-        or pool.nas_device_id != target_nas_device_id
+        or (
+            pool.nas_device_id != target_nas_device_id
+            and str(pool.id) not in tagged_pool_ids
+        )
     ):
         raise ValueError("The selected IPv4 pool is not linked to the target router.")
     active_address_ids = select(IPAssignment.ipv4_address_id).where(

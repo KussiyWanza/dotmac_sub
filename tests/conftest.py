@@ -249,6 +249,27 @@ def _enable_sqlite_spatial_admin() -> None:
 
 # Register the complete model graph before the shared schema fixture calls create_all.
 import app.models  # noqa: F401
+
+
+def _kernel_tenant_metadata():
+    """The kernel metadata holding only `tenants` and `tenant_domains`.
+
+    Scoped to those two tables on purpose: the kernel's base also carries
+    `parties`, `roles`, `user_credentials` and `audit_events`, each of which
+    collides with a Sub table of the same name. Creating the whole kernel
+    metadata against a Sub engine is exactly the corruption the adoption ledger
+    warns about, so this selects the two tables ADR-0009 admits and no others.
+    """
+
+    from dotmac_kernel.models import Tenant, TenantDomain
+    from sqlalchemy import MetaData
+
+    metadata = MetaData()
+    for model in (Tenant, TenantDomain):
+        model.__table__.to_metadata(metadata)
+    return metadata
+
+
 from app.models.catalog import AccessType, PriceBasis, RegionZone, ServiceType
 from app.models.subscriber import Subscriber
 from app.schemas.catalog import (
@@ -337,6 +358,12 @@ def engine() -> Engine:
         with engine.connect() as conn:
             pass
         Base.metadata.create_all(engine)
+        # `Tenant`/`TenantDomain` are mapped on the KERNEL's declarative base,
+        # so Sub's metadata does not carry them and `create_all` above cannot
+        # make them. The unit lane builds its schema from metadata rather than
+        # migrations, so without this the operator tenant has no table to live
+        # in (ADR-0009).
+        _kernel_tenant_metadata().create_all(engine)
 
     return engine
 

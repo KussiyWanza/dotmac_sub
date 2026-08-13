@@ -670,3 +670,72 @@ def test_audit_reclassifies_restored_subscriptions(
     ours = [i for i in run.items if i.subscription_id == subscription.id]
     assert ours and ours[0].amount_confirmed is True
     assert len(run.audit_fingerprint) == 64
+
+
+# ---------------------------------------------------------------------------
+# Scheduled sequencing: the repair owner must actually be reachable
+# ---------------------------------------------------------------------------
+
+
+def test_scheduled_runner_restores_terms_from_paid_evidence(
+    db_session, subscriber, subscription
+):
+    """The owner is only useful if something calls it.
+
+    It shipped with ADR 0007 stage 3 and had no task, route or admin surface,
+    so `contracted_prepaid_renewal_terms_unavailable` was a permanent block:
+    32 production accounts kept consuming service, and because this owner also
+    owns the work-item sync they never surfaced as finance work items either.
+    """
+    from app.services.collections.scheduled import restore_prepaid_renewal_terms
+
+    _block(db_session, subscription)
+    _paid_line(db_session, subscriber, subscription, "15000.00")
+    _paid_line(db_session, subscriber, subscription, "15000.00")
+
+    outcome = restore_prepaid_renewal_terms(db_session, now=_NOON)
+
+    assert outcome.restored >= 1
+    assert outcome.status.value == "ok"
+    db_session.refresh(subscription)
+    assert subscription.unit_price == Decimal("15000.00")
+
+
+def test_scheduled_runner_opens_a_work_item_instead_of_inventing_an_amount(
+    db_session, subscriber, subscription
+):
+    """Unresolvable evidence must stay fail-closed and become visible.
+
+    The amount is never inferred from the mutable catalog (ADR 0007 Phase 1),
+    so an account with contradictory evidence stays blocked -- but it must at
+    least become an owned, SLA-bound finance work item.
+    """
+    from app.services.collections.scheduled import restore_prepaid_renewal_terms
+
+    _block(db_session, subscription)
+    _paid_line(db_session, subscriber, subscription, "15000.00")
+    _paid_line(db_session, subscriber, subscription, "18000.00")
+
+    outcome = restore_prepaid_renewal_terms(db_session, now=_NOON)
+
+    assert outcome.restored == 0
+    assert outcome.work_items >= 1
+    db_session.refresh(subscription)
+    assert subscription.unit_price is None
+    alert = (
+        db_session.query(AdminAlert)
+        .filter(AdminAlert.fingerprint == f"{_FINDING_PREFIX}{subscription.id}")
+        .one()
+    )
+    assert alert.status.value == "open"
+    assert alert.details["owner"] == "finance-billing"
+
+
+def test_scheduled_runner_is_a_noop_when_nothing_is_blocked(db_session):
+    from app.services.collections.scheduled import restore_prepaid_renewal_terms
+
+    outcome = restore_prepaid_renewal_terms(db_session, now=_NOON)
+
+    assert outcome.blocked == 0
+    assert outcome.restored == 0
+    assert outcome.status.value == "ok"

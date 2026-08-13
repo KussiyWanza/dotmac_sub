@@ -6,6 +6,7 @@ import uuid
 from collections.abc import Mapping
 from typing import Any, Literal
 from urllib.parse import quote_plus
+from uuid import UUID, uuid4
 
 import anyio
 from fastapi import (
@@ -25,7 +26,11 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models.subscriber import Reseller, SubscriberCategory
-from app.services import conversation_lead_relationships, customer_portal
+from app.services import (
+    conversation_lead_relationships,
+    customer_portal,
+    payment_intent_management,
+)
 from app.services import customer_network_path as customer_network_path_service
 from app.services import network_monitoring as network_monitoring_service
 from app.services import subscriber as subscriber_service
@@ -58,7 +63,9 @@ from app.services.auth_dependencies import (
 from app.services.bandwidth import bandwidth_samples
 from app.services.customer_portal_context import resolve_customer_subscription
 from app.services.customer_timeline import CustomerTimelineItem
+from app.services.db_session_adapter import db_session_adapter
 from app.services.domain_errors import DomainError
+from app.services.owner_commands import CommandContext
 from app.services.queue_adapter import enqueue_task
 from app.services.subscription_change_execution import (
     RemoteProvisionActionCommand,
@@ -66,6 +73,7 @@ from app.services.subscription_change_execution import (
     SubscriptionChangeExecutionError,
     provision_and_verify_remote_change,
 )
+from app.services.topup_intents import DirectTransferCancellationSource
 from app.web.customer.branding import register_customer_portal_filters
 from app.web.request_parsing import parse_json_body
 
@@ -173,6 +181,24 @@ def _get_actor_id(request: Request) -> str | None:
 
     current_user = get_current_user(request)
     return str(current_user.get("subscriber_id")) if current_user else None
+
+
+def _payment_intent_command_context(
+    auth: dict, *, intent_id: UUID, reason: str
+) -> CommandContext:
+    principal_id = str(auth.get("principal_id") or "").strip()
+    if not principal_id:
+        raise HTTPException(status_code=403, detail="Authorized actor is missing")
+    command_id = uuid4()
+    actor_type = "api_key" if auth.get("principal_type") == "api_key" else "user"
+    return CommandContext(
+        command_id=command_id,
+        correlation_id=command_id,
+        actor=f"{actor_type}:{principal_id}",
+        scope=payment_intent_management.ADMIN_CANCEL_SCOPE,
+        reason=reason,
+        idempotency_key=f"admin-cancel-payment-intent:{intent_id}",
+    )
 
 
 def _subscription_action_permission_context(
@@ -789,6 +815,7 @@ def customer_create(
 def person_detail(
     request: Request,
     customer_id: str,
+    panel: str | None = Query(None, pattern="^network$"),
     usage_period: str = Query("current"),
     usage_page: int = Query(1, ge=1),
     usage_per_page: int = Query(25, ge=10, le=100),
@@ -809,6 +836,9 @@ def person_detail(
             db=db,
             customer_id=customer_id,
             include_conversations=show_conversations,
+            network_query=web_customer_details_service.CustomerDetailNetworkQuery(
+                include=panel == "network",
+            ),
         )
     except HTTPException:
         return templates.TemplateResponse(
@@ -860,6 +890,7 @@ def person_detail(
         "customerType": customer_type,
         "notificationChannels": notification_channels,
         "notificationTemplates": notification_templates,
+        "networkPanelUrl": (f"/admin/customers/person/{customer.id}?panel=network"),
     }
 
     return templates.TemplateResponse(
@@ -882,6 +913,75 @@ def person_detail(
             "can_unsuspend_account": can_unsuspend_account,
             "sidebar_stats": sidebar_stats,
         },
+    )
+
+
+@router.get(
+    "/person/{customer_id}/payment-intents",
+    response_class=HTMLResponse,
+)
+def customer_payment_intents(
+    request: Request,
+    customer_id: UUID,
+    db: Session = Depends(get_db),
+    auth: dict = Depends(require_permission("billing:payment_intent:read")),
+) -> Response:
+    customer = _get_subscriber(db, str(customer_id))
+    if customer is None:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    from app.web.admin import get_current_user, get_sidebar_stats
+
+    return templates.TemplateResponse(
+        "admin/customers/payment_intents.html",
+        {
+            "request": request,
+            "customer": customer,
+            "intents": payment_intent_management.list_for_account(db, customer_id),
+            "can_cancel": has_permission(auth, db, "billing:payment_intent:cancel"),
+            "current_user": get_current_user(request),
+            "sidebar_stats": get_sidebar_stats(db),
+            "message": request.query_params.get("message"),
+            "error": request.query_params.get("error"),
+        },
+    )
+
+
+@router.post("/person/{customer_id}/payment-intents/{intent_id}/cancel")
+def cancel_customer_payment_intent(
+    customer_id: UUID,
+    intent_id: UUID,
+    reason: str = Form(...),
+    db: Session = Depends(get_db),
+    auth: dict = Depends(require_permission("billing:payment_intent:cancel")),
+) -> Response:
+    cleaned_reason = reason.strip()
+    base_url = f"/admin/customers/person/{customer_id}/payment-intents"
+    if not cleaned_reason:
+        return RedirectResponse(
+            url=f"{base_url}?error={quote_plus('A cancellation reason is required')}",
+            status_code=303,
+        )
+    try:
+        db_session_adapter.release_read_transaction(db)
+        payment_intent_management.cancel_unsubmitted_direct_transfer(
+            db,
+            payment_intent_management.CancelPaymentIntentCommand(
+                context=_payment_intent_command_context(
+                    auth, intent_id=intent_id, reason=cleaned_reason
+                ),
+                account_id=customer_id,
+                intent_id=intent_id,
+                source=DirectTransferCancellationSource.admin_customer_billing,
+            ),
+        )
+    except (DomainError, ValueError) as exc:
+        message = exc.message if isinstance(exc, DomainError) else str(exc)
+        return RedirectResponse(
+            url=f"{base_url}?error={quote_plus(message)}", status_code=303
+        )
+    return RedirectResponse(
+        url=f"{base_url}?message={quote_plus('Payment intent canceled')}",
+        status_code=303,
     )
 
 
@@ -1608,6 +1708,55 @@ def business_edit(
             **_reseller_form_context(db, customer.reseller_id),
         },
     )
+
+
+@router.post(
+    "/person/{customer_id}/billing-notifications",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("customer:write"))],
+)
+def update_customer_billing_notifications(
+    request: Request,
+    customer_id: str,
+    send_billing_notifications: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    enabled = send_billing_notifications.strip().lower() in {"1", "true", "yes", "on"}
+    try:
+        before, after = (
+            web_customer_actions_service.update_billing_notification_preference(
+                db=db,
+                customer_id=customer_id,
+                send_billing_notifications=enabled,
+            )
+        )
+        log_audit_event(
+            db=db,
+            request=request,
+            action="update",
+            entity_type="subscriber",
+            entity_id=str(customer_id),
+            actor_id=_get_actor_id(request),
+            metadata={
+                "billing_notification_preference": {
+                    "before": (before.metadata_ or {}).get(
+                        "send_billing_notifications", True
+                    ),
+                    "after": (after.metadata_ or {}).get(
+                        "send_billing_notifications", True
+                    ),
+                }
+            },
+        )
+        return RedirectResponse(
+            url=f"/admin/customers/person/{customer_id}#billing",
+            status_code=303,
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to update billing notifications for %s", customer_id)
+        raise
 
 
 @router.post(

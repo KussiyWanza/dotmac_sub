@@ -545,10 +545,252 @@ SERVICES: tuple[SOTService, ...] = (
         ),
     ),
     SOTService(
+        name="operations.material_catalog",
+        module="app.services.field.material_catalog",
+        owns=(
+            "ERP material catalogue and warehouse projection",
+            "field material request eligibility",
+        ),
+        notes="ERP owns catalogue facts; Sub owns only field-request eligibility.",
+        contract=ServiceContract(
+            concerns=(
+                ConcernContract(
+                    name="ERP material catalogue and warehouse projection",
+                    role=OwnerRole.PROJECTION_WRITER,
+                    input_names=("ERP inventory catalogue observation",),
+                    canonical_writer="operations.material_catalog",
+                ),
+                ConcernContract(
+                    name="field material request eligibility",
+                    role=OwnerRole.COMMAND_WRITER,
+                    input_names=("ERP inventory catalogue observation",),
+                    canonical_writer="operations.material_catalog",
+                ),
+            ),
+            authoritative_inputs=(
+                AuthorityInput(
+                    name="ERP inventory catalogue observation",
+                    owner="external:dotmac_erp",
+                    kind=AuthorityKind.EXTERNAL_OBSERVATION,
+                    source="ERP item and warehouse APIs via the inventory capability",
+                ),
+            ),
+            transaction=TransactionContract(
+                mode=TransactionMode.OWNER_MANAGED,
+                boundary="One catalogue observation or eligibility decision per owner transaction.",
+                locking="Projected rows lock by stable ERP source identity.",
+                idempotency="Repeated complete observations converge by ERP identity.",
+                retries="Transport retries remain outside the owner transaction.",
+            ),
+            errors=ErrorContract(
+                domain_codes=(
+                    "operations.material_catalog.invalid_identity",
+                    "operations.material_catalog.duplicate_item",
+                    "operations.material_catalog.duplicate_warehouse",
+                    "operations.material_catalog.suspicious_shrink",
+                    "operations.material_catalog.item_not_found",
+                    "operations.material_catalog.inactive_item",
+                    "operations.material_catalog.naive_observation",
+                    *owner_command_boundary_error_codes("operations.material_catalog"),
+                ),
+                mapping_owner="material catalogue web and scheduler adapters",
+                retryable_codes=(),
+                fail_closed_on=("invalid or suspicious ERP observations",),
+            ),
+            events=EventContract(
+                event_types=(
+                    "field_material_catalog.projected",
+                    "field_material_catalog.eligibility_updated",
+                ),
+                schema_version=1,
+                delivery_owner="events.dispatcher",
+                compatibility="Version 1 is additive and preserves ERP source identities.",
+                replay="The latest complete ERP observation plus Sub eligibility decisions rebuild the projection.",
+            ),
+            projections=(
+                ProjectionContract(
+                    name="ERP field-material catalogue projection",
+                    input_names=("ERP inventory catalogue observation",),
+                    writer="operations.material_catalog",
+                    freshness="Refreshed every 24 hours or by an explicit operator import.",
+                    stale_behavior="Retain the last good catalogue and display its observation time.",
+                    drift_signal="The catalogue observation is stale or a complete scan reports suspicious shrinkage.",
+                    rebuild_operation="Run a complete ERP item and warehouse catalogue import.",
+                    repair_owner="operations.material_catalog",
+                ),
+            ),
+            migration=MigrationContract(
+                state=AuthorityMigrationState.CUTOVER_READY,
+                old_owner="legacy CRM item projection",
+                new_owner="operations.material_catalog",
+                verification="ERP identity, deactivation guard, and eligibility owner tests.",
+                cutover_gate="Validated ERP inventory capability and initial complete scan.",
+                fallback_retirement="Retire CRM item imports after ERP scan verification.",
+            ),
+            steward="field operations",
+            design_refs=("docs/designs/MATERIALS_VENDOR_ERP_CHAIN.md",),
+            test_refs=("tests/test_admin_material_requests.py",),
+        ),
+    ),
+    SOTService(
+        name="operations.expense_categories",
+        module="app.services.field.expense_categories",
+        owns=("ERP expense category query",),
+        depends_on=("integration.installations", "integration.runtime"),
+        notes=(
+            "ERP owns expense-category facts. This resolver returns a typed live "
+            "observation and keeps unavailable distinct from an authoritative "
+            "empty category list."
+        ),
+        contract=ServiceContract(
+            concerns=(
+                ConcernContract(
+                    name="ERP expense category query",
+                    role=OwnerRole.RESOLVER,
+                    input_names=("ERP expense category observation",),
+                ),
+            ),
+            authoritative_inputs=(
+                AuthorityInput(
+                    name="ERP expense category observation",
+                    owner="external:dotmac_erp",
+                    kind=AuthorityKind.EXTERNAL_OBSERVATION,
+                    source=(
+                        "Authenticated GET /api/v1/sync/sub/expense-categories "
+                        "through the version-pinned ERP inventory capability"
+                    ),
+                ),
+            ),
+            transaction=TransactionContract(
+                mode=TransactionMode.READ_ONLY,
+                boundary=(
+                    "The API adapter owns session lifecycle; the resolver performs "
+                    "no business write or transaction completion."
+                ),
+                locking="No business rows are locked for this live ERP read.",
+                idempotency="Repeated reads return the current ERP observation.",
+                retries="The connector runtime classifies bounded transport retries.",
+            ),
+            errors=ErrorContract(
+                domain_codes=("operations.expense_categories.erp_unavailable",),
+                mapping_owner="field expense category API adapter",
+                retryable_codes=("operations.expense_categories.erp_unavailable",),
+                fail_closed_on=(
+                    "missing capability binding",
+                    "retryable or rejected ERP response",
+                    "malformed ERP category identity or amount",
+                ),
+            ),
+            migration=MigrationContract(
+                state=AuthorityMigrationState.NATIVE,
+                old_owner=None,
+                new_owner="operations.expense_categories",
+                verification=(
+                    "Typed normalization, authoritative-empty, and unavailable "
+                    "response tests pass."
+                ),
+                cutover_gate="The ERP inventory capability binding is enabled.",
+                fallback_retirement="No empty-list fallback is permitted.",
+            ),
+            steward="field operations and finance",
+            design_refs=("docs/SOT_RELATIONSHIP_MAP.md",),
+            test_refs=("tests/test_field_expense_categories.py",),
+        ),
+    ),
+    SOTService(
+        name="operations.expense_requests",
+        module="app.services.field.expense_requests",
+        owns=("field expense request submission",),
+        depends_on=("operations.work_orders",),
+        notes=(
+            "One typed command creates and submits a technician expense request "
+            "atomically. The client reference and normalized fingerprint make "
+            "network retries safe."
+        ),
+        contract=ServiceContract(
+            concerns=(
+                ConcernContract(
+                    name="field expense request submission",
+                    role=OwnerRole.COMMAND_WRITER,
+                    input_names=("canonical service work-order state",),
+                    canonical_writer="operations.expense_requests",
+                ),
+            ),
+            authoritative_inputs=(
+                AuthorityInput(
+                    name="canonical service work-order state",
+                    owner="operations.work_orders",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source=(
+                        "Active assigned WorkOrder and technician scope plus "
+                        "validated receipt attachment evidence"
+                    ),
+                ),
+            ),
+            transaction=TransactionContract(
+                mode=TransactionMode.OWNER_MANAGED,
+                boundary=(
+                    "Create, submit, work-order activity marking, and optional ERP "
+                    "delivery staging complete in one owner transaction."
+                ),
+                locking="The command locks the scoped active work order.",
+                idempotency=(
+                    "A unique client reference replays only when the normalized "
+                    "command fingerprint is identical."
+                ),
+                retries="Identical client-reference retries return the committed request.",
+            ),
+            errors=ErrorContract(
+                domain_codes=(
+                    "operations.expense_requests.invalid_request",
+                    "operations.expense_requests.idempotency_conflict",
+                    "operations.expense_requests.requester_not_found",
+                    "operations.expense_requests.work_order_not_found",
+                    *owner_command_boundary_error_codes("operations.expense_requests"),
+                ),
+                mapping_owner="field expense request API adapter",
+                retryable_codes=(),
+                fail_closed_on=(
+                    "unknown technician or work order",
+                    "invalid receipt evidence",
+                    "client-reference fingerprint conflict",
+                ),
+            ),
+            events=EventContract(
+                event_types=("field_expense_request.submitted",),
+                schema_version=1,
+                delivery_owner="events.dispatcher",
+                compatibility=(
+                    "Version 1 is additive and identifies the expense request, "
+                    "work order, requester, client reference, and submission time."
+                ),
+                replay=(
+                    "The canonical expense request, item rows, command fingerprint, "
+                    "and ERP outbox evidence rebuild submission consequences."
+                ),
+            ),
+            migration=MigrationContract(
+                state=AuthorityMigrationState.CUTOVER_READY,
+                old_owner="separate field expense draft creation and submit calls",
+                new_owner="operations.expense_requests",
+                verification="Atomic submission, replay, and conflict tests pass.",
+                cutover_gate="Mobile online and offline clients use the atomic endpoint.",
+                fallback_retirement=(
+                    "Retire separate mobile create-then-submit use after compatibility expiry."
+                ),
+            ),
+            steward="field operations and finance",
+            design_refs=("docs/SOT_RELATIONSHIP_MAP.md",),
+            test_refs=("tests/test_field_expense_requests.py",),
+        ),
+    ),
+    SOTService(
         name="operations.material_dependencies",
         module="app.services.field.material_requests",
         owns=(
+            "contextual material need and ERP submission",
             "service-work-order material need and operational approval",
+            "ERP material status observation",
             "backoffice material-outcome projection into the service workflow",
             "work-order material allocation after confirmed external issue",
             "committed material output consumption",
@@ -571,13 +813,25 @@ SERVICES: tuple[SOTService, ...] = (
         contract=ServiceContract(
             concerns=(
                 ConcernContract(
-                    name=("service-work-order material need and operational approval"),
+                    name=("contextual material need and ERP submission"),
                     role=OwnerRole.COMMAND_WRITER,
                     input_names=(
                         "canonical service work-order state",
                         "material dependency transition protocol",
                         "material-support cutover controls",
                     ),
+                    canonical_writer="operations.material_dependencies",
+                ),
+                ConcernContract(
+                    name="service-work-order material need and operational approval",
+                    role=OwnerRole.COMMAND_WRITER,
+                    input_names=("canonical service work-order state",),
+                    canonical_writer="operations.material_dependencies",
+                ),
+                ConcernContract(
+                    name="ERP material status observation",
+                    role=OwnerRole.RECONCILER,
+                    input_names=("ERP material-support outcome observation",),
                     canonical_writer="operations.material_dependencies",
                 ),
                 ConcernContract(
@@ -689,6 +943,7 @@ SERVICES: tuple[SOTService, ...] = (
                     "operations.material_dependencies.work_order_not_found",
                     "operations.material_dependencies.assignment_required",
                     "operations.material_dependencies.material_item_not_found",
+                    "operations.material_dependencies.requester_required",
                     "operations.material_dependencies.invalid_request",
                     "operations.material_dependencies.idempotency_conflict",
                     "operations.material_dependencies.erp_identity_conflict",
@@ -897,11 +1152,12 @@ SERVICES: tuple[SOTService, ...] = (
             "Project and ProjectTask identity and lifecycle",
             "project creation customer email consequence",
             "project and task status-change customer notification consequence",
+            "project completion finance email consequence",
             "project and task allowed status transitions",
             "project-task relationship integrity and completion readiness",
             "project and task assignment and scheduling",
             "project manager assistant manager service-team and task-assignee changes",
-            "existing project-task reassignment email consequence",
+            "project and task staff assignment notification consequence",
             "Project-to-ProjectTask and project/task-to-work-order relationships",
             "project audit records and transactional domain events",
             "project derived-state reconciliation",
@@ -913,6 +1169,7 @@ SERVICES: tuple[SOTService, ...] = (
             "events.dispatcher",
             "communications.notification_service",
             "communications.staff_notifications",
+            "communications.nextcloud_talk_staff",
             "operations.work_order_commands",
         ),
         notes=(
@@ -947,6 +1204,16 @@ SERVICES: tuple[SOTService, ...] = (
                         "canonical project aggregate",
                         "project transition protocol",
                         "customer communication delivery intent",
+                    ),
+                ),
+                ConcernContract(
+                    name="project completion finance email consequence",
+                    role=OwnerRole.EVENT_POLICY,
+                    input_names=(
+                        "canonical project aggregate",
+                        "project transition protocol",
+                        "project completion finance notification policy",
+                        "staff notification delivery queue",
                     ),
                 ),
                 ConcernContract(
@@ -987,11 +1254,11 @@ SERVICES: tuple[SOTService, ...] = (
                     canonical_writer="operations.project_lifecycle",
                 ),
                 ConcernContract(
-                    name="existing project-task reassignment email consequence",
+                    name="project and task staff assignment notification consequence",
                     role=OwnerRole.EVENT_POLICY,
                     input_names=(
                         "canonical project aggregate",
-                        "active project-task assignee contact identity",
+                        "active project assignment audience",
                         "staff notification delivery queue",
                     ),
                 ),
@@ -1052,12 +1319,13 @@ SERVICES: tuple[SOTService, ...] = (
                     source="native WorkOrder.project_id and WorkOrder.project_task_id foreign keys",
                 ),
                 AuthorityInput(
-                    name="active project-task assignee contact identity",
+                    name="active project assignment audience",
                     owner="auth.staff_provisioning",
                     kind=AuthorityKind.AUTHORITATIVE_RECORD,
                     source=(
-                        "active SystemUser identity and email resolved from a "
-                        "new task-assignee SystemUser or canonical Person identifier"
+                        "active SystemUser identity and email resolved from direct "
+                        "Project or ProjectTask SystemUser/canonical Person assignments "
+                        "and active assigned Service Team membership"
                     ),
                 ),
                 AuthorityInput(
@@ -1075,6 +1343,15 @@ SERVICES: tuple[SOTService, ...] = (
                     source=(
                         "deduplicated customer email intent and durable Notification "
                         "delivery state"
+                    ),
+                ),
+                AuthorityInput(
+                    name="project completion finance notification policy",
+                    owner="operations.project_lifecycle",
+                    kind=AuthorityKind.CONTROL_INPUT,
+                    source=(
+                        "projects-domain enablement, explicit finance recipient list, "
+                        "and permission-key audience fallback"
                     ),
                 ),
             ),

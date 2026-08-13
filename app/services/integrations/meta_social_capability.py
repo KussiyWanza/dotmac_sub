@@ -16,8 +16,10 @@ from app.services.integrations.connectors.meta_social_runtime import (
     MetaSocialRuntimeRunner,
 )
 from app.services.integrations.meta_social_contracts import (
+    MetaContactProfile,
     MetaDirectMessageCommand,
     MetaDirectMessageOutcome,
+    MetaSocialChannel,
     MetaWebhookSecretMaterial,
 )
 from app.services.integrations.runtime import OperationStatus, OperationTrigger
@@ -112,4 +114,43 @@ def send_direct_message(
             str(provider_recipient_id) if provider_recipient_id is not None else None
         ),
         error_code=result.error_code,
+    )
+
+
+def fetch_contact_profile(
+    db: Session,
+    *,
+    channel: MetaSocialChannel,
+    contact_id: str,
+    secret_resolver: Callable[[str | None], str | None] = resolve_secret,
+) -> MetaContactProfile | None:
+    context = execution_context(
+        db,
+        capability_id=META_SOCIAL_SEND_CAPABILITY,
+        secret_resolver=secret_resolver,
+    )
+    executor = make_operation_executor(
+        context,
+        correlation_id=f"meta-profile:{channel.value}:{contact_id}",
+        trigger=OperationTrigger.interactive,
+        actor="integration.meta_social",
+        timeout_seconds=6,
+    )
+    result = executor(
+        "fetch_profile",
+        {
+            "channel": channel.value,
+            "contact_id": contact_id,
+        },
+    )
+    if result.status is not OperationStatus.succeeded:
+        return None
+    output = result.output if isinstance(result.output, dict) else {}
+    profile = output.get("profile")
+    if not isinstance(profile, dict):
+        return None
+    return MetaContactProfile(
+        display_name=profile.get("display_name"),
+        username=profile.get("username"),
+        profile_pic=profile.get("profile_pic"),
     )

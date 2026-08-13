@@ -20,6 +20,7 @@ from app.models.tr069 import (
     Tr069Session,
 )
 from app.schemas.tr069 import Tr069AcsServerCreate
+from app.services.auth_dependencies import can
 from app.services.events.types import EventType
 from app.services.network.tr069_job_commands import Tr069CommandError
 from app.web.brand_globals import _app_datetime_filter
@@ -780,6 +781,9 @@ class TestAutoLinkOnts:
         # a bare Environment doesn't get it (that's registered on Jinja2Templates
         # instances), so register it here to keep the test isolation-safe.
         env.filters["app_datetime"] = _app_datetime_filter
+        # Rendering the full admin layout also exercises permission-gated
+        # navigation, whose helper is an application template global.
+        env.globals["can"] = can
         html = env.get_template("admin/network/onts/index.html").render(context)
 
         assert "UI-ACS-LAST-SEEN-001" in html
@@ -1541,6 +1545,7 @@ class TestDeviceResolution:
         self, db_session
     ) -> None:
         from app.models.network import OntUnit
+        from app.services.genieacs_client import GenieACSError
         from app.services.network._resolve import resolve_genieacs_with_reason
 
         server = Tr069AcsServer(
@@ -1574,6 +1579,7 @@ class TestDeviceResolution:
             "app.services.network._resolve.create_genieacs_client"
         ) as MockClient:
             instance = MockClient.return_value
+            instance.get_device.side_effect = GenieACSError("Device not found")
             instance.list_devices.return_value = []
 
             result, reason = resolve_genieacs_with_reason(db_session, ont)
@@ -1632,6 +1638,57 @@ class TestDeviceResolution:
             "48575443-EG8145V5-HWTC7D4806C3"
         )
         MockClient.return_value.list_devices.assert_not_called()
+
+    def test_resolve_uses_linked_acs_identity_parts_before_serial_search(
+        self, db_session
+    ) -> None:
+        from app.models.network import OntUnit
+        from app.services.network._resolve import resolve_genieacs_with_reason
+
+        server = Tr069AcsServer(
+            name="Linked ACS Identity",
+            base_url="http://genieacs:7557",
+            is_active=True,
+        )
+        db_session.add(server)
+        db_session.flush()
+
+        ont = OntUnit(
+            serial_number="HWTC1DAF83D1",
+            is_active=True,
+            tr069_acs_server_id=server.id,
+        )
+        db_session.add(ont)
+        db_session.flush()
+
+        linked = Tr069CpeDevice(
+            acs_server_id=server.id,
+            ont_unit_id=ont.id,
+            serial_number="485754431DAF83D1",
+            oui="00259E",
+            product_class="HG8546M",
+            is_active=True,
+        )
+        db_session.add(linked)
+        db_session.commit()
+
+        with patch(
+            "app.services.network._resolve.create_genieacs_client"
+        ) as MockClient:
+            instance = MockClient.return_value
+            instance.get_device.return_value = {
+                "_id": "00259E-HG8546M-485754431DAF83D1"
+            }
+
+            result, reason = resolve_genieacs_with_reason(db_session, ont)
+
+        assert result is not None
+        _client, device_id = result
+        assert device_id == "00259E-HG8546M-485754431DAF83D1"
+        assert reason == "resolved_via_linked_tr069_device"
+        assert linked.genieacs_device_id == "00259E-HG8546M-485754431DAF83D1"
+        instance.get_device.assert_called_once_with("00259E-HG8546M-485754431DAF83D1")
+        instance.list_devices.assert_not_called()
 
     def test_resolve_clears_stale_linked_genieacs_id_when_acs_record_missing(
         self, db_session
@@ -1786,7 +1843,7 @@ class TestDeviceResolution:
         assert result is not None
         _client, device_id = result
         assert device_id == "00259E-HG8546M-48575443600AC29C"
-        assert reason == "resolved_via_ont_acs"
+        assert reason == "resolved_via_linked_tr069_device"
         assert linked.ont_unit_id == ont.id
         assert linked.genieacs_device_id == "00259E-HG8546M-48575443600AC29C"
 

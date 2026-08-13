@@ -160,9 +160,13 @@ owns the canonical filtered domain query, while
 `app.services.web_support_tickets` declares the admin list capabilities and owns
 query normalization, exact counts, stable sorting, clamped pages, status-summary
 links, and complete CSV scope. The route is a thin adapter, and full-page and
-HTMX reads share `_list.html` and `_table.html`. Advanced filters are validated
-and serialized by the same owner used by export; templates consume `ListQuery`
-and `PageMeta` rather than assembling query strings or estimating totals.
+targeted HTMX reads reuse the same `_table.html` projection. Result refreshes
+also update the status summary, sort state, and export URL out of band while
+leaving the filter and column controls mounted. A stable feedback row below
+advanced filters announces loading; failures keep the current results visible
+and offer retry. Advanced filters are validated and serialized by the same owner
+used by export; templates consume `ListQuery` and `PageMeta` rather than
+assembling query strings or estimating totals.
 
 Support-ticket bulk update is page-selection only. The authorized action
 projection comes from `app.services.web_support_ticket_bulk_actions`; templates
@@ -744,7 +748,7 @@ Dashboard implementation notes:
 and provisioning staff verifying customer identity, contactability, service
 location, account linkage, and access readiness. Its authoritative read owner is
 `app.services.web_customer_details`; action eligibility and execution remain with
-their existing customer, access, identity, and CRM owners.
+their existing customer, access, and identity owners.
 
 - The first decision layer remains the four-item Active Services, Balance Due,
   Service Orders, and Monthly Revenue summary.
@@ -754,8 +758,12 @@ their existing customer, access, identity, and CRM owners.
   retain the same location footprint and show `Location not set` with the existing
   geocoding or add-address action.
 - `Account & Access` groups Subscriber Accounts (including the existing Convert
-  action), Portal Access, and CRM Sync without changing their status meanings,
-  permissions, confirmations, or command destinations.
+  action) and Portal Access. Desktop Portal Access keeps login and PPPoE facts
+  on the left and places login actions plus the separately highlighted
+  impersonation control in a right-hand action rail; that rail moves below the
+  access facts on smaller screens. Existing permissions, confirmations, and
+  command destinations do not change. CRM synchronization evidence is managed
+  from the integrations surface rather than displayed on Customer 360.
 - Subscription records are investigated and managed in the Services tab; the
   Account tab does not duplicate an Active Subscriptions preview.
 
@@ -1457,6 +1465,24 @@ OLT listing uses the core device listing context — devices filtered to OLT typ
 ---
 
 ### Network — ONTs
+
+#### ONT Configuration tab contract
+
+- Audience: authenticated engineers and administrators with
+  `network:ont:read`; mutations additionally require `network:ont:write`.
+- Supported path: routed Huawei ONTs using DHCP, PPPoE, or static WAN, plus
+  management IP, LAN/DHCP, and Wi-Fi configuration. Initial commissioning and
+  bridge / Via ONU mode remain in the provisioning workflow.
+- Actions are section-scoped. The page does not provide or accept an
+  apply-all action, because one section must not silently mutate another.
+- Blank PPPoE and Wi-Fi password inputs mean "keep the current password".
+  Stored secret values are never rendered back into the form.
+- OLT assignment, configuration-pack availability, and ACS registration are
+  disclosed as readiness facts. They do not replace server-side eligibility
+  checks at execution time.
+- Results distinguish applied, pending delivery, and failed states with text
+  as well as color. A saved change waiting for an ACS inform is not presented
+  as applied.
 
 #### ONT Form Dependencies
 

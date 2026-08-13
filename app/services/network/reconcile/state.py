@@ -46,6 +46,61 @@ PppoeProvisioningMethod = Literal["omci", "tr069", "auto"]
 WriteSurface = Literal["olt", "acs"]
 ObserveSurface = Literal["olt", "acs"]
 ReconcileMode = Literal["sync", "sweep", "bootstrap"]
+OntWanProposedField = Literal[
+    "wan_mode",
+    "wan_pppoe_username",
+    "wan_pppoe_password_ref",
+    "wan_pppoe_wcd_index",
+    "wan_static_ip",
+    "wan_static_subnet",
+    "wan_static_gateway",
+    "wan_static_dns",
+    "wan_static_ip_is_public",
+    "ipv6_enabled",
+]
+
+
+@dataclass(frozen=True)
+class OntWanProposedChange:
+    """Typed, already-persisted admin WAN intent used to scope delivery.
+
+    The admin action saves the desired intent before the potentially slow
+    network call.  This command therefore tells the reconciler which WAN
+    fields to deliver; it must not write the effective values back as new
+    per-ONT overrides after reconciliation.
+    """
+
+    changed_fields: frozenset[OntWanProposedField]
+    wan_mode: WanMode
+    wan_pppoe_username: str | None
+    wan_pppoe_password_ref: str | None
+    wan_pppoe_wcd_index: int | None
+    wan_static_ip: str | None
+    wan_static_subnet: str | None
+    wan_static_gateway: str | None
+    wan_static_dns: str | None
+    wan_static_ip_is_public: bool | None
+    ipv6_enabled: bool
+
+    def as_mapping(self) -> dict[str, Any]:
+        """Serialize only explicitly submitted fields for the legacy core.
+
+        ``Any`` is confined to this explicit serialization boundary; the
+        command fields remain precisely typed before they reach it.
+        """
+        values: dict[OntWanProposedField, Any] = {
+            "wan_mode": self.wan_mode,
+            "wan_pppoe_username": self.wan_pppoe_username,
+            "wan_pppoe_password_ref": self.wan_pppoe_password_ref,
+            "wan_pppoe_wcd_index": self.wan_pppoe_wcd_index,
+            "wan_static_ip": self.wan_static_ip,
+            "wan_static_subnet": self.wan_static_subnet,
+            "wan_static_gateway": self.wan_static_gateway,
+            "wan_static_dns": self.wan_static_dns,
+            "wan_static_ip_is_public": self.wan_static_ip_is_public,
+            "ipv6_enabled": self.ipv6_enabled,
+        }
+        return {field: values[field] for field in self.changed_fields}
 
 
 # ── Desired state ───────────────────────────────────────────────────────────

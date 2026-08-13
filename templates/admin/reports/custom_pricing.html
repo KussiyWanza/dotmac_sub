@@ -1,12 +1,12 @@
 {% extends "layouts/admin.html" %}
 {% from "components/ui/macros.html" import ambient_background, page_header, card, stats_card, status_badge, empty_state, animation_styles, icon_chart_bar %}
 
-{% block title %}Custom Pricing & Discounts - Admin{% endblock %}
+{% block title %}Custom Pricing - Admin{% endblock %}
 
 {% block content %}
 {{ ambient_background("teal", "emerald") }}
 <div class="relative space-y-8">
-    {% call page_header(title="Custom Pricing & Discounts", subtitle="Active unit-price overrides and subscription add-ons", icon=icon_chart_bar(), color="teal", color2="emerald") %}{% endcall %}
+    {% call page_header(title="Custom Pricing", subtitle="Active unit-price overrides and subscription add-ons", icon=icon_chart_bar(), color="teal", color2="emerald") %}{% endcall %}
 
     <div class="grid gap-4 sm:grid-cols-2">
         {{ stats_card("Price Overrides", total|default(0), icon_chart_bar(), color="teal", color2="emerald") }}

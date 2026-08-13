@@ -6,9 +6,8 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.models.domain_settings import DomainSetting, SettingDomain
+from app.models.domain_settings import SettingDomain
 from app.services.billing_settings import resolve_payment_due_days
-from app.services.settings_cache import SettingsCache
 
 logger = logging.getLogger(__name__)
 
@@ -23,36 +22,24 @@ class SmartDefaultsService:
         self.db = db
 
     def _get_setting(self, domain: SettingDomain, key: str, default: Any = None) -> Any:
-        """Get a setting value with Redis caching for thread safety."""
-        # Check Redis cache first
-        cached = SettingsCache.get(domain.value, key)
-        if cached is not None:
-            return cached
+        """One resolved setting, through the one resolver.
 
-        # Query database
-        setting = (
-            self.db.query(DomainSetting)
-            .filter(
-                DomainSetting.domain == domain,
-                DomainSetting.key == key,
-                DomainSetting.is_active.is_(True),
-            )
-            .first()
-        )
+        This used to query `DomainSetting` directly, pick a column, and cache
+        the result under `settings:{domain}:{key}` — a fourth copy of the
+        resolution rules with none of the coercion, bounds or degrade-to-default
+        the spec declares, plus an unscoped cache key.
 
-        if setting:
-            value = (
-                setting.value_json
-                if setting.value_json is not None
-                else setting.value_text
-            )
-            SettingsCache.set(domain.value, key, value)
-            return value
+        `resolve_value` is the seam. Its cache is the kernel's, scoped by
+        construction, so nothing is lost by not keeping one here.
 
-        # Cache the default value to avoid repeated DB queries
-        if default is not None:
-            SettingsCache.set(domain.value, key, default)
-        return default
+        `default` still applies: it covers a key with no registered spec, where
+        `resolve_value` returns None by contract.
+        """
+
+        from app.services import settings_spec
+
+        value = settings_spec.resolve_value(self.db, domain, key)
+        return default if value is None else value
 
     def get_invoice_defaults(self, subscriber: object | None = None) -> dict[str, Any]:
         """

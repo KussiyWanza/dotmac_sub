@@ -266,13 +266,6 @@ def _publish_catalogue(
     db: Session, command: PublishPlanFamilyCatalogueCommand
 ) -> PublishPlanFamilyCatalogueOutcome:
     family = _normalize_family(command.plan_family)
-    configured = {_normalize_family(item) for item in plan_family_values(db)}
-    if family not in configured:
-        raise _error(
-            "invalid_plan_family",
-            "Choose a configured catalogue plan family.",
-            plan_family=family,
-        )
     display_name = command.display_name.strip()
     if not display_name:
         raise _error("display_name_required", "Catalogue name is required.")
@@ -299,6 +292,14 @@ def _publish_catalogue(
         )
     except FileValidationError as exc:
         raise _error("invalid_file", str(exc)) from exc
+
+    configured = {_normalize_family(item) for item in plan_family_values(db)}
+    if family not in configured:
+        raise _error(
+            "invalid_plan_family",
+            "Choose a configured catalogue plan family.",
+            plan_family=family,
+        )
 
     rows = db.scalars(_publication_rows_statement(family)).all()
     checksum = hashlib.sha256(command.file_bytes).hexdigest()

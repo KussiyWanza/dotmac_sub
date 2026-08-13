@@ -44,7 +44,6 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select, text
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.models.network import OLTDevice, OntSyncStatus, OntUnit
@@ -69,6 +68,11 @@ from .alerts import (
     resolve_sweep_unreachable,
 )
 from .applier import ApplyContext, SecretResolver, apply_plan
+from .lifecycle import (
+    ReconcileLifecycleBinding,
+    bind_reconcile_projection,
+    reconcile_binding_matches,
+)
 from .locking import OntNotFound, acquire_reconcile_lock
 from .planner import compute_plan
 from .readers import ReadResult, read_acs_state, read_olt_state
@@ -80,6 +84,7 @@ from .state import (
     OltObservedFields,
     OntDesiredState,
     OntObservedState,
+    OntWanProposedChange,
     ReconcileFailure,
     ReconcileFailureReason,
     ReconcileMode,
@@ -108,55 +113,63 @@ def _widen_idle_in_transaction_timeout(db: Session, timeout_sec: int) -> None:
     and surfacing it as an opaque ``OperationalError``. The transaction must be
     allowed to live at least as long as the reconciler's own deadline.
 
-    ``SET LOCAL`` scopes this to the current transaction, so it reverts on
-    commit or rollback and never leaks to the next user of a pooled connection.
-    Postgres-only; other dialects (SQLite in tests) have no such setting.
+    ``set_config(..., true)`` scopes this to the current transaction, so it
+    reverts on commit or rollback and never leaks to the next user of a pooled
+    connection. It is also parameterizable; PostgreSQL does not accept a bound
+    parameter in ``SET LOCAL ... = :value``. A setup error must propagate so the
+    outer transaction handler can roll back immediately instead of continuing
+    with an aborted transaction. Postgres-only; other dialects (SQLite in
+    tests) have no such setting.
     """
     if db.bind is None or db.bind.dialect.name != "postgresql":
         return
     budget_ms = (timeout_sec + _IDLE_TIMEOUT_MARGIN_SEC) * 1000
-    try:
-        db.execute(
-            text("SET LOCAL idle_in_transaction_session_timeout = :ms"),
-            {"ms": budget_ms},
-        )
-    except SQLAlchemyError:  # pragma: no cover - defensive, never fail the pass
-        logger.warning(
-            "Could not widen idle_in_transaction_session_timeout for reconcile",
-            exc_info=True,
-        )
+    db.execute(
+        text(
+            "SELECT set_config("
+            "'idle_in_transaction_session_timeout', :timeout_value, true)"
+        ),
+        {"timeout_value": f"{budget_ms}ms"},
+    )
 
 
 def reconcile_ont(
     db: Session,
     ont_unit_id: str | uuid.UUID,
     *,
-    proposed_change: dict[str, Any] | None = None,
+    proposed_change: OntWanProposedChange | dict[str, Any] | None = None,
     timeout_sec: int = 60,
     mode: ReconcileMode = "sync",
     olt_adapter: Any = None,
     acs_client: Any = None,
     secret_resolver: SecretResolver | None = None,
     ping_function: PingFunction | None = None,
+    lifecycle_binding: ReconcileLifecycleBinding | None = None,
+    readback_only: bool = False,
 ) -> ReconcileResult:
     """Reconcile one ONT — bring live state into agreement with desired state.
 
     Args:
-        db: SQLAlchemy session. The reconciler commits at the end on success;
-            on failure the caller's transaction lifecycle determines whether
-            partial DB writes (status/last_error) persist — the reconciler
-            does its writes inside the lock-held transaction.
+        db: SQLAlchemy session. The caller owns transaction completion. The
+            reconciler only flushes status and observation changes inside the
+            lock-held transaction.
         ont_unit_id: UUID or string id of the target ONT.
-        proposed_change: Optional dict of ``OntDesiredState`` field updates to
-            apply if the reconcile succeeds end-to-end. Validated before any
-            network call; rejected proposed_changes return ``INVALID_CHANGE``
-            with no side effects.
+        proposed_change: Optional ``OntDesiredState`` field updates. Legacy
+            mappings are persisted after successful reconciliation. A typed
+            ``OntWanProposedChange`` represents intent already persisted by
+            the admin action and scopes network delivery without writing the
+            effective values back as per-ONT overrides. Both forms are
+            validated before any network call; rejected changes return
+            ``INVALID_CHANGE`` with no network side effects.
         timeout_sec: Outer deadline for the whole reconcile (read + plan +
             apply + persist). Default 60s.
         mode: ``sync`` (operator-initiated; refuses ``out_of_sync``),
             ``sweep`` (periodic; proceeds against ``out_of_sync``),
             ``bootstrap`` (BOOTSTRAP event from GenieACS; like sync but
             always force-pushes the WiFi password).
+        lifecycle_binding: Exact assignment, configuration head, revision and
+            operation allowed to own this pass's current status projection.
+        readback_only: Observe and verify without applying a device write.
         olt_adapter: Pre-built OLT SSH adapter. Tests pass a stub; in
             production it's built from the ``OLTDevice`` row.
         acs_client: Pre-built GenieACS NBI client. Same pattern.
@@ -176,11 +189,21 @@ def reconcile_ont(
     deadline = started_at + timedelta(seconds=timeout_sec)
     if secret_resolver is None:
         secret_resolver = default_secret_resolver_from_env()
+    proposed_values = (
+        proposed_change.as_mapping()
+        if isinstance(proposed_change, OntWanProposedChange)
+        else proposed_change
+    )
+    persist_proposed_values = not isinstance(proposed_change, OntWanProposedChange)
 
     try:
         with acquire_reconcile_lock(db, ont_unit_id) as ont:
             _widen_idle_in_transaction_timeout(db, timeout_sec)
             # ── Mode guard ──────────────────────────────────────────────────
+            blocks_current_request = (
+                lifecycle_binding is None
+                or reconcile_binding_matches(ont, lifecycle_binding)
+            )
             if (
                 mode == "sync"
                 and ont.sync_status == OntSyncStatus.out_of_sync
@@ -192,6 +215,7 @@ def reconcile_ont(
                 # management, Wi-Fi and LAN changes could never converge again
                 # even though nothing is broken.
                 and ont.last_error is not None
+                and blocks_current_request
             ):
                 # Including just-recovered crashes (lock module sets out_of_sync
                 # then yields). Per Hole 7 design: operator must explicitly use
@@ -209,6 +233,9 @@ def reconcile_ont(
                     ),
                 )
 
+            if lifecycle_binding is not None:
+                bind_reconcile_projection(ont, lifecycle_binding)
+
             # Transition to reconciling for the duration of this transaction.
             # If we crash mid-pass, the rollback wipes this and the next
             # reconcile sees the previous status; if we exit normally it gets
@@ -219,11 +246,11 @@ def reconcile_ont(
             # ── Resolve desired ─────────────────────────────────────────────
             desired_current = desired_from_ont_unit(db, ont)
             proposed_fields: frozenset[str] = frozenset()
-            if proposed_change:
+            if proposed_values:
                 # Filter the proposed_change to OntDesiredState fields only —
                 # callers may have copy-pasted extras.
                 allowed = {f for f in vars(desired_current)}
-                filtered = {k: v for k, v in proposed_change.items() if k in allowed}
+                filtered = {k: v for k, v in proposed_values.items() if k in allowed}
                 proposed_fields = frozenset(filtered)
                 target = replace(desired_current, **filtered)
                 # Validation runs only on actual mutations — the principle is
@@ -340,6 +367,54 @@ def reconcile_ont(
                 )
 
             # ── Apply ───────────────────────────────────────────────────────
+            if readback_only:
+                acs_wait = _acs_wait_failure(plan)
+                if acs_wait is not None:
+                    return _finalise(
+                        db,
+                        ont,
+                        success=False,
+                        failure=acs_wait,
+                        started_monotonic=started_monotonic,
+                        observed_after=observed_before,
+                        actions_applied=(),
+                        drift_before=plan.drifts,
+                        drift_after=plan.drifts,
+                    )
+                if plan.actions:
+                    return _finalise(
+                        db,
+                        ont,
+                        success=False,
+                        failure=ReconcileFailure(
+                            reason=ReconcileFailureReason.VERIFICATION_MISMATCH,
+                            message="Current revision is still awaiting device readback.",
+                            evidence={
+                                "readback_pending": True,
+                                "drift_fields": [
+                                    f"{drift.surface}:{drift.field}"
+                                    for drift in plan.drifts
+                                ],
+                            },
+                        ),
+                        started_monotonic=started_monotonic,
+                        observed_after=observed_before,
+                        actions_applied=(),
+                        drift_before=plan.drifts,
+                        drift_after=plan.drifts,
+                    )
+                return _finalise(
+                    db,
+                    ont,
+                    success=True,
+                    failure=None,
+                    started_monotonic=started_monotonic,
+                    observed_after=observed_before,
+                    actions_applied=(),
+                    drift_before=plan.drifts,
+                    drift_after=(),
+                )
+
             # Resolve delivery-time PPP authorization from the service-intent
             # model. This is deliberately not derived from the plan: the plan
             # says what desired state wants, and this says whether the service
@@ -434,7 +509,7 @@ def reconcile_ont(
                         drift_before=plan.drifts,
                         drift_after=plan.drifts,
                     )
-                if proposed_change:
+                if proposed_values and persist_proposed_values:
                     apply_proposed_change(
                         ont,
                         target,
@@ -583,6 +658,13 @@ def reconcile_ont(
                             "Post-apply state still diverges from desired: "
                             f"{_summarise_drifts(verify_plan.drifts)}"
                         ),
+                        evidence={
+                            "readback_pending": not _genuine,
+                            "drift_fields": [
+                                f"{drift.surface}:{drift.field}"
+                                for drift in verify_plan.drifts
+                            ],
+                        },
                     ),
                     started_monotonic=started_monotonic,
                     observed_after=observed_after,
@@ -608,7 +690,7 @@ def reconcile_ont(
                     drift_after=plan.drifts,
                 )
 
-            if proposed_change:
+            if proposed_values and persist_proposed_values:
                 apply_proposed_change(
                     ont,
                     target,
@@ -638,16 +720,12 @@ def reconcile_ont(
         )
 
     except Exception as exc:
-        # Unexpected internal error. We try to record it on the row but the
-        # transaction may already be poisoned — best-effort.
+        # Unexpected internal error. Transaction completion remains with the
+        # public owner; a nested rollback would break atomic coordination.
         logger.exception(
             "reconcile_ont_internal_error",
             extra={"ont_unit_id": str(ont_unit_id), "error": str(exc)},
         )
-        try:
-            db.rollback()
-        except Exception:
-            pass
         return _failure_result(
             started_at=started_at,
             started_monotonic=started_monotonic,
