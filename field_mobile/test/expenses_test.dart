@@ -486,6 +486,7 @@ void main() {
                 'id': clientRef,
                 'number': 'Queued expense',
                 'status': 'queued',
+                'purpose': 'Fuel for site visit',
               }),
             ],
           ),
@@ -495,6 +496,7 @@ void main() {
     );
     await tester.pump();
 
+    expect(find.text('Fuel for site visit'), findsOneWidget);
     expect(find.text('Queued expense'), findsOneWidget);
     expect(find.text('queued'), findsOneWidget);
     expect(find.text(clientRef), findsNothing);
