@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
 from sqlalchemy import or_
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.models.audit import AuditActorType
@@ -102,6 +103,14 @@ class InboxCommandError(DomainError, ValueError):
 class ConversationNotFoundError(InboxCommandError):
     def __init__(self, message: str = "Conversation not found.") -> None:
         super().__init__(message, suffix="conversation_not_found")
+
+
+class ConversationBusyError(InboxCommandError):
+    def __init__(self) -> None:
+        super().__init__(
+            "Conversation is busy. Please retry the upload.",
+            suffix="conversation_busy",
+        )
 
 
 class MessageNotFoundError(InboxCommandError):
@@ -2019,7 +2028,13 @@ def stage_attachments(
             staged.append(str(asset.id))
         return staged
 
-    return _commit(db, action)
+    try:
+        return _commit(db, action)
+    except OperationalError as exc:
+        text = str(getattr(exc, "orig", exc)).lower()
+        if "lock timeout" in text or "locknotavailable" in text:
+            raise ConversationBusyError from exc
+        raise
 
 
 @dataclass(frozen=True)
@@ -2412,6 +2427,9 @@ def email_transcript(
     a recipient restriction is a policy decision the recorded evidence is meant
     to inform.
     """
+
+    if actor_type is not AuditActorType.system and actor_person_id is None:
+        raise InboxCommandError("An audit actor is required to export a transcript.")
 
     def action() -> str:
         conversation = _active_conversation(db, conversation_id)

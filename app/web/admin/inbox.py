@@ -391,6 +391,7 @@ def team_inbox_social_comments(
     search: str | None = Query(default=None),
     status: str | None = Query(default=None),
     channel_type: str | None = Query(default=None),
+    unread: bool = Query(default=False),
     conversation_id: str | None = Query(default=None),
     page: int = Query(default=1),
     per_page: int = Query(default=25),
@@ -406,6 +407,7 @@ def team_inbox_social_comments(
         search=_query_text(search),
         status=_query_text(status),
         channel_type=_query_text(channel_type),
+        unread=_query_bool(unread),
         selected_conversation_id=_query_text(conversation_id),
         actor_person_id=actor_person_id,
         page=_query_int(page, default=1) or 1,
@@ -417,11 +419,13 @@ def team_inbox_social_comments(
     context.update(
         {
             "rows": projection.rows,
+            "post_rows": projection.post_rows,
             "selected": (
                 projection.selected.timeline
                 if projection.selected is not None
                 else None
             ),
+            "selected_post": projection.selected_post,
             "selected_id": projection.selected_id or "",
             "count": projection.count,
             "list_query": projection.list_query,
@@ -429,6 +433,7 @@ def team_inbox_social_comments(
             "search": projection.search,
             "status": projection.status,
             "channel_type": projection.channel_type,
+            "unread": projection.unread,
             "status_options": projection.status_options,
             "channel_options": projection.channel_options,
             "actor_person_id": str(actor_person_id) if actor_person_id else "",
@@ -721,7 +726,11 @@ def team_inbox_detail(
     # HTMX list clicks swap the thread+context partial into #triage-detail;
     # a full navigation lands in the workspace with the conversation preselected.
     if request.headers.get("hx-request"):
-        context = _ctx(request, db)
+        # The workspace page already owns the global navigation and its sidebar
+        # statistics. Rebuilding that full-page context here delays the thread
+        # swap (and therefore leaves the opening loader visible) without giving
+        # this partial any values that it consumes.
+        context: dict[str, object] = {"request": request}
         context.update(view)
         return templates.TemplateResponse("admin/inbox/_conversation.html", context)
     return RedirectResponse(url=f"/admin/inbox?c={conversation_id}", status_code=303)
@@ -2797,6 +2806,12 @@ async def team_inbox_stage_attachments(
         )
     except team_inbox_commands.ConversationNotFoundError:
         return JSONResponse({"error": "Conversation not found."}, status_code=404)
+    except team_inbox_commands.ConversationBusyError as exc:
+        return JSONResponse(
+            {"error": str(exc)},
+            status_code=409,
+            headers={"Retry-After": "2"},
+        )
     except (team_inbox_media.MediaUploadError, ValueError) as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
     return JSONResponse({"attachment_ids": staged})

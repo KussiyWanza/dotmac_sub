@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from unittest.mock import patch
 
+import pytest
 from sqlalchemy import text
 
 from app.models.audit import AuditActorType, AuditEvent
@@ -86,6 +87,68 @@ def test_audit_stage_is_atomic_with_caller_transaction(db_session):
 
     db_session.rollback()
     assert db_session.get(AuditEvent, event.id) is None
+
+
+def test_audit_stage_dual_writes_kernel_details(db_session):
+    event = audit_service.audit_events.stage(
+        db_session,
+        AuditEventCreate(
+            actor_type=AuditActorType.service,
+            actor_id="service:parity-test",
+            action="audit_r1_parity_test",
+            entity_type="audit_event",
+            metadata_={
+                "source": "legacy-metadata",
+                "ip_address": "stale-value",
+            },
+            details={"candidate": "a42"},
+            ip_address="192.0.2.10",
+            user_agent="audit-r1-test",
+        ),
+    )
+    db_session.flush()
+
+    assert event.metadata_ == {
+        "source": "legacy-metadata",
+        "ip_address": "stale-value",
+    }
+    assert event.details == {
+        "source": "legacy-metadata",
+        "candidate": "a42",
+        "ip_address": "192.0.2.10",
+        "user_agent": "audit-r1-test",
+    }
+    assert event.created_at is not None
+
+
+@pytest.mark.parametrize(
+    "actor_type",
+    [AuditActorType.user, AuditActorType.service, AuditActorType.api_key],
+)
+def test_non_system_audit_actor_requires_an_identifier(actor_type):
+    with pytest.raises(ValueError, match="needs a non-empty actor_id"):
+        AuditEventCreate(
+            actor_type=actor_type,
+            action="invalid_actor",
+            entity_type="audit_event",
+        )
+
+
+def test_system_audit_actor_may_omit_an_identifier():
+    payload = AuditEventCreate(
+        actor_type=AuditActorType.system,
+        action="system_actor",
+        entity_type="audit_event",
+    )
+
+    assert payload.actor_id is None
+
+
+def test_actor_party_enrichment_is_not_a_foreign_key():
+    actor_party_id = AuditEvent.__table__.c.actor_party_id
+
+    assert not actor_party_id.foreign_keys
+    assert actor_party_id.nullable is True
 
 
 def test_audit_record_in_nested_transaction_waits_for_outer_commit(db_session):

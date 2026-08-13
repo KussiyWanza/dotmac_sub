@@ -1228,7 +1228,7 @@ def submit_response(
             entity_type="survey_response",
             entity_id=str(response.id),
             actor_type=AuditActorType.service,
-            actor_id=None,
+            actor_id=OWNER,
             request_id=command.context.idempotency_key,
             metadata={
                 "owner": OWNER,

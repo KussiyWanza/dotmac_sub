@@ -20,11 +20,10 @@ from app.models.gis import (
     GeoLocationType,
 )
 from app.models.subscriber import Address, AddressType, Subscriber
-from app.schemas.audit import AuditEventCreate
-from app.services import audit as audit_service
 from app.services import geocoding as geocoding_service
 from app.services import gis as gis_service
 from app.services import service_address as service_address_service
+from app.services.audit_adapter import record_audit_event
 from app.services.customer_context import optional_customer_subscriber_id
 
 logger = logging.getLogger(__name__)
@@ -184,18 +183,16 @@ def _audit(
     metadata: dict[str, Any] | None = None,
     actor_type: AuditActorType = AuditActorType.user,
 ) -> AuditEvent | None:
-    return audit_service.audit_events.record(
+    return record_audit_event(
         db,
-        AuditEventCreate(
-            actor_type=actor_type,
-            actor_id=actor_id,
-            action=action,
-            entity_type="customer_location_change_request",
-            entity_id=entity_id,
-            status_code=200,
-            is_success=True,
-            metadata_=metadata,
-        ),
+        actor_type=actor_type,
+        actor_id=actor_id,
+        action=action,
+        entity_type="customer_location_change_request",
+        entity_id=entity_id,
+        status_code=200,
+        is_success=True,
+        metadata=metadata,
         defer_until_commit=False,
     )
 

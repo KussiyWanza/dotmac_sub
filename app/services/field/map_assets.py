@@ -16,6 +16,7 @@ from app.models.field_map import FieldMapAssetLocationProvenance
 from app.models.gis import ServiceBuilding
 from app.models.network import FdhCabinet, FiberAccessPoint, FiberSpliceClosure
 from app.models.wireless_mast import WirelessMast
+from app.services.audit_adapter import stage_audit_event
 from app.services.common import coerce_uuid
 
 _EARTH_RADIUS_M = 6_371_000.0
@@ -359,30 +360,29 @@ class FieldMapAssets:
         if hasattr(row, "geom"):
             row.geom = _point_wkt(float(latitude), float(longitude))
 
-        db.add(
-            AuditEvent(
-                actor_type=AuditActorType.user if actor_id else AuditActorType.system,
-                actor_id=actor_id,
-                action="field:map_asset:update_location",
-                # The snake_case asset key, not the ORM class name: every plant
-                # detail page filters activity on this exact string, so
-                # "FdhCabinet" silently produced an empty activity feed and a
-                # field move was traceable only by SQL.
-                entity_type=asset_type,
-                entity_id=str(asset_uuid),
-                status_code=200,
-                is_success=True,
-                metadata_={
-                    "asset_type": asset_type,
-                    "from": previous,
-                    "to": {"latitude": float(latitude), "longitude": float(longitude)},
-                    "source": source,
-                    "accuracy_m": accuracy_m,
-                    "client_ref": client_ref,
-                    "forced": bool(force),
-                    **(audit_context or {}),
-                },
-            )
+        stage_audit_event(
+            db,
+            actor_type=AuditActorType.user if actor_id else AuditActorType.system,
+            actor_id=actor_id,
+            action="field:map_asset:update_location",
+            # The snake_case asset key, not the ORM class name: every plant
+            # detail page filters activity on this exact string, so
+            # "FdhCabinet" silently produced an empty activity feed and a
+            # field move was traceable only by SQL.
+            entity_type=asset_type,
+            entity_id=str(asset_uuid),
+            status_code=200,
+            is_success=True,
+            metadata={
+                "asset_type": asset_type,
+                "from": previous,
+                "to": {"latitude": float(latitude), "longitude": float(longitude)},
+                "source": source,
+                "accuracy_m": accuracy_m,
+                "client_ref": client_ref,
+                "forced": bool(force),
+                **(audit_context or {}),
+            },
         )
 
         actor_uuid = _actor_uuid(actor_id)

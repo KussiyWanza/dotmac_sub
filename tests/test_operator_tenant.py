@@ -10,16 +10,20 @@ from __future__ import annotations
 
 import ast
 import pathlib
+from typing import cast
+from unittest.mock import MagicMock
 from uuid import UUID
 
 import pytest
 from dotmac_kernel.models import Tenant
+from sqlalchemy.engine import Connection
 
 from app.services.operator_tenant import (
     OPERATOR_TENANT_ID,
     OPERATOR_TENANT_NAME,
     OPERATOR_TENANT_SLUG,
     OperatorTenantMissingError,
+    apply_operator_tenant_transaction_scope,
     operator_tenant,
     operator_tenant_id,
     provision_operator_tenant,
@@ -111,3 +115,28 @@ def test_the_id_accessor_needs_no_database(db_session) -> None:
 
     assert operator_tenant_id() == OPERATOR_TENANT_ID
     assert operator_tenant(db_session).id == operator_tenant_id()
+
+
+def test_postgres_transaction_scope_uses_the_operator_id_and_is_local() -> None:
+    """The scope must disappear at transaction end, never leak through the pool."""
+
+    connection = cast(Connection, MagicMock())
+    connection.dialect.name = "postgresql"
+    connection.scalar.return_value = str(OPERATOR_TENANT_ID)
+
+    apply_operator_tenant_transaction_scope(connection)
+
+    statement, parameters = connection.scalar.call_args.args
+    assert "set_config('app.current_tenant', :tenant_id, true)" in str(statement)
+    assert parameters == {"tenant_id": str(OPERATOR_TENANT_ID)}
+
+
+def test_non_postgres_transaction_scope_is_a_noop() -> None:
+    """SQLite remains the fast logic lane and has no PostgreSQL GUC surface."""
+
+    connection = cast(Connection, MagicMock())
+    connection.dialect.name = "sqlite"
+
+    apply_operator_tenant_transaction_scope(connection)
+
+    connection.scalar.assert_not_called()

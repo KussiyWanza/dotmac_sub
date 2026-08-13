@@ -10,6 +10,33 @@ Affected systems and domains: `docs/PLATFORM_ADOPTION_LEDGER.md` kernel import
 allowlist, `app/models/domain_settings.py` scope columns, request context,
 `alembic` chain, and every later kernel stateful-module adoption.
 
+## Amendment, 2026-08-13: transaction scope precedes FORCE RLS
+
+Sub now installs the deterministic operator tenant as
+`app.current_tenant` on every PostgreSQL SQLAlchemy root transaction. The
+canonical writer is
+`app.services.operator_tenant.apply_operator_tenant_transaction_scope`; the
+SQLAlchemy `after_begin` listener in `app.services.session_hooks` is its thin
+lifecycle adapter. It covers request sessions, tasks, workers, CLIs, one-off
+scripts and deferred callbacks, including direct `SessionLocal()` callers that
+never pass through a web dependency.
+
+The write uses `set_config(..., true)`, PostgreSQL's parameterisable equivalent
+of `SET LOCAL`. Commit and rollback therefore discard it before a pooled
+connection can be borrowed by another transaction. PostgreSQL refuses the
+caller's first statement if the setting cannot be installed or read back
+exactly; continuing unscoped would let FORCE RLS return zero rows without an
+error and falsely resemble an empty tenant.
+
+This is deliberately a predecessor release, not RLS activation and not kernel
+migration-lineage adoption. Sub deploys migrations before the new application
+image. Enabling FORCE RLS in the same release as the first GUC-setting image
+would still expose the old image to fail-silent empty reads during rollout.
+The lineage ratchet therefore remains pinned at kernel revision 0001 until a
+later PostgreSQL rehearsal proves the populated roles, credentials and audit
+rows survive the complete atomic disposition. No production backfill or
+cutover is authorised by this amendment.
+
 ## Amendment, 2026-08-11: the state this ADR describes no longer exists
 
 Measured read-only on production (`selfcare.dotmac.io`), two days after this
@@ -64,6 +91,18 @@ One mechanical schema delta remains after that adoption decision:
 and `ck_domain_settings_scope_alignment`, and fails if existing data contains
 an orphan rather than silently deleting or re-attributing it.
 
+The current a42 remeasurement also corrects this ADR's historical count. Six
+competing model declarations existed when the decision below was written;
+`domain_setting_history` and `communication_suppressions` first brought that set
+to eight. Kernel a41 then renamed its unrelated RBAC grant from `party_roles` to
+`party_role_grants`, leaving seven current competing model declarations,
+enforced by `tests/architecture/test_kernel_table_collisions.py`. The current
+lineage head has nine overlaps because it also includes `tenants` and
+`tenant_domains`, intentionally hosted through the kernel models under this
+ADR. The kernel chain still creates `party_roles` at 0003 before renaming it at
+0022, so that transient tenth name retains an explicit migration disposition.
+None of this admits another kernel identity or authorization model.
+
 The decision below stands unchanged. Only its premise has moved: it now records
 what Sub already does rather than what Sub should start doing.
 
@@ -117,8 +156,8 @@ product data plane. Each product assembly hosts its own tenants.
 
 - **Authoritative record:** `dotmac_kernel.models.Tenant` (table `tenants`),
   and `TenantDomain` (table `tenant_domains`) where domain binding is needed.
-  Neither table exists in Sub today, so neither is one of the six colliding
-  tables the ledger records.
+  Neither had a competing Sub model when this ADR was accepted; both are
+  intentionally hosted kernel models rather than competing declarations.
 - **Canonical writer:** a single provisioning path that creates the operator
   tenant if absent and is idempotent on every boot. Sub does not offer tenant
   CRUD; there is one tenant and it is not an operator-editable resource.
@@ -136,17 +175,20 @@ an ADR that amends this ledger."*
 
 ### Explicitly not decided here
 
-- `dotmac_kernel.models.Party`, `PartyRole`, `Role`, `UserCredential` — Sub
-  identity is not replaced. They remain prohibited.
+- `dotmac_kernel.models.Party`, `PartyRoleGrant`, `Role`, `UserCredential` —
+  Sub identity and authorization are not replaced. They remain prohibited.
 - `dotmac_kernel.db` as session/transaction authority. `app/db.py` remains the
   owner. Admitting two model classes does not admit the kernel engine.
 - `dotmac_kernel.migrations` composition. Sub writes its own migration for the
   two tables, in its own chain. See "Rejected alternatives".
 - `middleware.tenant` (`TenantResolverMiddleware`). Sub has nothing to resolve
   from.
-- The six colliding tables (`parties`, `party_roles`, `roles`,
-  `user_credentials`, `audit_events`, `domain_settings`). Each needs its own
-  ownership decision.
+- The seven current competing tables (`parties`, `roles`, `user_credentials`,
+  `audit_events`, `domain_settings`, `domain_setting_history`, and
+  `communication_suppressions`). Each needs its own ownership decision.
+- The historical kernel-lineage use of `party_roles` at revision 0003. Although
+  a42's current table is `party_role_grants`, composition still needs an
+  explicit disposition for the old name before revision 0022 can rename it.
 
 ## Invariants
 
@@ -155,6 +197,9 @@ an ADR that amends this ledger."*
 - Every tenant-scoped row Sub writes carries that tenant's id. No Sub row is
   created at platform scope once this lands, because Sub owns nothing that is
   deployment-wide above the operator.
+- Every PostgreSQL application root transaction receives the operator tenant
+  through a transaction-local GUC before its first statement. A commit or
+  rollback removes the setting; the next transaction installs it again.
 - `Tenant` and `TenantDomain` are the ONLY classes importable from
   `dotmac_kernel.models`. The import guard enforces the narrowing, not a
   comment.
@@ -273,12 +318,12 @@ deliberately:
 
 ## Review and retirement
 
-- Review date: when the first of the six colliding tables is scheduled, when a
-  second operator is proposed, or when the vendor control plane begins issuing
-  tenant identity — whichever is first.
+- Review date: when the next unresolved collision disposition is scheduled,
+  when a second operator is proposed, or when the vendor control plane begins
+  issuing tenant identity — whichever is first.
 - Retirement condition: superseded by an ADR that either admits further kernel
   models or establishes genuine multi-tenancy.
 - Supersedes or is superseded by: amends the kernel import allowlist in
   `docs/PLATFORM_ADOPTION_LEDGER.md`; partially discharges the ledger's S7
-  gate, whose remaining parts (kernel `db`, migration composition, the six
-  colliding tables) stay closed.
+  gate, whose remaining parts (kernel `db`, migration composition, and all
+  current and transient collision dispositions) stay closed.
