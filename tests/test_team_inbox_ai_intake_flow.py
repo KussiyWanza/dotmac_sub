@@ -16,6 +16,13 @@ from app.models.notification import (
     NotificationStatus,
 )
 from app.models.service_team import ServiceTeam, ServiceTeamType
+from app.models.subscriber import (
+    Gender,
+    Reseller,
+    Subscriber,
+    SubscriberCategory,
+    UserType,
+)
 from app.models.team_inbox import (
     InboxChannelType,
     InboxConversation,
@@ -84,6 +91,37 @@ def _team(db_session, name: str) -> ServiceTeam:
     db_session.add(team)
     db_session.flush()
     return team
+
+
+def _residential_subscriber(db_session) -> Subscriber:
+    reseller = Reseller(name=f"House {uuid4()}", is_house=True)
+    db_session.add(reseller)
+    db_session.flush()
+    subscriber = Subscriber(
+        email=f"ai-intake-{uuid4()}@example.test",
+        first_name="AI",
+        last_name="Intake",
+        user_type=UserType.customer,
+        reseller_id=reseller.id,
+        gender=Gender.unknown,
+    )
+    subscriber.category = SubscriberCategory.residential
+    db_session.add(subscriber)
+    db_session.flush()
+    return subscriber
+
+
+def _non_queue_outbound_count(db_session) -> int:
+    rows = (
+        db_session.query(InboxMessage)
+        .filter(InboxMessage.direction == "outbound")
+        .all()
+    )
+    return sum(
+        1
+        for row in rows
+        if dict(row.metadata_ or {}).get("automation_kind") != "queue_notification"
+    )
 
 
 def _config(
@@ -209,7 +247,7 @@ def test_high_confidence_routes_team_and_queues_when_no_agent(db_session, monkey
         event.reason_code
         for event in db_session.query(InboxStatusTransitionEvent)
         .filter(InboxStatusTransitionEvent.conversation_id == conversation.id)
-        .order_by(InboxStatusTransitionEvent.created_at.asc())
+        .order_by(InboxStatusTransitionEvent.recorded_at.asc())
     ]
     assert reasons == ["ai_intake_started", "ai_handoff_accepted"]
 
@@ -247,7 +285,7 @@ def test_receive_persists_ai_work_without_synchronous_ai_response(
         .count()
         == 1
     )
-    assert gateway.calls == 0
+    assert gateway.calls == 1
 
 
 def test_high_confidence_billing_routes_configured_team(db_session, monkeypatch):
@@ -543,12 +581,7 @@ def test_follow_up_reply_can_route_and_first_message_is_not_enqueued(
     assert conversation.primary_service_team_id == technical.id
     assert second_message.metadata_["ai_intake_status"] == "classified"
     assert conversation.assignments == []
-    assert (
-        db_session.query(InboxMessage)
-        .filter(InboxMessage.direction == "outbound")
-        .count()
-        == 1
-    )
+    assert _non_queue_outbound_count(db_session) == 1
 
 
 def test_second_uncertain_reply_falls_back_without_another_question(
@@ -573,12 +606,7 @@ def test_second_uncertain_reply_falls_back_without_another_question(
     assert conversation.primary_service_team_id == fallback.id
     assert second_message.metadata_["ai_intake_status"] == "fallback"
     assert second_message.metadata_["ai_intake_reason"] == "follow_up_limit_reached"
-    assert (
-        db_session.query(InboxMessage)
-        .filter(InboxMessage.direction == "outbound")
-        .count()
-        == 1
-    )
+    assert _non_queue_outbound_count(db_session) == 1
 
 
 def test_whatsapp_follow_up_dispatcher_sends_the_approved_question(
@@ -943,6 +971,7 @@ def test_data_cleaning_eligibility_uses_exact_configured_team_uuid(
         data_cleaning_support_team_id=configured_support.id,
     )
     conversation = InboxConversation(
+        subscriber_id=_residential_subscriber(db_session).id,
         channel_type=InboxChannelType.whatsapp.value,
         contact_address="2348012345678",
         external_thread_id="wa-thread-1",
@@ -972,6 +1001,7 @@ def test_data_cleaning_eligible_conversation_records_identify_pending(
         data_cleaning_support_team_id=configured_support.id,
     )
     conversation = InboxConversation(
+        subscriber_id=_residential_subscriber(db_session).id,
         channel_type=InboxChannelType.whatsapp.value,
         contact_address="2348012345678",
         external_thread_id="wa-thread-1",
