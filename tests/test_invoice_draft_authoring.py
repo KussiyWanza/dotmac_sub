@@ -273,6 +273,7 @@ def test_prepaid_proforma_conversion_capability_hides_generic_action(
     subscriber,
 ) -> None:
     subscriber.billing_mode = BillingMode.prepaid
+    db_session.commit()
     created = invoice_draft_authoring.create_invoice_draft(
         db_session,
         replace(
