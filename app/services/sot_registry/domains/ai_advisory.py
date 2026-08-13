@@ -602,7 +602,7 @@ DOMAIN = DomainSOT(
                     ),
                     AuthorityInput(
                         name="provider generation observation",
-                        owner="ai.gateway",
+                        owner="external:llm_provider",
                         kind=AuthorityKind.EXTERNAL_OBSERVATION,
                         source="Structured provider response and transport metadata.",
                     ),

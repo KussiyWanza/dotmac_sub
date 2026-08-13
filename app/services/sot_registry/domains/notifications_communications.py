@@ -1771,10 +1771,10 @@ DOMAIN = DomainSOT(
         SOTService(
             name="communications.team_inbox_queue_notifications",
             module="app.services.team_inbox_queue_notifications",
-            owns=("customer-visible FIFO queue notification evidence",),
+            owns=("queue notification delivery ledger writes",),
             depends_on=(
                 "communications.team_inbox_routing",
-                "communications.team_inbox_outbound",
+                "communications.team_inbox_outbound_intents",
             ),
             notes=(
                 "Delivery ledger only. Queue membership, order, position and "
@@ -1784,7 +1784,7 @@ DOMAIN = DomainSOT(
                 service_name="communications.team_inbox_queue_notifications",
                 concerns=(
                     (
-                        "customer-visible FIFO queue notification evidence",
+                        "queue notification delivery ledger writes",
                         OwnerRole.COMMAND_WRITER,
                     ),
                 ),
@@ -1797,7 +1797,7 @@ DOMAIN = DomainSOT(
                     ),
                     AuthorityInput(
                         name="customer outbound delivery result",
-                        owner="communications.team_inbox_outbound",
+                        owner="communications.team_inbox_outbound_intents",
                         kind=AuthorityKind.OBSERVATION,
                         source="Team Inbox outbound send result and dedupe identity.",
                     ),
