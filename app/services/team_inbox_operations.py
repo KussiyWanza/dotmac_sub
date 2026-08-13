@@ -902,20 +902,23 @@ def create_internal_note(
     conversation: InboxConversation,
     body: str,
     actor_person_id: str | UUID | None = None,
+    metadata: dict[str, object] | None = None,
 ) -> InboxMessage:
     clean_body = str(body or "").strip()
     if not clean_body:
         raise InboxOperationError("Internal note is required.")
+    note_metadata: dict[str, object] = {
+        "source": "admin_inbox_internal_note",
+        "actor_id": str(actor_person_id) if actor_person_id else None,
+    }
+    note_metadata.update(metadata or {})
     note = InboxMessage(
         conversation_id=conversation.id,
         channel_type=conversation.channel_type,
         direction="internal",
         body=clean_body,
         from_address="internal",
-        metadata_={
-            "source": "admin_inbox_internal_note",
-            "actor_id": str(actor_person_id) if actor_person_id else None,
-        },
+        metadata_=note_metadata,
     )
     db.add(note)
     db.flush()

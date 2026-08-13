@@ -183,7 +183,7 @@ def test_deliver_notification_queue_marks_failed_on_whatsapp_error(
     db_session.refresh(wa)
     assert delivered == 0
     assert wa.status == NotificationStatus.failed
-    assert wa.last_error == "provider down"
+    assert wa.last_error.startswith("provider_unknown_failure:")
 
 
 def test_deliver_notification_queue_brands_plain_text_email(db_session, monkeypatch):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
 from fastapi import BackgroundTasks
 from starlette.requests import Request
@@ -288,6 +289,15 @@ def test_admin_macro_create_and_reply_records_execution(db_session, monkeypatch)
     conversation = _conversation(db_session)
     conversation.contact_address = "0803 555 0114"
     conversation.channel_type = InboxChannelType.whatsapp.value
+    db_session.add(
+        InboxMessage(
+            conversation_id=conversation.id,
+            channel_type=InboxChannelType.whatsapp.value,
+            direction=InboxMessageDirection.inbound.value,
+            body="Hello",
+            received_at=datetime.now(UTC),
+        )
+    )
     from app.services import web_admin as web_admin_service
 
     monkeypatch.setattr(

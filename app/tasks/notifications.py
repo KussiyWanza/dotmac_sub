@@ -3,6 +3,7 @@
 import json
 import logging
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -24,6 +25,7 @@ from app.services import (
     communication_attachments,
     communication_eligibility,
     team_inbox_media,
+    team_inbox_reply_window,
 )
 from app.services import email as email_service
 from app.services import push as push_service
@@ -65,6 +67,154 @@ _DELIVERABLE_CHANNELS = (
     NotificationChannel.instagram_comment,
     NotificationChannel.push,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class _ProviderFailure:
+    code: str
+    message: str
+    retryable: bool
+
+
+def _safe_provider_failure(
+    *,
+    channel: NotificationChannel,
+    status_code: int | None = None,
+    error_code: str | None = None,
+    detail: Any = None,
+) -> _ProviderFailure:
+    raw = " ".join(
+        str(part or "")
+        for part in (channel.value, status_code, error_code, detail)
+        if part is not None
+    ).lower()
+    if (
+        "131047" in raw
+        or "24 hour" in raw
+        or "24-hour" in raw
+        or "conversation window" in raw
+        or "outside the allowed window" in raw
+        or "reply window" in raw
+    ):
+        return _ProviderFailure(
+            code="reply_window_expired",
+            message=(
+                "The 24-hour reply window has expired. A new free-form reply "
+                "cannot be sent until the customer messages again."
+            ),
+            retryable=False,
+        )
+    if status_code == 429 or "rate" in raw and "limit" in raw:
+        return _ProviderFailure(
+            code="provider_rate_limited",
+            message="The provider rate-limited this message. It will retry later.",
+            retryable=True,
+        )
+    if status_code in {401, 403} or "auth" in raw or "permission" in raw:
+        return _ProviderFailure(
+            code="provider_permission_denied",
+            message="The provider rejected this message because access is not allowed.",
+            retryable=False,
+        )
+    if "template" in raw:
+        return _ProviderFailure(
+            code="template_unavailable",
+            message="The provider rejected the selected template.",
+            retryable=False,
+        )
+    if status_code is not None and 400 <= status_code < 500:
+        return _ProviderFailure(
+            code="invalid_provider_message",
+            message="The provider rejected this message.",
+            retryable=False,
+        )
+    if (
+        status_code is not None
+        and status_code >= 500
+        or "timeout" in raw
+        or "unavailable" in raw
+    ):
+        return _ProviderFailure(
+            code="provider_unavailable",
+            message="The provider is temporarily unavailable. It will retry later.",
+            retryable=True,
+        )
+    reference = abs(hash(raw)) % 1_000_000
+    return _ProviderFailure(
+        code=f"provider_unknown_failure:{reference:06d}",
+        message=f"The provider rejected this message. Reference {reference:06d}.",
+        retryable=False,
+    )
+
+
+def _optional_status_code(value: object) -> int | None:
+    text = str(value or "")
+    return int(text) if text.isdigit() else None
+
+
+def _team_inbox_conversation_id(notification: Notification) -> str:
+    metadata = notification.metadata_ or {}
+    value = metadata.get("conversation_id")
+    return str(value or "").strip()
+
+
+def _team_inbox_whatsapp_template(notification: Notification, body: str) -> dict | None:
+    metadata = notification.metadata_ or {}
+    configured = metadata.get("whatsapp_template")
+    if isinstance(configured, dict) and configured.get("name"):
+        return configured
+    if not body:
+        return None
+    try:
+        parsed_body = json.loads(body)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(parsed_body, dict) and parsed_body.get("__whatsapp_template__"):
+        return parsed_body
+    return None
+
+
+def _preflight_team_inbox_meta_window(
+    db: Session,
+    *,
+    notification: Notification,
+    body: str,
+) -> _ProviderFailure | None:
+    if notification.channel not in {
+        NotificationChannel.whatsapp,
+        NotificationChannel.facebook_messenger,
+        NotificationChannel.instagram_dm,
+    }:
+        return None
+    if notification.channel == NotificationChannel.whatsapp and (
+        _team_inbox_whatsapp_template(notification, body) is not None
+    ):
+        return None
+    conversation_id = team_inbox_reply_window.coerce_conversation_id(
+        _team_inbox_conversation_id(notification)
+    )
+    if conversation_id is None:
+        return None
+    from app.models.team_inbox import InboxConversation
+
+    conversation = db.get(InboxConversation, conversation_id)
+    if conversation is None:
+        return _ProviderFailure(
+            code="invalid_conversation",
+            message="The conversation is no longer available.",
+            retryable=False,
+        )
+    decision = team_inbox_reply_window.decide_reply_window(
+        db, conversation=conversation
+    )
+    if not decision.blocks_free_form:
+        return None
+    return _ProviderFailure(
+        code="reply_window_expired",
+        message=decision.reason
+        or "The 24-hour reply window has expired. A new free-form reply cannot be sent until the customer messages again.",
+        retryable=False,
+    )
 
 
 def _metadata_text(source: dict[str, Any], *keys: str) -> str:
@@ -572,7 +722,18 @@ def _deliver_notification_queue_stats(
                     except json.JSONDecodeError:
                         whatsapp_payload = None
                 provider_messages: list[str] = []
-                if whatsapp_payload:
+                preflight_failure = _preflight_team_inbox_meta_window(
+                    db, notification=notification, body=body
+                )
+                if preflight_failure is not None:
+                    notification.retry_count = max_retries - 1
+                    result = {
+                        "ok": False,
+                        "provider": "whatsapp",
+                        "error_code": preflight_failure.code,
+                        "response": preflight_failure.message,
+                    }
+                elif whatsapp_payload:
                     result = whatsapp_service.send_template_message(
                         db=db,
                         recipient=notification.recipient,
@@ -650,6 +811,18 @@ def _deliver_notification_queue_stats(
                             if not result.get("ok"):
                                 break
                 success = bool(result.get("ok"))
+                provider_failure = (
+                    None
+                    if success
+                    else _safe_provider_failure(
+                        channel=notification.channel,
+                        status_code=(_optional_status_code(result.get("status_code"))),
+                        error_code=str(result.get("error_code") or ""),
+                        detail=result.get("response") or result.get("message"),
+                    )
+                )
+                if provider_failure is not None and not provider_failure.retryable:
+                    notification.retry_count = max_retries - 1
                 db.add(
                     NotificationDelivery(
                         notification_id=notification.id,
@@ -660,16 +833,31 @@ def _deliver_notification_queue_stats(
                         status=DeliveryStatus.delivered
                         if success
                         else DeliveryStatus.failed,
-                        response_code=str(result.get("status_code") or ""),
-                        response_body=str(
-                            result.get("response") or result.get("message") or ""
-                        )
-                        or None,
+                        response_code=(
+                            "accepted"
+                            if success
+                            else (
+                                provider_failure.code
+                                if provider_failure is not None
+                                else "provider_failed"
+                            )
+                        ),
+                        response_body=(
+                            "WhatsApp message accepted"
+                            if success
+                            else (
+                                provider_failure.message
+                                if provider_failure is not None
+                                else "WhatsApp message failed"
+                            )
+                        ),
                     )
                 )
                 if not success:
-                    notification.last_error = str(
-                        result.get("response") or "whatsapp_send_failed"
+                    notification.last_error = (
+                        provider_failure.code
+                        if provider_failure is not None
+                        else "whatsapp_send_failed"
                     )
                 elif provider_messages:
                     from app.models.team_inbox import InboxMessage
@@ -701,8 +889,20 @@ def _deliver_notification_queue_stats(
                 ).strip()
                 provider_message_id = ""
                 provider_error = "meta_direct_message_failed"
+                meta_provider_failure: _ProviderFailure | None = None
                 try:
+                    preflight_failure = _preflight_team_inbox_meta_window(
+                        db, notification=notification, body=body
+                    )
+                    if preflight_failure is not None:
+                        meta_provider_failure = preflight_failure
+                        notification.retry_count = max_retries - 1
+                        raise ValueError(preflight_failure.code)
                     if not account_id or not notification.recipient:
+                        meta_provider_failure = _safe_provider_failure(
+                            channel=notification.channel,
+                            error_code="meta_direct_message_context_missing",
+                        )
                         raise ValueError("meta_direct_message_context_missing")
                     outcome = meta_social_capability.send_direct_message(
                         db,
@@ -728,18 +928,39 @@ def _deliver_notification_queue_stats(
                         provider_error = (
                             outcome.error_code or "meta_direct_message_not_accepted"
                         )
-                        if outcome.operation_status == "rejected":
+                        meta_provider_failure = _safe_provider_failure(
+                            channel=notification.channel,
+                            error_code=provider_error,
+                            detail=outcome.operation_status,
+                        )
+                        if (
+                            outcome.operation_status == "rejected"
+                            or not meta_provider_failure.retryable
+                        ):
                             notification.retry_count = max_retries - 1
                 except ValueError:
                     success = False
                     notification.retry_count = max_retries - 1
-                    provider_error = "meta_direct_message_configuration_rejected"
+                    if meta_provider_failure is None:
+                        meta_provider_failure = _safe_provider_failure(
+                            channel=notification.channel,
+                            error_code="meta_direct_message_configuration_rejected",
+                        )
+                    provider_error = meta_provider_failure.code
                 except (httpx.TimeoutException, httpx.NetworkError):
                     success = False
-                    provider_error = "meta_direct_message_provider_unavailable"
+                    meta_provider_failure = _safe_provider_failure(
+                        channel=notification.channel,
+                        error_code="meta_direct_message_provider_unavailable",
+                    )
+                    provider_error = meta_provider_failure.code
                 except Exception:
                     success = False
-                    provider_error = "meta_direct_message_provider_failed"
+                    meta_provider_failure = _safe_provider_failure(
+                        channel=notification.channel,
+                        error_code="meta_direct_message_provider_failed",
+                    )
+                    provider_error = meta_provider_failure.code
                 notification.last_error = None if success else provider_error
                 db.add(
                     NotificationDelivery(
@@ -755,7 +976,11 @@ def _deliver_notification_queue_stats(
                         response_body=(
                             "Meta direct message accepted"
                             if success
-                            else "Meta direct message failed"
+                            else (
+                                meta_provider_failure.message
+                                if meta_provider_failure is not None
+                                else "Meta direct message failed"
+                            )
                         ),
                     )
                 )

@@ -21,7 +21,12 @@ from app.models.team_inbox import (
     InboxTeamRole,
 )
 from app.schemas.ai_intake import APPROVED_FOLLOW_UP_QUESTIONS
-from app.services import team_inbox_realtime, team_inbox_routing, team_outbound
+from app.services import (
+    team_inbox_realtime,
+    team_inbox_reply_window,
+    team_inbox_routing,
+    team_outbound,
+)
 from app.services.communication_intents import (
     CommunicationClass,
     CommunicationIntent,
@@ -289,6 +294,17 @@ def _send_whatsapp_reply(
         str(template_spec.get("name") or "").strip() if template_spec else ""
     )
     use_template = bool(template_spec and template_name)
+    if not use_template:
+        window = team_inbox_reply_window.decide_reply_window(
+            db, conversation=conversation, now=now
+        )
+        if window.blocks_free_form:
+            return InboxReplyResult(
+                kind="reply_window_expired",
+                conversation_id=str(conversation.id),
+                reason=window.reason
+                or "The 24-hour reply window has expired. Use an approved WhatsApp template or wait for the customer to message again.",
+            )
     return _queue_outbox_reply(
         db,
         conversation=conversation,
@@ -565,6 +581,16 @@ def _send_meta_direct_reply(
             kind="empty_body",
             conversation_id=str(conversation.id),
             reason="Reply body is required",
+        )
+    window = team_inbox_reply_window.decide_reply_window(
+        db, conversation=conversation, now=now
+    )
+    if window.blocks_free_form:
+        return InboxReplyResult(
+            kind="reply_window_expired",
+            conversation_id=str(conversation.id),
+            reason=window.reason
+            or "The 24-hour reply window has expired. A new free-form reply cannot be sent until the customer messages again.",
         )
     messages = (
         db.query(InboxMessage)
@@ -911,6 +937,25 @@ def retry_outbound_message(
             reason="Conversation not found",
         )
     retry_count = int(metadata.get("retry_count") or 0) + 1
+    retry_metadata = {
+        key: value
+        for key, value in metadata.items()
+        if key
+        not in {
+            "delivery_status",
+            "send_error",
+            "last_retry_at",
+            "last_retry_result",
+            "retried_message_id",
+        }
+    }
+    retry_metadata.update(
+        {
+            "source_route": "team_inbox_retry",
+            "retry_of_message_id": str(message.id),
+            "retry_count": retry_count,
+        }
+    )
     result = send_inbox_reply(
         db,
         conversation=conversation,
@@ -928,11 +973,7 @@ def retry_outbound_message(
             if isinstance(metadata.get("bcc"), list)
             else (),
             sent_by_person_id=sent_by_person_id,
-            metadata={
-                "source_route": "team_inbox_retry",
-                "retry_of_message_id": str(message.id),
-                "retry_count": retry_count,
-            },
+            metadata=retry_metadata,
         ),
         now=now,
         record_failure=False,

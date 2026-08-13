@@ -32,19 +32,25 @@ import ast
 import re
 import time
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
+from app.models.notification import Notification
 from app.models.service_team import ServiceTeam, ServiceTeamMember, ServiceTeamType
 from app.models.team_inbox import (
+    InboxAuditEvidenceGrade,
+    InboxAuditSource,
     InboxComment,
     InboxConversation,
     InboxConversationAssignment,
     InboxConversationStatus,
     InboxMessage,
+    InboxMessageDirection,
+    InboxStatusTransitionEvent,
 )
-from app.services import team_inbox_commands, team_inbox_read
+from app.services import team_inbox_commands, team_inbox_projection, team_inbox_read
 from tests.staff_identity_fixtures import add_bound_staff_user
 
 ROUTES_SOURCE = Path("app/web/admin/inbox.py").read_text()
@@ -206,6 +212,126 @@ def test_a_private_note_records_its_author(db_session, actor):
         .one()
     )
     assert (note.metadata_ or {}).get("actor_id") == str(actor)
+
+
+def test_private_note_mentions_store_user_ids_and_notify_once(db_session, actor):
+    mentioned_user, mentioned_person = add_bound_staff_user(
+        db_session,
+        email="mentioned-agent@example.test",
+    )
+    team = ServiceTeam(name="Mention Team", team_type=ServiceTeamType.support.value)
+    db_session.add(team)
+    db_session.flush()
+    db_session.add(
+        ServiceTeamMember(
+            team_id=team.id,
+            person_id=mentioned_person.id,
+            is_active=True,
+        )
+    )
+    conversation_id = _conversation_id(db_session, team_id=team.id)
+
+    team_inbox_commands.create_internal_note(
+        db_session,
+        conversation_id=conversation_id,
+        body=f"Please review this @{mentioned_user.display_name or mentioned_user.email}",
+        actor_person_id=actor,
+        mention_user_ids=(mentioned_user.id, mentioned_user.id),
+    )
+
+    note = (
+        db_session.query(InboxMessage)
+        .filter(InboxMessage.direction == "internal")
+        .one()
+    )
+    notifications = db_session.query(Notification).all()
+    assert (note.metadata_ or {}).get("mentions") == [str(mentioned_user.id)]
+    assert len(notifications) == 1
+    assert notifications[0].event_type == "team_inbox.private_note_mention"
+    assert notifications[0].dedupe_key == (
+        f"inbox-note-mention:{note.id}:{mentioned_user.id}"
+    )
+
+
+def test_private_note_mentions_reject_users_without_conversation_visibility(
+    db_session, actor
+):
+    outsider_user, _outsider_person = add_bound_staff_user(
+        db_session,
+        email="outsider-agent@example.test",
+    )
+    team = ServiceTeam(name="Visible Team", team_type=ServiceTeamType.support.value)
+    db_session.add(team)
+    db_session.flush()
+    conversation_id = _conversation_id(db_session, team_id=team.id)
+
+    with pytest.raises(team_inbox_commands.InboxCommandRejected):
+        team_inbox_commands.create_internal_note(
+            db_session,
+            conversation_id=conversation_id,
+            body="@Outsider should not resolve",
+            actor_person_id=actor,
+            mention_user_ids=(outsider_user.id,),
+        )
+
+    assert db_session.query(InboxMessage).count() == 0
+
+
+def test_projection_timeline_entries_merge_messages_and_system_events(
+    db_session,
+    actor,
+):
+    conversation_id = _conversation_id(db_session)
+    conversation = db_session.get(InboxConversation, conversation_id)
+    first_at = datetime(2026, 7, 10, 8, 0, tzinfo=UTC)
+    second_at = datetime(2026, 7, 10, 8, 5, tzinfo=UTC)
+    db_session.add_all(
+        [
+            InboxMessage(
+                conversation_id=conversation_id,
+                channel_type="email",
+                direction=InboxMessageDirection.inbound.value,
+                body="First",
+                received_at=first_at,
+            ),
+            InboxStatusTransitionEvent(
+                conversation_id=conversation_id,
+                previous_status=InboxConversationStatus.open.value,
+                status=InboxConversationStatus.pending.value,
+                reason_code="needs_follow_up",
+                actor_person_id=actor,
+                source=InboxAuditSource.status_command,
+                source_id="test:timeline-merge-status",
+                evidence_grade=InboxAuditEvidenceGrade.native,
+                occurred_at=second_at,
+            ),
+            InboxMessage(
+                conversation_id=conversation_id,
+                channel_type="email",
+                direction=InboxMessageDirection.outbound.value,
+                body="Second",
+                sent_at=second_at,
+            ),
+        ]
+    )
+    if conversation is not None:
+        conversation.last_message_at = second_at
+    db_session.flush()
+
+    projection = team_inbox_projection.get_conversation_projection(
+        db_session,
+        conversation_id=conversation_id,
+        actor_person_id=actor,
+    )
+
+    assert projection is not None
+    assert [entry.kind for entry in projection.timeline_entries] == [
+        "message",
+        "message",
+        "system",
+    ]
+    assert projection.timeline_entries[2].event is not None
+    assert projection.timeline_entries[2].event.label == "Status changed to pending"
 
 
 def test_a_team_comment_records_its_author_in_a_column(db_session, actor):

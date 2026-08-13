@@ -131,6 +131,11 @@
                 {% elif row.status == "resolved" %}
                 <span class="rounded-md border border-slate-200 bg-slate-100 px-1.5 py-0.5 text-[9px] font-semibold text-slate-700 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200">Resolved</span>
                 {% endif %}
+                {% if row.reply_window_status == "expired" %}
+                <span class="rounded-md border border-rose-200 bg-rose-50 px-1.5 py-0.5 text-[9px] font-semibold text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300" title="Provider free-form reply window is closed">Expired</span>
+                {% elif row.reply_window_status == "unavailable" %}
+                <span class="rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[9px] font-semibold text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300" title="Provider reply availability could not be confirmed">Unavailable</span>
+                {% endif %}
                 {% if row.has_ticket %}
                 <span class="rounded-md border border-sky-200 bg-sky-50 px-1.5 py-0.5 text-[9px] font-semibold text-sky-700 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-300">Sent to ticket</span>
                 {% endif %}
