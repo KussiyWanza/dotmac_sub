@@ -2016,6 +2016,31 @@ DOMAIN = DomainSOT(
             ),
         ),
         SOTService(
+            name="communications.team_inbox_reply_window",
+            module="app.services.team_inbox_reply_window",
+            owns=("Meta team-inbox free-form reply window eligibility",),
+            depends_on=("communications.team_inbox_threads",),
+            contract=_team_inbox_contract(
+                service_name="communications.team_inbox_reply_window",
+                concerns=(
+                    (
+                        "Meta team-inbox free-form reply window eligibility",
+                        OwnerRole.POLICY,
+                    ),
+                ),
+                inputs=(
+                    AuthorityInput(
+                        name="message chronology",
+                        owner="communications.team_inbox_threads",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="Latest qualifying inbound customer Inbox message timestamp for WhatsApp, Facebook Messenger, and Instagram DM.",
+                    ),
+                ),
+                transaction_mode=TransactionMode.READ_ONLY,
+                projections=("reply-window eligibility and expiry projection",),
+            ),
+        ),
+        SOTService(
             name="communications.team_inbox_outbound_intents",
             module="app.services.team_inbox_outbound",
             owns=(
@@ -2024,6 +2049,7 @@ DOMAIN = DomainSOT(
             ),
             depends_on=(
                 "communications.team_inbox_threads",
+                "communications.team_inbox_reply_window",
                 "communications.intents",
                 "communications.channel_policy",
             ),

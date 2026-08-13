@@ -219,6 +219,7 @@ def team_inbox_queue(
     open_only: bool = Query(default=False),
     unassigned: bool = Query(default=False),
     unread: bool = Query(default=False),
+    reply_window_status: str | None = Query(default=None),
     # Declared `bool | None` like `muted`/`snoozed`, not `str | None`: these ride
     # `_query_optional_bool`, which keeps only real booleans. Typed as strings the
     # checkbox value "true" was discarded at the adapter and neither filter ever
@@ -270,6 +271,7 @@ def team_inbox_queue(
                 open_only=_query_bool(open_only),
                 unassigned=_query_bool(unassigned),
                 unread=_query_bool(unread),
+                reply_window_status=_query_text(reply_window_status),
                 ai_handling=_query_optional_bool(ai_handling),
                 has_ticket=_query_optional_bool(has_ticket),
                 activity_from=_parse_datetime_field(activity_from),
@@ -325,6 +327,7 @@ def team_inbox_queue(
             "open_only": projection.open_only,
             "unassigned": projection.unassigned,
             "unread": projection.unread,
+            "reply_window_status": projection.reply_window_status,
             "ai_handling": projection.ai_handling,
             "has_ticket": projection.has_ticket,
             "activity_from": projection.activity_from,
@@ -374,6 +377,8 @@ def team_inbox_queue(
                 "is_unread": projection.selected.is_unread,
                 "priority_options": projection.selected.priority_options,
                 "activity_events": projection.selected.activity_events,
+                "timeline_entries": projection.selected.timeline_entries,
+                "reply_window": projection.selected.reply_window,
             }
         )
     if is_list_fragment_request:
@@ -706,6 +711,8 @@ def team_inbox_detail(
             ),
             "priority_options": projection.priority_options,
             "activity_events": projection.activity_events,
+            "timeline_entries": projection.timeline_entries,
+            "reply_window": projection.reply_window,
             "agent_options": team_inbox_projection.list_agent_options(db),
             "service_team_options": team_inbox_projection.list_service_team_options(db),
             "can_manage_leads": can(request, "crm:lead:write"),
@@ -788,6 +795,34 @@ def team_inbox_contact_context(
         }
     )
     return templates.TemplateResponse("admin/inbox/_contact_drawer.html", context)
+
+
+@router.get(
+    "/{conversation_id}/mentionable-users",
+    dependencies=[Depends(require_permission("support:ticket:read"))],
+)
+def team_inbox_mentionable_users(
+    conversation_id: UUID,
+    q: str = Query(default=""),
+    db: Session = Depends(get_db),
+):
+    users = team_inbox_projection.list_mentionable_users(
+        db,
+        conversation_id=conversation_id,
+        search=q,
+        limit=10,
+    )
+    return {
+        "users": [
+            {
+                "id": str(user.id),
+                "name": user.name,
+                "email": user.email,
+                "initials": user.initials,
+            }
+            for user in users
+        ]
+    }
 
 
 def _inbox_action_permissions(
@@ -1152,6 +1187,9 @@ def team_inbox_reply(
     send_after: str | None = Form(default=None),
     idempotency_key: str | None = Form(default=None),
     reply_to_message_id: str | None = Form(default=None),
+    whatsapp_template_name: str | None = Form(default=None),
+    whatsapp_template_language: str | None = Form(default=None),
+    whatsapp_template_components: str | None = Form(default=None),
     next_url: str | None = Form(default=None),
     db: Session = Depends(get_db),
 ) -> Response:
@@ -1171,6 +1209,11 @@ def team_inbox_reply(
             send_after=_parse_datetime_field(send_after),
             idempotency_key=_query_text(idempotency_key),
             reply_to_message_id=_query_text(reply_to_message_id),
+            whatsapp_template_name=_query_text(whatsapp_template_name),
+            whatsapp_template_language=_query_text(whatsapp_template_language),
+            whatsapp_template_components=_json_object_list(
+                _query_text(whatsapp_template_components)
+            ),
             actor_person_id=_actor_id_from_request(request),
         )
     except team_inbox_commands.ConversationNotFoundError:
@@ -2013,6 +2056,7 @@ def team_inbox_internal_note(
     conversation_id: UUID,
     request: Request,
     body_text: str = Form(...),
+    mention_user_ids: str | None = Form(default=None),
     db: Session = Depends(get_db),
 ):
     _prepare_mutation(db)
@@ -2022,6 +2066,11 @@ def team_inbox_internal_note(
             conversation_id=conversation_id,
             body=body_text,
             actor_person_id=_actor_id_from_request(request),
+            mention_user_ids=[
+                item.strip()
+                for item in (_query_text(mention_user_ids) or "").split(",")
+                if item.strip()
+            ],
         )
     except team_inbox_commands.ConversationNotFoundError:
         return RedirectResponse(

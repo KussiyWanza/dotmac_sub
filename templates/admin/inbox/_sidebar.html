@@ -134,6 +134,8 @@
                   @submit="filterRequestStarted($event.submitter?.name === 'status' ? $event.submitter.value : null)">
             {% if selected_id %}<input type="hidden" name="conversation_id" value="{{ selected_id }}">{% endif %}
             <input type="hidden" name="search" value="{{ search }}">
+            {% if status %}<input type="hidden" name="status" value="{{ status }}">{% endif %}
+            {% if reply_window_status %}<input type="hidden" name="reply_window_status" value="{{ reply_window_status }}">{% endif %}
             {% if ai_handling is not none %}<input type="hidden" name="ai_handling" value="{{ 'true' if ai_handling else 'false' }}">{% endif %}
             <fieldset>
                 <legend class="mb-1.5 text-[10px] font-bold uppercase tracking-wide text-slate-400">Status</legend>
@@ -220,6 +222,19 @@
                             :class="assignmentFilterActive('agent') ? 'bg-white text-violet-700 shadow-sm dark:bg-slate-700 dark:text-violet-300' : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'"
                             :aria-expanded="byAgentOpen.toString()" aria-controls="inbox-by-agent-panel">
                         <span>By Agent</span><span class="tabular-nums">{% if assigned_person_id and assigned_person_id != actor_person_id %}{{ count }}{% else %}—{% endif %}</span>
+                    </button>
+                </div>
+            </fieldset>
+            <fieldset>
+                <legend class="mb-1.5 text-[10px] font-bold uppercase tracking-wide text-slate-400">Provider state</legend>
+                <div class="flex flex-wrap gap-1 rounded-xl bg-slate-100 p-1 dark:bg-slate-800/50">
+                    <button type="submit" name="reply_window_status" value=""
+                            class="min-h-10 min-w-20 flex-1 rounded-lg px-2 text-xs font-semibold transition-colors {% if not reply_window_status %}bg-white text-slate-700 shadow-sm dark:bg-slate-700 dark:text-slate-200{% else %}text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200{% endif %}">
+                        Any
+                    </button>
+                    <button type="submit" name="reply_window_status" value="expired"
+                            class="min-h-10 min-w-24 flex-1 rounded-lg px-2 text-xs font-semibold transition-colors {% if reply_window_status == 'expired' %}bg-white text-rose-700 shadow-sm dark:bg-slate-700 dark:text-rose-300{% else %}text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200{% endif %}">
+                        <span class="inline-flex items-center justify-center gap-1.5"><span class="h-1.5 w-1.5 rounded-full bg-rose-500" aria-hidden="true"></span>Expired</span>
                     </button>
                 </div>
             </fieldset>

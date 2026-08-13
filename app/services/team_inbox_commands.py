@@ -21,6 +21,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.models.audit import AuditActorType
+from app.models.notification import Notification, NotificationChannel
 from app.models.organization import Organization
 from app.models.party import (
     Party,
@@ -32,7 +33,9 @@ from app.models.party import (
     PartyType,
 )
 from app.models.sales import Lead, LeadCaptureMethod, LeadSourcePlatform
+from app.models.service_team import ServiceTeamMember
 from app.models.subscriber import Reseller, Subscriber
+from app.models.system_user import SystemUser
 from app.models.team_inbox import (
     InboxAgentPresence,
     InboxChannelType,
@@ -41,6 +44,7 @@ from app.models.team_inbox import (
     InboxMessage,
     InboxSavedFilter,
 )
+from app.schemas.notification import NotificationCreate
 from app.schemas.sales import (
     LeadCapturePartyCreate,
     LeadCaptureRequest,
@@ -66,6 +70,7 @@ from app.services.audit_adapter import stage_audit_event
 from app.services.common import coerce_uuid
 from app.services.customer_identity_normalization import normalize_phone_identifier
 from app.services.domain_errors import DomainError
+from app.services.notification import Notifications
 from app.services.owner_commands import (
     CommandContext,
     OwnerCommandDefinition,
@@ -402,6 +407,9 @@ def reply(
     send_after: datetime | None = None,
     idempotency_key: str | None = None,
     reply_to_message_id: str | UUID | None = None,
+    whatsapp_template_name: str | None = None,
+    whatsapp_template_language: str | None = None,
+    whatsapp_template_components: Sequence[dict[str, Any]] = (),
 ) -> ReplyOutcome:
     def action() -> ReplyOutcome:
         conversation = _active_conversation(db, conversation_id, for_update=True)
@@ -472,6 +480,39 @@ def reply(
             template = team_inbox_operations.get_template(db, clean_template_id)
             if not clean_body:
                 clean_body = template.body_text.strip()
+        clean_provider_template_name = ""
+        clean_provider_template_language = ""
+        clean_provider_components: tuple[dict[str, Any], ...] = ()
+        if conversation.channel_type == InboxChannelType.whatsapp.value:
+            clean_provider_template_name = str(whatsapp_template_name or "").strip()
+            clean_provider_template_language = str(
+                whatsapp_template_language or ""
+            ).strip()
+            if clean_provider_template_name or clean_provider_template_language:
+                if not clean_provider_template_name:
+                    raise InboxCommandError("Choose an approved WhatsApp template.")
+                if not clean_provider_template_language:
+                    raise InboxCommandError("WhatsApp template language is required.")
+                try:
+                    from app.services.integrations import whatsapp_capability
+
+                    approved_templates = whatsapp_capability.list_approved_templates(db)
+                except Exception:
+                    raise InboxCommandError(
+                        "WhatsApp templates are unavailable. Please try again."
+                    ) from None
+                if not any(
+                    str(item.get("name") or "").strip() == clean_provider_template_name
+                    and str(item.get("language") or "").strip()
+                    == clean_provider_template_language
+                    for item in approved_templates
+                ):
+                    raise InboxCommandError("Choose an approved WhatsApp template.")
+                clean_provider_components = _validate_whatsapp_components(
+                    whatsapp_template_components
+                )
+                if not clean_body:
+                    clean_body = f"[WhatsApp template: {clean_provider_template_name}]"
         if not clean_body:
             raise InboxCommandError("Reply body is required.")
 
@@ -531,6 +572,14 @@ def reply(
                     "variables": variables if isinstance(variables, dict) else {},
                     "inbox_template_id": str(template.id),
                 }
+        if clean_provider_template_name:
+            reply_metadata["whatsapp_template"] = {
+                "name": clean_provider_template_name,
+                "language": clean_provider_template_language,
+                "components": list(clean_provider_components),
+                "variables": {},
+                "inbox_template_id": str(template.id) if template is not None else None,
+            }
 
         if scheduled_for is not None:
             scheduled = team_inbox_outbound.schedule_inbox_reply(
@@ -1676,16 +1725,125 @@ def create_internal_note(
     conversation_id: str | UUID,
     body: str,
     actor_person_id: str | UUID | None = None,
+    mention_user_ids: Sequence[str | UUID] = (),
 ) -> None:
     def action() -> None:
-        team_inbox_operations.create_internal_note(
+        conversation = _active_conversation(db, conversation_id)
+        mentions = _eligible_mention_users(
             db,
-            conversation=_active_conversation(db, conversation_id),
+            conversation=conversation,
+            mention_user_ids=mention_user_ids,
+        )
+        note = team_inbox_operations.create_internal_note(
+            db,
+            conversation=conversation,
             body=body,
+            actor_person_id=actor_person_id,
+            metadata={"mentions": [str(user.id) for user in mentions]}
+            if mentions
+            else None,
+        )
+        _notify_internal_note_mentions(
+            db,
+            conversation=conversation,
+            note=note,
+            users=mentions,
             actor_person_id=actor_person_id,
         )
 
     _commit(db, action)
+
+
+def _eligible_mention_users(
+    db: Session,
+    *,
+    conversation: InboxConversation,
+    mention_user_ids: Sequence[str | UUID],
+) -> tuple[SystemUser, ...]:
+    clean_ids = tuple(
+        value
+        for value in (coerce_uuid(item) for item in mention_user_ids)
+        if value is not None
+    )
+    if not clean_ids:
+        return ()
+    unique_ids = tuple(dict.fromkeys(clean_ids))
+    active_team_ids = [
+        link.service_team_id
+        for link in conversation.team_links
+        if link.is_active and link.service_team_id is not None
+    ]
+    if not active_team_ids and conversation.primary_service_team_id is not None:
+        active_team_ids = [conversation.primary_service_team_id]
+    if not active_team_ids:
+        raise InboxCommandRejected(
+            "No eligible colleagues can be mentioned on this conversation.",
+            conversation_id=conversation.id,
+        )
+    rows = (
+        db.query(SystemUser)
+        .join(
+            ServiceTeamMember,
+            ServiceTeamMember.person_id == SystemUser.person_party_id,
+        )
+        .filter(SystemUser.id.in_(unique_ids))
+        .filter(SystemUser.is_active.is_(True))
+        .filter(ServiceTeamMember.is_active.is_(True))
+        .filter(ServiceTeamMember.team_id.in_(active_team_ids))
+        .distinct()
+        .all()
+    )
+    by_id = {row.id: row for row in rows}
+    if len(by_id) != len(unique_ids):
+        raise InboxCommandRejected(
+            "One or more mentioned colleagues cannot access this conversation.",
+            conversation_id=conversation.id,
+        )
+    return tuple(by_id[user_id] for user_id in unique_ids)
+
+
+def _notify_internal_note_mentions(
+    db: Session,
+    *,
+    conversation: InboxConversation,
+    note: InboxMessage,
+    users: Sequence[SystemUser],
+    actor_person_id: str | UUID | None,
+) -> None:
+    actor_uuid = coerce_uuid(actor_person_id)
+    for user in users:
+        if user.id == actor_uuid:
+            continue
+        dedupe_key = f"inbox-note-mention:{note.id}:{user.id}"
+        existing = (
+            db.query(Notification)
+            .filter(Notification.channel == NotificationChannel.email)
+            .filter(Notification.dedupe_key == dedupe_key)
+            .one_or_none()
+        )
+        if existing is not None:
+            continue
+        notification = Notifications.queue_internal_notification(
+            db,
+            NotificationCreate(
+                channel=NotificationChannel.email,
+                audience_type="system_user",
+                audience_id=user.id,
+                recipient=user.email,
+                event_type="team_inbox.private_note_mention",
+                category="support",
+                subject="You were mentioned in a Team Inbox note",
+                body="A colleague mentioned you in a private Team Inbox note.",
+                metadata_={
+                    "conversation_id": str(conversation.id),
+                    "message_id": str(note.id),
+                    "target_url": f"/admin/inbox?c={conversation.id}",
+                    "actor_person_id": str(actor_uuid) if actor_uuid else None,
+                    "internal_only": True,
+                },
+            ),
+        )
+        notification.dedupe_key = dedupe_key
 
 
 def create_comment(

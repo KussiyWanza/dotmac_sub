@@ -39,6 +39,7 @@ combined Inbox/Support workspace.
 | Lifecycle audit timeline and drift | `communications.team_inbox_audit_projection` | Combines immutable evidence, exposes coverage, and reports current-state drift |
 | Operator read/unread state | `communications.team_inbox_operator_state` | Owns per-person monotonic read cursors and unread repair |
 | Outbound communication intent | `communications.team_inbox_outbound_intents` | Stages the intent, notification outbox record, and Inbox attempt together |
+| Meta free-form reply window | `communications.team_inbox_reply_window` | Determines WhatsApp, Facebook Messenger, and Instagram DM free-form reply eligibility from qualifying inbound customer message chronology |
 | Provider receipts | `communications.team_inbox_delivery_receipts` | Applies timestamp-monotonic sent/delivered/read/failed projections |
 | Operator mutations | `communications.team_inbox_commands` | Coordinates one typed owner transaction for replies and collaboration actions |
 | Visitor chat mutations | `communications.team_inbox_widget` | Owns authenticated portal and anonymous fiber-site widget session, message, read, and satisfaction commands; anonymous identity is exact-match or Party-backed prospect with ambiguity held for review |
@@ -122,6 +123,23 @@ notification delivery point. SMTP, WhatsApp, and social integrations translate
 the intent and later return normalized receipt observations; they cannot change
 conversation or ticket lifecycle state.
 
+For WhatsApp, Facebook Messenger, and Instagram DM free-form replies,
+`communications.team_inbox_reply_window` is the backend policy owner. It derives
+the open window from the latest qualifying inbound customer message on the
+conversation chronology, never from staff replies, private notes, audit events,
+receipts, scheduled attempts, AI drafts, or failed outbound rows. The outbound
+intent owner rechecks the policy immediately before staging a provider-facing
+free-form send. Approved WhatsApp template sends use the existing template
+metadata path and do not reopen the free-form window unless a subsequent
+qualifying inbound customer message is recorded.
+
+Provider reply-window state is calculated, not stored as
+`InboxConversation.status`. The queue projection may filter and badge Meta
+conversations whose calculated state is `expired`; conversations with no
+reliable qualifying inbound timestamp remain `unavailable` and are not included
+in that filter. Workflow states such as open, pending, snoozed, and resolved
+remain owned only by `communications.team_inbox_status`.
+
 Operator-initiated conversations use the same command boundary. The opening
 message retains approved WhatsApp template identity and submitted provider
 variables, and uploaded attachments are staged against the new conversation
@@ -194,6 +212,7 @@ queue interval, or assignment ending timestamp. See
 | Operator unread | Message chronology plus per-person read cursor | operator-state owner | Set-based grouped queries recompute the projection; `rebuild_operator_read_state` removes impossible cross-conversation cursors |
 | Queue metrics and response cohorts | Conversation lifecycle, ordered message chronology, agent reply provenance/delivery, ticket handoff, assignment, and read state | projection query owner | Recompute on every query; no independent flag or counter is authoritative |
 | Customer context drawer | Exact Party/Subscriber/Lead links plus permission-scoped owner queries | contact-context query owner | Recompute on drawer load; per-section failures remain explicit and retryable |
+| Meta free-form reply-window eligibility | Conversation channel plus ordered qualifying inbound customer messages | reply-window policy owner | Recompute on every send attempt and detail projection; a new qualifying inbound customer message reopens the free-form path |
 | Realtime envelope | Current committed Inbox projection | realtime transport | `rebuild_conversation_projection` republishes a snapshot; clients refetch |
 | Media and failed worklists | Authoritative message/intent metadata | maintenance owner | Idempotent scheduled maintenance commands |
 | Structured location card | Validated latitude/longitude and optional name/address on authoritative message attachment metadata | projection query owner | Recompute on every query; an invalid or legacy coordinate-less location is unavailable and never receives a media-content URL. `communications.team_inbox_maintenance.repair_whatsapp_locations` can restore an explicitly scoped historical message only when a processed `integration.inbox` receipt names that exact message and retains valid structured coordinates |
@@ -214,6 +233,17 @@ stale. Realtime has no replay authority.
   definition, normalized filters, canonical URL, page bounds, KPIs, unread
   state, detail composition, action eligibility, and the typed browser
   presentation for authorized media content and structured locations.
+- Detail projection includes owner-provided Meta reply-window state. Templates
+  render countdown and expired-state actions from that projection only; browser
+  timers are presentation helpers and do not authorize a send.
+- Private notes are internal messages written by the operator command owner.
+  Mention metadata stores stable system-user identifiers, and internal mention
+  notifications use the existing notification owner with deterministic dedupe
+  keys. Private notes and mentions never create provider delivery intents.
+- Lifecycle activity appears as subtle inline system timeline entries ordered by
+  occurrence time with messages. The template must distinguish system entries
+  from customer, agent, and private-note messages and must not delete or rewrite
+  historical audit evidence to change presentation.
 - Media presentation uses the resolved response MIME type, not a filename or
   provider claim. JPEG, PNG, GIF, WebP, and AVIF may render inline; SVG,
   unknown, and non-image content remains download-only. The HTTP adapter maps

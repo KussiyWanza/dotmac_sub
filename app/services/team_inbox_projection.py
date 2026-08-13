@@ -40,8 +40,10 @@ from app.services import (
     team_inbox_operations,
     team_inbox_read,
     team_inbox_read_state,
+    team_inbox_reply_window,
 )
 from app.services.catalog import plan_family_catalogues
+from app.services.integrations import whatsapp_capability
 from app.services.list_query import (
     ListDefinition,
     ListFieldDefinition,
@@ -178,6 +180,7 @@ INBOX_LIST_DEFINITION = ListDefinition(
         ListFieldDefinition("open_only", "Open only", filterable=True),
         ListFieldDefinition("unassigned", "Unassigned", filterable=True),
         ListFieldDefinition("unread", "Unread", filterable=True),
+        ListFieldDefinition("reply_window_status", "Reply window", filterable=True),
         ListFieldDefinition("priority_at_most", "Max priority", filterable=True),
         ListFieldDefinition("priority", "Priority", sortable=True),
         ListFieldDefinition("last_message_at", "Last activity", sortable=True),
@@ -212,6 +215,7 @@ class InboxQueueRequest:
     open_only: bool = False
     unassigned: bool = False
     unread: bool = False
+    reply_window_status: str | None = None
     ai_handling: bool | None = None
     has_ticket: bool | None = None
     activity_from: datetime | None = None
@@ -305,6 +309,27 @@ class InboxLifecycleEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class InboxReplyWindowProjection:
+    channel_type: str
+    free_form_allowed: bool
+    last_qualifying_inbound_at: datetime | None
+    expires_at: datetime | None
+    server_time: datetime
+    status: str
+    reason: str | None
+    whatsapp_template_available: bool
+    unknown: bool
+
+
+@dataclass(frozen=True, slots=True)
+class InboxTimelineEntry:
+    kind: str
+    occurred_at: datetime
+    message: team_inbox_read.InboxTimelineMessage | None = None
+    event: InboxLifecycleEvent | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class InboxConversationProjection:
     timeline: team_inbox_read.InboxConversationTimeline
     subscriber_summary: Mapping[str, object] | None
@@ -318,6 +343,8 @@ class InboxConversationProjection:
     is_unread: bool
     priority_options: tuple[InboxPriorityOption, ...]
     activity_events: tuple[InboxLifecycleEvent, ...]
+    timeline_entries: tuple[InboxTimelineEntry, ...]
+    reply_window: InboxReplyWindowProjection
 
 
 @dataclass(frozen=True, slots=True)
@@ -332,6 +359,7 @@ class InboxAgentOption:
     name: str
     initials: str
     presence_status: str
+    email: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -409,6 +437,7 @@ class InboxQueueProjection:
     open_only: bool
     unassigned: bool
     unread: bool
+    reply_window_status: str
     ai_handling: bool | None
     has_ticket: bool | None
     activity_from: str | None
@@ -498,6 +527,66 @@ def list_agent_options(db: Session) -> tuple[InboxAgentOption, ...]:
                 if (presence := presence_by_person.get(row.id)) is not None
                 else InboxAgentPresenceStatus.offline.value
             ),
+            email=row.email,
+        )
+        for row in rows
+    )
+
+
+def list_mentionable_users(
+    db: Session,
+    *,
+    conversation_id: UUID,
+    search: str,
+    limit: int = 10,
+) -> tuple[InboxAgentOption, ...]:
+    term = str(search or "").strip()
+    if not term:
+        return ()
+    conversation = db.get(InboxConversation, conversation_id)
+    if conversation is None or not conversation.is_active:
+        return ()
+    active_team_ids = [
+        link.service_team_id
+        for link in conversation.team_links
+        if link.is_active and link.service_team_id is not None
+    ]
+    if not active_team_ids and conversation.primary_service_team_id is not None:
+        active_team_ids = [conversation.primary_service_team_id]
+    if not active_team_ids:
+        return ()
+    like = f"%{term}%"
+    rows = (
+        db.query(SystemUser)
+        .join(
+            ServiceTeamMember,
+            ServiceTeamMember.person_id == SystemUser.person_party_id,
+        )
+        .filter(SystemUser.is_active.is_(True))
+        .filter(ServiceTeamMember.is_active.is_(True))
+        .filter(ServiceTeamMember.team_id.in_(active_team_ids))
+        .filter(
+            (SystemUser.display_name.ilike(like))
+            | (SystemUser.first_name.ilike(like))
+            | (SystemUser.last_name.ilike(like))
+            | (SystemUser.email.ilike(like))
+        )
+        .distinct()
+        .order_by(SystemUser.first_name.asc(), SystemUser.last_name.asc())
+        .limit(max(1, min(int(limit), 20)))
+        .all()
+    )
+    return tuple(
+        InboxAgentOption(
+            id=row.id,
+            name=(
+                row.display_name
+                or f"{row.first_name} {row.last_name}".strip()
+                or row.email
+            ),
+            initials=_initials(row.first_name, row.last_name, row.display_name),
+            presence_status=InboxAgentPresenceStatus.offline.value,
+            email=row.email,
         )
         for row in rows
     )
@@ -954,6 +1043,91 @@ def _conversation_activity(
     return tuple(events[:limit])
 
 
+def _timeline_message_time(message: team_inbox_read.InboxTimelineMessage) -> datetime:
+    return message.received_at or message.sent_at or message.created_at
+
+
+def _conversation_timeline_entries(
+    timeline: team_inbox_read.InboxConversationTimeline,
+    activity_events: tuple[InboxLifecycleEvent, ...],
+) -> tuple[InboxTimelineEntry, ...]:
+    entries: list[tuple[datetime, int, str, InboxTimelineEntry]] = []
+    for message in timeline.messages:
+        occurred_at = _timeline_message_time(message)
+        entries.append(
+            (
+                occurred_at,
+                0,
+                message.id,
+                InboxTimelineEntry(
+                    kind="message",
+                    occurred_at=occurred_at,
+                    message=message,
+                ),
+            )
+        )
+    for event in activity_events:
+        if event.occurred_at is None:
+            continue
+        entries.append(
+            (
+                event.occurred_at,
+                1,
+                f"{event.kind}:{event.label}:{event.actor_name}",
+                InboxTimelineEntry(
+                    kind="system",
+                    occurred_at=event.occurred_at,
+                    event=event,
+                ),
+            )
+        )
+    entries.sort(key=lambda item: item[:3])
+    return tuple(item[3] for item in entries)
+
+
+def _reply_window_projection(
+    db: Session,
+    conversation_id: UUID,
+    timeline: team_inbox_read.InboxConversationTimeline,
+) -> InboxReplyWindowProjection:
+    conversation = db.get(InboxConversation, conversation_id)
+    if conversation is None:
+        now = datetime.now(UTC)
+        return InboxReplyWindowProjection(
+            channel_type=timeline.channel_type,
+            free_form_allowed=False,
+            last_qualifying_inbound_at=None,
+            expires_at=None,
+            server_time=now,
+            status="unavailable",
+            reason="Conversation not found.",
+            whatsapp_template_available=False,
+            unknown=True,
+        )
+    template_available = False
+    if timeline.channel_type == InboxChannelType.whatsapp.value:
+        try:
+            template_available = bool(whatsapp_capability.list_approved_templates(db))
+        except Exception:
+            template_available = False
+    decision = team_inbox_reply_window.decide_reply_window(
+        db,
+        conversation=conversation,
+        whatsapp_template_available=template_available,
+    )
+    return InboxReplyWindowProjection(
+        channel_type=decision.channel_type,
+        free_form_allowed=decision.free_form_allowed,
+        last_qualifying_inbound_at=decision.last_qualifying_inbound_at,
+        expires_at=decision.expires_at,
+        server_time=decision.server_time,
+        status=decision.status.value,
+        reason=decision.reason,
+        whatsapp_template_available=decision.whatsapp_template_available,
+        unknown=decision.unknown,
+    )
+
+
 def get_conversation_projection(
     db: Session,
     *,
@@ -968,12 +1142,18 @@ def get_conversation_projection(
         return None
     is_resolved = timeline.status == InboxConversationStatus.resolved.value
     outbound_unsupported = timeline.channel_type == InboxChannelType.website_fiber.value
+    reply_window = _reply_window_projection(db, conversation_id, timeline)
+    provider_window_blocks = (
+        timeline.channel_type in team_inbox_reply_window.META_FREE_FORM_CHANNELS
+        and not reply_window.free_form_allowed
+    )
     summary = subscriber_summary.subscriber_summary(db, timeline.subscriber_id)
     lead_eligibility = lead_intake.manual_invitation_eligibility(
         db,
         conversation_id,
         verify_customer_identity=False,
     )
+    activity_events = _conversation_activity(db, conversation_id)
     return InboxConversationProjection(
         timeline=timeline,
         subscriber_summary=summary,
@@ -1002,7 +1182,9 @@ def get_conversation_projection(
             else ()
         ),
         action_eligibility=InboxActionEligibility(
-            can_reply=not is_resolved and not outbound_unsupported,
+            can_reply=not is_resolved
+            and not outbound_unsupported
+            and not provider_window_blocks,
             can_resolve=not is_resolved,
             can_reopen=is_resolved,
             can_link_contact=bool(timeline.contact_address),
@@ -1015,6 +1197,8 @@ def get_conversation_projection(
                 else (
                     "Outbound replies for fiber website inquiries are not configured yet."
                     if outbound_unsupported
+                    else reply_window.reason
+                    if provider_window_blocks
                     else None
                 )
             ),
@@ -1029,7 +1213,9 @@ def get_conversation_projection(
             else False
         ),
         priority_options=INBOX_PRIORITY_OPTIONS,
-        activity_events=_conversation_activity(db, conversation_id),
+        activity_events=activity_events,
+        timeline_entries=_conversation_timeline_entries(timeline, activity_events),
+        reply_window=reply_window,
     )
 
 
@@ -1302,6 +1488,7 @@ def _filter_params(
     open_only: bool,
     unassigned: bool,
     unread: bool,
+    reply_window_status: str | None,
     priority_at_most: int | None,
 ) -> dict[str, str | None]:
     """One filter contract for the query, the canonical URL and the redirect check.
@@ -1331,6 +1518,7 @@ def _filter_params(
         "open_only": "true" if open_only else None,
         "unassigned": "true" if unassigned else None,
         "unread": "true" if unread else None,
+        "reply_window_status": reply_window_status,
         "priority_at_most": str(priority_at_most)
         if priority_at_most is not None
         else None,
@@ -1476,6 +1664,7 @@ def build_queue_projection(
     open_only = request.open_only
     unassigned = request.unassigned
     unread = request.unread
+    raw_reply_window_status = request.reply_window_status
     raw_sort = request.sort_by
     raw_direction = request.sort_dir
     raw_page = request.page
@@ -1511,6 +1700,11 @@ def build_queue_projection(
     priority = (
         raw_priority if raw_priority is not None and 0 <= raw_priority <= 999 else None
     )
+    reply_window_status = (
+        "expired"
+        if str(raw_reply_window_status or "").strip().lower() == "expired"
+        else None
+    )
     sort = (
         InboxListSort(raw_sort).value
         if raw_sort in {item.value for item in InboxListSort}
@@ -1545,6 +1739,7 @@ def build_queue_projection(
         open_only=open_only,
         unassigned=unassigned,
         unread=unread,
+        reply_window_status=reply_window_status,
         priority_at_most=priority,
     )
     requested_query = INBOX_LIST_DEFINITION.build_query(
@@ -1580,6 +1775,7 @@ def build_queue_projection(
             unassigned=unassigned,
             operator_person_id=request.actor_person_id,
             unread_only=unread,
+            reply_window_status=reply_window_status,
             order_by=query.sort_by,
             order_dir=query.sort_dir,
             limit=query.per_page,
@@ -1616,6 +1812,7 @@ def build_queue_projection(
             open_only=open_only,
             unassigned=unassigned,
             unread=unread,
+            reply_window_status=raw_reply_window_status,
             priority_at_most=raw_priority,
         ),
         sort_by=raw_sort,
@@ -1669,6 +1866,7 @@ def build_queue_projection(
         open_only=open_only,
         unassigned=unassigned,
         unread=unread,
+        reply_window_status=reply_window_status or "",
         ai_handling=request.ai_handling,
         has_ticket=request.has_ticket,
         activity_from=_activity_param(request.activity_from),

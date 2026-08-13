@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from app.api import support as support_api
@@ -8,6 +8,7 @@ from app.models.notification import (
     CommunicationIntentRecord,
     Notification,
     NotificationChannel,
+    NotificationStatus,
 )
 from app.models.service_team import ServiceTeam, ServiceTeamType
 from app.models.subscriber import Subscriber, SubscriberStatus
@@ -25,7 +26,12 @@ from app.schemas.ai_intake import GENERIC_FOLLOW_UP_QUESTION
 from app.schemas.settings import DomainSettingUpdate
 from app.schemas.team_inbox import InboxConversationReplyRequest
 from app.services import email as email_service
-from app.services import team_inbox_media, team_inbox_outbound, team_outbound
+from app.services import (
+    team_inbox_commands,
+    team_inbox_media,
+    team_inbox_outbound,
+    team_outbound,
+)
 from app.services.domain_settings import notification_settings
 from app.tasks import notifications as notification_tasks
 
@@ -102,6 +108,24 @@ def _whatsapp_conversation(db_session) -> InboxConversation:
     return conversation
 
 
+def _open_whatsapp_window(
+    db_session,
+    conversation: InboxConversation,
+    *,
+    at: datetime | None = None,
+) -> InboxMessage:
+    inbound = InboxMessage(
+        conversation_id=conversation.id,
+        channel_type=InboxChannelType.whatsapp.value,
+        direction=InboxMessageDirection.inbound.value,
+        body="Hello",
+        received_at=at or datetime(2026, 7, 10, 8, 0, tzinfo=UTC),
+    )
+    db_session.add(inbound)
+    db_session.flush()
+    return inbound
+
+
 def test_send_inbox_reply_uses_owner_team_sender(db_session, monkeypatch):
     _smtp_sender(db_session, "support", from_email="support@dotmac.io")
     _activity_sender(db_session, "support_ticket", "support")
@@ -140,6 +164,7 @@ def test_send_inbox_reply_uses_owner_team_sender(db_session, monkeypatch):
 
 def test_send_inbox_reply_sends_whatsapp_text(db_session, monkeypatch):
     conversation = _whatsapp_conversation(db_session)
+    _open_whatsapp_window(db_session, conversation)
     db_session.commit()
 
     result = team_inbox_outbound.send_inbox_reply(
@@ -153,7 +178,11 @@ def test_send_inbox_reply_sends_whatsapp_text(db_session, monkeypatch):
     )
     db_session.commit()
 
-    message = db_session.query(InboxMessage).one()
+    message = (
+        db_session.query(InboxMessage)
+        .filter(InboxMessage.direction == InboxMessageDirection.outbound.value)
+        .one()
+    )
     notification = db_session.query(Notification).one()
     intent = db_session.query(CommunicationIntentRecord).one()
     assert result.kind == "queued"
@@ -203,10 +232,299 @@ def test_send_inbox_reply_sends_whatsapp_template(db_session, monkeypatch):
     assert message.external_message_id is None
 
 
+def test_whatsapp_free_form_reply_requires_open_customer_window(db_session):
+    conversation = _whatsapp_conversation(db_session)
+    db_session.add(
+        InboxMessage(
+            conversation_id=conversation.id,
+            channel_type=InboxChannelType.whatsapp.value,
+            direction=InboxMessageDirection.inbound.value,
+            body="Hello",
+            received_at=datetime(2026, 7, 10, 8, 0, tzinfo=UTC),
+        )
+    )
+    db_session.flush()
+
+    result = team_inbox_outbound.send_inbox_reply(
+        db_session,
+        conversation=conversation,
+        payload=team_inbox_outbound.InboxReplyPayload(
+            body_html="<p>We are checking.</p>",
+            body_text="We are checking.",
+        ),
+        now=datetime(2026, 7, 11, 8, 0, tzinfo=UTC),
+    )
+
+    assert result.kind == "reply_window_expired"
+    assert db_session.query(Notification).count() == 0
+
+
+def test_whatsapp_free_form_reply_fails_closed_when_window_is_unavailable(db_session):
+    conversation = _whatsapp_conversation(db_session)
+    db_session.commit()
+
+    result = team_inbox_outbound.send_inbox_reply(
+        db_session,
+        conversation=conversation,
+        payload=team_inbox_outbound.InboxReplyPayload(
+            body_html="<p>Can we send?</p>",
+            body_text="Can we send?",
+        ),
+        now=datetime(2026, 7, 10, 8, 0, tzinfo=UTC),
+    )
+
+    assert result.kind == "reply_window_expired"
+    assert result.reason == (
+        "Reply availability could not be confirmed. Free-form messaging is "
+        "disabled to prevent a provider rejection."
+    )
+    assert db_session.query(Notification).count() == 0
+
+
+def test_nonqualifying_inbound_message_does_not_reopen_whatsapp_window(db_session):
+    conversation = _whatsapp_conversation(db_session)
+    opened_at = datetime(2026, 7, 10, 8, 0, tzinfo=UTC)
+    _open_whatsapp_window(db_session, conversation, at=opened_at)
+    db_session.add(
+        InboxMessage(
+            conversation_id=conversation.id,
+            channel_type=InboxChannelType.whatsapp.value,
+            direction=InboxMessageDirection.inbound.value,
+            body="Read receipt placeholder",
+            received_at=opened_at + timedelta(hours=25),
+            metadata_={"reply_window_qualifying": False},
+        )
+    )
+    db_session.flush()
+
+    result = team_inbox_outbound.send_inbox_reply(
+        db_session,
+        conversation=conversation,
+        payload=team_inbox_outbound.InboxReplyPayload(
+            body_html="<p>Receipt should not reopen.</p>",
+            body_text="Receipt should not reopen.",
+        ),
+        now=opened_at + timedelta(hours=25, minutes=5),
+    )
+
+    assert result.kind == "reply_window_expired"
+    assert db_session.query(Notification).count() == 0
+
+
+def test_staff_and_internal_messages_do_not_extend_meta_reply_window(db_session):
+    conversation = _whatsapp_conversation(db_session)
+    opened_at = datetime(2026, 7, 10, 8, 0, tzinfo=UTC)
+    db_session.add_all(
+        [
+            InboxMessage(
+                conversation_id=conversation.id,
+                channel_type=InboxChannelType.whatsapp.value,
+                direction=InboxMessageDirection.inbound.value,
+                body="Hello",
+                received_at=opened_at,
+            ),
+            InboxMessage(
+                conversation_id=conversation.id,
+                channel_type=InboxChannelType.whatsapp.value,
+                direction=InboxMessageDirection.outbound.value,
+                body="Queued later",
+                sent_at=opened_at + timedelta(hours=23),
+            ),
+            InboxMessage(
+                conversation_id=conversation.id,
+                channel_type=InboxChannelType.whatsapp.value,
+                direction=InboxMessageDirection.internal.value,
+                body="Internal note",
+                created_at=opened_at + timedelta(hours=23, minutes=30),
+            ),
+        ]
+    )
+    db_session.flush()
+
+    result = team_inbox_outbound.send_inbox_reply(
+        db_session,
+        conversation=conversation,
+        payload=team_inbox_outbound.InboxReplyPayload(
+            body_html="<p>Still checking.</p>",
+            body_text="Still checking.",
+        ),
+        now=opened_at + timedelta(hours=24, seconds=1),
+    )
+
+    assert result.kind == "reply_window_expired"
+
+
+def test_new_qualifying_inbound_reopens_whatsapp_window(db_session):
+    conversation = _whatsapp_conversation(db_session)
+    opened_at = datetime(2026, 7, 10, 8, 0, tzinfo=UTC)
+    _open_whatsapp_window(db_session, conversation, at=opened_at)
+    _open_whatsapp_window(
+        db_session,
+        conversation,
+        at=opened_at + timedelta(hours=25),
+    )
+
+    result = team_inbox_outbound.send_inbox_reply(
+        db_session,
+        conversation=conversation,
+        payload=team_inbox_outbound.InboxReplyPayload(
+            body_html="<p>Window reopened.</p>",
+            body_text="Window reopened.",
+        ),
+        now=opened_at + timedelta(hours=25, minutes=5),
+    )
+
+    assert result.kind == "queued"
+    assert db_session.query(Notification).count() == 1
+
+
+def test_whatsapp_template_send_does_not_reopen_free_form_window(
+    db_session,
+):
+    conversation = _whatsapp_conversation(db_session)
+    opened_at = datetime(2026, 7, 10, 8, 0, tzinfo=UTC)
+    _open_whatsapp_window(db_session, conversation, at=opened_at)
+
+    template_result = team_inbox_outbound.send_inbox_reply(
+        db_session,
+        conversation=conversation,
+        payload=team_inbox_outbound.InboxReplyPayload(
+            body_html="<p>Template fallback.</p>",
+            body_text="Template fallback.",
+            metadata={
+                "whatsapp_template": {
+                    "name": "service_update",
+                    "language": "en",
+                    "components": [],
+                }
+            },
+        ),
+        now=opened_at + timedelta(hours=25),
+    )
+    free_form_result = team_inbox_outbound.send_inbox_reply(
+        db_session,
+        conversation=conversation,
+        payload=team_inbox_outbound.InboxReplyPayload(
+            body_html="<p>Can I send now?</p>",
+            body_text="Can I send now?",
+        ),
+        now=opened_at + timedelta(hours=25, minutes=1),
+    )
+
+    assert template_result.kind == "queued"
+    assert free_form_result.kind == "reply_window_expired"
+
+
+def test_whatsapp_template_retry_preserves_template_payload(db_session):
+    conversation = _whatsapp_conversation(db_session)
+    failed = InboxMessage(
+        conversation_id=conversation.id,
+        channel_type=InboxChannelType.whatsapp.value,
+        direction=InboxMessageDirection.outbound.value,
+        body="[WhatsApp template: service_update]",
+        sent_at=datetime(2026, 7, 11, 9, 0, tzinfo=UTC),
+        metadata_={
+            "delivery_status": "failed",
+            "retry_count": 0,
+            "whatsapp_template": {
+                "name": "service_update",
+                "language": "en",
+                "components": [],
+            },
+        },
+    )
+    db_session.add(failed)
+    db_session.flush()
+
+    result = team_inbox_outbound.retry_outbound_message(db_session, message=failed)
+
+    notification = db_session.query(Notification).one()
+    assert result.kind == "queued"
+    assert notification.metadata_["message_kind"] == "template"
+    assert notification.metadata_["whatsapp_template"]["name"] == "service_update"
+    assert failed.metadata_["delivery_status"] == "retried"
+
+
+def test_worker_preflight_blocks_expired_whatsapp_free_form_before_provider(
+    db_session, monkeypatch
+):
+    conversation = _whatsapp_conversation(db_session)
+    _open_whatsapp_window(
+        db_session,
+        conversation,
+        at=datetime(2026, 7, 10, 8, 0, tzinfo=UTC),
+    )
+    queued = team_inbox_outbound.send_inbox_reply(
+        db_session,
+        conversation=conversation,
+        payload=team_inbox_outbound.InboxReplyPayload(
+            body_html="<p>Queued before expiry.</p>",
+            body_text="Queued before expiry.",
+        ),
+        now=datetime(2026, 7, 10, 8, 5, tzinfo=UTC),
+    )
+    calls: list[object] = []
+    monkeypatch.setattr(
+        notification_tasks.whatsapp_service,
+        "send_text_message",
+        lambda *args, **kwargs: calls.append(kwargs) or {"ok": True},
+    )
+
+    notification_tasks._deliver_notification_queue_stats(db_session)
+
+    notification = db_session.get(
+        Notification, db_session.get(InboxMessage, queued.message_id).notification_id
+    )
+    message = db_session.get(InboxMessage, queued.message_id)
+    assert calls == []
+    assert notification.status == NotificationStatus.failed
+    assert notification.last_error == "reply_window_expired"
+    assert message.metadata_["delivery_status"] == "failed"
+    assert message.metadata_["send_error"] == "reply_window_expired"
+
+
+def test_direct_whatsapp_template_reply_uses_approved_template_validation(
+    db_session,
+    monkeypatch,
+):
+    conversation = _whatsapp_conversation(db_session)
+
+    from app.services.integrations import whatsapp_capability
+
+    monkeypatch.setattr(
+        whatsapp_capability,
+        "list_approved_templates",
+        lambda _db: (
+            {
+                "name": "service_update",
+                "language": "en",
+                "status": "APPROVED",
+                "components": [],
+            },
+        ),
+    )
+
+    outcome = team_inbox_commands.reply(
+        db_session,
+        conversation_id=conversation.id,
+        body_text="",
+        actor_person_id=uuid4(),
+        whatsapp_template_name="service_update",
+        whatsapp_template_language="en",
+        whatsapp_template_components=(),
+    )
+
+    notification = db_session.query(Notification).one()
+    assert outcome.kind == "queued"
+    assert notification.metadata_["message_kind"] == "template"
+    assert notification.metadata_["whatsapp_template"]["name"] == "service_update"
+
+
 def test_send_inbox_reply_does_not_call_whatsapp_provider_inline(
     db_session, monkeypatch
 ):
     conversation = _whatsapp_conversation(db_session)
+    _open_whatsapp_window(db_session, conversation)
     calls: list[object] = []
     monkeypatch.setattr(
         notification_tasks.whatsapp_service,
@@ -225,13 +543,19 @@ def test_send_inbox_reply_does_not_call_whatsapp_provider_inline(
 
     assert result.kind == "queued"
     assert calls == []
-    assert db_session.query(InboxMessage).count() == 1
+    assert (
+        db_session.query(InboxMessage)
+        .filter(InboxMessage.direction == InboxMessageDirection.outbound.value)
+        .count()
+        == 1
+    )
 
 
 def test_whatsapp_notification_delivers_inbox_attachment_as_media(
     db_session, monkeypatch
 ):
     conversation = _whatsapp_conversation(db_session)
+    _open_whatsapp_window(db_session, conversation)
     attachment_id = uuid4()
     media_calls: list[dict] = []
     text_calls: list[dict] = []
@@ -428,6 +752,244 @@ def test_social_comment_reply_targets_quoted_comment_not_latest_inbound(
     assert outbound.metadata_["parent_provider_comment_id"] == "comment-123"
 
 
+def test_facebook_targeted_comment_reply_dispatches_exact_page_and_comment(
+    db_session, monkeypatch
+):
+    from app.services import meta_pages
+
+    conversation = _social_comment_conversation(
+        db_session,
+        channel="facebook_comment",
+        account_key="page_id",
+        account_id="page-123",
+    )
+    target = (
+        db_session.query(InboxMessage)
+        .filter(InboxMessage.direction == InboxMessageDirection.inbound.value)
+        .one()
+    )
+    target.metadata_ = {
+        "page_id": "page-123",
+        "post_id": "page-123_987",
+        "provider_comment_id": "comment-123",
+    }
+    db_session.add(
+        InboxMessage(
+            conversation_id=conversation.id,
+            channel_type=conversation.channel_type,
+            direction=InboxMessageDirection.inbound.value,
+            body="Do not reply here",
+            external_message_id="comment-latest",
+            metadata_={
+                "page_id": "page-123",
+                "post_id": "page-123_987",
+                "provider_comment_id": "comment-latest",
+            },
+            received_at=datetime(2026, 7, 10, 8, 5, tzinfo=UTC),
+        )
+    )
+    db_session.flush()
+    calls: list[dict[str, str]] = []
+    monkeypatch.setattr(
+        meta_pages,
+        "reply_to_comment_sync",
+        lambda _db, **kwargs: calls.append(kwargs) or {"id": "fb-reply-1"},
+    )
+
+    result = team_inbox_commands.reply(
+        db_session,
+        conversation_id=conversation.id,
+        body_text="Replying publicly.",
+        actor_person_id=uuid4(),
+        reply_to_message_id=target.id,
+        idempotency_key="facebook-public-comment-reply",
+    )
+    notification_tasks._deliver_notification_queue_stats(db_session)
+
+    outbound = (
+        db_session.query(InboxMessage)
+        .filter(InboxMessage.direction == InboxMessageDirection.outbound.value)
+        .one()
+    )
+    assert result.kind == "queued"
+    assert calls == [
+        {
+            "page_id": "page-123",
+            "comment_id": "comment-123",
+            "message": "Replying publicly.",
+        }
+    ]
+    assert outbound.external_message_id == "fb-reply-1"
+    assert outbound.metadata_["target_inbox_message_id"] == str(target.id)
+    assert outbound.metadata_["provider_post_id"] == "page-123_987"
+
+
+def test_instagram_targeted_comment_reply_dispatches_exact_account_and_comment(
+    db_session, monkeypatch
+):
+    from app.services import meta_pages
+
+    conversation = _social_comment_conversation(
+        db_session,
+        channel="instagram_comment",
+        account_key="instagram_account_id",
+        account_id="ig-123",
+    )
+    target = (
+        db_session.query(InboxMessage)
+        .filter(InboxMessage.direction == InboxMessageDirection.inbound.value)
+        .one()
+    )
+    target.external_message_id = "ig-comment-123"
+    target.metadata_ = {
+        "instagram_account_id": "ig-123",
+        "media_id": "ig-media-987",
+        "provider_comment_id": "ig-comment-123",
+        "parent_provider_comment_id": "ig-root-1",
+    }
+    db_session.add(
+        InboxMessage(
+            conversation_id=conversation.id,
+            channel_type=conversation.channel_type,
+            direction=InboxMessageDirection.inbound.value,
+            body="Wrong target",
+            external_message_id="ig-comment-latest",
+            metadata_={
+                "instagram_account_id": "ig-123",
+                "media_id": "ig-media-987",
+                "provider_comment_id": "ig-comment-latest",
+            },
+            received_at=datetime(2026, 7, 10, 8, 5, tzinfo=UTC),
+        )
+    )
+    db_session.flush()
+    calls: list[dict[str, str]] = []
+    monkeypatch.setattr(
+        meta_pages,
+        "reply_to_instagram_comment_sync",
+        lambda _db, **kwargs: calls.append(kwargs) or {"id": "ig-reply-1"},
+    )
+
+    result = team_inbox_commands.reply(
+        db_session,
+        conversation_id=conversation.id,
+        body_text="Instagram public reply.",
+        actor_person_id=uuid4(),
+        reply_to_message_id=target.id,
+        idempotency_key="instagram-public-comment-reply",
+    )
+    notification_tasks._deliver_notification_queue_stats(db_session)
+
+    outbound = (
+        db_session.query(InboxMessage)
+        .filter(InboxMessage.direction == InboxMessageDirection.outbound.value)
+        .one()
+    )
+    assert result.kind == "queued"
+    assert calls == [
+        {
+            "ig_account_id": "ig-123",
+            "comment_id": "ig-comment-123",
+            "message": "Instagram public reply.",
+        }
+    ]
+    assert outbound.external_message_id == "ig-reply-1"
+    assert outbound.metadata_["target_inbox_message_id"] == str(target.id)
+    assert outbound.metadata_["provider_media_id"] == "ig-media-987"
+    assert outbound.metadata_["root_provider_comment_id"] == "ig-root-1"
+
+
+def test_targeted_social_reply_cannot_fall_back_from_outbound_message(
+    db_session,
+):
+    conversation = _social_comment_conversation(
+        db_session,
+        channel="facebook_comment",
+        account_key="page_id",
+        account_id="page-123",
+    )
+    outbound_target = InboxMessage(
+        conversation_id=conversation.id,
+        channel_type=conversation.channel_type,
+        direction=InboxMessageDirection.outbound.value,
+        body="Previous public reply",
+        external_message_id="reply-previous",
+        sent_at=datetime(2026, 7, 10, 8, 5, tzinfo=UTC),
+    )
+    db_session.add(outbound_target)
+    db_session.flush()
+
+    result = team_inbox_outbound.send_inbox_reply(
+        db_session,
+        conversation=conversation,
+        payload=team_inbox_outbound.InboxReplyPayload(
+            body_html="<p>Must not fall through.</p>",
+            body_text="Must not fall through.",
+            sent_by_person_id=uuid4(),
+            metadata={"reply_to": {"message_id": str(outbound_target.id)}},
+        ),
+    )
+
+    assert result.kind == "invalid_reply_target"
+    assert db_session.query(Notification).count() == 0
+    assert (
+        db_session.query(InboxMessage)
+        .filter(InboxMessage.direction == InboxMessageDirection.outbound.value)
+        .count()
+        == 1
+    )
+
+
+def test_worker_rejects_social_reply_when_target_account_context_does_not_match(
+    db_session, monkeypatch
+):
+    from app.services import meta_pages
+
+    conversation = _social_comment_conversation(
+        db_session,
+        channel="facebook_comment",
+        account_key="page_id",
+        account_id="page-123",
+    )
+    target = (
+        db_session.query(InboxMessage)
+        .filter(InboxMessage.direction == InboxMessageDirection.inbound.value)
+        .one()
+    )
+    target.metadata_ = {
+        "page_id": "page-123",
+        "post_id": "page-123_987",
+        "provider_comment_id": "comment-123",
+    }
+    result = team_inbox_outbound.send_inbox_reply(
+        db_session,
+        conversation=conversation,
+        payload=team_inbox_outbound.InboxReplyPayload(
+            body_html="<p>Account mismatch.</p>",
+            body_text="Account mismatch.",
+            sent_by_person_id=uuid4(),
+            metadata={"reply_to": {"message_id": str(target.id)}},
+        ),
+    )
+    notification = db_session.query(Notification).one()
+    notification.metadata_["provider_account_id"] = "page-999"
+    calls: list[dict[str, str]] = []
+    monkeypatch.setattr(
+        meta_pages,
+        "reply_to_comment_sync",
+        lambda _db, **kwargs: calls.append(kwargs) or {"id": "unexpected"},
+    )
+
+    notification_tasks._deliver_notification_queue_stats(db_session)
+
+    outbound = db_session.get(InboxMessage, result.message_id)
+    assert calls == []
+    assert notification.status == NotificationStatus.failed
+    assert notification.last_error == "meta_comment_target_account_mismatch"
+    assert outbound.metadata_["delivery_status"] == "failed"
+    assert outbound.metadata_["send_error"] == "meta_comment_target_account_mismatch"
+
+
 def test_social_comment_provider_failure_does_not_create_a_false_reply(
     db_session, monkeypatch
 ):
@@ -599,6 +1161,7 @@ def test_instagram_comment_limit_is_checked_before_meta(db_session, monkeypatch)
 
 def test_failed_outbox_message_can_be_manually_requeued(db_session, monkeypatch):
     conversation = _whatsapp_conversation(db_session)
+    _open_whatsapp_window(db_session, conversation)
     attempts: list[dict[str, object]] = []
 
     def _fake_send(*args, **kwargs):
@@ -643,7 +1206,12 @@ def test_failed_outbox_message_can_be_manually_requeued(db_session, monkeypatch)
     assert failed_message.metadata_["delivery_status"] == "retried"
     assert failed_message.metadata_["retry_count"] == 1
     assert retried.kind == "queued"
-    assert db_session.query(InboxMessage).count() == 2
+    assert (
+        db_session.query(InboxMessage)
+        .filter(InboxMessage.direction == InboxMessageDirection.outbound.value)
+        .count()
+        == 2
+    )
 
 
 def test_send_inbox_reply_requires_whatsapp_recipient(db_session):

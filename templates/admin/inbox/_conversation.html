@@ -40,6 +40,11 @@
                 <div class="flex min-w-0 items-center gap-2">
                     <h2 class="truncate font-display text-sm font-semibold text-slate-950 dark:text-white">{{ timeline.subject or timeline.contact_address or "Conversation" }}</h2>
                     {{ status_badge(timeline.status | replace('_',' ') | title, timeline.status, size="sm", show_icon=False) }}
+                    {% if reply_window and reply_window.status == 'expired' %}
+                    <span class="shrink-0 rounded-md border border-rose-200 bg-rose-50 px-1.5 py-0.5 text-[10px] font-semibold text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300" title="Provider free-form reply window is closed">Expired</span>
+                    {% elif reply_window and reply_window.status == 'unavailable' %}
+                    <span class="shrink-0 rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300" title="Provider reply availability could not be confirmed">Unavailable</span>
+                    {% endif %}
                 </div>
                 <div class="flex min-w-0 items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400">
                     <span class="truncate" title="{{ timeline.contact_name }}">{{ timeline.contact_name }}</span>
@@ -207,24 +212,25 @@
         <button type="button" @click="refreshThread('{{ timeline.id }}')" class="min-h-10 text-xs font-semibold text-amber-800 underline-offset-2 hover:underline dark:text-amber-200">New messages available — refresh safely</button>
     </div>
 
-    {% if activity_events %}
-    <div class="shrink-0 border-b border-slate-200 bg-slate-50 px-4 py-2 text-xs dark:border-slate-800 dark:bg-slate-950/60 sm:px-6">
-        <div class="mx-auto flex max-w-6xl flex-wrap items-center gap-x-4 gap-y-1 text-slate-500 dark:text-slate-400">
-            {% for event in activity_events[:6] %}
-            <span class="inline-flex min-w-0 items-center gap-1.5">
-                <span class="font-semibold text-slate-700 dark:text-slate-200">{{ event.label }}</span>
-                <span class="truncate">by {{ event.actor_name }}</span>
-                {% if event.occurred_at %}<time class="tabular-nums" datetime="{{ event.occurred_at.isoformat() }}">{{ event.occurred_at.strftime('%d %b %H:%M') }}</time>{% endif %}
-            </span>
-            {% endfor %}
-        </div>
-    </div>
-    {% endif %}
-
     <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-5 sm:px-6" data-thread-scroll>
-        {% if timeline.messages %}
+        {% if timeline_entries %}
         <div class="mx-auto flex max-w-6xl flex-col gap-4">
-            {% for message in timeline.messages %}{{ message_bubble(message) }}{% endfor %}
+            {% for entry in timeline_entries %}
+                {% if entry.kind == 'system' and entry.event %}
+                    {% set event = entry.event %}
+                    <div class="flex items-center justify-center gap-2 py-1 text-center text-[11px] text-slate-500 dark:text-slate-400" role="note">
+                        <span class="h-px w-8 bg-slate-200 dark:bg-slate-800"></span>
+                        <span class="rounded-lg bg-slate-100 px-2.5 py-1 dark:bg-slate-900">
+                            <span class="font-semibold text-slate-700 dark:text-slate-200">{{ event.label }}</span>
+                            <span>by {{ event.actor_name }}</span>
+                            <time class="tabular-nums" datetime="{{ event.occurred_at.isoformat() }}">{{ event.occurred_at.strftime('%d %b %H:%M') }}</time>
+                        </span>
+                        <span class="h-px w-8 bg-slate-200 dark:bg-slate-800"></span>
+                    </div>
+                {% elif entry.message %}
+                    {{ message_bubble(entry.message) }}
+                {% endif %}
+            {% endfor %}
             <div x-show="presenceText" x-cloak class="flex items-center gap-2 text-xs font-medium text-slate-500">
                 <span class="flex gap-1 rounded-2xl bg-slate-200 px-3 py-2 dark:bg-slate-800" aria-label="Another agent is typing">
                     <span class="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-500"></span>
@@ -264,6 +270,21 @@
                 <button type="button" @click="draftWithAI()" :disabled="aiDraftLoading" class="min-h-10 rounded-lg border border-violet-200 px-2.5 text-xs font-semibold text-violet-700 hover:bg-violet-50 disabled:opacity-60 dark:border-violet-800 dark:text-violet-300 dark:hover:bg-violet-950/20"><span x-text="aiDraftLoading ? 'Drafting…' : 'AI Draft'"></span></button>
             </div>
         </div>
+
+        {% if reply_window and reply_window.channel_type in ['whatsapp', 'facebook_messenger', 'instagram_dm'] %}
+        <div class="mb-2 rounded-lg border px-3 py-2 text-xs {% if reply_window.free_form_allowed %}border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/20 dark:text-emerald-200{% else %}border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/20 dark:text-amber-200{% endif %}"
+             data-reply-window
+             data-expires-at="{{ reply_window.expires_at.isoformat() if reply_window.expires_at else '' }}"
+             data-server-time="{{ reply_window.server_time.isoformat() }}">
+            {% if reply_window.free_form_allowed and reply_window.expires_at %}
+            <span data-reply-window-countdown>Reply window closes at {{ reply_window.expires_at.strftime('%d %b %H:%M') }}</span>
+            {% elif reply_window.status == 'expired' and reply_window.channel_type == 'whatsapp' and reply_window.whatsapp_template_available %}
+            <span>The 24-hour reply window has expired. Send an approved WhatsApp template to reopen the conversation.</span>
+            {% else %}
+            <span>{{ reply_window.reason or 'Reply availability could not be confirmed. Free-form messaging is disabled to prevent a provider rejection.' }}</span>
+            {% endif %}
+        </div>
+        {% endif %}
 
         <div x-show="aiDraftResult || aiDraftError" x-cloak class="mb-2 rounded-xl border border-violet-200 bg-violet-50/60 p-3 text-xs dark:border-violet-800 dark:bg-violet-950/20">
             <template x-if="aiDraftResult">
@@ -373,6 +394,25 @@
         </form>
         {% else %}
         <p x-show="mode === 'reply'" class="rounded-lg bg-slate-100 p-3 text-xs text-slate-600 dark:bg-slate-800 dark:text-slate-300">{{ action_eligibility.reason }}</p>
+        {% if reply_window and reply_window.status == 'expired' and reply_window.channel_type == 'whatsapp' and reply_window.whatsapp_template_available %}
+        <form method="post" action="/admin/inbox/{{ timeline.id }}/reply" x-show="mode === 'reply'" class="mt-2 space-y-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs dark:border-amber-800 dark:bg-amber-950/20" data-whatsapp-template-reopen data-template-endpoint="/admin/inbox/whatsapp-templates">
+            {% include "components/forms/csrf_input.html" %}
+            <input type="hidden" name="idempotency_key" value="">
+            <input type="hidden" name="body_text" data-whatsapp-template-body value="">
+            <input type="hidden" name="whatsapp_template_name" data-whatsapp-template-name value="">
+            <input type="hidden" name="whatsapp_template_language" data-whatsapp-template-language value="">
+            <input type="hidden" name="whatsapp_template_components" data-whatsapp-template-components value="[]">
+            <p class="font-medium text-amber-900 dark:text-amber-200">Send an approved WhatsApp template to reopen the conversation.</p>
+            <label class="block font-semibold text-amber-950 dark:text-amber-100">Approved template
+                <select required data-whatsapp-template-select class="mt-1 h-10 w-full rounded-lg border-amber-300 bg-white text-xs text-slate-800 focus:border-amber-500 focus:ring-amber-500 dark:border-amber-800 dark:bg-slate-950 dark:text-slate-100">
+                    <option value="">Loading templates...</option>
+                </select>
+            </label>
+            <div data-whatsapp-template-fields class="space-y-2"></div>
+            <p data-whatsapp-template-status class="text-[11px] text-amber-800 dark:text-amber-200" role="status" aria-live="polite"></p>
+            <button type="submit" data-whatsapp-template-submit disabled class="min-h-10 rounded-lg bg-amber-600 px-3 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50">Send template</button>
+        </form>
+        {% endif %}
         {% endif %}
 
         {# Save the current draft into the shared library. Sits outside the reply
@@ -398,7 +438,8 @@
 
         <form method="post" action="/admin/inbox/{{ timeline.id }}/note" x-show="mode === 'note'" x-cloak @submit="sending = true" class="space-y-2">
             {% include "components/forms/csrf_input.html" %}
-            <textarea name="body_text" rows="3" required placeholder="Add a private note. It will never be sent to the customer." class="w-full rounded-xl border-amber-300 bg-amber-50/60 text-sm focus:border-amber-500 focus:ring-amber-500 dark:border-amber-800 dark:bg-amber-950/20"></textarea>
+            <input type="hidden" name="mention_user_ids" data-mention-user-ids value="">
+            <textarea name="body_text" rows="3" required placeholder="Add a private note. Type @ to mention a colleague. It will never be sent to the customer." data-inbox-note-mentions data-mention-endpoint="/admin/inbox/{{ timeline.id }}/mentionable-users" class="w-full rounded-xl border-amber-300 bg-amber-50/60 text-sm focus:border-amber-500 focus:ring-amber-500 dark:border-amber-800 dark:bg-amber-950/20"></textarea>
             <div class="flex items-center justify-between"><p class="text-xs font-medium text-amber-800 dark:text-amber-200">Only internal agents can see this note.</p><button type="submit" class="min-h-11 rounded-lg bg-amber-500 px-4 text-sm font-semibold text-white">Save private note</button></div>
         </form>
     </div>

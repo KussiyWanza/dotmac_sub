@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from urllib.parse import urlencode
 from uuid import UUID
@@ -203,6 +203,7 @@ class InboxConversationListRow:
     unread_count: int
     team_count: int
     labels: tuple[InboxConversationListLabel, ...]
+    reply_window_status: str = "not_applicable"
 
 
 @dataclass(frozen=True)
@@ -1037,6 +1038,7 @@ def list_conversations(
     unassigned: bool = False,
     operator_person_id: UUID | None = None,
     unread_only: bool = False,
+    reply_window_status: str | None = None,
     ai_handling: bool | None = None,
     has_ticket: bool | None = None,
     activity_from: datetime | None = None,
@@ -1115,6 +1117,52 @@ def list_conversations(
         query = query.filter(InboxConversation.channel_type == channel_type)
     elif clean_channel_types:
         query = query.filter(InboxConversation.channel_type.in_(clean_channel_types))
+    clean_reply_window_status = str(reply_window_status or "").strip().lower()
+    if clean_reply_window_status == "expired":
+        reply_window_cutoff = datetime.now(UTC) - timedelta(hours=24)
+        latest_inbound = (
+            db.query(
+                InboxMessage.conversation_id.label("conversation_id"),
+                func.max(
+                    func.coalesce(InboxMessage.received_at, InboxMessage.created_at)
+                ).label("last_inbound_at"),
+            )
+            .filter(InboxMessage.direction == InboxMessageDirection.inbound.value)
+            .filter(
+                or_(
+                    InboxMessage.metadata_["reply_window_qualifying"]
+                    .as_boolean()
+                    .isnot(False),
+                    InboxMessage.metadata_["reply_window_qualifying"].is_(None),
+                )
+            )
+            .group_by(InboxMessage.conversation_id)
+            .subquery()
+        )
+        query = query.join(
+            latest_inbound,
+            latest_inbound.c.conversation_id == InboxConversation.id,
+        ).filter(
+            InboxConversation.channel_type.in_(
+                (
+                    InboxChannelType.whatsapp.value,
+                    InboxChannelType.facebook_messenger.value,
+                    InboxChannelType.instagram_dm.value,
+                )
+            ),
+            latest_inbound.c.last_inbound_at.isnot(None),
+            latest_inbound.c.last_inbound_at <= reply_window_cutoff,
+        )
+        if not status:
+            query = query.filter(
+                InboxConversation.status.in_(
+                    (
+                        InboxConversationStatus.open.value,
+                        InboxConversationStatus.pending.value,
+                        InboxConversationStatus.snoozed.value,
+                    )
+                )
+            )
     if priority_at_most is not None:
         query = query.filter(InboxConversation.priority <= int(priority_at_most))
     if muted is not None:
@@ -1407,6 +1455,9 @@ def list_conversations(
         if conversation_ids and operator_person_id is not None
         else {}
     )
+    reply_window_statuses = (
+        _reply_window_statuses(db, conversations) if conversations else {}
+    )
 
     capabilities_by_team = service_team_composition.capabilities_by_team(
         db,
@@ -1499,6 +1550,9 @@ def list_conversations(
                 unread_count=unread_count,
                 team_count=int(team_counts.get(conversation.id, 0)),
                 labels=tuple(labels_by_conversation.get(conversation.id, [])),
+                reply_window_status=reply_window_statuses.get(
+                    conversation.id, "not_applicable"
+                ),
             )
         )
     filtered_count = len(items) if needs_python_filter else total
@@ -1509,6 +1563,62 @@ def list_conversations(
         limit=limit,
         offset=offset,
     )
+
+
+def _reply_window_statuses(
+    db: Session, conversations: Sequence[InboxConversation]
+) -> dict[UUID, str]:
+    if not conversations:
+        return {}
+    conversation_ids = [conversation.id for conversation in conversations]
+    meta_channels = {
+        InboxChannelType.whatsapp.value,
+        InboxChannelType.facebook_messenger.value,
+        InboxChannelType.instagram_dm.value,
+    }
+    meta_conversation_ids = [
+        conversation.id
+        for conversation in conversations
+        if conversation.channel_type in meta_channels
+    ]
+    statuses = {
+        conversation.id: (
+            "not_applicable"
+            if conversation.channel_type not in meta_channels
+            else "unavailable"
+        )
+        for conversation in conversations
+    }
+    if not meta_conversation_ids:
+        return statuses
+    rows = (
+        db.query(
+            InboxMessage.conversation_id,
+            func.max(func.coalesce(InboxMessage.received_at, InboxMessage.created_at)),
+        )
+        .filter(InboxMessage.conversation_id.in_(meta_conversation_ids))
+        .filter(InboxMessage.direction == InboxMessageDirection.inbound.value)
+        .filter(
+            or_(
+                InboxMessage.metadata_["reply_window_qualifying"]
+                .as_boolean()
+                .isnot(False),
+                InboxMessage.metadata_["reply_window_qualifying"].is_(None),
+            )
+        )
+        .group_by(InboxMessage.conversation_id)
+        .all()
+    )
+    now = datetime.now(UTC)
+    for conversation_id, last_inbound_at in rows:
+        if last_inbound_at is None:
+            continue
+        if last_inbound_at.tzinfo is None:
+            last_inbound_at = last_inbound_at.replace(tzinfo=UTC)
+        statuses[conversation_id] = (
+            "open" if now < last_inbound_at + timedelta(hours=24) else "expired"
+        )
+    return statuses
 
 
 def get_conversation_timeline(
