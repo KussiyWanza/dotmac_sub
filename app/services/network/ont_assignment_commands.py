@@ -31,6 +31,7 @@ _REASSIGN_DEFINITION = OwnerCommandDefinition(
     concern="normal explicit ONT-to-subscription assignments",
     name="reassign_active_ont",
 )
+_AUDIT_SERVICE_ACTOR = "network.ont_assignment_commands"
 
 _CONFIG_FIELDS = (
     "wan_mode",
@@ -123,6 +124,12 @@ def _uuid(value: object, field: str) -> uuid.UUID:
 
 def _actor_type(actor_id: str | None) -> AuditActorType:
     return AuditActorType.user if actor_id else AuditActorType.service
+
+
+def _actor_id(actor_id: str | None) -> str:
+    """Name the automated owner instead of emitting an anonymous service."""
+
+    return actor_id or _AUDIT_SERVICE_ACTOR
 
 
 def _fsp_parts(
@@ -714,7 +721,7 @@ class OntAssignmentCommands:
             entity_type="ont_assignment",
             entity_id=str(assignment.id),
             actor_type=_actor_type(actor_id),
-            actor_id=actor_id,
+            actor_id=_actor_id(actor_id),
             metadata={"source": source, "exact_result": exact_result},
         )
         if commit:
@@ -783,7 +790,7 @@ class OntAssignmentCommands:
             entity_type="ont_assignment",
             entity_id=str(assignment.id),
             actor_type=_actor_type(actor_id),
-            actor_id=actor_id,
+            actor_id=_actor_id(actor_id),
             metadata={
                 "source": source,
                 "exact_result": {
@@ -891,7 +898,7 @@ class OntAssignmentCommands:
             entity_type="ont_assignment",
             entity_id=str(assignment.id),
             actor_type=_actor_type(actor_id),
-            actor_id=actor_id,
+            actor_id=_actor_id(actor_id),
             metadata={
                 "source": source,
                 "exact_result": {

@@ -21,6 +21,7 @@ from app.services.sot_registry.model import DomainSOT
 
 DOMAIN = DomainSOT(
     domain="authorization_control_plane",
+    authentication_mechanisms=("local",),
     setting_domains=("auth",),
     services=(
         SOTService(

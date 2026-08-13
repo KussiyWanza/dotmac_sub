@@ -114,9 +114,8 @@ def reseller_impersonate(
     new — it is a faster lens, gated behind ``reseller:impersonate`` and logged.
     """
     from app.models.audit import AuditActorType
-    from app.schemas.audit import AuditEventCreate
-    from app.services import audit as audit_service
     from app.services import reseller_portal
+    from app.services.audit_adapter import record_audit_event
 
     return_to = f"/admin/resellers/{reseller_id}"
     try:
@@ -135,20 +134,18 @@ def reseller_impersonate(
         actor_id_value = (
             str(auth.get("subscriber_id") or auth.get("person_id") or "") or None
         )
-    audit_service.audit_events.create(
-        db=db,
-        payload=AuditEventCreate(
-            actor_type=AuditActorType.user,
-            actor_id=actor_id_value,
-            action="impersonate",
-            entity_type="reseller",
-            entity_id=str(reseller_id),
-            status_code=303,
-            is_success=True,
-            ip_address=request.client.host if request.client else None,
-            user_agent=request.headers.get("user-agent"),
-            metadata_={"surface": "reseller_portal"},
-        ),
+    record_audit_event(
+        db,
+        actor_type=AuditActorType.user,
+        actor_id=actor_id_value,
+        action="impersonate",
+        entity_type="reseller",
+        entity_id=str(reseller_id),
+        status_code=303,
+        is_success=True,
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+        metadata={"surface": "reseller_portal"},
     )
 
     response = RedirectResponse(url="/reseller/dashboard", status_code=303)

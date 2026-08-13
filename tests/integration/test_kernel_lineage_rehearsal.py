@@ -66,16 +66,18 @@ from app import config as app_config
 #: reason: an earlier failure means something regressed.
 EXPECTED_FIRST_FAILURE = "0001_initial_tenant_schema"
 
-#: Collisions measured against staging on 2026-08-11, kernel 0.1.0a40.
-#: `domain_setting_history` is absent from staging because Sub's migration 520
-#: has not run there; it is present at Sub's dev head, hence ten here.
+#: Lineage-head collisions remeasured against kernel 0.1.0a42 and Sub's
+#: party-identity integration batch on 2026-08-13. Kernel 0022 renamed its RBAC
+#: grant from `party_roles` to `party_role_grants`, so the current head has nine
+#: overlaps. The lineage still creates `party_roles` at 0003 before renaming it;
+#: that transient chain hazard remains a required disposition even though it is
+#: intentionally absent from this current-metadata intersection.
 EXPECTED_COLLISIONS = {
     "audit_events",
     "communication_suppressions",
     "domain_setting_history",
     "domain_settings",
     "parties",
-    "party_roles",
     "roles",
     "tenant_domains",
     "tenants",
@@ -268,12 +270,13 @@ def test_the_measured_collisions_are_the_ones_actually_present(
         if table.schema in (None, "public")
     }
     measured = kernel_tables & sub_tables
-    unexpected = measured - EXPECTED_COLLISIONS
-    assert not unexpected, (
-        f"new kernel/Sub table-name collision(s): {sorted(unexpected)}. Either a "
-        "kernel release added a table Sub already has, or Sub added one the "
-        "kernel owns — both need a disposition before the lineage can run. See "
-        "dotmac_starter_mt/docs/inventories/sub-lineage-dispositions.md."
+    assert measured == EXPECTED_COLLISIONS, (
+        "kernel/Sub lineage-head collision inventory changed; classify every "
+        "added or removed name before changing this reviewed set. The separate "
+        "transient-chain disposition for `party_roles` still applies.\n"
+        f"added: {sorted(measured - EXPECTED_COLLISIONS)}\n"
+        f"removed: {sorted(EXPECTED_COLLISIONS - measured)}\n"
+        "See dotmac_starter_mt/docs/inventories/sub-lineage-dispositions.md."
     )
 
 

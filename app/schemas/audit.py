@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.audit import AuditActorType
 
@@ -11,6 +11,7 @@ class AuditEventBase(BaseModel):
     actor_type: AuditActorType = AuditActorType.system
     actor_id: str | None = None
     actor_label: str | None = None
+    actor_party_id: UUID | None = None
     action: str
     entity_type: str
     entity_id: str | None = None
@@ -24,6 +25,19 @@ class AuditEventBase(BaseModel):
         default=None,
         serialization_alias="metadata",
     )
+    details: dict[str, object] | None = None
+
+    @model_validator(mode="after")
+    def validate_actor_pair(self) -> "AuditEventBase":
+        """Keep Sub writes inside the kernel's closed actor contract."""
+
+        if self.actor_type is AuditActorType.system:
+            return self
+        if self.actor_id is None or not self.actor_id.strip():
+            raise ValueError(
+                f"audit actor type {self.actor_type.value!r} needs a non-empty actor_id"
+            )
+        return self
 
 
 class AuditEventCreate(AuditEventBase):
@@ -35,3 +49,4 @@ class AuditEventRead(AuditEventBase):
 
     id: UUID
     occurred_at: datetime
+    created_at: datetime | None = None

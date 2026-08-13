@@ -56,10 +56,44 @@ def setting_domain_declaration_errors() -> tuple[str, ...]:
     return tuple(sorted(errors))
 
 
+def authentication_mechanism_declaration_errors() -> tuple[str, ...]:
+    """Return structural errors in authentication-mechanism ownership."""
+
+    errors: list[str] = []
+    seen: dict[str, str] = {}
+    for domain_sot in DOMAIN_SOT_RELATIONSHIPS:
+        for mechanism in domain_sot.authentication_mechanisms:
+            if not mechanism or mechanism != mechanism.strip():
+                errors.append(
+                    f"{domain_sot.domain} declares a blank or padded authentication "
+                    f"mechanism {mechanism!r}"
+                )
+                continue
+            previous = seen.get(mechanism)
+            if previous == domain_sot.domain:
+                errors.append(
+                    f"{domain_sot.domain} declares authentication mechanism "
+                    f"{mechanism!r} more than once"
+                )
+                continue
+            if previous is not None:
+                errors.append(
+                    f"authentication mechanism {mechanism!r} is declared by both "
+                    f"{previous!r} and {domain_sot.domain!r}; exactly one SOT "
+                    "domain may own it"
+                )
+                continue
+            seen[mechanism] = domain_sot.domain
+    return tuple(sorted(errors))
+
+
 def registry_validation_errors() -> tuple[str, ...]:
     """Return structural errors that make ownership resolution ambiguous."""
 
-    errors: list[str] = list(setting_domain_declaration_errors())
+    errors: list[str] = [
+        *setting_domain_declaration_errors(),
+        *authentication_mechanism_declaration_errors(),
+    ]
     services = all_services()
 
     duplicate_domains = sorted(

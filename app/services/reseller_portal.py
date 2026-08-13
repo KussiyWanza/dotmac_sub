@@ -2325,10 +2325,11 @@ def create_customer_impersonation_token(
     import secrets
     from datetime import timedelta
 
-    from app.models.audit import AuditActorType, AuditEvent
+    from app.models.audit import AuditActorType
     from app.models.auth import Session as AuthSession
     from app.models.auth import SessionStatus
     from app.services import auth_flow as auth_flow_service
+    from app.services.audit_adapter import stage_audit_event
 
     account = _get_customer_account(db, reseller_id, account_id)
     if not account:
@@ -2347,18 +2348,17 @@ def create_customer_impersonation_token(
         expires_at=expires_at,
     )
     db.add(session)
-    db.add(
-        AuditEvent(
-            actor_type=AuditActorType.user,
-            actor_id=str(acting_subscriber_id),
-            action="reseller_impersonate",
-            entity_type="subscriber",
-            entity_id=str(account.id),
-            status_code=200,
-            is_success=True,
-            ip_address=ip_address,
-            user_agent=(user_agent or "")[:255] or None,
-        )
+    stage_audit_event(
+        db,
+        actor_type=AuditActorType.user,
+        actor_id=str(acting_subscriber_id),
+        action="reseller_impersonate",
+        entity_type="subscriber",
+        entity_id=str(account.id),
+        status_code=200,
+        is_success=True,
+        ip_address=ip_address,
+        user_agent=(user_agent or "")[:255] or None,
     )
     db.commit()
     db.refresh(session)

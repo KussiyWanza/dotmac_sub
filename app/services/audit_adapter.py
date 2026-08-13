@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from uuid import UUID
 
 from sqlalchemy.orm import Session
 
@@ -20,12 +21,14 @@ class AuditRecord:
     actor_type: AuditActorType = AuditActorType.system
     actor_id: str | None = None
     actor_label: str | None = None
+    actor_party_id: UUID | None = None
     status_code: int | None = None
     is_success: bool = True
     ip_address: str | None = None
     user_agent: str | None = None
     request_id: str | None = None
     metadata: dict[str, object] = field(default_factory=dict)
+    details: dict[str, object] = field(default_factory=dict)
     occurred_at: datetime | None = None
 
 
@@ -45,6 +48,7 @@ class AuditAdapter:
             actor_type=record.actor_type,
             actor_id=record.actor_id,
             actor_label=record.actor_label,
+            actor_party_id=record.actor_party_id,
             action=record.action,
             entity_type=record.entity_type,
             entity_id=record.entity_id,
@@ -54,6 +58,7 @@ class AuditAdapter:
             user_agent=record.user_agent,
             request_id=record.request_id,
             metadata_=dict(record.metadata or {}),
+            details=dict(record.details or {}),
             occurred_at=record.occurred_at,
         )
 
@@ -99,10 +104,16 @@ def record_audit_event(
     entity_id: str | None = None,
     actor_type: AuditActorType = AuditActorType.system,
     actor_id: str | None = None,
+    actor_label: str | None = None,
+    actor_party_id: UUID | None = None,
     metadata: dict[str, object] | None = None,
+    details: dict[str, object] | None = None,
     status_code: int | None = None,
     is_success: bool = True,
     request_id: str | None = None,
+    ip_address: str | None = None,
+    user_agent: str | None = None,
+    occurred_at: datetime | None = None,
     defer_until_commit: bool = False,
 ):
     return audit_adapter.record(
@@ -113,10 +124,16 @@ def record_audit_event(
             entity_id=entity_id,
             actor_type=actor_type,
             actor_id=actor_id,
+            actor_label=actor_label,
+            actor_party_id=actor_party_id,
             metadata=dict(metadata or {}),
+            details=dict(details or {}),
             status_code=status_code,
             is_success=is_success,
             request_id=request_id,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            occurred_at=occurred_at,
         ),
         defer_until_commit=defer_until_commit,
     )
@@ -131,10 +148,14 @@ def stage_audit_event(
     actor_type: AuditActorType = AuditActorType.system,
     actor_id: str | None = None,
     actor_label: str | None = None,
+    actor_party_id: UUID | None = None,
     metadata: dict[str, object] | None = None,
+    details: dict[str, object] | None = None,
     status_code: int | None = None,
     is_success: bool = True,
     request_id: str | None = None,
+    ip_address: str | None = None,
+    user_agent: str | None = None,
     occurred_at: datetime | None = None,
 ):
     return audit_adapter.stage(
@@ -146,10 +167,14 @@ def stage_audit_event(
             actor_type=actor_type,
             actor_id=actor_id,
             actor_label=actor_label,
+            actor_party_id=actor_party_id,
             metadata=dict(metadata or {}),
+            details=dict(details or {}),
             status_code=status_code,
             is_success=is_success,
             request_id=request_id,
+            ip_address=ip_address,
+            user_agent=user_agent,
             occurred_at=occurred_at,
         ),
     )

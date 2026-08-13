@@ -11,7 +11,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy.sql.elements import ColumnElement
 
-from app.models.audit import AuditActorType, AuditEvent
+from app.models.audit import AuditActorType
 from app.models.billing import (
     Invoice,
     InvoiceLine,
@@ -38,6 +38,7 @@ from app.services.account_lifecycle import (
     cancel_subscription,
     transition_account_status,
 )
+from app.services.audit_adapter import stage_audit_event
 from app.services.common import round_money
 from app.services.invoice_collectibility import (
     open_invoice_balance,
@@ -1257,23 +1258,22 @@ def log_status_writeback(
     result: str,
     status_code: int,
 ) -> None:
-    db.add(
-        AuditEvent(
-            actor_type=AuditActorType.service,
-            actor_id=actor or "crm",
-            action="crm.subscriber_status_writeback",
-            entity_type="subscriber",
-            entity_id=str(subscriber_id),
-            status_code=status_code,
-            is_success=status_code < 400,
-            metadata_={
-                "source": source,
-                "reason": reason,
-                "requested_status": requested_status,
-                "previous_status": previous_status,
-                "result": result,
-            },
-        )
+    stage_audit_event(
+        db,
+        actor_type=AuditActorType.service,
+        actor_id=actor or "crm",
+        action="crm.subscriber_status_writeback",
+        entity_type="subscriber",
+        entity_id=str(subscriber_id),
+        status_code=status_code,
+        is_success=status_code < 400,
+        metadata={
+            "source": source,
+            "reason": reason,
+            "requested_status": requested_status,
+            "previous_status": previous_status,
+            "result": result,
+        },
     )
 
 

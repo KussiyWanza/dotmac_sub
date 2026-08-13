@@ -2,8 +2,8 @@ import enum
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Enum, Integer, String
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import JSON, Boolean, DateTime, Enum, Integer, String, func
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.ext.mutable import MutableDict
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -34,6 +34,11 @@ class AuditEvent(Base):
     # not derived on read, so it survives deletion of the referenced actor
     # (actor_id is not a foreign key) and can be searched without a join.
     actor_label: Mapped[str | None] = mapped_column(String(160), index=True)
+    # Optional accountability enrichment. Deliberately not a foreign key: the
+    # forensic row must survive deletion of the Party it once named.
+    actor_party_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), index=True
+    )
     action: Mapped[str] = mapped_column(String(80))
     entity_type: Mapped[str] = mapped_column(String(160))
     entity_id: Mapped[str | None] = mapped_column(String(120))
@@ -45,4 +50,15 @@ class AuditEvent(Base):
     request_id: Mapped[str | None] = mapped_column(String(120))
     metadata_: Mapped[dict | None] = mapped_column(
         "metadata", MutableDict.as_mutable(JSON())
+    )
+    # R1 expansion target. Existing rows remain NULL; every sanctioned writer
+    # dual-populates this from metadata plus the forensic columns below.
+    details: Mapped[dict[str, object] | None] = mapped_column(
+        MutableDict.as_mutable(JSON().with_variant(JSONB(), "postgresql"))
+    )
+    # Persistence time, distinct from caller-supplyable domain time above.
+    # Migration 524 adds this without a default first, then sets the default in
+    # a second DDL statement so historical rows remain honestly unknown.
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, server_default=func.now()
     )
