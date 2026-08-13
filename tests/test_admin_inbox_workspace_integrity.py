@@ -654,8 +654,10 @@ def test_empty_state_and_inbox_pagination_are_scoped_to_the_queue():
         "@click.prevent='navigatePage(",
         "border border-slate-200 bg-white",
         "hover:bg-slate-50",
-        "Page {{ page_meta.page }}",
-        ">Back</a>",
+        "page_meta.start_item",
+        "page_meta.navigation",
+        'aria-current="page" aria-label="Page {{ page_number }}"',
+        ">Previous</a>",
         ">Next</a>",
     ):
         assert contract in QUEUE
