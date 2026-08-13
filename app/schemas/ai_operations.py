@@ -64,6 +64,16 @@ class AiIntakeConfigMetadata(BaseModel):
     account_id: str | None = Field(default=None, max_length=160)
     notes: str | None = Field(default=None, max_length=500)
     data_cleaning_support_team_id: UUID | None = None
+    display_name: str | None = Field(default="Dotmac Virtual Assistant", max_length=120)
+    welcome_message: str | None = Field(default=None, max_length=800)
+    business_tone: str | None = Field(default=None, max_length=1000)
+    approved_isp_information: str | None = Field(default=None, max_length=4000)
+    intent_definitions: list[dict] | None = None
+    clarification_questions: list[str] | None = None
+    queue_templates: dict | None = None
+    escalation_rules: dict | None = None
+    data_cleanup_policy: dict | None = None
+    data_cleanup_enabled: bool = False
 
 
 class AiIntakeConfigUpsert(BaseModel):
@@ -74,7 +84,7 @@ class AiIntakeConfigUpsert(BaseModel):
     is_enabled: bool = False
     confidence_threshold: float = Field(default=0.75, ge=0.0, le=1.0)
     allow_followup_questions: bool = True
-    max_clarification_turns: int = Field(default=1, ge=0, le=1)
+    max_clarification_turns: int = Field(default=2, ge=0, le=5)
     escalate_after_minutes: int = Field(default=5, ge=1, le=1440)
     exclude_campaign_attribution: bool = True
     fallback_team_id: UUID | None = None

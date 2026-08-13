@@ -11,6 +11,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.models.domain_settings import SettingDomain
 from app.models.service_team import ServiceTeam, ServiceTeamMember
 from app.models.system_user import SystemUser
 from app.models.team_inbox import (
@@ -29,16 +30,25 @@ from app.models.team_inbox import (
     InboxRoutingEvent,
     InboxRoutingEventType,
     InboxTeamRole,
+    InboxTeamRoundRobinCursor,
     InboxTeamSource,
 )
-from app.services import team_inbox_agent_introduction
+from app.services import team_inbox_agent_introduction, team_inbox_queue_notifications
 from app.services.owner_commands import (
     CommandContext,
     OwnerCommandDefinition,
     execute_owner_command,
 )
+from app.services.settings_spec import resolve_integer
 
-DEFAULT_MAX_CONCURRENT_CONVERSATIONS = 3
+DEFAULT_MAX_CONCURRENT_CONVERSATIONS = 10
+COUNTABLE_CAPACITY_STATUSES = frozenset(
+    {
+        InboxConversationStatus.open.value,
+        InboxConversationStatus.pending.value,
+        InboxConversationStatus.snoozed.value,
+    }
+)
 VALID_AGENT_PRESENCE_STATUSES = frozenset(
     item.value for item in InboxAgentPresenceStatus
 )
@@ -87,6 +97,7 @@ class InboxAssignmentResult:
     service_team_id: str | None
     assigned_person_id: str | None = None
     reason: str | None = None
+    queue_entry_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -127,12 +138,28 @@ def estimate_queue_wait_minutes(
     )
 
 
+def resolve_default_max_concurrent_conversations(db: Session) -> int:
+    """Resolve the configurable default agent capacity with a bounded fallback."""
+
+    try:
+        value = resolve_integer(
+            db,
+            SettingDomain.comms,
+            "inbox_agent_default_max_concurrent_conversations",
+        )
+    except Exception:
+        return DEFAULT_MAX_CONCURRENT_CONVERSATIONS
+    return max(1, min(int(value), 100))
+
+
 def team_capacity_snapshot(
     db: Session,
     service_team_id: str | UUID,
     *,
-    default_max_concurrent: int = DEFAULT_MAX_CONCURRENT_CONVERSATIONS,
+    default_max_concurrent: int | None = None,
 ) -> InboxTeamCapacitySnapshot:
+    if default_max_concurrent is None:
+        default_max_concurrent = resolve_default_max_concurrent_conversations(db)
     team_uuid = _coerce_uuid(service_team_id)
     if team_uuid is None:
         return InboxTeamCapacitySnapshot(active_assignments=0, total_capacity=0)
@@ -163,12 +190,7 @@ def team_capacity_snapshot(
         for person_id in online_ids
     )
     active = (
-        db.query(func.count(InboxConversationAssignment.id))
-        .filter(InboxConversationAssignment.is_active.is_(True))
-        .filter(InboxConversationAssignment.person_id.in_(online_ids))
-        .scalar()
-        if online_ids
-        else 0
+        _active_assignment_count_query(db, online_ids).scalar() if online_ids else 0
     )
     return InboxTeamCapacitySnapshot(
         active_assignments=int(active or 0), total_capacity=int(total_capacity)
@@ -191,6 +213,20 @@ def _effective_presence_status(presence: InboxAgentPresence) -> str:
         presence.manual_override_status
         or presence.status
         or InboxAgentPresenceStatus.offline.value
+    )
+
+
+def _active_assignment_count_query(db: Session, person_ids: list[UUID]):
+    return (
+        db.query(func.count(InboxConversationAssignment.id))
+        .join(
+            InboxConversation,
+            InboxConversation.id == InboxConversationAssignment.conversation_id,
+        )
+        .filter(InboxConversationAssignment.is_active.is_(True))
+        .filter(InboxConversationAssignment.person_id.in_(person_ids))
+        .filter(InboxConversation.status.in_(COUNTABLE_CAPACITY_STATUSES))
+        .filter(InboxConversation.is_active.is_(True))
     )
 
 
@@ -262,8 +298,10 @@ def list_available_team_agents(
     db: Session,
     service_team_id: str | UUID,
     *,
-    default_max_concurrent: int = DEFAULT_MAX_CONCURRENT_CONVERSATIONS,
+    default_max_concurrent: int | None = None,
 ) -> list[InboxAgentCandidate]:
+    if default_max_concurrent is None:
+        default_max_concurrent = resolve_default_max_concurrent_conversations(db)
     team_uuid = _coerce_uuid(service_team_id)
     if team_uuid is None:
         return []
@@ -298,8 +336,14 @@ def list_available_team_agents(
             InboxConversationAssignment.person_id,
             func.count(InboxConversationAssignment.id),
         )
+        .join(
+            InboxConversation,
+            InboxConversation.id == InboxConversationAssignment.conversation_id,
+        )
         .filter(InboxConversationAssignment.is_active.is_(True))
         .filter(InboxConversationAssignment.person_id.in_(person_ids))
+        .filter(InboxConversation.status.in_(COUNTABLE_CAPACITY_STATUSES))
+        .filter(InboxConversation.is_active.is_(True))
         .group_by(InboxConversationAssignment.person_id)
         .all()
     )
@@ -336,8 +380,49 @@ def list_available_team_agents(
             )
         )
 
-    candidates.sort(key=lambda item: (item.active_conversation_count, item.person_id))
+    candidates.sort(key=lambda item: item.person_id)
     return candidates
+
+
+def _round_robin_cursor(
+    db: Session, service_team_id: UUID
+) -> InboxTeamRoundRobinCursor:
+    cursor = (
+        db.query(InboxTeamRoundRobinCursor)
+        .filter(InboxTeamRoundRobinCursor.service_team_id == service_team_id)
+        .with_for_update()
+        .one_or_none()
+    )
+    if cursor is None:
+        cursor = InboxTeamRoundRobinCursor(service_team_id=service_team_id)
+        db.add(cursor)
+        db.flush()
+    return cursor
+
+
+def _select_round_robin_candidate(
+    db: Session, *, service_team_id: UUID, candidates: list[InboxAgentCandidate]
+) -> tuple[InboxAgentCandidate, InboxTeamRoundRobinCursor]:
+    cursor = _round_robin_cursor(db, service_team_id)
+    if not candidates:
+        raise ValueError("candidates are required")
+    candidate_ids = [item.person_id for item in candidates]
+    start_index = 0
+    if cursor.last_assigned_person_id is not None:
+        last_id = str(cursor.last_assigned_person_id)
+        if last_id in candidate_ids:
+            start_index = (candidate_ids.index(last_id) + 1) % len(candidates)
+    selected = candidates[start_index]
+    cursor.last_assigned_person_id = _coerce_uuid(selected.person_id)
+    cursor.rotation_count = int(cursor.rotation_count or 0) + 1
+    cursor.metadata_ = {
+        **dict(cursor.metadata_ or {}),
+        "last_candidate_count": len(candidates),
+        "last_candidate_ids": candidate_ids,
+        "last_selected_at": datetime.now(UTC).isoformat(),
+    }
+    db.flush()
+    return selected, cursor
 
 
 def set_conversation_owner_team(
@@ -657,10 +742,32 @@ def assign_conversation_to_agent(
         metadata_={"reason": reason, "source": source},
     )
     db.add(assignment)
+    try:
+        from app.services import ai_conversation_intake
+
+        session = ai_conversation_intake.active_session_for_conversation(
+            db, conversation.id
+        )
+        if session is not None:
+            ai_conversation_intake.complete_session(
+                session, state="stopped_human_takeover"
+            )
+            ai_conversation_intake.mark_conversation_ai_metadata(
+                conversation, session=session, active=False
+            )
+    except Exception:
+        pass
+    queued_entry = _queue_entry(db, conversation.id)
     _settle_queue_entry(
         db,
         conversation_id=conversation.id,
         status=InboxQueueEntryStatus.promoted,
+        now=assigned_at,
+    )
+    team_inbox_queue_notifications.send_handoff_notice(
+        db,
+        conversation=conversation,
+        entry=queued_entry,
         now=assigned_at,
     )
     _record_escalation_metadata(
@@ -750,17 +857,24 @@ def queue_conversation_for_team(
         kind="queued",
         now=queued_at,
     )
-    _admit_queue_entry(
+    entry = _admit_queue_entry(
         db,
         conversation_id=conversation.id,
         service_team_id=team_uuid,
         entered_at=queued_at,
+    )
+    team_inbox_queue_notifications.send_initial_queue_notice(
+        db,
+        entry=entry,
+        conversation=conversation,
+        now=queued_at,
     )
     db.flush()
     return InboxAssignmentResult(
         kind="queued",
         service_team_id=str(team_uuid),
         reason=reason_code,
+        queue_entry_id=str(entry.id),
     )
 
 
@@ -811,7 +925,10 @@ def assign_conversation_to_available_agent(
             reason="no_available_agent",
         )
 
-    selected = candidates[0]
+    selected, cursor = _select_round_robin_candidate(
+        db, service_team_id=team_uuid, candidates=candidates
+    )
+    source_id = f"auto-assign:{conversation.id}:{cursor.rotation_count}"
     return assign_conversation_to_agent(
         db,
         conversation=conversation,
@@ -821,6 +938,7 @@ def assign_conversation_to_available_agent(
         reason=reason,
         source=source,
         now=assigned_at,
+        source_id=source_id,
         decision_mode=InboxRoutingDecisionMode.automatic,
         decision_evidence=selected,
     )
@@ -951,7 +1069,9 @@ def sweep_queued_conversations(
             candidates = list_available_team_agents(db, entry.service_team_id)
             if not candidates:
                 continue
-            selected = candidates[0]
+            selected, cursor = _select_round_robin_candidate(
+                db, service_team_id=entry.service_team_id, candidates=candidates
+            )
             result = assign_conversation_to_agent(
                 db,
                 conversation=conversation,
@@ -960,6 +1080,7 @@ def sweep_queued_conversations(
                 reason="FIFO queue capacity became available",
                 source=InboxTeamSource.routing_rule.value,
                 now=observed_at,
+                source_id=f"queue-promote:{entry.id}:{cursor.rotation_count}",
                 decision_mode=InboxRoutingDecisionMode.automatic,
                 decision_evidence=selected,
             )

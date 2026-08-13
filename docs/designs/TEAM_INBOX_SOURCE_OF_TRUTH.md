@@ -119,6 +119,24 @@ durably settles invalid or already-assigned entries. The agent projection
 derives current FIFO rank and an estimated wait from that ledger and the live
 capacity snapshot; it never makes a routing decision.
 
+Automatic assignment uses `inbox_team_round_robin_cursors`, one durable cursor
+per service team. The routing owner locks the team and cursor, builds the
+eligible online candidate list, skips inactive/offline/full agents, advances
+the cursor only inside the assignment transaction, and records routing evidence
+with candidate capacity details. The default capacity is ten active
+conversations per agent unless `InboxAgentPresence.max_concurrent_conversations`
+overrides it. Capacity counts active human assignments on `open`, human-owned
+`pending`, and `snoozed` conversations while ownership remains active. It
+excludes resolved conversations and unassigned AI-pending conversations.
+
+Queue communication is also owned by Team Inbox routing. `inbox_queue_notifications`
+records initial position notices, movement updates, fifteen-minute unchanged
+heartbeats, handoff notices, dedupe keys, delivery outcome and outbound message
+links. Customer-visible queue messages are sent only through Team Inbox
+outbound intents and only for WhatsApp, Facebook Messenger and Instagram DM.
+Queue messages never invent estimated wait times. Promotion, transfer,
+resolution, cancellation or assignment stops further queue updates.
+
 ## Outbound flow
 
 An operator command locks the active conversation and records a communication
@@ -373,6 +391,15 @@ stale. Realtime has no replay authority.
   outcomes without independently deciding customer/contact identity or
   catalogue availability. See
   `docs/designs/INBOX_PLAN_CATALOGUE_SHARING.md`.
+- Pending incomplete-task assignment gate: conversational AI routing keeps the
+  existing Team Inbox assignment eligibility boundary and does not query
+  project, provisioning, CRM, or scheduling task tables directly. The blocking
+  rule still needs an approved source-of-truth decision naming the task domain
+  that owns incomplete work, whether the restriction is global or team-scoped,
+  the exact statuses that block assignment, whether the gate is settings-backed,
+  and the typed eligibility query that task owner will expose. Until that
+  decision is recorded, automatic assignment is limited to the existing online,
+  active-team-membership and conversation-capacity checks.
 
 ## Schema and migration
 

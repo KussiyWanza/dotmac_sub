@@ -2460,12 +2460,7 @@ def _settings_context(
         intake_configs[0] if intake_configs else None,
     )
     if selected_intake_config is None:
-        intake_mapping_json = (
-            '[{"intent":"technical_support","department":"technical_support",'
-            '"service_team_id":null},'
-            '{"intent":"billing_issue","department":"helpdesk",'
-            '"service_team_id":null}]'
-        )
+        intake_mapping_json = "[]"
     else:
         intake_mapping_json = json.dumps(
             [
@@ -2585,7 +2580,7 @@ def _routes_redirect(*, status: str, message: str) -> RedirectResponse:
 )
 def team_inbox_ai_intake_policy_update(
     request: Request,
-    scope_key: str = Form("global"),
+    scope_key: str = Form(...),
     channel_type: str = Form("any"),
     is_enabled: bool = Form(default=False),
     confidence_threshold: float = Form(default=0.75),
@@ -2595,6 +2590,20 @@ def team_inbox_ai_intake_policy_update(
     exclude_campaign_attribution: bool = Form(default=True),
     fallback_team_id: str | None = Form(default=None),
     data_cleaning_support_team_id: str | None = Form(default=None),
+    display_name: str | None = Form(default="Dotmac Virtual Assistant"),
+    welcome_message: str | None = Form(default=None),
+    business_tone: str | None = Form(default=None),
+    approved_isp_information: str | None = Form(default=None),
+    queue_initial_template: str | None = Form(default=None),
+    queue_position_update_template: str | None = Form(default=None),
+    queue_heartbeat_template: str | None = Form(default=None),
+    queue_handoff_template: str | None = Form(default=None),
+    queue_position_update_minutes: int = Form(default=5),
+    queue_heartbeat_minutes: int = Form(default=15),
+    data_cleanup_enabled: bool = Form(default=False),
+    data_cleanup_prompt: str | None = Form(default=None),
+    data_cleanup_gender_choices_json: str | None = Form(default=None),
+    data_cleanup_dob_formats: str | None = Form(default=None),
     instructions: str | None = Form(default=None),
     department_mappings_json: str | None = Form(default=None),
     db: Session = Depends(get_db),
@@ -2607,6 +2616,18 @@ def team_inbox_ai_intake_policy_update(
             AiIntakeDepartmentMapping.model_validate(item)
             for item in _json_mapping_list(department_mappings_json)
         )
+        gender_choices = (
+            json.loads(data_cleanup_gender_choices_json)
+            if data_cleanup_gender_choices_json
+            else {}
+        )
+        if gender_choices and not isinstance(gender_choices, dict):
+            raise ValueError("Data-cleanup gender choices must be a JSON object.")
+        dob_formats = [
+            item.strip()
+            for item in str(data_cleanup_dob_formats or "").splitlines()
+            if item.strip()
+        ]
         policy = AiIntakeConfigUpsert(
             scope_key=scope_key,
             channel_type=channel_type,
@@ -2622,7 +2643,34 @@ def team_inbox_ai_intake_policy_update(
             metadata=AiIntakeConfigMetadata(
                 data_cleaning_support_team_id=_uuid_form_value(
                     data_cleaning_support_team_id
-                )
+                ),
+                display_name=(display_name or "Dotmac Virtual Assistant"),
+                welcome_message=welcome_message,
+                business_tone=business_tone,
+                approved_isp_information=approved_isp_information,
+                queue_templates={
+                    "initial": queue_initial_template or "",
+                    "position_update": queue_position_update_template or "",
+                    "heartbeat": queue_heartbeat_template or "",
+                    "handoff": queue_handoff_template or "",
+                    "position_update_minutes": max(
+                        1, min(int(queue_position_update_minutes), 120)
+                    ),
+                    "heartbeat_minutes": max(5, min(int(queue_heartbeat_minutes), 240)),
+                },
+                data_cleanup_enabled=data_cleanup_enabled,
+                data_cleanup_policy={
+                    "production_collection_enabled": bool(data_cleanup_enabled),
+                    "prompt": data_cleanup_prompt or "",
+                    "max_attempts": 2,
+                    "gender_choices": gender_choices,
+                    "dob_formats": dob_formats,
+                    "eligible_channels": [
+                        "whatsapp",
+                        "facebook_messenger",
+                        "instagram_dm",
+                    ],
+                },
             ),
         )
     except (TypeError, ValueError, ValidationError, json.JSONDecodeError) as exc:

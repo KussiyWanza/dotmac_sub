@@ -173,7 +173,7 @@ def test_valid_technical_and_billing_results_use_controlled_registry(
     assert technical.classification.department == "technical_support"
     assert billing.classification is not None
     assert billing.classification.intent.value == "billing_issue"
-    assert billing.classification.department == "helpdesk"
+    assert billing.classification.department == "billing_issue"
 
 
 def test_department_mapping_overrides_default(db_session, monkeypatch):

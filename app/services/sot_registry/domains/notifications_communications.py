@@ -1695,6 +1695,8 @@ DOMAIN = DomainSOT(
                 "routing assignment and escalation transitions",
                 "immutable routing assignment and escalation evidence",
                 "durable FIFO queue admission and promotion",
+                "durable per-team round-robin cursor",
+                "customer-visible FIFO queue notification evidence",
             ),
             depends_on=(
                 "ai.intake",
@@ -1716,6 +1718,14 @@ DOMAIN = DomainSOT(
                     ),
                     (
                         "durable FIFO queue admission and promotion",
+                        OwnerRole.COMMAND_WRITER,
+                    ),
+                    (
+                        "durable per-team round-robin cursor",
+                        OwnerRole.AUTHORITATIVE_RECORD,
+                    ),
+                    (
+                        "customer-visible FIFO queue notification evidence",
                         OwnerRole.COMMAND_WRITER,
                     ),
                 ),
@@ -1751,8 +1761,51 @@ DOMAIN = DomainSOT(
                     "team_inbox.escalated.v1",
                     "team_inbox.queue_promoted.v1",
                 ),
-                projections=("FIFO queue position and estimated wait",),
-                test_refs=("tests/test_team_inbox_fifo_queue.py",),
+                projections=("FIFO queue position and notification due state",),
+                test_refs=(
+                    "tests/test_team_inbox_fifo_queue.py",
+                    "tests/test_team_inbox_queue_notifications.py",
+                ),
+            ),
+        ),
+        SOTService(
+            name="communications.team_inbox_queue_notifications",
+            module="app.services.team_inbox_queue_notifications",
+            owns=("queue notification delivery ledger writes",),
+            depends_on=(
+                "communications.team_inbox_routing",
+                "communications.team_inbox_outbound_intents",
+            ),
+            notes=(
+                "Delivery ledger only. Queue membership, order, position and "
+                "promotion remain owned by communications.team_inbox_routing."
+            ),
+            contract=_team_inbox_contract(
+                service_name="communications.team_inbox_queue_notifications",
+                concerns=(
+                    (
+                        "queue notification delivery ledger writes",
+                        OwnerRole.COMMAND_WRITER,
+                    ),
+                ),
+                inputs=(
+                    AuthorityInput(
+                        name="FIFO queue entry state",
+                        owner="communications.team_inbox_routing",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="InboxConversationQueueEntry lifecycle, team, position and status.",
+                    ),
+                    AuthorityInput(
+                        name="customer outbound delivery result",
+                        owner="communications.team_inbox_outbound_intents",
+                        kind=AuthorityKind.OBSERVATION,
+                        source="Team Inbox outbound send result and dedupe identity.",
+                    ),
+                ),
+                transaction_mode=TransactionMode.OWNER_MANAGED,
+                event_types=("team_inbox.queue_notification.changed.v1",),
+                projections=("queue notification next_due_at and delivery status",),
+                test_refs=("tests/test_team_inbox_queue_notifications.py",),
             ),
         ),
         SOTService(

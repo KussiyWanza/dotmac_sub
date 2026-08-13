@@ -32,6 +32,13 @@ class InboxStatusReason(StrEnum):
     field_job_open = "field_job_open"
     field_job_complete = "field_job_complete"
     field_job_queue = "field_job_queue"
+    ai_intake_started = "ai_intake_started"
+    ai_awaiting_clarification = "ai_awaiting_clarification"
+    ai_handoff_accepted = "ai_handoff_accepted"
+    ai_fallback_escalation = "ai_fallback_escalation"
+    ai_human_takeover = "ai_human_takeover"
+    ai_intake_expired = "ai_intake_expired"
+    ai_intake_failed = "ai_intake_failed"
     historical_reconstruction = "historical_reconstruction"
 
 
