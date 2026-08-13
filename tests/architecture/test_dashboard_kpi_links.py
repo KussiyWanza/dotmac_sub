@@ -25,14 +25,7 @@ _STATS = (
 
 
 def _registered_paths() -> set[str]:
-    import asyncio
-
-    from app.main import _load_deferred_api_routers, app
-
-    # Admin web routers are deferred to app startup; run just the deferred
-    # router loader (import + include only — no DB) so the full route table
-    # is registered before checking.
-    asyncio.run(_load_deferred_api_routers(app))
+    from app.main import _DEFERRED_API_ROUTER_SPECS, _load_router_object, app
 
     paths: set[str] = set()
 
@@ -44,6 +37,23 @@ def _registered_paths() -> set[str]:
                 _collect(route.routes, prefix + getattr(route, "path", ""))
 
     _collect(app.routes)
+    # Inspect deferred routers directly. Running the production loader here
+    # mutates the global app and imports modules through asyncio worker threads;
+    # under the parallel architecture suite that can wait indefinitely on
+    # Python's import lock. Dependencies do not alter route paths, so applying
+    # only the mount prefix gives this guard the same path contract without
+    # performing application startup work.
+    for (
+        module_name,
+        attr_name,
+        mount_kind,
+        _dependency_mode,
+    ) in _DEFERRED_API_ROUTER_SPECS:
+        router = _load_router_object(module_name, attr_name)
+        prefix = "/api/v1" if mount_kind == "api" else ""
+        if mount_kind == "admin":
+            prefix = "/admin"
+        _collect(router.routes, prefix)
     return paths
 
 

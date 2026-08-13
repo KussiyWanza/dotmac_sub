@@ -1975,6 +1975,10 @@ Payment creation, settlement, and allocation are one coherent owner contract:
   owner. Historical accounts predating the event/timer path remain repairable
   only through the reviewed targeted one-off command; that command is a
   backfill, not a scheduled decision path.
+  Timer replacement advances from the latest historical generation even after
+  the prior timer fired or was canceled. A later payment therefore cannot reuse
+  generation 1 and collide with immutable timer history while scheduling the
+  account's next healing check.
 - Retired payment-application evidence boundary: the former
   `PaymentPrepaidApplication` runtime is not a current financial or coverage
   owner. Revision `394_retire_payment_prepaid_applications` renames its physical
