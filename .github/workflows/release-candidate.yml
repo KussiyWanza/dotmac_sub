@@ -169,11 +169,36 @@ jobs:
           docker buildx imagetools inspect \
             "${REGISTRY}/${IMAGE_NAME}@${IMAGE_DIGEST}" >/dev/null
 
+      - name: Extract and verify the embedded product manifest
+        id: product-manifest
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          candidate_ref="${REGISTRY}/${IMAGE_NAME}@${IMAGE_DIGEST}"
+          evidence_dir="$RUNNER_TEMP/release-candidate-evidence"
+          manifest_path="$evidence_dir/product-manifest.json"
+          mkdir -p "$evidence_dir"
+          docker pull "$candidate_ref"
+          container_id="$(docker create "$candidate_ref")"
+          cleanup() {
+            docker rm -f "$container_id" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          docker cp "${container_id}:/app/product-manifest.json" "$manifest_path"
+          docker run --rm --entrypoint python "$candidate_ref" \
+            -m scripts.product_manifest verify \
+            --version-file /app/VERSION \
+            --path /app/product-manifest.json
+          product_manifest_digest="sha256:$(sha256sum "$manifest_path" | awk '{print $1}')"
+          echo "digest=$product_manifest_digest" >> "$GITHUB_OUTPUT"
+
       - name: Write typed candidate evidence
         env:
           SOURCE_REVISION: ${{ steps.candidate.outputs.sha }}
           SOURCE_TREE: ${{ steps.candidate.outputs.tree }}
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          PRODUCT_MANIFEST_DIGEST: ${{ steps.product-manifest.outputs.digest }}
           BUILD_RUN_ID: ${{ github.run_id }}
         run: |
           mkdir -p "$RUNNER_TEMP/release-candidate-evidence"
@@ -181,6 +206,7 @@ jobs:
             --source-revision "$SOURCE_REVISION" \
             --source-tree "$SOURCE_TREE" \
             --image-digest "$IMAGE_DIGEST" \
+            --product-manifest-digest "$PRODUCT_MANIFEST_DIGEST" \
             --build-run-id "$BUILD_RUN_ID" \
             --output "$RUNNER_TEMP/release-candidate-evidence/candidate.json"
 
@@ -188,6 +214,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: release-candidate-evidence
-          path: ${{ runner.temp }}/release-candidate-evidence/candidate.json
+          path: |
+            ${{ runner.temp }}/release-candidate-evidence/candidate.json
+            ${{ runner.temp }}/release-candidate-evidence/product-manifest.json
           if-no-files-found: error
           retention-days: 90

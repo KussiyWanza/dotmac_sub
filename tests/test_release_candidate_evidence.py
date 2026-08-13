@@ -11,6 +11,7 @@ from scripts.release_artifact_contract import (
     GitTreeSha,
     MainAuthorizationEvidence,
     OCIImageDigest,
+    ProductManifestDigest,
     ReleaseArtifactEvidence,
     ReleaseCandidateRecord,
     StagingAcceptanceEvidence,
@@ -32,6 +33,7 @@ from scripts.release_candidate_evidence import (
 SOURCE_REVISION = GitCommitSha("1" * 40)
 SOURCE_TREE = GitTreeSha("2" * 40)
 IMAGE_DIGEST = OCIImageDigest("sha256:" + "3" * 64)
+PRODUCT_MANIFEST_DIGEST = ProductManifestDigest("sha256:" + "4" * 64)
 BUILD_RUN_ID = WorkflowRunId(400)
 
 
@@ -43,6 +45,7 @@ def _candidate(
         source_revision=SOURCE_REVISION,
         source_tree=SOURCE_TREE,
         image_digest=IMAGE_DIGEST,
+        product_manifest_digest=PRODUCT_MANIFEST_DIGEST,
         build_run_id=BUILD_RUN_ID,
         source_ci_conclusion=conclusion,
     )
@@ -55,11 +58,12 @@ def test_candidate_evidence_round_trips_exact_typed_identity(tmp_path: Path) -> 
 
     assert read_candidate_evidence(path) == _candidate()
     assert json.loads(path.read_text(encoding="utf-8")) == {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "dotmac.release_candidate",
         "source_revision": SOURCE_REVISION.value,
         "source_tree": SOURCE_TREE.value,
         "image_digest": IMAGE_DIGEST.value,
+        "product_manifest_digest": PRODUCT_MANIFEST_DIGEST.value,
         "build_run_id": BUILD_RUN_ID.value,
         "source_ci_conclusion": "success",
     }

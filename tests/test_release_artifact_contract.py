@@ -16,6 +16,7 @@ from scripts.release_artifact_contract import (
     MigrationStateEvidence,
     OCIImageDigest,
     ProductionEligibilityBlocker,
+    ProductManifestDigest,
     ReleaseArtifactEvidence,
     ReleaseCandidateRecord,
     ReleaseContractError,
@@ -31,6 +32,7 @@ DEV_SHA = GitCommitSha("1" * 40)
 MAIN_SHA = GitCommitSha("2" * 40)
 TREE_SHA = GitTreeSha("3" * 40)
 IMAGE_DIGEST = OCIImageDigest("sha256:" + "4" * 64)
+PRODUCT_MANIFEST_DIGEST = ProductManifestDigest("sha256:" + "6" * 64)
 MIGRATION_DIGEST = MigrationGraphDigest("sha256:" + "5" * 64)
 
 
@@ -42,6 +44,7 @@ def _artifact(
         source_revision=DEV_SHA,
         source_tree=TREE_SHA,
         image_digest=IMAGE_DIGEST,
+        product_manifest_digest=PRODUCT_MANIFEST_DIGEST,
         build_run_id=WorkflowRunId(100),
         source_ci_conclusion=ci,
     )
@@ -116,6 +119,11 @@ def _hotfix(
             ReleaseContractErrorCode.INVALID_IMAGE_DIGEST,
         ),
         (
+            ProductManifestDigest,
+            "sha256:xyz",
+            ReleaseContractErrorCode.INVALID_PRODUCT_MANIFEST_DIGEST,
+        ),
+        (
             MigrationGraphDigest,
             "5" * 64,
             ReleaseContractErrorCode.INVALID_MIGRATION_GRAPH_DIGEST,
@@ -126,6 +134,7 @@ def test_release_identifiers_fail_closed(
     factory: type[GitCommitSha]
     | type[GitTreeSha]
     | type[OCIImageDigest]
+    | type[ProductManifestDigest]
     | type[MigrationGraphDigest],
     value: str,
     code: ReleaseContractErrorCode,

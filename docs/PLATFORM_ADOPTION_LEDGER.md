@@ -3,7 +3,7 @@
 **Status:** Rebaselined 2026-08-02 for slice S1 of the selective kernel-adoption
 plan; amended the same day for slice S2 (dependency pinned — see "S2 acceptance
 claim") and slice S3 (composition declared in `app/composition.py` — see "S3
-acceptance claim"). The pin moved to `dotmac-kernel==0.1.0a42` on 2026-08-12 —
+acceptance claim"). The pin moved to `dotmac-kernel==0.1.0a50` on 2026-08-13 —
 see "Pin history". Supersedes the
 2026-07-19 Phase-0 draft, which was surveyed before the kernel was released and
 against `origin/main` 7807afcd. No code, schema, or dependency change is
@@ -35,7 +35,7 @@ collision inventory re-verified at each rebase rather than assumed to hold:
   so the six then-documented collisions (`parties`, `party_roles`, `roles`,
   `user_credentials`, `audit_events`, `domain_settings`) were unchanged.
 - against the party-identity integration batch through migration 527 and
-  released kernel a42, the lineage-head inventory has nine table-name overlaps,
+  released kernel a50, the lineage-head inventory has nine table-name overlaps,
   classified in
   `dotmac_starter_mt/docs/inventories/sub-lineage-dispositions.md`. Two are the
   intentionally hosted kernel models `tenants` and `tenant_domains`; the other
@@ -71,6 +71,32 @@ schema release can enable RLS safely.
 
 
 ## Pin history
+
+**2026-08-13 — `0.1.0a42` → `0.1.0a50`.** Sub takes the first released
+product-manifest contract rather than following the kernel's latest version by
+default. Protected release run `31696869748` built, inspected, published and
+registry-verified a50. The annotated tag `dotmac-kernel-v0.1.0a50` peels to
+Starter main `461aff83d32d73166625be13e5214718f2ade9cf`. The lock records wheel
+SHA256 `3030954c84c8ed4c4aae877412df4c1f3db0b2e4dd94895f1bd9a3a954fa77371`
+and sdist SHA256
+`87c0df99a33f4d4b79f3e22842166524b3dec9f077af7ad5757e6fb3600274f7`;
+no unrelated locked dependency moves.
+
+a44, a45 and a46 allocate module namespaces only. a47 is breaking because it
+removes `sanitize_branding_css`; Sub imports neither that symbol nor any other
+retired branding-CSS path. a50 adds the pure, import-safe
+`ProductManifestSnapshot` contract consumed by Sub's release adapter. Sub does
+not compose a new kernel migration lineage, import a kernel authority into
+`app/`, or transfer any business owner. Its guarded transitive package surface
+grows from eighteen to nineteen modules because the kernel's supported
+top-level package now imports `dotmac_kernel.product_manifest`.
+
+The model and lineage collision sets are unchanged from a42: the intervening
+namespace allocations and product-manifest contract add no kernel models or
+migrations. The exact seven competing model declarations and nine current
+lineage-head overlaps remain executable ratchets. Kernel a51 is a later
+documentation-only release and is not required by this contract, so Sub does
+not repin merely to follow the newest package number.
 
 **2026-08-12 — `0.1.0a40` → `0.1.0a42`.** The dependency half of audit R1,
 after protected release run `31592573094` published and registry-verified a42
@@ -503,7 +529,7 @@ Rules the guard enforces beyond the module list:
 - `dotmac_kernel.testing.*` is consume-pure for `tests/` and the dev dependency
   group only; it is not on the `app/` allowlist.
 
-## Collision inventory (kernel 0.1.0a42 vs Sub through migration 527)
+## Collision inventory (kernel 0.1.0a50 vs Sub through migration 527)
 
 The authoritative migration-lineage measurement has nine overlaps at current
 lineage head plus one transient name that still needs a chain disposition; see
@@ -745,6 +771,19 @@ capability code, with a red-sensitivity negative control.
 `app/services/sot_registry/registry.py::service_relationship`; a code pointing at
 a nonexistent owner is a test failure. The registry stays the ownership
 authority; the composition module only references it and holds no owner rows.
+
+**2026-08-13 release-bound consumer.** The release image now derives one
+canonical product manifest from this exact `SUB_ASSEMBLY` and the checked-in
+`VERSION` by calling the published a50 contract. The Docker build writes those
+bytes to `/app/product-manifest.json`; because the file is inside the image, the
+OCI digest transitively binds it. The one-time candidate workflow pulls that
+exact digest, extracts the file, verifies it inside the exact image against the
+assembly and version, records its `sha256:` digest in typed schema-v2 candidate
+evidence, and uploads the canonical document beside that evidence. Parsing and
+verification refuse rather than normalize. This creates release evidence for
+the Vendor Control Plane catalogue adapter; it does not grant an entitlement,
+publish a release-catalog attestation by itself, or add a second product
+vocabulary owner.
 
 ## S2 acceptance claim (pinned 2026-08-02)
 
