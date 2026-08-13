@@ -629,7 +629,7 @@ SERVICES: tuple[SOTService, ...] = (
             concerns=(
                 ConcernContract(
                     name="customer-to-dedicated-Quote-Lead resolution",
-                    role=OwnerRole.RESOLVER,
+                    role=OwnerRole.COMMAND_WRITER,
                     input_names=("canonical customer account state",),
                 ),
             ),
