@@ -146,6 +146,7 @@ def _meta_comment_target_validation_error(
         return "meta_comment_target_root_mismatch"
     return None
 
+
 # Per-channel reclaim policy for notifications stuck in "sending" (the worker
 # may have crashed AFTER handing the message to the provider but BEFORE the
 # status commit, so re-sending risks a duplicate). We have no provider-side
@@ -327,7 +328,11 @@ def _deliver_notification_queue_stats(
     # The periodic sweep owns global expiry. An immediate single-row wake-up
     # must remain bounded to the notification the committed Inbox command
     # returned.
-    expired = 0 if notification_id is not None else _expire_stale_notifications(db, now)
+    expired = (
+        0
+        if notification_id is not None
+        else _expire_stale_notifications(db, now)
+    )
 
     candidate_query = _eligible_notification_query(
         db,
