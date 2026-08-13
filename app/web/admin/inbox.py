@@ -2797,6 +2797,12 @@ async def team_inbox_stage_attachments(
         )
     except team_inbox_commands.ConversationNotFoundError:
         return JSONResponse({"error": "Conversation not found."}, status_code=404)
+    except team_inbox_commands.ConversationBusyError as exc:
+        return JSONResponse(
+            {"error": str(exc)},
+            status_code=409,
+            headers={"Retry-After": "2"},
+        )
     except (team_inbox_media.MediaUploadError, ValueError) as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
     return JSONResponse({"attachment_ids": staged})
