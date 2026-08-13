@@ -189,8 +189,13 @@ DOMAIN = DomainSOT(
             owns=(
                 "role catalog and role-permission policy",
                 "permission catalog",
+                "kernel Role identity projection",
             ),
-            depends_on=("events.dispatcher", "observability.audit_log"),
+            depends_on=(
+                "tenancy.operator_tenant",
+                "events.dispatcher",
+                "observability.audit_log",
+            ),
             notes=(
                 "This is the only application and seed writer for roles, "
                 "permissions, and role_permissions. Catalog identities are "
@@ -198,6 +203,12 @@ DOMAIN = DomainSOT(
                 "Permission-policy updates preserve an unchanged legacy role "
                 "name, while new and genuinely renamed roles must use the "
                 "canonical lowercase identifier syntax. "
+                "Migration 528 adds the nullable kernel Role identity on the "
+                "same row; this owner alone writes the operator tenant and "
+                "deterministic slug while roles.name remains authoritative. "
+                "The service-level migration state is SHADOWING for that new "
+                "projection only; established catalog command ownership remains "
+                "complete. "
                 "Assigned identities cannot be renamed or deactivated, and "
                 "non-assignable permissions may be granted only to admin."
             ),
@@ -225,6 +236,16 @@ DOMAIN = DomainSOT(
                         ),
                         canonical_writer="auth.rbac_catalog",
                     ),
+                    ConcernContract(
+                        name="kernel Role identity projection",
+                        role=OwnerRole.PROJECTION_WRITER,
+                        input_names=(
+                            "canonical role and role-permission catalog",
+                            "operator tenant identity",
+                            "deterministic role slug derivation policy",
+                        ),
+                        canonical_writer="auth.rbac_catalog",
+                    ),
                 ),
                 authoritative_inputs=(
                     AuthorityInput(
@@ -247,6 +268,21 @@ DOMAIN = DomainSOT(
                         owner="auth.rbac_catalog",
                         kind=AuthorityKind.AUTHORITATIVE_RECORD,
                         source="permissions",
+                    ),
+                    AuthorityInput(
+                        name="operator tenant identity",
+                        owner="tenancy.operator_tenant",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="The provisioned deterministic Sub operator tenant",
+                    ),
+                    AuthorityInput(
+                        name="deterministic role slug derivation policy",
+                        owner="auth.rbac_catalog",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "derive_role_slug and the typed collision report; no "
+                            "counter or insertion-order disambiguation"
+                        ),
                     ),
                     AuthorityInput(
                         name="system-user role grant references",
@@ -284,7 +320,8 @@ DOMAIN = DomainSOT(
                     boundary=(
                         "Each public catalog command enters "
                         "execute_owner_command on a transaction-free session; "
-                        "the catalog row, complete role-permission policy, "
+                        "the catalog row, nullable kernel identity projection, "
+                        "complete role-permission policy, "
                         "audit evidence, and versioned event commit or roll "
                         "back together. Seed collaborators flush only."
                     ),
@@ -292,6 +329,8 @@ DOMAIN = DomainSOT(
                         "Existing catalog rows and relationship sets are "
                         "selected FOR UPDATE. Case-normalized PostgreSQL unique "
                         "indexes arbitrate concurrent natural-key creation, "
+                        "kernel tenant/slug uniqueness arbitrates projection "
+                        "collisions, "
                         "while grant-reference checks fail closed before rename "
                         "or deactivation."
                     ),
@@ -332,6 +371,7 @@ DOMAIN = DomainSOT(
                     fail_closed_on=(
                         "missing catalog authorization evidence",
                         "case-normalized catalog collisions",
+                        "kernel tenant/slug identity collisions",
                         "rename or deactivation of assigned identities",
                         "protected admin role or permission changes",
                         "non-assignable permission grants outside admin",
@@ -355,36 +395,75 @@ DOMAIN = DomainSOT(
                         "the rebuild inputs."
                     ),
                 ),
+                projections=(
+                    ProjectionContract(
+                        name="Role kernel identity projection",
+                        input_names=(
+                            "canonical role and role-permission catalog",
+                            "operator tenant identity",
+                            "deterministic role slug derivation policy",
+                        ),
+                        writer="auth.rbac_catalog",
+                        freshness=(
+                            "Written on every canonical role mutation in R1; legacy "
+                            "rows remain unprojected until touched or reviewed later."
+                        ),
+                        stale_behavior=(
+                            "roles.name remains authorization authority. A NULL, "
+                            "partial, colliding or mismatched projection blocks "
+                            "kernel reader and lineage cutover."
+                        ),
+                        drift_signal=(
+                            "ck_roles_kernel_identity_projection, kernel composite "
+                            "unique keys, sole-writer architecture guard and the "
+                            "typed role-slug collision report"
+                        ),
+                        rebuild_operation=(
+                            "Re-run a separately reviewed future role-adoption "
+                            "command through auth.rbac_catalog; R1 has no backfill."
+                        ),
+                        repair_owner="auth.rbac_catalog",
+                    ),
+                ),
                 migration=MigrationContract(
-                    state=AuthorityMigrationState.COMPLETE,
+                    # Role/permission command ownership was already complete.
+                    # The service's newest authority expansion is the kernel
+                    # identity projection, and that migration is only shadowing:
+                    # it is nullable, unpopulated for untouched rows and unread.
+                    state=AuthorityMigrationState.SHADOWING,
                     old_owner=(
-                        "app.services.rbac catalog CRUD, "
-                        "app.services.web_system_role_forms, and direct "
-                        "scripts.seed.seed_rbac catalog writers"
+                        "roles.name-only global identity read by every existing "
+                        "authorization path"
                     ),
                     new_owner="auth.rbac_catalog",
                     verification=(
-                        "Focused atomicity, normalization, protected-catalog, "
-                        "API/web adapter, seed, migration, and architecture tests."
+                        "Typed deterministic slug and collision reports, sole-writer "
+                        "guard, dual-write behavior, and PostgreSQL predecessor/fresh "
+                        "migration canaries."
                     ),
                     cutover_gate=(
-                        "Every application and seed catalog write delegates to "
-                        "auth.rbac_catalog and subscriber grant references "
-                        "are owned by auth.subscriber_assignments."
+                        "The reviewed collision and mismatch cohorts are zero, every "
+                        "role has a complete projection, kernel grant semantics have "
+                        "shadow parity, and the atomic revision-0001 rehearsal passes."
                     ),
                     fallback_retirement=(
-                        "Multi-commit role forms and legacy role, permission, "
-                        "and role-permission CRUD writers are removed."
+                        "R1 keeps roles.name authoritative and the kernel identity "
+                        "nullable and unread; legacy identity reads retire only in a "
+                        "later approved cutover."
                     ),
                 ),
                 steward="platform security",
                 design_refs=(
                     "docs/SOT_RELATIONSHIP_MAP.md",
+                    "docs/PLATFORM_ADOPTION_LEDGER.md",
                     "docs/adr/0002-owner-command-transaction-boundary.md",
                     "docs/designs/SOT_CODING_STANDARDS_REFACTOR.md",
                 ),
                 test_refs=(
                     "tests/test_rbac_catalog_owner.py",
+                    "tests/test_roles_r1_kernel_identity.py",
+                    "tests/test_roles_r1_migration.py",
+                    "tests/integration/test_roles_r1_migration.py",
                     "tests/architecture/test_rbac_catalog_boundary.py",
                 ),
             ),
