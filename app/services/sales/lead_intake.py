@@ -569,16 +569,26 @@ def _unknown_conversation(db: Session, conversation_id: UUID) -> InboxConversati
 
 
 def manual_invitation_eligibility(
-    db: Session, conversation_id: UUID
+    db: Session,
+    conversation_id: UUID,
+    *,
+    verify_customer_identity: bool = True,
 ) -> ManualInvitationEligibility:
     conversation = db.get(InboxConversation, conversation_id)
     if conversation is None or not conversation.is_active:
         return ManualInvitationEligibility(False, "Conversation is unavailable.")
-    return _manual_invitation_eligibility(db, conversation)
+    return _manual_invitation_eligibility(
+        db,
+        conversation,
+        verify_customer_identity=verify_customer_identity,
+    )
 
 
 def _manual_invitation_eligibility(
-    db: Session, conversation: InboxConversation
+    db: Session,
+    conversation: InboxConversation,
+    *,
+    verify_customer_identity: bool = True,
 ) -> ManualInvitationEligibility:
     if conversation.status == "resolved":
         return ManualInvitationEligibility(
@@ -599,6 +609,7 @@ def _manual_invitation_eligibility(
     if (
         conversation.channel_type in {"email", "whatsapp"}
         and conversation.contact_address
+        and verify_customer_identity
     ):
         # The Inbox route resolver predates SubscriberContact. Recheck the
         # canonical identity index so a customer's saved contact person is not

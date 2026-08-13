@@ -660,6 +660,18 @@ def test_team_inbox_routes_require_support_permissions():
         "POST",
         "support:ticket:update",
     )
+    assert not _route_has_permission(
+        admin_inbox.router,
+        "/inbox/{conversation_id}/assign-to-me",
+        "POST",
+        "support:ticket:update",
+    )
+    assert _route_has_permission(
+        admin_inbox.router,
+        "/inbox/{conversation_id}/assign-to-me",
+        "POST",
+        "support:inbox:self_assign",
+    )
 
 
 def test_support_ticket_bulk_routes_require_update_permission():

@@ -947,6 +947,7 @@ def bulk_escalate(
     auto_assign: bool = True,
     actor_person_id: str | UUID | None = None,
     reason: str | None = None,
+    require_team_membership: bool = True,
 ) -> dict[str, object]:
     updated: list[str] = []
     skipped: list[dict[str, str]] = []
@@ -968,6 +969,7 @@ def bulk_escalate(
                 person_id=assigned_person_id,
                 assigned_by_person_id=actor_person_id,
                 reason=reason,
+                require_team_membership=require_team_membership,
             )
         elif auto_assign:
             result = team_inbox_assignment.assign_conversation_to_available_agent(
