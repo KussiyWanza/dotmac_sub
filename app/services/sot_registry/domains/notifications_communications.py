@@ -2588,13 +2588,13 @@ DOMAIN = DomainSOT(
                         source="Active assignment, service-team links, and active team membership.",
                     ),
                     AuthorityInput(
-                        name="AI advisory generation result",
+                        name="AI advisory generation control",
                         owner="ai.generation",
-                        kind=AuthorityKind.EXTERNAL_OBSERVATION,
+                        kind=AuthorityKind.CONTROL_INPUT,
                         source="Existing AI engine, gateway, redaction, and AIInsight evidence path.",
                     ),
                 ),
-                transaction_mode=TransactionMode.READ_ONLY,
+                transaction_mode=TransactionMode.COORDINATOR_MANAGED,
                 domain_error_codes=(
                     "communications.team_inbox_ai_polish.access_denied",
                     "communications.team_inbox_ai_polish.unsupported_channel",

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from uuid import UUID
@@ -394,8 +395,26 @@ def _authorized_conversation(
 
 
 def _has_broad_conversation_access(auth: dict[str, object]) -> bool:
-    roles = {str(value) for value in auth.get("roles") or []}
-    scopes = {str(value) for value in auth.get("scopes") or []}
+    raw_roles = auth.get("roles")
+    raw_scopes = auth.get("scopes")
+    roles = {
+        str(value)
+        for value in (
+            raw_roles
+            if isinstance(raw_roles, Iterable) and not isinstance(raw_roles, str)
+            else ()
+        )
+        if not isinstance(value, bytes)
+    }
+    scopes = {
+        str(value)
+        for value in (
+            raw_scopes
+            if isinstance(raw_scopes, Iterable) and not isinstance(raw_scopes, str)
+            else ()
+        )
+        if not isinstance(value, bytes)
+    }
     return bool(
         "admin" in roles
         or "*" in scopes
@@ -426,6 +445,12 @@ def _polish_context(
     business_voice: str,
     channel_guidance: str,
 ) -> dict[str, object]:
+    raw_messages = projection.get("messages")
+    projection_messages = (
+        list(raw_messages)
+        if isinstance(raw_messages, Iterable) and not isinstance(raw_messages, str)
+        else []
+    )
     messages = [
         {
             "label": (
@@ -437,8 +462,8 @@ def _polish_context(
             "body": str(item.get("body") or "")[:_MAX_MESSAGE_CHARS],
             "occurred_at": item.get("occurred_at"),
         }
-        for item in list(projection.get("messages") or [])[-_MAX_CONTEXT_MESSAGES:]
-        if isinstance(item, dict) and str(item.get("body") or "").strip()
+        for item in projection_messages[-_MAX_CONTEXT_MESSAGES:]
+        if isinstance(item, Mapping) and str(item.get("body") or "").strip()
     ]
     return {
         "CONVERSATION_METADATA": {
