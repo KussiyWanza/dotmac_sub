@@ -255,8 +255,11 @@ void main() {
 
   test('flushAll uploads photos before outbox mutations', () async {
     final order = <String>[];
-    adapter.on('POST', '/api/v1/field/attachments', (_) {
+    DioMediaType? uploadedContentType;
+    adapter.on('POST', '/api/v1/field/attachments', (options) {
       order.add('photo');
+      final form = options.data as FormData;
+      uploadedContentType = form.files.single.value.contentType;
       return (201, {'id': 'att-1'});
     });
     adapter.on('POST', '/api/v1/field/jobs/wo-1/transition', (_) {
@@ -284,6 +287,7 @@ void main() {
 
     await sync.flushAll();
     expect(order, ['photo', 'transition']);
+    expect(uploadedContentType?.mimeType, 'image/jpeg');
   });
 
   test(

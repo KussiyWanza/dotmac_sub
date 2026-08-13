@@ -60,7 +60,6 @@ class _CompletionWizardState extends ConsumerState<CompletionWizard> {
   final _signature = SignaturePadController();
   final _signerName = TextEditingController();
   final _fallbackReason = TextEditingController();
-  final _serial = TextEditingController();
   final _summary = TextEditingController();
   bool _finishing = false;
   String _finishError = '';
@@ -115,7 +114,6 @@ class _CompletionWizardState extends ConsumerState<CompletionWizard> {
   void dispose() {
     _signerName.dispose();
     _fallbackReason.dispose();
-    _serial.dispose();
     _summary.dispose();
     super.dispose();
   }
@@ -150,18 +148,6 @@ class _CompletionWizardState extends ConsumerState<CompletionWizard> {
       await ref.read(signatureSinkProvider)(
         workOrderId: widget.jobId,
         png: png,
-      );
-    }
-    if (_serial.text.trim().isNotEmpty) {
-      // Record the installed ONT through the dedicated equipment endpoint,
-      // which links it to the subscriber + work order (not a free-text note).
-      await sync.enqueue(
-        kind: 'equipment',
-        clientRef: 'equip-${DateTime.now().microsecondsSinceEpoch}',
-        payload: {
-          'work_order_id': widget.jobId,
-          'serial_number': _serial.text.trim(),
-        },
       );
     }
     // Push evidence (photos + signature) up first so the complete transition
@@ -252,7 +238,6 @@ class _CompletionWizardState extends ConsumerState<CompletionWizard> {
             signature: _signature,
             signerName: _signerName,
             fallbackReason: _fallbackReason,
-            serial: _serial,
             onSigned: () => _update(
               (s) => s.copyWith(
                 hasSignature: widget.hasExistingSignature || _signature.hasInk,
@@ -533,7 +518,6 @@ class _SignOffStep extends StatelessWidget {
     required this.signature,
     required this.signerName,
     required this.fallbackReason,
-    required this.serial,
     required this.onSigned,
     required this.onFallbackChanged,
     required this.onSignerChanged,
@@ -545,7 +529,6 @@ class _SignOffStep extends StatelessWidget {
   final SignaturePadController signature;
   final TextEditingController signerName;
   final TextEditingController fallbackReason;
-  final TextEditingController serial;
   final VoidCallback onSigned;
   final ValueChanged<String> onFallbackChanged;
   final ValueChanged<String> onSignerChanged;
@@ -587,14 +570,6 @@ class _SignOffStep extends StatelessWidget {
             onChanged: onFallbackChanged,
           ),
         ],
-        const SizedBox(height: 16),
-        TextField(
-          key: const Key('equipment-serial'),
-          controller: serial,
-          decoration: const InputDecoration(
-            labelText: 'Installed ONT serial (optional)',
-          ),
-        ),
       ],
     );
   }

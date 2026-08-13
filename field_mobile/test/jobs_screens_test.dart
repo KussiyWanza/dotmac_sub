@@ -412,6 +412,7 @@ void main() {
     await tester.pump();
 
     expect(find.text('Customer sign-off (optional)'), findsOneWidget);
+    expect(find.byKey(const Key('equipment-serial')), findsNothing);
     final finish = tester.widget<FilledButton>(
       find.byKey(const Key('wizard-finish')),
     );

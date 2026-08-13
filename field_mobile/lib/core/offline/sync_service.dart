@@ -392,6 +392,7 @@ class SyncService {
           'file': MultipartFile.fromBytes(
             await file.readAsBytes(),
             filename: 'photo.jpg',
+            contentType: DioMediaType('image', 'jpeg'),
           ),
           'kind': photo.kind,
           'client_ref': photo.clientRef,
