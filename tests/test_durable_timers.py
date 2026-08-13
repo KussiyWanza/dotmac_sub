@@ -170,6 +170,55 @@ def test_firing_emits_only_the_declared_trigger_and_marks_the_timer(db_session):
     assert payload["entity_id"] == str(entity_id)
 
 
+def test_scheduling_after_fire_continues_the_generation(db_session):
+    """A later business event must not reuse a fired timer's generation."""
+
+    entity_id = uuid4()
+    first = _schedule(db_session, entity_id=entity_id, due_at=NOW)
+    first_id = first.id
+    db_session.commit()
+
+    fire_due_timers(db_session, now=NOW + timedelta(minutes=1), context=_context())
+    db_session.commit()
+
+    second = _schedule(
+        db_session,
+        entity_id=entity_id,
+        due_at=NOW + timedelta(days=1),
+    )
+
+    assert second.generation == 2
+    assert db_session.get(DurableTimer, first_id).status is TimerStatus.fired
+
+
+def test_scheduling_after_cancel_continues_the_generation(db_session):
+    entity_id = uuid4()
+    first = _schedule(db_session, entity_id=entity_id, due_at=NOW)
+    first_id = first.id
+    db_session.commit()
+
+    _in_owner_command(
+        db_session,
+        lambda: cancel_timer(
+            db_session,
+            owner="billing.obligations",
+            entity_kind="billing_obligation",
+            entity_id=entity_id,
+            purpose="renewal",
+        ),
+    )
+    db_session.commit()
+
+    second = _schedule(
+        db_session,
+        entity_id=entity_id,
+        due_at=NOW + timedelta(days=1),
+    )
+
+    assert second.generation == 2
+    assert db_session.get(DurableTimer, first_id).status is TimerStatus.canceled
+
+
 def test_a_timer_that_is_not_due_does_not_fire(db_session):
     entity_id = uuid4()
     _schedule(db_session, entity_id=entity_id, due_at=NOW + timedelta(days=2))
