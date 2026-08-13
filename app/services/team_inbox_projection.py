@@ -284,6 +284,7 @@ SOCIAL_COMMENT_LIST_DEFINITION = ListDefinition(
     fields=(
         ListFieldDefinition("status", "Status", filterable=True),
         ListFieldDefinition("channel_type", "Channel", filterable=True),
+        ListFieldDefinition("unread", "Unread", filterable=True),
         ListFieldDefinition("last_message_at", "Last activity", sortable=True),
         ListFieldDefinition("created_at", "Created", sortable=True),
     ),
@@ -430,7 +431,9 @@ class InboxQueueProjection:
 @dataclass(frozen=True, slots=True)
 class SocialCommentWorkspaceProjection:
     rows: tuple[team_inbox_read.InboxConversationListRow, ...]
+    post_rows: tuple[SocialCommentPostRow, ...]
     selected: InboxConversationProjection | None
+    selected_post: SocialCommentSelectedPostProjection | None
     selected_id: str | None
     count: int
     list_query: ListQuery
@@ -438,9 +441,85 @@ class SocialCommentWorkspaceProjection:
     search: str
     status: str
     channel_type: str
+    unread: bool
     status_options: tuple[str, ...]
     channel_options: tuple[str, ...]
     canonical_url: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class SocialCommentReplyContext:
+    message_id: str
+    channel_type: str
+    provider_account_id: str | None
+    provider_post_id: str | None
+    provider_media_id: str | None
+    provider_comment_id: str | None
+    parent_provider_comment_id: str | None
+    root_provider_comment_id: str | None
+    conversation_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class SocialCommentPostRow:
+    row: team_inbox_read.InboxConversationListRow
+    platform: str
+    thumbnail_url: str | None
+    media_type: str | None
+    latest_activity_summary: str
+
+
+@dataclass(frozen=True, slots=True)
+class SocialCommentNode:
+    message: team_inbox_read.InboxTimelineMessage
+    provider_comment_id: str | None
+    parent_provider_comment_id: str | None
+    root_provider_comment_id: str | None
+    author_name: str
+    author_avatar_url: str | None
+    platform: str
+    is_dotmac_reply: bool
+    can_target_reply: bool
+    reply_context: SocialCommentReplyContext | None
+    replies: tuple[SocialCommentNode, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SocialPostMediaItem:
+    id: str | None
+    url: str | None
+    media_type: str
+    caption: str | None
+    provider: str | None
+    provider_media_id: str | None
+    content_available: bool
+    download_status: str | None
+    unavailable_reason: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class SocialCommentPostHeader:
+    platform: str
+    account_id: str | None
+    post_id: str | None
+    media_id: str | None
+    caption: str
+    published_at: datetime | None
+    comment_count: int
+    status: str
+    permalink_url: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class SocialCommentSelectedPostProjection:
+    timeline: team_inbox_read.InboxConversationTimeline
+    header: SocialCommentPostHeader
+    comments: tuple[SocialCommentNode, ...]
+    media_items: tuple[SocialPostMediaItem, ...]
+    top_level_comment_supported: bool
+    top_level_comment_unavailable_reason: str
+    private_message_supported: bool
+    private_message_unavailable_reason: str
 
 
 def _uuid(value: object) -> UUID | None:
@@ -1349,12 +1428,325 @@ def social_comment_thread_count(db: Session) -> int:
     )
 
 
+def _metadata_text(metadata: Mapping[str, object] | None, *keys: str) -> str | None:
+    if not isinstance(metadata, Mapping):
+        return None
+    for key in keys:
+        value = str(metadata.get(key) or "").strip()
+        if value:
+            return value
+    return None
+
+
+def _social_platform(channel_type: str) -> str:
+    if channel_type == InboxChannelType.instagram_comment.value:
+        return "Instagram"
+    return "Facebook"
+
+
+def _social_post_identifier(
+    timeline: team_inbox_read.InboxConversationTimeline,
+    *keys: str,
+) -> str | None:
+    for message in timeline.messages:
+        value = _metadata_text(message.metadata, *keys)
+        if value:
+            return value
+    return _metadata_text(timeline.metadata, *keys)
+
+
+def _provider_comment_id(
+    message: team_inbox_read.InboxTimelineMessage,
+) -> str | None:
+    return _metadata_text(
+        message.metadata,
+        "provider_comment_id",
+        "comment_id",
+        "provider_message_id",
+    )
+
+
+def _comment_author_name(
+    message: team_inbox_read.InboxTimelineMessage,
+    *,
+    fallback: str,
+) -> str:
+    if message.direction == "outbound":
+        if message.sender is not None and message.sender.display_name:
+            return message.sender.display_name
+        return "Dotmac"
+    return (
+        _metadata_text(message.metadata, "commenter_name", "commenter_username")
+        or message.from_address
+        or fallback
+    )
+
+
+def _comment_avatar_url(
+    message: team_inbox_read.InboxTimelineMessage,
+) -> str | None:
+    metadata = message.metadata or {}
+    profile = metadata.get("contact_profile")
+    if isinstance(profile, Mapping):
+        return _metadata_text(profile, "profile_pic", "avatar_url")
+    return _metadata_text(metadata, "profile_pic", "avatar_url")
+
+
+def _comment_time(message: team_inbox_read.InboxTimelineMessage) -> datetime:
+    return message.received_at or message.sent_at or message.created_at
+
+
+def _media_type(
+    attachment: team_inbox_read.InboxTimelineAttachment,
+) -> str:
+    raw_type = str(attachment.type or "").strip().lower()
+    mime_type = str(attachment.mime_type or "").strip().lower()
+    if raw_type in {"video", "reel"} or mime_type.startswith("video/"):
+        return "video"
+    if raw_type in {"carousel", "album"}:
+        return "carousel"
+    if raw_type == "image" or mime_type.startswith("image/"):
+        return "image"
+    return raw_type or "media"
+
+
+def _social_media_items(
+    timeline: team_inbox_read.InboxConversationTimeline,
+) -> tuple[SocialPostMediaItem, ...]:
+    items: list[SocialPostMediaItem] = []
+    seen: set[tuple[str | None, str | None]] = set()
+    for message in timeline.messages:
+        for attachment in message.attachments:
+            key = (attachment.id, attachment.url or attachment.provider_media_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            content_available = bool(attachment.content_available and attachment.url)
+            items.append(
+                SocialPostMediaItem(
+                    id=attachment.id,
+                    url=attachment.url if content_available else None,
+                    media_type=_media_type(attachment),
+                    caption=attachment.caption,
+                    provider=attachment.provider,
+                    provider_media_id=attachment.provider_media_id,
+                    content_available=content_available,
+                    download_status=attachment.download_status,
+                    unavailable_reason=(
+                        None
+                        if content_available
+                        else attachment.download_error
+                        or "Post media is not available from the synced provider data."
+                    ),
+                )
+            )
+    return tuple(items)
+
+
+def _reply_context(
+    timeline: team_inbox_read.InboxConversationTimeline,
+    message: team_inbox_read.InboxTimelineMessage,
+    *,
+    provider_comment_id: str | None,
+    parent_provider_comment_id: str | None,
+    root_provider_comment_id: str | None,
+) -> SocialCommentReplyContext | None:
+    if not provider_comment_id or message.direction != "inbound":
+        return None
+    return SocialCommentReplyContext(
+        message_id=message.id,
+        channel_type=timeline.channel_type,
+        provider_account_id=_social_post_identifier(
+            timeline,
+            "provider_account_id",
+            "provider_account_scope",
+            "page_id",
+            "instagram_account_id",
+            "ig_account_id",
+        ),
+        provider_post_id=_social_post_identifier(timeline, "post_id"),
+        provider_media_id=_social_post_identifier(timeline, "media_id"),
+        provider_comment_id=provider_comment_id,
+        parent_provider_comment_id=parent_provider_comment_id,
+        root_provider_comment_id=root_provider_comment_id,
+        conversation_id=timeline.id,
+    )
+
+
+def _social_comment_nodes(
+    timeline: team_inbox_read.InboxConversationTimeline,
+) -> tuple[SocialCommentNode, ...]:
+    post_id = _social_post_identifier(timeline, "post_id", "media_id")
+    node_data: dict[str, tuple[team_inbox_read.InboxTimelineMessage, str | None]] = {}
+    children_by_parent: dict[str, list[str]] = {}
+    ordered_ids: list[str] = []
+    synthetic_index = 0
+    for message in timeline.messages:
+        provider_comment_id = _provider_comment_id(message)
+        node_id = provider_comment_id or f"local:{synthetic_index}:{message.id}"
+        synthetic_index += 1
+        parent_provider_comment_id = _metadata_text(
+            message.metadata,
+            "parent_provider_comment_id",
+            "parent_comment_id",
+            "comment_parent_id",
+        )
+        if parent_provider_comment_id == post_id:
+            parent_provider_comment_id = None
+        node_data[node_id] = (message, parent_provider_comment_id)
+        ordered_ids.append(node_id)
+        if parent_provider_comment_id:
+            children_by_parent.setdefault(parent_provider_comment_id, []).append(
+                node_id
+            )
+
+    def root_for(node_id: str) -> str | None:
+        current_id = node_id
+        seen: set[str] = set()
+        while current_id not in seen:
+            seen.add(current_id)
+            _message, parent_id = node_data[current_id]
+            if not parent_id or parent_id not in node_data:
+                return current_id if not current_id.startswith("local:") else None
+            current_id = parent_id
+        return None
+
+    def build(node_id: str) -> SocialCommentNode:
+        message, parent_provider_comment_id = node_data[node_id]
+        provider_comment_id = (
+            node_id
+            if not node_id.startswith("local:")
+            else _provider_comment_id(message)
+        )
+        root_id = root_for(node_id)
+        root_provider_comment_id = (
+            root_id
+            if root_id and not root_id.startswith("local:")
+            else provider_comment_id
+        )
+        reply_context = _reply_context(
+            timeline,
+            message,
+            provider_comment_id=provider_comment_id,
+            parent_provider_comment_id=parent_provider_comment_id,
+            root_provider_comment_id=root_provider_comment_id,
+        )
+        return SocialCommentNode(
+            message=message,
+            provider_comment_id=provider_comment_id,
+            parent_provider_comment_id=parent_provider_comment_id,
+            root_provider_comment_id=root_provider_comment_id,
+            author_name=_comment_author_name(message, fallback=timeline.contact_name),
+            author_avatar_url=_comment_avatar_url(message),
+            platform=_social_platform(timeline.channel_type),
+            is_dotmac_reply=message.direction == "outbound"
+            or _metadata_text(message.metadata, "message_kind")
+            == "social_comment_reply",
+            can_target_reply=reply_context is not None,
+            reply_context=reply_context,
+            replies=tuple(
+                build(child_id)
+                for child_id in sorted(
+                    children_by_parent.get(provider_comment_id or "", []),
+                    key=lambda child_id: _comment_time(node_data[child_id][0]),
+                )
+            ),
+        )
+
+    roots = [
+        node_id
+        for node_id in ordered_ids
+        if not node_data[node_id][1] or node_data[node_id][1] not in node_data
+    ]
+    return tuple(
+        build(node_id)
+        for node_id in sorted(roots, key=lambda item: _comment_time(node_data[item][0]))
+    )
+
+
+def _social_selected_post_projection(
+    selected: InboxConversationProjection,
+) -> SocialCommentSelectedPostProjection:
+    timeline = selected.timeline
+    post_id = _social_post_identifier(timeline, "post_id")
+    media_id = _social_post_identifier(timeline, "media_id")
+    caption = (
+        timeline.subject
+        or _metadata_text(timeline.metadata, "caption", "post_caption")
+        or f"{_social_platform(timeline.channel_type)} post"
+    )
+    return SocialCommentSelectedPostProjection(
+        timeline=timeline,
+        header=SocialCommentPostHeader(
+            platform=_social_platform(timeline.channel_type),
+            account_id=_social_post_identifier(
+                timeline,
+                "page_id",
+                "instagram_account_id",
+                "provider_account_id",
+                "provider_account_scope",
+            ),
+            post_id=post_id,
+            media_id=media_id,
+            caption=caption,
+            published_at=timeline.first_message_at,
+            comment_count=len(timeline.messages),
+            status=timeline.status,
+            permalink_url=_social_post_identifier(
+                timeline, "permalink_url", "permalink"
+            ),
+        ),
+        comments=_social_comment_nodes(timeline),
+        media_items=_social_media_items(timeline),
+        top_level_comment_supported=False,
+        top_level_comment_unavailable_reason=(
+            "Top-level public post comments are not wired through the Team Inbox "
+            "command owner yet. Use targeted replies on synced comments."
+        ),
+        private_message_supported=False,
+        private_message_unavailable_reason=(
+            "Private messaging commenters requires a separate Meta DM capability and "
+            "safe provider identity mapping; this workspace only supports public replies."
+        ),
+    )
+
+
+def _social_post_rows(
+    db: Session,
+    rows: tuple[team_inbox_read.InboxConversationListRow, ...],
+) -> tuple[SocialCommentPostRow, ...]:
+    post_rows: list[SocialCommentPostRow] = []
+    for row in rows:
+        timeline = team_inbox_read.get_conversation_timeline(db, row.id)
+        media_items = _social_media_items(timeline) if timeline is not None else ()
+        thumbnail = next((item for item in media_items if item.url), None)
+        latest_author = ""
+        if timeline is not None and timeline.messages:
+            latest = max(timeline.messages, key=_comment_time)
+            latest_author = _comment_author_name(latest, fallback=row.contact_name)
+        post_rows.append(
+            SocialCommentPostRow(
+                row=row,
+                platform=_social_platform(row.channel_type),
+                thumbnail_url=thumbnail.url if thumbnail is not None else None,
+                media_type=thumbnail.media_type if thumbnail is not None else None,
+                latest_activity_summary=(
+                    f"{latest_author} commented"
+                    if latest_author
+                    else row.latest_message_body or "No comment preview"
+                ),
+            )
+        )
+    return tuple(post_rows)
+
+
 def build_social_comments_projection(
     db: Session,
     *,
     search: str | None = None,
     status: str | None = None,
     channel_type: str | None = None,
+    unread: bool = False,
     selected_conversation_id: str | UUID | None = None,
     actor_person_id: UUID | None = None,
     page: int = 1,
@@ -1366,6 +1758,7 @@ def build_social_comments_projection(
         status if status in {item.value for item in InboxConversationStatus} else None
     )
     clean_channel = channel_type if channel_type in SOCIAL_COMMENT_CHANNELS else None
+    clean_unread = bool(unread)
     safe_per_page = (
         per_page
         if per_page in SOCIAL_COMMENT_LIST_DEFINITION.per_page_options
@@ -1374,6 +1767,7 @@ def build_social_comments_projection(
     normalized_filters = {
         "status": clean_status,
         "channel_type": clean_channel,
+        "unread": "true" if clean_unread else None,
     }
     requested_query = SOCIAL_COMMENT_LIST_DEFINITION.build_query(
         search=search,
@@ -1392,6 +1786,7 @@ def build_social_comments_projection(
             channel_type=clean_channel,
             channel_types=SOCIAL_COMMENT_CHANNELS if clean_channel is None else None,
             operator_person_id=actor_person_id,
+            unread_only=clean_unread,
             order_by=query.sort_by,
             order_dir=query.sort_dir,
             limit=query.per_page,
@@ -1425,12 +1820,19 @@ def build_social_comments_projection(
     ):
         selected = None
         selected_id = None
+    selected_post = (
+        _social_selected_post_projection(selected) if selected is not None else None
+    )
 
     canonical_url = None
     if request_needs_canonicalization(
         list_query,
         search=search,
-        filters={"status": status, "channel_type": channel_type},
+        filters={
+            "status": status,
+            "channel_type": channel_type,
+            "unread": "true" if unread else None,
+        },
         page=page,
         per_page=per_page,
     ):
@@ -1438,9 +1840,12 @@ def build_social_comments_projection(
         if selected_id is not None:
             canonical_url = f"{canonical_url}&conversation_id={selected_id}"
 
+    rows = tuple(result.items)
     return SocialCommentWorkspaceProjection(
-        rows=tuple(result.items),
+        rows=rows,
+        post_rows=_social_post_rows(db, rows),
         selected=selected,
+        selected_post=selected_post,
         selected_id=str(selected_id) if selected_id is not None else None,
         count=result.count,
         list_query=list_query,
@@ -1448,6 +1853,7 @@ def build_social_comments_projection(
         search=list_query.search or "",
         status=clean_status or "",
         channel_type=clean_channel or "",
+        unread=clean_unread,
         status_options=tuple(item.value for item in InboxConversationStatus),
         channel_options=SOCIAL_COMMENT_CHANNELS,
         canonical_url=canonical_url,

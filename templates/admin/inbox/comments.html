@@ -2,9 +2,68 @@
 {% from "admin/inbox/_queue_macros.html" import channel_icon %}
 
 {% macro comment_time(dt) %}{% if dt %}{{ dt.strftime('%b %d, %H:%M') }}{% endif %}{% endmacro %}
+{% macro comment_day(dt) %}{% if dt %}{{ dt.strftime('%b %d') }}{% endif %}{% endmacro %}
+
+{% macro avatar(label, avatar_url, channel_type, size_class="h-9 w-9") %}
+<span class="relative inline-flex {{ size_class }} shrink-0 items-center justify-center overflow-visible rounded-full bg-slate-900 text-[11px] font-bold uppercase text-white dark:bg-slate-700">
+    {% if avatar_url %}
+    <img src="{{ avatar_url }}" alt="" class="h-full w-full rounded-full object-cover" onerror="this.classList.add('hidden'); this.nextElementSibling.classList.remove('hidden');">
+    <span class="hidden">{{ (label or 'C')[:2] }}</span>
+    {% else %}
+    <span>{{ (label or 'C')[:2] }}</span>
+    {% endif %}
+    <span class="absolute -bottom-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-white text-slate-700 ring-1 ring-slate-200 dark:bg-slate-900 dark:text-slate-200 dark:ring-slate-700">
+        <span class="inbox-channel-text" data-inbox-channel="{{ channel_type }}">{{ channel_icon(channel_type, "h-2.5 w-2.5") }}</span>
+    </span>
+</span>
+{% endmacro %}
+
+{% macro render_comment(node, selected_id, can_reply) %}
+<article class="group flex gap-3">
+    {{ avatar(node.author_name, node.author_avatar_url, node.message.channel_type, "h-8 w-8") }}
+    <div class="min-w-0 flex-1">
+        <div class="flex items-start justify-between gap-3">
+            <p class="min-w-0 text-sm leading-6 text-slate-800 dark:text-slate-100">
+                <span class="mr-1 font-semibold text-slate-950 dark:text-white">{{ node.author_name }}</span>
+                {% if node.is_dotmac_reply %}<span class="mr-1 rounded bg-cyan-50 px-1.5 py-0.5 text-[10px] font-bold uppercase text-cyan-700 dark:bg-cyan-950 dark:text-cyan-300">Dotmac</span>{% endif %}
+                {{ node.message.body or "" }}
+            </p>
+        </div>
+        <div class="mt-1 flex flex-wrap items-center gap-3 text-xs font-semibold text-slate-500">
+            <time>{{ comment_time(node.message.received_at or node.message.sent_at or node.message.created_at) }}</time>
+            <span>{{ node.platform }}</span>
+            {% if can_reply and node.can_target_reply and node.reply_context %}
+            <button type="button" class="hover:text-slate-700 dark:hover:text-slate-200" onclick="this.closest('article').querySelector('[data-inline-comment-reply]').classList.toggle('hidden')">Reply</button>
+            {% endif %}
+        </div>
+        {% if can_reply and node.can_target_reply and node.reply_context %}
+        <form method="post" action="/admin/inbox/{{ selected_id }}/reply" data-inline-comment-reply data-target-message="{{ node.reply_context.message_id }}" class="hidden mt-2 max-w-xl rounded-md border border-slate-200 bg-slate-50 p-2 dark:border-slate-800 dark:bg-slate-950" onsubmit="const key=this.querySelector('[name=idempotency_key]'); if(!key.value){key.value='social-comment-reply:'+this.dataset.targetMessage+':'+((window.crypto&&crypto.randomUUID)?crypto.randomUUID():Date.now());} this.querySelector('[type=submit]').disabled=true;">
+            {% include "components/forms/csrf_input.html" %}
+            <input type="hidden" name="next_url" value="/admin/inbox/comments?conversation_id={{ selected_id }}">
+            <input type="hidden" name="reply_to_message_id" value="{{ node.reply_context.message_id }}">
+            <input type="hidden" name="idempotency_key" value="">
+            <div class="flex items-end gap-2">
+                <textarea name="body_text" rows="1" required maxlength="{% if node.reply_context.channel_type == 'instagram_comment' %}2200{% else %}8000{% endif %}" placeholder="Reply publicly to this comment..." class="min-h-10 flex-1 resize-none rounded-md border-slate-300 bg-white text-sm focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 dark:border-slate-700 dark:bg-slate-900 dark:text-white"></textarea>
+                <button type="submit" class="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-cyan-600 text-white hover:bg-cyan-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500" aria-label="Reply to comment">
+                    <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/></svg>
+                </button>
+            </div>
+        </form>
+        {% endif %}
+        {% if node.replies %}
+        <details class="mt-3" open>
+            <summary class="flex cursor-pointer items-center gap-3 text-xs font-semibold text-slate-500 hover:text-slate-700 dark:hover:text-slate-200"><span class="h-px w-8 bg-slate-300 dark:bg-slate-700"></span>View replies ({{ node.replies | length }})</summary>
+            <div class="mt-4 space-y-4 border-l border-slate-200 pl-4 dark:border-slate-800">
+                {% for reply in node.replies %}{{ render_comment(reply, selected_id, can_reply) }}{% endfor %}
+            </div>
+        </details>
+        {% endif %}
+    </div>
+</article>
+{% endmacro %}
 
 {% block title %}Inbox Comments - Admin{% endblock %}
-{% block main_class %}overflow-y-auto bg-slate-100 bg-noise bg-mesh dark:bg-slate-900{% endblock %}
+{% block main_class %}overflow-hidden bg-[#f0f2f5] dark:bg-slate-950{% endblock %}
 
 {% block head %}
 {{ super() }}
@@ -13,164 +72,173 @@
 {% endblock %}
 
 {% block main_body %}
-<div class="mx-auto h-full min-h-0 w-full max-w-none box-border px-4 py-6 sm:px-6 lg:px-8">
-    <div class="flex h-full min-h-0 overflow-hidden rounded-2xl border border-slate-200/60 bg-white shadow-sm dark:border-slate-700/60 dark:bg-slate-900">
-        <aside class="flex w-full min-w-0 shrink-0 flex-col border-r border-slate-200/60 bg-slate-50/50 dark:border-slate-700/60 dark:bg-slate-900/60 md:w-[360px]" aria-label="Social comment posts">
-            <header class="border-b border-slate-200/60 px-5 py-4 dark:border-slate-700/60">
+<div data-inbox-workspace class="box-border h-full min-h-0 w-full px-3 py-4 sm:px-5 lg:px-6">
+    <div class="mx-auto flex h-full min-h-0 max-w-[1800px] overflow-hidden border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
+        <aside class="flex w-full min-w-0 shrink-0 flex-col border-r border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900 md:w-[360px]" aria-label="Social comment posts">
+            <header class="shrink-0 border-b border-slate-200 p-4 dark:border-slate-800">
                 <div class="flex items-center justify-between gap-3">
                     <div class="min-w-0">
-                        <p class="text-[10px] font-bold uppercase tracking-wide text-slate-400">Inbox</p>
-                        <h1 class="truncate font-display text-lg font-bold text-slate-900 dark:text-white">Comments</h1>
+                        <h1 class="truncate text-base font-bold text-slate-950 dark:text-white">Comments</h1>
+                        <p class="mt-0.5 text-xs font-medium text-slate-500">{{ count }} social post thread{% if count != 1 %}s{% endif %}</p>
                     </div>
-                    <a href="/admin/inbox" class="inline-flex min-h-9 items-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-600 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">Inbox</a>
+                    <a href="/admin/inbox" class="inline-flex min-h-8 items-center rounded border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-600 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">Inbox</a>
                 </div>
-                <form method="get" action="/admin/inbox/comments" class="mt-4 space-y-2">
+                <form method="get" action="/admin/inbox/comments" class="mt-3 space-y-3">
                     {% if selected_id %}<input type="hidden" name="conversation_id" value="{{ selected_id }}">{% endif %}
                     <label class="relative block">
-                        <span class="sr-only">Search comments</span>
-                        <svg class="pointer-events-none absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-4.35-4.35M17 11a6 6 0 11-12 0 6 6 0 0112 0z"/></svg>
-                        <input name="search" type="search" value="{{ search }}" placeholder="Search posts or comments..." class="w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-10 pr-4 text-sm text-slate-900 placeholder-slate-400 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 dark:border-slate-600 dark:bg-slate-800/50 dark:text-white">
+                        <span class="sr-only">Search posts and comments</span>
+                        <svg class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-4.35-4.35M17 11a6 6 0 11-12 0 6 6 0 0112 0z"/></svg>
+                        <input name="search" type="search" value="{{ search }}" placeholder="Search" class="h-9 w-full rounded-md border border-slate-300 bg-white pl-9 pr-3 text-sm text-slate-900 placeholder-slate-500 focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 dark:border-slate-700 dark:bg-slate-950 dark:text-white">
                     </label>
                     <div class="grid grid-cols-2 gap-2">
-                        <select name="channel_type" class="h-10 rounded-lg border-slate-200 bg-white text-xs text-slate-700 focus:border-amber-500 focus:ring-amber-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
-                            <option value="">All comment channels</option>
-                            {% for option in channel_options %}<option value="{{ option }}" {% if option == channel_type %}selected{% endif %}>{{ option | replace('_',' ') | title }}</option>{% endfor %}
+                        <label class="sr-only" for="comment-platform-filter">Platform</label>
+                        <select id="comment-platform-filter" name="channel_type" class="h-9 rounded-md border-slate-300 bg-white text-xs text-slate-700 focus:border-cyan-500 focus:ring-cyan-500 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200">
+                            <option value="">All platforms</option>
+                            <option value="instagram_comment" {% if channel_type == 'instagram_comment' %}selected{% endif %}>Instagram</option>
+                            <option value="facebook_comment" {% if channel_type == 'facebook_comment' %}selected{% endif %}>Facebook</option>
                         </select>
-                        <select name="status" class="h-10 rounded-lg border-slate-200 bg-white text-xs text-slate-700 focus:border-amber-500 focus:ring-amber-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
-                            <option value="">All status</option>
-                            {% for option in status_options %}<option value="{{ option }}" {% if option == status %}selected{% endif %}>{{ option | title }}</option>{% endfor %}
+                        <label class="sr-only" for="comment-status-filter">Status</label>
+                        <select id="comment-status-filter" name="status" class="h-9 rounded-md border-slate-300 bg-white text-xs text-slate-700 focus:border-cyan-500 focus:ring-cyan-500 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200">
+                            <option value="">All statuses</option>
+                            <option value="open" {% if status == 'open' %}selected{% endif %}>Open</option>
+                            <option value="pending" {% if status == 'pending' %}selected{% endif %}>Follow up</option>
+                            <option value="resolved" {% if status == 'resolved' %}selected{% endif %}>Resolved</option>
                         </select>
                     </div>
-                    <button type="submit" class="inline-flex min-h-10 w-full items-center justify-center rounded-lg bg-amber-600 px-3 text-xs font-semibold text-white hover:bg-amber-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500">Apply filters</button>
+                    <label class="flex items-center gap-2 text-xs font-semibold text-slate-600 dark:text-slate-300">
+                        <input type="checkbox" name="unread" value="true" {% if unread %}checked{% endif %} class="h-4 w-4 rounded border-slate-300 text-cyan-600 focus:ring-cyan-500">
+                        Unread only
+                    </label>
+                    <button type="submit" class="inline-flex min-h-9 w-full items-center justify-center rounded-md bg-cyan-600 px-3 text-xs font-semibold text-white hover:bg-cyan-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500">Apply filters</button>
                 </form>
             </header>
 
             <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain" data-comment-post-list>
-                {% for row in rows %}
+                {% for post in post_rows %}
+                {% set row = post.row %}
                 {% set active = row.id == selected_id %}
-                <a href="/admin/inbox/comments?conversation_id={{ row.id }}"
-                   class="block border-b border-l-[3px] px-4 py-3.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:border-slate-800/50 {% if active %}border-l-[#F59E0B] bg-gradient-to-r from-[rgba(245,158,11,0.12)] to-[rgba(249,115,22,0.06)]{% else %}border-l-transparent hover:bg-gradient-to-r hover:from-[rgba(245,158,11,0.08)] hover:to-[rgba(249,115,22,0.04)]{% endif %}">
-                    <div class="flex items-start gap-3">
-                        <span class="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-[#314158] to-[#1D293D] text-white">
-                            {{ channel_icon(row.channel_type, "h-5 w-5") }}
+                <a href="{{ list_query.url('/admin/inbox/comments') }}&conversation_id={{ row.id }}"
+                   class="relative flex items-start gap-3 border-b border-l-[3px] border-slate-100 px-3 py-3 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 dark:border-slate-800 dark:hover:bg-slate-800/70 {% if active %}border-l-[#8c3a7c] bg-cyan-50/50 dark:bg-cyan-950/20{% else %}border-l-transparent{% endif %}"
+                   {% if active %}aria-current="page"{% endif %}>
+                    <span class="relative flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-md bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-300">
+                        {% if post.thumbnail_url %}
+                        <img src="{{ post.thumbnail_url }}" alt="" class="h-full w-full object-cover">
+                        {% else %}
+                        {{ channel_icon(row.channel_type, "h-5 w-5") }}
+                        {% endif %}
+                        <span class="absolute -bottom-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-white text-slate-700 ring-1 ring-slate-200 dark:bg-slate-900 dark:text-slate-200 dark:ring-slate-700">
+                            <span class="inbox-channel-text" data-inbox-channel="{{ row.channel_type }}">{{ channel_icon(row.channel_type, "h-2.5 w-2.5") }}</span>
                         </span>
-                        <span class="min-w-0 flex-1">
-                            <span class="flex min-w-0 items-baseline justify-between gap-2">
-                                <span class="truncate text-[13px] font-semibold text-slate-900 dark:text-white">{{ row.subject or row.contact_name or "Social post" }}</span>
-                                <time class="shrink-0 text-[10px] tabular-nums text-slate-400">{{ comment_time(row.latest_message_at or row.last_message_at) }}</time>
+                    </span>
+                    <span class="min-w-0 flex-1">
+                        <span class="flex min-w-0 items-baseline justify-between gap-2">
+                            <span class="truncate pr-2 text-[13px] font-semibold text-slate-950 dark:text-white">{{ row.subject or "Social post" }}</span>
+                            <span class="flex shrink-0 items-center gap-2">
+                                <time class="text-xs tabular-nums text-slate-500">{{ comment_day(row.latest_message_at or row.last_message_at) }}</time>
+                                {% if row.unread_count %}<span class="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-pink-500 px-1 text-[10px] font-bold text-white">{{ row.unread_count }}</span>{% endif %}
                             </span>
-                            <span class="mt-0.5 block truncate text-xs text-slate-500 dark:text-slate-400">{{ row.latest_message_body or "No comment preview" }}</span>
-                            <span class="mt-2 inline-flex rounded-md border border-slate-200 bg-white px-1.5 py-0.5 text-[9px] font-semibold text-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">{{ row.channel_type | replace('_',' ') | title }}</span>
                         </span>
-                    </div>
+                        <span class="mt-0.5 block truncate text-xs {% if row.unread_count %}font-semibold text-slate-900 dark:text-slate-100{% else %}text-slate-500 dark:text-slate-400{% endif %}">{{ post.latest_activity_summary }}</span>
+                        <span class="mt-1.5 flex min-w-0 items-center gap-2">
+                            <span class="inbox-channel-label rounded px-1.5 py-0.5 text-[9px] font-bold" data-inbox-channel="{{ row.channel_type }}">{{ post.platform }}</span>
+                            {% if row.status %}<span class="truncate text-[10px] font-semibold uppercase tracking-wide text-slate-400">{{ row.status }}</span>{% endif %}
+                        </span>
+                    </span>
                 </a>
                 {% else %}
                 <div class="px-5 py-10 text-center">
                     <p class="text-sm font-semibold text-slate-700 dark:text-slate-200">No comment posts found</p>
-                    <p class="mt-1 text-xs text-slate-500">New Facebook and Instagram post comments will appear here.</p>
+                    <p class="mt-1 text-xs text-slate-500">Synced Facebook and Instagram posts with comments will appear here.</p>
                 </div>
                 {% endfor %}
             </div>
 
             {% if page_meta.total_items > 0 %}
             <nav class="flex shrink-0 items-center justify-between border-t border-slate-200 px-4 py-2.5 text-xs font-semibold dark:border-slate-800" aria-label="Comment post pagination">
-                {% if page_meta.has_previous %}
-                <a href="{{ list_query.url('/admin/inbox/comments', page=page_meta.page - 1) }}{% if selected_id %}&conversation_id={{ selected_id }}{% endif %}" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">Back</a>
-                {% else %}<span></span>{% endif %}
+                {% if page_meta.has_previous %}<a href="{{ list_query.url('/admin/inbox/comments', page=page_meta.page - 1) }}{% if selected_id %}&conversation_id={{ selected_id }}{% endif %}" class="rounded border border-slate-300 bg-white px-3 py-2 text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">Back</a>{% else %}<span></span>{% endif %}
                 <span class="tabular-nums text-slate-500">Page {{ page_meta.page }} of {{ page_meta.total_pages }}</span>
-                {% if page_meta.has_next %}
-                <a href="{{ list_query.url('/admin/inbox/comments', page=page_meta.page + 1) }}{% if selected_id %}&conversation_id={{ selected_id }}{% endif %}" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">Next</a>
-                {% else %}<span></span>{% endif %}
+                {% if page_meta.has_next %}<a href="{{ list_query.url('/admin/inbox/comments', page=page_meta.page + 1) }}{% if selected_id %}&conversation_id={{ selected_id }}{% endif %}" class="rounded border border-slate-300 bg-white px-3 py-2 text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">Next</a>{% else %}<span></span>{% endif %}
             </nav>
             {% endif %}
         </aside>
 
-        <main class="hidden min-w-0 flex-1 flex-col overflow-hidden md:flex" aria-live="polite">
-            {% if selected %}
-            {% set post_meta = selected.metadata or {} %}
-            {% set media = namespace(url='', type='') %}
-            {% for message in selected.messages %}
-                {% for attachment in message.attachments %}
-                    {% if not media.url and attachment.url %}
-                        {% set media.url = attachment.url %}
-                        {% set media.type = attachment.type or 'media' %}
-                    {% endif %}
-                {% endfor %}
-            {% endfor %}
-            <header class="flex min-h-[5.5rem] items-center justify-between gap-4 border-b border-slate-200/60 px-5 dark:border-slate-700/60">
-                <div class="min-w-0">
-                    <div class="flex items-center gap-2">
-                        <span class="inbox-channel-label rounded-lg px-2 py-1 text-[10px] font-semibold" data-inbox-channel="{{ selected.channel_type }}">{{ selected.channel_type | replace('_',' ') | title }}</span>
-                        <span class="text-[10px] font-semibold uppercase tracking-wide text-slate-400">{{ selected.status }}</span>
+        <main class="hidden min-w-0 flex-1 flex-col overflow-hidden bg-white dark:bg-slate-900 md:flex" aria-live="polite">
+            {% if selected_post %}
+            <header class="flex min-h-[4.75rem] shrink-0 items-center justify-between gap-4 border-b border-slate-200 px-4 dark:border-slate-800">
+                <div class="flex min-w-0 items-center gap-3">
+                    {{ avatar(selected_post.header.platform, none, selected_post.timeline.channel_type, "h-12 w-12") }}
+                    <div class="min-w-0">
+                        <h2 class="truncate text-[15px] font-bold text-slate-950 dark:text-white">{{ selected_post.header.caption }}</h2>
+                        <p class="mt-0.5 truncate text-xs text-slate-500">
+                            <span>{{ selected_post.header.platform }}</span>
+                            {% if selected_post.header.account_id %}<span class="mx-1">.</span><span>{{ selected_post.header.account_id }}</span>{% endif %}
+                            <span class="mx-1">.</span><span>{{ selected_post.header.comment_count }} comments</span>
+                            {% if selected_post.header.published_at %}<span class="mx-1">.</span><span>{{ comment_day(selected_post.header.published_at) }}</span>{% endif %}
+                            <span class="mx-1">.</span><span>{{ selected_post.header.status }}</span>
+                        </p>
                     </div>
-                    <h2 class="mt-1 truncate font-display text-lg font-bold text-slate-900 dark:text-white">{{ selected.subject or selected.contact_name or "Social post comments" }}</h2>
-                    <p class="truncate text-xs text-slate-500">{{ selected.external_thread_id or post_meta.post_id or post_meta.media_id or "" }}</p>
                 </div>
-                <a href="/admin/inbox?conversation_id={{ selected.id }}" class="inline-flex min-h-10 shrink-0 items-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-600 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">Open thread</a>
+                <a href="/admin/inbox?conversation_id={{ selected_post.timeline.id }}" class="group relative inline-flex h-8 w-8 shrink-0 items-center justify-center rounded border border-slate-300 bg-white text-slate-600 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300" aria-label="Open full inbox thread">
+                    <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                    <span role="tooltip" class="pointer-events-none absolute right-0 top-full z-20 mt-2 hidden whitespace-nowrap rounded bg-slate-950 px-2 py-1 text-[11px] font-semibold text-white shadow-lg group-hover:block group-focus-visible:block dark:bg-white dark:text-slate-950">Open full inbox thread</span>
+                </a>
             </header>
-            <div class="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_minmax(360px,460px)] overflow-hidden">
-                <section class="min-h-0 overflow-y-auto border-r border-slate-200/60 bg-slate-950/5 p-4 dark:border-slate-700/60 dark:bg-slate-950/30" aria-label="Post media">
-                    {% if media.url %}
-                    <div class="mx-auto max-w-3xl overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900">
-                        {% if media.type == "video" %}
-                        <video src="{{ media.url }}" controls class="block max-h-[70vh] w-full bg-black"></video>
-                        {% else %}
-                        <img src="{{ media.url }}" alt="" class="block max-h-[70vh] w-full object-contain bg-black">
-                        {% endif %}
-                    </div>
-                    {% else %}
-                    <div class="mx-auto flex min-h-[22rem] max-w-3xl items-center justify-center rounded-xl border border-dashed border-slate-300 bg-white text-center dark:border-slate-700 dark:bg-slate-900">
-                        <div>
-                            <p class="text-sm font-semibold text-slate-700 dark:text-slate-200">No post media captured</p>
-                            <p class="mt-1 text-xs text-slate-500">Comments are available even when Meta only sends comment metadata.</p>
-                        </div>
-                    </div>
-                    {% endif %}
-                </section>
-                <section class="flex min-h-0 flex-col bg-white dark:bg-slate-900" aria-label="Post comments">
-                    <div class="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-                        <div class="space-y-4">
-                            {% for message in selected.messages %}
-                            {% set meta = message.metadata or {} %}
-                            {% set is_reply = meta.parent_provider_comment_id or meta.parent_comment_id or meta.comment_parent_id %}
-                            <article class="flex gap-3 {% if is_reply %}ml-10 border-l border-slate-200 pl-4 dark:border-slate-700{% endif %}">
-                                <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-900 text-[11px] font-bold uppercase text-white dark:bg-slate-700">{{ (message.from_address or selected.contact_initials or 'C')[:2] }}</span>
-                                <div class="min-w-0 flex-1">
-                                    <div class="rounded-2xl bg-slate-100 px-3 py-2 dark:bg-slate-800">
-                                        <p class="text-xs font-bold text-slate-900 dark:text-white">{{ meta.commenter_name or meta.commenter_username or message.from_address or selected.contact_name }}</p>
-                                        <p class="mt-1 whitespace-pre-wrap text-sm leading-5 text-slate-800 dark:text-slate-100">{{ message.body or "" }}</p>
-                                    </div>
-                                    <div class="mt-1 flex items-center gap-3 px-2 text-[11px] font-semibold text-slate-400">
-                                        <time>{{ comment_time(message.received_at or message.sent_at or message.created_at) }}</time>
-                                        {% if is_reply %}<span>Reply</span>{% else %}<span>Parent comment</span>{% endif %}
-                                    </div>
-                                    {% if can(request, 'support:ticket:update') and message.direction == 'inbound' %}
-                                    <form method="post" action="/admin/inbox/{{ selected.id }}/reply" class="mt-2 rounded-xl border border-slate-200 bg-white p-2 dark:border-slate-700 dark:bg-slate-900">
-                                        {% include "components/forms/csrf_input.html" %}
-                                        <input type="hidden" name="next_url" value="/admin/inbox/comments?conversation_id={{ selected.id }}">
-                                        <input type="hidden" name="reply_to_message_id" value="{{ message.id }}">
-                                        <div class="flex items-end gap-2">
-                                            <textarea name="body_text" rows="1" placeholder="Reply to this comment..." class="min-h-[42px] flex-1 resize-none rounded-lg border-slate-300 bg-white text-sm focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 dark:border-slate-700 dark:bg-slate-950 dark:text-white"></textarea>
-                                            <button type="submit" class="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-gradient-to-r from-[#06B6D4] to-[#0891B2] text-white hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500" aria-label="Reply to comment">
-                                                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/></svg>
-                                            </button>
-                                        </div>
-                                    </form>
-                                    {% endif %}
-                                </div>
-                            </article>
+
+            <div class="flex min-h-0 flex-1 overflow-hidden">
+                <section class="flex min-w-0 flex-1 flex-col overflow-hidden bg-white dark:bg-slate-900" aria-label="Post comments">
+                    <div class="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+                        <div class="space-y-5">
+                            {% for node in selected_post.comments %}
+                            {{ render_comment(node, selected_post.timeline.id, can(request, 'support:ticket:update') and selected.action_eligibility.can_reply if selected else false) }}
                             {% else %}
-                            <p class="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-500 dark:border-slate-700 dark:bg-slate-800/40">No comments captured for this post.</p>
+                            <p class="rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-950">No comments captured for this post.</p>
                             {% endfor %}
                         </div>
                     </div>
+                    <div class="shrink-0 border-t border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+                        <div class="rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300">
+                            <p class="font-semibold text-slate-800 dark:text-slate-100">Top-level public comments unavailable</p>
+                            <p class="mt-1 text-xs">{{ selected_post.top_level_comment_unavailable_reason }}</p>
+                        </div>
+                    </div>
                 </section>
+
+                <aside class="hidden w-[320px] shrink-0 border-l border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900 xl:flex xl:flex-col" aria-label="Post media">
+                    {% if selected_post.media_items %}
+                    <div class="min-h-0 flex-1 overflow-y-auto p-3">
+                        <div class="flex snap-x gap-3 overflow-x-auto pb-3" aria-label="Post media carousel">
+                            {% for item in selected_post.media_items %}
+                            <figure class="w-full min-w-full snap-center overflow-hidden rounded-md border border-slate-200 bg-slate-950 dark:border-slate-800">
+                                {% if item.content_available and item.url and item.media_type == 'video' %}
+                                <video src="{{ item.url }}" controls preload="metadata" playsinline class="block max-h-[calc(100dvh-11rem)] w-full bg-black object-contain" onerror="this.classList.add('hidden'); this.nextElementSibling.style.display='flex';"></video>
+                                <div class="min-h-[18rem] items-center justify-center p-5 text-center text-sm text-slate-300" style="display: none;">Media unavailable.</div>
+                                {% elif item.content_available and item.url %}
+                                <img src="{{ item.url }}" alt="{{ item.caption or 'Post media' }}" class="block max-h-[calc(100dvh-11rem)] w-full bg-black object-contain" onerror="this.classList.add('hidden'); this.nextElementSibling.style.display='flex';">
+                                <div class="min-h-[18rem] items-center justify-center p-5 text-center text-sm text-slate-300" style="display: none;">Media unavailable.</div>
+                                {% else %}
+                                <div class="flex min-h-[18rem] items-center justify-center p-5 text-center text-sm text-slate-300">{{ item.unavailable_reason or 'Media unavailable.' }}</div>
+                                {% endif %}
+                                {% if item.caption %}<figcaption class="bg-white px-3 py-2 text-xs text-slate-600 dark:bg-slate-900 dark:text-slate-300">{{ item.caption }}</figcaption>{% endif %}
+                            </figure>
+                            {% endfor %}
+                        </div>
+                        {% if selected_post.media_items | length > 1 %}<p class="text-center text-xs font-semibold text-slate-500">Scroll to view carousel media</p>{% endif %}
+                    </div>
+                    {% else %}
+                    <div class="flex h-full min-h-[18rem] items-center justify-center p-5 text-center">
+                        <div>
+                            <p class="text-sm font-semibold text-slate-700 dark:text-slate-200">Post media unavailable</p>
+                            <p class="mt-1 text-xs text-slate-500">No cached or provider-resolved media is attached to this synced post thread.</p>
+                        </div>
+                    </div>
+                    {% endif %}
+                </aside>
             </div>
             {% else %}
             <div class="flex flex-1 items-center justify-center p-8 text-center">
                 <div>
                     <p class="text-sm font-semibold text-slate-700 dark:text-slate-200">Select a post</p>
-                    <p class="mt-1 text-xs text-slate-500">Choose a Facebook or Instagram comment thread to view the post media and comment replies.</p>
+                    <p class="mt-1 text-xs text-slate-500">Choose a synced Facebook or Instagram post to view its comments.</p>
                 </div>
             </div>
             {% endif %}

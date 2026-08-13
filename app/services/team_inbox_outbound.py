@@ -406,12 +406,7 @@ def _social_comment_reply_target(
     messages: list[InboxMessage],
     payload: InboxReplyPayload,
 ) -> InboxMessage | None:
-    reply_to = (payload.metadata or {}).get("reply_to")
-    reply_to_id = (
-        _coerce_uuid(str(reply_to.get("message_id") or ""))
-        if isinstance(reply_to, dict)
-        else None
-    )
+    reply_to_id = _social_comment_reply_target_id(payload)
     if reply_to_id is not None:
         return next(
             (
@@ -429,6 +424,15 @@ def _social_comment_reply_target(
             if message.direction == InboxMessageDirection.inbound.value
         ),
         None,
+    )
+
+
+def _social_comment_reply_target_id(payload: InboxReplyPayload) -> UUID | None:
+    reply_to = (payload.metadata or {}).get("reply_to")
+    return (
+        _coerce_uuid(str(reply_to.get("message_id") or ""))
+        if isinstance(reply_to, dict)
+        else None
     )
 
 
@@ -464,7 +468,15 @@ def _send_social_comment_reply(
         .order_by(InboxMessage.created_at.asc())
         .all()
     )
+    requested_reply_to_id = _social_comment_reply_target_id(payload)
     inbound = _social_comment_reply_target(messages, payload)
+    if requested_reply_to_id is not None and inbound is None:
+        return InboxReplyResult(
+            kind="invalid_reply_target",
+            conversation_id=str(conversation.id),
+            reason="Targeted public replies must target an inbound social comment.",
+        )
+    inbound_metadata = dict(inbound.metadata_ or {}) if inbound is not None else {}
     provider_comment_id = (
         str(inbound.external_message_id or "").strip() if inbound is not None else ""
     ) or _social_value(
@@ -490,6 +502,24 @@ def _send_social_comment_reply(
             conversation_id=str(conversation.id),
             reason="This comment is missing its Meta reply details.",
         )
+    provider_post_id = str(
+        inbound_metadata.get("post_id") or ""
+    ).strip() or _social_value(
+        conversation,
+        messages,
+        "post_id",
+    )
+    provider_media_id = str(
+        inbound_metadata.get("media_id") or ""
+    ).strip() or _social_value(
+        conversation,
+        messages,
+        "media_id",
+    )
+    root_provider_comment_id = (
+        str(inbound_metadata.get("parent_provider_comment_id") or "").strip()
+        or provider_comment_id
+    )
 
     channel = (
         NotificationChannel.facebook_comment
@@ -512,6 +542,10 @@ def _send_social_comment_reply(
             "provider": "meta",
             "provider_account_id": account_id,
             "parent_provider_comment_id": provider_comment_id,
+            "root_provider_comment_id": root_provider_comment_id,
+            "provider_post_id": provider_post_id or None,
+            "provider_media_id": provider_media_id or None,
+            "target_inbox_message_id": str(inbound.id) if inbound is not None else None,
         },
     )
 
