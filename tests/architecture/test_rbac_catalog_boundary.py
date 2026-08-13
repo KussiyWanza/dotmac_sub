@@ -16,6 +16,7 @@ ADMIN_ADAPTER = PROJECT_ROOT / "app" / "web" / "admin" / "system.py"
 ROLE_FORM = PROJECT_ROOT / "app" / "services" / "web_system_role_forms.py"
 SEED = PROJECT_ROOT / "scripts" / "seed" / "seed_rbac.py"
 TEST_SEED = PROJECT_ROOT / "scripts" / "seed" / "seed_test_fixtures.py"
+APPLICATION_ROOTS = (PROJECT_ROOT / "app", PROJECT_ROOT / "scripts")
 MIGRATION = (
     PROJECT_ROOT / "alembic" / "versions" / "385_rbac_catalog_normalized_identity.py"
 )
@@ -51,6 +52,49 @@ def _function_calls(path: Path, names: set[str]) -> set[str]:
     return calls
 
 
+def _kernel_role_identity_writes(source: str, *, filename: str) -> set[str]:
+    """Find direct writes to the two derived Role identity columns.
+
+    A module that imports the RBAC `Role` model may not construct either field
+    or assign either attribute outside the canonical owner. Limiting attribute
+    detection to Role-importing modules avoids treating every unrelated
+    `tenant_id`/`slug` assignment in this large application as an RBAC write.
+    """
+
+    tree = ast.parse(source, filename=filename)
+    imports_role = any(
+        isinstance(node, ast.ImportFrom)
+        and node.module == "app.models.rbac"
+        and any(alias.name == "Role" for alias in node.names)
+        for node in ast.walk(tree)
+    )
+    if not imports_role:
+        return set()
+
+    writes: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            if node.func.id == "Role":
+                writes.update(
+                    keyword.arg
+                    for keyword in node.keywords
+                    if keyword.arg in {"slug", "tenant_id"}
+                )
+        targets: list[ast.expr] = []
+        if isinstance(node, ast.Assign):
+            targets.extend(node.targets)
+        elif isinstance(node, ast.AnnAssign):
+            targets.append(node.target)
+        for target in targets:
+            for child in ast.walk(target):
+                if isinstance(child, ast.Attribute) and child.attr in {
+                    "slug",
+                    "tenant_id",
+                }:
+                    writes.add(child.attr)
+    return writes
+
+
 def test_catalog_owner_uses_one_verified_transaction_boundary() -> None:
     source = OWNER.read_text(encoding="utf-8")
     calls = _calls(OWNER)
@@ -71,6 +115,38 @@ def test_legacy_forms_and_seed_no_longer_construct_catalog_rows() -> None:
     assert "rbac_catalog.ensure_role" in seed_source
     assert "rbac_catalog.ensure_permission" in seed_source
     assert "rbac_catalog.replace_seeded_role_permissions" in seed_source
+
+
+def test_kernel_role_identity_projection_has_one_application_writer() -> None:
+    writers: dict[Path, set[str]] = {}
+    for root in APPLICATION_ROOTS:
+        for path in root.rglob("*.py"):
+            found = _kernel_role_identity_writes(
+                path.read_text(encoding="utf-8"), filename=str(path)
+            )
+            if found:
+                writers[path.relative_to(PROJECT_ROOT)] = found
+
+    assert writers == {
+        Path("app/services/rbac_catalog.py"): {"slug", "tenant_id"},
+    }
+
+
+def test_kernel_role_identity_writer_guard_is_sensitive() -> None:
+    source = """
+from app.models.rbac import Role
+
+def parallel_writer(role: Role) -> None:
+    role.slug = "shadow"
+    role.tenant_id = None
+
+def parallel_constructor() -> Role:
+    return Role(name="shadow", slug="shadow")
+"""
+    assert _kernel_role_identity_writes(source, filename="canary.py") == {
+        "slug",
+        "tenant_id",
+    }
 
 
 def test_api_and_admin_catalog_adapters_delegate_without_persistence() -> None:
