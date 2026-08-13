@@ -67,12 +67,14 @@ def test_profile_cleanup_is_disabled_by_default(db_session):
 
 def test_profile_cleanup_saves_missing_fields_and_audit_evidence(db_session):
     subscriber = _subscriber(db_session, _house_reseller(db_session))
+    subscriber_id = subscriber.id
+    db_session.commit()
 
     result = submit_profile_cleanup(
         db_session,
         SubmitProfileCleanupCommand(
             context=_context(),
-            subscriber_id=subscriber.id,
+            subscriber_id=subscriber_id,
             source_conversation_id=uuid4(),
             candidate_gender="male",
             candidate_date_of_birth=date(1990, 1, 2),
@@ -81,7 +83,7 @@ def test_profile_cleanup_saves_missing_fields_and_audit_evidence(db_session):
         ),
     )
 
-    updated = db_session.get(Subscriber, subscriber.id)
+    updated = db_session.get(Subscriber, subscriber_id)
     verifications = db_session.query(SubscriberFieldVerification).all()
     assert result.outcome is ProfileCleanupOutcome.saved
     assert set(result.saved_fields) == {"gender", "date_of_birth"}
@@ -96,12 +98,14 @@ def test_profile_cleanup_excludes_non_house_reseller_customer(db_session):
     db_session.add(reseller)
     db_session.flush()
     subscriber = _subscriber(db_session, reseller)
+    subscriber_id = subscriber.id
+    db_session.commit()
 
     result = submit_profile_cleanup(
         db_session,
         SubmitProfileCleanupCommand(
             context=_context(),
-            subscriber_id=subscriber.id,
+            subscriber_id=subscriber_id,
             source_conversation_id=uuid4(),
             candidate_gender="female",
             activation_enabled=True,

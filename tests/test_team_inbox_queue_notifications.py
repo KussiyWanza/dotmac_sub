@@ -11,6 +11,7 @@ from app.models.team_inbox import (
 from app.services import team_inbox_queue_notifications
 from app.services.owner_commands import CommandContext
 from app.services.team_inbox_assignment import queue_conversation_for_team
+from app.services.team_inbox_outbound import InboxReplyResult
 
 
 def _team(db_session) -> ServiceTeam:
@@ -52,9 +53,22 @@ def test_initial_queue_notice_is_recorded_once_per_queue_lifecycle(db_session):
     assert notice.status in {"sent", "failed"}
 
 
+def _queue_delivery_succeeds(monkeypatch) -> None:
+    monkeypatch.setattr(
+        team_inbox_queue_notifications.team_inbox_outbound,
+        "send_ai_intake_message",
+        lambda _db, *, conversation, **_kwargs: InboxReplyResult(
+            kind="queued",
+            conversation_id=str(conversation.id),
+            message_id=str(uuid4()),
+        ),
+    )
+
+
 def test_queue_notification_sweep_uses_next_due_and_sends_heartbeat_once(
-    db_session,
+    db_session, monkeypatch
 ):
+    _queue_delivery_succeeds(monkeypatch)
     team = _team(db_session)
     conversation = _conversation(db_session)
     now = datetime(2026, 8, 12, 10, 0, tzinfo=UTC)
@@ -120,7 +134,8 @@ def test_queue_notification_sweep_uses_next_due_and_sends_heartbeat_once(
     assert duplicate.sent == 0
 
 
-def test_queue_notification_sends_changed_position_update_once(db_session):
+def test_queue_notification_sends_changed_position_update_once(db_session, monkeypatch):
+    _queue_delivery_succeeds(monkeypatch)
     team = _team(db_session)
     first_conversation = _conversation(db_session)
     second_conversation = _conversation(db_session)

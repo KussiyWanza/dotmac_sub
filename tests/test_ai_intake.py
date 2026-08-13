@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.models.ai_intake import AiIntakeConfig
+from app.models.service_team import ServiceTeam
 from app.schemas.ai_intake import (
     CUSTOMER_TYPE_FOLLOW_UP_QUESTION,
     AiIntakeContextMessage,
@@ -66,6 +67,15 @@ def _config(db_session, **overrides) -> AiIntakeConfig:
         "metadata_": {},
     }
     values.update(overrides)
+    if values["is_enabled"] and "fallback_team_id" not in overrides:
+        fallback = ServiceTeam(
+            name=f"AI Intake Fallback {len(db_session.new)}",
+            team_type="support",
+            is_active=True,
+        )
+        db_session.add(fallback)
+        db_session.flush()
+        values["fallback_team_id"] = fallback.id
     row = AiIntakeConfig(**values)
     db_session.add(row)
     db_session.flush()
