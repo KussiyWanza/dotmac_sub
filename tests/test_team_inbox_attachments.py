@@ -186,6 +186,16 @@ def test_pending_assets_are_listed_until_a_message_carries_them(db_session):
             team_inbox_projection.InboxMediaBrowserPresentation.inline,
         ),
         (
+            "video/mp4",
+            "video/mp4",
+            team_inbox_projection.InboxMediaBrowserPresentation.inline,
+        ),
+        (
+            "audio/mpeg",
+            "audio/mpeg",
+            team_inbox_projection.InboxMediaBrowserPresentation.inline,
+        ),
+        (
             "image/png",
             "text/html",
             team_inbox_projection.InboxMediaBrowserPresentation.attachment,
@@ -231,6 +241,35 @@ def test_media_content_selects_a_safe_browser_presentation(
     assert content.presentation is expected_presentation
     assert content.content_type == response_content_type.split(";", 1)[0]
     assert content.file_name == "customer-image.png"
+
+
+def test_remote_media_streaming_requires_known_provider_and_host(db_session):
+    conversation_id = _conversation_id(db_session)
+    trusted = InboxMediaAsset(
+        conversation_id=conversation_id,
+        channel_type="instagram_comment",
+        direction="inbound",
+        asset_type="video",
+        file_name="clip.mp4",
+        mime_type="video/mp4",
+        provider="instagram",
+        source_url="https://scontent.cdninstagram.com/v/t50.2886-16/clip.mp4",
+        download_status="remote_available",
+    )
+    untrusted = InboxMediaAsset(
+        conversation_id=conversation_id,
+        channel_type="email",
+        direction="inbound",
+        asset_type="video",
+        file_name="clip.mp4",
+        mime_type="video/mp4",
+        provider="email",
+        source_url="https://example.test/clip.mp4",
+        download_status="remote_available",
+    )
+
+    assert team_inbox_media.can_stream_remote_media(trusted) is True
+    assert team_inbox_media.can_stream_remote_media(untrusted) is False
 
 
 @pytest.mark.parametrize(
