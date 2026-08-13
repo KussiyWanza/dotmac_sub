@@ -54,6 +54,21 @@ collision inventory re-verified at each rebase rather than assumed to hold:
 The recon is re-run on every pin and Sub model change because a stale inventory
 would silently under-report the very risk the S7 ADR gate exists to hold.
 
+**2026-08-13 — S7 GUC predecessor, no RLS activation.** Sub's existing
+session/transaction authority now applies its one deterministic operator tenant
+to every PostgreSQL SQLAlchemy root transaction through a transaction-local
+GUC. The owner lives in `app.services.operator_tenant`; the global
+`after_begin` hook is a lifecycle adapter that also covers direct sessions in
+tasks, workers, CLIs and scripts. The PostgreSQL canary proves reapplication
+after both commit and rollback and proves the setting does not survive for the
+same pooled connection's next transaction.
+
+This does not import `dotmac_kernel.db`, activate FORCE RLS, compose the kernel
+migration lineage, move the revision-0001 ratchet, backfill Party projections,
+or authorise deployment. Because Sub deploys migrations before the new image,
+this GUC behavior must be present in the deployed predecessor before a later
+schema release can enable RLS safely.
+
 
 ## Pin history
 

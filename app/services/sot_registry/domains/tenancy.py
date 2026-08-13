@@ -27,9 +27,10 @@ DOMAIN = DomainSOT(
             owns=(
                 "operator tenant identity",
                 "operator tenant provisioning",
+                "operator tenant transaction scope installation",
                 "single-tenant deployment invariant",
             ),
-            depends_on=(),
+            depends_on=("runtime.db_sessions",),
             notes=(
                 "ADR-0009. Sub is a dedicated single-operator deployment and "
                 "the ISP operator IS the tenant, per starter ADR-0003: a "
@@ -44,7 +45,12 @@ DOMAIN = DomainSOT(
                 "seed because settings are tenant-scoped. `Tenant` is the "
                 "kernel's model, admitted by name only through the adoption "
                 "ledger; importing it constructs no engine and `app/db.py` "
-                "remains the session and transaction authority."
+                "remains the session and transaction authority. Every "
+                "PostgreSQL root transaction receives that deterministic "
+                "tenant through a transaction-local GUC before its first "
+                "application statement; the SQLAlchemy lifecycle hook covers "
+                "web, task, worker, CLI and one-off sessions without making "
+                "the kernel engine authoritative."
             ),
             contract=ServiceContract(
                 concerns=(
@@ -58,6 +64,15 @@ DOMAIN = DomainSOT(
                         name="operator tenant provisioning",
                         role=OwnerRole.COMMAND_WRITER,
                         input_names=("deterministic operator tenant id",),
+                        canonical_writer="tenancy.operator_tenant",
+                    ),
+                    ConcernContract(
+                        name="operator tenant transaction scope installation",
+                        role=OwnerRole.COMMAND_WRITER,
+                        input_names=(
+                            "deterministic operator tenant id",
+                            "root database transaction lifecycle observation",
+                        ),
                         canonical_writer="tenancy.operator_tenant",
                     ),
                     ConcernContract(
@@ -78,13 +93,24 @@ DOMAIN = DomainSOT(
                             "importing application code into a migration"
                         ),
                     ),
+                    AuthorityInput(
+                        name="root database transaction lifecycle observation",
+                        owner="runtime.db_sessions",
+                        kind=AuthorityKind.OBSERVATION,
+                        source=(
+                            "SQLAlchemy Session root after_begin events consumed "
+                            "by app.services.session_hooks"
+                        ),
+                    ),
                 ),
                 transaction=TransactionContract(
                     mode=TransactionMode.OWNER_MANAGED,
                     boundary=(
                         "provision_operator_tenant commits its own insert; it "
                         "runs at startup before any settings seed, not inside "
-                        "another owner's command."
+                        "another owner's command. Tenant scope installation "
+                        "participates in each caller-owned root transaction "
+                        "and never commits it."
                     ),
                     locking=(
                         "The tenants primary key serialises a concurrent "
@@ -110,12 +136,18 @@ DOMAIN = DomainSOT(
                         "tenancy.operator_tenant.invalid_command_context",
                         "tenancy.operator_tenant.nested_owner_command",
                         "tenancy.operator_tenant.nested_transaction_completion",
+                        "tenancy.operator_tenant.scope_installation_failed",
                     ),
-                    mapping_owner="app.main startup and migration 509",
+                    mapping_owner=(
+                        "app.main startup, migration 509 and app.services.session_hooks"
+                    ),
                     fail_closed_on=(
                         "reading the operator tenant before it is provisioned, "
                         "because a tenant-scoped write would otherwise be "
                         "attributed to nothing",
+                        "PostgreSQL refusing or changing the transaction-local "
+                        "operator tenant GUC, because FORCE RLS would otherwise "
+                        "return silent empty reads",
                     ),
                 ),
                 events=EventContract(
@@ -142,12 +174,18 @@ DOMAIN = DomainSOT(
                         "tests/test_operator_tenant.py proves exactly one "
                         "tenant, idempotence across boots, that provisioning "
                         "never reverts an operator edit, and that migration "
-                        "509's copy of the id still matches the runtime."
+                        "509's copy of the id still matches the runtime. "
+                        "tests/integration/test_operator_tenant_transaction_scope.py "
+                        "proves the GUC is reinstalled after commit and rollback "
+                        "and never survives for a pooled connection's next "
+                        "transaction."
                     ),
                     cutover_gate=(
                         "Migration 509 inserts the tenant and moves every "
                         "domain_settings row from platform to tenant scope in "
-                        "one transaction."
+                        "one transaction. The GUC hook must run in the deployed "
+                        "predecessor release before any later migration enables "
+                        "FORCE RLS."
                     ),
                     fallback_retirement=(
                         "The platform-scope default introduced by migration "
@@ -161,6 +199,7 @@ DOMAIN = DomainSOT(
                 ),
                 test_refs=(
                     "tests/test_operator_tenant.py",
+                    "tests/integration/test_operator_tenant_transaction_scope.py",
                     "tests/architecture/test_kernel_import_boundary.py",
                 ),
             ),
@@ -168,11 +207,13 @@ DOMAIN = DomainSOT(
     ),
     entrypoints=(
         "app.main",
+        "SQLAlchemy root transaction hook",
         "startup settings seed",
         "migration 509 backfill",
         "future tenant-scoped kernel module adoptions",
     ),
     rule="Exactly one tenant exists and it is the ISP operator. Every "
+    "PostgreSQL root transaction carries its transaction-local GUC, and every "
     "tenant-scoped row carries its id; nothing Sub owns is deployment-wide "
     "above the operator. A second tenant row is a defect until an ADR "
     "supersedes ADR-0009.",
