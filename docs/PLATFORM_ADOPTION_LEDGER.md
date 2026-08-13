@@ -83,7 +83,7 @@ capacity table remains `party_roles`, while the kernel's current RBAC grant is
 kernel chain still creates the old name at 0003 before 0022 renames it. a42 adds
 the polymorphic audit actor and request
 forensics contract plus kernel migration 0023. Sub still does not import
-`dotmac_kernel.audit` or compose the kernel lineage: migration 524 expands
+`dotmac_kernel.audit` or compose the kernel lineage: migration 525 expands
 Sub's own table and its existing `observability.audit_log` owner remains the
 single writer during shadowing. This pin makes the immutable contract available
 for compatibility and rehearsal; it does not claim an authority or lineage
