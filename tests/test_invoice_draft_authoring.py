@@ -273,14 +273,15 @@ def test_prepaid_proforma_conversion_capability_hides_generic_action(
     subscriber,
 ) -> None:
     subscriber.billing_mode = BillingMode.prepaid
+    command = replace(
+        _create_command(subscriber),
+        invoice_number="PF-PREPAID-CAPABILITY",
+        is_proforma=True,
+    )
     db_session.commit()
     created = invoice_draft_authoring.create_invoice_draft(
         db_session,
-        replace(
-            _create_command(subscriber),
-            invoice_number="PF-PREPAID-CAPABILITY",
-            is_proforma=True,
-        ),
+        command,
         context=_context("prepaid-proforma-capability"),
     )
     invoice = db_session.get(Invoice, created.invoice_id)
