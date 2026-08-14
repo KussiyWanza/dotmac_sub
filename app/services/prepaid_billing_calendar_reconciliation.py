@@ -1003,7 +1003,10 @@ def reconcile_prepaid_billing_calendar(
             access_restored = restoration.access_restored
             resolved_lock_count = restoration.resolved_lock_count
             remaining_blockers = restoration.remaining_blockers
-        evidence = {
+        # Annotated because `dict` is invariant: the inferred
+        # `dict[str, list[str] | int | str]` is not assignable to the
+        # contract's `dict[str, object]` even though every value fits.
+        evidence: dict[str, object] = {
             "owner": _OWNER,
             "timezone": APP_TIMEZONE_NAME,
             "reason": command.context.reason.strip(),

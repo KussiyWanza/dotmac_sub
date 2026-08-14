@@ -144,6 +144,27 @@ def test_system_audit_actor_may_omit_an_identifier():
     assert payload.actor_id is None
 
 
+@pytest.mark.parametrize(
+    ("actor_type", "actor_id"),
+    [
+        (AuditActorType.system, None),
+        (AuditActorType.service, "scheduler"),
+    ],
+)
+def test_automated_audit_actor_cannot_carry_a_party(
+    actor_type,
+    actor_id,
+):
+    with pytest.raises(ValueError, match="cannot carry a Party identity"):
+        AuditEventCreate(
+            actor_type=actor_type,
+            actor_id=actor_id,
+            actor_party_id=uuid.uuid4(),
+            action="invalid_party_enrichment",
+            entity_type="audit_event",
+        )
+
+
 def test_actor_party_enrichment_is_not_a_foreign_key():
     actor_party_id = AuditEvent.__table__.c.actor_party_id
 

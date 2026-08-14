@@ -73,8 +73,9 @@
 <article class="conversation-item group relative border-b border-l-[3px] border-slate-200 dark:border-slate-800/50"
          :class="selectedId === '{{ row.id }}'
             ? 'border-l-[#F59E0B] bg-gradient-to-r from-[rgba(245,158,11,0.12)] to-[rgba(249,115,22,0.06)] hover:from-[rgba(245,158,11,0.12)] hover:to-[rgba(249,115,22,0.06)]'
-            : 'border-l-transparent {% if row.is_unread %}{{ unread_classes }} {% endif %}hover:bg-gradient-to-r hover:from-[rgba(245,158,11,0.08)] hover:to-[rgba(249,115,22,0.04)]'"
-         data-conversation-id="{{ row.id }}">
+            : ['border-l-transparent hover:bg-gradient-to-r hover:from-[rgba(245,158,11,0.08)] hover:to-[rgba(249,115,22,0.04)]', {% if row.is_unread %}conversationIsLocallyRead('{{ row.id }}') ? '' : '{{ unread_classes }}'{% else %}''{% endif %}]"
+         data-conversation-id="{{ row.id }}"
+         data-conversation-unread="{{ 'true' if row.is_unread else 'false' }}">
     <div class="flex items-start gap-3 px-4 py-3.5">
         <label class="flex h-11 w-4 shrink-0 cursor-pointer items-center justify-center" @click.stop>
             <span class="sr-only">Select conversation with {{ contact_name }}</span>
@@ -112,7 +113,8 @@
            class="min-w-0 flex-1 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
            :aria-current="selectedId === '{{ row.id }}' ? 'true' : null">
             <div class="flex min-w-0 items-baseline justify-between gap-2">
-                <p class="truncate text-[13px] text-slate-900 dark:text-white {% if row.is_unread %}font-bold{% else %}font-semibold{% endif %}">{{ contact_name }}</p>
+                <p class="truncate text-[13px] text-slate-900 dark:text-white"
+                   :class="{% if row.is_unread %}conversationIsLocallyRead('{{ row.id }}') ? 'font-semibold' : 'font-bold'{% else %}'font-semibold'{% endif %}">{{ contact_name }}</p>
                 <time class="shrink-0 text-[10px] tabular-nums text-slate-400 dark:text-slate-500">{{ inbox_ts(row.latest_message_at or row.last_message_at) }}</time>
             </div>
             {% if row.subject %}
@@ -155,7 +157,7 @@
                 <span class="rounded-md border px-1.5 py-0.5 text-[9px] font-semibold {{ priority_classes }}">{{ priority_label }}</span>
                 {% endif %}
                 {% if row.is_unread %}
-                <span class="ml-auto inline-flex min-w-5 items-center justify-center rounded-md bg-[#06B6D4] px-1.5 py-0.5 text-[9px] font-bold text-white" aria-label="{{ row.unread_count }} unread messages">{{ row.unread_count }}</span>
+                <span x-show="!conversationIsLocallyRead('{{ row.id }}')" class="ml-auto inline-flex min-w-5 items-center justify-center rounded-md bg-[#06B6D4] px-1.5 py-0.5 text-[9px] font-bold text-white" aria-label="{{ row.unread_count }} unread messages">{{ row.unread_count }}</span>
                 {% endif %}
             </div>
         </a>

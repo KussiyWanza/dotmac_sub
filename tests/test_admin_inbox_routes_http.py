@@ -28,7 +28,12 @@ from fastapi.testclient import TestClient
 from starlette.datastructures import UploadFile
 
 from app.db import get_db
-from app.services import team_inbox_commands, team_inbox_filters, team_inbox_projection
+from app.services import (
+    team_inbox_commands,
+    team_inbox_filters,
+    team_inbox_projection,
+    team_inbox_read_state,
+)
 from app.web.admin.inbox import _detail_redirect, _read_new_conversation_uploads, router
 
 
@@ -93,6 +98,39 @@ def test_has_ticket_false_is_distinct_from_absent(captured_request):
 
 def test_queue_requests_exact_total_for_numbered_pagination(captured_request):
     assert captured_request("?page=7").include_total_count is True
+
+
+def test_mark_read_returns_typed_browser_result_without_redirect(db_session):
+    conversation_id = uuid.uuid4()
+    actor_id = uuid.uuid4()
+    command_id = uuid.uuid4()
+    outcome = team_inbox_read_state.ConversationReadOutcome(
+        conversation_id=conversation_id,
+        person_id=actor_id,
+        through_message_id=None,
+        last_read_at=datetime.now(UTC),
+        changed=True,
+        command_id=command_id,
+    )
+    client = _client(db_session)
+
+    with (
+        patch("app.services.web_admin.get_actor_id", return_value=str(actor_id)),
+        patch("app.web.admin.inbox._prepare_mutation"),
+        patch(
+            "app.web.admin.inbox.team_inbox_read_state.mark_conversation_read",
+            return_value=outcome,
+        ),
+    ):
+        response = client.post(f"/inbox/{conversation_id}/read")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "conversation_id": str(conversation_id),
+        "status": "success",
+        "changed": True,
+        "message": "Conversation marked read.",
+    }
 
 
 def test_reply_fallback_preserves_page_filters_and_uses_separate_notice_status():

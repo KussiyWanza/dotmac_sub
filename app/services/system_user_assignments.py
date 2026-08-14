@@ -19,7 +19,7 @@ from app.models.rbac import (
 )
 from app.models.system_user import SystemUser
 from app.services import auth_cache
-from app.services.audit_adapter import stage_audit_event
+from app.services.audit_adapter import AuditActor, stage_audit_event
 from app.services.domain_errors import DomainError
 from app.services.entitlement_revocation import (
     PRINCIPAL_SYSTEM_USER,
@@ -543,6 +543,27 @@ def _granted_by(actor_type: AuditActorType, actor_id: str) -> UUID | None:
         return None
 
 
+def _audit_actor(
+    db: Session,
+    *,
+    actor_type: AuditActorType,
+    actor_id: str,
+) -> AuditActor:
+    """Attach only the canonical Party already bound to a staff principal."""
+
+    party_id: UUID | None = None
+    principal_id = _granted_by(actor_type, actor_id)
+    if principal_id is not None:
+        party_id = db.scalar(
+            select(SystemUser.person_party_id).where(SystemUser.id == principal_id)
+        )
+    return AuditActor(
+        actor_type=actor_type,
+        actor_id=actor_id,
+        party_id=party_id,
+    )
+
+
 def replace_system_user_assignments(
     db: Session,
     command: ReplaceSystemUserAssignmentsCommand,
@@ -630,8 +651,11 @@ def replace_system_user_assignments(
             action="auth.system_user_assignments_replaced",
             entity_type="system_user",
             entity_id=str(user.id),
-            actor_type=actor_type,
-            actor_id=actor_id,
+            actor=_audit_actor(
+                db,
+                actor_type=actor_type,
+                actor_id=actor_id,
+            ),
             request_id=str(command.context.correlation_id),
             metadata=metadata,
         )

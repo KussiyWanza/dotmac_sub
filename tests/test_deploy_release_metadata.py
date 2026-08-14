@@ -550,6 +550,23 @@ def test_deploy_never_starts_a_service_the_host_does_not_declare(
     assert "BACKGROUND RUNTIME FAILURE: celery-beat" not in result.stderr
 
 
+def test_deploy_refuses_missing_required_celery_worker(tmp_path: Path) -> None:
+    missing_notification_worker = tuple(
+        service for service in FULL_SERVICES if service != "celery-worker-notifications"
+    )
+    result, _env_file, docker_log = _run_deploy(
+        tmp_path,
+        declared_services=missing_notification_worker,
+    )
+
+    assert result.returncode != 0
+    assert "DEPLOY CONFIG FAILURE" in result.stderr
+    assert "celery-worker-notifications" in result.stderr
+    assert not any(
+        " up -d " in command for command in docker_log.read_text().splitlines()
+    )
+
+
 def test_deploy_loads_the_compose_override_when_the_host_has_one(
     tmp_path: Path,
 ) -> None:

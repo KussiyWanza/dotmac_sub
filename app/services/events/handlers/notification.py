@@ -512,6 +512,115 @@ class EventCatalogueEntry:
     subject: str
 
 
+DOCUMENT_CHANGE_EVENT_CATALOGUE: tuple[EventCatalogueEntry, ...] = (
+    EventCatalogueEntry(
+        event_type="project_status_changed",
+        template_code="project_status_changed",
+        category="service",
+        default_channels=("email",),
+        subject="Project status updated",
+    ),
+    EventCatalogueEntry(
+        event_type="project_task_status_changed",
+        template_code="project_task_status_changed",
+        category="service",
+        default_channels=("email",),
+        subject="Project task status updated",
+    ),
+    EventCatalogueEntry(
+        event_type="project_updated",
+        template_code="project_updated",
+        category="service",
+        default_channels=("email",),
+        subject="Project details updated",
+    ),
+    EventCatalogueEntry(
+        event_type="project_task_updated",
+        template_code="project_task_updated",
+        category="service",
+        default_channels=("email",),
+        subject="Project task details updated",
+    ),
+    EventCatalogueEntry(
+        event_type="project_completed",
+        template_code="project_completed",
+        category="service",
+        default_channels=("email", "whatsapp", "push"),
+        subject="Project completed",
+    ),
+    EventCatalogueEntry(
+        event_type="project_task_completed",
+        template_code="project_task_completed",
+        category="service",
+        default_channels=("email",),
+        subject="Project task completed",
+    ),
+    EventCatalogueEntry(
+        event_type="support_ticket_created_admin",
+        template_code="support_ticket_created_admin",
+        category="support",
+        default_channels=("email",),
+        subject="Support ticket created",
+    ),
+    EventCatalogueEntry(
+        event_type="support_ticket_comment_added",
+        template_code="support_ticket_comment_added",
+        category="support",
+        default_channels=("email", "whatsapp", "push"),
+        subject="Support ticket updated",
+    ),
+    EventCatalogueEntry(
+        event_type="support_ticket_status_changed",
+        template_code="support_ticket_status_changed",
+        category="support",
+        default_channels=("email", "whatsapp", "push"),
+        subject="Support ticket status changed",
+    ),
+    EventCatalogueEntry(
+        event_type="support_ticket_updated",
+        template_code="support_ticket_updated",
+        category="support",
+        default_channels=("email",),
+        subject="Support ticket details updated",
+    ),
+    EventCatalogueEntry(
+        event_type="support_ticket_resolution_confirmation",
+        template_code="support_ticket_resolution_confirmation",
+        category="support",
+        default_channels=("email", "whatsapp", "push"),
+        subject="Confirm support ticket resolution",
+    ),
+    EventCatalogueEntry(
+        event_type="work_order_en_route",
+        template_code="work_order_en_route",
+        category="service",
+        default_channels=("whatsapp", "push"),
+        subject="Technician on the way",
+    ),
+    EventCatalogueEntry(
+        event_type="work_order_arrived",
+        template_code="work_order_arrived",
+        category="service",
+        default_channels=("whatsapp", "push"),
+        subject="Technician arrived",
+    ),
+    EventCatalogueEntry(
+        event_type="work_order_complete",
+        template_code="work_order_complete",
+        category="service",
+        default_channels=("email", "whatsapp", "push"),
+        subject="Technician visit completed",
+    ),
+    EventCatalogueEntry(
+        event_type="work_order_unable_to_complete",
+        template_code="work_order_unable_to_complete",
+        category="service",
+        default_channels=("email", "whatsapp", "push"),
+        subject="Technician visit needs follow-up",
+    ),
+)
+
+
 def event_catalogue() -> tuple[EventCatalogueEntry, ...]:
     """Describe every event whose channels an operator can configure.
 
@@ -521,7 +630,7 @@ def event_catalogue() -> tuple[EventCatalogueEntry, ...]:
     """
     return tuple(
         sorted(
-            (
+            tuple(
                 EventCatalogueEntry(
                     event_type=event_type.value,
                     template_code=spec.template_code,
@@ -530,7 +639,8 @@ def event_catalogue() -> tuple[EventCatalogueEntry, ...]:
                     subject=spec.subject,
                 )
                 for event_type, spec in EVENT_NOTIFICATION_SPECS.items()
-            ),
+            )
+            + DOCUMENT_CHANGE_EVENT_CATALOGUE,
             key=lambda entry: (entry.category, entry.template_code),
         )
     )
@@ -538,7 +648,7 @@ def event_catalogue() -> tuple[EventCatalogueEntry, ...]:
 
 def event_categories() -> tuple[str, ...]:
     """Distinct categories, for the category-level override rows."""
-    return tuple(sorted({spec.category for spec in EVENT_NOTIFICATION_SPECS.values()}))
+    return tuple(sorted({entry.category for entry in event_catalogue()}))
 
 
 class NotificationHandler:

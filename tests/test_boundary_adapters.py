@@ -283,15 +283,20 @@ def test_rate_limiter_adapter_blocks_after_limit_until_window_resets() -> None:
 
 def test_audit_adapter_builds_audit_payload() -> None:
     from app.models.audit import AuditActorType
-    from app.services.audit_adapter import AuditAdapter, AuditRecord
+    from app.services.audit_adapter import AuditActor, AuditAdapter, AuditRecord
+
+    actor_party_id = uuid4()
 
     payload = AuditAdapter().build_payload(
         AuditRecord(
             action="provision",
             entity_type="ont",
             entity_id="ont-1",
-            actor_type=AuditActorType.service,
-            actor_id="provisioner",
+            actor=AuditActor.user(
+                "operator-1",
+                party_id=actor_party_id,
+                label="Network operator",
+            ),
             metadata={"result": "ok"},
             status_code=200,
             request_id="req-1",
@@ -300,9 +305,37 @@ def test_audit_adapter_builds_audit_payload() -> None:
 
     assert payload.action == "provision"
     assert payload.entity_type == "ont"
-    assert payload.actor_type == AuditActorType.service
+    assert payload.actor_type == AuditActorType.user
+    assert payload.actor_id == "operator-1"
+    assert payload.actor_party_id == actor_party_id
     assert payload.metadata_ == {"result": "ok"}
     assert payload.request_id == "req-1"
+
+
+def test_audit_actor_rejects_party_identity_for_automated_actors() -> None:
+    import pytest
+
+    from app.models.audit import AuditActorType
+    from app.services.audit_adapter import AuditActor
+
+    with pytest.raises(ValueError, match="cannot carry a Party identity"):
+        AuditActor(actor_type=AuditActorType.system, party_id=uuid4())
+    with pytest.raises(ValueError, match="cannot carry a Party identity"):
+        AuditActor(
+            actor_type=AuditActorType.service,
+            actor_id="provisioner",
+            party_id=uuid4(),
+        )
+
+
+def test_audit_actor_rejects_an_unidentified_principal() -> None:
+    import pytest
+
+    from app.models.audit import AuditActorType
+    from app.services.audit_adapter import AuditActor
+
+    with pytest.raises(ValueError, match="needs a non-empty actor_id"):
+        AuditActor(actor_type=AuditActorType.user, actor_id="  ")
 
 
 def test_billing_adapter_builds_invoice_and_payment_payloads(monkeypatch) -> None:
