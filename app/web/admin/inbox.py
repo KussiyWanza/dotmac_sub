@@ -449,6 +449,16 @@ def team_inbox_social_comments(
     )
     if projection.canonical_url is not None:
         return RedirectResponse(url=projection.canonical_url, status_code=307)
+    selected_action_eligibility = (
+        projection.selected.action_eligibility
+        if projection.selected is not None
+        else None
+    )
+    can_reply_to_social_comments = bool(
+        can(request, "support:ticket:update")
+        and selected_action_eligibility is not None
+        and selected_action_eligibility.can_reply
+    )
     context = _ctx(request, db)
     context.update(
         {
@@ -470,6 +480,8 @@ def team_inbox_social_comments(
             "unread": projection.unread,
             "status_options": projection.status_options,
             "channel_options": projection.channel_options,
+            "action_eligibility": selected_action_eligibility,
+            "can_reply_to_social_comments": can_reply_to_social_comments,
             "actor_person_id": str(actor_person_id) if actor_person_id else "",
         }
     )

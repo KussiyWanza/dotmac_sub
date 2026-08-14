@@ -36,6 +36,7 @@ from app.schemas.support import (
 )
 from app.services import (
     service_address,
+    service_team_lifecycle,
     sla_assignment,
     support_ticket_filters,
     support_ticket_region_projection,
@@ -425,11 +426,39 @@ def _ticket_sla_state(
     return state
 
 
+def _assigned_to_me_audience(
+    db: Session, *, list_query: ListQuery, actor_id: str | None
+) -> support_service.TicketAudienceScope | None:
+    """Resolve the one typed audience used by every assigned-to-me projection.
+
+    The selected filter must never broaden when the authenticated principal is
+    missing, malformed, inactive, or lacks an active Person Party identity.
+    """
+
+    if list_query.filter_value("assigned_to_me") != "true":
+        return None
+    actor_uuid = parse_uuid_or_none(actor_id)
+    if actor_uuid is None:
+        return support_service.TicketAudienceScope(None, None)
+    resolution = service_team_lifecycle.resolve_staff_service_teams(db, actor_uuid)
+    if (
+        resolution.kind
+        is service_team_lifecycle.ServiceTeamResolutionKind.identity_unavailable
+    ):
+        return support_service.TicketAudienceScope(None, None)
+    return support_service.TicketAudienceScope(
+        system_user_id=actor_uuid,
+        person_party_id=resolution.person_party_id,
+        service_team_ids=resolution.team_ids,
+    )
+
+
 def _ticket_scope_count(
     db: Session,
     *,
     list_query: ListQuery,
     actor_id: str | None,
+    assigned_to_audience: support_service.TicketAudienceScope | None,
     status: str | None,
 ) -> int:
     return support_service.tickets.count(
@@ -438,9 +467,7 @@ def _ticket_scope_count(
         status_scope=_ticket_status_scope(status),
         ticket_type=list_query.filter_value("ticket_type"),
         region=list_query.filter_value("region"),
-        assigned_to_person_id=(
-            actor_id if list_query.filter_value("assigned_to_me") == "true" else None
-        ),
+        assigned_to_audience=assigned_to_audience,
         project_manager_person_id=list_query.filter_value("project_manager_person_id"),
         site_coordinator_person_id=list_query.filter_value(
             "site_coordinator_person_id"
@@ -451,7 +478,11 @@ def _ticket_scope_count(
 
 
 def _status_summary_cards(
-    db: Session, *, list_query: ListQuery, actor_id: str | None
+    db: Session,
+    *,
+    list_query: ListQuery,
+    actor_id: str | None,
+    assigned_to_audience: support_service.TicketAudienceScope | None,
 ) -> list[dict[str, str | int | bool]]:
     selected_status = list_query.filter_value("status")
     definitions = (
@@ -468,6 +499,7 @@ def _status_summary_cards(
                 db,
                 list_query=list_query,
                 actor_id=actor_id,
+                assigned_to_audience=assigned_to_audience,
                 status=value or None,
             ),
             "href": list_query.url(
@@ -1225,10 +1257,14 @@ def build_tickets_list_context(
     unavailable_status_filter = _unavailable_status_presentation(
         status_options, selected_status
     )
+    assigned_to_audience = _assigned_to_me_audience(
+        db, list_query=list_query, actor_id=actor_id
+    )
     total = _ticket_scope_count(
         db,
         list_query=list_query,
         actor_id=actor_id,
+        assigned_to_audience=assigned_to_audience,
         status=selected_status,
     )
     page_meta = PageMeta.from_query(list_query, total)
@@ -1239,11 +1275,7 @@ def build_tickets_list_context(
         status_scope=_ticket_status_scope(effective_query.filter_value("status")),
         ticket_type=effective_query.filter_value("ticket_type"),
         region=effective_query.filter_value("region"),
-        assigned_to_person_id=(
-            actor_id
-            if effective_query.filter_value("assigned_to_me") == "true"
-            else None
-        ),
+        assigned_to_audience=assigned_to_audience,
         project_manager_person_id=effective_query.filter_value(
             "project_manager_person_id"
         ),
@@ -1329,7 +1361,10 @@ def build_tickets_list_context(
         "total_pages": page_meta.total_pages,
         "has_next_page": page_meta.has_next,
         "status_summary_cards": _status_summary_cards(
-            db, list_query=effective_query, actor_id=actor_id
+            db,
+            list_query=effective_query,
+            actor_id=actor_id,
+            assigned_to_audience=assigned_to_audience,
         ),
         "visible_columns": visible_ticket_columns(visible_columns_cookie),
         "ticket_columns": TICKET_COLUMNS,
@@ -1365,15 +1400,16 @@ def list_tickets_for_scope(
 
     if list_query.definition.key != SUPPORT_TICKET_LIST_DEFINITION.key:
         raise ValueError("Ticket scope requires the support ticket definition")
+    assigned_to_audience = _assigned_to_me_audience(
+        db, list_query=list_query, actor_id=actor_id
+    )
     return support_service.tickets.list(
         db,
         search=list_query.search,
         status_scope=_ticket_status_scope(list_query.filter_value("status")),
         ticket_type=list_query.filter_value("ticket_type"),
         region=list_query.filter_value("region"),
-        assigned_to_person_id=(
-            actor_id if list_query.filter_value("assigned_to_me") == "true" else None
-        ),
+        assigned_to_audience=assigned_to_audience,
         project_manager_person_id=list_query.filter_value("project_manager_person_id"),
         site_coordinator_person_id=list_query.filter_value(
             "site_coordinator_person_id"

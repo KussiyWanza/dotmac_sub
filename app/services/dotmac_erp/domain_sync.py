@@ -1,6 +1,6 @@
 """Watermarked Sub -> ERP operational context feed.
 
-ERP needs project/ticket/work-order context for expense and finance reporting,
+ERP needs project/ticket/project-task/work-order context for expense reporting,
 but must no longer pull it from CRM. This feed is idempotent at ERP and advances
 each local cursor only when the complete bulk request succeeds without errors.
 """
@@ -8,27 +8,59 @@ each local cursor only when the complete bulk request succeeds without errors.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Protocol
 from uuid import UUID
 
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.erp_domain_sync import ErpDomainSyncCursor
 from app.models.project import Project, ProjectTask
 from app.models.support import Ticket
 from app.models.work_order import WorkOrder
-from app.services.dotmac_erp.client import DotMacERPClient
+from app.services.dotmac_erp.operational_contracts import (
+    ErpOperationalSyncCommand,
+    ErpOperationalSyncOutcome,
+    ErpProjectProjection,
+    ErpProjectTaskProjection,
+    ErpTicketProjection,
+    ErpWorkOrderProjection,
+    OperationalSyncExecution,
+    OperationalSyncRunOutcome,
+)
+from app.services.events import EventType, emit_event
 from app.services.integrations.erp_capability import capability_client
+from app.services.owner_commands import (
+    CommandContext,
+    OwnerCommandDefinition,
+    current_command_context,
+    execute_owner_command,
+)
 
 _DOMAINS = ("projects", "project_tasks", "tickets", "work_orders")
+_SYNC_COMMAND = OwnerCommandDefinition(
+    owner="integration.dotmac_erp_operational_context_adapter",
+    concern="per-domain ERP operational-context delivery watermarks",
+    name="sync_operational_domains",
+)
+
+
+class OperationalSyncClient(Protocol):
+    def sync_operational_domains(
+        self, command: ErpOperationalSyncCommand
+    ) -> ErpOperationalSyncOutcome: ...
+
+    def close(self) -> None: ...
 
 
 def _cursor(db: Session, domain: str) -> ErpDomainSyncCursor:
-    row = db.get(ErpDomainSyncCursor, domain)
+    row = db.scalar(
+        select(ErpDomainSyncCursor)
+        .where(ErpDomainSyncCursor.domain == domain)
+        .with_for_update()
+    )
     if row is None:
         row = ErpDomainSyncCursor(domain=domain)
-        db.add(row)
-        db.flush()
     return row
 
 
@@ -115,74 +147,70 @@ def _work_orders(db: Session, cursor: ErpDomainSyncCursor, limit: int):
     )
 
 
-def _project_payload(row: Project) -> dict:
+def _project_payload(row: Project) -> ErpProjectProjection:
     subscriber = row.subscriber
     customer_name = None
     if subscriber:
         customer_name = (
             f"{subscriber.first_name or ''} {subscriber.last_name or ''}".strip()
         )
-    return {
-        "source_id": str(row.id),
-        "name": row.name,
-        "code": row.code,
-        "project_type": row.project_type,
-        "status": row.status,
-        "priority": row.priority,
-        "region": row.region,
-        "description": row.description,
-        "start_at": row.start_at.isoformat() if row.start_at else None,
-        "due_at": row.due_at.isoformat() if row.due_at else None,
-        "customer_name": customer_name or None,
-        "customer_crm_id": str(row.subscriber_id) if row.subscriber_id else None,
-        "metadata": {"source_system": "dotmac_sub", **(row.metadata_ or {})},
-        "service_team_name": row.service_team.name if row.service_team else None,
-    }
+    return ErpProjectProjection(
+        source_id=row.id,
+        name=row.name,
+        code=row.code,
+        project_type=row.project_type,
+        status=row.status,
+        priority=row.priority,
+        region=row.region,
+        description=row.description,
+        start_at=row.start_at,
+        due_at=row.due_at,
+        customer_name=customer_name or None,
+        customer_crm_id=row.subscriber_id,
+        metadata={"source_system": "dotmac_sub", **(row.metadata_ or {})},
+        service_team_name=row.service_team.name if row.service_team else None,
+    )
 
 
-def _ticket_payload(row: Ticket) -> dict:
+def _ticket_payload(row: Ticket) -> ErpTicketProjection:
     channel = getattr(row.channel, "value", row.channel)
-    return {
-        "source_id": str(row.id),
-        "subject": row.title,
-        "ticket_number": row.number,
-        "ticket_type": row.ticket_type,
-        "status": row.status,
-        "priority": row.priority,
-        "description": row.description,
-        "customer_crm_id": str(row.subscriber_id) if row.subscriber_id else None,
-        "metadata": {
+    return ErpTicketProjection(
+        source_id=row.id,
+        subject=row.title,
+        ticket_number=row.number,
+        ticket_type=row.ticket_type,
+        status=row.status,
+        priority=row.priority,
+        description=row.description,
+        customer_crm_id=row.subscriber_id,
+        metadata={
             "source_system": "dotmac_sub",
             "channel": str(channel) if channel else None,
             **(row.metadata_ or {}),
         },
-        "comments": [],
-        "activity_log": [],
-    }
+    )
 
 
-def _project_task_payload(row: ProjectTask) -> dict:
-    return {
-        "source_id": str(row.id),
-        "project_source_id": str(row.project_id),
-        "parent_task_source_id": str(row.parent_task_id)
-        if row.parent_task_id
-        else None,
-        "ticket_source_id": str(row.ticket_id) if row.ticket_id else None,
-        "title": row.title,
-        "number": row.number,
-        "description": row.description,
-        "status": row.status,
-        "priority": row.priority,
-        "start_at": row.start_at.isoformat() if row.start_at else None,
-        "due_at": row.due_at.isoformat() if row.due_at else None,
-        "completed_at": row.completed_at.isoformat() if row.completed_at else None,
-        "effort_hours": row.effort_hours,
-        "metadata": {"source_system": "dotmac_sub", **(row.metadata_ or {})},
-    }
+def _project_task_payload(row: ProjectTask) -> ErpProjectTaskProjection:
+    return ErpProjectTaskProjection(
+        source_id=row.id,
+        project_source_id=row.project_id,
+        parent_task_source_id=row.parent_task_id,
+        ticket_source_id=row.ticket_id,
+        title=row.title,
+        number=row.number,
+        description=row.description,
+        status=row.status,
+        priority=row.priority,
+        start_at=row.start_at,
+        due_at=row.due_at,
+        completed_at=row.completed_at,
+        effort_hours=row.effort_hours,
+        metadata={"source_system": "dotmac_sub", **(row.metadata_ or {})},
+    )
 
 
-def _work_order_payload(row: WorkOrder) -> dict:
+def _work_order_payload(row: WorkOrder) -> ErpWorkOrderProjection:
     metadata = dict(row.metadata_ or {})
     metadata.update(
         {
@@ -191,47 +219,55 @@ def _work_order_payload(row: WorkOrder) -> dict:
             "subscriber_id": str(row.subscriber_id),
         }
     )
-    return {
-        "source_id": str(row.id),
-        "title": row.title,
-        "work_type": row.work_type,
-        "status": row.status,
-        "priority": row.priority,
-        "project_crm_id": str(row.project_id) if row.project_id else row.crm_project_id,
-        "ticket_crm_id": (
+    return ErpWorkOrderProjection(
+        source_id=row.id,
+        title=row.title,
+        work_type=row.work_type,
+        status=row.status,
+        priority=row.priority,
+        project_crm_id=str(row.project_id) if row.project_id else row.crm_project_id,
+        ticket_crm_id=(
             str(row.origin_ticket_id) if row.origin_ticket_id else row.crm_ticket_id
         ),
-        "scheduled_start": (
-            row.scheduled_start.isoformat() if row.scheduled_start else None
-        ),
-        "scheduled_end": row.scheduled_end.isoformat() if row.scheduled_end else None,
-        "metadata": metadata,
-    }
+        scheduled_start=row.scheduled_start,
+        scheduled_end=row.scheduled_end,
+        metadata=metadata,
+    )
 
 
-def _advance(cursor: ErpDomainSyncCursor, rows: list) -> None:
+def _advance(db: Session, cursor: ErpDomainSyncCursor, rows: list) -> None:
     if not rows:
         return
     last = max(rows, key=lambda row: (row.updated_at, row.id))
     cursor.watermark_at = last.updated_at
     cursor.watermark_id = last.id
     cursor.updated_at = datetime.now(UTC)
+    db.add(cursor)
 
 
 def sync_operational_domains(
     db: Session,
     *,
-    client: DotMacERPClient | None = None,
-    batch_size: int = 100,
-    domains: tuple[str, ...] | None = None,
-) -> dict:
-    limit = max(1, min(int(batch_size or 100), 500))
-    selected = tuple(dict.fromkeys(domains or _DOMAINS))
-    if not selected:
-        raise ValueError("at least one ERP operational domain is required")
-    unknown = set(selected) - set(_DOMAINS)
-    if unknown:
-        raise ValueError(f"unsupported ERP operational domains: {sorted(unknown)}")
+    command: OperationalSyncExecution,
+    context: CommandContext,
+    client: OperationalSyncClient | None = None,
+) -> OperationalSyncRunOutcome:
+    """Execute one contracted watermark-owning sync command."""
+    return execute_owner_command(
+        db,
+        definition=_SYNC_COMMAND,
+        context=context,
+        operation=lambda: _sync_operational_domains(db, command, client),
+    )
+
+
+def _sync_operational_domains(
+    db: Session,
+    command: OperationalSyncExecution,
+    client: OperationalSyncClient | None,
+) -> OperationalSyncRunOutcome:
+    limit = command.batch_size
+    selected = tuple(dict.fromkeys(command.domains))
     cursors = {domain: _cursor(db, domain) for domain in selected}
     projects = (
         _projects(db, cursors["projects"], limit) if "projects" in selected else []
@@ -251,61 +287,59 @@ def sync_operational_domains(
     if dependencies_catching_up:
         project_tasks = []
     if not projects and not project_tasks and not tickets and not work_orders:
-        db.commit()
-        return {
-            "projects": 0,
-            "project_tasks": 0,
-            "tickets": 0,
-            "work_orders": 0,
-            "errors": [],
-        }
+        return OperationalSyncRunOutcome(
+            projects=0, project_tasks=0, tickets=0, work_orders=0
+        )
 
-    payload = {
-        "projects": [_project_payload(row) for row in projects],
-        "project_tasks": [_project_task_payload(row) for row in project_tasks],
-        "tickets": [_ticket_payload(row) for row in tickets],
-        "work_orders": [_work_order_payload(row) for row in work_orders],
-    }
+    outbound_command = ErpOperationalSyncCommand(
+        projects=tuple(_project_payload(row) for row in projects),
+        project_tasks=tuple(_project_task_payload(row) for row in project_tasks),
+        tickets=tuple(_ticket_payload(row) for row in tickets),
+        work_orders=tuple(_work_order_payload(row) for row in work_orders),
+    )
     owned_client = client or capability_client(db)
     created_client = client is None
     try:
-        response = owned_client.sync_operational_domains(payload)
+        response = owned_client.sync_operational_domains(outbound_command)
     finally:
         if created_client:
             owned_client.close()
-    errors = response.get("errors") or []
-    if project_tasks and response.get("contract_version") != 2:
-        errors = [
-            {
-                "entity_type": "project_task",
-                "error": "ERP bulk contract v2 is required for project task sync",
-            }
-        ]
+    errors = response.errors
     if errors:
-        db.rollback()
-        return {
-            "projects": 0,
-            "project_tasks": 0,
-            "tickets": 0,
-            "work_orders": 0,
-            "errors": errors,
-        }
+        return OperationalSyncRunOutcome(
+            projects=0,
+            project_tasks=0,
+            tickets=0,
+            work_orders=0,
+            errors=errors,
+        )
     if "projects" in cursors:
-        _advance(cursors["projects"], projects)
+        _advance(db, cursors["projects"], projects)
     if "project_tasks" in cursors:
-        _advance(cursors["project_tasks"], project_tasks)
+        _advance(db, cursors["project_tasks"], project_tasks)
     if "tickets" in cursors:
-        _advance(cursors["tickets"], tickets)
+        _advance(db, cursors["tickets"], tickets)
     if "work_orders" in cursors:
-        _advance(cursors["work_orders"], work_orders)
-    db.commit()
-    return {
-        "projects": len(projects),
-        "project_tasks": len(project_tasks),
-        "tickets": len(tickets),
-        "work_orders": len(work_orders),
-        "errors": [],
-    }
+        _advance(db, cursors["work_orders"], work_orders)
+    emit_event(
+        db,
+        EventType.erp_operational_context_watermark_advanced,
+        {
+            "domains": list(selected),
+            "projects": len(projects),
+            "project_tasks": len(project_tasks),
+            "tickets": len(tickets),
+            "work_orders": len(work_orders),
+        },
+        actor=current_command_context(db).actor,
+        dispatch_after_commit=False,
+    )
+    return OperationalSyncRunOutcome(
+        projects=len(projects),
+        project_tasks=len(project_tasks),
+        tickets=len(tickets),
+        work_orders=len(work_orders),
+    )
 
 
 def run_sync_operational_domains() -> dict[str, object]:
@@ -327,18 +361,24 @@ def run_sync_operational_domains() -> dict[str, object]:
             .one_or_none()
         )
         if binding is None:
-            return {
-                "projects": 0,
-                "project_tasks": 0,
-                "tickets": 0,
-                "work_orders": 0,
-                "errors": [],
-                "skipped": "capability_disabled",
-            }
+            return OperationalSyncRunOutcome(
+                projects=0,
+                project_tasks=0,
+                tickets=0,
+                work_orders=0,
+                skipped="capability_disabled",
+            ).model_dump(mode="json")
         domains = tuple((binding.scope_json or {}).get("domains") or _DOMAINS)
         batch_size = int((binding.policy_json or {}).get("batch_size") or 100)
+        db.rollback()
         return sync_operational_domains(
             db,
-            domains=domains,
-            batch_size=batch_size,
-        )
+            command=OperationalSyncExecution.model_validate(
+                {"domains": domains, "batch_size": batch_size}
+            ),
+            context=CommandContext.system(
+                actor="erp-operational-sync-task",
+                scope="erp-operational-context",
+                reason="scheduled operational-context projection",
+            ),
+        ).model_dump(mode="json")

@@ -173,7 +173,8 @@ def get_tr069_server_profile_binding(
             prompt=config_prompt,
         )
         interface_prompt = _exact_prompt(core, interface_output, config_prompt)
-        output = core._run_huawei_cmd(channel, "display this", prompt=interface_prompt)
+        run_paged = getattr(core, "_run_huawei_paged_cmd", core._run_huawei_cmd)
+        output = run_paged(channel, "display this", prompt=interface_prompt)
         profile_id = parse_tr069_binding(
             _clean_cli_output(output),
             port=port_num,

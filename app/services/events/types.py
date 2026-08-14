@@ -76,6 +76,9 @@ class EventType(enum.Enum):
         "integration.installation.meta_social_configured"
     )
     integration_job_capability_activated = "integration.job.capability_activated"
+    erp_operational_context_watermark_advanced = (
+        "erp.operational_context.watermark_advanced"
+    )
     oauth_token_refreshed = "oauth_token.refreshed"
     oauth_token_refresh_failed = "oauth_token.refresh_failed"
     account_credit_deposited = "account_credit.deposited"

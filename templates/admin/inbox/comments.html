@@ -155,9 +155,9 @@
 
             {% if page_meta.total_items > 0 %}
             <nav class="flex shrink-0 items-center justify-between border-t border-slate-200 px-4 py-2.5 text-xs font-semibold dark:border-slate-800" aria-label="Comment post pagination">
-                {% if page_meta.has_previous %}<a href="{{ list_query.url('/admin/inbox/comments', page=page_meta.page - 1) }}{% if selected_id %}&conversation_id={{ selected_id }}{% endif %}" class="rounded border border-slate-300 bg-white px-3 py-2 text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">Back</a>{% else %}<span></span>{% endif %}
+                {% if page_meta.has_previous %}<a href="{{ list_query.url('/admin/inbox/comments', page=page_meta.page - 1) }}" class="rounded border border-slate-300 bg-white px-3 py-2 text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">Back</a>{% else %}<span></span>{% endif %}
                 <span class="tabular-nums text-slate-500">Page {{ page_meta.page }} of {{ page_meta.total_pages }}</span>
-                {% if page_meta.has_next %}<a href="{{ list_query.url('/admin/inbox/comments', page=page_meta.page + 1) }}{% if selected_id %}&conversation_id={{ selected_id }}{% endif %}" class="rounded border border-slate-300 bg-white px-3 py-2 text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">Next</a>{% else %}<span></span>{% endif %}
+                {% if page_meta.has_next %}<a href="{{ list_query.url('/admin/inbox/comments', page=page_meta.page + 1) }}" class="rounded border border-slate-300 bg-white px-3 py-2 text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">Next</a>{% else %}<span></span>{% endif %}
             </nav>
             {% endif %}
         </aside>
@@ -189,7 +189,7 @@
                     <div class="min-h-0 flex-1 overflow-y-auto px-6 py-5">
                         <div class="space-y-5">
                             {% for node in selected_post.comments %}
-                            {{ render_comment(node, selected_post.timeline.id, can(request, 'support:ticket:update') and selected.action_eligibility.can_reply if selected else false) }}
+                            {{ render_comment(node, selected_post.timeline.id, can_reply_to_social_comments) }}
                             {% else %}
                             <p class="rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-950">No comments captured for this post.</p>
                             {% endfor %}
