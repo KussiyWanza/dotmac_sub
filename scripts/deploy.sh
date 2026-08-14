@@ -382,11 +382,14 @@ if [[ "${IGNORE_COMPOSE_OVERRIDE:-0}" != "1" && -f "${HOST_COMPOSE_OVERRIDE}" ]]
   COMPOSE_FILES_DESC+=" + ${HOST_COMPOSE_OVERRIDE}"
 fi
 
-# Restrict the services this deploy touches to the ones the resolved Compose
-# config actually declares. Naming a profile-gated service explicitly ACTIVATES
-# its profile, so a hardcoded `up -d ... celery-beat` would create the very
-# scheduler the staging override exists to suppress. Also drops services a host
-# genuinely does not run, instead of failing the deploy on them.
+# Restrict optional services this deploy touches to the ones the resolved
+# Compose config actually declares. Naming a profile-gated service explicitly
+# ACTIVATES its profile, so a hardcoded `up -d ... celery-beat` would create
+# the very scheduler the staging override exists to suppress.
+#
+# Worker services are not optional on a production host. Dropping a missing
+# queue consumer here lets beat keep publishing tasks to an unconsumed Redis
+# queue while the deploy still reports green.
 DECLARED_SERVICES=""
 load_declared_services() {
   if ! DECLARED_SERVICES="$("${COMPOSE[@]}" config --services 2>&1)"; then
@@ -409,6 +412,20 @@ declared_subset() {
       printf '%s\n' "${service}"
     fi
   done
+}
+
+assert_required_services_declared() {
+  local service
+  local missing=()
+  for service in "$@"; do
+    if ! service_is_declared "${service}"; then
+      missing+=("${service}")
+    fi
+  done
+  if ((${#missing[@]} > 0)); then
+    echo "DEPLOY CONFIG FAILURE: required Compose service(s) missing from ${COMPOSE_FILES_DESC}: ${missing[*]}" >&2
+    return 1
+  fi
 }
 
 set_env_value() {
@@ -566,8 +583,8 @@ assert_proxy_handoff_contract
 
 log "Resolving declared Compose services"
 load_declared_services
+assert_required_services_declared app "${CELERY_WORKER_SERVICES[@]}"
 mapfile -t APP_SERVICES < <(declared_subset "${APP_SERVICES[@]}")
-mapfile -t CELERY_WORKER_SERVICES < <(declared_subset "${CELERY_WORKER_SERVICES[@]}")
 if ((${#APP_SERVICES[@]} == 0)); then
   echo "DEPLOY CONFIG FAILURE: none of the app services are declared in ${COMPOSE_FILES_DESC}." >&2
   exit 1
