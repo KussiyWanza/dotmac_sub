@@ -10,11 +10,21 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.audit import AuditActorType
-from app.models.rbac import Permission, Role, SystemUserPermission, SystemUserRole
+from app.models.rbac import (
+    Permission,
+    Role,
+    RolePermission,
+    SystemUserPermission,
+    SystemUserRole,
+)
 from app.models.system_user import SystemUser
 from app.services import auth_cache
 from app.services.audit_adapter import stage_audit_event
 from app.services.domain_errors import DomainError
+from app.services.entitlement_revocation import (
+    PRINCIPAL_SYSTEM_USER,
+    revoke_for_entitlement_reduction,
+)
 from app.services.events import emit_event
 from app.services.events.types import EventType
 from app.services.owner_commands import (
@@ -234,6 +244,47 @@ def system_user_direct_permission_keys(db: Session, user_id: UUID) -> tuple[str,
         .all()
     )
     return tuple(rows)
+
+
+def _permission_keys_via_roles(db: Session, user_id: UUID) -> tuple[str, ...]:
+    rows = (
+        db.execute(
+            select(Permission.key)
+            .join(RolePermission, RolePermission.permission_id == Permission.id)
+            .join(Role, Role.id == RolePermission.role_id)
+            .join(SystemUserRole, SystemUserRole.role_id == Role.id)
+            .where(
+                SystemUserRole.system_user_id == user_id,
+                Role.is_active.is_(True),
+                Permission.is_active.is_(True),
+            )
+            .distinct()
+            .order_by(Permission.key)
+        )
+        .scalars()
+        .all()
+    )
+    return tuple(rows)
+
+
+def _effective_access(
+    db: Session, user_id: UUID
+) -> tuple[frozenset[str], frozenset[str]]:
+    """What this user can currently do: role names, and every permission key.
+
+    Permissions are the union of direct grants and everything the assigned
+    active roles confer, because a reduction has to be judged on effect rather
+    than on shape. Swapping one role for another can leave the role *count*
+    unchanged while taking permissions away, and that is still a reduction.
+    Conversely a rename or a re-grant that lands on the same effective set is
+    not a reduction and must not revoke anything.
+    """
+
+    return (
+        frozenset(system_user_role_names(db, user_id)),
+        frozenset(system_user_direct_permission_keys(db, user_id))
+        | frozenset(_permission_keys_via_roles(db, user_id)),
+    )
 
 
 def _replace_source_roles(
@@ -515,6 +566,7 @@ def replace_system_user_assignments(
                 "Assignment command exceeds the supported cardinality.",
             )
 
+        before_roles, before_permissions = _effective_access(db, user.id)
         role_result = sync_source_roles_by_ids(
             db,
             user_id=user.id,
@@ -529,6 +581,26 @@ def replace_system_user_assignments(
         )
         permission_keys = system_user_direct_permission_keys(db, user.id)
         changed = bool(role_result.changed or permission_changed)
+
+        # A reduction is the only transition an already-issued JWT can outlive:
+        # its claims still name the roles and scopes just taken away, and it
+        # stays valid until expiry. Revoking the sessions in THIS transaction is
+        # what makes the next request fail. Widening, equivalent and no-op
+        # changes take nothing away, so they revoke nothing — logging an
+        # operator out for being granted something is not security.
+        after_roles, after_permissions = _effective_access(db, user.id)
+        removed_roles = tuple(sorted(before_roles - after_roles))
+        removed_permissions = tuple(sorted(before_permissions - after_permissions))
+        revoked_session_ids: tuple[str, ...] = ()
+        if removed_roles or removed_permissions:
+            revoked_session_ids = revoke_for_entitlement_reduction(
+                db,
+                principal_type=PRINCIPAL_SYSTEM_USER,
+                principal_id=user.id,
+                reason="system_user_assignments_reduced",
+                correlation_id=str(command.context.correlation_id),
+                actor=command.context.actor,
+            )
         metadata = {
             "schema_version": 1,
             "command_id": str(command.context.command_id),
@@ -548,6 +620,9 @@ def replace_system_user_assignments(
             "role_names": list(role_result.role_names),
             "direct_permission_keys": list(permission_keys),
             "changed": changed,
+            "removed_role_names": list(removed_roles),
+            "removed_permission_keys": list(removed_permissions),
+            "revoked_session_ids": list(revoked_session_ids),
         }
         stage_audit_event(
             db,
