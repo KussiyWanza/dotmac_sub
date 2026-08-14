@@ -2,6 +2,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.models.domain_settings import SettingDomain
+from app.models.subscription_engine import SettingValueType
 from app.schemas.settings import DomainSettingUpdate
 from app.services import settings_api, settings_spec
 from app.services.response import ListResponseMixin
@@ -126,11 +127,12 @@ def test_upsert_notification_setting_variants(db_session):
         db_session,
         "document_change_notification_events_enabled",
         DomainSettingUpdate(
+            value_type=SettingValueType.json,
             value_json={
                 "default": False,
                 "project_status_changed": True,
                 "support_ticket_updated": True,
-            }
+            },
         ),
     )
     assert document_events.value_type.value == "json"

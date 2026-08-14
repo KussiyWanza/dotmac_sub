@@ -247,7 +247,7 @@
                         <span>By Agent</span><span class="tabular-nums">{% if assigned_person_id and assigned_person_id != actor_person_id %}{{ count }}{% else %}—{% endif %}</span>
                     </button>
                 </div>
-                <div id="inbox-by-agent-panel" x-show="byAgentOpen" x-cloak class="mt-2 space-y-2 rounded-lg border border-slate-200/60 bg-white p-2.5 dark:border-slate-700/60 dark:bg-slate-900">
+                <div id="inbox-by-agent-panel" x-show="byAgentOpen" x-cloak class="mt-2 space-y-2 rounded-lg border border-slate-200/60 bg-slate-50 p-2.5 dark:border-slate-700/60 dark:bg-slate-900">
                     <label class="block">
                         <span class="sr-only">Agent</span>
                         <select name="assigned_person_id" @change="$el.form.requestSubmit()" class="h-10 w-full rounded-lg border-slate-200 bg-white text-xs text-slate-700 focus:border-violet-500 focus:ring-violet-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">

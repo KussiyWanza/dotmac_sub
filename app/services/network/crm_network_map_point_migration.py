@@ -110,9 +110,7 @@ class CrmAuthoritativeBatchSet:
             "source_archive_sha256": self.source_archive_sha256,
             "source_count": self.source_count,
             "staged_count": self.staged_count,
-            "superseded_batch_ids": [
-                str(value) for value in self.superseded_batch_ids
-            ],
+            "superseded_batch_ids": [str(value) for value in self.superseded_batch_ids],
         }
 
 
@@ -125,6 +123,7 @@ class CrmFeatureReconciliation:
     reason_code: str
     canonical_asset_id: uuid.UUID | None = None
     proposal_action: str | None = None
+    proposal_reason: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -134,6 +133,7 @@ class CrmFeatureReconciliation:
             else None,
             "classification": self.classification,
             "proposal_action": self.proposal_action,
+            "proposal_reason": self.proposal_reason,
             "reason_code": self.reason_code,
             "source_identity": self.source_identity,
             "staged_feature_id": str(self.staged_feature_id),
@@ -208,8 +208,7 @@ def _batch_metadata(batch: FiberTopologySourceBatch) -> dict[str, Any]:
     missing = sorted(REQUIRED_METADATA - set(metadata))
     if missing:
         raise CrmNetworkMapPointMigrationError(
-            f"batch {batch.id} is missing authoritative metadata: "
-            + ", ".join(missing)
+            f"batch {batch.id} is missing authoritative metadata: " + ", ".join(missing)
         )
     if metadata["reconciliation_status"] != EXPECTED_RECONCILIATION_STATUS:
         raise CrmNetworkMapPointMigrationError(
@@ -255,7 +254,9 @@ def _candidate_cohorts(
     if expected_archive_sha256 is not None:
         digest = _sha(expected_archive_sha256, "expected_archive_sha256")
         filters.append(
-            FiberTopologySourceBatch.source_metadata["source_archive_sha256"].as_string()
+            FiberTopologySourceBatch.source_metadata[
+                "source_archive_sha256"
+            ].as_string()
             == digest
         )
     batches = list(
@@ -288,9 +289,13 @@ def _selection_from_cohort(
     batches: list[FiberTopologySourceBatch],
     superseded: tuple[uuid.UUID, ...],
 ) -> CrmAuthoritativeBatchSet:
-    asset_type, archive_sha256, manifest_sha256, snapshot_timestamp, importer_version = (
-        key
-    )
+    (
+        asset_type,
+        archive_sha256,
+        manifest_sha256,
+        snapshot_timestamp,
+        importer_version,
+    ) = key
     metadata = _batch_metadata(batches[0])
     if any(batch.status != "staged" or batch.blocker_count for batch in batches):
         raise CrmNetworkMapPointMigrationError(
@@ -532,6 +537,7 @@ def _classify_feature(
             f"active_identity_decision_{decision.status}",
             canonical_asset_id=decision.target_asset_id,
             proposal_action=decision.action,
+            proposal_reason=decision.reason,
         )
     if feature.match_status == "blocked" or feature.blocker_codes:
         return CrmFeatureReconciliation(
@@ -653,20 +659,28 @@ def reconcile_authoritative_crm_points(
 def _proposal_items(rows: tuple[CrmFeatureReconciliation, ...]) -> list[dict[str, str]]:
     items: list[dict[str, str]] = []
     for row in rows:
-        if row.classification == "exact_match" and row.canonical_asset_id:
+        if (
+            row.classification == "exact_match"
+            or (
+                row.classification == "unchanged"
+                and row.proposal_action == "link_existing"
+            )
+        ) and row.canonical_asset_id:
             items.append(
                 {
                     "action": "link_existing",
-                    "reason": row.reason_code,
+                    "reason": row.proposal_reason or row.reason_code,
                     "staged_feature_id": str(row.staged_feature_id),
                     "target_asset_id": str(row.canonical_asset_id),
                 }
             )
-        elif row.classification == "create_new":
+        elif row.classification == "create_new" or (
+            row.classification == "unchanged" and row.proposal_action == "create"
+        ):
             items.append(
                 {
                     "action": "create",
-                    "reason": row.reason_code,
+                    "reason": row.proposal_reason or row.reason_code,
                     "staged_feature_id": str(row.staged_feature_id),
                 }
             )
@@ -681,7 +695,9 @@ def _proposal_source_name(
     selections: tuple[CrmAuthoritativeBatchSet, ...], expected_archive_sha256: str
 ) -> str:
     manifest = _digest([selection.to_dict() for selection in selections])
-    return f"crm-network-map-point-assets-{expected_archive_sha256[:12]}-{manifest[:12]}"
+    return (
+        f"crm-network-map-point-assets-{expected_archive_sha256[:12]}-{manifest[:12]}"
+    )
 
 
 def preview_crm_point_identity_proposals(
@@ -762,6 +778,17 @@ def assert_crm_identity_batch_authoritative(
     proposal_batch_id: str | uuid.UUID,
     expected_archive_sha256: str,
 ) -> None:
+    source_batches = _proposal_batch_source_feature_batches(db, proposal_batch_id)
+    if not source_batches:
+        raise CrmNetworkMapPointMigrationError(
+            "proposal batch has no CRM point-source staging evidence"
+        )
+    if any(
+        _batch_metadata(batch)["source_archive_sha256"] != expected_archive_sha256
+        for batch in source_batches
+    ):
+        raise CrmNetworkMapPointMigrationError("proposal batch archive hash mismatch")
+
     selected_ids = {
         batch_id
         for selection in select_authoritative_crm_point_batches(
@@ -770,15 +797,19 @@ def assert_crm_identity_batch_authoritative(
         for batch_id in selection.batch_ids
     }
     if not selected_ids:
-        raise CrmNetworkMapPointMigrationError("no authoritative CRM point batches found")
-    for batch in _proposal_batch_source_feature_batches(db, proposal_batch_id):
+        raise CrmNetworkMapPointMigrationError(
+            "no authoritative CRM point batches found"
+        )
+    for batch in source_batches:
         if batch.id not in selected_ids:
             raise CrmNetworkMapPointMigrationError(
                 "proposal batch contains a superseded or non-authoritative source batch"
             )
         metadata = _batch_metadata(batch)
         if metadata["source_archive_sha256"] != expected_archive_sha256:
-            raise CrmNetworkMapPointMigrationError("proposal batch archive hash mismatch")
+            raise CrmNetworkMapPointMigrationError(
+                "proposal batch archive hash mismatch"
+            )
 
 
 def dry_run_crm_point_identity_apply(
@@ -856,8 +887,12 @@ def build_crm_point_migration_report(
     )
     canonical_before = {
         "fdh_cabinet": int(db.scalar(select(func.count(FdhCabinet.id))) or 0),
-        "fiber_access_point": int(db.scalar(select(func.count(FiberAccessPoint.id))) or 0),
-        "splice_closure": int(db.scalar(select(func.count(FiberSpliceClosure.id))) or 0),
+        "fiber_access_point": int(
+            db.scalar(select(func.count(FiberAccessPoint.id))) or 0
+        ),
+        "splice_closure": int(
+            db.scalar(select(func.count(FiberSpliceClosure.id))) or 0
+        ),
     }
     proposal_status_counts = {
         status: count

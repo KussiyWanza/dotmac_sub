@@ -6,13 +6,15 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from app.models.fiber_change_request import FiberChangeRequest
-from app.models.fiber_topology_identity import FiberTopologyAssetSourceLink
-from app.models.fiber_topology_identity import FiberTopologyIdentityDecision
+from app.models.fiber_topology_identity import (
+    FiberTopologyAssetSourceLink,
+    FiberTopologyIdentityDecision,
+)
 from app.models.fiber_topology_staging import (
     FiberTopologySourceBatch,
     FiberTopologyStagedFeature,
 )
-from app.models.network import FdhCabinet, FiberAccessPoint, FiberSpliceClosure
+from app.models.network import FdhCabinet
 from app.services.network.crm_network_map_point_migration import (
     CrmNetworkMapPointMigrationError,
     build_crm_point_migration_report,
@@ -24,7 +26,6 @@ from app.services.network.crm_network_map_point_migration import (
 )
 from app.services.network.fiber_topology_identity import stable_source_external_id
 from app.services.network.fiber_topology_review import attest_identity_batch
-
 
 ARCHIVE = "a" * 64
 OLD_ARCHIVE = "b" * 64
@@ -172,7 +173,9 @@ def test_authoritative_selection_supersedes_older_batches_without_using_largest_
 
 def test_authoritative_selection_requires_complete_reconciliation_metadata(db_session):
     batch = _batch(db_session)
-    batch.source_metadata.pop("importer_version")
+    metadata = dict(batch.source_metadata)
+    metadata.pop("importer_version")
+    batch.source_metadata = metadata
     db_session.commit()
 
     with pytest.raises(CrmNetworkMapPointMigrationError, match="missing"):
@@ -293,7 +296,11 @@ def test_inactive_and_invalid_coordinate_sources_fail_closed(db_session):
         batch,
         row_number=1,
         external_id="INACTIVE",
-        source_properties={"crm_id": "INACTIVE", "code": "INACTIVE", "is_active": "false"},
+        source_properties={
+            "crm_id": "INACTIVE",
+            "code": "INACTIVE",
+            "is_active": "false",
+        },
     )
     _feature(db_session, batch, row_number=2, external_id="BAD", latitude=100.0)
 

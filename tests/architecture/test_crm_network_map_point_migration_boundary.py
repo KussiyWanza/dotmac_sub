@@ -50,6 +50,6 @@ def test_crm_point_migration_cli_keeps_stages_explicit_and_has_no_startup_hook()
     }
     assert "snapshot" not in commands
     assert "stage" not in commands
-    assert "if __name__ == \"__main__\"" in source
+    assert 'if __name__ == "__main__"' in source
     assert "scheduler" not in source.casefold()
     assert "startup" not in source.casefold()

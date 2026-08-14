@@ -344,7 +344,10 @@ def test_project_update_notification_is_opt_in(db_session, subscriber):
     settings_api.upsert_notification_setting(
         db_session,
         "document_change_notification_events_enabled",
-        DomainSettingUpdate(value_json={"project_updated": True}),
+        DomainSettingUpdate(
+            value_type=SettingValueType.json,
+            value_json={"project_updated": True},
+        ),
     )
 
     projects.update(db_session, str(project.id), ProjectUpdate(name="Notified rename"))
@@ -356,7 +359,10 @@ def test_project_update_notification_is_opt_in(db_session, subscriber):
     )
     assert notice.channel == NotificationChannel.email
     assert notice.metadata_["changed_fields"] == ["name"]
-    assert notice.dedupe_key == f"project_updated:{project.id}:{notice.metadata_['transition_id']}"
+    assert (
+        notice.dedupe_key
+        == f"project_updated:{project.id}:{notice.metadata_['transition_id']}"
+    )
 
 
 def test_status_notification_failure_keeps_transition_and_records_audit(

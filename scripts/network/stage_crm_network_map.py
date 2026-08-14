@@ -159,9 +159,7 @@ def _stage_profiles(
                         ),
                         "valid_active_source_count": profile.feature_count,
                         "staged_count": preview.feature_count,
-                        "reconciliation_status": (
-                            "source_restore_staged_counts_match"
-                        ),
+                        "reconciliation_status": ("source_restore_staged_counts_match"),
                     },
                 )
             results.append(

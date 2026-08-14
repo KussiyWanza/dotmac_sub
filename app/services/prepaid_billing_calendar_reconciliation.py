@@ -1003,7 +1003,7 @@ def reconcile_prepaid_billing_calendar(
             access_restored = restoration.access_restored
             resolved_lock_count = restoration.resolved_lock_count
             remaining_blockers = restoration.remaining_blockers
-        evidence = {
+        evidence: dict[str, object] = {
             "owner": _OWNER,
             "timezone": APP_TIMEZONE_NAME,
             "reason": command.context.reason.strip(),

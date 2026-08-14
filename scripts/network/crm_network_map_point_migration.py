@@ -53,11 +53,16 @@ def parse_args() -> argparse.Namespace:
     )
     select_cmd.add_argument("--expected-archive-sha256")
 
-    for command, help_text in (
-        ("preview-proposals", "Validate and hash a proposal manifest without writing."),
-        ("propose-batch", "Persist a proposal batch; never approves or applies it."),
+    for proposal in (
+        commands.add_parser(
+            "preview-proposals",
+            help="Validate and hash a proposal manifest without writing.",
+        ),
+        commands.add_parser(
+            "propose-batch",
+            help="Persist a proposal batch; never approves or applies it.",
+        ),
     ):
-        proposal = commands.add_parser(command, help=help_text)
         proposal.add_argument("--expected-archive-sha256", required=True)
         proposal.add_argument("--actor", required=True)
         proposal.add_argument("--reason", required=True)
@@ -83,9 +88,7 @@ def parse_args() -> argparse.Namespace:
 
 def _read_only_begin(db) -> None:
     if db.bind is not None and db.bind.dialect.name != "sqlite":
-        db.execute(
-            text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
-        )
+        db.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
 
 
 def main() -> int:

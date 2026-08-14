@@ -1310,13 +1310,16 @@ def person_pppoe_password(
     and per-actor rate-limited — this exposes a reusable credential whose leak
     equals takeover of the customer's connection.
     """
-    from app.models.audit import AuditActorType
     from app.services import web_admin as web_admin_service
-    from app.services.audit_adapter import record_audit_event
+    from app.services.audit_adapter import AuditActor, record_audit_event
     from app.services.rate_limiter_adapter import allow_operation
 
     actor = web_admin_service.get_current_user(request)
     actor_id = web_admin_service.get_actor_id(request)
+    audit_actor = AuditActor.user(
+        actor_id or "unknown",
+        label=actor.get("name") if actor else None,
+    )
     actor_metadata = {
         key: value
         for key, value in {
@@ -1337,8 +1340,7 @@ def person_pppoe_password(
             action="customer.pppoe_password_reveal",
             entity_type="subscriber",
             entity_id=str(customer_id),
-            actor_type=AuditActorType.user,
-            actor_id=actor_id,
+            actor=audit_actor,
             metadata={
                 "credential_id": credential_id,
                 "reason": "rate_limited",
@@ -1362,8 +1364,7 @@ def person_pppoe_password(
         action="customer.pppoe_password_reveal",
         entity_type="subscriber",
         entity_id=str(customer_id),
-        actor_type=AuditActorType.user,
-        actor_id=actor_id,
+        actor=audit_actor,
         metadata={
             "credential_id": credential_id,
             "found": bool(found),

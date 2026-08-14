@@ -552,9 +552,7 @@ def test_deploy_never_starts_a_service_the_host_does_not_declare(
 
 def test_deploy_refuses_missing_required_celery_worker(tmp_path: Path) -> None:
     missing_notification_worker = tuple(
-        service
-        for service in FULL_SERVICES
-        if service != "celery-worker-notifications"
+        service for service in FULL_SERVICES if service != "celery-worker-notifications"
     )
     result, _env_file, docker_log = _run_deploy(
         tmp_path,

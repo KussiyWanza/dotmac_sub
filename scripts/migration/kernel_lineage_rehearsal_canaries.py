@@ -117,8 +117,8 @@ def _seed_roles(db: Session, evidence: KernelLineageRehearsalEvidence) -> None:
         name_length = max(1, min(cohort.maximum_name_length, 120))
         unique_character = chr(ord("a") + (index % 26))
         role_name = (unique_character + ("r" * name_length))[:name_length]
-        db.add(
-            Role(
+        db.execute(
+            Role.__table__.insert().values(
                 name=role_name,
                 description=CANARY_PREFIX,
                 is_active=cohort.is_active,

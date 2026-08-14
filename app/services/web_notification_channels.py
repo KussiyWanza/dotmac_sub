@@ -64,8 +64,8 @@ def channel_policy_context(db: Session) -> dict[str, Any]:
     default_channels: list[str] = list(policy["default"])
     category_overrides: Mapping[str, list[str]] = policy["categories"]
     event_overrides: Mapping[str, list[str]] = policy["events"]
-    document_enabled = customer_experience_communications.document_change_notification_policy(
-        db
+    document_enabled = (
+        customer_experience_communications.document_change_notification_policy(db)
     )
 
     channels = [
@@ -189,7 +189,9 @@ def save_channel_policy(
         for entry in event_catalogue()
     }
     document_enabled = {
-        entry.template_code: bool(_values(f"{DOCUMENT_ENABLED_FIELD_PREFIX}{entry.template_code}"))
+        entry.template_code: bool(
+            _values(f"{DOCUMENT_ENABLED_FIELD_PREFIX}{entry.template_code}")
+        )
         for entry in event_catalogue()
         if entry.template_code
         in customer_experience_communications.DOCUMENT_CHANGE_NOTIFICATION_EVENTS

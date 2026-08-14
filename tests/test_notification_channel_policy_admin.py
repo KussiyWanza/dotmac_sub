@@ -152,7 +152,9 @@ def test_context_lists_document_change_events(db_session):
 
     assert rows["project_updated"]["effective"] == ["email"]
     assert rows["project_updated"]["enabled"] is False
-    assert rows["project_updated"]["enabled_field"] == "document_enabled__project_updated"
+    assert (
+        rows["project_updated"]["enabled_field"] == "document_enabled__project_updated"
+    )
     assert rows["work_order_complete"]["effective"] == ["email", "whatsapp", "push"]
     assert rows["work_order_complete"]["enabled"] is True
 

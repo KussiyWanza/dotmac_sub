@@ -730,7 +730,12 @@ def list_projects_settings(
     db: Session = Depends(get_db),
 ):
     return settings_service.list_projects_settings_response(
-        db, is_active, order_by, order_dir, limit, offset
+        db=db,
+        is_active=is_active,
+        order_by=order_by,
+        order_dir=order_dir,
+        limit=limit,
+        offset=offset,
     )
 
 
@@ -743,7 +748,7 @@ def list_projects_settings(
 def upsert_projects_setting(
     key: str, payload: DomainSettingUpdate, db: Session = Depends(get_db)
 ):
-    return settings_service.upsert_projects_setting(db, key, payload)
+    return settings_service.upsert_projects_setting(db=db, key=key, payload=payload)
 
 
 @router.get(
@@ -752,4 +757,4 @@ def upsert_projects_setting(
     tags=["settings-projects"],
 )
 def get_projects_setting(key: str, db: Session = Depends(get_db)):
-    return settings_service.get_projects_setting(db, key)
+    return settings_service.get_projects_setting(db=db, key=key)
