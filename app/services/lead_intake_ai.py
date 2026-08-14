@@ -34,10 +34,12 @@ def _send_text(
 ):
     return team_inbox_commands.reply(
         db,
-        conversation_id=conversation_id,
-        body_text=body,
-        actor_person_id=None,
-        idempotency_key=f"lead-intake:{purpose}:{message_id}",
+        command=team_inbox_commands.ReplyCommand(
+            conversation_id=conversation_id,
+            body_text=body,
+            actor_person_id=None,
+            idempotency_key=f"lead-intake:{purpose}:{message_id}",
+        ),
     )
 
 
@@ -184,10 +186,12 @@ def send_completion_confirmation(
     try:
         team_inbox_commands.reply(
             db,
-            conversation_id=outcome.conversation_id,
-            body_text=outcome.confirmation_message,
-            actor_person_id=None,
-            idempotency_key=f"lead-intake:confirmation:{outcome.invitation_id}",
+            command=team_inbox_commands.ReplyCommand(
+                conversation_id=outcome.conversation_id,
+                body_text=outcome.confirmation_message,
+                actor_person_id=None,
+                idempotency_key=(f"lead-intake:confirmation:{outcome.invitation_id}"),
+            ),
         )
     except team_inbox_commands.InboxCommandError:
         logger.warning(

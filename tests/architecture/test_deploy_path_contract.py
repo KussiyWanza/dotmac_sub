@@ -94,6 +94,18 @@ def test_deploy_accepts_and_reverifies_an_exact_oci_digest() -> None:
     assert 'docker pull "${IMAGE}"' in deploy
 
 
+def test_deploy_uses_and_verifies_the_authorized_release_compose_tree() -> None:
+    deploy = (ROOT / "scripts/deploy.sh").read_text(encoding="utf-8")
+
+    assert 'RELEASE_COMPOSE_FILE="${REPO_DIR}/docker-compose.yml"' in deploy
+    assert '--project-directory "${DEPLOY_DIR}"' in deploy
+    assert '--env-file "${DEPLOY_DIR}/.env"' in deploy
+    assert 'HOST_COMPOSE_OVERRIDE="${DEPLOY_DIR}/docker-compose.override.yml"' in deploy
+    assert '"io.dotmac.release.source-tree"' in deploy
+    assert "git -C \"${REPO_DIR}\" rev-parse 'HEAD^{tree}'" in deploy
+    assert "does not match image source tree" in deploy
+
+
 def test_deploy_checks_openbao_boot_secrets_before_migrations() -> None:
     deploy = (ROOT / "scripts/deploy.sh").read_text(encoding="utf-8")
 

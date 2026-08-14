@@ -76,6 +76,16 @@ class _ProviderFailure:
     retryable: bool
 
 
+@dataclass(frozen=True, slots=True)
+class _WhatsAppTemplateDelivery:
+    """Normalized provider-template intent at the notification adapter boundary."""
+
+    name: str
+    language: str | None
+    variables: dict[str, object]
+    components: list[dict[str, object]]
+
+
 def _safe_provider_failure(
     *,
     channel: NotificationChannel,
@@ -158,10 +168,41 @@ def _team_inbox_conversation_id(notification: Notification) -> str:
     return str(value or "").strip()
 
 
-def _team_inbox_whatsapp_template(notification: Notification, body: str) -> dict | None:
+def _whatsapp_template_delivery(
+    value: object,
+    *,
+    require_marker: bool,
+) -> _WhatsAppTemplateDelivery | None:
+    if not isinstance(value, dict):
+        return None
+    if require_marker and not value.get("__whatsapp_template__"):
+        return None
+    name = str(value.get("name") or "").strip()
+    if not name:
+        return None
+    language = str(value.get("language") or "").strip() or None
+    variables = value.get("variables")
+    components = value.get("components")
+    return _WhatsAppTemplateDelivery(
+        name=name,
+        language=language,
+        variables=variables if isinstance(variables, dict) else {},
+        components=(
+            [item for item in components if isinstance(item, dict)]
+            if isinstance(components, list)
+            else []
+        ),
+    )
+
+
+def _team_inbox_whatsapp_template(
+    notification: Notification, body: str
+) -> _WhatsAppTemplateDelivery | None:
     metadata = notification.metadata_ or {}
-    configured = metadata.get("whatsapp_template")
-    if isinstance(configured, dict) and configured.get("name"):
+    configured = _whatsapp_template_delivery(
+        metadata.get("whatsapp_template"), require_marker=False
+    )
+    if configured is not None:
         return configured
     if not body:
         return None
@@ -169,9 +210,7 @@ def _team_inbox_whatsapp_template(notification: Notification, body: str) -> dict
         parsed_body = json.loads(body)
     except json.JSONDecodeError:
         return None
-    if isinstance(parsed_body, dict) and parsed_body.get("__whatsapp_template__"):
-        return parsed_body
-    return None
+    return _whatsapp_template_delivery(parsed_body, require_marker=True)
 
 
 def _preflight_team_inbox_meta_window(
@@ -704,23 +743,7 @@ def _deliver_notification_queue_stats(
                     if inbox_attachment_ids
                     else ()
                 )
-                whatsapp_payload = None
-                configured_template = delivery_metadata.get("whatsapp_template")
-                if isinstance(configured_template, dict) and configured_template.get(
-                    "name"
-                ):
-                    whatsapp_payload = configured_template
-                if body:
-                    try:
-                        parsed_body = json.loads(body)
-                        if (
-                            isinstance(parsed_body, dict)
-                            and parsed_body.get("__whatsapp_template__")
-                            and whatsapp_payload is None
-                        ):
-                            whatsapp_payload = parsed_body
-                    except json.JSONDecodeError:
-                        whatsapp_payload = None
+                whatsapp_payload = _team_inbox_whatsapp_template(notification, body)
                 provider_messages: list[str] = []
                 preflight_failure = _preflight_team_inbox_meta_window(
                     db, notification=notification, body=body
@@ -737,10 +760,10 @@ def _deliver_notification_queue_stats(
                     result = whatsapp_service.send_template_message(
                         db=db,
                         recipient=notification.recipient,
-                        template_name=str(whatsapp_payload.get("name") or ""),
-                        language=str(whatsapp_payload.get("language") or "") or None,
-                        variables=whatsapp_payload.get("variables") or {},
-                        components=whatsapp_payload.get("components") or [],
+                        template_name=whatsapp_payload.name,
+                        language=whatsapp_payload.language,
+                        variables=whatsapp_payload.variables,
+                        components=whatsapp_payload.components,
                         dry_run=False,
                         correlation_id=(
                             f"notification:{notification.id}:"
