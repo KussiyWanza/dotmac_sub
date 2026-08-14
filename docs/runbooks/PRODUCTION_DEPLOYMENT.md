@@ -32,33 +32,39 @@ contain the backup upstream.
 
 ## Release sequence
 
-1. Pull the image and verify its OCI revision matches the requested SHA tag.
-2. Require successful `CI` and `Mobile CI` GitHub push workflow runs for that
+1. Resolve the base Compose contract from the exact authorized release
+   checkout, while resolving `.env` and any host-specific override from the
+   persistent deployment directory.
+2. Pull the image, verify its OCI revision matches the requested SHA tag, and
+   require its `io.dotmac.release.source-tree` label to match the authorized
+   release checkout's Git tree. A stale host Compose file cannot silently omit
+   a service introduced by the image.
+3. Require successful `CI` and `Mobile CI` GitHub push workflow runs for that
    exact full revision on `main`. Missing, pending, failed, wrong-branch, or
    unavailable evidence fails closed before backup or database mutation.
-3. Back up the database.
-4. Run candidate-image pre-migration state checks against the target database.
-5. Pin the immutable image and revision.
-6. Apply `alembic upgrade heads`, retrying bounded PostgreSQL lock timeouts.
-7. Verify registered schema contracts and reject every invalid or unready
+4. Back up the database.
+5. Run candidate-image pre-migration state checks against the target database.
+6. Pin the immutable image and revision.
+7. Apply `alembic upgrade heads`, retrying bounded PostgreSQL lock timeouts.
+8. Verify registered schema contracts and reject every invalid or unready
    user-schema index.
-8. Verify every enabled integration installation pin resolves to a current or
+9. Verify every enabled integration installation pin resolves to a current or
    bounded historical definition in the new image. Unavailable pins block
    replacement; historical pins are reported for explicit adoption.
-9. Verify that an enabled `crm.ticket_pull` control has exactly one enabled
+10. Verify that an enabled `crm.ticket_pull` control has exactly one enabled
    `crm.ticket_observation.v1` binding and one active job bound to it. Complete
    the reviewed
    [`CRM_TICKET_CAPABILITY_CUTOVER.md`](CRM_TICKET_CAPABILITY_CUTOVER.md)
    procedure with the candidate image before deployment when this gate fails.
-10. Start and health-check the new application image on `127.0.0.1:18001`.
-11. Recreate the primary application and workers. Nginx uses the healthy
+11. Start and health-check the new application image on `127.0.0.1:18001`.
+12. Recreate the primary application and workers. Nginx uses the healthy
    candidate while the primary port is unavailable.
-12. Verify the primary image has no source-code bind mount and wait for its
+13. Verify the primary image has no source-code bind mount and wait for its
    health endpoint.
-13. Require every declared Celery worker to remain restart-free and answer a
+14. Require every declared Celery worker to remain restart-free and answer a
    node-specific ping, and require Celery Beat to remain running without
    restarts, across a bounded stabilization window.
-14. Gracefully drain the candidate and retain the configured rollback images.
+15. Gracefully drain the candidate and retain the configured rollback images.
 
 The candidate runs the same image, environment, and database schema as the
 primary. It is bound to localhost and exists only for the handoff window.
@@ -117,10 +123,17 @@ docker compose -f docker-compose.yml run --rm --no-deps app \
 
 ## Working-tree drift detection
 
-Code deploys are immutable images, but the host checkout remains the source for
-`docker-compose.yml`, `config/`, and `nginx/`. The tree is therefore part of
-the deployed configuration and must stay at `origin/main` and clean; a tree
-left on a feature branch or with hand-applied edits is configuration drift.
+Code deploys are immutable images. The GitHub Actions release checkout is the
+source for `docker-compose.yml`; the persistent host directory supplies `.env`,
+an optional host-specific Compose override, `config/`, and `nginx/`. The deploy
+compares the release checkout's Git tree with the image's source-tree label
+before backup or migration, so the base Compose contract and image cannot come
+from different releases.
+
+The remaining host-owned files are still operational configuration and must be
+kept reviewed and clean. A host tree left on a feature branch or carrying
+hand-applied edits remains configuration drift, but it can no longer replace
+the authorized release's base Compose service graph during a controlled deploy.
 
 `scripts/ops/prod_tree_drift_metrics.sh` exports that state as gauges
 (`deploy_tree_on_main`, `deploy_tree_clean`, `deploy_tree_matches_origin_main`,
