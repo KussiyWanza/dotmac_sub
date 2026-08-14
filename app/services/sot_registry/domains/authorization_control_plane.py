@@ -664,10 +664,7 @@ DOMAIN = DomainSOT(
                     ConcernContract(
                         name="session revocation for entitlement reductions",
                         role=OwnerRole.COMMAND_WRITER,
-                        input_names=(
-                            "reduced effective entitlement decision",
-                            "live authoritative sessions",
-                        ),
+                        input_names=("reduced effective entitlement decision",),
                         canonical_writer="auth.entitlement_revocation",
                     ),
                 ),
@@ -680,12 +677,6 @@ DOMAIN = DomainSOT(
                             "the reducing owner's before/after effective access "
                             "comparison, computed inside its own transaction"
                         ),
-                    ),
-                    AuthorityInput(
-                        name="live authoritative sessions",
-                        owner="auth.session_manager",
-                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
-                        source="active, unrevoked, unexpired rows in sessions",
                     ),
                 ),
                 transaction=TransactionContract(

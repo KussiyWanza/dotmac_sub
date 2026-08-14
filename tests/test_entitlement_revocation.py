@@ -26,7 +26,11 @@ from app.models.auth import SessionStatus
 from app.models.event_store import EventStore
 from app.models.rbac import Permission, Role, RolePermission, SystemUserRole
 from app.models.system_user import SystemUser
-from app.services import entitlement_revocation, system_user_assignments
+from app.services import (
+    entitlement_revocation,
+    session_hooks,
+    system_user_assignments,
+)
 from app.services.owner_commands import CommandContext
 
 REDUCTION_EVENT = "rbac.entitlement_reduction_revoked"
@@ -184,11 +188,17 @@ def test_a_no_op_replace_revokes_nothing(db_session, staff) -> None:
     assert session.status is SessionStatus.active
 
 
-def test_an_equivalent_regrant_revokes_nothing(db_session, staff) -> None:
-    """Same effective permissions by a different route is not a reduction.
+def test_swapping_a_role_for_its_permissions_is_still_a_reduction(
+    db_session, staff
+) -> None:
+    """Losing a role is a reduction even when the permissions are re-granted.
 
-    The role is swapped for a direct grant of the permission it conferred. Shape
-    changes, effect does not — so nobody should be logged out.
+    Tempting to call this "equivalent" — the permission set is identical. It is
+    not. Role membership is itself an authorization input: `require_role`
+    checks role names directly, so a principal who keeps every permission but
+    loses the role can no longer pass a role-gated route. Treating this as
+    equivalent would leave a live session holding a role claim the database no
+    longer backs.
     """
 
     _replace(
@@ -200,10 +210,7 @@ def test_an_equivalent_regrant_revokes_nothing(db_session, staff) -> None:
     db_session.commit()
 
     session = db_session.get(AuthSession, staff["session_id"])
-    assert session.status is SessionStatus.active
-    assert (
-        db_session.query(EventStore).filter_by(event_type=REDUCTION_EVENT).count() == 0
-    )
+    assert session.status is SessionStatus.revoked
 
 
 def test_a_role_swap_that_reduces_permissions_still_revokes(db_session, staff) -> None:
@@ -223,9 +230,24 @@ def test_a_role_swap_that_reduces_permissions_still_revokes(db_session, staff) -
 def test_rolling_back_preserves_both_the_assignment_and_the_session(
     db_session, staff
 ) -> None:
-    """Atomicity in both directions: neither half survives a rollback."""
+    """Atomicity: the helper joins the caller's transaction and never commits.
 
-    _replace(db_session, user_id=staff["user_id"], role_ids=())
+    Asserted against the helper rather than the command, because
+    `execute_owner_command` commits before it returns — a rollback afterwards
+    could not undo it, so testing there would prove nothing about atomicity.
+    Here the revocation is rolled back with the caller's work, which is exactly
+    the property a reducing owner depends on.
+    """
+
+    revoked = entitlement_revocation.revoke_for_entitlement_reduction(
+        db_session,
+        principal_type=entitlement_revocation.PRINCIPAL_SYSTEM_USER,
+        principal_id=staff["user_id"],
+        reason="atomicity_canary",
+        correlation_id=str(uuid.uuid4()),
+    )
+    assert revoked == (str(staff["session_id"]),)
+
     db_session.rollback()
 
     session = db_session.get(AuthSession, staff["session_id"])
@@ -260,7 +282,10 @@ def test_expired_and_already_revoked_sessions_are_left_alone(db_session, staff) 
     expired_after = db_session.get(AuthSession, expired_id)
     already_after = db_session.get(AuthSession, already_id)
     assert expired_after.status is SessionStatus.active
-    assert already_after.revoked_at == original_revoked_at
+    stored = already_after.revoked_at
+    if stored.tzinfo is None:
+        stored = stored.replace(tzinfo=UTC)
+    assert stored == original_revoked_at
 
 
 def test_cache_invalidation_is_strict_and_runs_only_after_commit(
@@ -281,11 +306,27 @@ def test_cache_invalidation_is_strict_and_runs_only_after_commit(
         entitlement_revocation.auth_cache, "invalidate_principal_strict", _record
     )
 
-    _replace(db_session, user_id=staff["user_id"], role_ids=())
-    assert calls == []  # nothing invalidated while the reduction is uncommitted
+    entitlement_revocation.revoke_for_entitlement_reduction(
+        db_session,
+        principal_type=entitlement_revocation.PRINCIPAL_SYSTEM_USER,
+        principal_id=staff["user_id"],
+        reason="ordering_canary",
+        correlation_id=str(uuid.uuid4()),
+    )
 
-    db_session.commit()
+    # Nothing may be invalidated while the reduction is uncommitted: a
+    # concurrent read would repopulate the cache from rows that have not landed.
+    assert calls == []
 
+    # The invalidation is deferred, not skipped. Unit sessions run inside an
+    # outer transaction, so SQLAlchemy's after_commit never fires here — assert
+    # the callback was registered on the transaction, then drive it directly.
+    registered = session_hooks._pop_transaction_callbacks(
+        db_session, db_session.get_transaction()
+    )
+    assert len(registered) == 1
+
+    registered[0](db_session)
     assert calls == [("system_user", str(staff["user_id"]), True)]
 
 
