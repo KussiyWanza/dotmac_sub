@@ -308,10 +308,13 @@ The 2026-08-13 predecessor slice installs the operator-tenant GUC on every
 PostgreSQL SQLAlchemy root transaction and proves commit/rollback reapplication
 plus pool cleanup in the PostgreSQL integration lane. That discharges the
 application-side prerequisite only. FORCE RLS still cannot activate until a
-later production-derived rehearsal proves populated roles, credentials and
-audit rows remain visible through the complete kernel-revision-0001
-disposition, and until this GUC-setting image is already the deployed
-predecessor.
+later production-shape rehearsal proves synthetic representatives of every
+observed role, credential, audit and business-capacity cohort remain visible
+and byte-stable through the complete kernel-revision-0001 disposition, and
+until this GUC-setting image is already the deployed predecessor. The rehearsal
+uses the aggregate-only bundle in
+`docs/runbooks/KERNEL_LINEAGE_MINIMIZED_REHEARSAL.md`; a full production data
+copy is neither required nor accepted.
 
 Only after parity may legacy person UUID resolution, fake-subscriber principal
 fallbacks, duplicated OrganizationMembership decisions, the unused VendorUser
