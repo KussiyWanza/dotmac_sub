@@ -4,7 +4,7 @@ import pytest
 
 from app.models.audit import AuditEvent
 from app.models.party import PartyType
-from app.services import party
+from app.services import db_session_adapter, party
 from app.services.owner_commands import CommandContext
 from app.services.subscriber_party_binding_repair import (
     COMMAND_SCOPE,
@@ -29,14 +29,23 @@ def _context() -> CommandContext:
     )
 
 
+def _subscriber_id_for_command(db_session, subscriber):
+    """Read the fixture identity, then satisfy the public-command boundary."""
+
+    subscriber_id = subscriber.id
+    db_session_adapter.release_read_transaction(db_session)
+    return subscriber_id
+
+
 def test_create_and_bind_requires_review_and_records_pii_free_audit(
     db_session, subscriber
 ):
+    subscriber_id = _subscriber_id_for_command(db_session, subscriber)
     outcome = create_and_bind_subscriber_party(
         db_session,
         CreateAndBindSubscriberPartyCommand(
             context=_context(),
-            subscriber_id=subscriber.id,
+            subscriber_id=subscriber_id,
             party_type=PartyType.person,
             party_display_name="Reviewed Test Customer",
             binding_reason="Reviewed the signed customer identity evidence.",
@@ -67,17 +76,20 @@ def test_create_and_bind_requires_review_and_records_pii_free_audit(
 def test_existing_party_binding_replays_only_with_identical_evidence(
     db_session, subscriber
 ):
+    subscriber_id = subscriber.id
     target = party.create_party(
         db_session, party_type=PartyType.person, display_name="Exact target"
     )
     db_session.commit()
+    target_id = target.id
+    db_session_adapter.release_read_transaction(db_session)
     reason = "Reviewed the authoritative identity record."
     first = bind_subscriber_to_existing_party(
         db_session,
         BindSubscriberToExistingPartyCommand(
             context=_context(),
-            subscriber_id=subscriber.id,
-            party_id=target.id,
+            subscriber_id=subscriber_id,
+            party_id=target_id,
             binding_reason=reason,
         ),
     )
@@ -85,8 +97,8 @@ def test_existing_party_binding_replays_only_with_identical_evidence(
         db_session,
         BindSubscriberToExistingPartyCommand(
             context=_context(),
-            subscriber_id=subscriber.id,
-            party_id=target.id,
+            subscriber_id=subscriber_id,
+            party_id=target_id,
             binding_reason=reason,
         ),
     )
@@ -95,6 +107,7 @@ def test_existing_party_binding_replays_only_with_identical_evidence(
 
 
 def test_repair_refuses_repoint_and_context_exposes_that_block(db_session, subscriber):
+    subscriber_id = subscriber.id
     first_party = party.create_party(
         db_session, party_type=PartyType.person, display_name="First target"
     )
@@ -102,12 +115,15 @@ def test_repair_refuses_repoint_and_context_exposes_that_block(db_session, subsc
         db_session, party_type=PartyType.person, display_name="Second target"
     )
     db_session.commit()
+    first_party_id = first_party.id
+    second_party_id = second_party.id
+    db_session_adapter.release_read_transaction(db_session)
     bind_subscriber_to_existing_party(
         db_session,
         BindSubscriberToExistingPartyCommand(
             context=_context(),
-            subscriber_id=subscriber.id,
-            party_id=first_party.id,
+            subscriber_id=subscriber_id,
+            party_id=first_party_id,
             binding_reason="Reviewed exact initial identity evidence.",
         ),
     )
@@ -117,24 +133,25 @@ def test_repair_refuses_repoint_and_context_exposes_that_block(db_session, subsc
             db_session,
             BindSubscriberToExistingPartyCommand(
                 context=_context(),
-                subscriber_id=subscriber.id,
-                party_id=second_party.id,
+                subscriber_id=subscriber_id,
+                party_id=second_party_id,
                 binding_reason="Reviewed a different identity evidence record.",
             ),
         )
     db_session.rollback()
-    context = resolve_repair_context(db_session, subscriber_id=subscriber.id)
+    context = resolve_repair_context(db_session, subscriber_id=subscriber_id)
     assert context.can_repair is False
     assert "repointing" in (context.unavailable_reason or "").lower()
 
 
 def test_repair_requires_meaningful_review_evidence(db_session, subscriber):
+    subscriber_id = _subscriber_id_for_command(db_session, subscriber)
     with pytest.raises(SubscriberPartyBindingRepairError, match="Review evidence"):
         create_and_bind_subscriber_party(
             db_session,
             CreateAndBindSubscriberPartyCommand(
                 context=_context(),
-                subscriber_id=subscriber.id,
+                subscriber_id=subscriber_id,
                 party_type=PartyType.person,
                 party_display_name="Reviewed Test Customer",
                 binding_reason="too short",

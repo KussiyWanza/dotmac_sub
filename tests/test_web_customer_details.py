@@ -698,6 +698,11 @@ def test_person_detail_normalizes_usage_period(monkeypatch, db_session):
         "bulk_notification_setup_context",
         lambda db: {},
     )
+    monkeypatch.setattr(
+        customer_routes.subscriber_party_binding_repair,
+        "resolve_repair_context",
+        lambda db, *, subscriber_id: None,
+    )
 
     import app.web.admin as admin_module
 
