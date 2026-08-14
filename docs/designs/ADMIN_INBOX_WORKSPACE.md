@@ -53,6 +53,12 @@ Common conversation actions: reply, add private note, assign, change status,
 change priority, snooze, mute, apply labels, retry a failed message, open
 contact context, and start a ticket handoff.
 
+Reply submission preserves one browser-generated idempotency key until the
+owner returns a committed outcome. If another conversation mutation already
+holds the authoritative row, the owner fails fast with a retryable busy result;
+the adapter keeps the draft and key, returns `Retry-After`, and never presents
+the attempt as queued or sent.
+
 Clicking a safe raster-image attachment opens the authorized media content in
 a new browser tab. The media projection, not the template or filename, decides
 whether the resolved MIME type is safe for inline presentation. SVG, unknown,

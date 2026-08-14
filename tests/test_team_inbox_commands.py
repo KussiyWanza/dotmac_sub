@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from sqlalchemy.exc import OperationalError
 
 from app.models.team_inbox import (
     InboxConversation,
@@ -82,10 +83,65 @@ def test_rejected_reply_rolls_back_the_command_transaction(monkeypatch, db_sessi
     with pytest.raises(team_inbox_commands.InboxCommandRejected):
         team_inbox_commands.reply(
             db_session,
-            conversation_id=conversation_id,
-            body_text="We are checking this.",
-            actor_person_id=uuid.uuid4(),
+            command=team_inbox_commands.ReplyCommand(
+                conversation_id=conversation_id,
+                body_text="We are checking this.",
+                actor_person_id=uuid.uuid4(),
+            ),
         )
 
     assert db_session.get(InboxConversation, conversation_id) is not None
     assert db_session.query(InboxConversation).count() == 1
+
+
+class _PostgresLockUnavailable(RuntimeError):
+    sqlstate = "55P03"
+
+
+def test_reply_maps_postgres_nowait_contention_to_retryable_domain_error(
+    monkeypatch, db_session
+):
+    conversation = _conversation(db_session)
+    conversation_id = conversation.id
+    db_session.commit()
+
+    def lock_unavailable(*_args, **_kwargs):
+        raise OperationalError("SELECT", {}, _PostgresLockUnavailable())
+
+    monkeypatch.setattr(team_inbox_commands, "_active_conversation", lock_unavailable)
+
+    with pytest.raises(team_inbox_commands.ConversationBusyError) as exc:
+        team_inbox_commands.reply(
+            db_session,
+            command=team_inbox_commands.ReplyCommand(
+                conversation_id=conversation_id,
+                body_text="We are checking this.",
+                actor_person_id=uuid.uuid4(),
+                idempotency_key="busy-reply-1",
+            ),
+        )
+
+    assert exc.value.code == "communications.team_inbox_commands.conversation_busy"
+    assert not db_session.in_transaction()
+
+
+def test_reply_does_not_hide_unrelated_database_errors(monkeypatch, db_session):
+    conversation = _conversation(db_session)
+    conversation_id = conversation.id
+    db_session.commit()
+
+    def database_failure(*_args, **_kwargs):
+        raise OperationalError("SELECT", {}, RuntimeError("connection lost"))
+
+    monkeypatch.setattr(team_inbox_commands, "_active_conversation", database_failure)
+
+    with pytest.raises(OperationalError):
+        team_inbox_commands.reply(
+            db_session,
+            command=team_inbox_commands.ReplyCommand(
+                conversation_id=conversation_id,
+                body_text="We are checking this.",
+                actor_person_id=uuid.uuid4(),
+                idempotency_key="database-failure-1",
+            ),
+        )

@@ -2217,7 +2217,11 @@ DOMAIN = DomainSOT(
                         name="current conversation state",
                         owner="communications.team_inbox_threads",
                         kind=AuthorityKind.AUTHORITATIVE_RECORD,
-                        source="Locked conversation, collaboration records, labels, comments, and messages.",
+                        source=(
+                            "Conversation snapshot followed by a late NOWAIT row lock "
+                            "for idempotency replay, collaboration records, labels, "
+                            "comments, and message writes."
+                        ),
                     ),
                     AuthorityInput(
                         name="contact association decision",

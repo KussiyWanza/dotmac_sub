@@ -254,6 +254,38 @@ def test_reply_htmx_command_error_stays_in_workspace_with_failure_event():
     }
 
 
+def test_reply_htmx_busy_error_is_retryable_without_http_500():
+    conversation_id = uuid.uuid4()
+    client = _client(object())
+
+    with (
+        patch("app.web.admin.inbox._prepare_mutation"),
+        patch(
+            "app.services.team_inbox_commands.reply",
+            side_effect=team_inbox_commands.ConversationBusyError(),
+        ),
+        patch("app.services.web_admin.get_actor_id", return_value=None),
+    ):
+        response = client.post(
+            f"/inbox/{conversation_id}/reply",
+            data={
+                "body_text": "Please retry this reply.",
+                "idempotency_key": "stable-browser-send-key",
+            },
+            headers={"HX-Request": "true"},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 204
+    assert response.headers["Retry-After"] == "1"
+    event = json.loads(response.headers["HX-Trigger"])["inbox-reply-completed"]
+    assert event == {
+        "conversation_id": str(conversation_id),
+        "status": "error",
+        "message": "Another conversation update is completing. Please retry.",
+    }
+
+
 def _post_new_email_conversation(
     db_session,
     *,

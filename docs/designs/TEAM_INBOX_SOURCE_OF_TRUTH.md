@@ -139,9 +139,16 @@ resolution, cancellation or assignment stops further queue updates.
 
 ## Outbound flow
 
-An operator command locks the active conversation and records a communication
-intent, durable notification/outbox row, and Inbox outbound-attempt projection
-in one owner transaction. Dispatch occurs after commit through the canonical
+An operator reply command accepts one typed `ReplyCommand`. It performs pure and
+provider-template preparation before acquiring the conversation row, then takes
+a late PostgreSQL `NOWAIT` lock for the bounded database-only write phase. Under
+that lock it rechecks active state and the stable per-conversation idempotency
+key, then records the communication intent, durable notification/outbox row,
+Inbox outbound-attempt projection, attachments, and macro consequence in one
+owner transaction. Exact key retries replay the existing message; changed input
+under the same key fails closed. SQLSTATE `55P03` rolls back completely and maps
+to the retryable `communications.team_inbox_commands.conversation_busy` domain
+error, never to an HTTP 500. Dispatch occurs after commit through the canonical
 notification delivery point. SMTP, WhatsApp, and social integrations translate
 the intent and later return normalized receipt observations; they cannot change
 conversation or ticket lifecycle state.

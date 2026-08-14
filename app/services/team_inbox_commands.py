@@ -8,9 +8,10 @@ routes never become a parallel writer.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 from html import escape
 from typing import Any, TypeVar
 from urllib.parse import urlparse
@@ -42,6 +43,7 @@ from app.models.team_inbox import (
     InboxConversation,
     InboxConversationStatus,
     InboxMessage,
+    InboxMessageDirection,
     InboxSavedFilter,
 )
 from app.schemas.notification import NotificationCreate
@@ -113,7 +115,7 @@ class ConversationNotFoundError(InboxCommandError):
 class ConversationBusyError(InboxCommandError):
     def __init__(self) -> None:
         super().__init__(
-            "Conversation is busy. Please retry the upload.",
+            "Another conversation update is completing. Please retry.",
             suffix="conversation_busy",
         )
 
@@ -143,6 +145,48 @@ class ReplyOutcome:
     message_id: str | None = None
     notification_id: UUID | None = None
     replayed: bool = False
+
+
+class WhatsAppTemplateComponentKind(StrEnum):
+    header = "header"
+    body = "body"
+    button = "button"
+
+
+class WhatsAppTemplateParameterKind(StrEnum):
+    text = "text"
+    image = "image"
+    video = "video"
+    document = "document"
+
+
+@dataclass(frozen=True, slots=True)
+class WhatsAppTemplateParameter:
+    kind: WhatsAppTemplateParameterKind
+    value: str
+
+
+@dataclass(frozen=True, slots=True)
+class WhatsAppTemplateComponent:
+    kind: WhatsAppTemplateComponentKind
+    parameters: tuple[WhatsAppTemplateParameter, ...]
+    button_index: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ReplyCommand:
+    conversation_id: UUID
+    body_text: str
+    actor_person_id: UUID | None
+    macro_id: UUID | None = None
+    template_id: UUID | None = None
+    attachment_ids: tuple[str, ...] = ()
+    send_after: datetime | None = None
+    idempotency_key: str | None = None
+    reply_to_message_id: UUID | None = None
+    whatsapp_template_name: str | None = None
+    whatsapp_template_language: str | None = None
+    whatsapp_template_components: tuple[WhatsAppTemplateComponent, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -227,6 +271,7 @@ def _active_conversation(
     conversation_id: str | UUID,
     *,
     for_update: bool = False,
+    nowait: bool = False,
 ) -> InboxConversation:
     conversation_uuid = coerce_uuid(conversation_id)
     conversation = None
@@ -235,11 +280,17 @@ def _active_conversation(
             InboxConversation.id == conversation_uuid
         )
         if for_update:
-            query = query.with_for_update()
+            query = query.with_for_update(nowait=nowait)
         conversation = query.one_or_none()
     if conversation is None or not conversation.is_active:
         raise ConversationNotFoundError("Conversation not found.")
     return conversation
+
+
+def _is_lock_unavailable(exc: OperationalError) -> bool:
+    original = getattr(exc, "orig", None)
+    sqlstate = getattr(original, "sqlstate", None) or getattr(original, "pgcode", None)
+    return sqlstate == "55P03"
 
 
 def _normalize_email_recipients(
@@ -337,7 +388,7 @@ def _whatsapp_party_address(
 
 
 def _validate_whatsapp_components(
-    values: Sequence[dict[str, Any]],
+    values: Sequence[Mapping[str, object]],
 ) -> tuple[dict[str, Any], ...]:
     allowed_types = {"header", "body", "button"}
     normalized: list[dict[str, Any]] = []
@@ -396,86 +447,150 @@ def _validate_whatsapp_components(
     return tuple(normalized)
 
 
+def parse_whatsapp_template_components(
+    values: Sequence[Mapping[str, object]],
+) -> tuple[WhatsAppTemplateComponent, ...]:
+    """Normalize the dynamic form payload into the typed reply boundary."""
+
+    normalized = _validate_whatsapp_components(values)
+    components: list[WhatsAppTemplateComponent] = []
+    for value in normalized:
+        parameters: list[WhatsAppTemplateParameter] = []
+        for raw_parameter in value["parameters"]:
+            parameter_kind = WhatsAppTemplateParameterKind(raw_parameter["type"])
+            if parameter_kind is WhatsAppTemplateParameterKind.text:
+                parameter_value = str(raw_parameter["text"])
+            else:
+                parameter_value = str(raw_parameter[parameter_kind.value]["link"])
+            parameters.append(
+                WhatsAppTemplateParameter(
+                    kind=parameter_kind,
+                    value=parameter_value,
+                )
+            )
+        components.append(
+            WhatsAppTemplateComponent(
+                kind=WhatsAppTemplateComponentKind(value["type"]),
+                parameters=tuple(parameters),
+                button_index=(
+                    int(value["index"])
+                    if value["type"] == WhatsAppTemplateComponentKind.button.value
+                    else None
+                ),
+            )
+        )
+    return tuple(components)
+
+
+def _provider_whatsapp_components(
+    values: Sequence[WhatsAppTemplateComponent],
+) -> tuple[dict[str, Any], ...]:
+    components: list[dict[str, Any]] = []
+    for component in values:
+        parameters: list[dict[str, Any]] = []
+        for parameter in component.parameters:
+            if parameter.kind is WhatsAppTemplateParameterKind.text:
+                parameters.append(
+                    {"type": parameter.kind.value, "text": parameter.value}
+                )
+            else:
+                parameters.append(
+                    {
+                        "type": parameter.kind.value,
+                        parameter.kind.value: {"link": parameter.value},
+                    }
+                )
+        payload: dict[str, Any] = {
+            "type": component.kind.value,
+            "parameters": parameters,
+        }
+        if component.kind is WhatsAppTemplateComponentKind.button:
+            payload["sub_type"] = "url"
+            payload["index"] = str(component.button_index)
+        components.append(payload)
+    return tuple(components)
+
+
+def _reply_replay(
+    db: Session,
+    *,
+    conversation: InboxConversation,
+    idempotency_key: str,
+    body_text: str,
+    reply_to_message_id: UUID | None,
+) -> ReplyOutcome | None:
+    if not idempotency_key:
+        return None
+    previous = (
+        db.query(InboxMessage)
+        .filter(InboxMessage.conversation_id == conversation.id)
+        .filter(InboxMessage.direction == InboxMessageDirection.outbound.value)
+        .filter(
+            InboxMessage.metadata_["idempotency_key"].as_string() == idempotency_key
+        )
+        .order_by(InboxMessage.created_at.desc())
+        .first()
+    )
+    if previous is None:
+        return None
+    previous_body = str((previous.metadata_ or {}).get("body_text") or "").strip()
+    previous_reply = (previous.metadata_ or {}).get("reply_to")
+    previous_reply_id = (
+        str(previous_reply.get("message_id") or "")
+        if isinstance(previous_reply, dict)
+        else ""
+    )
+    requested_reply_id = str(reply_to_message_id) if reply_to_message_id else ""
+    if (
+        previous_body
+        and previous_body != body_text
+        or previous_reply_id != requested_reply_id
+    ):
+        raise InboxCommandRejected(
+            "This send key was already used for a different reply.",
+            conversation_id=conversation.id,
+        )
+    return ReplyOutcome(
+        conversation_id=str(conversation.id),
+        kind=str((previous.metadata_ or {}).get("delivery_status") or "queued"),
+        sender=previous.from_address or "team sender",
+        message_id=str(previous.id),
+        notification_id=previous.notification_id,
+        replayed=True,
+    )
+
+
 def reply(
     db: Session,
     *,
-    conversation_id: str | UUID,
-    body_text: str,
-    actor_person_id: str | UUID | None,
-    macro_id: str | UUID | None = None,
-    template_id: str | UUID | None = None,
-    attachment_ids: Sequence[str] | None = None,
-    send_after: datetime | None = None,
-    idempotency_key: str | None = None,
-    reply_to_message_id: str | UUID | None = None,
-    whatsapp_template_name: str | None = None,
-    whatsapp_template_language: str | None = None,
-    whatsapp_template_components: Sequence[dict[str, Any]] = (),
+    command: ReplyCommand,
 ) -> ReplyOutcome:
     def action() -> ReplyOutcome:
-        conversation = _active_conversation(db, conversation_id, for_update=True)
-        clean_body = str(body_text or "").strip()
-        scheduled_for = send_after
+        conversation = _active_conversation(db, command.conversation_id)
+        clean_body = command.body_text.strip()
+        scheduled_for = command.send_after
         if scheduled_for is not None:
             if scheduled_for.tzinfo is None:
                 scheduled_for = scheduled_for.replace(tzinfo=UTC)
             if scheduled_for <= datetime.now(UTC):
                 raise InboxCommandError("Choose a send time in the future.")
-        clean_idempotency_key = str(idempotency_key or "").strip()
-        reply_to_uuid = coerce_uuid(reply_to_message_id)
-        if reply_to_message_id and reply_to_uuid is None:
-            raise InboxCommandRejected(
-                "Quoted message is invalid.",
-                conversation_id=conversation.id,
-            )
+        clean_idempotency_key = str(command.idempotency_key or "").strip()
+        reply_to_uuid = command.reply_to_message_id
         if len(clean_idempotency_key) > 200:
             raise InboxCommandError("Reply idempotency key is too long.")
-        if clean_idempotency_key:
-            previous = (
-                db.query(InboxMessage)
-                .filter(InboxMessage.conversation_id == conversation.id)
-                .filter(InboxMessage.direction == "outbound")
-                .filter(
-                    InboxMessage.metadata_["idempotency_key"].as_string()
-                    == clean_idempotency_key
-                )
-                .order_by(InboxMessage.created_at.desc())
-                .first()
-            )
-            if previous is not None:
-                previous_body = str(
-                    (previous.metadata_ or {}).get("body_text") or ""
-                ).strip()
-                previous_reply = (previous.metadata_ or {}).get("reply_to")
-                previous_reply_id = (
-                    str(previous_reply.get("message_id") or "")
-                    if isinstance(previous_reply, dict)
-                    else ""
-                )
-                requested_reply_id = str(reply_to_uuid) if reply_to_uuid else ""
-                if (
-                    previous_body
-                    and previous_body != clean_body
-                    or previous_reply_id != requested_reply_id
-                ):
-                    raise InboxCommandRejected(
-                        "This send key was already used for a different reply.",
-                        conversation_id=conversation.id,
-                    )
-                return ReplyOutcome(
-                    conversation_id=str(conversation.id),
-                    kind=str(
-                        (previous.metadata_ or {}).get("delivery_status") or "queued"
-                    ),
-                    sender=previous.from_address or "team sender",
-                    message_id=str(previous.id),
-                    notification_id=previous.notification_id,
-                    replayed=True,
-                )
+        replay = _reply_replay(
+            db,
+            conversation=conversation,
+            idempotency_key=clean_idempotency_key,
+            body_text=clean_body,
+            reply_to_message_id=reply_to_uuid,
+        )
+        if replay is not None:
+            return replay
         template = None
         clean_template_id = (
-            str(template_id).strip()
-            if isinstance(template_id, (str, UUID)) and str(template_id).strip()
+            str(command.template_id).strip()
+            if command.template_id is not None
             else None
         )
         if clean_template_id:
@@ -486,9 +601,11 @@ def reply(
         clean_provider_template_language = ""
         clean_provider_components: tuple[dict[str, Any], ...] = ()
         if conversation.channel_type == InboxChannelType.whatsapp.value:
-            clean_provider_template_name = str(whatsapp_template_name or "").strip()
+            clean_provider_template_name = str(
+                command.whatsapp_template_name or ""
+            ).strip()
             clean_provider_template_language = str(
-                whatsapp_template_language or ""
+                command.whatsapp_template_language or ""
             ).strip()
             if clean_provider_template_name or clean_provider_template_language:
                 if not clean_provider_template_name:
@@ -510,13 +627,34 @@ def reply(
                     for item in approved_templates
                 ):
                     raise InboxCommandError("Choose an approved WhatsApp template.")
-                clean_provider_components = _validate_whatsapp_components(
-                    whatsapp_template_components
+                clean_provider_components = _provider_whatsapp_components(
+                    command.whatsapp_template_components
                 )
                 if not clean_body:
                     clean_body = f"[WhatsApp template: {clean_provider_template_name}]"
         if not clean_body:
             raise InboxCommandError("Reply body is required.")
+
+        # The provider/template preparation above may perform external I/O. Do
+        # not hold the canonical conversation row while it runs. Reacquire the
+        # authoritative row only for the bounded database write phase, and
+        # fail fast so contention becomes an explicit retry instead of a
+        # ten-second PostgreSQL lock timeout and HTTP 500.
+        conversation = _active_conversation(
+            db,
+            command.conversation_id,
+            for_update=True,
+            nowait=True,
+        )
+        replay = _reply_replay(
+            db,
+            conversation=conversation,
+            idempotency_key=clean_idempotency_key,
+            body_text=clean_body,
+            reply_to_message_id=reply_to_uuid,
+        )
+        if replay is not None:
+            return replay
 
         body_html = (
             "<p>"
@@ -524,7 +662,7 @@ def reply(
             + "</p>"
         )
         staged_attachment_ids = [
-            str(item).strip() for item in (attachment_ids or ()) if str(item).strip()
+            str(item).strip() for item in command.attachment_ids if str(item).strip()
         ]
         reply_metadata: dict[str, object] = {
             "source_route": "admin_inbox_detail_reply",
@@ -591,7 +729,7 @@ def reply(
                     body_html=body_html,
                     body_text=clean_body,
                     subject=template.subject if template is not None else None,
-                    sent_by_person_id=actor_person_id,
+                    sent_by_person_id=command.actor_person_id,
                     metadata=reply_metadata,
                 ),
                 send_after=scheduled_for,
@@ -600,7 +738,7 @@ def reply(
                 team_inbox_media.bind_assets_to_message(
                     db, message=scheduled, asset_ids=staged_attachment_ids
                 )
-            team_inbox_operations.record_macro_use(db, macro_id)
+            team_inbox_operations.record_macro_use(db, command.macro_id)
             return ReplyOutcome(
                 conversation_id=str(conversation.id),
                 kind="scheduled",
@@ -614,7 +752,7 @@ def reply(
                 body_html=body_html,
                 body_text=clean_body,
                 subject=template.subject if template is not None else None,
-                sent_by_person_id=actor_person_id,
+                sent_by_person_id=command.actor_person_id,
                 metadata=reply_metadata,
             ),
             record_failure=True,
@@ -634,7 +772,11 @@ def reply(
                 entity_type="inbox_conversation",
                 entity_id=str(conversation.id),
                 actor_type=AuditActorType.user,
-                actor_id=str(actor_person_id) if actor_person_id else None,
+                actor_id=(
+                    str(command.actor_person_id)
+                    if command.actor_person_id is not None
+                    else None
+                ),
                 metadata={
                     "owner": OWNER,
                     "channel_type": conversation.channel_type,
@@ -650,7 +792,7 @@ def reply(
                 team_inbox_media.bind_assets_to_message(
                     db, message=message, asset_ids=staged_attachment_ids
                 )
-        team_inbox_operations.record_macro_use(db, macro_id)
+        team_inbox_operations.record_macro_use(db, command.macro_id)
         return ReplyOutcome(
             conversation_id=str(conversation.id),
             kind=result.kind,
@@ -659,7 +801,12 @@ def reply(
             notification_id=result.notification_id,
         )
 
-    return _commit(db, action)
+    try:
+        return _commit(db, action)
+    except OperationalError as exc:
+        if _is_lock_unavailable(exc):
+            raise ConversationBusyError from exc
+        raise
 
 
 def create_label(db: Session, *, name: str, color: str | None = None) -> None:

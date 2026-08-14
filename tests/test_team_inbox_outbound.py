@@ -554,12 +554,14 @@ def test_direct_whatsapp_template_reply_uses_approved_template_validation(
 
     outcome = team_inbox_commands.reply(
         db_session,
-        conversation_id=conversation.id,
-        body_text="",
-        actor_person_id=uuid4(),
-        whatsapp_template_name="service_update",
-        whatsapp_template_language="en",
-        whatsapp_template_components=(),
+        command=team_inbox_commands.ReplyCommand(
+            conversation_id=conversation.id,
+            body_text="",
+            actor_person_id=uuid4(),
+            whatsapp_template_name="service_update",
+            whatsapp_template_language="en",
+            whatsapp_template_components=(),
+        ),
     )
 
     notification = db_session.query(Notification).one()
@@ -859,11 +861,13 @@ def test_facebook_targeted_comment_reply_dispatches_exact_page_and_comment(
 
     result = team_inbox_commands.reply(
         db_session,
-        conversation_id=conversation.id,
-        body_text="Replying publicly.",
-        actor_person_id=uuid4(),
-        reply_to_message_id=target.id,
-        idempotency_key="facebook-public-comment-reply",
+        command=team_inbox_commands.ReplyCommand(
+            conversation_id=conversation.id,
+            body_text="Replying publicly.",
+            actor_person_id=uuid4(),
+            reply_to_message_id=target.id,
+            idempotency_key="facebook-public-comment-reply",
+        ),
     )
     notification_tasks._deliver_notification_queue_stats(db_session)
 
@@ -933,11 +937,13 @@ def test_instagram_targeted_comment_reply_dispatches_exact_account_and_comment(
 
     result = team_inbox_commands.reply(
         db_session,
-        conversation_id=conversation.id,
-        body_text="Instagram public reply.",
-        actor_person_id=uuid4(),
-        reply_to_message_id=target.id,
-        idempotency_key="instagram-public-comment-reply",
+        command=team_inbox_commands.ReplyCommand(
+            conversation_id=conversation.id,
+            body_text="Instagram public reply.",
+            actor_person_id=uuid4(),
+            reply_to_message_id=target.id,
+            idempotency_key="instagram-public-comment-reply",
+        ),
     )
     notification_tasks._deliver_notification_queue_stats(db_session)
 
