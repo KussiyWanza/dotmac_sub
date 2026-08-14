@@ -92,6 +92,12 @@
                             <td class="px-5 py-3 align-top">
                                 <p class="font-medium text-slate-900 dark:text-white">{{ event.template_code }}</p>
                                 <p class="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{{ event.category }} &middot; {{ event.subject }}</p>
+                                {% if event.enabled_field %}
+                                <label class="mt-2 inline-flex items-center gap-2 text-xs font-medium text-slate-600 dark:text-slate-300">
+                                    <input type="checkbox" name="{{ event.enabled_field }}" value="1" {% if event.enabled %}checked{% endif %} class="rounded border-slate-300 text-primary-600 focus:ring-primary-500 dark:border-slate-500 dark:bg-slate-700">
+                                    Enabled
+                                </label>
+                                {% endif %}
                             </td>
                             <td class="px-5 py-3 align-top">{{ channel_boxes(event.field, channel_policy_channels, event.selected) }}</td>
                             <td class="px-5 py-3 align-top">

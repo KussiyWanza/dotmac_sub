@@ -7,6 +7,7 @@ import pytest
 from app.models.domain_settings import DomainSetting, SettingDomain
 from app.models.notification import NotificationChannel
 from app.models.subscription_engine import SettingValueType
+from app.services import customer_experience_communications
 from app.services import notification_channel_policy as channel_policy
 from app.services import web_notification_channels as channels_view
 from app.services.domain_errors import DomainError
@@ -130,6 +131,32 @@ def test_context_lists_every_event_and_selectable_channel(db_session):
     ]
 
 
+def test_context_lists_document_change_events(db_session):
+    rows = {
+        row["template_code"]: row
+        for row in channels_view.channel_policy_context(db_session)[
+            "channel_policy_events"
+        ]
+    }
+
+    for template_code in (
+        "project_status_changed",
+        "project_task_status_changed",
+        "project_updated",
+        "project_task_updated",
+        "support_ticket_status_changed",
+        "support_ticket_updated",
+        "work_order_complete",
+    ):
+        assert template_code in rows
+
+    assert rows["project_updated"]["effective"] == ["email"]
+    assert rows["project_updated"]["enabled"] is False
+    assert rows["project_updated"]["enabled_field"] == "document_enabled__project_updated"
+    assert rows["work_order_complete"]["effective"] == ["email", "whatsapp", "push"]
+    assert rows["work_order_complete"]["enabled"] is True
+
+
 def test_context_reports_effective_channel_and_its_source(db_session):
     channel_policy.set_channel_policy(
         db_session,
@@ -199,6 +226,9 @@ def test_save_from_form_writes_one_policy(db_session):
             channels_view.DEFAULT_FIELD: ["email"],
             f"{channels_view.CATEGORY_FIELD_PREFIX}service": ["whatsapp", "email"],
             f"{channels_view.EVENT_FIELD_PREFIX}outage_area": ["whatsapp"],
+            f"{channels_view.DOCUMENT_ENABLED_FIELD_PREFIX}project_status_changed": [
+                "1"
+            ],
         }
     )
     channels_view.save_channel_policy(db_session, form)
@@ -209,6 +239,14 @@ def test_save_from_form_writes_one_policy(db_session):
     assert stored["default"] == ["email"]
     assert stored["categories"]["service"] == ["whatsapp", "email"]
     assert stored["events"]["outage_area"] == ["whatsapp"]
+    assert customer_experience_communications.document_change_notification_enabled(
+        db_session,
+        "project_status_changed",
+    )
+    assert not customer_experience_communications.document_change_notification_enabled(
+        db_session,
+        "support_ticket_status_changed",
+    )
 
 
 def test_unticked_row_clears_its_override(db_session):

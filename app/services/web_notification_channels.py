@@ -14,8 +14,8 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.models.notification import NotificationChannel
+from app.services import customer_experience_communications, web_notifications
 from app.services import notification_channel_policy as channel_policy
-from app.services import web_notifications
 from app.services.customer_notification_policy import channel_disabled_in_config
 from app.services.events.handlers.notification import (
     event_catalogue,
@@ -26,6 +26,7 @@ from app.services.events.handlers.notification import (
 DEFAULT_FIELD = "default"
 CATEGORY_FIELD_PREFIX = "category__"
 EVENT_FIELD_PREFIX = "event__"
+DOCUMENT_ENABLED_FIELD_PREFIX = "document_enabled__"
 
 _CHANNEL_LABELS = {
     NotificationChannel.email: "Email",
@@ -63,6 +64,9 @@ def channel_policy_context(db: Session) -> dict[str, Any]:
     default_channels: list[str] = list(policy["default"])
     category_overrides: Mapping[str, list[str]] = policy["categories"]
     event_overrides: Mapping[str, list[str]] = policy["events"]
+    document_enabled = customer_experience_communications.document_change_notification_policy(
+        db
+    )
 
     channels = [
         {
@@ -116,6 +120,12 @@ def channel_policy_context(db: Session) -> dict[str, Any]:
                 "category": entry.category,
                 "subject": entry.subject,
                 "field": f"{EVENT_FIELD_PREFIX}{entry.template_code}",
+                "enabled_field": (
+                    f"{DOCUMENT_ENABLED_FIELD_PREFIX}{entry.template_code}"
+                    if entry.template_code in document_enabled
+                    else None
+                ),
+                "enabled": document_enabled.get(entry.template_code, True),
                 "selected": override,
                 "code_default": list(entry.default_channels),
                 "effective": effective,
@@ -178,6 +188,17 @@ def save_channel_policy(
         entry.template_code: _values(f"{EVENT_FIELD_PREFIX}{entry.template_code}")
         for entry in event_catalogue()
     }
+    document_enabled = {
+        entry.template_code: bool(_values(f"{DOCUMENT_ENABLED_FIELD_PREFIX}{entry.template_code}"))
+        for entry in event_catalogue()
+        if entry.template_code
+        in customer_experience_communications.DOCUMENT_CHANGE_NOTIFICATION_EVENTS
+    }
+    if document_enabled:
+        customer_experience_communications.set_document_change_notification_policy(
+            db,
+            document_enabled,
+        )
 
     return channel_policy.set_channel_policy(
         db,
