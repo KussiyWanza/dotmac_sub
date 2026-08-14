@@ -635,6 +635,32 @@ DOMAIN = DomainSOT(
             ),
         ),
         SOTService(
+            name="auth.entitlement_revocation",
+            module="app.services.entitlement_revocation",
+            owns=("session revocation for entitlement reductions",),
+            depends_on=(
+                "events.dispatcher",
+                "observability.audit_log",
+            ),
+            notes=(
+                "An issued JWT carries the roles and scopes it was minted with "
+                "and stays valid until it expires, so no cache invalidation can "
+                "withdraw an entitlement from it. require_user_auth re-reads the "
+                "authoritative sessions row on every request, which makes "
+                "revoking that row the only mechanism that denies on the next "
+                "request. This owner revokes inside the reducing owner's "
+                "transaction so revocation and reduction commit or roll back "
+                "together, emits durable projection work, and registers strict "
+                "cache invalidation for after commit — never before, or a "
+                "concurrent read would repopulate the cache from uncommitted "
+                "rows. A failed invalidation is counted and logged but cannot "
+                "preserve authorization, because the database already denies. "
+                "It does not decide whether a reduction occurred: that "
+                "judgement belongs to the reducing owner, which alone knows the "
+                "principal's effective access before and after."
+            ),
+        ),
+        SOTService(
             name="auth.token_signing",
             module="app.services.context_signing",
             owns=(
