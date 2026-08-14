@@ -566,7 +566,9 @@ if [[ "${DEPLOYMENT_TARGET}" == "production" ]]; then
     exit 1
   fi
   if ! GITHUB_RELEASE_REVISION="$(
-    PYTHONPATH="${REPO_DIR}" "${PYTHON_BIN}" -m scripts.release_candidate_evidence \
+    # The shell is in DEPLOY_DIR, which is a mutable host checkout. ``-P``
+    # prevents it from shadowing the authorized Actions checkout on PYTHONPATH.
+    PYTHONPATH="${REPO_DIR}" "${PYTHON_BIN}" -P -m scripts.release_candidate_evidence \
       verify-production \
       --path "${PRODUCTION_RELEASE_EVIDENCE}" \
       --expected-source-revision "${FULL_SHA}" \
@@ -605,7 +607,7 @@ if [[ "${DEPLOYMENT_TARGET}" == "staging" ]]; then
   BACKUP_MODE="skip_staging"
 elif [[ -n "${PRODUCTION_BACKUP_DECISION_FILE:-}" ]]; then
   if ! BACKUP_MODE="$(
-    PYTHONPATH="${REPO_DIR}" "${PYTHON_BIN}" -m scripts.release_backup_policy \
+    PYTHONPATH="${REPO_DIR}" "${PYTHON_BIN}" -P -m scripts.release_backup_policy \
       verify-production-decision --path "${PRODUCTION_BACKUP_DECISION_FILE}"
   )"; then
     echo "BACKUP POLICY REJECTED: production hotfix evidence is invalid." >&2

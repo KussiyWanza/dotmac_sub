@@ -16,11 +16,15 @@ backup invocation. This guard covers it directly.
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DEPLOY_SH = ROOT / "scripts/deploy.sh"
+DEPLOY_PRODUCTION_SH = ROOT / "scripts/deploy_production.sh"
 DB_BACKUP_SH = ROOT / "scripts/db_backup.sh"
 
 
@@ -67,3 +71,78 @@ def test_deploy_keeps_repo_dir_and_deploy_dir_distinct() -> None:
 
     assert 'DEPLOY_DIR="${DEPLOY_DIR:-' in source
     assert 'REPO_DIR="${REPO_DIR:-${DEPLOY_DIR}}"' in source
+
+
+def test_production_evidence_verifier_ignores_deploy_checkout_shadow(
+    tmp_path: Path,
+) -> None:
+    """The authorized workflow checkout must win over the mutable deploy cwd.
+
+    Production run 31762013926 set ``PYTHONPATH`` to the authorized Actions
+    checkout, but Python still prepended the persistent deployment checkout to
+    ``sys.path``. Its stale ``scripts.release_candidate_evidence`` therefore
+    parsed a valid authorization document and rejected its newer schema.
+
+    Deriving the interpreter flag from the real deploy invocation makes this a
+    sensitivity proof: removing the safe-path flag sends the import back to the
+    hostile deployment checkout and this test fails.
+    """
+
+    source = DEPLOY_SH.read_text(encoding="utf-8")
+    host_python_invocations = [
+        (path.name, line.strip())
+        for path in (DEPLOY_SH, DEPLOY_PRODUCTION_SH)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if 'PYTHONPATH="${REPO_DIR}" "${PYTHON_BIN}"' in line
+        and "-m scripts." in line
+    ]
+    assert host_python_invocations
+    assert all(
+        '"${PYTHON_BIN}" -P -m' in line
+        for _, line in host_python_invocations
+    ), (
+        "every host-side Python module must ignore the mutable deployment "
+        f"checkout: {host_python_invocations}"
+    )
+    invocations = [
+        line.strip()
+        for line in source.splitlines()
+        if '"${PYTHON_BIN}"' in line
+        and "-m scripts.release_candidate_evidence" in line
+    ]
+    assert len(invocations) == 1, (
+        "deploy.sh must have exactly one production-evidence module invocation"
+    )
+    safe_path_enabled = '"${PYTHON_BIN}" -P -m' in invocations[0]
+
+    authorized_root = tmp_path / "authorized"
+    deployment_root = tmp_path / "deployment"
+    for root, identity in (
+        (authorized_root, "authorized"),
+        (deployment_root, "hostile"),
+    ):
+        scripts = root / "scripts"
+        scripts.mkdir(parents=True)
+        (scripts / "__init__.py").write_text("", encoding="utf-8")
+        (scripts / "release_candidate_evidence.py").write_text(
+            f"print({identity!r})\n",
+            encoding="utf-8",
+        )
+
+    command = [sys.executable]
+    if safe_path_enabled:
+        command.append("-P")
+    command.extend(("-m", "scripts.release_candidate_evidence"))
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(authorized_root)
+
+    completed = subprocess.run(
+        command,
+        cwd=deployment_root,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.stdout.strip() == "authorized"

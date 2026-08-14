@@ -371,7 +371,10 @@ production target.
 The GitHub-hosted verification job validates authorization before the production
 runner is scheduled. The host job checks out the exact authorized `main`
 revision in its runner workspace and uses the persistent directory only for
-host-owned `.env`, Compose overrides, and deployment state.
+host-owned `.env`, Compose overrides, and deployment state. Host-side Python
+verifiers run with safe-path isolation and an explicit `PYTHONPATH` rooted at
+that authorized workspace; the persistent checkout must never shadow their
+release-evidence or backup-policy modules.
 
 ## Staging database-backup policy
 
