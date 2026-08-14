@@ -5053,3 +5053,18 @@ Quote-request and deposit surfaces branch on the explicit
 `sales.selfserve`, and its deposit "already paid" decision belongs to the paid
 deposit Invoice in the billing ledger — never to a mirror flag the CRM could
 stale-sync.
+## CRM Network Map Point Migration Addendum
+
+`network.crm_network_map_point_migration` owns the CRM Network Map point-asset
+migration coordinator for FDH cabinets, fiber access points, and splice
+closures. It reads immutable CRM staging batches from
+`network.fiber_source_staging`, selects one authoritative cohort per supported
+asset type using archive hash, snapshot timestamp, importer version,
+source/restored/staged counts, and reconciliation status, then classifies every
+staged feature before proposal generation.
+
+The coordinator never writes canonical assets directly and never feeds staged
+observations into `/admin/network/map`. Proposal creation, review, and bounded
+execution are delegated to `network.fiber_identity_decisions` and
+`network.fiber_identity_review`; canonical passive-asset writes remain delegated
+to `network.fiber_asset_changes`.

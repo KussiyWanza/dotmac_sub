@@ -6,6 +6,9 @@ Owner boundaries:
 
 - `network.crm_map_source` validates and normalizes the restored CRM archive.
 - `network.fiber_source_staging` owns immutable imported source evidence.
+- `network.crm_network_map_point_migration` owns authoritative CRM point-batch
+  selection, deterministic point-asset reconciliation, and CRM proposal/apply
+  guards for FDH cabinets, fibre access points, and splice closures.
 - `network.fiber_identity_decisions` and `network.fiber_connectivity_decisions`
   own reviewed proposals; they never infer identity or topology from proximity.
 - `network.fiber_asset_changes` remains the canonical passive-plant writer.
@@ -14,6 +17,13 @@ Owner boundaries:
 
 The importer never restores the CRM dump over a Selfcare database, never uses
 direct SQL to repair Selfcare records, and never writes canonical map assets.
+Deployment of this code does not start a snapshot, restore, staging run,
+proposal generation, review, dry-run apply, or canonical apply.
+
+The permanent production map is `GET /admin/network/map`, and it reads
+canonical Selfcare models only. `GET /admin/network/map-v2` remains a temporary
+preview/workbench. `GET /admin/gis` remains the generic GIS module. Staged CRM
+observations must never be rendered directly as production map data.
 
 ## Immutable source
 
@@ -70,7 +80,7 @@ The restored archive contains:
 | --- | ---: | ---: | --- |
 | `fdh_cabinets` | 245 | 244 | Staged point evidence; one active row has no coordinates and is a hard blocker |
 | `fiber_access_points` | 501 | 501 | Staged point evidence |
-| `fiber_splice_closures` | 1,315 | 1,307 | Eight inactive rows are reported and excluded |
+| `fiber_splice_closures` | 1,321 | 1,313 | Eight inactive rows are reported and excluded |
 | `fiber_segments` | 2,890 | 2,890 | Staged LineString evidence; endpoints are not inferred |
 | `service_buildings` | 2,742 | 2,742 | Staged identity evidence; canonical creation is not enabled |
 | `olt_devices` | 39 | 39 | Comparison-only; never inserted by this importer |
@@ -132,6 +142,91 @@ classification in transactions of no more than 100 features. Each transaction
 creates immutable staging evidence only. Exact replay returns the existing
 batch. A failing transaction rolls back and the command stops at the last
 successful receipt.
+
+## CRM point-asset reconciliation
+
+This phase covers only:
+
+- FDH cabinets;
+- fibre access points; and
+- fibre splice closures.
+
+It explicitly excludes OLT creation, fibre segments, service buildings, support
+structures, splitters, trays, strands, termination points, route topology, and
+customer data. Selfcare network inventory remains authoritative for OLTs.
+
+After an authorized fresh snapshot, isolated restore, and bounded staging run,
+select the authoritative staged CRM point cohort with:
+
+```bash
+python scripts/network/crm_network_map_point_migration.py report \
+  --expected-archive-sha256 <fresh-archive-sha256>
+```
+
+Authoritative selection requires matching source system, supported asset type,
+completed staged status, archive SHA-256, snapshot timestamp, importer version,
+source count, restored count, staged count, full manifest hash, and
+`source_restore_staged_counts_match`. Older cohorts remain immutable evidence
+but are treated as superseded and cannot generate or execute new proposals.
+
+Stable CRM source identities use:
+
+```text
+crm_network_map:{entity_type}:{crm_primary_key}
+```
+
+Names and coordinate proximity may create review candidates, but they never
+establish identity automatically. Deterministic reconciliation checks, in
+order: existing durable source link, exact unique code/reference match,
+supported identifier match, human-review candidate, create-new eligibility,
+then conflict/invalid/superseded refusal. Every staged feature receives one of
+`already_linked`, `exact_match`, `candidate_match`, `create_new`, `unchanged`,
+`conflict`, `invalid`, or `superseded_source` with a durable reason code.
+
+Preview proposal generation without writes:
+
+```bash
+python scripts/network/crm_network_map_point_migration.py preview-proposals \
+  --expected-archive-sha256 <fresh-archive-sha256> \
+  --actor "approved proposer identity" \
+  --reason "CRM Network Map point-asset migration phase 1"
+```
+
+Persist proposal batches only after the preview is reviewed:
+
+```bash
+python scripts/network/crm_network_map_point_migration.py propose-batch \
+  --expected-archive-sha256 <fresh-archive-sha256> \
+  --actor "approved proposer identity" \
+  --reason "CRM Network Map point-asset migration phase 1"
+```
+
+Independent review remains the existing identity batch attestation workflow.
+Dry-run apply is a separate read-only operation:
+
+```bash
+python scripts/network/crm_network_map_point_migration.py dry-run-apply \
+  --batch-id <identity-proposal-batch-id> \
+  --expected-archive-sha256 <fresh-archive-sha256>
+```
+
+Approved apply is a separate bounded command requiring both the exact archive
+hash and exact proposal manifest hash:
+
+```bash
+python scripts/network/crm_network_map_point_migration.py apply-approved \
+  --batch-id <identity-proposal-batch-id> \
+  --expected-manifest-sha256 <proposal-manifest-sha256> \
+  --expected-archive-sha256 <fresh-archive-sha256> \
+  --actor "approved executor identity" \
+  --limit 50
+```
+
+Creates emit pending `network.fiber_asset_changes` requests and do not
+self-approve canonical asset mutations. Link decisions create only durable CRM
+source links to existing canonical assets. Retrying the same proposal/apply
+commands is idempotent; stale archive hashes, superseded source batches, changed
+staged content, duplicate source identities, and canonical drift fail closed.
 
 ## Review and canonical application
 
