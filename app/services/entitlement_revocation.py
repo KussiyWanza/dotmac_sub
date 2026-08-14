@@ -9,10 +9,12 @@ the time it can change, nothing is assigned.
 
 The real transition is **losing an entitlement you still hold a token for**: a
 role unassigned from a principal, or a permission taken off a role that
-principal holds. The issued JWT carries the old roles and scopes in its claims
-and stays cryptographically valid until it expires. No cache invalidation can
-reach inside a signed token, so "flush the claims cache" is not revocation — it
-only stops *new* reads of stale rows.
+principal holds. Current login and refresh tokens omit roles and scopes and
+reload RBAC through the request dependency, but that dependency still accepts
+compatibility tokens with embedded claims. Those claims stay cryptographically
+valid until expiry and no cache invalidation can reach inside them. Revoking the
+authoritative session therefore provides one fail-closed rule for both token
+forms instead of relying on how a particular token was minted.
 
 ## Why revoking the session is the whole mechanism
 

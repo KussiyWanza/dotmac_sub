@@ -2,11 +2,13 @@
 
 Deactivating a role was never the exposure — `auth.rbac_catalog` refuses to
 deactivate an assigned role, and authorization reads already filter inactive
-roles out. The exposure is a principal who *loses* a role or a permission while
-holding a signed JWT that still names it. Nothing can edit claims inside an
-issued token, so the only mechanism that denies immediately is revoking the
-authoritative session row that `auth_dependencies.require_user_auth` re-reads on
-every request.
+roles out. The compatibility exposure is a principal who *loses* a role or a
+permission while holding a signed JWT that still names it. Current login and
+refresh tokens omit those claims and reload RBAC, but the request dependency
+still accepts older embedded claims. Nothing can edit claims inside a signed
+token, so revoking the authoritative session row that
+`auth_dependencies.require_user_auth` re-reads on every request is the
+fail-closed mechanism for both token forms.
 
 One test per property: atomic with the reduction, denies on the next request,
 silent on widening/equivalent/no-op changes, rollback-safe, and cache failure
@@ -28,7 +30,6 @@ from app.models.rbac import Permission, Role, RolePermission, SystemUserRole
 from app.models.system_user import SystemUser
 from app.services import (
     entitlement_revocation,
-    session_hooks,
     system_user_assignments,
 )
 from app.services.owner_commands import CommandContext
@@ -232,12 +233,22 @@ def test_rolling_back_preserves_both_the_assignment_and_the_session(
 ) -> None:
     """Atomicity: the helper joins the caller's transaction and never commits.
 
-    Asserted against the helper rather than the command, because
-    `execute_owner_command` commits before it returns — a rollback afterwards
-    could not undo it, so testing there would prove nothing about atomicity.
-    Here the revocation is rolled back with the caller's work, which is exactly
-    the property a reducing owner depends on.
+    The unit fixture itself lives inside a connection-level outer transaction,
+    so a full Session.rollback() would erase the committed fixture baseline as
+    well as the mutation under test. A nested transaction models the reducing
+    owner's boundary without weakening the assertion: the real assignment
+    helper and the revocation both change state inside the same savepoint, and
+    both must disappear when that boundary rolls back.
     """
+
+    savepoint = db_session.begin_nested()
+    result = system_user_assignments.sync_source_roles_by_ids(
+        db_session,
+        user_id=staff["user_id"],
+        role_ids=(),
+        source=system_user_assignments.LOCAL_ROLE_SOURCE,
+    )
+    assert result.changed is True
 
     revoked = entitlement_revocation.revoke_for_entitlement_reduction(
         db_session,
@@ -247,10 +258,18 @@ def test_rolling_back_preserves_both_the_assignment_and_the_session(
         correlation_id=str(uuid.uuid4()),
     )
     assert revoked == (str(staff["session_id"]),)
+    assert (
+        db_session.query(SystemUserRole)
+        .filter_by(system_user_id=staff["user_id"])
+        .count()
+        == 0
+    )
 
-    db_session.rollback()
+    savepoint.rollback()
+    db_session.expire_all()
 
     session = db_session.get(AuthSession, staff["session_id"])
+    assert session is not None
     assert session.status is SessionStatus.active
     assert session.revoked_at is None
     assert (
@@ -293,13 +312,10 @@ def test_cache_invalidation_is_strict_and_runs_only_after_commit(
 ) -> None:
     """Invalidating before commit would let a concurrent read repopulate it."""
 
-    calls: list[tuple[str, str, bool]] = []
+    calls: list[tuple[str, str]] = []
 
     def _record(principal_type: str, principal_id: str) -> int:
-        session = db_session.get(AuthSession, staff["session_id"])
-        calls.append(
-            (principal_type, principal_id, session.status is SessionStatus.revoked)
-        )
+        calls.append((principal_type, principal_id))
         return 1
 
     monkeypatch.setattr(
@@ -318,16 +334,16 @@ def test_cache_invalidation_is_strict_and_runs_only_after_commit(
     # concurrent read would repopulate the cache from rows that have not landed.
     assert calls == []
 
-    # The invalidation is deferred, not skipped. Unit sessions run inside an
-    # outer transaction, so SQLAlchemy's after_commit never fires here — assert
-    # the callback was registered on the transaction, then drive it directly.
-    registered = session_hooks._pop_transaction_callbacks(
-        db_session, db_session.get_transaction()
-    )
-    assert len(registered) == 1
+    # Commit through the real session hook. emit_event legitimately registers
+    # its own after-commit dispatcher beside the strict invalidation, so total
+    # callback cardinality is not this contract. The observable contract is
+    # exactly one invalidation, after commit, with revocation already durable.
+    db_session.commit()
 
-    registered[0](db_session)
-    assert calls == [("system_user", str(staff["user_id"]), True)]
+    assert calls == [("system_user", str(staff["user_id"]))]
+    session = db_session.get(AuthSession, staff["session_id"])
+    assert session is not None
+    assert session.status is SessionStatus.revoked
 
 
 def test_a_failed_cache_invalidation_is_observable_and_does_not_restore_access(

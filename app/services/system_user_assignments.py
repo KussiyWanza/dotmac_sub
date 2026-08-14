@@ -582,12 +582,13 @@ def replace_system_user_assignments(
         permission_keys = system_user_direct_permission_keys(db, user.id)
         changed = bool(role_result.changed or permission_changed)
 
-        # A reduction is the only transition an already-issued JWT can outlive:
-        # its claims still name the roles and scopes just taken away, and it
-        # stays valid until expiry. Revoking the sessions in THIS transaction is
-        # what makes the next request fail. Widening, equivalent and no-op
-        # changes take nothing away, so they revoke nothing — logging an
-        # operator out for being granted something is not security.
+        # A reduction is the only transition an already-issued token can
+        # outlive. Current tokens reload RBAC, while compatibility tokens may
+        # still embed the roles and scopes just taken away. Revoking sessions in
+        # THIS transaction gives both forms the same fail-closed next-request
+        # rule. Widening, equivalent and no-op changes take nothing away, so
+        # they revoke nothing — logging an operator out for being granted
+        # something is not security.
         after_roles, after_permissions = _effective_access(db, user.id)
         removed_roles = tuple(sorted(before_roles - after_roles))
         removed_permissions = tuple(sorted(before_permissions - after_permissions))

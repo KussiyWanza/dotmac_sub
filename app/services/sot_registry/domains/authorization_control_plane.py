@@ -643,12 +643,14 @@ DOMAIN = DomainSOT(
                 "observability.audit_log",
             ),
             notes=(
-                "An issued JWT carries the roles and scopes it was minted with "
-                "and stays valid until it expires, so no cache invalidation can "
-                "withdraw an entitlement from it. require_user_auth re-reads the "
-                "authoritative sessions row on every request, which makes "
-                "revoking that row the only mechanism that denies on the next "
-                "request. This owner revokes inside the reducing owner's "
+                "Current login and refresh tokens omit roles and scopes and "
+                "reload RBAC through require_user_auth, while that dependency "
+                "still accepts compatibility tokens carrying embedded claims. "
+                "Those claims remain valid until expiry and cannot be changed by "
+                "cache invalidation. require_user_auth re-reads the authoritative "
+                "sessions row on every request, so revoking that row is the one "
+                "fail-closed next-request rule for both token forms. This owner "
+                "revokes inside the reducing owner's "
                 "transaction so revocation and reduction commit or roll back "
                 "together, emits durable projection work, and registers strict "
                 "cache invalidation for after commit — never before, or a "
