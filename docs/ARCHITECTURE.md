@@ -577,12 +577,12 @@ EventStore (Event sourcing)
 └── error
 
 AuditEvent (Operation-level audit log)
-├── actor_type, actor_id
-├── resource_type, resource_id
-├── operation (create, update, delete, read)
-├── method, path, status_code
-├── request_body, response_status
-└── timestamp
+├── actor_type, actor_id, actor_label
+├── actor_party_id (optional immutable accountability enrichment)
+├── action, entity_type, entity_id
+├── metadata (legacy) + details (R1 dual-write)
+├── ip_address, user_agent, request_id, status_code
+└── occurred_at (domain time) + created_at (persistence time)
 ```
 
 ### Collections/Dunning Models

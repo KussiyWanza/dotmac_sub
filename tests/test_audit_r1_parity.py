@@ -16,6 +16,10 @@ def _report(**overrides: int) -> AuditR1ParityReport:
         "user_agent_mismatches": 0,
         "unknown_actor_types": 0,
         "missing_required_actor_ids": 0,
+        "user_actor_rows": 1,
+        "user_actor_rows_with_party": 1,
+        "user_actor_rows_without_party": 0,
+        "automated_actor_rows_with_party": 0,
     }
     values.update(overrides)
     return AuditR1ParityReport(**values)
@@ -29,14 +33,30 @@ def test_zero_drift_with_observed_r1_rows_is_parity() -> None:
 
 
 def test_any_mismatch_blocks_parity() -> None:
-    report = _report(metadata_mismatches=2, missing_required_actor_ids=1)
+    report = _report(
+        metadata_mismatches=2,
+        missing_required_actor_ids=1,
+        automated_actor_rows_with_party=1,
+    )
 
     assert report.status == "drift"
-    assert report.blocking_mismatches == 3
+    assert report.blocking_mismatches == 4
 
 
 def test_zero_new_rows_is_not_misreported_as_proven_parity() -> None:
     assert _report(r1_rows=0).status == "no_r1_rows"
+
+
+def test_actor_party_adoption_is_reported_separately_from_payload_parity() -> None:
+    report = _report(
+        user_actor_rows=3,
+        user_actor_rows_with_party=1,
+        user_actor_rows_without_party=2,
+    )
+
+    assert report.status == "parity"
+    assert report.actor_party_projection_status == "partial"
+    assert report.as_dict()["actor_party_projection_status"] == "partial"
 
 
 def test_query_reads_aggregates_without_selecting_forensic_values() -> None:

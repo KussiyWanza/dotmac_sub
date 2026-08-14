@@ -92,6 +92,46 @@ reliable statement about rows written through the R1 schema default, not proof
 that a malicious raw writer could not explicitly insert NULL. The architecture
 ratchet and database access controls own prevention of unsanctioned writers.
 
+## Typed actor-provenance adoption
+
+Payload parity and caller adoption are separate gates. Payload parity proves
+that the adapter writes the additive R1 shape correctly; it does not prove that
+the domain caller supplied the Party it alone can identify.
+
+`AuditActor` is the typed seam for that adoption. It keeps the authenticating
+principal and optional canonical Party enrichment in one value:
+
+- `user` and `api_key` actors require a principal identifier and may carry a
+  Party only when an owning domain has an explicit canonical binding;
+- `service` requires a service-principal identifier and refuses a Party;
+- `system` may name a component or job and refuses a Party.
+
+Names and email addresses are never identity evidence. The first adopted owner
+is `auth.system_user_assignments`: for a user actor it reads the reviewed
+`SystemUser.person_party_id` binding in the assignment transaction and passes
+that value to the audit owner. An absent binding remains absent rather than
+being guessed.
+
+The scalar `actor_type`/`actor_id`/`actor_party_id` facade remains a temporary
+compatibility path for the unmigrated callers. Its exact inventory is pinned by
+`tests/architecture/audit_actor_provenance_baseline.json`. Run the PII-free
+source report with:
+
+```bash
+poetry run python -m scripts.audit_actor_provenance_report
+```
+
+The architecture gate is two-directional: it fails when legacy debt rises and
+when debt falls without the reviewed baseline being lowered. Its scanner covers
+both `app/` and `scripts/`, so moving a writer into a job or operator command
+does not make it disappear. Callers migrate in owner-sized batches; the
+compatibility parameters retire only when the legacy count reaches zero.
+
+The aggregate database report now also separates `user` rows with and without
+Party enrichment. Missing Party enrichment is adoption evidence, not payload
+drift, because some principals are not yet canonically bound. A `system` or
+`service` row carrying a Party is a blocking contract violation.
+
 ## Cutover and rollback boundaries
 
 R1 is expansion only. Reads continue using Sub's legacy columns. A code rollback
