@@ -1992,7 +1992,7 @@ def build_social_comments_projection(
     if selected_id is None and result.items:
         selected_id = _uuid(result.items[0].id)
     if selected_id is not None and str(selected_id) not in row_ids:
-        selected_id = None
+        selected_id = _uuid(result.items[0].id) if result.items else None
     selected = (
         get_conversation_projection(
             db,

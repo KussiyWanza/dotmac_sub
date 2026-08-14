@@ -635,6 +635,7 @@ def test_domain_sot_relationships_encode_cross_domain_dependencies():
         "ui.list_contracts",
         "support.ticket_lifecycle",
         "support.ticket_configuration",
+        "operations.service_team_lifecycle",
     )
     assert sot_relationships.dependencies_for("ui.bulk_action_contracts") == (
         "ui.list_contracts",
@@ -690,6 +691,15 @@ def test_domain_sot_relationships_encode_cross_domain_dependencies():
         "events.dispatcher",
         "operations.work_orders",
         "operations.work_order_status",
+    )
+    assert sot_relationships.dependencies_for(
+        "integration.dotmac_erp_operational_context_adapter"
+    ) == (
+        "events.dispatcher",
+        "integration.backoffice_adapter",
+        "operations.project_lifecycle",
+        "operations.work_order_commands",
+        "support.ticket_lifecycle",
     )
     assert sot_relationships.dependencies_for(
         "integration.dotmac_erp_payables_adapter"

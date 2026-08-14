@@ -14,6 +14,10 @@ from sqlalchemy.orm import Session
 
 from app.services.backoffice import ExpenseCategoryView
 from app.services.dotmac_erp.client import DotMacERPError, DotMacERPTransientError
+from app.services.dotmac_erp.operational_contracts import (
+    ErpOperationalSyncCommand,
+    ErpOperationalSyncOutcome,
+)
 from app.services.integrations import installations
 from app.services.integrations.backoffice_contracts import (
     ERP_INVENTORY_CAPABILITY,
@@ -213,14 +217,17 @@ class ErpCapabilityClient:
             correlation_id="erp-inventory:available-serials",
         )
 
-    def sync_operational_domains(self, payload: dict) -> dict:
-        return self._execute(
+    def sync_operational_domains(
+        self, command: ErpOperationalSyncCommand
+    ) -> ErpOperationalSyncOutcome:
+        response = self._execute(
             ERP_OPERATIONAL_SYNC_CAPABILITY,
             "sync_operational_domains",
-            {"payload": payload},
+            {"payload": command.model_dump(mode="json")},
             trigger=OperationTrigger.scheduled,
             correlation_id="erp-operational-context:sync",
         )
+        return ErpOperationalSyncOutcome.model_validate(response)
 
     def get_ncc_financials(self, **params) -> dict:
         return self._execute(

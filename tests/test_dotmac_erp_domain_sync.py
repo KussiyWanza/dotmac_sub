@@ -6,23 +6,57 @@ from app.models.subscriber import Subscriber
 from app.models.support import Ticket
 from app.models.work_order import WorkOrder
 from app.services.dotmac_erp.domain_sync import sync_operational_domains
+from app.services.dotmac_erp.operational_contracts import (
+    ErpOperationalSyncCommand,
+    ErpOperationalSyncError,
+    ErpOperationalSyncOutcome,
+    OperationalSyncExecution,
+)
+from app.services.owner_commands import CommandContext
 
 
 class _ERP:
-    def __init__(self, response=None):
-        self.response = response or {
-            "contract_version": 2,
-            "projects_synced": 1,
-            "project_tasks_synced": 1,
-            "tickets_synced": 1,
-            "work_orders_synced": 1,
-            "errors": [],
-        }
-        self.payloads = []
+    def __init__(self, response: ErpOperationalSyncOutcome | None = None):
+        self.response = response or ErpOperationalSyncOutcome(
+            contract_version=2,
+            projects_synced=1,
+            project_tasks_synced=1,
+            tickets_synced=1,
+            work_orders_synced=1,
+        )
+        self.commands: list[ErpOperationalSyncCommand] = []
 
-    def sync_operational_domains(self, payload):
-        self.payloads.append(payload)
+    def sync_operational_domains(
+        self, command: ErpOperationalSyncCommand
+    ) -> ErpOperationalSyncOutcome:
+        self.commands.append(command)
         return self.response
+
+    def close(self) -> None:
+        return None
+
+
+def test_v2_outcome_accepts_the_real_erp_error_field() -> None:
+    source_id = uuid4()
+
+    outcome = ErpOperationalSyncOutcome.model_validate(
+        {
+            "contract_version": 2,
+            "projects_synced": 0,
+            "project_tasks_synced": 0,
+            "tickets_synced": 0,
+            "work_orders_synced": 0,
+            "errors": [
+                {
+                    "entity_type": "project_task",
+                    "crm_id": str(source_id),
+                    "error": "project source mapping not found",
+                }
+            ],
+        }
+    )
+
+    assert outcome.errors[0].source_id == source_id
 
 
 def _seed(db):
@@ -60,66 +94,65 @@ def _seed(db):
     db.commit()
 
 
+def _run(db_session, client):
+    return sync_operational_domains(
+        db_session,
+        command=OperationalSyncExecution(),
+        context=CommandContext.system(
+            actor="test-suite",
+            scope="erp-operational-context",
+            reason="verify operational sync",
+        ),
+        client=client,
+    )
+
+
 def test_domain_sync_pushes_sub_ids_and_advances_cursors(db_session):
     _seed(db_session)
     client = _ERP()
 
-    result = sync_operational_domains(db_session, client=client)
+    result = _run(db_session, client)
 
-    assert result == {
-        "projects": 1,
-        "project_tasks": 1,
-        "tickets": 1,
-        "work_orders": 1,
-        "errors": [],
-    }
-    payload = client.payloads[0]
-    assert payload["projects"][0]["source_id"]
-    assert (
-        payload["project_tasks"][0]["project_source_id"]
-        == payload["projects"][0]["source_id"]
-    )
-    assert payload["tickets"][0]["source_id"]
-    assert payload["work_orders"][0]["source_id"]
-    assert payload["projects"][0]["metadata"]["source_system"] == "dotmac_sub"
+    assert result.projects == 1
+    assert result.project_tasks == 1
+    assert result.tickets == 1
+    assert result.work_orders == 1
+    assert result.errors == ()
+    command = client.commands[0]
+    assert command.projects[0].source_id
+    assert command.project_tasks[0].project_source_id == command.projects[0].source_id
+    assert command.tickets[0].source_id
+    assert command.work_orders[0].source_id
+    assert command.projects[0].metadata is not None
+    assert command.projects[0].metadata["source_system"] == "dotmac_sub"
     assert db_session.query(ErpDomainSyncCursor).count() == 4
+    db_session.rollback()
 
     # No changes after the keyset watermark: next sweep is a no-op.
-    assert sync_operational_domains(db_session, client=client)["projects"] == 0
-    assert len(client.payloads) == 1
+    assert _run(db_session, client).projects == 0
+    assert len(client.commands) == 1
 
 
 def test_domain_sync_does_not_advance_on_partial_erp_error(db_session):
     _seed(db_session)
     client = _ERP(
-        {
-            "contract_version": 2,
-            "projects_synced": 0,
-            "project_tasks_synced": 0,
-            "tickets_synced": 0,
-            "work_orders_synced": 0,
-            "errors": [{"entity_type": "project", "error": "invalid"}],
-        }
+        ErpOperationalSyncOutcome(
+            contract_version=2,
+            projects_synced=0,
+            project_tasks_synced=0,
+            tickets_synced=0,
+            work_orders_synced=0,
+            errors=(
+                ErpOperationalSyncError(
+                    entity_type="project",
+                    source_id=uuid4(),
+                    error="invalid",
+                ),
+            ),
+        )
     )
 
-    result = sync_operational_domains(db_session, client=client)
+    result = _run(db_session, client)
 
-    assert result["errors"]
-    assert db_session.query(ErpDomainSyncCursor).count() == 0
-
-
-def test_project_task_cursor_does_not_advance_against_old_erp_contract(db_session):
-    _seed(db_session)
-    client = _ERP(
-        {
-            "projects_synced": 1,
-            "tickets_synced": 1,
-            "work_orders_synced": 1,
-            "errors": [],
-        }
-    )
-
-    result = sync_operational_domains(db_session, client=client)
-
-    assert result["errors"][0]["entity_type"] == "project_task"
+    assert result.errors
     assert db_session.query(ErpDomainSyncCursor).count() == 0

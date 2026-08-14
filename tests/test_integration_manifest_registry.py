@@ -32,7 +32,7 @@ from app.services.web_integrations import build_marketplace_data
 EXPECTED_MARKETPLACE = {
     "fiber.inquiry.http": ("Fiber Website Inquiry", "1.0.0", "messaging"),
     "lead.capture.http": ("Lead Capture Webhook", "1.0.0", "sales"),
-    "whatsapp": ("WhatsApp", "1.0.0", "messaging"),
+    "whatsapp": ("WhatsApp", "1.1.0", "messaging"),
     "nextcloud.talk": ("Nextcloud Talk", "1.0.0", "messaging"),
     "meta.social": ("Meta Social Inbox", "1.1.0", "messaging"),
     "paystack": ("Paystack", "1.0.1", "payment"),
@@ -232,7 +232,7 @@ def test_operation_envelope_is_version_pinned() -> None:
         payload={"message_id": "msg-1"},
     )
 
-    assert operation.connector_version == "1.0.0"
+    assert operation.connector_version == "1.1.0"
     assert OperationStatus.reconciliation_required.value == "reconciliation_required"
 
 

@@ -13,7 +13,7 @@ from functools import wraps
 from typing import Any, ParamSpec, TypeVar
 from uuid import UUID
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import false, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.domain_settings import SettingDomain
@@ -251,6 +251,28 @@ class TicketStatusScope:
     @classmethod
     def not_closed(cls) -> TicketStatusScope:
         return cls(excluded=frozenset({TicketStatus.closed}))
+
+
+@dataclass(frozen=True, slots=True)
+class TicketAudienceScope:
+    """Typed, read-only audience for the expanded ``assigned_to_me`` scope.
+
+    Ticket assignment fields retain compatibility with both current SystemUser
+    identifiers and historical Person Party identifiers. Service-team identity
+    remains separate and is resolved by the service-team lifecycle owner.
+    """
+
+    system_user_id: UUID | None
+    person_party_id: UUID | None
+    service_team_ids: tuple[UUID, ...] = ()
+
+    @property
+    def individual_ids(self) -> tuple[UUID, ...]:
+        return tuple(
+            value
+            for value in (self.system_user_id, self.person_party_id)
+            if value is not None
+        )
 
 
 def active_ticket_status_values() -> tuple[str, ...]:
@@ -918,6 +940,7 @@ class Tickets:
         ticket_type: str | None = None,
         region: str | None = None,
         assigned_to_person_id: str | None = None,
+        assigned_to_audience: TicketAudienceScope | None = None,
         project_manager_person_id: str | None = None,
         site_coordinator_person_id: str | None = None,
         subscriber_id: str | None = None,
@@ -2670,6 +2693,7 @@ class Tickets:
         ticket_type: str | None = None,
         region: str | None = None,
         assigned_to_person_id: str | None = None,
+        assigned_to_audience: TicketAudienceScope | None = None,
         project_manager_person_id: str | None = None,
         site_coordinator_person_id: str | None = None,
         subscriber_id: str | None = None,
@@ -2738,6 +2762,30 @@ class Tickets:
                     ),
                 )
             )
+        if assigned_to_audience is not None:
+            individual_ids = assigned_to_audience.individual_ids
+            audience_conditions = []
+            if individual_ids:
+                audience_conditions.extend(
+                    (
+                        Ticket.assigned_to_person_id.in_(individual_ids),
+                        Ticket.technician_person_id.in_(individual_ids),
+                        Ticket.ticket_manager_person_id.in_(individual_ids),
+                        Ticket.site_coordinator_person_id.in_(individual_ids),
+                        Ticket.id.in_(
+                            db.query(TicketAssignee.ticket_id).filter(
+                                TicketAssignee.person_id.in_(individual_ids)
+                            )
+                        ),
+                    )
+                )
+            if assigned_to_audience.service_team_ids:
+                audience_conditions.append(
+                    Ticket.service_team_id.in_(assigned_to_audience.service_team_ids)
+                )
+            query = query.filter(
+                or_(*audience_conditions) if audience_conditions else false()
+            )
         if project_manager_person_id:
             query = query.filter(
                 Ticket.ticket_manager_person_id == project_manager_person_id
@@ -2768,6 +2816,7 @@ class Tickets:
         ticket_type: str | None = None,
         region: str | None = None,
         assigned_to_person_id: str | None = None,
+        assigned_to_audience: TicketAudienceScope | None = None,
         project_manager_person_id: str | None = None,
         site_coordinator_person_id: str | None = None,
         subscriber_id: str | None = None,
@@ -2788,6 +2837,7 @@ class Tickets:
                 ticket_type=ticket_type,
                 region=region,
                 assigned_to_person_id=assigned_to_person_id,
+                assigned_to_audience=assigned_to_audience,
                 project_manager_person_id=project_manager_person_id,
                 site_coordinator_person_id=site_coordinator_person_id,
                 subscriber_id=subscriber_id,
@@ -2810,6 +2860,7 @@ class Tickets:
         ticket_type: str | None = None,
         region: str | None = None,
         assigned_to_person_id: str | None = None,
+        assigned_to_audience: TicketAudienceScope | None = None,
         project_manager_person_id: str | None = None,
         site_coordinator_person_id: str | None = None,
         subscriber_id: str | None = None,
@@ -2831,6 +2882,7 @@ class Tickets:
             ticket_type=ticket_type,
             region=region,
             assigned_to_person_id=assigned_to_person_id,
+            assigned_to_audience=assigned_to_audience,
             project_manager_person_id=project_manager_person_id,
             site_coordinator_person_id=site_coordinator_person_id,
             subscriber_id=subscriber_id,

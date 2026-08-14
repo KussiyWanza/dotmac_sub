@@ -69,7 +69,8 @@
             </div>
             <div class="xl:col-span-2">
                 <label class="sr-only" for="ticket-assignee-filter">Assignee Scope</label>
-                <select id="ticket-assignee-filter" name="assigned_to_me" data-auto-submit class="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-900 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 dark:border-slate-600 dark:bg-slate-800 dark:text-white">
+                <span id="ticket-assignee-filter-help" class="sr-only">Assigned To Me includes tickets where you are an assignee, technician, manager, site coordinator, or a member of the assigned team.</span>
+                <select id="ticket-assignee-filter" name="assigned_to_me" data-auto-submit aria-describedby="ticket-assignee-filter-help" class="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-900 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 dark:border-slate-600 dark:bg-slate-800 dark:text-white">
                     <option value="0" {% if not assigned_to_me %}selected{% endif %}>All Assignees</option>
                     <option value="1" {% if assigned_to_me %}selected{% endif %}>Assigned To Me</option>
                 </select>
