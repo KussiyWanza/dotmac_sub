@@ -93,13 +93,18 @@ def staff(db_session: Session):
     )
     session = _live_session(user.id, token=f"canary-{uuid.uuid4().hex}")
     db_session.add(session)
-    db_session.commit()
-    return {
+    db_session.flush()
+    # Capture ids BEFORE the commit. Reading an ORM attribute afterwards
+    # refreshes the expired instance, which opens a new transaction — and
+    # `execute_owner_command` refuses a session that is already inside one.
+    identifiers = {
         "user_id": user.id,
         "role_id": role.id,
         "permission_id": permission.id,
         "session_id": session.id,
     }
+    db_session.commit()
+    return identifiers
 
 
 def _replace(db_session: Session, *, user_id, role_ids=(), permission_ids=()):
@@ -153,13 +158,14 @@ def test_a_widening_change_revokes_nothing(db_session, staff) -> None:
     """Being granted something is not a reason to be logged out."""
 
     extra = _permission(db_session, "canary:extra")
+    extra_id = extra.id
     db_session.commit()
 
     _replace(
         db_session,
         user_id=staff["user_id"],
         role_ids=(staff["role_id"],),
-        permission_ids=(extra.id,),
+        permission_ids=(extra_id,),
     )
     db_session.commit()
 
@@ -204,9 +210,10 @@ def test_a_role_swap_that_reduces_permissions_still_revokes(db_session, staff) -
     """Role count unchanged, effective permissions smaller — still a reduction."""
 
     thinner = _role_with(db_session, "canary_thinner")
+    thinner_id = thinner.id
     db_session.commit()
 
-    _replace(db_session, user_id=staff["user_id"], role_ids=(thinner.id,))
+    _replace(db_session, user_id=staff["user_id"], role_ids=(thinner_id,))
     db_session.commit()
 
     session = db_session.get(AuthSession, staff["session_id"])
@@ -242,16 +249,18 @@ def test_expired_and_already_revoked_sessions_are_left_alone(db_session, staff) 
     already.status = SessionStatus.revoked
     already.revoked_at = datetime.now(UTC) - timedelta(days=2)
     db_session.add_all((expired, already))
-    db_session.commit()
+    db_session.flush()
+    expired_id, already_id = expired.id, already.id
     original_revoked_at = already.revoked_at
+    db_session.commit()
 
     _replace(db_session, user_id=user_id, role_ids=())
     db_session.commit()
 
-    db_session.refresh(expired)
-    db_session.refresh(already)
-    assert expired.status is SessionStatus.active
-    assert already.revoked_at == original_revoked_at
+    expired_after = db_session.get(AuthSession, expired_id)
+    already_after = db_session.get(AuthSession, already_id)
+    assert expired_after.status is SessionStatus.active
+    assert already_after.revoked_at == original_revoked_at
 
 
 def test_cache_invalidation_is_strict_and_runs_only_after_commit(
