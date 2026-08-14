@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from app.db import get_db
 from app.schemas.plan_family_catalogue import PublicPlanFamilyCatalogue
+from app.services.team_inbox_commands import ReplyCommand
 from app.web.admin.inbox import router as inbox_router
 from app.web.public.catalogues import router as public_catalogue_router
 
@@ -28,10 +29,10 @@ def _client(db_session) -> TestClient:
 def test_share_catalogue_queues_the_selected_versioned_public_link(db_session):
     conversation_id = uuid4()
     catalogue_id = uuid4()
-    captured: dict[str, object] = {}
+    captured: list[ReplyCommand] = []
 
-    def reply(_db, **kwargs):
-        captured.update(kwargs)
+    def reply(_db, *, command: ReplyCommand):
+        captured.append(command)
         return SimpleNamespace(replayed=False, kind="queued", sender="Support")
 
     resolved = PublicPlanFamilyCatalogue(
@@ -59,6 +60,7 @@ def test_share_catalogue_queues_the_selected_versioned_public_link(db_session):
         )
 
     assert response.status_code == 303
-    assert captured["conversation_id"] == conversation_id
-    assert "Dedicated Plan Catalogue" in str(captured["body_text"])
-    assert f"/catalogues/{catalogue_id}/download" in str(captured["body_text"])
+    assert len(captured) == 1
+    assert captured[0].conversation_id == conversation_id
+    assert "Dedicated Plan Catalogue" in captured[0].body_text
+    assert f"/catalogues/{catalogue_id}/download" in captured[0].body_text
