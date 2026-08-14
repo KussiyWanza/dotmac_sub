@@ -1719,6 +1719,58 @@ class Tickets:
         )
 
     @staticmethod
+    def _notify_customer_of_ticket_update(
+        db: Session,
+        ticket: Ticket,
+        *,
+        changed_fields: Sequence[str],
+    ) -> None:
+        """Notify the customer for opt-in, customer-visible ticket edits."""
+
+        effective_fields = tuple(
+            sorted(
+                {
+                    field
+                    for field in changed_fields
+                    if field
+                    not in {
+                        "status",
+                        "description_is_internal",
+                        "assigned_to_person_id",
+                        "ticket_manager_person_id",
+                        "site_coordinator_person_id",
+                        "service_team_id",
+                    }
+                }
+            )
+        )
+        if not effective_fields:
+            return
+        from app.services import customer_experience_communications
+
+        event_type = "support_ticket_updated"
+        if not customer_experience_communications.document_change_notification_enabled(
+            db, event_type, default=False
+        ):
+            return
+        ticket_ref = ticket.number or str(ticket.id)[:8]
+        Tickets._queue_customer_ticket_update(
+            db,
+            ticket,
+            event_type=event_type,
+            subject=f"Support ticket {ticket_ref} updated",
+            body=(
+                f"Support ticket {ticket_ref} ({ticket.title}) was updated.\n"
+                f"Updated fields: {', '.join(effective_fields)}."
+            ),
+            dedupe_key=(
+                f"ticket-updated:{ticket.id}:"
+                f"{'-'.join(effective_fields)}:{_now().strftime('%Y%m%d%H%M')}"
+            ),
+            extra_metadata={"changed_fields": list(effective_fields)},
+        )
+
+    @staticmethod
     def _status_change_dedupe_key(
         ticket: Ticket, previous_status: str, current: str
     ) -> str:
@@ -2926,8 +2978,10 @@ class Tickets:
         previous_assignment_user_ids = Tickets._assignment_user_ids(db, ticket)
 
         before = {
+            "title": ticket.title,
             "status": ticket.status,
             "priority": ticket.priority,
+            "due_at": ticket.due_at.isoformat() if ticket.due_at else None,
             "description_is_internal": ticket.description_is_internal,
             "assigned_to_person_id": str(ticket.assigned_to_person_id)
             if ticket.assigned_to_person_id
@@ -2989,8 +3043,10 @@ class Tickets:
         )
 
         after = {
+            "title": ticket.title,
             "status": ticket.status,
             "priority": ticket.priority,
+            "due_at": ticket.due_at.isoformat() if ticket.due_at else None,
             "description_is_internal": ticket.description_is_internal,
             "assigned_to_person_id": str(ticket.assigned_to_person_id)
             if ticket.assigned_to_person_id
@@ -3011,6 +3067,12 @@ class Tickets:
             for field in before.keys()
             if before[field] != after[field]
         }
+        if changes and before["status"] == after["status"]:
+            Tickets._notify_customer_of_ticket_update(
+                db,
+                ticket,
+                changed_fields=tuple(changes),
+            )
         log_audit_event(
             db=db,
             request=request,
