@@ -41,7 +41,6 @@ app.services.customer_portal_flow_payment_methods
 app.services.customer_portal_flow_payments
 app.services.cutover_balance_audit
 app.services.dispatch
-app.services.dotmac_erp.domain_sync
 app.services.dotmac_erp.expense_sync
 app.services.dotmac_erp.outbox
 app.services.dotmac_erp.purchase_order_sync

@@ -121,6 +121,9 @@ def test_social_comments_have_dedicated_workspace_and_filter_entry_point():
     assert "Top-level public comments unavailable" in COMMENTS
     assert "data-inline-comment-reply" in COMMENTS
     assert '"/comments"' in ROUTES
+    assert "can_reply_to_social_comments" in COMMENTS
+    assert "selected.action_eligibility" not in COMMENTS
+    assert '"can_reply_to_social_comments": can_reply_to_social_comments' in ROUTES
 
 
 # --- Slice 1: read state -------------------------------------------------

@@ -38,7 +38,7 @@ def test_operator_api_manages_additive_installation_lifecycle(db_session) -> Non
     assert created.status_code == 201, created.text
     installation = created.json()
     installation_id = installation["id"]
-    assert installation["connector_version"] == "1.0.0"
+    assert installation["connector_version"] == "1.1.0"
     assert installation["created_by"] == "integration-admin"
     assert installation["state"] == "draft"
 

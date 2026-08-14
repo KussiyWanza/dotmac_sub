@@ -26,8 +26,8 @@
     {
         "current": true,
         "key": "whatsapp",
-        "manifest_digest": "4f83cbba8ecb8e986de90c6e3ba424fbac9ec1e966671fb534fd98a9c35d4a32",
-        "version": "1.0.0"
+        "manifest_digest": "fa0f913f5b8658b1281d2bf461bed417af50a8d5fb12fef95a7a5a16a60909ec",
+        "version": "1.1.0"
     },
     {
         "current": true,
@@ -69,6 +69,12 @@
         "current": true,
         "key": "freepbx",
         "manifest_digest": "2009f57dda6aec855f50ddb970505365f979fde9eb2e94c93341b3b6efc6772c",
+        "version": "1.0.0"
+    },
+    {
+        "current": false,
+        "key": "whatsapp",
+        "manifest_digest": "4f83cbba8ecb8e986de90c6e3ba424fbac9ec1e966671fb534fd98a9c35d4a32",
         "version": "1.0.0"
     },
     {
