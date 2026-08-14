@@ -16,10 +16,7 @@ backup invocation. This guard covers it directly.
 
 from __future__ import annotations
 
-import os
 import re
-import subprocess
-import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -73,73 +70,37 @@ def test_deploy_keeps_repo_dir_and_deploy_dir_distinct() -> None:
     assert 'REPO_DIR="${REPO_DIR:-${DEPLOY_DIR}}"' in source
 
 
-def test_production_evidence_verifier_ignores_deploy_checkout_shadow(
-    tmp_path: Path,
-) -> None:
-    """The authorized workflow checkout must win over the mutable deploy cwd.
+def test_release_modules_run_through_the_repo_module_runner() -> None:
+    """The authorized checkout must win over the mutable deploy cwd.
 
     Production run 31762013926 set ``PYTHONPATH`` to the authorized Actions
-    checkout, but Python still prepended the persistent deployment checkout to
-    ``sys.path``. Its stale ``scripts.release_candidate_evidence`` therefore
-    parsed a valid authorization document and rejected its newer schema.
+    checkout, but Python prepends the current directory ahead of it, so the
+    persistent deployment checkout's stale ``scripts.release_candidate_evidence``
+    won anyway and rejected the newer evidence schema.
 
-    Deriving the interpreter flag from the real deploy invocation makes this a
-    sensitivity proof: removing the safe-path flag sends the import back to the
-    hostile deployment checkout and this test fails.
+    ``scripts/run_repo_module.sh`` fixes that by making the selected checkout
+    the import root before the interpreter starts. This is the sensitivity
+    half: if any host-side release module goes back to being invoked directly,
+    the shadowing path reopens and this fails. The behavioural proof that a
+    stale module cannot win lives in
+    ``tests/test_deploy_repo_module_resolution.py``.
     """
 
-    source = DEPLOY_SH.read_text(encoding="utf-8")
-    host_python_invocations = [
+    direct_invocations = [
         (path.name, line.strip())
         for path in (DEPLOY_SH, DEPLOY_PRODUCTION_SH)
         for line in path.read_text(encoding="utf-8").splitlines()
-        if 'PYTHONPATH="${REPO_DIR}" "${PYTHON_BIN}"' in line and "-m scripts." in line
+        if '"${PYTHON_BIN}"' in line and "-m scripts." in line
     ]
-    assert host_python_invocations
-    assert all(
-        '"${PYTHON_BIN}" -P -m' in line for _, line in host_python_invocations
-    ), (
-        "every host-side Python module must ignore the mutable deployment "
-        f"checkout: {host_python_invocations}"
+    assert not direct_invocations, (
+        "host-side release modules must run through run_repo_module, or the "
+        f"deploy checkout can shadow them again: {direct_invocations}"
     )
-    invocations = [
-        line.strip()
-        for line in source.splitlines()
-        if '"${PYTHON_BIN}"' in line and "-m scripts.release_candidate_evidence" in line
+
+    runner_invocations = [
+        (path.name, line.strip())
+        for path in (DEPLOY_SH, DEPLOY_PRODUCTION_SH)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if "run_repo_module scripts." in line
     ]
-    assert len(invocations) == 1, (
-        "deploy.sh must have exactly one production-evidence module invocation"
-    )
-    safe_path_enabled = '"${PYTHON_BIN}" -P -m' in invocations[0]
-
-    authorized_root = tmp_path / "authorized"
-    deployment_root = tmp_path / "deployment"
-    for root, identity in (
-        (authorized_root, "authorized"),
-        (deployment_root, "hostile"),
-    ):
-        scripts = root / "scripts"
-        scripts.mkdir(parents=True)
-        (scripts / "__init__.py").write_text("", encoding="utf-8")
-        (scripts / "release_candidate_evidence.py").write_text(
-            f"print({identity!r})\n",
-            encoding="utf-8",
-        )
-
-    command = [sys.executable]
-    if safe_path_enabled:
-        command.append("-P")
-    command.extend(("-m", "scripts.release_candidate_evidence"))
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(authorized_root)
-
-    completed = subprocess.run(
-        command,
-        cwd=deployment_root,
-        env=env,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-
-    assert completed.stdout.strip() == "authorized"
+    assert runner_invocations, "no release module is routed through run_repo_module"

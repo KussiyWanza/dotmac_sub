@@ -30,7 +30,13 @@ from app.services.operator_tenant import OPERATOR_TENANT_ID
 
 
 def _party(db_session: Session) -> Party:
-    party = Party(party_type=PartyType.person.value)
+    # `display_name` is NOT NULL on `parties`. The value is irrelevant to every
+    # assertion here — the report is aggregate and never reads it — but it has
+    # to be present for the row to exist at all.
+    party = Party(
+        party_type=PartyType.person.value,
+        display_name=f"Shadow Parity {uuid.uuid4().hex[:8]}",
+    )
     db_session.add(party)
     db_session.flush()
     return party
