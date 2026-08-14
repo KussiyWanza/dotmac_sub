@@ -222,7 +222,11 @@
       pollTimer: null,
       typingTimer: null,
       inFlight: new Set(),
+      readStateInFlight: new Set(),
+      locallyReadConversationIds: [],
       filterLoading: false,
+      inboxRefreshState: "idle",
+      inboxRefreshTimer: null,
       conversationOpening: false,
       activeFilterXhr: null,
       pendingStatusFilter: null,
@@ -339,6 +343,35 @@
 
       persistFilters() {
         localStorage.setItem(KEYS.filtersOpen, String(this.filtersOpen));
+      },
+
+      inboxRefreshLabel() {
+        if (this.inboxRefreshState === "checking") {
+          return "Checking for updates…";
+        }
+        if (this.inboxRefreshState === "updated") {
+          return "Inbox updated just now";
+        }
+        if (this.inboxRefreshState === "error") {
+          return "Couldn’t update — retrying";
+        }
+        return "Waiting for new activity";
+      },
+
+      inboxRefreshStarted() {
+        window.clearTimeout(this.inboxRefreshTimer);
+        this.inboxRefreshState = "checking";
+      },
+
+      inboxRefreshFinished(failed = false) {
+        window.clearTimeout(this.inboxRefreshTimer);
+        this.inboxRefreshState = failed ? "error" : "updated";
+        if (failed) return;
+        this.inboxRefreshTimer = window.setTimeout(() => {
+          if (this.inboxRefreshState === "updated") {
+            this.inboxRefreshState = "idle";
+          }
+        }, 2200);
       },
 
       activeFilterChips() {
@@ -483,6 +516,7 @@
               ...request,
               xhr: event.detail.xhr,
             };
+            this.inboxRefreshStarted();
             if (request.operator) {
               this.filterLoading = true;
               this.activeFilterXhr = event.detail.xhr;
@@ -503,9 +537,11 @@
         });
         const release = (event, failed = false) => {
           const sequence = event.detail?.xhr?.__inboxListSequence;
+          const requestFailed = failed || event.detail?.successful === false;
           if (sequence === this.activeListRequest?.sequence) {
             const wasOperator = this.activeListRequest.operator;
             this.activeListRequest = null;
+            this.inboxRefreshFinished(requestFailed);
             if (wasOperator) this.filterLoading = false;
           }
           if (event.detail?.xhr === this.activeFilterXhr) {
@@ -513,7 +549,7 @@
             this.filterLoading = false;
             this.pendingStatusFilter = null;
           }
-          if (failed && sequence === this.listRequestSequence) {
+          if (requestFailed && sequence === this.listRequestSequence) {
             this.listRequestError = "Could not update conversations. Try again.";
             history.replaceState({}, "", this.lastSuccessfulListUrl);
           }
@@ -724,6 +760,36 @@
           });
       },
 
+      conversationIsLocallyRead(conversationId) {
+        return this.locallyReadConversationIds.includes(String(conversationId));
+      },
+
+      applyConversationRead(conversationId) {
+        const id = String(conversationId || "");
+        if (!id || this.conversationIsLocallyRead(id)) return;
+        const row = Array.from(
+          document.querySelectorAll("[data-conversation-id]"),
+        ).find((item) => item.dataset.conversationId === id);
+        if (row?.dataset.conversationUnread !== "true") return;
+
+        this.locallyReadConversationIds = [
+          ...this.locallyReadConversationIds,
+          id,
+        ];
+        row.dataset.conversationUnread = "false";
+        const total = document.querySelector("[data-inbox-unread-total]");
+        const current = Number.parseInt(total?.textContent || "0", 10);
+        if (total && Number.isFinite(current)) {
+          const next = Math.max(0, current - 1);
+          total.textContent = String(next);
+          total.setAttribute("aria-label", `${next} unread conversations`);
+        }
+
+        if (new URLSearchParams(window.location.search).get("unread") === "true") {
+          this.refreshConversationList("read_state");
+        }
+      },
+
       navigateFilter(changes, clearAll = false) {
         const url = new URL(window.location.href);
         const assignmentKeys = [
@@ -798,18 +864,30 @@
       // Operator read-state is server-owned. Opening an unread thread clears it
       // through the inbox command boundary; without this the workspace renders
       // an unread badge it can never retire.
-      async markConversationRead(conversationId) {
-        if (!conversationId) return;
+      async markConversationRead(conversationId, retryAttempt = 0) {
+        const id = String(conversationId || "");
+        if (!id || this.readStateInFlight.has(id)) return;
+        this.readStateInFlight.add(id);
         try {
-          await fetch(`/admin/inbox/${conversationId}/read`, {
+          const response = await fetch(`/admin/inbox/${id}/read`, {
             method: "POST",
-            headers: { "X-CSRF-Token": csrfToken() },
-            redirect: "manual",
+            headers: {
+              Accept: "application/json",
+              "X-CSRF-Token": csrfToken(),
+            },
           });
+          const result = await response.json();
+          if (!response.ok || result.status !== "success") {
+            throw new Error(result.message || "Could not mark conversation read");
+          }
+          this.applyConversationRead(id);
         } catch (error) {
-          return;
+          if (retryAttempt < 1) {
+            window.setTimeout(() => this.markConversationRead(id, 1), 1500);
+          }
+        } finally {
+          this.readStateInFlight.delete(id);
         }
-        this.refreshSidebar("read_state");
       },
 
       applyAssignmentFilter(value) {
@@ -1289,14 +1367,20 @@
       },
 
       refreshConversationList(intent = "manual_refresh") {
-        const url = new URL(window.location.href);
+        const url = new URL(
+          window.__inboxReturnUrl || window.location.href,
+          window.location.origin,
+        );
+        url.pathname = "/admin/inbox";
+        url.searchParams.delete("conversation_id");
         if (this.selectedId) {
-          url.searchParams.set("conversation_id", this.selectedId);
+          url.searchParams.set("c", this.selectedId);
         }
+        window.__inboxReturnUrl = `${url.pathname}${url.search}`;
         this.newListActivityAvailable = false;
         this.requestInboxList(url, {
           intent,
-          historyMode: "none",
+          historyMode: intent === "reply" ? "replace" : "none",
           target: "#inbox-conversation-queue",
           select: "#inbox-conversation-queue",
           swap: "outerHTML",
@@ -1305,6 +1389,9 @@
 
       navigatePage(urlValue) {
         const url = new URL(urlValue, window.location.origin);
+        url.searchParams.delete("conversation_id");
+        if (this.selectedId) url.searchParams.set("c", this.selectedId);
+        window.__inboxReturnUrl = `${url.pathname}${url.search}`;
         this.requestInboxList(url, {
           intent: "pagination",
           historyMode: "push",

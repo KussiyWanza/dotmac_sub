@@ -139,9 +139,26 @@ def test_thread_publishes_unread_state_and_composer_clears_it():
 
 def test_mark_read_posts_with_csrf_header():
     marker = JAVASCRIPT.index("async markConversationRead")
-    body = JAVASCRIPT[marker : marker + 500]
+    body = JAVASCRIPT[marker : marker + 1200]
     assert '"X-CSRF-Token": csrfToken()' in body
     assert 'method: "POST"' in body
+    assert 'Accept: "application/json"' in body
+    assert "this.applyConversationRead(id)" in body
+    assert 'this.refreshSidebar("read_state")' not in body
+    assert "this.markConversationRead(id, 1)" in body
+
+
+def test_mark_read_updates_only_the_unread_row_and_total():
+    assert "data-inbox-unread-total" in SIDEBAR
+    assert "data-conversation-unread=" in QUEUE
+    assert "conversationIsLocallyRead" in QUEUE
+    marker = JAVASCRIPT.index("applyConversationRead(conversationId)")
+    body = JAVASCRIPT[marker : marker + 1300]
+    assert 'row.dataset.conversationUnread = "false"' in body
+    assert 'document.querySelector("[data-inbox-unread-total]")' in body
+    assert "Math.max(0, current - 1)" in body
+    assert 'get("unread") === "true"' in body
+    assert 'this.refreshConversationList("read_state")' in body
 
 
 # --- Slice 1: reply provenance ------------------------------------------
@@ -184,6 +201,19 @@ def test_conversation_drilldown_and_reply_fallback_preserve_queue_page_state():
     assert "conversation_queue_item(row, list_query" in SIDEBAR
     assert 'name="next_url"' in CONVERSATION
     assert "queue_return_url | default('/admin/inbox')" in CONVERSATION
+    assert ':value="window.__inboxReturnUrl ||' in CONVERSATION
+
+    refresh_marker = JAVASCRIPT.index("refreshConversationList(intent")
+    refresh_body = JAVASCRIPT[refresh_marker : refresh_marker + 900]
+    assert "window.__inboxReturnUrl || window.location.href" in refresh_body
+    assert 'url.pathname = "/admin/inbox"' in refresh_body
+    assert 'url.searchParams.set("c", this.selectedId)' in refresh_body
+    assert 'historyMode: intent === "reply" ? "replace" : "none"' in refresh_body
+
+    pagination_marker = JAVASCRIPT.index("navigatePage(urlValue)")
+    pagination_body = JAVASCRIPT[pagination_marker : pagination_marker + 500]
+    assert 'url.searchParams.set("c", this.selectedId)' in pagination_body
+    assert "window.__inboxReturnUrl" in pagination_body
 
 
 def test_macro_menu_dispatches_identity_not_just_text():
@@ -360,7 +390,7 @@ def test_sidebar_filters_replace_stale_requests_and_expose_busy_state():
     assert 'hx-sync="this:replace"' in SIDEBAR
     assert 'hx-sync="#inbox-sidebar-content:replace"' in SIDEBAR
     assert ':aria-busy="filterLoading.toString()"' in SIDEBAR
-    assert "Updating conversations" in SIDEBAR
+    assert "Checking for updates" in JAVASCRIPT
     assert "stale.xhr.abort()" in JAVASCRIPT
     assert "if (this.filterLoading) return" in JAVASCRIPT
     assert 'document.body.addEventListener("htmx:sendAbort", release)' in JAVASCRIPT
@@ -371,7 +401,36 @@ def test_sidebar_filters_replace_stale_requests_and_expose_busy_state():
     assert 'htmx_target == "inbox-conversation-queue"' in ROUTES
 
 
+def test_inbox_refresh_status_precedes_stats_filters_and_conversation_list():
+    status = SIDEBAR.index("data-inbox-refresh-status")
+    disclosure = SIDEBAR.index('aria-controls="inbox-stats-filters"')
+    queue = SIDEBAR.index('id="inbox-conversation-queue"')
+    assert status < disclosure < queue
+    for label in (
+        "Waiting for new activity",
+        "Checking for updates",
+        "Inbox updated just now",
+        "Couldn’t update — retrying",
+    ):
+        assert label in SIDEBAR or label in JAVASCRIPT
+    for contract in (
+        'inboxRefreshState: "idle"',
+        "this.inboxRefreshStarted()",
+        "this.inboxRefreshFinished(requestFailed)",
+        "event.detail?.successful === false",
+    ):
+        assert contract in JAVASCRIPT
+
+
 def test_conversation_click_shows_loading_without_hiding_list_until_swap():
+    pane = INDEX.index("data-conversation-pane")
+    loader = INDEX.index('x-show="conversationOpening"')
+    detail = INDEX.index('id="triage-detail"')
+    assert pane < loader < detail
+    pane_markup = INDEX[pane - 100 : detail]
+    assert "relative flex min-w-0 flex-1 overflow-hidden" in pane_markup
+    assert "absolute inset-0" in pane_markup
+
     select_start = JAVASCRIPT.index("selectConversation(id) {")
     select_end = JAVASCRIPT.index("updateSelectedHighlight()", select_start)
     select_block = JAVASCRIPT[select_start:select_end]

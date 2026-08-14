@@ -96,6 +96,13 @@ class InboxReplyPresentation(BaseModel):
     message: str
 
 
+class InboxReadPresentation(BaseModel):
+    conversation_id: UUID
+    status: Literal["success", "error"]
+    changed: bool
+    message: str
+
+
 def _json_object_list(value: str | None) -> tuple[dict[str, object], ...]:
     text = str(value or "").strip()
     if not text:
@@ -640,6 +647,26 @@ def _reply_presentation_response(
     return Response(
         status_code=204,
         headers=headers,
+    )
+
+
+def _read_presentation_response(
+    conversation_id: UUID,
+    *,
+    status: Literal["success", "error"],
+    changed: bool,
+    message: str,
+    status_code: int = 200,
+) -> JSONResponse:
+    payload = InboxReadPresentation(
+        conversation_id=conversation_id,
+        status=status,
+        changed=changed,
+        message=message,
+    )
+    return JSONResponse(
+        content=payload.model_dump(mode="json"),
+        status_code=status_code,
     )
 
 
@@ -1231,17 +1258,19 @@ def team_inbox_mark_read(
     conversation_id: UUID,
     request: Request,
     db: Session = Depends(get_db),
-):
+) -> JSONResponse:
     actor_person_id = _actor_uuid_from_request(request)
     if actor_person_id is None:
-        return _detail_redirect(
+        return _read_presentation_response(
             conversation_id,
             status="error",
+            changed=False,
             message="Authenticated operator identity is required.",
+            status_code=401,
         )
     _prepare_mutation(db)
     try:
-        team_inbox_read_state.mark_conversation_read(
+        outcome = team_inbox_read_state.mark_conversation_read(
             db,
             team_inbox_read_state.MarkConversationReadCommand(
                 context=CommandContext.system(
@@ -1255,14 +1284,17 @@ def team_inbox_mark_read(
             ),
         )
     except team_inbox_read_state.TeamInboxReadStateError as exc:
-        return _detail_redirect(
+        return _read_presentation_response(
             conversation_id,
             status="error",
+            changed=False,
             message=exc.message,
+            status_code=409,
         )
-    return _detail_redirect(
+    return _read_presentation_response(
         conversation_id,
         status="success",
+        changed=outcome.changed,
         message="Conversation marked read.",
     )
 
