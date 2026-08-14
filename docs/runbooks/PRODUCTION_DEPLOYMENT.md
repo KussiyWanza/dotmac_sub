@@ -21,6 +21,11 @@ rollback boundary in one operation.
   from Python's safe path, so a stale or locally modified `scripts/` package
   cannot interpret release evidence or decide backup policy.
 - The database backup and deploy locks are writable.
+- Host-side release-control modules execute from the exact authorized Actions
+  checkout through `scripts/run_repo_module.sh`. `PYTHONPATH` alone is not an
+  admissible checkout boundary because Python searches the current deploy
+  directory first; a stale `/root/dotmac_sub/scripts` package must never shadow
+  the authorized verifier.
 
 The deployment refuses to start if the running Nginx configuration does not
 contain the backup upstream.

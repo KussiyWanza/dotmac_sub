@@ -8,6 +8,11 @@ ENV_FILE="${DEPLOY_DIR}/.env"
 IMAGE_REPO="ghcr.io/michaelayoade/dotmac_sub"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 
+run_repo_module() {
+  REPO_DIR="${REPO_DIR}" PYTHON_BIN="${PYTHON_BIN}" \
+    bash "${REPO_DIR}/scripts/run_repo_module.sh" "$@"
+}
+
 die() {
   echo "Production deploy refused: $*" >&2
   exit 1
@@ -96,7 +101,7 @@ if [[ "${HOTFIX}" == "1" ]]; then
     container="$(docker create "${image}")" || return 1
     CONTAINERS+=("${container}")
     docker cp "${container}:/app/alembic/versions" "${TMP_DIR}/${name}/versions" || return 1
-    PYTHONPATH="${REPO_DIR}" "${PYTHON_BIN}" -P -m scripts.release_backup_policy describe-tree \
+    run_repo_module scripts.release_backup_policy describe-tree \
       --versions-dir "${TMP_DIR}/${name}/versions" \
       --output "${TMP_DIR}/${name}.json" || return 1
   }
@@ -138,7 +143,7 @@ if [[ "${HOTFIX}" == "1" ]]; then
     DECISION_FILE="${TMP_DIR}/production-backup-decision.json"
     if ((${#HEAD_ARGS[@]} > 0)); then
       BACKUP_MODE="$(
-        PYTHONPATH="${REPO_DIR}" "${PYTHON_BIN}" -P -m scripts.release_backup_policy write-production-decision \
+        run_repo_module scripts.release_backup_policy write-production-decision \
           --running-image "${TMP_DIR}/running.json" \
           --candidate-image "${TMP_DIR}/candidate.json" \
           "${HEAD_ARGS[@]}" \

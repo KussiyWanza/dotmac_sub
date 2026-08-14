@@ -67,6 +67,11 @@ IMAGE_REPO="ghcr.io/michaelayoade/dotmac_sub"
 APP_CONTAINER="dotmac_sub_app"
 GITHUB_RELEASE_REPOSITORY="michaelayoade/dotmac_sub"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
+
+run_repo_module() {
+  REPO_DIR="${REPO_DIR}" PYTHON_BIN="${PYTHON_BIN}" \
+    bash "${REPO_DIR}/scripts/run_repo_module.sh" "$@"
+}
 # Host-specific, so resolve shell env > .env > default. The default assumes the
 # app publishes on loopback; staging binds its port to a host-internal address
 # instead, and a wrong default here fails the gate rather than passing it.
@@ -566,9 +571,7 @@ if [[ "${DEPLOYMENT_TARGET}" == "production" ]]; then
     exit 1
   fi
   if ! GITHUB_RELEASE_REVISION="$(
-    # The shell is in DEPLOY_DIR, which is a mutable host checkout. ``-P``
-    # prevents it from shadowing the authorized Actions checkout on PYTHONPATH.
-    PYTHONPATH="${REPO_DIR}" "${PYTHON_BIN}" -P -m scripts.release_candidate_evidence \
+    run_repo_module scripts.release_candidate_evidence \
       verify-production \
       --path "${PRODUCTION_RELEASE_EVIDENCE}" \
       --expected-source-revision "${FULL_SHA}" \
@@ -607,7 +610,7 @@ if [[ "${DEPLOYMENT_TARGET}" == "staging" ]]; then
   BACKUP_MODE="skip_staging"
 elif [[ -n "${PRODUCTION_BACKUP_DECISION_FILE:-}" ]]; then
   if ! BACKUP_MODE="$(
-    PYTHONPATH="${REPO_DIR}" "${PYTHON_BIN}" -P -m scripts.release_backup_policy \
+    run_repo_module scripts.release_backup_policy \
       verify-production-decision --path "${PRODUCTION_BACKUP_DECISION_FILE}"
   )"; then
     echo "BACKUP POLICY REJECTED: production hotfix evidence is invalid." >&2

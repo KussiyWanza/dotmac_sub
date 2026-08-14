@@ -148,7 +148,15 @@ printf '%s\\n' "{nginx_config}"
         bin_dir / "python3",
         f"""#!/usr/bin/env bash
 set -eu
-printf 'host-python %s\\n' "$*" >> "$DOCKER_LOG"
+printf 'host-python cwd=%s args=%s\\n' "$PWD" "$*" >> "$DOCKER_LOG"
+if [[ "$*" == *"-m scripts.release_candidate_evidence verify-production"* ]]; then
+  printf '%s\\n' "{revision}"
+  exit 0
+fi
+if [[ "$*" == *"-m scripts.release_backup_policy verify-production-decision"* ]]; then
+  printf '%s\\n' "skip_production_hotfix"
+  exit 0
+fi
 if [[ "$*" == *"scripts/verify_github_release.py"* ]]; then
   if [[ "{int(github_checks_ready)}" != "1" ]]; then
     echo "GITHUB RELEASE GATE REJECTED: CI=failure" >&2
@@ -163,6 +171,16 @@ exit 0
     _write_executable(bin_dir / "flock", "#!/usr/bin/env bash\nexit 0\n")
 
     repo_root = Path(__file__).resolve().parents[1]
+    production_evidence: dict[str, str] = {}
+    if deployment_target == "production":
+        authorization = tmp_path / "authorization.json"
+        authorization.write_text("{}")
+        backup_decision = tmp_path / "backup-decision.json"
+        backup_decision.write_text("{}")
+        production_evidence = {
+            "PRODUCTION_RELEASE_EVIDENCE": str(authorization),
+            "PRODUCTION_BACKUP_DECISION_FILE": str(backup_decision),
+        }
     env = {
         **os.environ,
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
@@ -178,6 +196,7 @@ exit 0
         "MIGRATION_RETRY_SECONDS": "0",
         "DOCKER_LOG": str(docker_log),
         "MIGRATION_ATTEMPTS": str(migration_attempts),
+        **production_evidence,
         **(extra_env or {}),
     }
     result = subprocess.run(
@@ -211,6 +230,35 @@ def test_deploy_pins_exact_oci_digest(tmp_path: Path) -> None:
     commands = docker_log.read_text().splitlines()
     assert f"manifest inspect {IMAGE_REFERENCE}" in commands
     assert f"pull {IMAGE_REFERENCE}" in commands
+
+
+def test_production_release_modules_run_from_the_authorized_checkout(
+    tmp_path: Path,
+) -> None:
+    """A stale deploy directory must not shadow the authorized Actions checkout."""
+
+    result, env_file, docker_log = _run_deploy(
+        tmp_path,
+        image_selector=IMAGE_DIGEST,
+        deployment_target="production",
+    )
+
+    assert result.returncode == 0, result.stderr
+    repo_root = Path(__file__).resolve().parents[1]
+    release_gate = next(
+        command
+        for command in docker_log.read_text().splitlines()
+        if "-m scripts.release_candidate_evidence verify-production" in command
+    )
+    assert f"cwd={repo_root}" in release_gate
+    assert f"cwd={env_file.parent}" not in release_gate
+    backup_gate = next(
+        command
+        for command in docker_log.read_text().splitlines()
+        if "-m scripts.release_backup_policy verify-production-decision" in command
+    )
+    assert f"cwd={repo_root}" in backup_gate
+    assert f"cwd={env_file.parent}" not in backup_gate
 
 
 def test_deploy_rejects_digest_not_reported_by_pulled_image(tmp_path: Path) -> None:
