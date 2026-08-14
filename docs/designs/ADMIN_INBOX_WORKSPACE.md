@@ -95,6 +95,23 @@ v4 amber, status, assignment, saved-view, dark-mode, and `rounded-xl` group
 classes are confined to `templates/admin/inbox/_sidebar.html`; it does not
 change the global theme, Tailwind configuration, or shared components.
 
+The existing **Inbox Stats & Filters** button remains the single disclosure for
+the whole section and shows the number of active filter concepts. Its expanded
+content begins with compact, counted shortcuts for Active, Unreplied,
+Unassigned, Comments, and Failed. Comments and Failed remain navigation to
+their canonical Inbox views; the other shortcuts select their exact projected
+cohorts. The broad non-resolved cohort is labelled Active so it cannot be
+confused with the narrower `status=open` filter.
+
+Active filters render once as removable chips with one Clear all action. The
+remaining controls are grouped by operator task under Status, Assignment,
+Attention, Routing, Advanced, and Saved views disclosures. A counted shortcut
+is not repeated in a second group: Unreplied and Unassigned exist only in the
+compact shortcut row, while Unread, Snoozed, Muted, Needs attention, and reply
+window state live under Attention. Status and Assignment begin open; less-used
+groups use progressive disclosure. Collapsing the outer control changes only
+visibility and preserves every URL-owned filter.
+
 The same page-scoped exception covers the sidebar shell, header, action
 tooltips, live/offline indicator, and search field. The header keeps the real
 new-conversation, local notification-sound, manager-dashboard, and settings

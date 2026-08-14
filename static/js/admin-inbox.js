@@ -341,6 +341,84 @@
         localStorage.setItem(KEYS.filtersOpen, String(this.filtersOpen));
       },
 
+      activeFilterChips() {
+        const filters = new URLSearchParams(window.location.search);
+        const chips = [];
+        const add = (key, label, keys = [key]) => {
+          if (filters.has(key)) chips.push({ key, label, keys });
+        };
+        const title = (value) =>
+          String(value || "")
+            .replaceAll("_", " ")
+            .replace(/\b\w/g, (letter) => letter.toUpperCase());
+
+        if (filters.get("unassigned") === "true") {
+          chips.push({
+            key: "unassigned",
+            label: "Unassigned",
+            keys: ["unassigned", "open_only"],
+          });
+        } else if (filters.get("open_only") === "true") {
+          chips.push({ key: "open_only", label: "Active", keys: ["open_only"] });
+        }
+        if (filters.get("status")) {
+          chips.push({
+            key: "status",
+            label: title(filters.get("status")),
+            keys: ["status"],
+          });
+        }
+        add("has_ticket", "Sent to ticket");
+        add("needs_response", "Unreplied");
+        add("needs_attention", "Needs attention");
+        add("ai_handling", "AI handling");
+        add("unread", "Unread");
+        add("snoozed", "Snoozed");
+        add("muted", "Muted");
+        add("reply_window_status", "Reply window expired");
+        if (filters.get("assigned_person_id")) {
+          chips.push({
+            key: "assigned_person_id",
+            label:
+              filters.get("assigned_person_id") === this.actorId
+                ? "Assigned to me"
+                : "By agent",
+            keys: ["assigned_person_id"],
+          });
+        }
+        add("service_team_ids", "My team");
+        if (filters.get("channel_type")) {
+          chips.push({
+            key: "channel_type",
+            label: title(filters.get("channel_type")),
+            keys: ["channel_type"],
+          });
+        }
+        add("service_team_id", "Team");
+        add("priority_at_most", "Priority");
+        add("filters", "Advanced team");
+        add("activity_from", "Activity from");
+        add("activity_to", "Activity to");
+        return chips;
+      },
+
+      activeFilterCount() {
+        return this.activeFilterChips().length;
+      },
+
+      removeActiveFilter(chip) {
+        const url = new URL(window.location.href);
+        (chip?.keys || []).forEach((key) => url.searchParams.delete(key));
+        url.searchParams.delete("page");
+        if (this.selectedId) {
+          url.searchParams.set("conversation_id", this.selectedId);
+        }
+        this.requestInboxList(url, {
+          intent: "operator_filter",
+          historyMode: "push",
+        });
+      },
+
       toggleSound() {
         this.soundEnabled = !this.soundEnabled;
         localStorage.setItem(KEYS.soundEnabled, String(this.soundEnabled));

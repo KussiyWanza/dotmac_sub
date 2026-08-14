@@ -339,11 +339,10 @@ def test_live_indicator_and_search_match_the_sidebar_contract():
 
 
 def test_stats_filters_scroll_without_hiding_the_conversation_queue():
-    summary_filters = SIDEBAR.index('aria-label="Inbox summary filters"')
-    secondary_filters = SIDEBAR.index('aria-label="Secondary inbox filters"')
+    summary_filters = SIDEBAR.index('aria-label="Inbox views and statistics"')
     filter_panel = SIDEBAR.index('id="inbox-stats-filters"')
     filter_form = SIDEBAR.index('id="inbox-filter-form"')
-    assert filter_panel < summary_filters < secondary_filters < filter_form
+    assert filter_panel < summary_filters < filter_form
     assert 'class="inbox-filter-scroll space-y-3 pt-2"' in SIDEBAR
     assert filter_panel < SIDEBAR.index('id="inbox-conversation-queue"')
     for contract in (
@@ -771,6 +770,31 @@ def test_assignment_filter_colours_and_counts_are_present():
         assert selected_colour in SIDEBAR
     assert "assignmentFilterActive" in SIDEBAR
     assert "assignmentFilterActive(value)" in JAVASCRIPT
+
+
+def test_stats_and_filters_use_one_grouped_progressive_disclosure():
+    assert "Inbox Stats &amp; Filters" in SIDEBAR
+    assert 'x-text="activeFilterCount()"' in SIDEBAR
+    assert "Inbox views &amp; stats" in SIDEBAR
+    assert ">Active</span>" in SIDEBAR
+    assert "Active filters" in SIDEBAR
+    assert "activeFilterChips()" in SIDEBAR
+    assert "removeActiveFilter(chip)" in SIDEBAR
+    for group in (
+        "Status",
+        "Assignment",
+        "Attention",
+        "Routing",
+        "Advanced",
+        "Saved views",
+    ):
+        assert f"<span>{group}</span>" in SIDEBAR
+    assert SIDEBAR.count("<span>Unreplied</span>") == 1
+    assert SIDEBAR.count("<span>Unassigned</span>") == 1
+    assert 'aria-label="Secondary inbox filters"' not in SIDEBAR
+    assert "activeFilterChips()" in JAVASCRIPT
+    assert "activeFilterCount()" in JAVASCRIPT
+    assert "removeActiveFilter(chip)" in JAVASCRIPT
 
 
 def test_needs_attention_is_a_live_saved_filter():
