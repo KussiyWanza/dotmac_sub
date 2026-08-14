@@ -78,7 +78,7 @@ live database sessions. The operator adapter runs one PostgreSQL
 `REPEATABLE READ, READ ONLY` snapshot and emits sorted aggregate JSON with no
 identifier or contact value.
 
-Five stable cohorts block cutover independently:
+Five stable reasons block cutover independently:
 
 - `party_disagreement`: the credential and principal name different Parties;
 - `principal_unbound`: an active credential's staff principal has no Person
@@ -89,6 +89,15 @@ Five stable cohorts block cutover independently:
   have to choose between credential rows; and
 - `projection_incomplete`: expected adoption debt that the approved executor
   clears.
+
+`party_owns_multiple_system_users` is an invariant-breach sentinel, not an
+ordinary population cohort. `uq_system_users_person_party_id` currently makes a
+non-zero value structurally unreachable. The migrated-PostgreSQL canary pins
+both the exact `UNIQUE (person_party_id)` catalog shape and its enforcement;
+the report guard remains so a future lineage change cannot silently turn a
+schema guarantee into an unchecked observation. Removing or relaxing that
+constraint requires separate adjudication of Party-keyed MFA and session
+semantics before any reader cutover.
 
 The report is evidence for a later authorization decision, not that decision
 itself. The legacy login path remains authoritative until every cohort is zero,

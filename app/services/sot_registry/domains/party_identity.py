@@ -576,8 +576,11 @@ DOMAIN = DomainSOT(
             notes=(
                 "Read-only migration evidence compares SystemUser-keyed and "
                 "Party-keyed credential, MFA, lockout and live-session answers. "
-                "It reports aggregate stable cohorts only, changes no reader or "
-                "authentication state, and cannot authorize cutover by itself."
+                "It reports aggregate stable reasons only, changes no reader or "
+                "authentication state, and cannot authorize cutover by itself. "
+                "uq_system_users_person_party_id prevents a Party from owning "
+                "multiple SystemUsers today; that report reason remains an "
+                "invariant-breach sentinel for lineage drift."
             ),
             contract=ServiceContract(
                 concerns=(
@@ -698,7 +701,10 @@ DOMAIN = DomainSOT(
                     "docs/PARTY_PRINCIPAL_CONTEXT_BINDING.md",
                     "docs/SOT_RELATIONSHIP_MAP.md",
                 ),
-                test_refs=("tests/test_staff_authentication_shadow.py",),
+                test_refs=(
+                    "tests/test_staff_authentication_shadow.py",
+                    "tests/integration/test_staff_party_identity_constraint.py",
+                ),
             ),
         ),
         SOTService(
