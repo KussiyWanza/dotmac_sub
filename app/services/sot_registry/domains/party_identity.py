@@ -561,6 +561,147 @@ DOMAIN = DomainSOT(
             ),
         ),
         SOTService(
+            name="party.staff_authentication_shadow",
+            module="app.services.staff_authentication_shadow",
+            owns=(
+                "legacy and Party-keyed staff authentication parity",
+                "staff Party authentication read-cutover readiness",
+            ),
+            depends_on=(
+                "party.staff_principal_adoption",
+                "party.credential_authentication_projection",
+                "auth.staff_provisioning",
+                "app_sessions.auth",
+            ),
+            notes=(
+                "Read-only migration evidence compares SystemUser-keyed and "
+                "Party-keyed credential, MFA, lockout and live-session answers. "
+                "It reports aggregate stable cohorts only, changes no reader or "
+                "authentication state, and cannot authorize cutover by itself."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name="legacy and Party-keyed staff authentication parity",
+                        role=OwnerRole.RESOLVER,
+                        input_names=(
+                            "canonical staff identity and credential state",
+                            "credential Party authentication projection",
+                            "database authentication session state",
+                            "legacy staff MFA persistence observation",
+                        ),
+                    ),
+                    ConcernContract(
+                        name="staff Party authentication read-cutover readiness",
+                        role=OwnerRole.POLICY,
+                        input_names=(
+                            "canonical staff identity and credential state",
+                            "credential Party authentication projection",
+                            "database authentication session state",
+                            "legacy staff MFA persistence observation",
+                        ),
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="canonical staff identity and credential state",
+                        owner="auth.staff_provisioning",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "SystemUser identity plus its active local "
+                            "UserCredential and credential lockout state"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="credential Party authentication projection",
+                        owner="party.credential_authentication_projection",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source=(
+                            "the complete nullable UserCredential Party, binding, "
+                            "tenant and evidence projection introduced by migration 527"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="database authentication session state",
+                        owner="app_sessions.auth",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "database Session status, revocation and expiry facts "
+                            "resolved by the application-session owner"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="legacy staff MFA persistence observation",
+                        owner="party.staff_authentication_shadow",
+                        kind=AuthorityKind.OBSERVATION,
+                        source=(
+                            "read-only count and SystemUser association observed "
+                            "directly from retained MFAMethod compatibility rows; "
+                            "this assigns no MFA lifecycle or writer authority"
+                        ),
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.READ_ONLY,
+                    boundary=(
+                        "The operator adapter opens one PostgreSQL REPEATABLE READ, "
+                        "READ ONLY transaction, resolves one report, then rolls back."
+                    ),
+                    locking=(
+                        "No row locks: one repeatable-read snapshot prevents login, "
+                        "MFA or session changes from splitting the report."
+                    ),
+                    idempotency=(
+                        "The sorted aggregate report is deterministic for one "
+                        "database snapshot and stores no execution marker."
+                    ),
+                    retries=(
+                        "Retry the complete read-only report on a fresh snapshot; "
+                        "never combine cohorts from separate attempts."
+                    ),
+                ),
+                errors=ErrorContract(
+                    domain_codes=(),
+                    mapping_owner=(
+                        "scripts.migration.staff_authentication_shadow_parity"
+                    ),
+                    fail_closed_on=(
+                        "credential and principal Party disagreement",
+                        "an active credential whose staff principal has no Party",
+                        "one Party owning multiple SystemUsers",
+                        "one principal holding multiple active credentials",
+                        "any incomplete credential projection",
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.SHADOWING,
+                    old_owner=(
+                        "legacy SystemUser-keyed credential, MFA, lockout and "
+                        "database-session reads"
+                    ),
+                    new_owner="party.staff_authentication_shadow",
+                    verification=(
+                        "Stable PII-free cohorts compare both resolution paths and "
+                        "separately expose corruption, ambiguity and projection debt."
+                    ),
+                    cutover_gate=(
+                        "Every staff credential is projected and every blocking "
+                        "cohort is zero in production shadow evidence."
+                    ),
+                    fallback_retirement=(
+                        "Retire the shadow verifier only after the separately "
+                        "approved authentication reader cutover and rollback window."
+                    ),
+                ),
+                steward="identity and authentication",
+                design_refs=(
+                    "docs/PARTY_PRINCIPAL_CONTEXT_BINDING.md",
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                ),
+                test_refs=("tests/test_staff_authentication_shadow.py",),
+            ),
+        ),
+        SOTService(
             name="party.contact_inbox_audit",
             module="app.services.party_contact_audit",
             owns=(
@@ -589,7 +730,7 @@ DOMAIN = DomainSOT(
         "scripts.migration.audit_party_organization_profiles",
         "scripts.migration.audit_party_principal_contexts",
         "scripts.migration.execute_staff_party_credential_adoption",
-        "scripts.migration.execute_staff_party_credential_adoption",
+        "scripts.migration.staff_authentication_shadow_parity",
         "scripts.migration.audit_party_contact_inbox",
         "future party backfills",
         "future subscriber/reseller/vendor cutovers",
