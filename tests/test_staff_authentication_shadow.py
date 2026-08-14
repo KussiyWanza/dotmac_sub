@@ -13,6 +13,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.auth import (
@@ -180,28 +181,81 @@ def test_a_credential_disagreeing_with_its_principal_blocks(
     assert report.is_read_cutover_safe is False
 
 
-def test_a_party_owning_two_principals_blocks_and_taints_mfa_and_sessions(
+def test_mfa_and_sessions_are_counted_and_attributed_to_unambiguous_parties(
     db_session: Session,
 ) -> None:
-    """A Party-keyed read would union two principals' MFA methods and sessions."""
+    """The healthy case, which is the only one the schema permits.
+
+    Keeps MFA and live sessions under database-level coverage after the
+    ambiguous-Party scenario became unconstructable.
+    """
 
     binding = _binding(db_session)
     party = _party(db_session)
-    first = _staff(db_session, party=party)
-    second = _staff(db_session, party=party)
-    _credential(db_session, staff=first, party=party, binding=binding)
-    db_session.add(MFAMethod(system_user_id=first.id, method_type=MFAMethodType.totp))
-    db_session.add(MFAMethod(system_user_id=second.id, method_type=MFAMethodType.totp))
-    _live_session(db_session, first)
-    _live_session(db_session, second)
+    staff = _staff(db_session, party=party)
+    _credential(db_session, staff=staff, party=party, binding=binding)
+    db_session.add(MFAMethod(system_user_id=staff.id, method_type=MFAMethodType.totp))
+    _live_session(db_session, staff)
     db_session.commit()
 
     report = shadow.staff_authentication_parity_report(db_session)
 
-    assert report.parties_with_multiple_principals == 1
-    assert report.mfa_methods_on_ambiguous_parties == 2
-    assert report.live_sessions_on_ambiguous_parties == 2
+    assert report.mfa_methods == 1
+    assert report.live_sessions == 1
+    assert report.mfa_methods_on_ambiguous_parties == 0
+    assert report.live_sessions_on_ambiguous_parties == 0
+    assert report.parties_with_multiple_principals == 0
+
+
+def test_the_schema_forbids_a_party_owning_two_principals(
+    db_session: Session,
+) -> None:
+    """The ambiguous-Party cohort is structurally unreachable, not merely absent.
+
+    A Party-keyed MFA or session read would union two principals' artifacts, so
+    the report counts and blocks on it. But `uq_system_users_person_party_id`
+    means the database cannot hold that state at all: the cohort is zero by
+    construction, not by luck.
+
+    That is worth pinning. If the constraint is ever dropped — during the kernel
+    lineage adoption, say, where `roles`, `parties` and `party_roles` are all in
+    scope — this test fails and tells you the report's zero has stopped being a
+    guarantee and become an observation.
+    """
+
+    party = _party(db_session)
+    _staff(db_session, party=party)
+    with pytest.raises(IntegrityError):
+        _staff(db_session, party=party)
+    db_session.rollback()
+
+
+def test_the_ambiguous_party_guard_still_blocks_if_it_ever_fires() -> None:
+    """The guard must work even though the schema currently prevents the input.
+
+    Tested on the contract rather than through the database, because the
+    database is exactly what makes the state unconstructable. Deleting the
+    guard because it "cannot happen" is how it would be missing on the day the
+    constraint is relaxed.
+    """
+
+    report = shadow.StaffAuthenticationParityReport(
+        credentials=1,
+        projection_complete=1,
+        principal_unbound=0,
+        party_disagreements=0,
+        parties_with_multiple_principals=1,
+        principals_with_multiple_active_credentials=0,
+        mfa_methods=2,
+        mfa_methods_on_ambiguous_parties=2,
+        live_sessions=2,
+        live_sessions_on_ambiguous_parties=2,
+        locked_credentials=0,
+        locked_credentials_on_multi_credential_principals=0,
+    )
+
     assert shadow.BLOCKING_AMBIGUOUS_PARTY_PRINCIPALS in report.blocking_reasons
+    assert report.is_read_cutover_safe is False
 
 
 def test_a_principal_with_two_active_credentials_makes_lockout_ambiguous(
