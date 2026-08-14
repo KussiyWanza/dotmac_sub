@@ -65,6 +65,45 @@ legacy principal readiness and completion/correctness of the new projection.
 Neither number is allowed to stand in for the other. The report is aggregate
 and PII-free.
 
+## Staff authentication shadow evidence
+
+`party.staff_authentication_shadow` owns the read-only comparison between
+the retained SystemUser-keyed path and the proposed Party-keyed staff
+authentication path. It does not own or change credential, MFA, lockout,
+session, SystemUser, or Party state.
+
+The typed report compares the four facts a reader cutover would change:
+credential-to-principal resolution, MFA association, credential lockout, and
+live database sessions. The operator adapter runs one PostgreSQL
+`REPEATABLE READ, READ ONLY` snapshot and emits sorted aggregate JSON with no
+identifier or contact value.
+
+Five stable reasons block cutover independently:
+
+- `party_disagreement`: the credential and principal name different Parties;
+- `principal_unbound`: an active credential's staff principal has no Person
+  Party binding;
+- `party_owns_multiple_system_users`: a Party-keyed read would union separate
+  staff principals' MFA and session state;
+- `principal_holds_multiple_active_credentials`: Party-keyed lockout would
+  have to choose between credential rows; and
+- `projection_incomplete`: expected adoption debt that the approved executor
+  clears.
+
+`party_owns_multiple_system_users` is an invariant-breach sentinel, not an
+ordinary population cohort. `uq_system_users_person_party_id` currently makes a
+non-zero value structurally unreachable. The migrated-PostgreSQL canary pins
+both the exact `UNIQUE (person_party_id)` catalog shape and its enforcement;
+the report guard remains so a future lineage change cannot silently turn a
+schema guarantee into an unchecked observation. Removing or relaxing that
+constraint requires separate adjudication of Party-keyed MFA and session
+semantics before any reader cutover.
+
+The report is evidence for a later authorization decision, not that decision
+itself. The legacy login path remains authoritative until every cohort is zero,
+the credential convergence report is enforcement-ready, the GUC/RLS rehearsal
+passes, and the reader cutover is separately reviewed.
+
 Migration 527 performs no population change. Staff and subscriber adoption
 remain separate approval-bound work: the existing Subscriber executor cannot
 bind SystemUsers, and no command infers identity from email, name, username, or
