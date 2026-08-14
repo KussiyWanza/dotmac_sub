@@ -359,9 +359,9 @@ def test_project_update_notification_is_opt_in(db_session, subscriber):
     )
     assert notice.channel == NotificationChannel.email
     assert notice.metadata_["changed_fields"] == ["name"]
-    assert (
-        notice.dedupe_key
-        == f"project_updated:{project.id}:{notice.metadata_['transition_id']}"
+    assert notice.communication_intent is not None
+    assert notice.communication_intent.dedupe_key == (
+        f"project_updated:{project.id}:{notice.metadata_['transition_id']}"
     )
 
 

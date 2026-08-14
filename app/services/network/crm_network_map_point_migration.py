@@ -783,12 +783,6 @@ def assert_crm_identity_batch_authoritative(
         raise CrmNetworkMapPointMigrationError(
             "proposal batch has no CRM point-source staging evidence"
         )
-    if any(
-        _batch_metadata(batch)["source_archive_sha256"] != expected_archive_sha256
-        for batch in source_batches
-    ):
-        raise CrmNetworkMapPointMigrationError("proposal batch archive hash mismatch")
-
     selected_ids = {
         batch_id
         for selection in select_authoritative_crm_point_batches(
@@ -797,6 +791,13 @@ def assert_crm_identity_batch_authoritative(
         for batch_id in selection.batch_ids
     }
     if not selected_ids:
+        if any(
+            _batch_metadata(batch)["source_archive_sha256"] != expected_archive_sha256
+            for batch in source_batches
+        ):
+            raise CrmNetworkMapPointMigrationError(
+                "proposal batch archive hash mismatch"
+            )
         raise CrmNetworkMapPointMigrationError(
             "no authoritative CRM point batches found"
         )
