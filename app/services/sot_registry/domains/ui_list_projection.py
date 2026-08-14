@@ -911,6 +911,7 @@ DOMAIN = DomainSOT(
                 "ui.list_contracts",
                 "support.ticket_lifecycle",
                 "support.ticket_configuration",
+                "operations.service_team_lifecycle",
             ),
             notes=(
                 "app.services.support.Tickets owns the canonical filtered "
@@ -935,6 +936,7 @@ DOMAIN = DomainSOT(
                             "typed support Ticket list query",
                             "canonical ticket lifecycle state",
                             "ticket configuration",
+                            "resolved staff ticket audience",
                         ),
                     )
                     for name in (
@@ -968,6 +970,15 @@ DOMAIN = DomainSOT(
                         kind=AuthorityKind.CONTROL_INPUT,
                         source="configured filter option vocabulary",
                     ),
+                    AuthorityInput(
+                        name="resolved staff ticket audience",
+                        owner="operations.service_team_lifecycle",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source=(
+                            "authenticated SystemUser identity, compatible Person Party "
+                            "identity, and direct active ServiceTeam membership set"
+                        ),
+                    ),
                 ),
                 transaction=TransactionContract(
                     mode=TransactionMode.READ_ONLY,
@@ -979,7 +990,11 @@ DOMAIN = DomainSOT(
                 errors=ErrorContract(
                     domain_codes=("support_ticket_list_invalid_query",),
                     mapping_owner="admin support list and export HTTP adapters",
-                    fail_closed_on=("unsupported filter", "unsupported sort"),
+                    fail_closed_on=(
+                        "unsupported filter",
+                        "unsupported sort",
+                        "assigned-to-me staff identity unavailable",
+                    ),
                 ),
                 migration=MigrationContract(
                     state=AuthorityMigrationState.COMPLETE,

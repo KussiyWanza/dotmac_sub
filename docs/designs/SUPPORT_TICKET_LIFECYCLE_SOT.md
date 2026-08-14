@@ -211,7 +211,12 @@ results when a read fails, and offers retry. After a successful list read, the
 browser stores the canonical `ListQuery` URL under a signed-in-user-specific
 key. A bare return to the list restores that applied URL; an explicit URL wins
 and replaces the stored view. The browser cache controls navigation only and is
-never authoritative for Ticket facts. `ui.support_ticket_bulk_action_projection`
+never authoritative for Ticket facts. The `assigned_to_me=1` audience is one
+deduplicated active-Ticket predicate: current and compatible legacy primary or
+additional assignee, technician, ticket manager, site coordinator, or direct
+active Service Team membership. The projection resolves direct active team
+membership only through `operations.service_team_lifecycle`; unavailable staff
+identity fails closed and never broadens the queue. `ui.support_ticket_bulk_action_projection`
 declares page-only selection and action presentation. `support.ticket_bulk_commands`
 resolves membership, normalizes the shared changes, previews eligibility, binds
 the preview to a deterministic scope token, and detects drift. Confirmed

@@ -635,6 +635,117 @@ DOMAIN = DomainSOT(
             ),
         ),
         SOTService(
+            name="auth.entitlement_revocation",
+            module="app.services.entitlement_revocation",
+            owns=("session revocation for entitlement reductions",),
+            depends_on=(
+                "events.dispatcher",
+                "observability.audit_log",
+            ),
+            notes=(
+                "Current login and refresh tokens omit roles and scopes and "
+                "reload RBAC through require_user_auth, while that dependency "
+                "still accepts compatibility tokens carrying embedded claims. "
+                "Those claims remain valid until expiry and cannot be changed by "
+                "cache invalidation. require_user_auth re-reads the authoritative "
+                "sessions row on every request, so revoking that row is the one "
+                "fail-closed next-request rule for both token forms. This owner "
+                "revokes inside the reducing owner's "
+                "transaction so revocation and reduction commit or roll back "
+                "together, emits durable projection work, and registers strict "
+                "cache invalidation for after commit — never before, or a "
+                "concurrent read would repopulate the cache from uncommitted "
+                "rows. A failed invalidation is counted and logged but cannot "
+                "preserve authorization, because the database already denies. "
+                "It does not decide whether a reduction occurred: that "
+                "judgement belongs to the reducing owner, which alone knows the "
+                "principal's effective access before and after."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name="session revocation for entitlement reductions",
+                        role=OwnerRole.COMMAND_WRITER,
+                        input_names=("reduced effective entitlement decision",),
+                        canonical_writer="auth.entitlement_revocation",
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="reduced effective entitlement decision",
+                        owner="auth.system_user_assignments",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "the reducing owner's before/after effective access "
+                            "comparison, computed inside its own transaction"
+                        ),
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.PARTICIPANT,
+                    boundary=(
+                        "Runs inside the reducing owner's transaction and never "
+                        "commits. Revocation and reduction commit or roll back "
+                        "together; a half-applied pair would either strand a "
+                        "live session on withdrawn access or log a principal "
+                        "out for a change that was abandoned."
+                    ),
+                    locking=(
+                        "Live sessions for the principal are selected FOR "
+                        "UPDATE, serializing against a concurrent login or "
+                        "refresh touching the same rows."
+                    ),
+                    idempotency=(
+                        "Already-revoked and expired sessions are excluded, so "
+                        "a replay revokes nothing further and preserves the "
+                        "original revoked_at."
+                    ),
+                    retries=(
+                        "Retry belongs to the reducing owner's command. The "
+                        "post-commit cache invalidation is not retried inline; "
+                        "the emitted event is the replay handle, and "
+                        "authorization is already denied without it."
+                    ),
+                ),
+                errors=ErrorContract(
+                    domain_codes=(
+                        "auth.entitlement_revocation.unknown_principal_type",
+                    ),
+                    mapping_owner="auth.system_user_assignments",
+                    fail_closed_on=(
+                        "auth.entitlement_revocation.unknown_principal_type",
+                    ),
+                ),
+                events=EventContract(
+                    event_types=("rbac.entitlement_reduction_revoked",),
+                    schema_version=1,
+                    delivery_owner="events.dispatcher",
+                    compatibility=(
+                        "Additive payload only. Consumers must tolerate unknown "
+                        "keys; revoked_session_ids is sorted and stable."
+                    ),
+                    replay=(
+                        "Replayable as the record of a completed revocation. "
+                        "Replay re-invalidates caches; it never re-grants."
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.NATIVE,
+                    new_owner="auth.entitlement_revocation",
+                    old_owner=None,
+                    verification=(
+                        "Canaries assert the revoked session no longer "
+                        "satisfies the predicate require_user_auth applies, and "
+                        "that widening, no-op and equivalent-regrant changes "
+                        "revoke nothing."
+                    ),
+                ),
+                steward="auth",
+                design_refs=("docs/SOT_RELATIONSHIP_MAP.md",),
+                test_refs=("tests/test_entitlement_revocation.py",),
+            ),
+        ),
+        SOTService(
             name="auth.token_signing",
             module="app.services.context_signing",
             owns=(
