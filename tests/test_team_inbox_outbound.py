@@ -233,6 +233,53 @@ def test_send_inbox_reply_sends_whatsapp_template(db_session, monkeypatch):
     assert message.external_message_id is None
 
 
+def test_worker_delivers_metadata_template_instead_of_placeholder_text(
+    db_session, monkeypatch
+):
+    conversation = _whatsapp_conversation(db_session)
+    db_session.commit()
+    queued = team_inbox_outbound.send_inbox_reply(
+        db_session,
+        conversation=conversation,
+        payload=team_inbox_outbound.InboxReplyPayload(
+            body_html="<p>Template fallback.</p>",
+            body_text="Template fallback.",
+            metadata={
+                "whatsapp_template": {
+                    "name": "service_update",
+                    "language": "en",
+                    "variables": {"1": "Ada"},
+                    "components": [],
+                }
+            },
+        ),
+        now=datetime(2026, 7, 10, 8, 5, tzinfo=UTC),
+    )
+    template_calls: list[dict[str, object]] = []
+    text_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        notification_tasks.whatsapp_service,
+        "send_template_message",
+        lambda *args, **kwargs: template_calls.append(kwargs) or {"ok": True},
+    )
+    monkeypatch.setattr(
+        notification_tasks.whatsapp_service,
+        "send_text_message",
+        lambda *args, **kwargs: text_calls.append(kwargs) or {"ok": True},
+    )
+
+    notification_tasks._deliver_notification_queue_stats(db_session)
+
+    notification = db_session.get(Notification, queued.notification_id)
+    assert text_calls == []
+    assert len(template_calls) == 1
+    assert template_calls[0]["template_name"] == "service_update"
+    assert template_calls[0]["language"] == "en"
+    assert template_calls[0]["variables"] == {"1": "Ada"}
+    assert template_calls[0]["components"] == []
+    assert notification.status == NotificationStatus.delivered
+
+
 def test_whatsapp_free_form_reply_requires_open_customer_window(db_session):
     conversation = _whatsapp_conversation(db_session)
     db_session.add(
@@ -507,12 +554,14 @@ def test_direct_whatsapp_template_reply_uses_approved_template_validation(
 
     outcome = team_inbox_commands.reply(
         db_session,
-        conversation_id=conversation.id,
-        body_text="",
-        actor_person_id=uuid4(),
-        whatsapp_template_name="service_update",
-        whatsapp_template_language="en",
-        whatsapp_template_components=(),
+        command=team_inbox_commands.ReplyCommand(
+            conversation_id=conversation.id,
+            body_text="",
+            actor_person_id=uuid4(),
+            whatsapp_template_name="service_update",
+            whatsapp_template_language="en",
+            whatsapp_template_components=(),
+        ),
     )
 
     notification = db_session.query(Notification).one()
@@ -812,11 +861,13 @@ def test_facebook_targeted_comment_reply_dispatches_exact_page_and_comment(
 
     result = team_inbox_commands.reply(
         db_session,
-        conversation_id=conversation.id,
-        body_text="Replying publicly.",
-        actor_person_id=uuid4(),
-        reply_to_message_id=target.id,
-        idempotency_key="facebook-public-comment-reply",
+        command=team_inbox_commands.ReplyCommand(
+            conversation_id=conversation.id,
+            body_text="Replying publicly.",
+            actor_person_id=uuid4(),
+            reply_to_message_id=target.id,
+            idempotency_key="facebook-public-comment-reply",
+        ),
     )
     notification_tasks._deliver_notification_queue_stats(db_session)
 
@@ -886,11 +937,13 @@ def test_instagram_targeted_comment_reply_dispatches_exact_account_and_comment(
 
     result = team_inbox_commands.reply(
         db_session,
-        conversation_id=conversation.id,
-        body_text="Instagram public reply.",
-        actor_person_id=uuid4(),
-        reply_to_message_id=target.id,
-        idempotency_key="instagram-public-comment-reply",
+        command=team_inbox_commands.ReplyCommand(
+            conversation_id=conversation.id,
+            body_text="Instagram public reply.",
+            actor_person_id=uuid4(),
+            reply_to_message_id=target.id,
+            idempotency_key="instagram-public-comment-reply",
+        ),
     )
     notification_tasks._deliver_notification_queue_stats(db_session)
 

@@ -351,6 +351,13 @@ assert_no_source_mount() {
 
 # Compose file set.
 #
+# The base Compose contract belongs to the authorized release checkout, not the
+# persistent host deployment directory. Production intentionally separates
+# those locations: REPO_DIR is the exact Actions checkout while DEPLOY_DIR owns
+# only host state such as .env and an optional host-specific override. Reading
+# the base file from DEPLOY_DIR let a stale checkout omit a newly required
+# worker even while the host ran the newer image.
+#
 # This used to be `-f docker-compose.yml` alone, which silently diverges from
 # every bare `docker compose` command on the host: Compose auto-loads
 # docker-compose.override.yml, this script did not. On a host whose override
@@ -361,11 +368,18 @@ assert_no_source_mount() {
 #
 # Production has no override file, so this resolves to exactly the previous
 # single-file behaviour there. Set IGNORE_COMPOSE_OVERRIDE=1 to force it.
-COMPOSE=(docker compose -f docker-compose.yml)
-COMPOSE_FILES_DESC="docker-compose.yml"
-if [[ "${IGNORE_COMPOSE_OVERRIDE:-0}" != "1" && -f docker-compose.override.yml ]]; then
-  COMPOSE+=(-f docker-compose.override.yml)
-  COMPOSE_FILES_DESC+=" + docker-compose.override.yml"
+RELEASE_COMPOSE_FILE="${REPO_DIR}/docker-compose.yml"
+HOST_COMPOSE_OVERRIDE="${DEPLOY_DIR}/docker-compose.override.yml"
+if [[ ! -f "${RELEASE_COMPOSE_FILE}" ]]; then
+  echo "DEPLOY CONFIG FAILURE: authorized release has no ${RELEASE_COMPOSE_FILE}." >&2
+  exit 1
+fi
+COMPOSE=(docker compose --project-directory "${DEPLOY_DIR}" \
+  --env-file "${DEPLOY_DIR}/.env" -f "${RELEASE_COMPOSE_FILE}")
+COMPOSE_FILES_DESC="${RELEASE_COMPOSE_FILE}"
+if [[ "${IGNORE_COMPOSE_OVERRIDE:-0}" != "1" && -f "${HOST_COMPOSE_OVERRIDE}" ]]; then
+  COMPOSE+=(-f "${HOST_COMPOSE_OVERRIDE}")
+  COMPOSE_FILES_DESC+=" + ${HOST_COMPOSE_OVERRIDE}"
 fi
 
 # Restrict the services this deploy touches to the ones the resolved Compose
@@ -428,6 +442,29 @@ pinned_git_sha() { env_value GIT_SHA; }
 image_revision() {
   docker image inspect "$1" \
     --format '{{index .Config.Labels "org.opencontainers.image.revision"}}'
+}
+
+image_source_tree() {
+  docker image inspect "$1" \
+    --format '{{index .Config.Labels "io.dotmac.release.source-tree"}}'
+}
+
+validate_release_source_tree() {
+  local image="$1"
+  local image_tree="$2"
+  local release_tree
+  if [[ ! "${image_tree}" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "DEPLOY INTEGRITY FAILURE: ${image} has no full source-tree label." >&2
+    return 1
+  fi
+  if ! release_tree="$(git -C "${REPO_DIR}" rev-parse 'HEAD^{tree}' 2>/dev/null)"; then
+    echo "DEPLOY INTEGRITY FAILURE: ${REPO_DIR} is not an authorized Git checkout." >&2
+    return 1
+  fi
+  if [[ "${release_tree}" != "${image_tree}" ]]; then
+    echo "DEPLOY INTEGRITY FAILURE: release Compose tree ${release_tree} does not match image source tree ${image_tree}." >&2
+    return 1
+  fi
 }
 
 validate_image_revision() {
@@ -552,6 +589,13 @@ if ! FULL_SHA="$(image_revision "${IMAGE}")"; then
   exit 1
 fi
 if ! validate_image_revision "${IMAGE}" "${TAG}" "${FULL_SHA}"; then
+  exit 1
+fi
+if ! IMAGE_SOURCE_TREE="$(image_source_tree "${IMAGE}")"; then
+  echo "DEPLOY INTEGRITY FAILURE: could not inspect ${IMAGE} source tree." >&2
+  exit 1
+fi
+if ! validate_release_source_tree "${IMAGE}" "${IMAGE_SOURCE_TREE}"; then
   exit 1
 fi
 

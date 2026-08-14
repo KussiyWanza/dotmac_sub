@@ -189,10 +189,12 @@ def test_a_past_send_time_is_a_command_error(db_session):
     ):
         team_inbox_commands.reply(
             db_session,
-            conversation_id=conversation_id,
-            body_text="too late",
-            actor_person_id=None,
-            send_after=datetime.now(UTC) - timedelta(minutes=1),
+            command=team_inbox_commands.ReplyCommand(
+                conversation_id=conversation_id,
+                body_text="too late",
+                actor_person_id=None,
+                send_after=datetime.now(UTC) - timedelta(minutes=1),
+            ),
         )
 
 

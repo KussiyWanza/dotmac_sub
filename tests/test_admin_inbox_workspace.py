@@ -631,17 +631,21 @@ def test_reply_idempotency_key_replays_without_duplicate_message(
 
     first = team_inbox_commands.reply(
         db_session,
-        conversation_id=conversation_id,
-        body_text="We are checking.",
-        actor_person_id=uuid.uuid4(),
-        idempotency_key="send-key-1",
+        command=team_inbox_commands.ReplyCommand(
+            conversation_id=conversation_id,
+            body_text="We are checking.",
+            actor_person_id=uuid.uuid4(),
+            idempotency_key="send-key-1",
+        ),
     )
     second = team_inbox_commands.reply(
         db_session,
-        conversation_id=conversation_id,
-        body_text="We are checking.",
-        actor_person_id=uuid.uuid4(),
-        idempotency_key="send-key-1",
+        command=team_inbox_commands.ReplyCommand(
+            conversation_id=conversation_id,
+            body_text="We are checking.",
+            actor_person_id=uuid.uuid4(),
+            idempotency_key="send-key-1",
+        ),
     )
 
     assert first.replayed is False
@@ -685,10 +689,12 @@ def test_reply_idempotency_key_rejects_changed_body(db_session, monkeypatch):
     )
     team_inbox_commands.reply(
         db_session,
-        conversation_id=conversation_id,
-        body_text="Original",
-        actor_person_id=uuid.uuid4(),
-        idempotency_key="send-key-2",
+        command=team_inbox_commands.ReplyCommand(
+            conversation_id=conversation_id,
+            body_text="Original",
+            actor_person_id=uuid.uuid4(),
+            idempotency_key="send-key-2",
+        ),
     )
 
     with pytest.raises(
@@ -697,10 +703,12 @@ def test_reply_idempotency_key_rejects_changed_body(db_session, monkeypatch):
     ):
         team_inbox_commands.reply(
             db_session,
-            conversation_id=conversation_id,
-            body_text="Changed",
-            actor_person_id=uuid.uuid4(),
-            idempotency_key="send-key-2",
+            command=team_inbox_commands.ReplyCommand(
+                conversation_id=conversation_id,
+                body_text="Changed",
+                actor_person_id=uuid.uuid4(),
+                idempotency_key="send-key-2",
+            ),
         )
 
 
