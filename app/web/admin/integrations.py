@@ -167,11 +167,16 @@ def erp_connector_config_save(
 ):
     actor_id = str(auth.get("user_id") or auth.get("sub") or "unknown")
     command_id = uuid4()
-    db_session_adapter.release_read_transaction(db)
     try:
+        selection = erp_admin_service.parse_domain_selection(domains)
+        plan = erp_admin_service.review_domain_configuration(
+            db,
+            selection=selection,
+        )
+        db_session_adapter.release_read_transaction(db)
         erp_admin_service.configure_domains(
             db,
-            domains=domains,
+            plan=plan,
             actor=f"user:{actor_id}",
             context=CommandContext(
                 command_id=command_id,

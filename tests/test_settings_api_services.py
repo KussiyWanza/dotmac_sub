@@ -1,8 +1,9 @@
 import pytest
 from fastapi import HTTPException
 
+from app.models.domain_settings import SettingDomain
 from app.schemas.settings import DomainSettingUpdate
-from app.services import settings_api
+from app.services import settings_api, settings_spec
 from app.services.response import ListResponseMixin
 
 
@@ -209,6 +210,30 @@ def test_upsert_gis_setting_variants(db_session):
             "sync_enabled",
             DomainSettingUpdate(value_text="false"),
         )
+
+
+def test_ai_polish_settings_are_integration_settings(db_session):
+    for key in (
+        "inbox_ai_polish_business_voice",
+        "inbox_ai_polish_channel_guidance",
+    ):
+        spec = settings_spec.get_spec(SettingDomain.integration, key)
+        assert spec is not None
+        setting = settings_api.upsert_integration_setting(
+            db_session,
+            key,
+            DomainSettingUpdate(value_text=f"configured {key}"),
+        )
+        assert setting.domain == SettingDomain.integration
+        assert setting.value_text == f"configured {key}"
+
+        with pytest.raises(HTTPException) as exc:
+            settings_api.upsert_comms_setting(
+                db_session,
+                key,
+                DomainSettingUpdate(value_text="wrong owner"),
+            )
+        assert exc.value.status_code == 400
 
 
 def test_list_settings_response(db_session):

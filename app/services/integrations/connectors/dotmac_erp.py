@@ -12,6 +12,7 @@ from app.services.dotmac_erp.client import (
     DotMacERPRateLimitError,
     DotMacERPTransientError,
 )
+from app.services.dotmac_erp.operational_contracts import ErpOperationalSyncCommand
 from app.services.integrations.backoffice_contracts import (
     ERP_INVENTORY_CAPABILITY,
     ERP_OPERATIONAL_SYNC_CAPABILITY,
@@ -214,7 +215,8 @@ class DotmacErpRunner:
                 return client.list_available_serials(**params)
         elif capability_id == ERP_OPERATIONAL_SYNC_CAPABILITY:
             if action == "sync_operational_domains":
-                return client.sync_operational_domains(dict(params["payload"]))
+                command = ErpOperationalSyncCommand.model_validate(params["payload"])
+                return client.sync_operational_domains(command).model_dump(mode="json")
         elif capability_id == ERP_REGULATORY_CAPABILITY:
             if action == "get_ncc_financials":
                 return client.get_ncc_financials(**params)

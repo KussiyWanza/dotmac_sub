@@ -7,7 +7,8 @@ import pytest
 
 from app.models.ai_insight import AIInsight
 from app.models.team_inbox import InboxConversation, InboxConversationStatus
-from app.services import team_inbox_ai_polish
+from app.schemas.settings import DomainSettingUpdate
+from app.services import settings_api, team_inbox_ai_polish
 
 
 def _conversation(db_session, *, channel_type: str = "whatsapp") -> InboxConversation:
@@ -92,7 +93,10 @@ def test_polish_uses_bounded_context_and_existing_ai_engine(db_session, monkeypa
     _patch_success(
         monkeypatch,
         captured,
-        suggestion="Please bear with us while we check the line. Your ticket TCK-42 is still open.",
+        suggestion=(
+            "Please bear with us while we check the line. "
+            "Your ticket TCK-42 is still open."
+        ),
     )
 
     result = team_inbox_ai_polish.polish_reply(
@@ -117,6 +121,49 @@ def test_polish_uses_bounded_context_and_existing_ai_engine(db_session, monkeypa
     assert result.detected_mood is team_inbox_ai_polish.PolishMood.frustrated
     assert result.suggestion_ready is True
     assert db_session.query(AIInsight).count() == 0
+
+
+def test_polish_uses_configured_business_voice_and_channel_guidance(
+    db_session, monkeypatch
+):
+    conversation = _conversation(db_session)
+    captured: dict[str, object] = {}
+    settings_api.upsert_integration_setting(
+        db_session,
+        "inbox_ai_polish_business_voice",
+        DomainSettingUpdate(value_text="Use the reviewed support voice."),
+    )
+    settings_api.upsert_integration_setting(
+        db_session,
+        "inbox_ai_polish_channel_guidance",
+        DomainSettingUpdate(value_text="Keep WhatsApp direct and concise."),
+    )
+    monkeypatch.setattr(
+        team_inbox_ai_polish.team_inbox_projection,
+        "build_ai_reply_projection",
+        lambda _db, *, conversation_id: _projection(),
+    )
+    _patch_success(
+        monkeypatch,
+        captured,
+        suggestion="We are checking ticket TCK-42 and will update you shortly.",
+    )
+
+    team_inbox_ai_polish.polish_reply(
+        db_session,
+        team_inbox_ai_polish.TeamInboxAIPolishCommand(
+            auth=_auth(),
+            actor_person_id=None,
+            conversation_id=conversation.id,
+            draft="Checking ticket TCK-42.",
+        ),
+    )
+
+    report = captured["report"]
+    assert report["CONFIGURABLE_BUSINESS_VOICE"] == "Use the reviewed support voice."
+    assert (
+        report["CONFIGURABLE_CHANNEL_GUIDANCE"] == "Keep WhatsApp direct and concise."
+    )
 
 
 def test_polish_denies_conversation_without_object_access(db_session, monkeypatch):

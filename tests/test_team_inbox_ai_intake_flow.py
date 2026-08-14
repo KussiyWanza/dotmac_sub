@@ -4,6 +4,8 @@ import json
 from datetime import datetime, timedelta
 from uuid import uuid4
 
+import pytest
+
 from app.models.ai_intake import (
     AiIntakeConfig,
     AiIntakePolicy,
@@ -37,6 +39,13 @@ from app.services import (
     team_inbox_maintenance,
 )
 from app.services.ai.client import AIResponse
+from app.services.integrations import installations
+from app.services.integrations.connectors.whatsapp_runtime import WHATSAPP_PROVIDER_META
+from app.services.integrations.runtime import ValidationResult
+from app.services.integrations.whatsapp_capability import (
+    WHATSAPP_RECEIVE_CAPABILITY,
+    WHATSAPP_SEND_CAPABILITY,
+)
 from app.services.owner_commands import CommandContext
 from app.tasks import notifications as notification_tasks
 
@@ -91,6 +100,49 @@ def _team(db_session, name: str) -> ServiceTeam:
     db_session.add(team)
     db_session.flush()
     return team
+
+
+def _install_whatsapp_scope(db_session, *, account_scope: str) -> None:
+    installation = installations.create_draft(
+        db_session,
+        connector_key="whatsapp",
+        name=f"WhatsApp {uuid4().hex}",
+        environment="test",
+        actor="test",
+    )
+    installations.create_config_revision(
+        db_session,
+        installation_id=installation.id,
+        config={
+            "provider": WHATSAPP_PROVIDER_META,
+            "phone_number": "test-number",
+            "phone_number_id": account_scope,
+            "graph_version": "v21.0",
+            "timeout_seconds": 10,
+        },
+        secret_refs={
+            "service_credentials": "env://WHATSAPP_TEST_TOKEN",
+            "webhook_signing_secret": "env://WHATSAPP_TEST_SIGNING_SECRET",
+            "webhook_verify_token": "env://WHATSAPP_TEST_VERIFY_TOKEN",
+        },
+        actor="test",
+    )
+    for capability_id in (WHATSAPP_SEND_CAPABILITY, WHATSAPP_RECEIVE_CAPABILITY):
+        installations.bind_capability(
+            db_session,
+            installation_id=installation.id,
+            capability_id=capability_id,
+            scope={"channel": "whatsapp", "phone_number_id": account_scope},
+            policy={"default": True},
+            actor="test",
+        )
+    installations.validate_static(db_session, installation_id=installation.id)
+    installations.enable_after_connection_validation(
+        db_session,
+        installation_id=installation.id,
+        connection_result=ValidationResult(valid=True),
+        actor="test",
+    )
 
 
 def _residential_subscriber(db_session) -> Subscriber:
@@ -729,6 +781,191 @@ def test_policy_version_activation_supersedes_without_mutating_active_version(
     assert db_session.get(AiIntakePolicy, policy_id).active_version_id == (
         second_activation.version_id
     )
+
+
+def test_draft_policy_creation_stays_inactive_and_unactivated(db_session):
+    account_scope = f"test-phone-{uuid4().hex}"
+    _install_whatsapp_scope(db_session, account_scope=account_scope)
+    fallback = _team(db_session, f"Fallback {uuid4()}")
+    technical = _team(db_session, f"Technical {uuid4()}")
+    fallback_id = fallback.id
+    technical_id = technical.id
+    db_session.commit()
+
+    result = ai_conversation_intake.create_draft_policy(
+        db_session,
+        ai_conversation_intake.AiDraftPolicyCommand(
+            context=CommandContext.system(
+                actor="test",
+                scope="ai:intake-policy-draft",
+                reason="prepare inactive draft policy",
+            ),
+            channel_type=InboxChannelType.whatsapp.value,
+            provider=WHATSAPP_PROVIDER_META,
+            account_scope=account_scope,
+            display_name="Test Virtual Assistant",
+            fallback_team_id=fallback_id,
+            welcome_message="Hello from the draft assistant.",
+            intent_team_mappings=(
+                {
+                    "intent": "technical_support",
+                    "service_team_id": str(technical_id),
+                    "enabled": True,
+                },
+            ),
+        ),
+    )
+
+    policy = db_session.get(AiIntakePolicy, result.policy_id)
+    version = db_session.get(AiIntakePolicyVersion, result.version_id)
+    assert result.policy_enabled is False
+    assert result.active_version_id is None
+    assert policy.is_enabled is False
+    assert policy.active_version_id is None
+    assert policy.scope_key == f"{WHATSAPP_PROVIDER_META}:{account_scope}"
+    assert version.status == "draft"
+    assert version.is_active is False
+    assert version.activated_at is None
+    assert (
+        db_session.query(AiIntakePolicyVersion).filter_by(is_active=True).count() == 0
+    )
+
+
+def test_draft_policy_creation_rejects_inactive_team(db_session):
+    account_scope = f"test-phone-{uuid4().hex}"
+    _install_whatsapp_scope(db_session, account_scope=account_scope)
+    inactive = _team(db_session, f"Inactive {uuid4()}")
+    inactive.is_active = False
+    inactive_id = inactive.id
+    db_session.commit()
+
+    with pytest.raises(ValueError, match="active team"):
+        ai_conversation_intake.create_draft_policy(
+            db_session,
+            ai_conversation_intake.AiDraftPolicyCommand(
+                context=CommandContext.system(
+                    actor="test",
+                    scope="ai:intake-policy-draft",
+                    reason="reject inactive team",
+                ),
+                channel_type=InboxChannelType.whatsapp.value,
+                provider=WHATSAPP_PROVIDER_META,
+                account_scope=account_scope,
+                fallback_team_id=inactive_id,
+            ),
+        )
+
+
+def test_draft_policy_creation_rejects_existing_draft_without_explicit_replace(
+    db_session,
+):
+    account_scope = f"test-phone-{uuid4().hex}"
+    _install_whatsapp_scope(db_session, account_scope=account_scope)
+    db_session.commit()
+    command = ai_conversation_intake.AiDraftPolicyCommand(
+        context=CommandContext.system(
+            actor="test",
+            scope="ai:intake-policy-draft",
+            reason="prepare one draft",
+        ),
+        channel_type=InboxChannelType.whatsapp.value,
+        provider=WHATSAPP_PROVIDER_META,
+        account_scope=account_scope,
+        welcome_message="Hello from the first draft.",
+    )
+    ai_conversation_intake.create_draft_policy(db_session, command)
+
+    with pytest.raises(ValueError, match="already has an editable draft"):
+        ai_conversation_intake.create_draft_policy(db_session, command)
+
+    replaced = ai_conversation_intake.create_draft_policy(
+        db_session,
+        ai_conversation_intake.AiDraftPolicyCommand(
+            context=command.context,
+            channel_type=command.channel_type,
+            provider=command.provider,
+            account_scope=command.account_scope,
+            welcome_message="Hello from the replacement draft.",
+            replace_existing_draft=True,
+        ),
+    )
+    version = db_session.get(AiIntakePolicyVersion, replaced.version_id)
+    assert version.welcome_message == "Hello from the replacement draft."
+
+
+def test_draft_policy_creation_rejects_unconfigured_or_unsupported_provider_scope(
+    db_session,
+):
+    db_session.commit()
+    with pytest.raises(ValueError, match="enabled send and receive capabilities"):
+        ai_conversation_intake.create_draft_policy(
+            db_session,
+            ai_conversation_intake.AiDraftPolicyCommand(
+                context=CommandContext.system(
+                    actor="test",
+                    scope="ai:intake-policy-draft",
+                    reason="reject unconfigured provider",
+                ),
+                channel_type=InboxChannelType.whatsapp.value,
+                provider=WHATSAPP_PROVIDER_META,
+                account_scope="unconfigured-test-scope",
+            ),
+        )
+
+    with pytest.raises(ValueError, match="supports only"):
+        ai_conversation_intake.create_draft_policy(
+            db_session,
+            ai_conversation_intake.AiDraftPolicyCommand(
+                context=CommandContext.system(
+                    actor="test",
+                    scope="ai:intake-policy-draft",
+                    reason="reject unsupported channel",
+                ),
+                channel_type=InboxChannelType.email.value,
+                provider="smtp",
+                account_scope="support@example.test",
+            ),
+        )
+
+
+def test_activation_stays_separate_and_requires_fallback_team(db_session):
+    account_scope = f"test-phone-{uuid4().hex}"
+    _install_whatsapp_scope(db_session, account_scope=account_scope)
+    technical = _team(db_session, f"Technical {uuid4()}")
+    technical_id = technical.id
+    db_session.commit()
+    context = CommandContext.system(
+        actor="test",
+        scope="ai:intake-policy-draft",
+        reason="prepare draft without fallback",
+    )
+
+    draft = ai_conversation_intake.create_draft_policy(
+        db_session,
+        ai_conversation_intake.AiDraftPolicyCommand(
+            context=context,
+            channel_type=InboxChannelType.whatsapp.value,
+            provider=WHATSAPP_PROVIDER_META,
+            account_scope=account_scope,
+            welcome_message="Hello from the draft assistant.",
+            intent_team_mappings=(
+                {
+                    "intent": "technical_support",
+                    "service_team_id": str(technical_id),
+                    "enabled": True,
+                },
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="requires a fallback team"):
+        ai_conversation_intake.activate_policy_version(
+            db_session,
+            ai_conversation_intake.AiPolicyVersionActivateCommand(
+                context=context,
+                version_id=draft.version_id,
+            ),
+        )
 
 
 def test_active_session_remains_pinned_to_original_policy_version(db_session):
