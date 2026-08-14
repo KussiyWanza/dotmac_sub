@@ -277,7 +277,7 @@ def test_worker_delivers_metadata_template_instead_of_placeholder_text(
     assert template_calls[0]["language"] == "en"
     assert template_calls[0]["variables"] == {"1": "Ada"}
     assert template_calls[0]["components"] == []
-    assert notification.status == NotificationStatus.sent
+    assert notification.status == NotificationStatus.delivered
 
 
 def test_whatsapp_free_form_reply_requires_open_customer_window(db_session):
