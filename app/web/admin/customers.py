@@ -25,11 +25,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.models.party import PartyType
 from app.models.subscriber import Reseller, SubscriberCategory
 from app.services import (
     conversation_lead_relationships,
     customer_portal,
     payment_intent_management,
+    subscriber_party_binding_repair,
 )
 from app.services import customer_network_path as customer_network_path_service
 from app.services import network_monitoring as network_monitoring_service
@@ -198,6 +200,23 @@ def _payment_intent_command_context(
         scope=payment_intent_management.ADMIN_CANCEL_SCOPE,
         reason=reason,
         idempotency_key=f"admin-cancel-payment-intent:{intent_id}",
+    )
+
+
+def _subscriber_party_binding_command_context(
+    auth: dict, *, subscriber_id: UUID, reason: str
+) -> CommandContext:
+    principal_id = str(auth.get("principal_id") or "").strip()
+    if not principal_id:
+        raise HTTPException(status_code=403, detail="Authorized actor is missing")
+    command_id = uuid4()
+    return CommandContext(
+        command_id=command_id,
+        correlation_id=command_id,
+        actor=f"user:{principal_id}",
+        scope=subscriber_party_binding_repair.COMMAND_SCOPE,
+        reason=reason,
+        idempotency_key=f"subscriber-party-binding:{subscriber_id}:{command_id}",
     )
 
 
@@ -870,6 +889,12 @@ def person_detail(
         "has_password": False,
     }
     customer = detail_data["customer"]
+    try:
+        party_binding_repair = subscriber_party_binding_repair.resolve_repair_context(
+            db, subscriber_id=customer.id
+        )
+    except subscriber_party_binding_repair.SubscriberPartyBindingRepairError:
+        party_binding_repair = None
     customer_type = str(detail_data.get("customer_type") or "person")
     notification_channels = notification_context.get("bulk_notification_channels") or []
     notification_templates = (
@@ -911,8 +936,114 @@ def person_detail(
             "current_user": current_user,
             "location_capture_enabled": location_capture_enabled,
             "can_unsuspend_account": can_unsuspend_account,
+            "party_binding_repair": party_binding_repair,
             "sidebar_stats": sidebar_stats,
         },
+    )
+
+
+@router.get(
+    "/person/{customer_id}/party-binding-repair",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("customer:update"))],
+)
+def customer_party_binding_repair_form(
+    request: Request,
+    customer_id: UUID,
+    db: Session = Depends(get_db),
+):
+    """Render the reviewed, one-account Party binding repair form."""
+
+    try:
+        context = subscriber_party_binding_repair.resolve_repair_context(
+            db, subscriber_id=customer_id
+        )
+    except subscriber_party_binding_repair.SubscriberPartyBindingRepairError:
+        raise HTTPException(status_code=404, detail="Customer not found") from None
+    from app.web.admin import get_current_user, get_sidebar_stats
+
+    return templates.TemplateResponse(
+        "admin/customers/party_binding_repair.html",
+        {
+            "request": request,
+            "repair": context,
+            "current_user": get_current_user(request),
+            "sidebar_stats": get_sidebar_stats(db),
+            "error": request.query_params.get("error"),
+        },
+    )
+
+
+@router.post(
+    "/person/{customer_id}/party-binding-repair",
+    dependencies=[Depends(require_permission("customer:update"))],
+)
+def customer_party_binding_repair_submit(
+    request: Request,
+    customer_id: UUID,
+    repair_mode: Literal["existing", "create"] = Form(...),
+    binding_reason: str = Form(...),
+    review_confirmed: str = Form(...),
+    party_id: UUID | None = Form(None),
+    party_type: PartyType | None = Form(None),
+    party_display_name: str | None = Form(None),
+    db: Session = Depends(get_db),
+    auth: dict = Depends(require_permission("customer:update")),
+):
+    """Submit a typed reviewed Party binding command; the route owns no facts."""
+
+    base_url = f"/admin/customers/person/{customer_id}/party-binding-repair"
+    if review_confirmed != "reviewed":
+        return RedirectResponse(
+            url=f"{base_url}?error={quote_plus('Confirm that you reviewed the identity evidence before applying this repair.')}",
+            status_code=303,
+        )
+    try:
+        command_context = _subscriber_party_binding_command_context(
+            auth, subscriber_id=customer_id, reason=binding_reason
+        )
+        db_session_adapter.release_read_transaction(db)
+        if repair_mode == "existing":
+            if party_id is None:
+                raise subscriber_party_binding_repair.SubscriberPartyBindingRepairError(
+                    code="party.subscriber_binding_repair.invalid_command",
+                    message="Select the exact existing Party to bind.",
+                )
+            outcome = subscriber_party_binding_repair.bind_subscriber_to_existing_party(
+                db,
+                subscriber_party_binding_repair.BindSubscriberToExistingPartyCommand(
+                    context=command_context,
+                    subscriber_id=customer_id,
+                    party_id=party_id,
+                    binding_reason=binding_reason,
+                ),
+            )
+        else:
+            if party_type is None or party_display_name is None:
+                raise subscriber_party_binding_repair.SubscriberPartyBindingRepairError(
+                    code="party.subscriber_binding_repair.invalid_command",
+                    message="Party type and display name are required to create a Party.",
+                )
+            outcome = subscriber_party_binding_repair.create_and_bind_subscriber_party(
+                db,
+                subscriber_party_binding_repair.CreateAndBindSubscriberPartyCommand(
+                    context=command_context,
+                    subscriber_id=customer_id,
+                    party_type=party_type,
+                    party_display_name=party_display_name,
+                    binding_reason=binding_reason,
+                ),
+            )
+    except subscriber_party_binding_repair.SubscriberPartyBindingRepairError as exc:
+        return RedirectResponse(
+            url=f"{base_url}?error={quote_plus(exc.message)}", status_code=303
+        )
+    return RedirectResponse(
+        url=(
+            f"/admin/customers/person/{customer_id}"
+            f"?party_binding_success={quote_plus('Party binding repaired')}&party_id={outcome.party_id}"
+        ),
+        status_code=303,
     )
 
 

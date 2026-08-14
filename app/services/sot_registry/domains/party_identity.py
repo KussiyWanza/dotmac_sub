@@ -164,6 +164,130 @@ DOMAIN = DomainSOT(
             ),
         ),
         SOTService(
+            name="party.subscriber_binding_repair",
+            module="app.services.subscriber_party_binding_repair",
+            owns=("reviewed single-subscriber Party binding repair",),
+            depends_on=(
+                "party.registry",
+                "auth.permission_gate",
+                "observability.audit_log",
+            ),
+            notes=(
+                "Applies one attributable administrator's reviewed choice for an "
+                "unbound Subscriber. It may bind one exact existing Party or create "
+                "one explicitly named Party, but never infers identity, repoints, "
+                "copies contacts, changes lifecycle, or grants access."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name="reviewed single-subscriber Party binding repair",
+                        role=OwnerRole.APPLICATION_COORDINATOR,
+                        input_names=(
+                            "attributable reviewed binding decision",
+                            "canonical Subscriber account state",
+                            "canonical Party identity",
+                        ),
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="attributable reviewed binding decision",
+                        owner="party.subscriber_binding_repair",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "typed administrator command with explicit Party choice "
+                            "or explicit Party type/name, review evidence and "
+                            "correlation evidence"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical Subscriber account state",
+                        owner="auth.subscriber_assignments",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="exact Subscriber row locked by UUID",
+                    ),
+                    AuthorityInput(
+                        name="canonical Party identity",
+                        owner="party.registry",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "reviewed existing Party or explicit Party creation and "
+                            "guarded Subscriber.party_id binding"
+                        ),
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.COORDINATOR_MANAGED,
+                    boundary=(
+                        "The public command locks the selected Party before the "
+                        "Subscriber where applicable, delegates native writes to "
+                        "party.registry, stages PII-free audit evidence and commits "
+                        "once before returning."
+                    ),
+                    locking=(
+                        "Lock the exact existing Party before the Subscriber; Party "
+                        "creation and Subscriber binding occur in one owner command."
+                    ),
+                    idempotency=(
+                        "An exact existing-Party command replays only with the same "
+                        "Party and complete evidence. Existing bindings to another "
+                        "Party fail closed; created-Party commands never replay into "
+                        "a second Party."
+                    ),
+                    retries=(
+                        "Retry only after rereading the customer binding. A changed "
+                        "or already bound customer requires the reviewed merge/repoint "
+                        "workflow."
+                    ),
+                ),
+                errors=ErrorContract(
+                    domain_codes=(
+                        "party.subscriber_binding_repair.invalid_command",
+                        "party.subscriber_binding_repair.subscriber_not_found",
+                        "party.subscriber_binding_repair.party_binding_refused",
+                        *owner_command_boundary_error_codes(
+                            "party.subscriber_binding_repair"
+                        ),
+                    ),
+                    mapping_owner="app.web.admin.customers",
+                    fail_closed_on=(
+                        "unattributable administrator",
+                        "missing or unavailable Party",
+                        "missing Subscriber",
+                        "incomplete review evidence",
+                        "existing or conflicting Party binding",
+                        "active caller transaction or manifest mismatch",
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.SHADOWING,
+                    old_owner="unbound Subscriber rows with no runtime repair path",
+                    new_owner="party.subscriber_binding_repair",
+                    verification=(
+                        "Focused command, audit, exact-replay, repoint-refusal and "
+                        "admin action tests."
+                    ),
+                    cutover_gate=(
+                        "The customer quote picker consumes only complete reviewed "
+                        "Party bindings and focused repair evidence remains green."
+                    ),
+                    fallback_retirement=(
+                        "No direct Subscriber.party_id writer or UI fallback is "
+                        "introduced; the existing backfill executor remains available "
+                        "for approved batch work."
+                    ),
+                ),
+                steward="identity and customer operations",
+                design_refs=(
+                    "docs/PARTY_ROLE_RELATIONSHIP_SOT.md",
+                    "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                ),
+                test_refs=("tests/test_subscriber_party_binding_repair.py",),
+            ),
+        ),
+        SOTService(
             name="party.staff_principal_adoption",
             module="app.services.staff_party_adoption",
             owns=("existing staff Party principal adoption",),

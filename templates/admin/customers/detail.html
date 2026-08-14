@@ -28,6 +28,11 @@
         {% endif %}
     </div>
     {% endif %}
+    {% if request.query_params.get('party_binding_success') %}
+    <div class="rounded-xl border border-emerald-300 bg-emerald-50 p-4 text-sm text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-100" role="status">
+        {{ request.query_params.get('party_binding_success') }}. The customer can now be rechecked in the quote picker.
+    </div>
+    {% endif %}
     {% if map_data %}
     <!-- Leaflet CSS for the Overview map -->
     <link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css"
@@ -69,6 +74,7 @@
                 {% if customer.email %}<a href="{{ send_email_link }}" class="flex items-center gap-2 px-3 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-700">Send Email</a>{% endif %}
                 <a href="/admin/billing/payments/new?account={{ customer.id }}" class="flex items-center gap-2 px-3 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-700">Record Payment</a>
                 <a href="/admin/provisioning/orders/new?subscriber={{ customer.id }}" class="flex items-center gap-2 px-3 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-700">Create Service Order</a>
+                {% if party_binding_repair and party_binding_repair.can_repair %}<a href="/admin/customers/person/{{ customer.id }}/party-binding-repair" class="flex items-center gap-2 px-3 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-700">Repair Party Binding</a>{% endif %}
                 {% if customer.is_active %}<button hx-post="/admin/customers/{{ customer_type }}/{{ customer.id }}/deactivate" hx-confirm="Deactivate this customer?" @click="openQuickActions = false" class="status-foreground status-tone-warning flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm font-medium hover:bg-amber-50 dark:hover:bg-amber-900/20">Deactivate customer</button>{% endif %}
             </div>
         </div>
