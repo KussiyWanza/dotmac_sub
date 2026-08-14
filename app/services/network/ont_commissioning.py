@@ -681,21 +681,13 @@ def _exact_live_autofind_preflight(
         port=target.fsp.value,
     )
     if not ok:
-        return _CommissioningPreflightOutcome(False, message)
-    match = next(
-        (
-            entry
-            for entry in entries
-            if entry.fsp.strip() == target.fsp.value
-            and target.serial_number.value
-            in {
-                canonical_serial(entry.serial_number),
-                canonical_serial(entry.serial_hex),
-            }
-        ),
-        None,
-    )
-    if match is None:
+        if not _scoped_autofind_command_unsupported(message):
+            return _CommissioningPreflightOutcome(False, message)
+        ok, fallback_message, entries = query_ont_autofind(cast(OLTDevice, olt_config))
+        if not ok:
+            return _CommissioningPreflightOutcome(False, fallback_message)
+    matches = [entry for entry in entries if _autofind_entry_matches(entry, target)]
+    if not matches:
         return _CommissioningPreflightOutcome(
             success=False,
             message=(
@@ -703,10 +695,32 @@ def _exact_live_autofind_preflight(
                 f"target {target.fsp.value}; no OLT write was attempted."
             ),
         )
+    if len(matches) > 1:
+        return _CommissioningPreflightOutcome(
+            success=False,
+            message=(
+                "Live autofind returned multiple exact target matches for "
+                f"{target.fsp.value}; no OLT write was attempted."
+            ),
+        )
     return _CommissioningPreflightOutcome(
         True,
         "Exact live autofind target confirmed.",
     )
+
+
+def _scoped_autofind_command_unsupported(message: str) -> bool:
+    normalized = str(message or "").lower().replace("-", "_").replace(" ", "_")
+    return "unknown_command" in normalized
+
+
+def _autofind_entry_matches(entry: object, target: OntAuthorizationTarget) -> bool:
+    if str(getattr(entry, "fsp", "") or "").strip() != target.fsp.value:
+        return False
+    return target.serial_number.value in {
+        canonical_serial(getattr(entry, "serial_number", None)),
+        canonical_serial(getattr(entry, "serial_hex", None)),
+    }
 
 
 def _management_only_plan(
