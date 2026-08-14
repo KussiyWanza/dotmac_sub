@@ -267,6 +267,36 @@ void main() {
     expect(find.text('Inventory'), findsOneWidget);
   });
 
+  testWidgets('queued material request uses a friendly label instead of UUID', (
+    tester,
+  ) async {
+    const clientRef = 'abcdef12-1234-1234-1234-123456789abc';
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          materialRequestsProvider.overrideWith(
+            (ref) async => [
+              MaterialRequest.fromJson({
+                'id': clientRef,
+                'number': 'Queued materials',
+                'status': 'queued',
+                'priority': 'high',
+              }),
+            ],
+          ),
+          inventorySearchProvider.overrideWith((ref) async => const []),
+        ],
+        child: const MaterialApp(home: MaterialsScreen()),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('Queued materials'), findsOneWidget);
+    expect(find.text('queued'), findsOneWidget);
+    expect(find.text(clientRef), findsNothing);
+    expect(find.text('abcdef12'), findsNothing);
+  });
+
   testWidgets('new material request form renders on phone width', (
     tester,
   ) async {

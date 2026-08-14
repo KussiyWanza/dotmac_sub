@@ -115,6 +115,73 @@ def test_customer_filter_form_keeps_canonical_query_state_in_browser_history():
     assert "/api/v1/tables/customers" not in template
 
 
+def test_customer_export_button_renders_accessible_checkbox_options():
+    templates = Jinja2Templates(directory=str(PROJECT_ROOT / "templates"))
+
+    html = templates.env.get_template("admin/customers/_export_controls.html").render()
+
+    assert "Export CSV" not in html
+    assert "@click=\"exportMenuOpen = !exportMenuOpen; exportError = ''\"" in html
+    assert 'aria-haspopup="dialog"' in html
+    assert 'aria-controls="customer-export-options"' in html
+    assert 'id="customer-export-options"' in html
+    assert 'role="dialog"' in html
+    assert "Choose export columns" in html
+    assert 'type="checkbox"' in html
+    assert "exportOptions" in html
+    assert "Advanced" in html
+    assert "advancedExportOptions" in html
+    assert "toggleExportOption(option.sourceColumn" in html
+    assert "exportSelectedCustomers()" in html
+    assert "exportLoading ? 'Preparing…' : 'Export'" in html
+    assert 'aria-live="polite"' in html
+    assert 'role="alert"' in html
+
+
+def test_customer_multi_column_exports_project_the_complete_backend_csv():
+    template = (PROJECT_ROOT / "templates/admin/customers/index.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert '{% include "admin/customers/_export_controls.html" %}' in template
+    assert "selectedExportColumns: ['all']" in template
+    assert "label: 'Full customer CSV'" in template
+    assert "description: 'All available customer details'" in template
+    assert "this.selectedExportColumns = checked ? ['all'] : [];" in template
+    assert "filter((column) => column !== 'all')" in template
+    assert "window.location.href = this.customerExportUrl();" in template
+    assert "fetch(this.customerExportUrl()," in template
+    assert "credentials: 'same-origin'" in template
+    assert "parseCustomerCsv(await response.text())" in template
+    assert "selectedColumnIndexes" in template
+    assert "headers.indexOf(option.sourceColumn)" in template
+    assert "selectedOptions.map((option) => option.csvHeader)" in template
+    assert "...this.advancedExportOptions" in template
+    assert "row.map((value) => this.exportCsvCell(value)).join(',')" in template
+    assert "spreadsheetSafeText" in template
+    assert "downloadCustomerCsv(content, filename)" in template
+    assert "customers_selected_fields_" in template
+    for source_column in (
+        "name",
+        "email",
+        "phone",
+        "is_active",
+        "type",
+        "created_at",
+        "id",
+        "account_number",
+        "subscriber_number",
+        "subscription_plans",
+        "service_statuses",
+        "locations",
+        "pppoe_usernames",
+        "service_ip_addresses",
+        "nas_devices",
+        "contact_completeness",
+    ):
+        assert f"sourceColumn: '{source_column}'" in template
+
+
 def test_customer_bulk_message_requires_in_modal_preview_before_queueing():
     template = (PROJECT_ROOT / "templates/admin/customers/index.html").read_text(
         encoding="utf-8"

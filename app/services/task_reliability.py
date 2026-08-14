@@ -382,6 +382,13 @@ TASK_RELIABILITY_CONTRACTS: dict[str, TaskReliabilityContract] = {
         "Transactional outbox publisher; row state owns retries and unknown delivery.",
     ),
     "app.tasks.nin_tasks.verify_nin_task": _c("identity", AUTORETRY, GUARDED, STATUS),
+    "app.tasks.notifications.deliver_notification": _c(
+        "notifications",
+        STATE,
+        GUARDED,
+        STATUS,
+        "Exact-row wake-up after commit; the periodic queue sweep owns recovery.",
+    ),
     "app.tasks.notifications.deliver_notification_queue": _c(
         "notifications", STATE, GUARDED, STATUS
     ),
@@ -635,6 +642,15 @@ TASK_RELIABILITY_CONTRACTS: dict[str, TaskReliabilityContract] = {
         "Locks FIFO queue entries and team capacity before promotion; settled "
         "entries are skipped and stale entries are durably cancelled on re-run.",
     ),
+    "app.tasks.team_inbox.send_queue_position_notifications": _c(
+        "support",
+        SWEEP,
+        IDEMP,
+        STATUS,
+        "Scans persisted queue-notification next_due_at rows; each logical "
+        "notice has a database dedupe key and failed deliveries retry the same "
+        "ledger row.",
+    ),
     "app.tasks.team_inbox.send_reply_reminders": _c(
         "support",
         SWEEP,
@@ -651,6 +667,15 @@ TASK_RELIABILITY_CONTRACTS: dict[str, TaskReliabilityContract] = {
         "Routes only expired AI intake waits through the configured fallback; "
         "locked rows already settled by inbound processing or an earlier sweep "
         "are skipped on re-run.",
+    ),
+    "app.tasks.team_inbox.process_ai_intake_sessions": _c(
+        "support",
+        SWEEP,
+        IDEMP,
+        STATUS,
+        "Locks ready AI intake sessions with skip_locked, records generation "
+        "attempt evidence, and sends outbound messages with deterministic "
+        "dedupe keys after rechecking human takeover.",
     ),
     "app.tasks.team_inbox.repair_whatsapp_locations": _c(
         "support",

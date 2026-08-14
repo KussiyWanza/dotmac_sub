@@ -1695,6 +1695,8 @@ DOMAIN = DomainSOT(
                 "routing assignment and escalation transitions",
                 "immutable routing assignment and escalation evidence",
                 "durable FIFO queue admission and promotion",
+                "durable per-team round-robin cursor",
+                "customer-visible FIFO queue notification evidence",
             ),
             depends_on=(
                 "ai.intake",
@@ -1716,6 +1718,14 @@ DOMAIN = DomainSOT(
                     ),
                     (
                         "durable FIFO queue admission and promotion",
+                        OwnerRole.COMMAND_WRITER,
+                    ),
+                    (
+                        "durable per-team round-robin cursor",
+                        OwnerRole.AUTHORITATIVE_RECORD,
+                    ),
+                    (
+                        "customer-visible FIFO queue notification evidence",
                         OwnerRole.COMMAND_WRITER,
                     ),
                 ),
@@ -1751,8 +1761,51 @@ DOMAIN = DomainSOT(
                     "team_inbox.escalated.v1",
                     "team_inbox.queue_promoted.v1",
                 ),
-                projections=("FIFO queue position and estimated wait",),
-                test_refs=("tests/test_team_inbox_fifo_queue.py",),
+                projections=("FIFO queue position and notification due state",),
+                test_refs=(
+                    "tests/test_team_inbox_fifo_queue.py",
+                    "tests/test_team_inbox_queue_notifications.py",
+                ),
+            ),
+        ),
+        SOTService(
+            name="communications.team_inbox_queue_notifications",
+            module="app.services.team_inbox_queue_notifications",
+            owns=("queue notification delivery ledger writes",),
+            depends_on=(
+                "communications.team_inbox_routing",
+                "communications.team_inbox_outbound_intents",
+            ),
+            notes=(
+                "Delivery ledger only. Queue membership, order, position and "
+                "promotion remain owned by communications.team_inbox_routing."
+            ),
+            contract=_team_inbox_contract(
+                service_name="communications.team_inbox_queue_notifications",
+                concerns=(
+                    (
+                        "queue notification delivery ledger writes",
+                        OwnerRole.COMMAND_WRITER,
+                    ),
+                ),
+                inputs=(
+                    AuthorityInput(
+                        name="FIFO queue entry state",
+                        owner="communications.team_inbox_routing",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="InboxConversationQueueEntry lifecycle, team, position and status.",
+                    ),
+                    AuthorityInput(
+                        name="customer outbound delivery result",
+                        owner="communications.team_inbox_outbound_intents",
+                        kind=AuthorityKind.OBSERVATION,
+                        source="Team Inbox outbound send result and dedupe identity.",
+                    ),
+                ),
+                transaction_mode=TransactionMode.OWNER_MANAGED,
+                event_types=("team_inbox.queue_notification.changed.v1",),
+                projections=("queue notification next_due_at and delivery status",),
+                test_refs=("tests/test_team_inbox_queue_notifications.py",),
             ),
         ),
         SOTService(
@@ -2016,6 +2069,31 @@ DOMAIN = DomainSOT(
             ),
         ),
         SOTService(
+            name="communications.team_inbox_reply_window",
+            module="app.services.team_inbox_reply_window",
+            owns=("Meta team-inbox free-form reply window eligibility",),
+            depends_on=("communications.team_inbox_threads",),
+            contract=_team_inbox_contract(
+                service_name="communications.team_inbox_reply_window",
+                concerns=(
+                    (
+                        "Meta team-inbox free-form reply window eligibility",
+                        OwnerRole.POLICY,
+                    ),
+                ),
+                inputs=(
+                    AuthorityInput(
+                        name="message chronology",
+                        owner="communications.team_inbox_threads",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="Latest qualifying inbound customer Inbox message timestamp for WhatsApp, Facebook Messenger, and Instagram DM.",
+                    ),
+                ),
+                transaction_mode=TransactionMode.READ_ONLY,
+                projections=("reply-window eligibility and expiry projection",),
+            ),
+        ),
+        SOTService(
             name="communications.team_inbox_outbound_intents",
             module="app.services.team_inbox_outbound",
             owns=(
@@ -2024,6 +2102,7 @@ DOMAIN = DomainSOT(
             ),
             depends_on=(
                 "communications.team_inbox_threads",
+                "communications.team_inbox_reply_window",
                 "communications.intents",
                 "communications.channel_policy",
             ),
@@ -2062,6 +2141,13 @@ DOMAIN = DomainSOT(
                 transaction_mode=TransactionMode.OWNER_MANAGED,
                 event_types=("team_inbox.outbound_intent_recorded.v1",),
                 projections=("outbound attempt and failed-worklist projection",),
+            ),
+            notes=(
+                "A committed operator reply returns the exact Notification outbox UUID "
+                "to the web transport, which schedules an after-response task on the "
+                "dedicated notifications queue. The periodic delivery runner remains "
+                "the durable recovery sweep; each worker locks and claims the exact "
+                "eligible row before provider delivery."
             ),
         ),
         SOTService(
@@ -2543,6 +2629,73 @@ DOMAIN = DomainSOT(
                     "tests/test_team_inbox_attachments.py",
                     "tests/architecture/test_team_inbox_boundaries.py",
                     "tests/architecture/test_team_inbox_sot_contracts.py",
+                ),
+            ),
+        ),
+        SOTService(
+            name="communications.team_inbox_ai_polish",
+            module="app.services.team_inbox_ai_polish",
+            owns=("context-aware Inbox composer polish advisory coordination",),
+            depends_on=(
+                "communications.team_inbox_projection",
+                "communications.team_inbox_threads",
+                "communications.team_inbox_routing",
+                "ai.generation",
+            ),
+            contract=_team_inbox_contract(
+                service_name="communications.team_inbox_ai_polish",
+                concerns=(
+                    (
+                        "context-aware Inbox composer polish advisory coordination",
+                        OwnerRole.APPLICATION_COORDINATOR,
+                    ),
+                ),
+                inputs=(
+                    AuthorityInput(
+                        name="bounded Team Inbox reply context",
+                        owner="communications.team_inbox_projection",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source=(
+                            "Private-note-excluding recent customer and agent messages, "
+                            "conversation metadata, labels, assignment display, and linked "
+                            "ticket context from build_ai_reply_projection."
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical conversation identity",
+                        owner="communications.team_inbox_threads",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="Active customer-facing InboxConversation channel and lifecycle.",
+                    ),
+                    AuthorityInput(
+                        name="conversation access facts",
+                        owner="communications.team_inbox_routing",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="Active assignment, service-team links, and active team membership.",
+                    ),
+                    AuthorityInput(
+                        name="AI advisory generation control",
+                        owner="ai.generation",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source="Existing AI engine, gateway, redaction, and AIInsight evidence path.",
+                    ),
+                ),
+                transaction_mode=TransactionMode.COORDINATOR_MANAGED,
+                domain_error_codes=(
+                    "communications.team_inbox_ai_polish.access_denied",
+                    "communications.team_inbox_ai_polish.unsupported_channel",
+                    "communications.team_inbox_ai_polish.ai_unavailable",
+                    "communications.team_inbox_ai_polish.invalid_ai_response",
+                ),
+                projections=("Temporary staff-facing composer polish suggestion",),
+                design_refs=(
+                    "docs/designs/AI_SOT.md",
+                    "docs/designs/TEAM_INBOX_SOURCE_OF_TRUTH.md",
+                    "docs/designs/TEAM_INBOX_AI_POLISH.md",
+                ),
+                test_refs=(
+                    "tests/test_team_inbox_ai_polish.py",
+                    "tests/test_admin_inbox_implemented_features.py",
                 ),
             ),
         ),

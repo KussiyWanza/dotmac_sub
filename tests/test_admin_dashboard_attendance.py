@@ -174,10 +174,14 @@ def test_dashboard_templates_and_script_preserve_lazy_safe_states():
     script = (root / "static/js/admin-attendance.js").read_text()
 
     assert 'hx-get="/admin/dashboard/attendance"' in index
-    assert index.index('id="attendance-widget"') < index.index("Needs Attention")
+    assert index.index("Add Customer") < index.index('id="attendance-widget"')
     assert "_dashboard_global_cache" not in partial
-    assert "Not checked in today" in partial
+    assert "Ready to check in" in partial
     assert "Check In" in partial and "Check Out" in partial
+    assert "data-attendance-start" in partial
+    assert "data-attendance-end" in partial
+    assert "formatElapsed" in script
+    assert "clearAttendanceTimer" in script
     assert "maximumAge: 0" in script
     assert "enableHighAccuracy: true" in script
     assert "X-CSRF-Token" in script

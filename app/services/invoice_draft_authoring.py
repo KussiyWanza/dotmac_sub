@@ -209,6 +209,45 @@ class ConvertProformaInvoiceCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class ProformaConversionCapability:
+    """Owner-derived eligibility for the generic proforma conversion action."""
+
+    allowed: bool
+    reason: str | None = None
+
+
+def proforma_conversion_capability(
+    db: Session, *, invoice: Invoice
+) -> ProformaConversionCapability:
+    """Return whether generic conversion can safely be offered for an invoice."""
+
+    if not invoice.is_active:
+        return ProformaConversionCapability(
+            allowed=False,
+            reason="Inactive invoices cannot be converted.",
+        )
+    if not _is_active_proforma(invoice):
+        return ProformaConversionCapability(
+            allowed=False,
+            reason="Invoice is not an active proforma.",
+        )
+    if invoice.status is not InvoiceStatus.draft:
+        return ProformaConversionCapability(
+            allowed=False,
+            reason="Only a draft proforma can be converted.",
+        )
+    if _requires_prepaid_reconciliation(db, invoice):
+        return ProformaConversionCapability(
+            allowed=False,
+            reason=(
+                "Prepaid proformas are handled through the reviewed prepaid draft "
+                "reconciliation workflow after verified funding."
+            ),
+        )
+    return ProformaConversionCapability(allowed=True)
+
+
+@dataclass(frozen=True, slots=True)
 class InvoiceDraftResult:
     """Immutable result returned after the owner transaction commits."""
 

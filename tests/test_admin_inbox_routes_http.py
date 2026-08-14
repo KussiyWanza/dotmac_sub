@@ -20,7 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from io import BytesIO
 from unittest.mock import patch
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlsplit
 
 import pytest
 from fastapi import FastAPI
@@ -29,7 +29,7 @@ from starlette.datastructures import UploadFile
 
 from app.db import get_db
 from app.services import team_inbox_commands, team_inbox_filters, team_inbox_projection
-from app.web.admin.inbox import _read_new_conversation_uploads, router
+from app.web.admin.inbox import _detail_redirect, _read_new_conversation_uploads, router
 
 
 def _client(db_session) -> TestClient:
@@ -89,6 +89,37 @@ def test_has_ticket_checkbox_reaches_the_read_model_as_a_boolean(captured_reques
 def test_has_ticket_false_is_distinct_from_absent(captured_request):
     assert captured_request("?has_ticket=false").has_ticket is False
     assert captured_request("").has_ticket is None
+
+
+def test_queue_requests_exact_total_for_numbered_pagination(captured_request):
+    assert captured_request("?page=7").include_total_count is True
+
+
+def test_reply_fallback_preserves_page_filters_and_uses_separate_notice_status():
+    conversation_id = uuid.uuid4()
+
+    response = _detail_redirect(
+        conversation_id,
+        status="success",
+        message="Reply queued.",
+        next_url=(
+            "/admin/inbox?status=open&channel_type=email&sort=last_message_at"
+            "&dir=desc&page=7&per_page=25&conversation_id=stale"
+        ),
+    )
+
+    query = parse_qs(urlsplit(response.headers["location"]).query)
+    assert query == {
+        "status": ["open"],
+        "channel_type": ["email"],
+        "sort": ["last_message_at"],
+        "dir": ["desc"],
+        "page": ["7"],
+        "per_page": ["25"],
+        "c": [str(conversation_id)],
+        "notice_status": ["success"],
+        "message": ["Reply queued."],
+    }
 
 
 def test_the_tristate_filters_behave_the_same_way(captured_request):
@@ -156,17 +187,22 @@ def test_every_route_declares_a_permission_guard():
 
 def test_reply_htmx_request_returns_typed_completion_event_without_redirect():
     conversation_id = uuid.uuid4()
+    notification_id = uuid.uuid4()
     outcome = team_inbox_commands.ReplyOutcome(
         conversation_id=str(conversation_id),
         kind="queued",
         sender="support@example.test",
         message_id=str(uuid.uuid4()),
+        notification_id=notification_id,
     )
     client = _client(object())
 
     with (
         patch("app.web.admin.inbox._prepare_mutation"),
         patch("app.services.team_inbox_commands.reply", return_value=outcome),
+        patch(
+            "app.web.admin.inbox._request_immediate_notification_delivery"
+        ) as wake_delivery,
         patch("app.services.web_admin.get_actor_id", return_value=None),
     ):
         response = client.post(
@@ -184,6 +220,7 @@ def test_reply_htmx_request_returns_typed_completion_event_without_redirect():
         "status": "success",
         "message": "Reply queued from support@example.test.",
     }
+    wake_delivery.assert_called_once_with(notification_id)
 
 
 def test_reply_htmx_command_error_stays_in_workspace_with_failure_event():

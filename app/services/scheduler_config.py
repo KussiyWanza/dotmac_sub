@@ -1170,6 +1170,22 @@ def build_beat_schedule() -> dict:
             enabled=True,
             interval_seconds=60,
         )
+        queue_notification_scan_interval = resolve_integer(
+            session,
+            SettingDomain.comms,
+            "inbox_queue_notification_scan_interval_seconds",
+        )
+        _sync_scheduled_task(
+            session,
+            name="team_inbox_queue_position_notifications",
+            task_name="app.tasks.team_inbox.send_queue_position_notifications",
+            enabled=_scheduler_setting_enabled(
+                session,
+                SettingDomain.comms,
+                "inbox_queue_notification_processor_enabled",
+            ),
+            interval_seconds=max(queue_notification_scan_interval, 10),
+        )
         _sync_scheduled_task(
             session,
             name="team_inbox_reply_reminders",
@@ -1183,6 +1199,16 @@ def build_beat_schedule() -> dict:
             task_name="app.tasks.team_inbox.recover_stale_ai_intake",
             enabled=True,
             interval_seconds=60,
+        )
+        ai_intake_processing_interval = resolve_integer(
+            session, SettingDomain.comms, "ai_intake_processing_interval_seconds"
+        )
+        _sync_scheduled_task(
+            session,
+            name="team_inbox_ai_intake_session_processing",
+            task_name="app.tasks.team_inbox.process_ai_intake_sessions",
+            enabled=True,
+            interval_seconds=max(ai_intake_processing_interval, 10),
         )
         _sync_scheduled_task(
             session,

@@ -2,6 +2,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../auth/auth_state.dart';
+import '../execution/execution_controller.dart';
 import 'expense_models.dart';
 
 class ExpensesRepository {
@@ -10,18 +11,24 @@ class ExpensesRepository {
   final Ref _ref;
 
   Future<List<ExpenseRequest>> fetchRequests({String? status}) async {
-    final response = await _ref
-        .read(apiClientProvider)
-        .dio
-        .get(
-          '/api/v1/field/expense-requests',
-          queryParameters: {
-            if (status != null && status.trim().isNotEmpty)
-              'status': status.trim(),
-            'limit': 100,
-          },
-        );
-    return _items(response.data).map(ExpenseRequest.fromJson).toList();
+    final local = await _offlineExpenseRequests(_ref);
+    try {
+      final response = await _ref
+          .read(apiClientProvider)
+          .dio
+          .get(
+            '/api/v1/field/expense-requests',
+            queryParameters: {
+              if (status != null && status.trim().isNotEmpty)
+                'status': status.trim(),
+              'limit': 100,
+            },
+          );
+      return [...local, ..._items(response.data).map(ExpenseRequest.fromJson)];
+    } on DioException {
+      if (local.isNotEmpty) return local;
+      rethrow;
+    }
   }
 
   Future<ExpenseRequest> fetchRequest(String id) async {
@@ -136,6 +143,28 @@ class ExpensesRepository {
       return '/api/v1/field/attachments/$id/content';
     }
     throw StateError('Receipt upload did not return an attachment link.');
+  }
+}
+
+Future<List<ExpenseRequest>> _offlineExpenseRequests(Ref ref) async {
+  try {
+    final entries = await ref
+        .read(syncServiceProvider)
+        .offlineRequestHistory('expense_request');
+    return [
+      for (final entry in entries)
+        ExpenseRequest.fromJson({
+          ...entry.payload,
+          'id': entry.clientRef,
+          'number': 'Queued expense',
+          'status': entry.status == 'conflict' ? 'sync failed' : 'queued',
+          'client_ref': entry.clientRef,
+          'created_at': entry.createdAt.toIso8601String(),
+          'erp_sync_error': entry.lastError,
+        }),
+    ];
+  } on UnimplementedError {
+    return const [];
   }
 }
 

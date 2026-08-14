@@ -539,13 +539,17 @@ DOMAIN = DomainSOT(
                 "admin customer profile edits",
                 "person-to-business customer conversion",
                 "approved legacy Subscriber name corrections",
+                "governed NCC DOB/gender profile cleanup writes",
             ),
             depends_on=("customer.identity_scope",),
             notes=(
                 "Business conversion is an explicit command. Generic "
                 "person edits and form category controls must not change "
                 "the customer account type. Approved legacy Subscriber "
-                "name corrections remain here until explicit Party cutover."
+                "name corrections remain here until explicit Party cutover. "
+                "AI-collected DOB/gender candidates are validated and saved "
+                "only through this owner after direct residential-customer "
+                "eligibility is rechecked."
             ),
         ),
         SOTService(
@@ -1995,6 +1999,91 @@ DOMAIN = DomainSOT(
                 "Read-only policy owner. It reports absent, inferred, "
                 "captured, and stale state; it never fills a field or "
                 "writes a capture fact."
+            ),
+        ),
+        SOTService(
+            name="customer.profile_cleanup",
+            module="app.services.subscriber_profile_cleanup",
+            owns=(
+                "governed subscriber DOB and gender cleanup command",
+                "subscriber profile cleanup field verification evidence",
+            ),
+            depends_on=("customer.identity_scope",),
+            notes=(
+                "The only writer for AI-collected DOB/gender candidates. It "
+                "revalidates direct residential customer eligibility and never "
+                "overwrites verified profile values."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name="governed subscriber DOB and gender cleanup command",
+                        role=OwnerRole.COMMAND_WRITER,
+                        input_names=(
+                            "subscriber identity and type",
+                            "customer-supplied cleanup candidate",
+                        ),
+                        canonical_writer="customer.profile_cleanup",
+                    ),
+                    ConcernContract(
+                        name="subscriber profile cleanup field verification evidence",
+                        role=OwnerRole.AUTHORITATIVE_RECORD,
+                        input_names=(
+                            "subscriber identity and type",
+                            "customer-supplied cleanup candidate",
+                        ),
+                        canonical_writer="customer.profile_cleanup",
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="subscriber identity and type",
+                        owner="customer.identity_scope",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="Subscriber, reseller-management and customer type relationships.",
+                    ),
+                    AuthorityInput(
+                        name="customer-supplied cleanup candidate",
+                        owner="communications.team_inbox_threads",
+                        kind=AuthorityKind.OBSERVATION,
+                        source="Bounded private-message response captured by AI intake.",
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.OWNER_MANAGED,
+                    boundary="Profile cleanup enters execute_owner_command and explicitly updates only allowed fields.",
+                    locking="The subscriber row is locked before checking missing and verified values.",
+                    idempotency="Existing verified values are not overwritten; repeated commands return the same refusal or no-op outcome.",
+                    retries="Retry only by replaying the typed command after rollback with the same source conversation evidence.",
+                ),
+                errors=ErrorContract(
+                    domain_codes=owner_command_boundary_error_codes(
+                        "customer.profile_cleanup"
+                    ),
+                    mapping_owner="AI intake cleanup workflow and future profile admin adapters",
+                    fail_closed_on=(
+                        "ambiguous identity",
+                        "reseller-managed subscriber",
+                        "verified existing value",
+                    ),
+                ),
+                events=EventContract(
+                    event_types=("customer.profile_cleanup.saved.v1",),
+                    schema_version=1,
+                    delivery_owner="events.dispatcher",
+                    compatibility="Version 1 carries field keys and source evidence, not raw prompt context.",
+                    replay="Verified subscriber values make replay a no-op.",
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.NATIVE,
+                    new_owner="customer.profile_cleanup",
+                    verification="Subscriber profile cleanup eligibility, validation and privacy tests.",
+                    cutover_gate="Production collection remains disabled until compliance activation.",
+                    fallback_retirement="No legacy AI profile cleanup writer exists.",
+                ),
+                steward="customer experience platform",
+                design_refs=("docs/SOT_RELATIONSHIP_MAP.md",),
+                test_refs=("tests/test_subscriber_profile_cleanup.py",),
             ),
         ),
         SOTService(

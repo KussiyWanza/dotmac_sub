@@ -32,14 +32,15 @@ from app.schemas.ai_intake import (
     DataCleaningEligibilityReason,
 )
 from app.services import (
+    ai_conversation_intake,
     ai_intake,
     team_inbox_automation,
     team_inbox_media,
     team_inbox_operations,
-    team_inbox_outbound,
     team_inbox_participants,
     team_inbox_realtime,
     team_inbox_routing,
+    team_inbox_status,
 )
 from app.services.common import coerce_uuid
 from app.services.customer_identity_normalization import (
@@ -602,7 +603,7 @@ def _classify_inbound(
         awaiting_follow_up=awaiting_follow_up,
         follow_up_count=follow_up_count,
     )
-    return request, ai_intake.classify_message(db, request)
+    return request, ai_intake.prepare_async_intake(db, request)
 
 
 def receive_inbound_channel(
@@ -732,12 +733,44 @@ def receive_inbound_channel(
             reason=AiIntakeReason.context_error,
         )
     metadata.update(ai_intake.route_metadata(intake_outcome))
+    ai_session_context = None
     if intake_request is not None:
         conversation_metadata = dict(conversation.metadata_ or {})
         conversation_metadata["ai_intake"] = ai_intake.conversation_state(
             intake_request, intake_outcome
         )
         conversation.metadata_ = conversation_metadata
+        try:
+            ai_session_context = ai_conversation_intake.ensure_session_for_outcome(
+                db,
+                conversation=conversation,
+                outcome=intake_outcome,
+                provider=intake_request.provider,
+                account_scope=intake_request.account_scope,
+                created_conversation=created_conversation,
+            )
+            if ai_session_context is not None:
+                ai_conversation_intake.transition_conversation_status(
+                    db,
+                    conversation=conversation,
+                    status=InboxConversationStatus.pending,
+                    reason=team_inbox_status.InboxStatusReason.ai_intake_started,
+                    source_id=f"ai-intake-started:{ai_session_context.session.id}",
+                )
+                ai_conversation_intake.mark_conversation_ai_metadata(
+                    conversation,
+                    session=ai_session_context.session,
+                    active=True,
+                )
+        except Exception as exc:
+            logger.warning(
+                "AI intake session creation failed",
+                extra={
+                    "event": "ai_intake_session_failure",
+                    "conversation_id": str(conversation.id),
+                    "error_type": type(exc).__name__,
+                },
+            )
         cleaning_eligibility = ai_intake.evaluate_data_cleaning_eligibility(
             db,
             request=intake_request,
@@ -886,49 +919,6 @@ def receive_inbound_channel(
             extra={"sender_type": "visitor", "from_customer": True},
         ),
     )
-    if (
-        intake_outcome.status is AiIntakeStatus.awaiting_follow_up
-        and intake_outcome.config_id is not None
-        and intake_outcome.classification is not None
-        and intake_outcome.classification.follow_up_question is not None
-    ):
-        delivery = team_inbox_outbound.send_ai_intake_follow_up(
-            db,
-            conversation=conversation,
-            payload=team_inbox_outbound.AiIntakeFollowUpPayload(
-                question=intake_outcome.classification.follow_up_question,
-                inbound_message_id=message.id,
-                config_id=intake_outcome.config_id,
-                follow_up_count=intake_outcome.follow_up_count,
-            ),
-        )
-        delivery_status = "queued" if delivery.kind == "queued" else "failed"
-        conversation_metadata = dict(conversation.metadata_ or {})
-        state_value = conversation_metadata.get("ai_intake")
-        state = dict(state_value) if isinstance(state_value, dict) else {}
-        state["follow_up_delivery_status"] = delivery_status
-        state["follow_up_outbound_message_id"] = delivery.message_id
-        state["follow_up_delivery_reason"] = delivery.reason
-        conversation_metadata["ai_intake"] = state
-        conversation.metadata_ = conversation_metadata
-        message_metadata = dict(message.metadata_ or {})
-        message_metadata["ai_intake_follow_up_delivery_status"] = delivery_status
-        message_metadata["ai_intake_follow_up_outbound_message_id"] = (
-            delivery.message_id
-        )
-        message.metadata_ = message_metadata
-        log = logger.info if delivery.kind == "queued" else logger.warning
-        log(
-            "AI intake follow-up delivery recorded",
-            extra={
-                "event": "ai_intake_follow_up_delivery",
-                "conversation_id": str(conversation.id),
-                "channel": channel_type,
-                "delivery_status": delivery_status,
-                "outbound_message_id": delivery.message_id,
-                "reason": delivery.reason,
-            },
-        )
     team_inbox_realtime.publish_queue_event(
         db,
         conversation_id=str(conversation.id),

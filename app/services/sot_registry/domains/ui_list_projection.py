@@ -512,11 +512,148 @@ DOMAIN = DomainSOT(
                 "admin customer filter semantics",
                 "admin customer stable sort semantics",
                 "admin customer row and page projection",
+                "admin customer complete CSV scope and analytical projection",
                 "legacy customer offset API compatibility mapping",
             ),
             depends_on=(
                 "ui.list_contracts",
                 "customer.account_visibility",
+                "customer.accounts",
+                "access.subscription_lifecycle",
+                "service_intent.catalog_policy",
+                "network.identity",
+                "network.ip_assignment_lifecycle",
+            ),
+            notes=(
+                "The admin list and CSV export share one normalized scope and "
+                "stable ordering contract. CSV rows project committed customer, "
+                "subscription, catalog, access identity, IP assignment, NAS, and "
+                "POP facts without mutating or re-owning them."
+            ),
+            contract=ServiceContract(
+                concerns=tuple(
+                    ConcernContract(
+                        name=concern,
+                        role=OwnerRole.RESOLVER,
+                        input_names=(
+                            "normalized customer list query",
+                            "canonical visible customer accounts",
+                            "canonical subscription lifecycle records",
+                            "canonical catalog offers",
+                            "canonical network access identities",
+                            "canonical service IP assignments",
+                        ),
+                    )
+                    for concern in (
+                        "admin customer searchable fields",
+                        "admin customer filter semantics",
+                        "admin customer stable sort semantics",
+                        "admin customer row and page projection",
+                        "admin customer complete CSV scope and analytical projection",
+                        "legacy customer offset API compatibility mapping",
+                    )
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="normalized customer list query",
+                        owner="ui.list_contracts",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source="CUSTOMER_LIST_DEFINITION and normalized ListQuery",
+                    ),
+                    AuthorityInput(
+                        name="canonical visible customer accounts",
+                        owner="customer.accounts",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "Subscriber account records constrained by the "
+                            "customer.account_visibility import rule"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical subscription lifecycle records",
+                        owner="access.subscription_lifecycle",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="committed Subscription rows and lifecycle status",
+                    ),
+                    AuthorityInput(
+                        name="canonical catalog offers",
+                        owner="service_intent.catalog_policy",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="CatalogOffer names referenced by subscriptions",
+                    ),
+                    AuthorityInput(
+                        name="canonical network access identities",
+                        owner="network.identity",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="subscription PPPoE login and provisioning NAS binding",
+                    ),
+                    AuthorityInput(
+                        name="canonical service IP assignments",
+                        owner="network.ip_assignment_lifecycle",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "desired subscription IPv4, active IPAM assignments, "
+                            "and active ONT static IP assignments"
+                        ),
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.READ_ONLY,
+                    boundary=(
+                        "The projection reads committed facts on the adapter session "
+                        "and never mutates, flushes, commits, or rolls back."
+                    ),
+                    locking="Stable list and CSV projections require no mutation lock.",
+                    idempotency=(
+                        "The same committed facts and normalized query produce the "
+                        "same ordered rows and CSV values."
+                    ),
+                    retries="The read-only list and export projections are safe to retry.",
+                ),
+                errors=ErrorContract(
+                    domain_codes=(
+                        "ui.customer_list_projection.invalid_filters",
+                        "ui.customer_list_projection.invalid_target",
+                        "ui.customer_list_projection.empty_target",
+                    ),
+                    mapping_owner="app.web.admin.customers",
+                    fail_closed_on=(
+                        "invalid filter values",
+                        "malformed or empty selected-customer targets",
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.COMPLETE,
+                    old_owner=(
+                        "route-local customer list/export queries and generic "
+                        "configurable-table customer filtering"
+                    ),
+                    new_owner="ui.customer_list_projection",
+                    verification=(
+                        "List, compatibility, typed export, UI boundary, registry, "
+                        "and relationship-map tests."
+                    ),
+                    cutover_gate=(
+                        "Admin list, compatibility API, and CSV adapters delegate "
+                        "scope and projection to app.services.web_customer_lists."
+                    ),
+                    fallback_retirement=(
+                        "Route-local CSV queries and generic customer filtering are "
+                        "removed; invalid inputs fail closed."
+                    ),
+                ),
+                steward="subscriber operations UI",
+                design_refs=(
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                    "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                    "docs/FRONTEND_SPEC.md",
+                ),
+                test_refs=(
+                    "tests/test_web_customer_lists.py",
+                    "tests/test_customer_list_ui_contract.py",
+                    "tests/test_customer_export.py",
+                    "tests/test_sot_relationships.py",
+                ),
             ),
         ),
         SOTService(

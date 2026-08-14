@@ -11,7 +11,13 @@ from app.models.ai_insight import (  # noqa: F401
     InsightDomain,
     InsightSeverity,
 )
-from app.models.ai_intake import AiIntakeConfig  # noqa: F401
+from app.models.ai_intake import (  # noqa: F401
+    AiIntakeConfig,
+    AiIntakeGenerationAttempt,
+    AiIntakePolicy,
+    AiIntakePolicyVersion,
+    AiIntakeSession,
+)
 from app.models.analytics import (  # noqa: F401
     KPIAggregate,
     KPIConfig,
@@ -979,10 +985,12 @@ from app.models.team_inbox import (  # noqa: F401
     InboxMessage,
     InboxMessageDirection,
     InboxMessageTemplate,
+    InboxQueueNotification,
     InboxReplyMacro,
     InboxReplyReminder,
     InboxSavedFilter,
     InboxTeamRole,
+    InboxTeamRoundRobinCursor,
     InboxTeamSource,
     TeamInboxAiRoute,
     TeamInboxChannelRoute,

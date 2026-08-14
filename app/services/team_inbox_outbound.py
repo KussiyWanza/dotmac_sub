@@ -21,7 +21,12 @@ from app.models.team_inbox import (
     InboxTeamRole,
 )
 from app.schemas.ai_intake import APPROVED_FOLLOW_UP_QUESTIONS
-from app.services import team_inbox_realtime, team_inbox_routing, team_outbound
+from app.services import (
+    team_inbox_realtime,
+    team_inbox_reply_window,
+    team_inbox_routing,
+    team_outbound,
+)
 from app.services.communication_intents import (
     CommunicationClass,
     CommunicationIntent,
@@ -76,6 +81,10 @@ class AiIntakeFollowUpPayload:
     inbound_message_id: UUID
     config_id: UUID
     follow_up_count: int
+    session_id: UUID | None = None
+    policy_id: UUID | None = None
+    policy_version_id: UUID | None = None
+    display_name: str = "Dotmac Virtual Assistant"
 
 
 @dataclass(frozen=True)
@@ -83,6 +92,7 @@ class InboxReplyResult:
     kind: str
     conversation_id: str
     message_id: str | None = None
+    notification_id: UUID | None = None
     service_team_id: str | None = None
     sender_key: str | None = None
     activity: str | None = None
@@ -229,6 +239,12 @@ def _queue_outbox_reply(
         db.add(message)
     conversation.last_message_at = queued_at
     db.flush()
+    author_name = str(
+        intent_metadata.get("author_name")
+        or intent_metadata.get("ai_display_name")
+        or "Support"
+    )
+    sender_type = str(intent_metadata.get("sender_type") or "agent")
     team_inbox_realtime.publish_conversation_event(
         db,
         str(conversation.id),
@@ -240,9 +256,9 @@ def _queue_outbox_reply(
             direction=message.direction,
             channel_type=message.channel_type,
             created_at=message.created_at,
-            author_name="Support",
+            author_name=author_name,
             extra={
-                "sender_type": "agent",
+                "sender_type": sender_type,
                 "from_customer": False,
                 "delivery_status": "queued",
             },
@@ -252,6 +268,7 @@ def _queue_outbox_reply(
         kind="queued",
         conversation_id=str(conversation.id),
         message_id=str(message.id),
+        notification_id=notification.id,
         to_email=recipient,
     )
 
@@ -287,6 +304,17 @@ def _send_whatsapp_reply(
         str(template_spec.get("name") or "").strip() if template_spec else ""
     )
     use_template = bool(template_spec and template_name)
+    if not use_template:
+        window = team_inbox_reply_window.decide_reply_window(
+            db, conversation=conversation, now=now
+        )
+        if window.blocks_free_form:
+            return InboxReplyResult(
+                kind="reply_window_expired",
+                conversation_id=str(conversation.id),
+                reason=window.reason
+                or "The 24-hour reply window has expired. Use an approved WhatsApp template or wait for the customer to message again.",
+            )
     return _queue_outbox_reply(
         db,
         conversation=conversation,
@@ -564,6 +592,16 @@ def _send_meta_direct_reply(
             conversation_id=str(conversation.id),
             reason="Reply body is required",
         )
+    window = team_inbox_reply_window.decide_reply_window(
+        db, conversation=conversation, now=now
+    )
+    if window.blocks_free_form:
+        return InboxReplyResult(
+            kind="reply_window_expired",
+            conversation_id=str(conversation.id),
+            reason=window.reason
+            or "The 24-hour reply window has expired. A new free-form reply cannot be sent until the customer messages again.",
+        )
     messages = (
         db.query(InboxMessage)
         .filter(InboxMessage.conversation_id == conversation.id)
@@ -632,6 +670,22 @@ def send_inbox_reply(
             conversation_id=str(conversation.id),
             reason="Resolved conversations cannot be replied to",
         )
+    if payload.sent_by_person_id is not None:
+        try:
+            from app.services import ai_conversation_intake
+
+            session = ai_conversation_intake.active_session_for_conversation(
+                db, conversation.id
+            )
+            if session is not None:
+                ai_conversation_intake.complete_session(
+                    session, state="stopped_human_takeover"
+                )
+                ai_conversation_intake.mark_conversation_ai_metadata(
+                    conversation, session=session, active=False
+                )
+        except Exception:
+            pass
 
     if conversation.channel_type == InboxChannelType.whatsapp.value:
         return _send_whatsapp_reply(
@@ -734,6 +788,7 @@ def send_inbox_reply(
         kind=result.kind,
         conversation_id=result.conversation_id,
         message_id=result.message_id,
+        notification_id=result.notification_id,
         service_team_id=sender.service_team_id,
         sender_key=config.get("sender_key") or sender.sender_key,
         activity=sender.activity,
@@ -774,13 +829,75 @@ def send_ai_intake_follow_up(
             body_html=payload.question,
             body_text=payload.question,
             metadata={
+                "sender_type": "ai",
+                "author_type": "ai",
+                "automation_kind": "ai_intake",
+                "ai_display_name": payload.display_name,
+                "ai_intake_session_id": str(payload.session_id)
+                if payload.session_id
+                else None,
+                "ai_intake_policy_id": str(payload.policy_id)
+                if payload.policy_id
+                else None,
+                "ai_intake_policy_version_id": str(payload.policy_version_id)
+                if payload.policy_version_id
+                else None,
+                "ai_message_purpose": "clarification",
                 "ai_intake_follow_up": True,
                 "ai_intake_config_id": str(payload.config_id),
                 "ai_intake_inbound_message_id": str(payload.inbound_message_id),
                 "ai_intake_follow_up_count": payload.follow_up_count,
-                "author_name": "Support",
+                "author_name": payload.display_name,
             },
             dedupe_key=f"ai-intake-follow-up:{payload.inbound_message_id}",
+        ),
+        now=now,
+    )
+
+
+def send_ai_intake_message(
+    db: Session,
+    *,
+    conversation: InboxConversation,
+    body_text: str,
+    metadata: dict[str, Any],
+    dedupe_key: str,
+    now: datetime | None = None,
+) -> InboxReplyResult:
+    """Queue a customer-visible AI intake message through Team Inbox outbound."""
+
+    if conversation.channel_type not in {
+        InboxChannelType.whatsapp.value,
+        *_META_DM_CHANNELS,
+    }:
+        return InboxReplyResult(
+            kind="unsupported_channel",
+            conversation_id=str(conversation.id),
+            reason="AI intake delivery is unsupported on this channel",
+        )
+    clean_body = " ".join(str(body_text or "").split())
+    if not clean_body:
+        return InboxReplyResult(
+            kind="empty_body",
+            conversation_id=str(conversation.id),
+            reason="AI intake message body is required",
+        )
+    return send_inbox_reply(
+        db,
+        conversation=conversation,
+        payload=InboxReplyPayload(
+            body_html=clean_body,
+            body_text=clean_body,
+            metadata={
+                **metadata,
+                "sender_type": "ai",
+                "author_type": "ai",
+                "automation_kind": metadata.get("automation_kind") or "ai_intake",
+                "author_name": metadata.get("author_name")
+                or metadata.get("ai_display_name")
+                or "Dotmac Virtual Assistant",
+            },
+            dedupe_key=dedupe_key,
         ),
         now=now,
     )
@@ -908,6 +1025,25 @@ def retry_outbound_message(
             reason="Conversation not found",
         )
     retry_count = int(metadata.get("retry_count") or 0) + 1
+    retry_metadata = {
+        key: value
+        for key, value in metadata.items()
+        if key
+        not in {
+            "delivery_status",
+            "send_error",
+            "last_retry_at",
+            "last_retry_result",
+            "retried_message_id",
+        }
+    }
+    retry_metadata.update(
+        {
+            "source_route": "team_inbox_retry",
+            "retry_of_message_id": str(message.id),
+            "retry_count": retry_count,
+        }
+    )
     result = send_inbox_reply(
         db,
         conversation=conversation,
@@ -925,11 +1061,7 @@ def retry_outbound_message(
             if isinstance(metadata.get("bcc"), list)
             else (),
             sent_by_person_id=sent_by_person_id,
-            metadata={
-                "source_route": "team_inbox_retry",
-                "retry_of_message_id": str(message.id),
-                "retry_count": retry_count,
-            },
+            metadata=retry_metadata,
         ),
         now=now,
         record_failure=False,

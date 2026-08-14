@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
 
 from app.models.ai_intake import AiIntakeConfig
+from app.models.service_team import ServiceTeam
 from app.schemas.ai_intake import (
     CUSTOMER_TYPE_FOLLOW_UP_QUESTION,
     AiIntakeContextMessage,
@@ -66,6 +68,15 @@ def _config(db_session, **overrides) -> AiIntakeConfig:
         "metadata_": {},
     }
     values.update(overrides)
+    if values["is_enabled"] and "fallback_team_id" not in overrides:
+        fallback = ServiceTeam(
+            name=f"AI Intake Fallback {uuid4()}",
+            team_type="support",
+            is_active=True,
+        )
+        db_session.add(fallback)
+        db_session.flush()
+        values["fallback_team_id"] = fallback.id
     row = AiIntakeConfig(**values)
     db_session.add(row)
     db_session.flush()
@@ -173,7 +184,7 @@ def test_valid_technical_and_billing_results_use_controlled_registry(
     assert technical.classification.department == "technical_support"
     assert billing.classification is not None
     assert billing.classification.intent.value == "billing_issue"
-    assert billing.classification.department == "helpdesk"
+    assert billing.classification.department == "billing_issue"
 
 
 def test_department_mapping_overrides_default(db_session, monkeypatch):

@@ -473,6 +473,36 @@ void main() {
     expect(find.text('No expense requests yet'), findsOneWidget);
   });
 
+  testWidgets('queued expense uses a friendly label instead of its UUID', (
+    tester,
+  ) async {
+    const clientRef = '12345678-1234-1234-1234-123456789abc';
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          expenseRequestsProvider.overrideWith(
+            (ref) async => [
+              ExpenseRequest.fromJson({
+                'id': clientRef,
+                'number': 'Queued expense',
+                'status': 'queued',
+                'purpose': 'Fuel for site visit',
+              }),
+            ],
+          ),
+        ],
+        child: const MaterialApp(home: ExpensesScreen()),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('Fuel for site visit'), findsOneWidget);
+    expect(find.text('Queued expense'), findsOneWidget);
+    expect(find.text('queued'), findsOneWidget);
+    expect(find.text(clientRef), findsNothing);
+    expect(find.text('12345678'), findsNothing);
+  });
+
   testWidgets('new expense request validates lines and purpose then submits', (
     tester,
   ) async {

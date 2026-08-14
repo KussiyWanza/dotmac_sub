@@ -28,6 +28,22 @@ router = APIRouter(prefix="/webhooks/whatsapp", tags=["whatsapp-webhook"])
 
 SIGNATURE_HEADER = "X-Hub-Signature-256"
 
+_WHATSAPP_QUALIFYING_MESSAGE_TYPES = frozenset(
+    {
+        "",
+        "text",
+        "image",
+        "document",
+        "audio",
+        "video",
+        "sticker",
+        "location",
+        "contacts",
+        "button",
+        "interactive",
+    }
+)
+
 
 def _app_secret(db: Session) -> str:
     return str(inbound_secret_material(db).get("webhook_signing_secret") or "").strip()
@@ -65,6 +81,8 @@ def _text_body(message: dict[str, Any]) -> str:
         return str(text or "").strip()
 
     message_type = str(message.get("type") or "").strip().lower()
+    if message_type not in _WHATSAPP_QUALIFYING_MESSAGE_TYPES:
+        return ""
     if message_type in {
         "image",
         "document",
@@ -128,6 +146,8 @@ def _iter_meta_whatsapp_messages(payload: dict[str, Any]):
             for message in messages:
                 if not isinstance(message, dict):
                     continue
+                if bool(message.get("is_echo")):
+                    continue
                 body = _text_body(message)
                 sender = str(message.get("from") or "").strip()
                 if not sender or not body:
@@ -139,7 +159,14 @@ def _iter_meta_whatsapp_messages(payload: dict[str, Any]):
                         "id": str(message.get("id") or "").strip() or None,
                     },
                     "contact_name": names_by_wa_id.get(sender),
-                    "metadata": metadata,
+                    "metadata": {
+                        **metadata,
+                        "provider_message_type": str(message.get("type") or "text")
+                        .strip()
+                        .lower()
+                        or "text",
+                        "reply_window_qualifying": True,
+                    },
                     "attachments": _whatsapp_attachments(message),
                     "observed_at": (
                         datetime.fromtimestamp(

@@ -80,13 +80,15 @@ SERVICES: tuple[SOTService, ...] = (
                     "session."
                 ),
                 locking=(
-                    "The current timer row is locked FOR UPDATE before "
-                    "replacement; the due scan uses SKIP LOCKED so "
-                    "concurrent fire runs never double-emit."
+                    "The latest timer generation, including fired or canceled "
+                    "history, is locked FOR UPDATE before replacement; the due "
+                    "scan uses SKIP LOCKED so concurrent fire runs never "
+                    "double-emit."
                 ),
                 idempotency=(
                     "One current timer per (owner, entity, purpose); "
-                    "replacement bumps the generation so a stale "
+                    "replacement advances from the latest historical generation "
+                    "so fired or canceled history is never reused and a stale "
                     "delivery is idempotently rejected by its consumer."
                 ),
                 retries=(

@@ -67,7 +67,7 @@ class QuoteEmailContent:
     subject: str
     body_html: str
     body_text: str
-    payment_url: str
+    payment_url: str | None
 
 
 _HEX_COLOR = re.compile(r"#[0-9a-fA-F]{6}")
@@ -104,6 +104,7 @@ def render_quote_email(
     *,
     snapshot: quote_documents.QuoteDocumentSnapshot,
     recipient: quote_documents.QuoteRecipient,
+    require_paystack_link: bool = True,
 ) -> QuoteEmailContent:
     """Render the branded HTML/text alternatives from one immutable snapshot."""
 
@@ -115,7 +116,7 @@ def render_quote_email(
             "The company legal name is unavailable for Quote delivery",
         )
     payment_url = snapshot.payment.paystack_url
-    if payment_url is None:
+    if require_paystack_link and payment_url is None:
         raise _error(
             "payment_link_unavailable",
             "A secure Paystack payment link is unavailable for this Quote",
@@ -127,16 +128,35 @@ def render_quote_email(
     safe_name = escape(recipient.display_name)
     safe_total = escape(total)
     safe_reference = escape(reference)
-    safe_payment_url = escape(payment_url, quote=True)
+    bank = snapshot.payment.bank_transfer
+    bank_transfer_html = (
+        '<h2 style="margin:0 0 12px;font-size:18px;line-height:1.35;color:#111827;">'
+        "Bank transfer details</h2>"
+        '<p style="margin:0 0 10px;font-size:14px;line-height:1.6;">'
+        "Please use the bank-transfer details below, also included in the "
+        "attached quotation PDF.</p>"
+        '<p style="margin:0 0 4px;font-size:14px;line-height:1.6;">'
+        f"<strong>Bank:</strong> {escape(bank.bank_name)}</p>"
+        '<p style="margin:0 0 4px;font-size:14px;line-height:1.6;">'
+        f"<strong>Account number:</strong> {escape(bank.account_number)}</p>"
+        '<p style="margin:0 0 16px;font-size:14px;line-height:1.6;">'
+        f"<strong>Account name:</strong> {escape(bank.account_name)}</p>"
+    )
+    payment_html = bank_transfer_html
+    if payment_url is not None:
+        safe_payment_url = escape(payment_url, quote=True)
+        payment_html = f"""
+<h2 style="margin:0 0 12px;font-size:18px;line-height:1.35;color:#111827;">Make payment for this quotation</h2>
+<p style="margin:0 0 20px;font-size:14px;line-height:1.6;">Use the secure payment button below to make the required payment for this quotation through Paystack.</p>
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 auto 22px;"><tr><td style="border-radius:8px;background-color:{background};text-align:center;"><a href="{safe_payment_url}" aria-label="Pay Now for quotation {safe_reference}" style="display:inline-block;min-width:120px;padding:14px 24px;border-radius:8px;background-color:{background};color:{foreground} !important;font-size:15px;font-weight:700;line-height:1;text-align:center;text-decoration:none;">Pay Now</a></td></tr></table>
+<p style="margin:0 0 16px;font-size:14px;line-height:1.6;">Alternatively, you can find the available bank-transfer details in the attached quotation PDF.</p>
+""".strip()
     body = f"""
 <h1 style="margin:0 0 20px;font-size:24px;line-height:1.25;color:#111827;">Your quotation is ready</h1>
 <p style="margin:0 0 16px;font-size:14px;line-height:1.6;">Dear {safe_name},</p>
 <p style="margin:0 0 16px;font-size:14px;line-height:1.6;">Please find attached your quotation for <strong>{safe_total}</strong>.</p>
 <p style="margin:0 0 24px;font-size:14px;line-height:1.6;"><strong>Quote reference:</strong> {safe_reference}</p>
-<h2 style="margin:0 0 12px;font-size:18px;line-height:1.35;color:#111827;">Make payment for this quotation</h2>
-<p style="margin:0 0 20px;font-size:14px;line-height:1.6;">Use the secure payment button below to make the required payment for this quotation through Paystack.</p>
-<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 auto 22px;"><tr><td style="border-radius:8px;background-color:{background};text-align:center;"><a href="{safe_payment_url}" aria-label="Pay Now for quotation {safe_reference}" style="display:inline-block;min-width:120px;padding:14px 24px;border-radius:8px;background-color:{background};color:{foreground} !important;font-size:15px;font-weight:700;line-height:1;text-align:center;text-decoration:none;">Pay Now</a></td></tr></table>
-<p style="margin:0 0 16px;font-size:14px;line-height:1.6;">Alternatively, you can find the available bank-transfer details in the attached quotation PDF.</p>
+{payment_html}
 <p style="margin:0;font-size:14px;line-height:1.6;">Please reply to this email if you have any questions.</p>
 """.strip()
     subject = f"Quote from {legal_name}"
@@ -146,16 +166,29 @@ def render_quote_email(
         base_url=brand.app_url,
         brand=brand.to_dict(),
     )
+    payment_text = (
+        "Bank transfer details\n\n"
+        "Please use the bank-transfer details below, also included in the "
+        "attached quotation PDF.\n\n"
+        f"Bank: {bank.bank_name}\n"
+        f"Account number: {bank.account_number}\n"
+        f"Account name: {bank.account_name}"
+    )
+    if payment_url is not None:
+        payment_text = (
+            "Make payment for this quotation\n\n"
+            "Use the secure link below to make the required payment through "
+            "Paystack:\n\n"
+            f"Pay Now: {payment_url}\n\n"
+            "Alternatively, you can find the available bank-transfer details "
+            "in the attached quotation PDF."
+        )
     body_text = (
         "Your quotation is ready\n\n"
         f"Dear {recipient.display_name},\n\n"
         f"Please find attached your quotation for {total}.\n\n"
         f"Quote reference: {reference}\n\n"
-        "Make payment for this quotation\n\n"
-        "Use the secure link below to make the required payment through Paystack:\n\n"
-        f"Pay Now: {payment_url}\n\n"
-        "Alternatively, you can find the available bank-transfer details in the "
-        "attached quotation PDF.\n\n"
+        f"{payment_text}\n\n"
         "Please reply to this email if you have any questions."
     )
     return QuoteEmailContent(
@@ -169,13 +202,9 @@ def render_quote_email(
 def _payment_eligibility(
     db: Session,
     quote: Quote,
-) -> quote_deposits.QuotePaymentPage:
+) -> quote_deposits.QuotePaymentPage | None:
     if quote.subscriber_id is None:
-        raise _error(
-            "payment_link_unavailable",
-            "A secure Paystack payment link is unavailable for this Quote",
-            reason="sales.quote_deposits.quote_not_found",
-        )
+        return None
     try:
         return quote_deposits.quote_payment_page(
             db,
@@ -312,7 +341,7 @@ def send_quote_email(
             requested_by_id=actor_id,
         )
         snapshot = quote_documents.load_quote_document_snapshot(export.snapshot)
-        if (
+        if payment is not None and (
             payment.quote_id != snapshot.quote_id
             or payment.subscriber_id != quote.subscriber_id
             or payment.currency != snapshot.currency
@@ -326,7 +355,19 @@ def send_quote_email(
         content = render_quote_email(
             snapshot=snapshot,
             recipient=recipient,
+            require_paystack_link=payment is not None,
         )
+        metadata = [
+            ("quote_id", str(quote.id)),
+            ("pdf_export_id", str(export.id)),
+            ("activity", "sales_quote"),
+        ]
+        if content.payment_url is not None:
+            metadata.append(("quote_payment_url", content.payment_url))
+            metadata.append(("quote_payment_mode", "paystack"))
+        else:
+            metadata.append(("quote_payment_mode", "bank_transfer"))
+            metadata.append(("quote_delivery_mode", "prospect_bank_transfer"))
 
         def record(entry: document_delivery.DeliveryRecord) -> None:
             db.add(
@@ -379,14 +420,9 @@ def send_quote_email(
                     intent_event_type="quote.delivery_requested",
                     body_html=content.body_html,
                     body_text=content.body_text,
-                    metadata=(
-                        ("quote_id", str(quote.id)),
-                        ("pdf_export_id", str(export.id)),
-                        ("quote_payment_url", content.payment_url),
-                        ("activity", "sales_quote"),
-                    ),
+                    metadata=tuple(metadata),
                 ),
-                subscriber_id=payment.subscriber_id,
+                subscriber_id=payment.subscriber_id if payment is not None else None,
                 record=record,
                 event_type=EventType.quote_delivery_requested,
                 on_queued=on_queued,
