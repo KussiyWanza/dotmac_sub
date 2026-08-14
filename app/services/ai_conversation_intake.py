@@ -34,6 +34,19 @@ from app.models.team_inbox import (
 )
 from app.schemas.ai_intake import AiIntakeOutcome, AiIntakeStatus
 from app.services import team_inbox_status
+from app.services.integrations import (
+    installations,
+    meta_social_capability,
+    whatsapp_capability,
+)
+from app.services.integrations.connectors.meta_social_runtime import (
+    META_SOCIAL_RECEIVE_CAPABILITY,
+    META_SOCIAL_SEND_CAPABILITY,
+)
+from app.services.integrations.connectors.whatsapp_runtime import WHATSAPP_PROVIDER_META
+from app.services.integrations.meta_social_installation import (
+    get_meta_social_installation_projection,
+)
 from app.services.owner_commands import (
     CommandContext,
     OwnerCommandDefinition,
@@ -110,6 +123,11 @@ _AI_POLICY_VERSION_COMMAND = OwnerCommandDefinition(
     concern="AI conversational intake policy-version lifecycle",
     name="execute_ai_intake_policy_version_command",
 )
+_AI_POLICY_DRAFT_COMMAND = OwnerCommandDefinition(
+    owner="ai.intake",
+    concern="AI conversational intake configuration lifecycle",
+    name="create_ai_intake_draft_policy",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,6 +167,29 @@ class AiPolicyVersionDraftCommand:
     queue_templates: Mapping[str, object] | None = None
     escalation_rules: Mapping[str, object] | None = None
     data_cleanup_policy: Mapping[str, object] | None = None
+    replace_existing_draft: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class AiDraftPolicyCommand:
+    context: CommandContext
+    channel_type: str
+    provider: str
+    account_scope: str
+    display_name: str | None = None
+    fallback_team_id: UUID | None = None
+    base_version_id: UUID | None = None
+    welcome_message: str | None = None
+    business_tone: str | None = None
+    business_instructions: str | None = None
+    approved_isp_information: str | None = None
+    intent_definitions: tuple[Mapping[str, object], ...] = ()
+    clarification_questions: tuple[Mapping[str, object], ...] = ()
+    intent_team_mappings: tuple[Mapping[str, object], ...] = ()
+    queue_templates: Mapping[str, object] | None = None
+    escalation_rules: Mapping[str, object] | None = None
+    data_cleanup_policy: Mapping[str, object] | None = None
+    replace_existing_draft: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,8 +208,267 @@ class AiPolicyVersionOutcome:
     active_version_id: UUID | None
 
 
+@dataclass(frozen=True, slots=True)
+class AiDraftPolicyOutcome:
+    policy_id: UUID
+    version_id: UUID
+    version_number: int
+    policy_enabled: bool
+    version_status: str
+    active_version_id: UUID | None
+    channel_type: str
+    provider: str
+    account_scope: str
+    scope_key: str
+
+
 def is_supported_channel(channel_type: str | None) -> bool:
     return str(channel_type or "").strip() in SUPPORTED_CONVERSATIONAL_CHANNELS
+
+
+def _normalize_text(value: str | None, *, field: str, limit: int = 160) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(f"AI intake {field} is required")
+    return text[:limit]
+
+
+def _provider_scope_key(provider: str, account_scope: str) -> str:
+    return f"{provider}:{account_scope}"
+
+
+def _active_service_team_id(
+    db: Session, team_id: UUID | None, *, field: str
+) -> UUID | None:
+    if team_id is None:
+        return None
+    team = db.get(ServiceTeam, team_id)
+    if team is None or not team.is_active:
+        raise ValueError(f"AI intake {field} must reference an active team")
+    return team.id
+
+
+def _validate_mapping_team_references(
+    db: Session, mappings: tuple[Mapping[str, object], ...]
+) -> None:
+    for mapping in mappings:
+        if mapping.get("enabled") is False:
+            continue
+        raw_team_id = mapping.get("service_team_id") or mapping.get("team_id")
+        if raw_team_id in (None, ""):
+            continue
+        try:
+            team_id = UUID(str(raw_team_id))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("AI intake intent mapping team id is invalid") from exc
+        _active_service_team_id(db, team_id, field="intent mapping team")
+
+
+def _validate_whatsapp_provider_scope(
+    db: Session, *, provider: str, account_scope: str
+) -> None:
+    if provider != WHATSAPP_PROVIDER_META:
+        raise ValueError("WhatsApp AI intake provider scope is unsupported")
+    try:
+        send_binding = whatsapp_capability.require_binding(
+            db, capability_id=whatsapp_capability.WHATSAPP_SEND_CAPABILITY
+        )
+        receive_binding = whatsapp_capability.require_binding(
+            db, capability_id=whatsapp_capability.WHATSAPP_RECEIVE_CAPABILITY
+        )
+    except installations.InstallationError as exc:
+        raise ValueError(
+            "WhatsApp AI intake requires enabled send and receive capabilities"
+        ) from exc
+    send_revision = send_binding.installation.current_config_revision
+    receive_revision = receive_binding.installation.current_config_revision
+    if send_revision is None or receive_revision is None:
+        raise ValueError(
+            "WhatsApp AI intake requires validated configuration revisions"
+        )
+    config = dict(send_revision.config_json or {})
+    configured_phone_number_id = str(config.get("phone_number_id") or "").strip()
+    if not configured_phone_number_id:
+        raise ValueError("WhatsApp AI intake requires a configured phone number id")
+    if configured_phone_number_id != account_scope:
+        raise ValueError("WhatsApp AI intake account scope must match phone number id")
+    receive_config = dict(receive_revision.config_json or {})
+    receive_phone_number_id = str(receive_config.get("phone_number_id") or "").strip()
+    if receive_phone_number_id and receive_phone_number_id != account_scope:
+        raise ValueError("WhatsApp inbound capability uses a different account scope")
+
+
+def _validate_meta_social_provider_scope(
+    db: Session, *, channel_type: str, provider: str, account_scope: str
+) -> None:
+    if provider != meta_social_capability.META_SOCIAL_CONNECTOR_KEY:
+        raise ValueError("Meta private-message AI intake provider scope is unsupported")
+    try:
+        meta_social_capability.require_binding(
+            db, capability_id=META_SOCIAL_SEND_CAPABILITY
+        )
+        meta_social_capability.require_binding(
+            db, capability_id=META_SOCIAL_RECEIVE_CAPABILITY
+        )
+    except installations.InstallationError as exc:
+        raise ValueError(
+            "Meta private-message AI intake requires enabled send and receive capabilities"
+        ) from exc
+    projection = get_meta_social_installation_projection(db)
+    expected_scope = (
+        projection.facebook_page_id
+        if channel_type == InboxChannelType.facebook_messenger.value
+        else projection.instagram_account_id
+    )
+    if not expected_scope or expected_scope != account_scope:
+        raise ValueError(
+            "Meta private-message AI intake account scope is not configured"
+        )
+
+
+def _validate_provider_scope(
+    db: Session, *, channel_type: str, provider: str, account_scope: str
+) -> None:
+    if channel_type not in SUPPORTED_CONVERSATIONAL_CHANNELS:
+        raise ValueError("AI intake supports only WhatsApp, Messenger and Instagram DM")
+    if account_scope.lower() in {"any", "global", "default"}:
+        raise ValueError("AI intake draft policy requires an explicit account scope")
+    if channel_type == InboxChannelType.whatsapp.value:
+        _validate_whatsapp_provider_scope(
+            db, provider=provider, account_scope=account_scope
+        )
+        return
+    _validate_meta_social_provider_scope(
+        db,
+        channel_type=channel_type,
+        provider=provider,
+        account_scope=account_scope,
+    )
+
+
+def create_draft_policy(
+    db: Session, command: AiDraftPolicyCommand
+) -> AiDraftPolicyOutcome:
+    """Create or update an inactive policy shell and one editable draft version."""
+
+    def _operation() -> AiDraftPolicyOutcome:
+        channel = _normalize_text(command.channel_type, field="channel", limit=40)
+        provider = _normalize_text(command.provider, field="provider", limit=80)
+        account_scope = _normalize_text(
+            command.account_scope, field="account scope", limit=160
+        )
+        _validate_provider_scope(
+            db,
+            channel_type=channel,
+            provider=provider,
+            account_scope=account_scope,
+        )
+        fallback_team_id = _active_service_team_id(
+            db, command.fallback_team_id, field="fallback team"
+        )
+        _validate_mapping_team_references(db, command.intent_team_mappings)
+        scope_key = _provider_scope_key(provider, account_scope)
+        conflicting_policy = (
+            db.query(AiIntakePolicy)
+            .filter(AiIntakePolicy.scope_key == scope_key)
+            .filter(AiIntakePolicy.channel_type == channel)
+            .filter(
+                (AiIntakePolicy.provider != provider)
+                | (AiIntakePolicy.account_scope != account_scope)
+            )
+            .one_or_none()
+        )
+        if conflicting_policy is not None:
+            raise ValueError(
+                "AI intake policy identity conflicts with an existing policy"
+            )
+        policy = (
+            db.query(AiIntakePolicy)
+            .filter(AiIntakePolicy.scope_key == scope_key)
+            .filter(AiIntakePolicy.channel_type == channel)
+            .filter(AiIntakePolicy.provider == provider)
+            .filter(AiIntakePolicy.account_scope == account_scope)
+            .with_for_update()
+            .one_or_none()
+        )
+        if policy is None:
+            draft_display_name = (
+                str(command.display_name or DEFAULT_DISPLAY_NAME).strip()[:120]
+                or DEFAULT_DISPLAY_NAME
+            )
+            policy = AiIntakePolicy(
+                legacy_config_id=None,
+                scope_key=scope_key,
+                channel_type=channel,
+                provider=provider,
+                account_scope=account_scope,
+                display_name=draft_display_name,
+                is_enabled=False,
+                active_version_id=None,
+                fallback_team_id=fallback_team_id,
+                metadata_={
+                    "created_reason": command.context.reason,
+                    "created_from": "canonical_draft_policy_command",
+                },
+            )
+            db.add(policy)
+            db.flush()
+        else:
+            draft_display_name = (
+                str(
+                    command.display_name or policy.display_name or DEFAULT_DISPLAY_NAME
+                ).strip()[:120]
+                or DEFAULT_DISPLAY_NAME
+            )
+            if not policy.is_enabled and policy.active_version_id is None:
+                policy.display_name = draft_display_name
+                policy.fallback_team_id = fallback_team_id
+            policy.metadata_ = {
+                **dict(policy.metadata_ or {}),
+                "last_draft_reason": command.context.reason,
+            }
+        outcome = _create_or_update_draft_policy_version_locked(
+            db,
+            command=AiPolicyVersionDraftCommand(
+                context=command.context,
+                policy_id=policy.id,
+                base_version_id=command.base_version_id,
+                display_name=draft_display_name,
+                welcome_message=command.welcome_message,
+                business_tone=command.business_tone,
+                business_instructions=command.business_instructions,
+                approved_isp_information=command.approved_isp_information,
+                intent_definitions=command.intent_definitions,
+                clarification_questions=command.clarification_questions,
+                intent_team_mappings=command.intent_team_mappings,
+                queue_templates=command.queue_templates,
+                escalation_rules=command.escalation_rules,
+                data_cleanup_policy=command.data_cleanup_policy,
+                replace_existing_draft=command.replace_existing_draft,
+            ),
+        )
+        if policy.active_version_id is None:
+            policy.is_enabled = False
+        db.flush()
+        return AiDraftPolicyOutcome(
+            policy_id=policy.id,
+            version_id=outcome.version_id,
+            version_number=outcome.version_number,
+            policy_enabled=policy.is_enabled,
+            version_status=outcome.status,
+            active_version_id=policy.active_version_id,
+            channel_type=policy.channel_type,
+            provider=policy.provider,
+            account_scope=policy.account_scope,
+            scope_key=policy.scope_key,
+        )
+
+    return execute_owner_command(
+        db,
+        definition=_AI_POLICY_DRAFT_COMMAND,
+        context=command.context,
+        operation=_operation,
+    )
 
 
 def _next_policy_version_number(db: Session, policy_id: UUID) -> int:
@@ -220,61 +520,69 @@ def _copy_version_payload(
     }
 
 
+def _create_or_update_draft_policy_version_locked(
+    db: Session, *, command: AiPolicyVersionDraftCommand
+) -> AiPolicyVersionOutcome:
+    policy = (
+        db.query(AiIntakePolicy)
+        .filter(AiIntakePolicy.id == command.policy_id)
+        .with_for_update()
+        .one_or_none()
+    )
+    if policy is None:
+        raise ValueError("AI intake policy was not found")
+    base = (
+        db.get(AiIntakePolicyVersion, command.base_version_id)
+        if command.base_version_id is not None
+        else None
+    )
+    if base is not None and base.policy_id != policy.id:
+        raise ValueError("Base AI intake policy version does not belong to policy")
+    existing_draft = (
+        db.query(AiIntakePolicyVersion)
+        .filter(AiIntakePolicyVersion.policy_id == policy.id)
+        .filter(AiIntakePolicyVersion.status == "draft")
+        .with_for_update()
+        .one_or_none()
+    )
+    if existing_draft is not None and not command.replace_existing_draft:
+        raise ValueError("AI intake policy already has an editable draft")
+    payload = _copy_version_payload(base, command)
+    version = existing_draft
+    if version is None:
+        version = AiIntakePolicyVersion(
+            policy_id=policy.id,
+            version_number=_next_policy_version_number(db, policy.id),
+            status="draft",
+            is_active=False,
+            created_by_person_id=None,
+            metadata_={
+                "created_reason": command.context.reason,
+                "base_version_id": str(base.id) if base is not None else None,
+            },
+            **payload,
+        )
+        db.add(version)
+    else:
+        for field, value in payload.items():
+            setattr(version, field, value)
+    db.flush()
+    return AiPolicyVersionOutcome(
+        policy_id=policy.id,
+        version_id=version.id,
+        version_number=version.version_number,
+        status=version.status,
+        active_version_id=policy.active_version_id,
+    )
+
+
 def create_or_update_draft_policy_version(
     db: Session, command: AiPolicyVersionDraftCommand
 ) -> AiPolicyVersionOutcome:
     """Create a new editable draft; activated versions are never mutated."""
 
     def _operation() -> AiPolicyVersionOutcome:
-        policy = (
-            db.query(AiIntakePolicy)
-            .filter(AiIntakePolicy.id == command.policy_id)
-            .with_for_update()
-            .one_or_none()
-        )
-        if policy is None:
-            raise ValueError("AI intake policy was not found")
-        base = (
-            db.get(AiIntakePolicyVersion, command.base_version_id)
-            if command.base_version_id is not None
-            else None
-        )
-        if base is not None and base.policy_id != policy.id:
-            raise ValueError("Base AI intake policy version does not belong to policy")
-        existing_draft = (
-            db.query(AiIntakePolicyVersion)
-            .filter(AiIntakePolicyVersion.policy_id == policy.id)
-            .filter(AiIntakePolicyVersion.status == "draft")
-            .with_for_update()
-            .one_or_none()
-        )
-        payload = _copy_version_payload(base, command)
-        version = existing_draft
-        if version is None:
-            version = AiIntakePolicyVersion(
-                policy_id=policy.id,
-                version_number=_next_policy_version_number(db, policy.id),
-                status="draft",
-                is_active=False,
-                created_by_person_id=None,
-                metadata_={
-                    "created_reason": command.context.reason,
-                    "base_version_id": str(base.id) if base is not None else None,
-                },
-                **payload,
-            )
-            db.add(version)
-        else:
-            for field, value in payload.items():
-                setattr(version, field, value)
-        db.flush()
-        return AiPolicyVersionOutcome(
-            policy_id=policy.id,
-            version_id=version.id,
-            version_number=version.version_number,
-            status=version.status,
-            active_version_id=policy.active_version_id,
-        )
+        return _create_or_update_draft_policy_version_locked(db, command=command)
 
     return execute_owner_command(
         db,

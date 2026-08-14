@@ -1336,6 +1336,212 @@ DOMAIN = DomainSOT(
             ),
         ),
         SOTService(
+            name="integration.dotmac_erp_operational_context_adapter",
+            module="app.services.dotmac_erp.domain_sync",
+            owns=(
+                "typed ERP operational-context projection mapping",
+                "version-2 ERP operational-context transport and response validation",
+                "per-domain ERP operational-context delivery watermarks",
+            ),
+            depends_on=(
+                "events.dispatcher",
+                "integration.backoffice_adapter",
+                "operations.project_lifecycle",
+                "operations.work_order_commands",
+                "support.ticket_lifecycle",
+            ),
+            notes=(
+                "Sub retains project, project-task, ticket, and work-order authority. "
+                "ERP receives a rebuildable projection for its own finance context."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name="typed ERP operational-context projection mapping",
+                        role=OwnerRole.RESOLVER,
+                        input_names=(
+                            "canonical Sub projects and project tasks",
+                            "canonical Sub support tickets",
+                            "canonical Sub service work orders",
+                            "enabled ERP operational-sync capability",
+                        ),
+                    ),
+                    ConcernContract(
+                        name=(
+                            "version-2 ERP operational-context transport and response "
+                            "validation"
+                        ),
+                        role=OwnerRole.TRANSPORT,
+                        input_names=(
+                            "enabled ERP operational-sync capability",
+                            "ERP version-2 operational-sync response",
+                        ),
+                    ),
+                    ConcernContract(
+                        name="per-domain ERP operational-context delivery watermarks",
+                        role=OwnerRole.PROJECTION_WRITER,
+                        input_names=(
+                            "canonical Sub projects and project tasks",
+                            "canonical Sub support tickets",
+                            "canonical Sub service work orders",
+                            "ERP version-2 operational-sync response",
+                        ),
+                        canonical_writer=(
+                            "integration.dotmac_erp_operational_context_adapter"
+                        ),
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="canonical Sub projects and project tasks",
+                        owner="operations.project_lifecycle",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "canonical project aggregates, hierarchy, status, schedule, "
+                            "and task-to-ticket source relationship"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical Sub support tickets",
+                        owner="support.ticket_lifecycle",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "canonical ticket identity, number, status, priority, and "
+                            "customer relationship"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical Sub service work orders",
+                        owner="operations.work_order_commands",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "canonical service work-order identity, schedule, status, "
+                            "and project/ticket relationships"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="enabled ERP operational-sync capability",
+                        owner="integration.backoffice_adapter",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "enabled version-pinned erp.operational_context.sync.v1 "
+                            "binding, domain allowlist, and bounded batch policy"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="ERP version-2 operational-sync response",
+                        owner="external:dotmac_erp",
+                        kind=AuthorityKind.EXTERNAL_OBSERVATION,
+                        source=(
+                            "contract version, accepted entity counts, and item errors "
+                            "returned by /api/v1/sync/sub/bulk"
+                        ),
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.OWNER_MANAGED,
+                    boundary=(
+                        "One public sync command validates the ERP response and commits "
+                        "all selected domain watermarks together only after zero errors."
+                    ),
+                    locking=(
+                        "Per-domain cursor rows serialize watermark advancement; the "
+                        "keyset cursor orders source updates by updated_at and UUID."
+                    ),
+                    idempotency=(
+                        "ERP upserts by organization, entity type, and Sub source UUID; "
+                        "a failed batch replays from unchanged watermarks."
+                    ),
+                    retries=(
+                        "The scheduled capability retries transient transport failures; "
+                        "item errors leave every selected watermark unchanged."
+                    ),
+                ),
+                errors=ErrorContract(
+                    domain_codes=(
+                        *owner_command_boundary_error_codes(
+                            "integration.dotmac_erp_operational_context_adapter"
+                        ),
+                        "integration.dotmac_erp_operational_context_adapter.invalid_domain",
+                        "integration.dotmac_erp_operational_context_adapter.invalid_response",
+                        "integration.dotmac_erp_operational_context_adapter.transport_unavailable",
+                    ),
+                    mapping_owner="app.tasks.dotmac_erp_outbox",
+                    retryable_codes=(
+                        "integration.dotmac_erp_operational_context_adapter.transport_unavailable",
+                    ),
+                    fail_closed_on=(
+                        "missing or disabled ERP capability binding",
+                        "missing version-2 response",
+                        "any ERP item error",
+                        "unsupported domain selection",
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.CUTOVER_READY,
+                    old_owner="untyped operational sync helper and ERP version-1 endpoint",
+                    new_owner=("integration.dotmac_erp_operational_context_adapter"),
+                    verification=(
+                        "Typed Sub tests plus ERP API/PostgreSQL end-to-end acceptance "
+                        "for project, ticket, task, forms, and idempotent replay."
+                    ),
+                    cutover_gate=(
+                        "Deploy ERP schema and version-2 endpoint before enabling the "
+                        "Self-Care operational-sync capability."
+                    ),
+                    fallback_retirement=(
+                        "Self-Care never falls back to /sync/crm/bulk; the legacy CRM "
+                        "endpoint retires independently after remaining CRM callers."
+                    ),
+                ),
+                steward="service delivery integrations",
+                design_refs=(
+                    "docs/designs/CONFIGURABLE_ERP_OPERATIONAL_SYNC.md",
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                ),
+                test_refs=("tests/test_dotmac_erp_domain_sync.py",),
+                events=EventContract(
+                    event_types=("erp.operational_context.watermark_advanced",),
+                    schema_version=1,
+                    delivery_owner="events.dispatcher",
+                    compatibility=(
+                        "Additive payload evolution; counts and selected domains remain "
+                        "available for version 1 consumers."
+                    ),
+                    replay=(
+                        "The durable dispatcher may replay by event id; the event is "
+                        "informational and does not advance a second cursor."
+                    ),
+                ),
+                projections=(
+                    ProjectionContract(
+                        name="ERP operational-context delivery watermarks",
+                        input_names=(
+                            "canonical Sub projects and project tasks",
+                            "canonical Sub support tickets",
+                            "canonical Sub service work orders",
+                            "ERP version-2 operational-sync response",
+                        ),
+                        writer=("integration.dotmac_erp_operational_context_adapter"),
+                        freshness="scheduled five-minute keyset batches",
+                        stale_behavior=(
+                            "Expense context in ERP may lag, while Sub remains authoritative."
+                        ),
+                        drift_signal=(
+                            "ERP item errors, invalid contract response, or unchanged cursor "
+                            "with eligible source rows"
+                        ),
+                        rebuild_operation=(
+                            "reset selected erp_domain_sync_cursors and replay source UUIDs"
+                        ),
+                        repair_owner=(
+                            "integration.dotmac_erp_operational_context_adapter"
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        SOTService(
             name="integration.dotmac_erp_payables_adapter",
             module="app.services.dotmac_erp.purchase_invoice_sync",
             owns=(

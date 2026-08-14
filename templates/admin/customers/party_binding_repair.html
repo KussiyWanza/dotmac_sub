@@ -1,0 +1,82 @@
+{% extends "layouts/admin.html" %}
+
+{% block title %}Repair Party Binding - {{ repair.subscriber_display_name }}{% endblock %}
+
+{% block content %}
+<div class="mx-auto max-w-3xl space-y-6">
+    <nav class="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
+        <a href="/admin/customers" class="hover:text-accent-600">Customers</a>
+        <span>/</span>
+        <a href="/admin/customers/person/{{ repair.subscriber_id }}" class="hover:text-accent-600">Customer</a>
+        <span>/</span>
+        <span class="text-slate-900 dark:text-white">Repair Party binding</span>
+    </nav>
+
+    <section class="rounded-xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-800">
+        <h1 class="text-xl font-semibold text-slate-900 dark:text-white">Repair customer Party binding</h1>
+        <p class="mt-2 text-sm text-slate-600 dark:text-slate-300">
+            Customer: <strong>{{ repair.subscriber_display_name or repair.subscriber_id }}</strong>.
+            This binds the service account to one reviewed identity so eligible sales workflows can use it.
+        </p>
+        <p class="mt-2 text-sm text-amber-800 dark:text-amber-200">
+            This action does not change customer lifecycle, service, billing, access, contacts, or permissions. It cannot repoint an existing Party binding.
+        </p>
+    </section>
+
+    {% if error %}
+    <div class="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-200" role="alert">{{ error }}</div>
+    {% endif %}
+
+    {% if not repair.can_repair %}
+    <section class="rounded-xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-100">
+        {{ repair.unavailable_reason }}
+    </section>
+    {% else %}
+    <form method="post" class="space-y-6 rounded-xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-800">
+        {% include "components/forms/csrf_input.html" %}
+        <fieldset>
+            <legend class="text-sm font-semibold text-slate-900 dark:text-white">Reviewed action</legend>
+            <div class="mt-3 space-y-3 text-sm text-slate-700 dark:text-slate-200">
+                <label class="flex gap-3"><input type="radio" name="repair_mode" value="existing" checked> <span><strong>Bind an existing Party</strong><br><span class="text-slate-500">Use only when you have reviewed the exact canonical Party UUID.</span></span></label>
+                <label class="flex gap-3"><input type="radio" name="repair_mode" value="create"> <span><strong>Create and bind a new Party</strong><br><span class="text-slate-500">Use only after confirming that no canonical Party already represents this person or organization.</span></span></label>
+            </div>
+        </fieldset>
+
+        <div id="existing-party-fields" class="space-y-2">
+            <label for="party_id" class="block text-sm font-medium text-slate-700 dark:text-slate-200">Existing Party UUID</label>
+            <input id="party_id" name="party_id" type="text" inputmode="text" class="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-sm dark:border-slate-600 dark:bg-slate-900" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+        </div>
+
+        <div id="new-party-fields" class="hidden space-y-4">
+            <div>
+                <label for="party_type" class="block text-sm font-medium text-slate-700 dark:text-slate-200">Party type</label>
+                <select id="party_type" name="party_type" class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-600 dark:bg-slate-900">
+                    <option value="person">Person</option><option value="organization">Organization</option>
+                </select>
+            </div>
+            <div>
+                <label for="party_display_name" class="block text-sm font-medium text-slate-700 dark:text-slate-200">Reviewed Party display name</label>
+                <input id="party_display_name" name="party_display_name" maxlength="200" value="{{ repair.subscriber_display_name }}" class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-600 dark:bg-slate-900">
+            </div>
+        </div>
+
+        <div>
+            <label for="binding_reason" class="block text-sm font-medium text-slate-700 dark:text-slate-200">Review evidence</label>
+            <textarea id="binding_reason" name="binding_reason" rows="4" minlength="10" maxlength="2000" required class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-600 dark:bg-slate-900" placeholder="State the evidence reviewed and why this is the correct identity."></textarea>
+        </div>
+        <label class="flex items-start gap-3 text-sm text-slate-700 dark:text-slate-200"><input name="review_confirmed" value="reviewed" type="checkbox" required class="mt-1"><span>I reviewed the identity evidence and understand that a different existing Party requires the separate merge/repoint workflow.</span></label>
+        <div class="flex gap-3"><a href="/admin/customers/person/{{ repair.subscriber_id }}" class="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium dark:border-slate-600">Cancel</a><button type="submit" class="rounded-lg bg-accent-600 px-4 py-2 text-sm font-semibold text-white hover:bg-accent-700">Apply reviewed Party binding</button></div>
+    </form>
+    {% endif %}
+</div>
+<script>
+(() => {
+  const existing = document.getElementById('existing-party-fields');
+  const created = document.getElementById('new-party-fields');
+  document.querySelectorAll('input[name="repair_mode"]').forEach((input) => input.addEventListener('change', () => {
+    const creating = input.value === 'create' && input.checked;
+    existing.classList.toggle('hidden', creating); created.classList.toggle('hidden', !creating);
+  }));
+})();
+</script>
+{% endblock %}

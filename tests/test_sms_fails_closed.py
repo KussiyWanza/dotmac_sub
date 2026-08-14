@@ -164,6 +164,11 @@ def test_matrix_marks_a_disabled_channel_unavailable(monkeypatch):
         lambda db: {"default": [], "categories": {}, "events": {}},
     )
     monkeypatch.setattr(channel_policy, "legacy_event_overrides", lambda db: {})
+    monkeypatch.setattr(
+        view.customer_experience_communications,
+        "document_change_notification_policy",
+        lambda db: {},
+    )
 
     channels = {
         c["id"]: c for c in view.channel_policy_context(None)["channel_policy_channels"]
@@ -190,6 +195,11 @@ def test_save_drops_a_hand_posted_disabled_channel(monkeypatch):
         channel_policy,
         "set_channel_policy",
         lambda db, **kw: written.update(kw) or {},
+    )
+    monkeypatch.setattr(
+        view.customer_experience_communications,
+        "set_document_change_notification_policy",
+        lambda db, policy: None,
     )
 
     class _Form(dict):

@@ -1,8 +1,10 @@
 import pytest
 from fastapi import HTTPException
 
+from app.models.domain_settings import SettingDomain
+from app.models.subscription_engine import SettingValueType
 from app.schemas.settings import DomainSettingUpdate
-from app.services import settings_api
+from app.services import settings_api, settings_spec
 from app.services.response import ListResponseMixin
 
 
@@ -121,6 +123,45 @@ def test_upsert_notification_setting_variants(db_session):
     )
     assert channel.value_text == "email"
 
+    document_events = settings_api.upsert_notification_setting(
+        db_session,
+        "document_change_notification_events_enabled",
+        DomainSettingUpdate(
+            value_type=SettingValueType.json,
+            value_json={
+                "default": False,
+                "project_status_changed": True,
+                "support_ticket_updated": True,
+            },
+        ),
+    )
+    assert document_events.value_type.value == "json"
+    assert document_events.value_json["default"] is False
+    assert document_events.value_json["project_status_changed"] is True
+
+
+def test_upsert_projects_setting_exposes_project_notification_policy(db_session):
+    enabled = settings_api.upsert_projects_setting(
+        db_session,
+        "project_completion_finance_email_enabled",
+        DomainSettingUpdate(value_text="false"),
+    )
+    assert enabled.value_type.value == "boolean"
+    assert enabled.value_json is False
+
+    recipients = settings_api.upsert_projects_setting(
+        db_session,
+        "project_completion_finance_email_recipients",
+        DomainSettingUpdate(value_text="finance@example.com,ops@example.com"),
+    )
+    assert recipients.value_type.value == "list"
+    assert recipients.value_json == ["finance@example.com", "ops@example.com"]
+
+    fetched = settings_api.get_projects_setting(
+        db_session, "project_completion_finance_email_recipients"
+    )
+    assert fetched.value_json == ["finance@example.com", "ops@example.com"]
+
 
 def test_upsert_scheduler_setting(db_session):
     beat = settings_api.upsert_scheduler_setting(
@@ -209,6 +250,30 @@ def test_upsert_gis_setting_variants(db_session):
             "sync_enabled",
             DomainSettingUpdate(value_text="false"),
         )
+
+
+def test_ai_polish_settings_are_integration_settings(db_session):
+    for key in (
+        "inbox_ai_polish_business_voice",
+        "inbox_ai_polish_channel_guidance",
+    ):
+        spec = settings_spec.get_spec(SettingDomain.integration, key)
+        assert spec is not None
+        setting = settings_api.upsert_integration_setting(
+            db_session,
+            key,
+            DomainSettingUpdate(value_text=f"configured {key}"),
+        )
+        assert setting.domain == SettingDomain.integration
+        assert setting.value_text == f"configured {key}"
+
+        with pytest.raises(HTTPException) as exc:
+            settings_api.upsert_comms_setting(
+                db_session,
+                key,
+                DomainSettingUpdate(value_text="wrong owner"),
+            )
+        assert exc.value.status_code == 400
 
 
 def test_list_settings_response(db_session):

@@ -1237,6 +1237,148 @@ SERVICES: tuple[SOTService, ...] = (
         ),
     ),
     SOTService(
+        name="network.crm_network_map_point_migration",
+        module="app.services.network.crm_network_map_point_migration",
+        owns=(
+            "CRM Network Map point-asset authoritative batch selection",
+            "CRM Network Map FDH/access-point/splice-closure reconciliation report",
+            "CRM point-source identity proposal manifest preparation",
+            "CRM point-source archive and authority guards before identity execution",
+        ),
+        depends_on=(
+            "network.fiber_source_staging",
+            "network.fiber_identity_decisions",
+            "network.fiber_identity_review",
+            "network.fiber_asset_changes",
+        ),
+        notes=(
+            "This coordinator reads immutable CRM staging evidence only for FDH "
+            "cabinets, fiber access points, and splice closures. It never reads "
+            "staged rows into production map projections and never writes "
+            "canonical assets directly; selected proposals and approved "
+            "execution are delegated to the existing fiber identity owners."
+        ),
+        contract=ServiceContract(
+            concerns=(
+                ConcernContract(
+                    name="CRM Network Map point-asset authoritative batch selection",
+                    role=OwnerRole.RESOLVER,
+                    input_names=("immutable CRM point staging evidence",),
+                ),
+                ConcernContract(
+                    name=(
+                        "CRM Network Map FDH/access-point/splice-closure "
+                        "reconciliation report"
+                    ),
+                    role=OwnerRole.RESOLVER,
+                    input_names=(
+                        "immutable CRM point staging evidence",
+                        "canonical fiber asset and identity evidence",
+                    ),
+                ),
+                ConcernContract(
+                    name="CRM point-source identity proposal manifest preparation",
+                    role=OwnerRole.RESOLVER,
+                    input_names=(
+                        "immutable CRM point staging evidence",
+                        "canonical fiber asset and identity evidence",
+                    ),
+                ),
+                ConcernContract(
+                    name=(
+                        "CRM point-source archive and authority guards before "
+                        "identity execution"
+                    ),
+                    role=OwnerRole.POLICY,
+                    input_names=(
+                        "immutable CRM point staging evidence",
+                        "reviewed fiber identity proposal evidence",
+                    ),
+                ),
+            ),
+            authoritative_inputs=(
+                AuthorityInput(
+                    name="immutable CRM point staging evidence",
+                    owner="network.fiber_source_staging",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source=(
+                        "checksum-bound FiberTopologySourceBatch and "
+                        "FiberTopologyStagedFeature rows produced from the "
+                        "isolated CRM archive"
+                    ),
+                ),
+                AuthorityInput(
+                    name="canonical fiber asset and identity evidence",
+                    owner="network.fiber_identity_decisions",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source=(
+                        "canonical fiber assets, durable source links, and active "
+                        "identity decisions"
+                    ),
+                ),
+                AuthorityInput(
+                    name="reviewed fiber identity proposal evidence",
+                    owner="network.fiber_identity_review",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source=(
+                        "immutable proposal batch manifest, review attestation, "
+                        "and approved decision state"
+                    ),
+                ),
+            ),
+            transaction=TransactionContract(
+                mode=TransactionMode.READ_ONLY,
+                boundary=(
+                    "Selection, reporting, preview, and authority checks are "
+                    "read-only. Proposal persistence and approved execution are "
+                    "separate explicit calls delegated to the fiber identity "
+                    "review and decision owners, which retain their transactions."
+                ),
+                locking=(
+                    "Immutable staging hashes and reviewed manifest hashes replace "
+                    "locks at this resolver boundary; downstream writers own locks."
+                ),
+                idempotency=(
+                    "Archive, cohort, feature-content, request, and manifest hashes "
+                    "make repeated resolution deterministic."
+                ),
+                retries=(
+                    "Read-only resolution may be retried unchanged; a stale archive "
+                    "or manifest requires a fresh operator review."
+                ),
+            ),
+            errors=ErrorContract(
+                domain_codes=(
+                    "network.crm_network_map_point_migration.invalid_evidence",
+                    "network.crm_network_map_point_migration.archive_mismatch",
+                    "network.crm_network_map_point_migration.superseded_batch",
+                    "network.crm_network_map_point_migration.no_eligible_features",
+                ),
+                mapping_owner="scripts.network.crm_network_map_point_migration",
+                fail_closed_on=(
+                    "missing reconciliation metadata",
+                    "archive or manifest mismatch",
+                    "superseded source evidence",
+                    "ambiguous canonical identity",
+                ),
+            ),
+            migration=MigrationContract(
+                state=AuthorityMigrationState.NATIVE,
+                new_owner="network.crm_network_map_point_migration",
+            ),
+            steward="network operations",
+            design_refs=(
+                "docs/designs/NETWORK_MAP_V2_PARITY.md",
+                "docs/runbooks/CRM_NETWORK_MAP_MIGRATION.md",
+                "docs/SOT_RELATIONSHIP_MAP.md",
+            ),
+            test_refs=(
+                "tests/test_crm_network_map_point_migration.py",
+                "tests/architecture/test_crm_network_map_point_migration_boundary.py",
+            ),
+        ),
+    ),
+    SOTService(
         name="network.fiber_field_observations",
         module="app.services.network.fiber_topology_field_observations",
         owns=(

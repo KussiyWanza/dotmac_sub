@@ -34,7 +34,7 @@ def test_create_draft_pins_deployed_manifest(db_session):
 
     assert installation.state == IntegrationInstallationState.draft.value
     assert installation.connector_key == "whatsapp"
-    assert installation.connector_version == "1.0.0"
+    assert installation.connector_version == "1.1.0"
     assert len(installation.manifest_digest) == 64
     assert installation.environment == "sandbox"
 

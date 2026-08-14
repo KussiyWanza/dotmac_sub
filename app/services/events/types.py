@@ -76,6 +76,9 @@ class EventType(enum.Enum):
         "integration.installation.meta_social_configured"
     )
     integration_job_capability_activated = "integration.job.capability_activated"
+    erp_operational_context_watermark_advanced = (
+        "erp.operational_context.watermark_advanced"
+    )
     oauth_token_refreshed = "oauth_token.refreshed"
     oauth_token_refresh_failed = "oauth_token.refresh_failed"
     account_credit_deposited = "account_credit.deposited"
@@ -385,9 +388,13 @@ class EventType(enum.Enum):
     account_adjustment_confirmed = "account_adjustment.confirmed"
     account_adjustment_reversed = "account_adjustment.reversed"
 
-    # RBAC catalog events (2)
+    # RBAC catalog events (3)
     rbac_role_catalog_changed = "rbac.role_catalog_changed"
     rbac_permission_catalog_changed = "rbac.permission_catalog_changed"
+    # Durable projection work for a reduction that revoked live sessions. The
+    # revocation is already a committed database fact when this is dispatched;
+    # the event is the record and the replay handle, never the mechanism.
+    rbac_entitlement_reduction_revoked = "rbac.entitlement_reduction_revoked"
 
     # NAS events (7)
     nas_device_created = "nas_device.created"

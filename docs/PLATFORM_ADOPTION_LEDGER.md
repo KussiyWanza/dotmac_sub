@@ -69,6 +69,22 @@ or authorise deployment. Because Sub deploys migrations before the new image,
 this GUC behavior must be present in the deployed predecessor before a later
 schema release can enable RLS safely.
 
+**2026-08-14 — minimized production-shape lineage rehearsal.** The executable
+revision-0001 ratchet can now consume a typed, aggregate-only evidence bundle
+instead of a production database restore. The source exporter is repeatable-
+read and read-only; its schema rejects values outside catalog digests, counts
+and closed structural cohorts. The scratch lane verifies the exact source
+revision and catalog fingerprints, materializes new synthetic cohort canaries,
+runs the installed kernel lineage, and proves complete canary rows survive the
+expected failure byte-stable. It copies no production UUIDs, identity/contact
+fields, credential material, audit payloads, metadata values or timestamps.
+The runbook is `docs/runbooks/KERNEL_LINEAGE_MINIMIZED_REHEARSAL.md`.
+
+This makes the evidence collection safe enough to execute after both hosts are
+explicitly named. It does not disposition any collision, move
+`EXPECTED_FIRST_FAILURE`, authorize kernel composition, or replace the
+per-table cutover decisions.
+
 
 ## Pin history
 

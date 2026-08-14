@@ -283,6 +283,75 @@ MA5608T(config-if-gpon-0/1)#
     assert commands[3][1].endswith(r"MA5608T\(config\-if\-gpon\-0/1\)\#\s*$")
 
 
+def test_get_tr069_profile_binding_reads_display_this_with_paged_helper(
+    monkeypatch,
+) -> None:
+    import app.services.network.olt_ssh as core
+    from app.services.network.olt_ssh_ont.tr069 import get_tr069_server_profile_binding
+
+    class FakeChannel:
+        def send(self, _chars: str) -> None:
+            return None
+
+    class FakeTransport:
+        def close(self) -> None:
+            return None
+
+    non_paged_commands: list[str] = []
+    paged_commands: list[str] = []
+
+    def fake_run(channel, command: str, prompt: str = r"#\s*$") -> str:
+        assert isinstance(channel, FakeChannel)
+        non_paged_commands.append(command)
+        if command == "config":
+            return "config\n\nMA5800-X2(config)#"
+        if command == "interface gpon 0/2":
+            return "interface gpon 0/2\n\nMA5800-X2(config-if-gpon-0/2)#"
+        if command == "display this":
+            raise AssertionError("display this must use paged readback")
+        raise AssertionError(f"Unexpected command: {command}")
+
+    def fake_paged(channel, command: str, prompt: str = r"#\s*$") -> str:
+        assert isinstance(channel, FakeChannel)
+        paged_commands.append(command)
+        if command == "display this":
+            return """
+interface gpon 0/2
+ ont tr069-server-config 0 0 profile-id 2
+---- More ( Press 'Q' to break ) ----
+ ont tr069-server-config 1 13 profile-id 5
+
+MA5800-X2(config-if-gpon-0/2)#
+"""
+        raise AssertionError(f"Unexpected paged command: {command}")
+
+    monkeypatch.setattr(core, "_validate_fsp", lambda fsp: (True, ""))
+    monkeypatch.setattr(
+        core,
+        "_open_shell",
+        lambda olt: (
+            FakeTransport(),
+            FakeChannel(),
+            SimpleNamespace(prompt_regex=r"MA5800-X2#\s*$"),
+        ),
+    )
+    monkeypatch.setattr(core, "_read_until_prompt", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(core, "_run_huawei_cmd", fake_run)
+    monkeypatch.setattr(core, "_run_huawei_paged_cmd", fake_paged)
+
+    ok, message, profile_id = get_tr069_server_profile_binding(
+        SimpleNamespace(name="Garki Huawei OLT", model="MA5800-X2"),
+        "0/2/1",
+        13,
+    )
+
+    assert ok is True
+    assert profile_id == 5
+    assert "TR-069 profile 5 bound" in message
+    assert non_paged_commands == ["config", "interface gpon 0/2"]
+    assert paged_commands == ["display this"]
+
+
 def test_provision_fails_when_tr069_binding_readback_mismatches(monkeypatch) -> None:
     from app.services.network import ont_provision_steps
     from app.services.network.ont_provision_steps import provision_with_reconciliation

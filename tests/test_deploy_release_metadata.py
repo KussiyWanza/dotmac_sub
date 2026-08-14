@@ -33,6 +33,7 @@ def _run_deploy(
     tmp_path: Path,
     *,
     revision: str = REVISION,
+    image_source_tree: str | None = None,
     health_success: bool = True,
     proxy_ready: bool = True,
     migration_lock_failures: int = 0,
@@ -78,6 +79,14 @@ def _run_deploy(
         if repo_digest_matches
         else "ghcr.io/michaelayoade/dotmac_sub@sha256:" + "b" * 64
     )
+    repo_root = Path(__file__).resolve().parents[1]
+    release_source_tree = subprocess.run(
+        ["git", "-C", str(repo_root), "rev-parse", "HEAD^{tree}"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    reported_source_tree = image_source_tree or release_source_tree
     _write_executable(
         bin_dir / "docker",
         f"""#!/usr/bin/env bash
@@ -86,6 +95,8 @@ printf '%s\\n' "$*" >> "$DOCKER_LOG"
 if [[ "$1 $2" == "image inspect" ]]; then
   if [[ "$*" == *"RepoDigests"* ]]; then
     printf '%s\\n' "{reported_digest_reference}"
+  elif [[ "$*" == *"io.dotmac.release.source-tree"* ]]; then
+    printf '%s\\n' "{reported_source_tree}"
   else
     printf '%s\\n' "{revision}"
   fi
@@ -334,6 +345,27 @@ def test_deploy_rejects_tag_revision_mismatch_without_changing_env(
     assert "GIT_SHA=old0000000000000000000000000000000000000" in env_text
 
 
+def test_deploy_rejects_release_compose_tree_mismatch_before_database_work(
+    tmp_path: Path,
+) -> None:
+    result, env_file, docker_log = _run_deploy(
+        tmp_path,
+        image_source_tree="f" * 40,
+    )
+
+    assert result.returncode != 0
+    assert "release Compose tree" in result.stderr
+    assert "does not match image source tree" in result.stderr
+    assert "APP_IMAGE=ghcr.io/michaelayoade/dotmac_sub:sha-old0000" in (
+        env_file.read_text()
+    )
+    assert not any(
+        "scripts.migration.reconcile_service_extension_duplicates" in command
+        or "alembic upgrade heads" in command
+        for command in docker_log.read_text().splitlines()
+    )
+
+
 def test_deploy_restores_image_and_git_sha_after_health_failure(tmp_path: Path) -> None:
     result, env_file, _docker_log = _run_deploy(tmp_path, health_success=False)
 
@@ -377,9 +409,7 @@ def test_deploy_verifies_schema_then_warms_candidate_before_recreate(
         if "127.0.0.1:18001:8001" in command
     )
     recreate = next(
-        index
-        for index, command in enumerate(commands)
-        if "compose -f docker-compose.yml up -d app" in command
+        index for index, command in enumerate(commands) if " up -d app" in command
     )
 
     assert migration < verification < manifest_pins < crm_ticket < candidate < recreate
@@ -520,6 +550,23 @@ def test_deploy_never_starts_a_service_the_host_does_not_declare(
     assert "BACKGROUND RUNTIME FAILURE: celery-beat" not in result.stderr
 
 
+def test_deploy_refuses_missing_required_celery_worker(tmp_path: Path) -> None:
+    missing_notification_worker = tuple(
+        service for service in FULL_SERVICES if service != "celery-worker-notifications"
+    )
+    result, _env_file, docker_log = _run_deploy(
+        tmp_path,
+        declared_services=missing_notification_worker,
+    )
+
+    assert result.returncode != 0
+    assert "DEPLOY CONFIG FAILURE" in result.stderr
+    assert "celery-worker-notifications" in result.stderr
+    assert not any(
+        " up -d " in command for command in docker_log.read_text().splitlines()
+    )
+
+
 def test_deploy_loads_the_compose_override_when_the_host_has_one(
     tmp_path: Path,
 ) -> None:
@@ -532,10 +579,30 @@ def test_deploy_loads_the_compose_override_when_the_host_has_one(
         if command.startswith("compose ")
     ]
     assert compose_commands
+    repo_compose = str(Path(__file__).resolve().parents[1] / "docker-compose.yml")
+    host_override = str(tmp_path / "deploy" / "docker-compose.override.yml")
     assert all(
-        "-f docker-compose.yml -f docker-compose.override.yml" in command
+        f"-f {repo_compose}" in command and f"-f {host_override}" in command
         for command in compose_commands
     )
+
+
+def test_deploy_uses_release_compose_instead_of_host_base_file(
+    tmp_path: Path,
+) -> None:
+    result, _env_file, docker_log = _run_deploy(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    repo_compose = str(Path(__file__).resolve().parents[1] / "docker-compose.yml")
+    host_compose = str(tmp_path / "deploy" / "docker-compose.yml")
+    compose_commands = [
+        command
+        for command in docker_log.read_text().splitlines()
+        if command.startswith("compose ")
+    ]
+    assert compose_commands
+    assert all(f"-f {repo_compose}" in command for command in compose_commands)
+    assert all(f"-f {host_compose}" not in command for command in compose_commands)
 
 
 def test_deploy_ignores_the_compose_override_when_told_to(tmp_path: Path) -> None:

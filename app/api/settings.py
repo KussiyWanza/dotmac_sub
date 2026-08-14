@@ -714,3 +714,47 @@ def upsert_comms_setting(
 )
 def get_comms_setting(key: str, db: Session = Depends(get_db)):
     return settings_service.get_comms_setting(db, key)
+
+
+@router.get(
+    "/projects",
+    response_model=ListResponse[DomainSettingRead],
+    tags=["settings-projects"],
+)
+def list_projects_settings(
+    is_active: bool | None = None,
+    order_by: str = Query(default="created_at"),
+    order_dir: str = Query(default="desc", pattern="^(asc|desc)$"),
+    limit: int = Query(default=200, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+):
+    return settings_service.list_projects_settings_response(
+        db=db,
+        is_active=is_active,
+        order_by=order_by,
+        order_dir=order_dir,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.put(
+    "/projects/{key}",
+    response_model=DomainSettingRead,
+    status_code=status.HTTP_200_OK,
+    tags=["settings-projects"],
+)
+def upsert_projects_setting(
+    key: str, payload: DomainSettingUpdate, db: Session = Depends(get_db)
+):
+    return settings_service.upsert_projects_setting(db=db, key=key, payload=payload)
+
+
+@router.get(
+    "/projects/{key}",
+    response_model=DomainSettingRead,
+    tags=["settings-projects"],
+)
+def get_projects_setting(key: str, db: Session = Depends(get_db)):
+    return settings_service.get_projects_setting(db=db, key=key)

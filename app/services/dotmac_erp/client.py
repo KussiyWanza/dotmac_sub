@@ -18,6 +18,11 @@ from collections.abc import Collection
 import httpx
 from dotmac_integration import IntegrationHttpClient
 
+from app.services.dotmac_erp.operational_contracts import (
+    ErpOperationalSyncCommand,
+    ErpOperationalSyncOutcome,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -530,13 +535,16 @@ class DotMacERPClient:
             return rows if isinstance(rows, list) else []
         return result if isinstance(result, list) else []
 
-    def sync_operational_domains(self, payload: dict) -> dict:
-        """Push native Sub project/ticket/work-order context to ERP."""
-        return self.post(
+    def sync_operational_domains(
+        self, command: ErpOperationalSyncCommand
+    ) -> ErpOperationalSyncOutcome:
+        """Push native Sub project/ticket/task/work-order context to ERP."""
+        response = self.post(
             "/api/v1/sync/sub/bulk",
-            payload,
+            command.model_dump(mode="json"),
             expected_status_codes={200},
         )
+        return ErpOperationalSyncOutcome.model_validate(response)
 
     # ============ NCC regulatory read surface (ERP owns finance + HR) ============
     #

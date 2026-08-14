@@ -69,6 +69,7 @@ from app.services import (
 from app.services.ai.client import AIClientError
 from app.services.auth_dependencies import can, require_permission
 from app.services.catalog import plan_family_catalogues
+from app.services.common import coerce_uuid
 from app.services.domain_errors import DomainError
 from app.services.file_storage import (
     build_content_disposition,
@@ -92,6 +93,13 @@ class InboxPolishRequest(BaseModel):
 class InboxReplyPresentation(BaseModel):
     conversation_id: UUID
     status: Literal["success", "error"]
+    message: str
+
+
+class InboxReadPresentation(BaseModel):
+    conversation_id: UUID
+    status: Literal["success", "error"]
+    changed: bool
     message: str
 
 
@@ -162,6 +170,16 @@ def _query_text(value: object) -> str | None:
     """Normalize direct-call FastAPI parameter sentinels at the adapter."""
 
     return value if isinstance(value, str) else None
+
+
+def _optional_uuid_field(value: object, *, message: str) -> UUID | None:
+    text = _query_text(value)
+    if not text:
+        return None
+    parsed = coerce_uuid(text)
+    if parsed is None:
+        raise team_inbox_commands.InboxCommandError(message)
+    return parsed
 
 
 def _query_bool(value: object, *, default: bool = False) -> bool:
@@ -438,6 +456,16 @@ def team_inbox_social_comments(
     )
     if projection.canonical_url is not None:
         return RedirectResponse(url=projection.canonical_url, status_code=307)
+    selected_action_eligibility = (
+        projection.selected.action_eligibility
+        if projection.selected is not None
+        else None
+    )
+    can_reply_to_social_comments = bool(
+        can(request, "support:ticket:update")
+        and selected_action_eligibility is not None
+        and selected_action_eligibility.can_reply
+    )
     context = _ctx(request, db)
     context.update(
         {
@@ -459,6 +487,8 @@ def team_inbox_social_comments(
             "unread": projection.unread,
             "status_options": projection.status_options,
             "channel_options": projection.channel_options,
+            "action_eligibility": selected_action_eligibility,
+            "can_reply_to_social_comments": can_reply_to_social_comments,
             "actor_person_id": str(actor_person_id) if actor_person_id else "",
         }
     )
@@ -598,6 +628,7 @@ def _reply_presentation_response(
     *,
     status: Literal["success", "error"],
     message: str,
+    retry_after_seconds: int | None = None,
 ) -> Response:
     """Return the typed HTMX result consumed by the Inbox composer adapter."""
 
@@ -606,13 +637,36 @@ def _reply_presentation_response(
         status=status,
         message=message,
     )
+    headers = {
+        "HX-Trigger": json.dumps(
+            {"inbox-reply-completed": payload.model_dump(mode="json")}
+        )
+    }
+    if retry_after_seconds is not None:
+        headers["Retry-After"] = str(retry_after_seconds)
     return Response(
         status_code=204,
-        headers={
-            "HX-Trigger": json.dumps(
-                {"inbox-reply-completed": payload.model_dump(mode="json")}
-            )
-        },
+        headers=headers,
+    )
+
+
+def _read_presentation_response(
+    conversation_id: UUID,
+    *,
+    status: Literal["success", "error"],
+    changed: bool,
+    message: str,
+    status_code: int = 200,
+) -> JSONResponse:
+    payload = InboxReadPresentation(
+        conversation_id=conversation_id,
+        status=status,
+        changed=changed,
+        message=message,
+    )
+    return JSONResponse(
+        content=payload.model_dump(mode="json"),
+        status_code=status_code,
     )
 
 
@@ -1092,10 +1146,14 @@ def team_inbox_lead_intake_issue(
         try:
             reply = team_inbox_commands.reply(
                 db,
-                conversation_id=conversation_id,
-                body_text=body,
-                actor_person_id=_actor_id_from_request(request),
-                idempotency_key=f"lead-intake:manual-delivery:{outcome.invitation_id}",
+                command=team_inbox_commands.ReplyCommand(
+                    conversation_id=conversation_id,
+                    body_text=body,
+                    actor_person_id=coerce_uuid(_actor_id_from_request(request)),
+                    idempotency_key=(
+                        f"lead-intake:manual-delivery:{outcome.invitation_id}"
+                    ),
+                ),
             )
             delivery_status = reply.kind
             outbound_message_id = UUID(reply.message_id) if reply.message_id else None
@@ -1200,17 +1258,19 @@ def team_inbox_mark_read(
     conversation_id: UUID,
     request: Request,
     db: Session = Depends(get_db),
-):
+) -> JSONResponse:
     actor_person_id = _actor_uuid_from_request(request)
     if actor_person_id is None:
-        return _detail_redirect(
+        return _read_presentation_response(
             conversation_id,
             status="error",
+            changed=False,
             message="Authenticated operator identity is required.",
+            status_code=401,
         )
     _prepare_mutation(db)
     try:
-        team_inbox_read_state.mark_conversation_read(
+        outcome = team_inbox_read_state.mark_conversation_read(
             db,
             team_inbox_read_state.MarkConversationReadCommand(
                 context=CommandContext.system(
@@ -1224,14 +1284,17 @@ def team_inbox_mark_read(
             ),
         )
     except team_inbox_read_state.TeamInboxReadStateError as exc:
-        return _detail_redirect(
+        return _read_presentation_response(
             conversation_id,
             status="error",
+            changed=False,
             message=exc.message,
+            status_code=409,
         )
-    return _detail_redirect(
+    return _read_presentation_response(
         conversation_id,
         status="success",
+        changed=outcome.changed,
         message="Conversation marked read.",
     )
 
@@ -1261,25 +1324,51 @@ def team_inbox_reply(
     try:
         outcome = team_inbox_commands.reply(
             db,
-            conversation_id=conversation_id,
-            body_text=body_text,
-            macro_id=macro_id,
-            template_id=template_id,
-            attachment_ids=[
-                item.strip()
-                for item in (_query_text(attachment_ids) or "").split(",")
-                if item.strip()
-            ],
-            send_after=_parse_datetime_field(send_after),
-            idempotency_key=_query_text(idempotency_key),
-            reply_to_message_id=_query_text(reply_to_message_id),
-            whatsapp_template_name=_query_text(whatsapp_template_name),
-            whatsapp_template_language=_query_text(whatsapp_template_language),
-            whatsapp_template_components=_json_object_list(
-                _query_text(whatsapp_template_components)
+            command=team_inbox_commands.ReplyCommand(
+                conversation_id=conversation_id,
+                body_text=body_text,
+                macro_id=_optional_uuid_field(
+                    macro_id, message="Reply macro is invalid."
+                ),
+                template_id=_optional_uuid_field(
+                    template_id, message="Reply template is invalid."
+                ),
+                attachment_ids=tuple(
+                    item.strip()
+                    for item in (_query_text(attachment_ids) or "").split(",")
+                    if item.strip()
+                ),
+                send_after=_parse_datetime_field(send_after),
+                idempotency_key=_query_text(idempotency_key),
+                reply_to_message_id=_optional_uuid_field(
+                    reply_to_message_id, message="Quoted message is invalid."
+                ),
+                whatsapp_template_name=_query_text(whatsapp_template_name),
+                whatsapp_template_language=_query_text(whatsapp_template_language),
+                whatsapp_template_components=(
+                    team_inbox_commands.parse_whatsapp_template_components(
+                        _json_object_list(_query_text(whatsapp_template_components))
+                    )
+                ),
+                actor_person_id=coerce_uuid(_actor_id_from_request(request)),
             ),
-            actor_person_id=_actor_id_from_request(request),
         )
+    except team_inbox_commands.ConversationBusyError as exc:
+        if _is_htmx_request(request):
+            return _reply_presentation_response(
+                conversation_id,
+                status="error",
+                message=exc.message,
+                retry_after_seconds=1,
+            )
+        response = _detail_redirect(
+            conversation_id,
+            status="error",
+            message=exc.message,
+            next_url=next_url,
+        )
+        response.headers["Retry-After"] = "1"
+        return response
     except team_inbox_commands.ConversationNotFoundError:
         if _is_htmx_request(request):
             return _reply_presentation_response(
@@ -1368,10 +1457,12 @@ def team_inbox_share_catalogue(
         _prepare_mutation(db)
         outcome = team_inbox_commands.reply(
             db,
-            conversation_id=conversation_id,
-            body_text=body,
-            idempotency_key=_query_text(idempotency_key),
-            actor_person_id=_actor_id_from_request(request),
+            command=team_inbox_commands.ReplyCommand(
+                conversation_id=conversation_id,
+                body_text=body,
+                idempotency_key=_query_text(idempotency_key),
+                actor_person_id=coerce_uuid(_actor_id_from_request(request)),
+            ),
         )
     except plan_family_catalogues.PlanFamilyCatalogueError as exc:
         return _detail_redirect(

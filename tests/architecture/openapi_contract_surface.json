@@ -9672,6 +9672,34 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "GET /api/v1/settings/projects": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "query:is_active",
+    "query:limit",
+    "query:offset",
+    "query:order_by",
+    "query:order_dir"
+   ],
+   "request": null,
+   "responses": {
+    "200": "4eee36edaba3",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "GET /api/v1/settings/projects/{key}": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:key!"
+   ],
+   "request": null,
+   "responses": {
+    "200": "ae0aacc33266",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "GET /api/v1/settings/provisioning": {
    "params": [
     "header:authorization",
@@ -18619,6 +18647,18 @@
    }
   },
   "PUT /api/v1/settings/notification/{key}": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:key!"
+   ],
+   "request": "97fabd9d85d0",
+   "responses": {
+    "200": "ae0aacc33266",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "PUT /api/v1/settings/projects/{key}": {
    "params": [
     "header:authorization",
     "header:x-api-key",

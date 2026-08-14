@@ -87,3 +87,20 @@ def test_no_inbox_writer_outside_team_inbox_family():
         "team_inbox_commands / the *_committed receivers instead):\n"
         + "\n".join(sorted(offenders))
     )
+
+
+def test_operator_reply_keeps_typed_command_and_late_nowait_lock():
+    source = (APP / "services" / "team_inbox_commands.py").read_text(encoding="utf-8")
+    reply_start = source.index("def reply(")
+    reply_end = source.index("\ndef create_label(", reply_start)
+    reply_source = source[reply_start:reply_end]
+
+    assert "command: ReplyCommand" in reply_source
+    assert "command.conversation_id" in reply_source
+    assert "for_update=True" in reply_source
+    assert "nowait=True" in reply_source
+    assert reply_source.index("list_approved_templates") < reply_source.index(
+        "nowait=True"
+    )
+    assert "except OperationalError as exc" in reply_source
+    assert "_is_lock_unavailable(exc)" in reply_source

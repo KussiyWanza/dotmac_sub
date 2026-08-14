@@ -53,6 +53,12 @@ Common conversation actions: reply, add private note, assign, change status,
 change priority, snooze, mute, apply labels, retry a failed message, open
 contact context, and start a ticket handoff.
 
+Reply submission preserves one browser-generated idempotency key until the
+owner returns a committed outcome. If another conversation mutation already
+holds the authoritative row, the owner fails fast with a retryable busy result;
+the adapter keeps the draft and key, returns `Retry-After`, and never presents
+the attempt as queued or sent.
+
 Clicking a safe raster-image attachment opens the authorized media content in
 a new browser tab. The media projection, not the template or filename, decides
 whether the resolved MIME type is safe for inline presentation. SVG, unknown,
@@ -88,6 +94,23 @@ the shared branding palette and 8px compact-control radius. Its static Tailwind
 v4 amber, status, assignment, saved-view, dark-mode, and `rounded-xl` group
 classes are confined to `templates/admin/inbox/_sidebar.html`; it does not
 change the global theme, Tailwind configuration, or shared components.
+
+The existing **Inbox Stats & Filters** button remains the single disclosure for
+the whole section and shows the number of active filter concepts. Its expanded
+content begins with compact, counted shortcuts for Active, Unreplied,
+Unassigned, Comments, and Failed. Comments and Failed remain navigation to
+their canonical Inbox views; the other shortcuts select their exact projected
+cohorts. The broad non-resolved cohort is labelled Active so it cannot be
+confused with the narrower `status=open` filter.
+
+Active filters render once as removable chips with one Clear all action. The
+remaining controls are grouped by operator task under Status, Assignment,
+Attention, Routing, Advanced, and Saved views disclosures. A counted shortcut
+is not repeated in a second group: Unreplied and Unassigned exist only in the
+compact shortcut row, while Unread, Snoozed, Muted, Needs attention, and reply
+window state live under Attention. Status and Assignment begin open; less-used
+groups use progressive disclosure. Collapsing the outer control changes only
+visibility and preserves every URL-owned filter.
 
 The same page-scoped exception covers the sidebar shell, header, action
 tooltips, live/offline indicator, and search field. The header keeps the real
@@ -163,6 +186,11 @@ notice. `Refresh list` refetches and swaps only
 boundary and preserves the selected conversation in the URL. Thread refresh
 remains independent, so a focused composer is never replaced.
 
+Opening a conversation records the exact queue return URL, including page,
+filters, sort, and page size. A successful reply refreshes the thread and that
+same queue page without returning the operator to page one; the non-HTMX
+fallback submits the same local return URL.
+
 All list-changing interactions use one latest-request-wins coordinator: sidebar
 filters and KPI links, search, saved views, pagination, browser history, manual
 refresh, read-state refresh, realtime refresh, and fallback polling. Each
@@ -218,7 +246,18 @@ bounded, auditable, and safe to repeat.
 
 ## Loading and failure behaviour
 
+- A stable, non-blocking activity row sits between search and the Stats and
+  Filters disclosure. It reports waiting, checking, just-updated, and retrying
+  states for every coordinated list request without covering or disabling the
+  queue.
 - List, thread, and contact context load independently.
+- After an unread thread opens successfully, the operator read command returns
+  a typed browser result. Success clears only that queue row's unread treatment
+  and decrements the unread-conversation total. The unread-only cohort refreshes
+  only its queue so pagination remains truthful; failure preserves unread state
+  and receives one quiet retry.
+- Opening a conversation places a loading veil over the conversation pane only;
+  the queue sidebar remains visible and usable.
 - A request already in flight for the same resource is not repeated.
 - Realtime events update safe surfaces in place. A focused composer is never
   replaced; the UI shows a new-activity banner instead.

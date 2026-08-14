@@ -10,11 +10,13 @@ import pytest
 from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
 
-from app.models.support import Ticket, TicketChannel, TicketStatus
+from app.models.service_team import ServiceTeam, ServiceTeamMember
+from app.models.support import Ticket, TicketAssignee, TicketChannel, TicketStatus
 from app.services import support as support_service
 from app.services import support_ticket_settings, web_support_tickets
 from app.services.list_query import PageMeta
 from app.web.admin import support_tickets as admin_support_tickets
+from tests.staff_identity_fixtures import add_bound_staff_user
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -348,6 +350,117 @@ def test_ticket_complete_scope_explicitly_disables_the_page_limit(monkeypatch):
     assert captured["limit"] is None
     assert captured["offset"] == 0
     assert captured["region"] == "north"
+
+
+def test_assigned_to_me_expands_roles_and_direct_active_team_without_duplicates(
+    db_session,
+):
+    user, person = add_bound_staff_user(db_session)
+    team = ServiceTeam(name=f"Direct team {uuid4()}")
+    inactive_team = ServiceTeam(name=f"Inactive team {uuid4()}", is_active=False)
+    db_session.add_all([team, inactive_team])
+    db_session.flush()
+    db_session.add_all(
+        [
+            ServiceTeamMember(team_id=team.id, person_id=person.id),
+            ServiceTeamMember(team_id=inactive_team.id, person_id=person.id),
+        ]
+    )
+
+    primary = _ticket(title="Primary", assigned_to_person_id=user.id)
+    legacy_primary = _ticket(title="Legacy primary", assigned_to_person_id=person.id)
+    additional = _ticket(title="Additional")
+    legacy_additional = _ticket(title="Legacy additional")
+    technician = _ticket(title="Technician", technician_person_id=user.id)
+    manager = _ticket(title="Manager", ticket_manager_person_id=person.id)
+    coordinator = _ticket(title="Coordinator", site_coordinator_person_id=user.id)
+    team_ticket = _ticket(title="Team", service_team_id=team.id)
+    multi_match = _ticket(
+        title="Multiple roles",
+        assigned_to_person_id=user.id,
+        technician_person_id=user.id,
+        ticket_manager_person_id=person.id,
+        service_team_id=team.id,
+    )
+    unrelated = _ticket(title="Unrelated")
+    inactive_team_ticket = _ticket(
+        title="Inactive team", service_team_id=inactive_team.id
+    )
+    db_session.add_all(
+        [
+            primary,
+            legacy_primary,
+            additional,
+            legacy_additional,
+            technician,
+            manager,
+            coordinator,
+            team_ticket,
+            multi_match,
+            unrelated,
+            inactive_team_ticket,
+        ]
+    )
+    db_session.flush()
+    db_session.add_all(
+        [
+            TicketAssignee(ticket_id=additional.id, person_id=user.id),
+            TicketAssignee(ticket_id=legacy_additional.id, person_id=person.id),
+            TicketAssignee(ticket_id=multi_match.id, person_id=user.id),
+        ]
+    )
+    db_session.commit()
+
+    query = _query(assigned_to_me=True, per_page=25)
+    context = web_support_tickets.build_tickets_list_context(
+        db_session,
+        list_query=query,
+        actor_id=str(user.id),
+        visible_columns_cookie=None,
+    )
+    expected_ids = {
+        primary.id,
+        legacy_primary.id,
+        additional.id,
+        legacy_additional.id,
+        technician.id,
+        manager.id,
+        coordinator.id,
+        team_ticket.id,
+        multi_match.id,
+    }
+
+    assert context["total"] == len(expected_ids)
+    assert {ticket.id for ticket in context["tickets"]} == expected_ids
+    assert len(context["tickets"]) == len(expected_ids)
+    complete_scope = web_support_tickets.list_tickets_for_scope(
+        db_session, list_query=query, actor_id=str(user.id)
+    )
+    assert {ticket.id for ticket in complete_scope} == expected_ids
+
+    csv_output = web_support_tickets.render_tickets_csv(
+        db_session,
+        list_query=query,
+        actor_id=str(user.id),
+        visible_columns_cookie="number",
+    )
+    assert len(csv_output.splitlines()) == len(expected_ids) + 1
+
+
+def test_assigned_to_me_fails_closed_when_staff_identity_is_unavailable(db_session):
+    ticket = _ticket(title="Must not broaden")
+    db_session.add(ticket)
+    db_session.commit()
+
+    context = web_support_tickets.build_tickets_list_context(
+        db_session,
+        list_query=_query(assigned_to_me=True),
+        actor_id=str(uuid4()),
+        visible_columns_cookie=None,
+    )
+
+    assert context["total"] == 0
+    assert context["tickets"] == []
 
 
 def test_ticket_number_search_renders_results_without_filter_controls(
