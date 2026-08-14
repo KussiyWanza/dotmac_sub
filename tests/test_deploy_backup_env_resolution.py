@@ -21,6 +21,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DEPLOY_SH = ROOT / "scripts/deploy.sh"
+DEPLOY_PRODUCTION_SH = ROOT / "scripts/deploy_production.sh"
 DB_BACKUP_SH = ROOT / "scripts/db_backup.sh"
 
 
@@ -67,3 +68,39 @@ def test_deploy_keeps_repo_dir_and_deploy_dir_distinct() -> None:
 
     assert 'DEPLOY_DIR="${DEPLOY_DIR:-' in source
     assert 'REPO_DIR="${REPO_DIR:-${DEPLOY_DIR}}"' in source
+
+
+def test_release_modules_run_through_the_repo_module_runner() -> None:
+    """The authorized checkout must win over the mutable deploy cwd.
+
+    Production run 31762013926 set ``PYTHONPATH`` to the authorized Actions
+    checkout, but Python prepends the current directory ahead of it, so the
+    persistent deployment checkout's stale ``scripts.release_candidate_evidence``
+    won anyway and rejected the newer evidence schema.
+
+    ``scripts/run_repo_module.sh`` fixes that by making the selected checkout
+    the import root before the interpreter starts. This is the sensitivity
+    half: if any host-side release module goes back to being invoked directly,
+    the shadowing path reopens and this fails. The behavioural proof that a
+    stale module cannot win lives in
+    ``tests/test_deploy_repo_module_resolution.py``.
+    """
+
+    direct_invocations = [
+        (path.name, line.strip())
+        for path in (DEPLOY_SH, DEPLOY_PRODUCTION_SH)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if '"${PYTHON_BIN}"' in line and "-m scripts." in line
+    ]
+    assert not direct_invocations, (
+        "host-side release modules must run through run_repo_module, or the "
+        f"deploy checkout can shadow them again: {direct_invocations}"
+    )
+
+    runner_invocations = [
+        (path.name, line.strip())
+        for path in (DEPLOY_SH, DEPLOY_PRODUCTION_SH)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if "run_repo_module scripts." in line
+    ]
+    assert runner_invocations, "no release module is routed through run_repo_module"
