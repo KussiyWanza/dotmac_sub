@@ -167,6 +167,9 @@ def test_checkout_uses_csrf_cookie_when_dashboard_has_no_meta_token(
 ):
     page = attendance_page
     page.add_init_script("document.cookie = 'csrf_token=cookie-test; path=/';")
+    page.add_init_script(
+        "navigator.geolocation.getCurrentPosition = (ok) => ok({coords: {latitude: 9.08, longitude: 7.40, accuracy: 8}, timestamp: Date.now()});"
+    )
 
     def punch(route: Route) -> None:
         assert route.request.headers["x-csrf-token"] == "cookie-test"

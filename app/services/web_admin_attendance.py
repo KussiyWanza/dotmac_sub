@@ -143,8 +143,13 @@ def punch(
         }[action]
         is_uncertain_transport = exc.code == "attendance_unavailable"
         if exc.code == duplicate_for_action or is_uncertain_transport:
-            attendance = _reconcile_punch(db, subject=subject, request_id=request_id)
-            if attendance is not None and attendance.state == _intended_state(action):
+            reconciled_attendance = _reconcile_punch(
+                db, subject=subject, request_id=request_id
+            )
+            if (
+                reconciled_attendance is not None
+                and reconciled_attendance.state == _intended_state(action)
+            ):
                 _audit(
                     request,
                     db,
@@ -154,8 +159,8 @@ def punch(
                     payload.accuracy_m,
                     True,
                 )
-                return _render(request, attendance=attendance)
-            if is_uncertain_transport and attendance is not None:
+                return _render(request, attendance=reconciled_attendance)
+            if is_uncertain_transport and reconciled_attendance is not None:
                 _audit(
                     request,
                     db,
@@ -167,7 +172,7 @@ def punch(
                 )
                 return _render(
                     request,
-                    attendance=attendance,
+                    attendance=reconciled_attendance,
                     error_message=(
                         "Attendance outcome was not confirmed. Please try again."
                     ),
