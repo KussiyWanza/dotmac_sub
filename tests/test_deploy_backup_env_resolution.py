@@ -93,13 +93,11 @@ def test_production_evidence_verifier_ignores_deploy_checkout_shadow(
         (path.name, line.strip())
         for path in (DEPLOY_SH, DEPLOY_PRODUCTION_SH)
         for line in path.read_text(encoding="utf-8").splitlines()
-        if 'PYTHONPATH="${REPO_DIR}" "${PYTHON_BIN}"' in line
-        and "-m scripts." in line
+        if 'PYTHONPATH="${REPO_DIR}" "${PYTHON_BIN}"' in line and "-m scripts." in line
     ]
     assert host_python_invocations
     assert all(
-        '"${PYTHON_BIN}" -P -m' in line
-        for _, line in host_python_invocations
+        '"${PYTHON_BIN}" -P -m' in line for _, line in host_python_invocations
     ), (
         "every host-side Python module must ignore the mutable deployment "
         f"checkout: {host_python_invocations}"
@@ -107,8 +105,7 @@ def test_production_evidence_verifier_ignores_deploy_checkout_shadow(
     invocations = [
         line.strip()
         for line in source.splitlines()
-        if '"${PYTHON_BIN}"' in line
-        and "-m scripts.release_candidate_evidence" in line
+        if '"${PYTHON_BIN}"' in line and "-m scripts.release_candidate_evidence" in line
     ]
     assert len(invocations) == 1, (
         "deploy.sh must have exactly one production-evidence module invocation"
