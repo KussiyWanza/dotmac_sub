@@ -13,6 +13,7 @@ from app.services.workforce_attendance import (
     AttendanceAction,
     AttendanceState,
     AttendanceView,
+    WorkforceAttendanceError,
 )
 
 
@@ -140,6 +141,121 @@ def test_dashboard_punch_forwards_only_browser_location(monkeypatch):
     assert kwargs["idempotency_key"] == "request-1"
     assert not hasattr(args[2], "employee_id")
     assert captured["attendance"].state == AttendanceState.CHECKED_IN
+
+
+def test_uncertain_checkout_is_confirmed_only_by_erp_postcondition(monkeypatch):
+    captured = {}
+    user = _user()
+    service = MagicMock()
+    service.punch.side_effect = WorkforceAttendanceError(
+        "attendance_unavailable",
+        "Attendance is temporarily unavailable.",
+        unavailable=True,
+    )
+    service.today.return_value = _view(AttendanceState.CHECKED_OUT)
+    monkeypatch.setattr(
+        web_admin_attendance, "WorkforceAttendanceService", lambda _db: service
+    )
+    monkeypatch.setattr(
+        web_admin_attendance,
+        "allow_operation",
+        lambda *_a, **_k: SimpleNamespace(allowed=True),
+    )
+    audit = MagicMock()
+    monkeypatch.setattr(web_admin_attendance, "_audit", audit)
+    monkeypatch.setattr(
+        web_admin_attendance.templates,
+        "TemplateResponse",
+        lambda _name, context: captured.update(context) or context,
+    )
+
+    web_admin_attendance.punch(
+        _request(user),
+        MagicMock(),
+        action=AttendanceAction.CHECK_OUT,
+        payload=DashboardAttendanceLocation(latitude=9.0, longitude=7.0),
+        idempotency_key="checkout-request-1",
+    )
+
+    assert captured["attendance"].state == AttendanceState.CHECKED_OUT
+    assert captured["error_message"] is None
+    assert audit.call_args.args[4] == "reconciled_success"
+    assert audit.call_args.args[6] is True
+
+
+def test_uncertain_checkout_that_remains_checked_in_is_not_fabricated(monkeypatch):
+    captured = {}
+    user = _user()
+    service = MagicMock()
+    service.punch.side_effect = WorkforceAttendanceError(
+        "attendance_unavailable",
+        "Attendance is temporarily unavailable.",
+        unavailable=True,
+    )
+    service.today.return_value = _view(AttendanceState.CHECKED_IN)
+    monkeypatch.setattr(
+        web_admin_attendance, "WorkforceAttendanceService", lambda _db: service
+    )
+    monkeypatch.setattr(
+        web_admin_attendance,
+        "allow_operation",
+        lambda *_a, **_k: SimpleNamespace(allowed=True),
+    )
+    monkeypatch.setattr(web_admin_attendance, "_audit", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        web_admin_attendance.templates,
+        "TemplateResponse",
+        lambda _name, context: captured.update(context) or context,
+    )
+
+    web_admin_attendance.punch(
+        _request(user),
+        MagicMock(),
+        action=AttendanceAction.CHECK_OUT,
+        payload=DashboardAttendanceLocation(latitude=9.0, longitude=7.0),
+        idempotency_key="checkout-request-1",
+    )
+
+    assert captured["attendance"].state == AttendanceState.CHECKED_IN
+    assert (
+        captured["error_message"]
+        == "Attendance outcome was not confirmed. Please try again."
+    )
+
+
+def test_duplicate_checkout_is_success_only_when_erp_confirms_checked_out(monkeypatch):
+    captured = {}
+    user = _user()
+    service = MagicMock()
+    service.punch.side_effect = WorkforceAttendanceError(
+        "already_checked_out", "You are already checked out."
+    )
+    service.today.return_value = _view(AttendanceState.CHECKED_OUT)
+    monkeypatch.setattr(
+        web_admin_attendance, "WorkforceAttendanceService", lambda _db: service
+    )
+    monkeypatch.setattr(
+        web_admin_attendance,
+        "allow_operation",
+        lambda *_a, **_k: SimpleNamespace(allowed=True),
+    )
+    monkeypatch.setattr(web_admin_attendance, "_audit", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        web_admin_attendance.templates,
+        "TemplateResponse",
+        lambda _name, context: captured.update(context) or context,
+    )
+
+    web_admin_attendance.punch(
+        _request(user),
+        MagicMock(),
+        action=AttendanceAction.CHECK_OUT,
+        payload=DashboardAttendanceLocation(latitude=9.0, longitude=7.0),
+        idempotency_key="checkout-request-1",
+    )
+
+    assert captured["attendance"].state == AttendanceState.CHECKED_OUT
+    assert captured["error_message"] is None
 
 
 def test_attendance_audit_uses_the_sanctioned_writer_without_adapter_commit(

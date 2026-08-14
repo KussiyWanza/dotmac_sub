@@ -26,6 +26,24 @@ logger = logging.getLogger(__name__)
 templates = Jinja2Templates(directory="templates")
 
 
+def _intended_state(action: AttendanceAction) -> AttendanceState:
+    return (
+        AttendanceState.CHECKED_IN
+        if action == AttendanceAction.CHECK_IN
+        else AttendanceState.CHECKED_OUT
+    )
+
+
+def _reconcile_punch(
+    db: Session, *, subject: UUID, request_id: str
+) -> AttendanceView | None:
+    """Read ERP after an ambiguous punch without inferring a local result."""
+    try:
+        return WorkforceAttendanceService(db).today(subject, request_id=request_id)
+    except WorkforceAttendanceError:
+        return None
+
+
 def _subject(request: Request) -> UUID | None:
     auth = getattr(request.state, "auth", None)
     user = getattr(request.state, "user", None)
@@ -119,17 +137,41 @@ def punch(
             request_id=request_id,
         )
     except WorkforceAttendanceError as exc:
-        # Duplicate punch responses are reconciled to the authoritative ERP read.
-        if exc.code in {"already_checked_in", "already_checked_out"}:
-            try:
-                attendance = WorkforceAttendanceService(db).today(
-                    subject, request_id=request_id
+        duplicate_for_action = {
+            AttendanceAction.CHECK_IN: "already_checked_in",
+            AttendanceAction.CHECK_OUT: "already_checked_out",
+        }[action]
+        is_uncertain_transport = exc.code == "attendance_unavailable"
+        if exc.code == duplicate_for_action or is_uncertain_transport:
+            attendance = _reconcile_punch(db, subject=subject, request_id=request_id)
+            if attendance is not None and attendance.state == _intended_state(action):
+                _audit(
+                    request,
+                    db,
+                    subject,
+                    action,
+                    "reconciled_success",
+                    payload.accuracy_m,
+                    True,
+                )
+                return _render(request, attendance=attendance)
+            if is_uncertain_transport and attendance is not None:
+                _audit(
+                    request,
+                    db,
+                    subject,
+                    action,
+                    "attendance_unconfirmed",
+                    payload.accuracy_m,
+                    False,
                 )
                 return _render(
-                    request, attendance=attendance, error_message=exc.message
+                    request,
+                    attendance=attendance,
+                    error_message=(
+                        "Attendance outcome was not confirmed. Please try again."
+                    ),
                 )
-            except WorkforceAttendanceError:
-                pass
         _audit(request, db, subject, action, exc.code, payload.accuracy_m, False)
         return _render(request, error_message=exc.message, unavailable=exc.unavailable)
     except Exception:
