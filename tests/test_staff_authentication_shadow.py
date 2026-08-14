@@ -43,12 +43,21 @@ def _party(db_session: Session) -> Party:
 
 
 def _staff(db_session: Session, *, party: Party | None = None) -> SystemUser:
+    # `ck_system_users_party_binding_evidence` (migration 353) makes the Party
+    # link and its provenance one projection: a bound principal must carry
+    # `party_bound_at`, a non-blank source and a non-blank reason, and an
+    # unbound one must carry none of them. The fixture has to honour that or it
+    # is not modelling a real row.
+    bound = party is not None
     user = SystemUser(
         first_name="Shadow",
         last_name="Staff",
         email=f"shadow-{uuid.uuid4().hex}@dotmac.io",
         is_active=True,
-        person_party_id=party.id if party is not None else None,
+        person_party_id=party.id if bound else None,
+        party_bound_at=datetime.now(UTC) if bound else None,
+        party_binding_source="test" if bound else None,
+        party_binding_reason="staff authentication shadow fixture" if bound else None,
     )
     db_session.add(user)
     db_session.flush()
