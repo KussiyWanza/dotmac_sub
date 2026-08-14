@@ -296,6 +296,52 @@ def test_live_autofind_preflight_requires_exact_fsp_and_serial(
     assert "no OLT write was attempted" in outcome.message
 
 
+def test_live_autofind_preflight_falls_back_to_global_when_scoped_is_unsupported(
+    db_session,
+    monkeypatch,
+):
+    olt, _candidate_row, target = _candidate(
+        db_session,
+        serial="HWTC1D1251D1",
+        fsp="0/2/1",
+    )
+    calls: list[str | None] = []
+
+    def fake_query(_olt, port=None):
+        calls.append(port)
+        if port == "0/2/1":
+            return False, "Autofind query failed: Error: unknown_command", []
+        return (
+            True,
+            "Found 1 autofind entry",
+            [
+                SimpleNamespace(
+                    fsp="0/2/1",
+                    serial_number="HWTC-1D1251D1",
+                    serial_hex="485754431D1251D1",
+                )
+            ],
+        )
+
+    monkeypatch.setattr(
+        "app.services.network.olt_ssh_ont.autofind.query_ont_autofind",
+        fake_query,
+    )
+
+    outcome = _exact_live_autofind_preflight(
+        target=OntAuthorizationTarget.from_transport(
+            olt_id=target.olt_id,
+            fsp=target.fsp,
+            serial_number=target.serial,
+        ),
+        olt_config=OltConnectionConfig.from_model(olt),
+    )
+
+    assert outcome.success is True
+    assert outcome.message == "Exact live autofind target confirmed."
+    assert calls == ["0/2/1", None]
+
+
 def test_assignment_is_blocked_until_commissioning_is_management_ready(db_session):
     _olt, _candidate_row, target = _candidate(db_session)
     ont = OntUnit(
