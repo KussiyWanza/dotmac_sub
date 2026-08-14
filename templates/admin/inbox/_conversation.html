@@ -352,7 +352,9 @@
               class="space-y-2"
               data-reply-form>
             {% include "components/forms/csrf_input.html" %}
-            <input type="hidden" name="next_url" value="{{ queue_return_url | default('/admin/inbox') }}">
+            <input type="hidden" name="next_url"
+                   value="{{ queue_return_url | default('/admin/inbox') }}"
+                   :value="window.__inboxReturnUrl || {{ queue_return_url | default('/admin/inbox') | tojson | forceescape }}">
             <input type="hidden" name="idempotency_key" :value="idempotencyKey">
             <input type="hidden" name="reply_to_message_id" :value="replyTo ? replyTo.id : ''">
             {# Provenance for the reply owner: macro execution, template audit,
@@ -421,6 +423,9 @@
         {% if reply_window and reply_window.status == 'expired' and reply_window.channel_type == 'whatsapp' and reply_window.whatsapp_template_available %}
         <form method="post" action="/admin/inbox/{{ timeline.id }}/reply" x-show="mode === 'reply'" class="mt-2 space-y-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs dark:border-amber-800 dark:bg-amber-950/20" data-whatsapp-template-reopen data-template-endpoint="/admin/inbox/whatsapp-templates">
             {% include "components/forms/csrf_input.html" %}
+            <input type="hidden" name="next_url"
+                   value="{{ queue_return_url | default('/admin/inbox') }}"
+                   :value="window.__inboxReturnUrl || {{ queue_return_url | default('/admin/inbox') | tojson | forceescape }}">
             <input type="hidden" name="idempotency_key" value="">
             <input type="hidden" name="body_text" data-whatsapp-template-body value="">
             <input type="hidden" name="whatsapp_template_name" data-whatsapp-template-name value="">

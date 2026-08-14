@@ -11,7 +11,7 @@
             <div class="min-w-0">
                 <div class="flex items-baseline gap-1.5">
                     <h1 class="truncate font-display text-lg font-bold text-slate-900 dark:text-white">Inbox</h1>
-                    <span class="shrink-0 font-semibold tabular-nums text-amber-600 dark:text-amber-400" aria-label="{{ operator_unread_count }} unread conversations">{{ operator_unread_count }}</span>
+                    <span data-inbox-unread-total class="shrink-0 font-semibold tabular-nums text-amber-600 dark:text-amber-400" aria-label="{{ operator_unread_count }} unread conversations">{{ operator_unread_count }}</span>
                 </div>
                 <p class="flex items-center text-xs text-slate-500 dark:text-slate-400" aria-live="polite">
                     <span class="inline-flex items-center gap-1.5"
@@ -105,27 +105,60 @@
         </label>
     </div>
 
+    <div data-inbox-refresh-status
+         class="flex min-h-9 shrink-0 items-center gap-2 border-y border-slate-200/70 px-4 py-2 text-[11px] font-medium dark:border-slate-700/70"
+         :class="inboxRefreshState === 'error' ? 'bg-rose-50 text-rose-700 dark:bg-rose-950/20 dark:text-rose-300' : inboxRefreshState === 'updated' ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/20 dark:text-emerald-300' : inboxRefreshState === 'checking' ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/20 dark:text-amber-300' : 'bg-slate-50 text-slate-500 dark:bg-slate-900/40 dark:text-slate-400'"
+         role="status"
+         aria-live="polite"
+         aria-atomic="true">
+        <span x-show="inboxRefreshState === 'checking'"
+              class="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-amber-300 border-t-amber-700 dark:border-amber-700 dark:border-t-amber-300"
+              aria-hidden="true"></span>
+        <span x-show="inboxRefreshState !== 'checking'"
+              class="h-2 w-2 shrink-0 rounded-full"
+              :class="inboxRefreshState === 'error' ? 'bg-rose-500' : inboxRefreshState === 'updated' ? 'bg-emerald-500' : 'bg-slate-400'"
+              aria-hidden="true"></span>
+        <span x-text="inboxRefreshLabel()">Waiting for new activity</span>
+    </div>
+
     <div class="border-b border-slate-200 p-3 dark:border-slate-800">
         <button type="button" @click="filtersOpen = !filtersOpen; persistFilters()"
                 class="flex min-h-10 w-full items-center justify-between rounded-lg border border-amber-200 bg-amber-50 px-3 text-left text-xs font-semibold text-amber-800 hover:border-amber-300 hover:bg-amber-100 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200 dark:hover:border-amber-400/50 dark:hover:bg-amber-500/20 dark:hover:text-amber-50"
                 :aria-expanded="filtersOpen.toString()" aria-controls="inbox-stats-filters">
-            <span>Inbox Stats &amp; Filters</span>
+            <span class="inline-flex items-center gap-2">
+                Inbox Stats &amp; Filters
+                <span x-show="activeFilterCount()" x-cloak x-text="activeFilterCount()"
+                      class="inline-flex min-w-5 items-center justify-center rounded-full bg-amber-600 px-1.5 py-0.5 text-[10px] font-bold text-white"
+                      aria-label="Active filter count"></span>
+            </span>
             <svg class="h-4 w-4 transition-transform" :class="filtersOpen && 'rotate-180'" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
         </button>
 
         <div id="inbox-stats-filters" x-show="filtersOpen" x-collapse x-cloak class="inbox-filter-scroll space-y-3 pt-2">
-            <nav class="grid grid-cols-5 gap-px overflow-hidden rounded-xl border border-slate-200 bg-slate-200 text-center dark:border-slate-700 dark:bg-slate-700" aria-label="Inbox summary filters">
-                <a href="/admin/inbox?open_only=true" hx-get="/admin/inbox?open_only=true{% if selected_id %}&conversation_id={{ selected_id }}{% endif %}" hx-target="#inbox-sidebar-content" hx-push-url="true" hx-sync="#inbox-sidebar-content:replace" @click="filterRequestStarted()" class="bg-white px-1 py-2 hover:bg-amber-50 dark:bg-slate-900 dark:hover:bg-slate-800"><strong class="block text-sm tabular-nums text-slate-900 dark:text-white">{{ queue_metrics.total_open }}</strong><span class="text-[9px] font-semibold uppercase text-slate-400">Open</span></a>
-                <a href="/admin/inbox?needs_response=true" hx-get="/admin/inbox?needs_response=true{% if selected_id %}&conversation_id={{ selected_id }}{% endif %}" hx-target="#inbox-sidebar-content" hx-push-url="true" hx-sync="#inbox-sidebar-content:replace" @click="filterRequestStarted()" class="bg-white px-1 py-2 hover:bg-amber-50 dark:bg-slate-900 dark:hover:bg-slate-800"><strong class="block text-sm tabular-nums text-amber-700 dark:text-amber-300">{{ queue_metrics.needs_response }}</strong><span class="text-[9px] font-semibold uppercase text-slate-400">Unreplied</span></a>
-                <a href="/admin/inbox?open_only=true&unassigned=true" hx-get="/admin/inbox?open_only=true&unassigned=true{% if selected_id %}&conversation_id={{ selected_id }}{% endif %}" hx-target="#inbox-sidebar-content" hx-push-url="true" hx-sync="#inbox-sidebar-content:replace" @click="filterRequestStarted()" class="bg-white px-1 py-2 hover:bg-amber-50 dark:bg-slate-900 dark:hover:bg-slate-800"><strong class="block text-sm tabular-nums text-slate-900 dark:text-white">{{ queue_metrics.unassigned_open }}</strong><span class="text-[9px] font-semibold uppercase text-slate-400">Unassigned</span></a>
-                <a href="/admin/inbox/reports/outbox-failures" class="bg-white px-1 py-2 hover:bg-rose-50 dark:bg-slate-900 dark:hover:bg-slate-800"><strong class="block text-sm tabular-nums {% if queue_metrics.failed_outbound %}text-rose-600{% else %}text-slate-900 dark:text-white{% endif %}">{{ queue_metrics.failed_outbound }}</strong><span class="text-[9px] font-semibold uppercase text-slate-400">Failed</span></a>
-                <a href="/admin/inbox/comments" class="bg-white px-1 py-2 hover:bg-sky-50 dark:bg-slate-900 dark:hover:bg-slate-800"><strong class="block text-sm tabular-nums text-sky-700 dark:text-sky-300">{{ social_comment_count | default(0) }}</strong><span class="text-[9px] font-semibold uppercase text-slate-400">Comments</span></a>
-            </nav>
-            <nav class="flex min-h-10 items-center gap-4 rounded-lg border border-slate-200 px-3 text-[11px] dark:border-slate-700" aria-label="Secondary inbox filters">
-                <a href="/admin/inbox?unread=true" class="font-medium text-slate-500 hover:text-amber-700">Unread <strong>{{ operator_unread_count }}</strong></a>
-                <a href="/admin/inbox?open_only=true&snoozed=true" class="font-medium text-slate-500 hover:text-amber-700">Snoozed <strong>{{ queue_metrics.snoozed_open }}</strong></a>
-                <a href="/admin/inbox?open_only=true&muted=true" class="font-medium text-slate-500 hover:text-amber-700">Muted <strong>{{ queue_metrics.muted_open }}</strong></a>
-            </nav>
+            <section aria-labelledby="inbox-view-heading">
+                <h3 id="inbox-view-heading" class="mb-1.5 text-[10px] font-bold uppercase tracking-wide text-slate-400">Inbox views &amp; stats</h3>
+                <nav class="flex flex-wrap gap-1.5" aria-label="Inbox views and statistics">
+                    <a href="/admin/inbox?open_only=true" hx-get="/admin/inbox?open_only=true{% if selected_id %}&conversation_id={{ selected_id }}{% endif %}" hx-target="#inbox-sidebar-content" hx-push-url="true" hx-sync="#inbox-sidebar-content:replace" @click="filterRequestStarted()" class="inline-flex min-h-8 flex-1 basis-[30%] items-center justify-between gap-1 rounded-lg border border-slate-200 bg-white px-2 text-[10px] font-semibold text-slate-600 hover:border-amber-300 hover:bg-amber-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"><span>Active</span><strong class="tabular-nums text-slate-900 dark:text-white">{{ queue_metrics.total_open }}</strong></a>
+                    <a href="/admin/inbox?needs_response=true" hx-get="/admin/inbox?needs_response=true{% if selected_id %}&conversation_id={{ selected_id }}{% endif %}" hx-target="#inbox-sidebar-content" hx-push-url="true" hx-sync="#inbox-sidebar-content:replace" @click="filterRequestStarted()" class="inline-flex min-h-8 flex-1 basis-[30%] items-center justify-between gap-1 rounded-lg border border-amber-200 bg-white px-2 text-[10px] font-semibold text-amber-700 hover:bg-amber-50 dark:border-amber-500/30 dark:bg-slate-900 dark:text-amber-300"><span>Unreplied</span><strong class="tabular-nums">{{ queue_metrics.needs_response }}</strong></a>
+                    <a href="/admin/inbox?open_only=true&amp;unassigned=true" hx-get="/admin/inbox?open_only=true&amp;unassigned=true{% if selected_id %}&amp;conversation_id={{ selected_id }}{% endif %}" hx-target="#inbox-sidebar-content" hx-push-url="true" hx-sync="#inbox-sidebar-content:replace" @click="filterRequestStarted()" class="inline-flex min-h-8 flex-1 basis-[30%] items-center justify-between gap-1 rounded-lg border border-slate-200 bg-white px-2 text-[10px] font-semibold text-slate-600 hover:border-amber-300 hover:bg-amber-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"><span>Unassigned</span><strong class="tabular-nums text-slate-900 dark:text-white">{{ queue_metrics.unassigned_open }}</strong></a>
+                    <a href="/admin/inbox/comments" class="inline-flex min-h-8 flex-1 basis-[30%] items-center justify-between gap-1 rounded-lg border border-sky-200 bg-white px-2 text-[10px] font-semibold text-sky-700 hover:bg-sky-50 dark:border-sky-500/30 dark:bg-slate-900 dark:text-sky-300"><span>Comments</span><strong class="tabular-nums">{{ social_comment_count | default(0) }}</strong></a>
+                    <a href="/admin/inbox/reports/outbox-failures" class="inline-flex min-h-8 flex-1 basis-[30%] items-center justify-between gap-1 rounded-lg border border-rose-200 bg-white px-2 text-[10px] font-semibold text-rose-700 hover:bg-rose-50 dark:border-rose-500/30 dark:bg-slate-900 dark:text-rose-300"><span>Failed</span><strong class="tabular-nums">{{ queue_metrics.failed_outbound }}</strong></a>
+                </nav>
+            </section>
+
+            <div x-show="activeFilterCount()" x-cloak class="rounded-lg border border-slate-200 bg-slate-50 p-2 dark:border-slate-700 dark:bg-slate-800/50">
+                <div class="mb-1.5 flex items-center justify-between gap-2">
+                    <span class="text-[10px] font-bold uppercase tracking-wide text-slate-400">Active filters</span>
+                    <a href="/admin/inbox" class="text-[10px] font-semibold text-slate-500 hover:text-amber-700">Clear all</a>
+                </div>
+                <div class="flex flex-wrap gap-1.5">
+                    <template x-for="chip in activeFilterChips()" :key="chip.key">
+                        <button type="button" @click="removeActiveFilter(chip)" class="inline-flex min-h-8 items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 text-[10px] font-semibold text-amber-800 hover:border-rose-300 hover:text-rose-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+                            <span x-text="chip.label"></span><span aria-hidden="true">&times;</span><span class="sr-only">Remove filter</span>
+                        </button>
+                    </template>
+                </div>
+            </div>
             <form id="inbox-filter-form" method="get" action="/admin/inbox"
                   hx-get="/admin/inbox" hx-target="#inbox-sidebar-content" hx-swap="innerHTML" hx-push-url="true"
                   hx-sync="this:replace"
@@ -137,8 +170,12 @@
             {% if status %}<input type="hidden" name="status" value="{{ status }}">{% endif %}
             {% if reply_window_status %}<input type="hidden" name="reply_window_status" value="{{ reply_window_status }}">{% endif %}
             {% if ai_handling is not none %}<input type="hidden" name="ai_handling" value="{{ 'true' if ai_handling else 'false' }}">{% endif %}
-            <fieldset>
-                <legend class="mb-1.5 text-[10px] font-bold uppercase tracking-wide text-slate-400">Status</legend>
+            <details open class="group rounded-lg border border-slate-200/70 bg-slate-50/70 dark:border-slate-700/70 dark:bg-slate-800/40">
+                <summary class="flex min-h-10 cursor-pointer list-none items-center justify-between px-3 text-xs font-semibold text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:text-slate-300">
+                    <span>Status</span><span class="text-slate-400 transition-transform group-open:rotate-90" aria-hidden="true">&rsaquo;</span>
+                </summary>
+                <fieldset class="border-t border-slate-200/70 p-2.5 dark:border-slate-700/70">
+                <legend class="sr-only">Status</legend>
                 <div class="flex flex-wrap gap-1 rounded-xl bg-slate-100 p-1 dark:bg-slate-800/50">
                     <button type="submit" name="status" value=""
                             :aria-pressed="(pendingStatusFilter === '' || (pendingStatusFilter === null && {{ 'true' if not status and not open_only and not has_ticket else 'false' }})).toString()"
@@ -169,18 +206,19 @@
                         Done
                     </button>
                 </div>
-                <p x-show="filterLoading" x-cloak class="mt-1.5 flex items-center gap-1.5 text-[10px] font-medium text-amber-700 dark:text-amber-300" role="status">
-                    <span class="h-3 w-3 animate-spin rounded-full border-2 border-amber-300 border-t-amber-700" aria-hidden="true"></span>
-                    Updating conversations…
-                </p>
-            </fieldset>
+                </fieldset>
+            </details>
             <p x-show="listRequestError" x-cloak class="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] font-medium text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-200" role="alert">
                 <span x-text="listRequestError"></span>
                 <button type="button" class="ml-1 underline" @click="refreshSidebar()">Retry</button>
             </p>
 
-            <fieldset>
-                <legend class="mb-1.5 text-[10px] font-bold uppercase tracking-wide text-slate-400">Assignment</legend>
+            <details open class="group rounded-lg border border-slate-200/70 bg-slate-50/70 dark:border-slate-700/70 dark:bg-slate-800/40">
+                <summary class="flex min-h-10 cursor-pointer list-none items-center justify-between px-3 text-xs font-semibold text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:text-slate-300">
+                    <span>Assignment</span><span class="text-slate-400 transition-transform group-open:rotate-90" aria-hidden="true">&rsaquo;</span>
+                </summary>
+                <fieldset class="border-t border-slate-200/70 p-2.5 dark:border-slate-700/70">
+                <legend class="sr-only">Assignment</legend>
                 <div class="flex flex-wrap gap-1 rounded-xl bg-slate-100 p-1 dark:bg-slate-800/50">
                     <button type="button" @click="applyAssignmentFilter('')"
                             class="flex min-h-10 min-w-24 flex-1 items-center justify-between gap-2 rounded-lg px-2.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
@@ -202,21 +240,6 @@
                             :class="assignmentFilterActive('ai') ? 'bg-white text-indigo-700 shadow-sm dark:bg-slate-700 dark:text-indigo-300' : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'">
                         <span>AI handling</span><span class="tabular-nums">{{ assignment_counts.ai_handling }}</span>
                     </button>
-                    <button type="button" @click="applyAssignmentFilter('unassigned')"
-                            class="flex min-h-10 min-w-24 flex-1 items-center justify-between gap-2 rounded-lg px-2.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
-                            :class="assignmentFilterActive('unassigned') ? 'bg-white text-amber-700 shadow-sm dark:bg-slate-700 dark:text-amber-300' : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'">
-                        <span>Unassigned</span><span class="tabular-nums">{{ assignment_counts.unassigned }}</span>
-                    </button>
-                    <button type="button" @click="applyAssignmentFilter('unreplied')"
-                            class="flex min-h-10 min-w-24 flex-1 items-center justify-between gap-2 rounded-lg px-2.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
-                            :class="assignmentFilterActive('unreplied') ? 'bg-white text-rose-700 shadow-sm dark:bg-slate-700 dark:text-rose-300' : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'">
-                        <span>Unreplied</span><span class="tabular-nums">{{ assignment_counts.unreplied }}</span>
-                    </button>
-                    <button type="button" @click="applyAssignmentFilter('attention')"
-                            class="flex min-h-10 min-w-32 flex-1 items-center justify-between gap-2 rounded-lg px-2.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-500"
-                            :class="assignmentFilterActive('attention') ? 'bg-white text-orange-700 shadow-sm dark:bg-slate-700 dark:text-orange-300' : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'">
-                        <span>Needs attention</span><span class="tabular-nums">{{ assignment_counts.needs_attention }}</span>
-                    </button>
                     <button type="button" @click="byAgentOpen = !byAgentOpen"
                             class="flex min-h-10 min-w-24 flex-1 items-center justify-between gap-2 rounded-lg px-2.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500"
                             :class="assignmentFilterActive('agent') ? 'bg-white text-violet-700 shadow-sm dark:bg-slate-700 dark:text-violet-300' : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'"
@@ -224,22 +247,58 @@
                         <span>By Agent</span><span class="tabular-nums">{% if assigned_person_id and assigned_person_id != actor_person_id %}{{ count }}{% else %}—{% endif %}</span>
                     </button>
                 </div>
-            </fieldset>
-            <fieldset>
-                <legend class="mb-1.5 text-[10px] font-bold uppercase tracking-wide text-slate-400">Provider state</legend>
+                <div id="inbox-by-agent-panel" x-show="byAgentOpen" x-cloak class="mt-2 space-y-2 rounded-lg border border-slate-200/60 bg-white p-2.5 dark:border-slate-700/60 dark:bg-slate-900">
+                    <label class="block">
+                        <span class="sr-only">Agent</span>
+                        <select name="assigned_person_id" @change="$el.form.requestSubmit()" class="h-10 w-full rounded-lg border-slate-200 bg-white text-xs text-slate-700 focus:border-violet-500 focus:ring-violet-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
+                            <option value="">Choose agent</option>
+                            {% for agent in agent_options %}<option value="{{ agent.id }}" {% if agent.id|string == assigned_person_id %}selected{% endif %}>{{ agent.name }}</option>{% endfor %}
+                        </select>
+                    </label>
+                    <div class="grid grid-cols-2 gap-2">
+                        <label class="text-[11px] font-medium text-slate-500 dark:text-slate-400">From
+                            <input type="datetime-local" name="activity_from" value="{{ activity_from or '' }}" @change="$el.form.requestSubmit()" class="mt-1 h-10 w-full rounded-lg border-slate-200 bg-white text-xs text-slate-700 focus:border-violet-500 focus:ring-violet-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
+                        </label>
+                        <label class="text-[11px] font-medium text-slate-500 dark:text-slate-400">To
+                            <input type="datetime-local" name="activity_to" value="{{ activity_to or '' }}" @change="$el.form.requestSubmit()" class="mt-1 h-10 w-full rounded-lg border-slate-200 bg-white text-xs text-slate-700 focus:border-violet-500 focus:ring-violet-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
+                        </label>
+                    </div>
+                </div>
+                </fieldset>
+            </details>
+
+            <details class="group rounded-lg border border-slate-200/70 bg-slate-50/70 dark:border-slate-700/70 dark:bg-slate-800/40" {% if unread or snoozed or muted or needs_attention or reply_window_status %}open{% endif %}>
+                <summary class="flex min-h-10 cursor-pointer list-none items-center justify-between px-3 text-xs font-semibold text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:text-slate-300">
+                    <span>Attention</span><span class="text-slate-400 transition-transform group-open:rotate-90" aria-hidden="true">&rsaquo;</span>
+                </summary>
+                <fieldset class="border-t border-slate-200/70 p-2.5 dark:border-slate-700/70">
+                <legend class="sr-only">Attention</legend>
                 <div class="flex flex-wrap gap-1 rounded-xl bg-slate-100 p-1 dark:bg-slate-800/50">
+                    <label class="inline-flex min-h-10 min-w-20 flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-lg px-2 text-xs font-semibold {% if unread %}bg-white text-amber-700 shadow-sm dark:bg-slate-700 dark:text-amber-300{% else %}text-slate-500 dark:text-slate-400{% endif %}"><input type="checkbox" name="unread" value="true" {% if unread %}checked{% endif %} @change="$el.form.requestSubmit()" class="rounded border-slate-300 text-amber-500 focus:ring-amber-500">Unread</label>
+                    <button type="button" @click="applyAssignmentFilter('attention')"
+                            class="min-h-10 min-w-28 flex-1 rounded-lg px-2 text-xs font-semibold transition-colors"
+                            :class="assignmentFilterActive('attention') ? 'bg-white text-orange-700 shadow-sm dark:bg-slate-700 dark:text-orange-300' : 'text-slate-500 dark:text-slate-400'">
+                        Needs attention <span class="tabular-nums">{{ assignment_counts.needs_attention }}</span>
+                    </button>
+                    <a href="/admin/inbox?open_only=true&amp;snoozed=true" class="inline-flex min-h-10 min-w-20 flex-1 items-center justify-center gap-1 rounded-lg px-2 text-xs font-semibold {% if snoozed %}bg-white text-violet-700 shadow-sm dark:bg-slate-700 dark:text-violet-300{% else %}text-slate-500 dark:text-slate-400{% endif %}">Snoozed <strong>{{ queue_metrics.snoozed_open }}</strong></a>
+                    <a href="/admin/inbox?open_only=true&amp;muted=true" class="inline-flex min-h-10 min-w-20 flex-1 items-center justify-center gap-1 rounded-lg px-2 text-xs font-semibold {% if muted %}bg-white text-slate-700 shadow-sm dark:bg-slate-700 dark:text-slate-200{% else %}text-slate-500 dark:text-slate-400{% endif %}">Muted <strong>{{ queue_metrics.muted_open }}</strong></a>
                     <button type="submit" name="reply_window_status" value=""
                             class="min-h-10 min-w-20 flex-1 rounded-lg px-2 text-xs font-semibold transition-colors {% if not reply_window_status %}bg-white text-slate-700 shadow-sm dark:bg-slate-700 dark:text-slate-200{% else %}text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200{% endif %}">
-                        Any
+                        Any window
                     </button>
                     <button type="submit" name="reply_window_status" value="expired"
                             class="min-h-10 min-w-24 flex-1 rounded-lg px-2 text-xs font-semibold transition-colors {% if reply_window_status == 'expired' %}bg-white text-rose-700 shadow-sm dark:bg-slate-700 dark:text-rose-300{% else %}text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200{% endif %}">
                         <span class="inline-flex items-center justify-center gap-1.5"><span class="h-1.5 w-1.5 rounded-full bg-rose-500" aria-hidden="true"></span>Expired</span>
                     </button>
                 </div>
-            </fieldset>
+                </fieldset>
+            </details>
 
-            <div class="space-y-2">
+            <details class="group rounded-lg border border-slate-200/70 bg-slate-50/70 dark:border-slate-700/70 dark:bg-slate-800/40" {% if channel_type or service_team_id or priority_at_most is not none %}open{% endif %}>
+                <summary class="flex min-h-10 cursor-pointer list-none items-center justify-between px-3 text-xs font-semibold text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:text-slate-300">
+                    <span>Routing</span><span class="text-slate-400 transition-transform group-open:rotate-90" aria-hidden="true">&rsaquo;</span>
+                </summary>
+            <div class="space-y-2 border-t border-slate-200/70 p-2.5 dark:border-slate-700/70">
                 <label class="flex items-center gap-2 text-[11px] font-medium text-slate-500 dark:text-slate-400">
                     <span class="w-12 shrink-0">Channel</span>
                     <select name="channel_type" @change="$el.form.requestSubmit()" data-inbox-channel="{{ channel_type }}" class="inbox-channel-filter h-10 min-w-0 flex-1 rounded-lg border-slate-200 bg-white text-xs text-slate-700 focus:border-amber-500 focus:ring-amber-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
@@ -266,9 +325,15 @@
                     </select>
                 </label>
             </div>
+            </details>
 
+            <details class="group rounded-lg border border-slate-200/70 bg-slate-50/70 dark:border-slate-700/70 dark:bg-slate-800/40" {% if filters or assigned_person_id or activity_from or activity_to %}open{% endif %}>
+                <summary class="flex min-h-10 cursor-pointer list-none items-center justify-between px-3 text-xs font-semibold text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:text-slate-300">
+                    <span>Advanced</span><span class="text-slate-400 transition-transform group-open:rotate-90" aria-hidden="true">&rsaquo;</span>
+                </summary>
+            <div class="space-y-2 border-t border-slate-200/70 p-2.5 dark:border-slate-700/70">
             <div x-data='inboxTeamFilterBuilder({{ filters | tojson }})'
-                 class="rounded-lg border border-slate-200/70 bg-slate-50/70 dark:border-slate-700/70 dark:bg-slate-800/40">
+                  class="rounded-lg border border-slate-200/70 bg-slate-50/70 dark:border-slate-700/70 dark:bg-slate-800/40">
                 <input type="hidden" name="filters" :value="filtersJson">
                 <details {% if filters %}open{% endif %} class="group">
                     <summary class="flex min-h-10 cursor-pointer list-none items-center justify-between gap-2 px-3 text-xs font-semibold text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:text-slate-300">
@@ -327,34 +392,17 @@
                 </details>
             </div>
 
-            <div id="inbox-by-agent-panel" x-show="byAgentOpen" x-cloak class="space-y-2 rounded-lg border border-slate-200/60 bg-slate-50 p-2.5 dark:border-slate-700/60 dark:bg-slate-800/50">
-                    <label class="block">
-                        <span class="sr-only">Agent</span>
-                        <select name="assigned_person_id" @change="$el.form.requestSubmit()" class="h-10 w-full rounded-lg border-slate-200 bg-white text-xs text-slate-700 focus:border-violet-500 focus:ring-violet-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
-                        <option value="">Choose agent</option>
-                        {% for agent in agent_options %}<option value="{{ agent.id }}" {% if agent.id|string == assigned_person_id %}selected{% endif %}>{{ agent.name }}</option>{% endfor %}
-                        </select>
-                    </label>
-                    <div class="grid grid-cols-2 gap-2">
-                        <label class="text-[11px] font-medium text-slate-500 dark:text-slate-400">From
-                            <input type="datetime-local" name="activity_from" value="{{ activity_from or '' }}" @change="$el.form.requestSubmit()" class="mt-1 h-10 w-full rounded-lg border-slate-200 bg-white text-xs text-slate-700 focus:border-violet-500 focus:ring-violet-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
-                        </label>
-                        <label class="text-[11px] font-medium text-slate-500 dark:text-slate-400">To
-                            <input type="datetime-local" name="activity_to" value="{{ activity_to or '' }}" @change="$el.form.requestSubmit()" class="mt-1 h-10 w-full rounded-lg border-slate-200 bg-white text-xs text-slate-700 focus:border-violet-500 focus:ring-violet-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
-                        </label>
-                    </div>
-                </div>
-
-            <div class="flex flex-wrap items-center justify-between gap-2">
-                <label class="inline-flex min-h-10 items-center gap-2 rounded-lg border border-slate-200 px-2.5 text-xs text-slate-600 dark:border-slate-700 dark:text-slate-300"><input type="checkbox" name="unread" value="true" {% if unread %}checked{% endif %} @change="$el.form.requestSubmit()" class="rounded border-slate-300 text-amber-500 focus:ring-amber-500">Unread</label>
-                <a href="/admin/inbox" class="inline-flex min-h-10 items-center rounded-lg px-2.5 text-xs font-semibold text-slate-500 hover:text-amber-700">Clear</a>
             </div>
+            </details>
 
             </form>
 
-        <div class="border-t border-slate-200 pt-3 dark:border-slate-800">
+        <details class="group rounded-lg border border-slate-200/70 bg-slate-50/70 dark:border-slate-700/70 dark:bg-slate-800/40">
+        <summary class="flex min-h-10 cursor-pointer list-none items-center justify-between px-3 text-xs font-semibold text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:text-slate-300">
+            <span>Saved views</span><span class="text-slate-400 transition-transform group-open:rotate-90" aria-hidden="true">&rsaquo;</span>
+        </summary>
+        <div class="border-t border-slate-200/70 p-2.5 dark:border-slate-700/70">
         <div class="flex items-center justify-between gap-2">
-            <span class="shrink-0 text-[10px] font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">Saved Views</span>
             <div class="flex min-w-0 flex-1 items-center justify-end gap-1.5">
                 <label class="min-w-0 flex-1">
                     <span class="sr-only">Saved view name</span>
@@ -382,6 +430,7 @@
             {% endfor %}
         </div>
         </div>
+        </details>
         </div>
     </div>
 
