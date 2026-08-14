@@ -1,8 +1,9 @@
 # Network Map V2 parity
 
-Status: experimental, read-only duplicate at `GET /admin/network/map-v2`.
-The established `GET /admin/network/map` route, template, and behavior remain
-unchanged.
+Status: experimental, read-only duplicate/workbench at
+`GET /admin/network/map-v2`. The permanent production network map is
+`GET /admin/network/map`; CRM map replacement work targets canonical Selfcare
+data rendered there. `GET /admin/gis` remains the generic GIS module.
 
 ## Comparison evidence
 
@@ -81,4 +82,22 @@ separation, original-template immutability, explicit topology, missing geometry,
 and nearby unrelated endpoints. Node tests cover coordinate and asset search,
 nearest-FDH selection, layer classification, and endpoint identity behavior.
 The original route remains the production Network Map; V2 is a separate
-read-only preview and does not deploy or migrate data.
+read-only preview/workbench and does not deploy or migrate data.
+
+## CRM point-asset migration boundary
+
+CRM migration phase 1 covers only FDH cabinets, fibre access points, and splice
+closures. It excludes OLT creation, fibre segments, service buildings, support
+structures, topology, and customer data. Staged CRM observations are not map
+layers. `/admin/network/map` continues to read canonical Selfcare models only;
+CRM point observations become visible only after governed identity review and
+canonical owner workflows create or link Selfcare assets.
+
+`network.crm_network_map_point_migration` selects one authoritative CRM staging
+cohort per supported asset type using archive hash, snapshot timestamp,
+importer version, source/restored/staged counts, and reconciliation status.
+Older staged cohorts remain audit evidence and are refused for proposal
+generation or apply. Stable CRM source identities are recorded as
+`crm_network_map:{entity_type}:{crm_primary_key}`. Deployment does not trigger
+snapshot, restore, stage, proposal generation, approval, dry-run apply, or
+canonical apply.

@@ -49,6 +49,7 @@ LINK_TARGET_MODELS = {
 }
 FINAL_STATUSES = frozenset({"applied", "closed"})
 ACTIVE_STATUSES = ("proposed", "approved", "change_requested")
+CRM_SOURCE_SYSTEM = "dotmac_crm_fiber_map"
 
 
 class FiberTopologyIdentityError(ValueError):
@@ -170,6 +171,19 @@ def _decision_digest(
     return hashlib.sha256(encoded).hexdigest()
 
 
+def stable_source_external_id(
+    source_system: str, source_asset_type: str, external_id: str | None
+) -> str | None:
+    """Return the durable external identity stored on identity decisions/links."""
+
+    normalized_external_id = (external_id or "").strip()
+    if not normalized_external_id:
+        return None
+    if source_system == CRM_SOURCE_SYSTEM:
+        return f"crm_network_map:{source_asset_type}:{normalized_external_id}"
+    return normalized_external_id
+
+
 def _assert_feature_unchanged(
     decision: FiberTopologyIdentityDecision,
 ) -> FiberTopologyStagedFeature:
@@ -235,13 +249,16 @@ def _assert_target_exists(db: Session, asset_type: str, asset_id: uuid.UUID) -> 
 def _existing_source_link(
     db: Session, feature: FiberTopologyStagedFeature
 ) -> FiberTopologyAssetSourceLink | None:
-    if not feature.external_id:
+    source_external_id = stable_source_external_id(
+        feature.batch.source_system, feature.asset_type, feature.external_id
+    )
+    if not source_external_id:
         return None
     return db.scalar(
         select(FiberTopologyAssetSourceLink).where(
             FiberTopologyAssetSourceLink.source_system == feature.batch.source_system,
             FiberTopologyAssetSourceLink.source_asset_type == feature.asset_type,
-            FiberTopologyAssetSourceLink.external_id == feature.external_id,
+            FiberTopologyAssetSourceLink.external_id == source_external_id,
         )
     )
 
@@ -333,9 +350,12 @@ def preview_identity_decision(
         FiberTopologyIdentityDecision.source_system == feature.batch.source_system,
         FiberTopologyIdentityDecision.source_asset_type == feature.asset_type,
     ]
-    if feature.external_id:
+    source_external_id = stable_source_external_id(
+        feature.batch.source_system, feature.asset_type, feature.external_id
+    )
+    if source_external_id:
         active_conditions.append(
-            FiberTopologyIdentityDecision.source_external_id == feature.external_id
+            FiberTopologyIdentityDecision.source_external_id == source_external_id
         )
     else:
         active_conditions.append(
@@ -350,7 +370,7 @@ def preview_identity_decision(
                 staged_feature_id=feature.id,
                 source_system=feature.batch.source_system,
                 source_asset_type=feature.asset_type,
-                source_external_id=feature.external_id,
+                source_external_id=source_external_id,
                 feature_content_sha256=feature.content_sha256,
                 action=normalized_action,
                 target_asset_type=target_type,
@@ -379,7 +399,9 @@ def preview_identity_decision(
         staged_feature_id=feature.id,
         source_system=feature.batch.source_system,
         source_asset_type=feature.asset_type,
-        source_external_id=feature.external_id,
+        source_external_id=stable_source_external_id(
+            feature.batch.source_system, feature.asset_type, feature.external_id
+        ),
         feature_content_sha256=feature.content_sha256,
         action=normalized_action,
         target_asset_type=target_type,
@@ -688,7 +710,10 @@ def _create_source_link(
     actor: str,
 ) -> FiberTopologyAssetSourceLink:
     feature = _assert_feature_unchanged(decision)
-    if not feature.external_id:
+    source_external_id = stable_source_external_id(
+        feature.batch.source_system, feature.asset_type, feature.external_id
+    )
+    if not source_external_id:
         raise FiberTopologyIdentityError("staged feature is missing external_id")
     existing = _existing_source_link(db, feature)
     if existing:
@@ -708,7 +733,7 @@ def _create_source_link(
         source_system=feature.batch.source_system,
         source_profile=feature.batch.profile,
         source_asset_type=feature.asset_type,
-        external_id=feature.external_id,
+        external_id=source_external_id,
         content_sha256=feature.content_sha256,
         canonical_asset_type=canonical_asset_type,
         canonical_asset_id=canonical_asset_id,
@@ -862,6 +887,7 @@ __all__ = [
     "IdentityDecisionPreview",
     "LINK_TARGET_MODELS",
     "POINT_ASSET_TYPES",
+    "CRM_SOURCE_SYSTEM",
     "approve_identity_decision",
     "decision_to_dict",
     "decline_identity_decision",
@@ -870,4 +896,5 @@ __all__ = [
     "preview_identity_decision",
     "propose_identity_decision",
     "representative_point",
+    "stable_source_external_id",
 ]

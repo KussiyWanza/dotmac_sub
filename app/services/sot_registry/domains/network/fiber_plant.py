@@ -1237,6 +1237,29 @@ SERVICES: tuple[SOTService, ...] = (
         ),
     ),
     SOTService(
+        name="network.crm_network_map_point_migration",
+        module="app.services.network.crm_network_map_point_migration",
+        owns=(
+            "CRM Network Map point-asset authoritative batch selection",
+            "CRM Network Map FDH/access-point/splice-closure reconciliation report",
+            "CRM point-source identity proposal manifest preparation",
+            "CRM point-source archive and authority guards before identity execution",
+        ),
+        depends_on=(
+            "network.fiber_source_staging",
+            "network.fiber_identity_decisions",
+            "network.fiber_identity_review",
+            "network.fiber_asset_changes",
+        ),
+        notes=(
+            "This coordinator reads immutable CRM staging evidence only for FDH "
+            "cabinets, fiber access points, and splice closures. It never reads "
+            "staged rows into production map projections and never writes "
+            "canonical assets directly; selected proposals and approved "
+            "execution are delegated to the existing fiber identity owners."
+        ),
+    ),
+    SOTService(
         name="network.fiber_field_observations",
         module="app.services.network.fiber_topology_field_observations",
         owns=(

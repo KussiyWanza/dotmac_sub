@@ -36,6 +36,7 @@ from app.services.network.fiber_topology_identity import (
     preview_identity_decision,
     propose_identity_decision,
     representative_point,
+    stable_source_external_id,
     validate_identity_decision_for_review,
 )
 
@@ -892,7 +893,9 @@ def _latest_features(
 
 
 def _feature_source_key(feature: FiberTopologyStagedFeature) -> tuple[str, str, str]:
-    identity = feature.external_id or f"feature:{feature.id}"
+    identity = stable_source_external_id(
+        feature.batch.source_system, feature.asset_type, feature.external_id
+    ) or f"feature:{feature.id}"
     return feature.batch.source_system, feature.asset_type, identity
 
 

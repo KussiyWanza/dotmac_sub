@@ -35,6 +35,7 @@ from app.services.network.fiber_topology_field_observations import (
     field_verification_state_counts,
     project_field_verification_evidence,
 )
+from app.services.network.fiber_topology_identity import stable_source_external_id
 
 SUPPORTED_CREATE_OR_LINK_TYPES = frozenset(
     {"fdh_cabinet", "fiber_access_point", "splice_closure", "support_structure"}
@@ -524,6 +525,9 @@ def _provenance_evidence(
         else None
     )
     canonical_current = bool(asset and getattr(asset, "is_active", False))
+    expected_external_id = stable_source_external_id(
+        feature.batch.source_system, feature.asset_type, feature.external_id
+    )
     link_current = bool(
         link
         and link.status == "active"
@@ -532,7 +536,7 @@ def _provenance_evidence(
         and link.source_system == feature.batch.source_system
         and link.source_profile == feature.batch.profile
         and link.source_asset_type == feature.asset_type
-        and link.external_id == feature.external_id
+        and link.external_id == expected_external_id
         and link.content_sha256 == feature.content_sha256
         and link.canonical_asset_type == feature.asset_type
         and link.canonical_asset_id == expected_asset_id
