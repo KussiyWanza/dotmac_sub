@@ -29,6 +29,10 @@ class AuditR1ParityReport:
     user_agent_mismatches: int
     unknown_actor_types: int
     missing_required_actor_ids: int
+    user_actor_rows: int
+    user_actor_rows_with_party: int
+    user_actor_rows_without_party: int
+    automated_actor_rows_with_party: int
 
     @property
     def blocking_mismatches(self) -> int:
@@ -40,8 +44,19 @@ class AuditR1ParityReport:
                 self.user_agent_mismatches,
                 self.unknown_actor_types,
                 self.missing_required_actor_ids,
+                self.automated_actor_rows_with_party,
             )
         )
+
+    @property
+    def actor_party_projection_status(self) -> str:
+        if not self.user_actor_rows:
+            return "not_observed"
+        if not self.user_actor_rows_with_party:
+            return "none"
+        if self.user_actor_rows_without_party:
+            return "partial"
+        return "complete"
 
     @property
     def status(self) -> str:
@@ -56,6 +71,7 @@ class AuditR1ParityReport:
             **asdict(self),
             "blocking_mismatches": self.blocking_mismatches,
             "status": self.status,
+            "actor_party_projection_status": self.actor_party_projection_status,
         }
 
     @classmethod
@@ -72,6 +88,10 @@ class AuditR1ParityReport:
             user_agent_mismatches=int(row["user_agent_mismatches"]),
             unknown_actor_types=int(row["unknown_actor_types"]),
             missing_required_actor_ids=int(row["missing_required_actor_ids"]),
+            user_actor_rows=int(row["user_actor_rows"]),
+            user_actor_rows_with_party=int(row["user_actor_rows_with_party"]),
+            user_actor_rows_without_party=int(row["user_actor_rows_without_party"]),
+            automated_actor_rows_with_party=int(row["automated_actor_rows_with_party"]),
         )
 
 
@@ -123,7 +143,25 @@ _AUDIT_R1_PARITY_QUERY = text(
             WHERE created_at IS NOT NULL
               AND actor_type::text IN ('user', 'api_key', 'service')
               AND (actor_id IS NULL OR btrim(actor_id) = '')
-        ) AS missing_required_actor_ids
+        ) AS missing_required_actor_ids,
+        count(*) FILTER (
+            WHERE created_at IS NOT NULL AND actor_type::text = 'user'
+        ) AS user_actor_rows,
+        count(*) FILTER (
+            WHERE created_at IS NOT NULL
+              AND actor_type::text = 'user'
+              AND actor_party_id IS NOT NULL
+        ) AS user_actor_rows_with_party,
+        count(*) FILTER (
+            WHERE created_at IS NOT NULL
+              AND actor_type::text = 'user'
+              AND actor_party_id IS NULL
+        ) AS user_actor_rows_without_party,
+        count(*) FILTER (
+            WHERE created_at IS NOT NULL
+              AND actor_type::text IN ('system', 'service')
+              AND actor_party_id IS NOT NULL
+        ) AS automated_actor_rows_with_party
     FROM audit_events
     """
 )
@@ -327,7 +365,7 @@ class AuditEvents(ListResponseMixin):
         except KeyError:
             query_params = {}
         sensitive = {"token", "password", "secret", "api_key", "api_token"}
-        metadata = {
+        metadata: dict[str, object] = {
             "path": request.url.path,
             "query": {
                 key: "<redacted>" if key.lower() in sensitive else value

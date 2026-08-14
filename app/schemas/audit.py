@@ -21,7 +21,7 @@ class AuditEventBase(BaseModel):
     ip_address: str | None = None
     user_agent: str | None = None
     request_id: str | None = None
-    metadata_: dict | None = Field(
+    metadata_: dict[str, object] | None = Field(
         default=None,
         serialization_alias="metadata",
     )
@@ -31,11 +31,19 @@ class AuditEventBase(BaseModel):
     def validate_actor_pair(self) -> "AuditEventBase":
         """Keep Sub writes inside the kernel's closed actor contract."""
 
-        if self.actor_type is AuditActorType.system:
-            return self
-        if self.actor_id is None or not self.actor_id.strip():
+        if self.actor_type is not AuditActorType.system and (
+            self.actor_id is None or not self.actor_id.strip()
+        ):
             raise ValueError(
                 f"audit actor type {self.actor_type.value!r} needs a non-empty actor_id"
+            )
+        if (
+            self.actor_type in {AuditActorType.system, AuditActorType.service}
+            and self.actor_party_id is not None
+        ):
+            raise ValueError(
+                f"audit actor type {self.actor_type.value!r} cannot carry a "
+                "Party identity"
             )
         return self
 

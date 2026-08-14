@@ -480,6 +480,7 @@ DOMAIN = DomainSOT(
                 "auth.permission_gate",
                 "events.dispatcher",
                 "observability.audit_log",
+                "party.registry",
             ),
             notes=(
                 "This is the only application writer for system_user_roles and "
@@ -499,6 +500,7 @@ DOMAIN = DomainSOT(
                             "authorized system-user assignment principal",
                             "active role and permission catalog",
                             "canonical system-user assignment state",
+                            "canonical staff Party binding",
                         ),
                         canonical_writer="auth.system_user_assignments",
                     ),
@@ -534,6 +536,15 @@ DOMAIN = DomainSOT(
                         kind=AuthorityKind.AUTHORITATIVE_RECORD,
                         source="system_user_roles and system_user_permissions",
                     ),
+                    AuthorityInput(
+                        name="canonical staff Party binding",
+                        owner="party.registry",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "the reviewed SystemUser.person_party_id projection; "
+                            "names and email addresses are never identity evidence"
+                        ),
+                    ),
                 ),
                 transaction=TransactionContract(
                     mode=TransactionMode.OWNER_MANAGED,
@@ -541,7 +552,9 @@ DOMAIN = DomainSOT(
                         "The public replacement command enters "
                         "execute_owner_command on a transaction-free session; "
                         "roles, direct permissions, audit, and event evidence "
-                        "commit or roll back together. Collaborator methods "
+                        "commit or roll back together. Audit actor enrichment reads "
+                        "the canonical staff Party binding in that transaction. "
+                        "Collaborator methods "
                         "flush but never complete a coordinator transaction."
                     ),
                     locking=(
@@ -631,6 +644,7 @@ DOMAIN = DomainSOT(
                 test_refs=(
                     "tests/test_system_user_assignments.py",
                     "tests/architecture/test_system_user_assignment_boundary.py",
+                    "tests/architecture/test_audit_actor_provenance.py",
                 ),
             ),
         ),
