@@ -4,7 +4,8 @@ import pytest
 
 from app.models.audit import AuditEvent
 from app.models.party import PartyType
-from app.services import db_session_adapter, party
+from app.services import party
+from app.services.db_session_adapter import db_session_adapter
 from app.services.owner_commands import CommandContext
 from app.services.subscriber_party_binding_repair import (
     COMMAND_SCOPE,
