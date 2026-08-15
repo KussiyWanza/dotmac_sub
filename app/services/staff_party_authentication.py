@@ -20,8 +20,8 @@ lifecycle. Party identifies the *person*; it does not absorb staff ownership.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from enum import StrEnum
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -45,15 +45,15 @@ class StaffProjectionRefusal(StrEnum):
     projection_conflict = "staff_projection_conflict"
 
 
-@dataclass(frozen=True, slots=True)
 class StaffProjectionError(Exception):
     """A staff credential cannot be resolved through its Party projection."""
 
-    refusal: StaffProjectionRefusal
-    credential_id: str
+    __slots__ = ("credential_id", "refusal")
 
-    def __str__(self) -> str:  # pragma: no cover - message plumbing
-        return f"{self.refusal.value} for credential {self.credential_id}"
+    def __init__(self, refusal: StaffProjectionRefusal, credential_id: UUID) -> None:
+        self.refusal = refusal
+        self.credential_id = credential_id
+        super().__init__(f"{refusal.value} for credential {credential_id}")
 
 
 def resolve_staff_principal(db: Session, credential: UserCredential) -> SystemUser:
@@ -63,7 +63,7 @@ def resolve_staff_principal(db: Session, credential: UserCredential) -> SystemUs
     accidentally treat "unresolvable" as "anonymous" and continue.
     """
 
-    credential_id = str(credential.id)
+    credential_id = credential.id
     if credential.party_id is None:
         raise StaffProjectionError(
             StaffProjectionRefusal.projection_missing, credential_id
@@ -99,7 +99,7 @@ def resolve_staff_principal(db: Session, credential: UserCredential) -> SystemUs
     return principal
 
 
-def resolve_staff_principal_assertion(db: Session, system_user_id) -> SystemUser:
+def resolve_staff_principal_assertion(db: Session, system_user_id: UUID) -> SystemUser:
     """Validate a staff principal asserted by an existing session or token.
 
     Sessions carry `system_user_id`, not `party_id`, so the assertion arrives in
@@ -116,7 +116,7 @@ def resolve_staff_principal_assertion(db: Session, system_user_id) -> SystemUser
     ambiguous Party, every live staff session validates.
     """
 
-    reference = str(system_user_id)
+    reference = system_user_id
     principal = db.get(SystemUser, system_user_id)
     if principal is None:
         raise StaffProjectionError(

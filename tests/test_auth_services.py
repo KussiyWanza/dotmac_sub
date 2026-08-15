@@ -31,6 +31,7 @@ from app.services import settings_spec
 from app.services import web_auth as web_auth_service
 from app.services import web_system_config as web_system_config_service
 from app.services.auth_flow import hash_password
+from tests.staff_identity_fixtures import project_staff_login
 
 
 class _FakeRedis:
@@ -111,7 +112,7 @@ def _make_system_user_with_login(db_session, *, email: str):
         password_hash=hash_password("secret"),
         is_active=True,
     )
-    db_session.add(credential)
+    project_staff_login(db_session, user=user, credential=credential)
     db_session.commit()
     return user
 
@@ -550,7 +551,7 @@ def test_web_login_submit_supports_system_user(db_session, monkeypatch):
         password_hash=hash_password("secret"),
         is_active=True,
     )
-    db_session.add(credential)
+    project_staff_login(db_session, user=user, credential=credential)
     db_session.commit()
 
     response = web_auth_service.login_submit(
@@ -662,7 +663,7 @@ def test_web_login_submit_issues_lean_session_cookie_for_system_user(
         password_hash=hash_password("secret"),
         is_active=True,
     )
-    db_session.add(credential)
+    project_staff_login(db_session, user=user, credential=credential)
     db_session.commit()
 
     response = web_auth_service.login_submit(
