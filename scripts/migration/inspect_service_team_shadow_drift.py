@@ -14,10 +14,9 @@ import json
 from collections.abc import Sequence
 from dataclasses import asdict
 
-from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.services.db_session_adapter import db_session_adapter
+from app.db import read_only_snapshot_session
 from app.services.domain_errors import DomainError
 from app.services.service_team_composition import inspect_shadow_drift
 
@@ -38,11 +37,7 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     _parser().parse_args(argv)
     try:
-        with db_session_adapter.read_session() as db:
-            if db.get_bind().dialect.name == "postgresql":
-                db.execute(
-                    text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
-                )
+        with read_only_snapshot_session() as db:
             drift = inspect_shadow_drift(db)
         print(
             json.dumps(

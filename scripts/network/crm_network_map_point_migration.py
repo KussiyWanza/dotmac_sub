@@ -13,12 +13,10 @@ import json
 import sys
 from pathlib import Path
 
-from sqlalchemy import text
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.db import SessionLocal  # noqa: E402
+from app.db import read_only_snapshot_session  # noqa: E402
 from app.services.network.crm_network_map_point_migration import (  # noqa: E402
     CrmNetworkMapPointMigrationError,
     build_crm_point_migration_report,
@@ -86,24 +84,17 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _read_only_begin(db) -> None:
-    if db.bind is not None and db.bind.dialect.name != "sqlite":
-        db.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
-
-
 def main() -> int:
     args = parse_args()
     try:
-        with SessionLocal() as db:
+        with read_only_snapshot_session() as db:
             if args.command == "report":
-                _read_only_begin(db)
                 output = build_crm_point_migration_report(
                     db,
                     expected_archive_sha256=args.expected_archive_sha256,
                     include_rows=args.include_rows,
                 )
             elif args.command == "select":
-                _read_only_begin(db)
                 output = {
                     "selections": [
                         selection.to_dict()
@@ -114,7 +105,6 @@ def main() -> int:
                     ]
                 }
             elif args.command == "preview-proposals":
-                _read_only_begin(db)
                 output = preview_crm_point_identity_proposals(
                     db,
                     expected_archive_sha256=args.expected_archive_sha256,
@@ -129,7 +119,6 @@ def main() -> int:
                     reason=args.reason,
                 ).to_dict()
             elif args.command == "dry-run-apply":
-                _read_only_begin(db)
                 output = dry_run_crm_point_identity_apply(
                     db,
                     proposal_batch_id=args.batch_id,

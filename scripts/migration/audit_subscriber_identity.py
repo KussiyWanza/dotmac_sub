@@ -10,10 +10,7 @@ import os
 from collections.abc import Iterable
 from pathlib import Path
 
-from sqlalchemy import text
-from sqlalchemy.orm import Session
-
-from app.db import SessionLocal
+from app.db import read_only_snapshot_session
 from app.services import party_identity_audit
 
 
@@ -123,14 +120,8 @@ def write_audit_artifacts(
     return summary_path, subscriber_path, groups_path, members_path
 
 
-def _set_transaction_read_only(db: Session) -> None:
-    if db.get_bind().dialect.name == "postgresql":
-        db.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"))
-
-
 def run(output_dir: Path) -> party_identity_audit.SubscriberIdentityAudit:
-    with SessionLocal() as db:
-        _set_transaction_read_only(db)
+    with read_only_snapshot_session() as db:
         audit = party_identity_audit.build_subscriber_identity_audit(db)
         db.rollback()
     write_audit_artifacts(audit, output_dir)

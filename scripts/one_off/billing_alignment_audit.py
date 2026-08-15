@@ -91,7 +91,7 @@ from sqlalchemy import (
 from sqlalchemy import true as sa_true
 from sqlalchemy.orm import Session
 
-from app.db import SessionLocal
+from app.db import SessionLocal, begin_read_only_snapshot
 from app.models.billing import (
     AccountAdjustment,
     CreditNote,
@@ -2352,7 +2352,10 @@ def _configure_read_only_session(
     bind = db.get_bind()
     if bind is None or bind.dialect.name != "postgresql":
         return
-    db.execute(text("SET TRANSACTION READ ONLY"))
+    # This report owns its session for savepoint discipline, so it takes the
+    # caller-owned half of the seam. `SET LOCAL` below stays raw SQL because
+    # it is legal mid-transaction; `SET TRANSACTION` was not.
+    begin_read_only_snapshot(db)
     db.execute(text(f"SET LOCAL statement_timeout = {int(statement_timeout_ms)}"))
     is_replica = bool(db.scalar(text("SELECT pg_is_in_recovery()")))
     if not is_replica and not allow_primary:

@@ -41,9 +41,9 @@ import json
 import sys
 from collections import Counter
 
-from sqlalchemy import select, text
+from sqlalchemy import select
 
-from app.db import SessionLocal
+from app.db import read_only_snapshot_session
 from app.models.network import OntUnit, PonPort
 from app.models.ont_observation import OntObservation
 from app.services.network.ont_reconcile_eligibility import held_ont_ids
@@ -57,12 +57,7 @@ EXIT_EMPTY = 1
 
 
 def main() -> int:
-    with SessionLocal() as db:
-        if db.get_bind().dialect.name == "postgresql":
-            db.execute(
-                text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
-            )
-
+    with read_only_snapshot_session() as db:
         candidates = sweep_candidates(db)
         population = [c.ont_id for c in candidates]
         observed_ids = {

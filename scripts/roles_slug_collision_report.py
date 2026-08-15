@@ -18,9 +18,9 @@ import json
 from collections.abc import Sequence
 from uuid import UUID
 
-from sqlalchemy import select, text
+from sqlalchemy import select
 
-from app.db import SessionLocal
+from app.db import read_only_snapshot_session
 from app.models.rbac import Role
 from app.services.rbac_catalog import role_slug_collision_report
 
@@ -34,13 +34,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    with SessionLocal() as db:
-        db.execute(text("SET TRANSACTION READ ONLY"))
+    with read_only_snapshot_session() as db:
         rows: tuple[tuple[UUID, str], ...] = tuple(
             (role_id, name)
             for role_id, name in db.execute(select(Role.id, Role.name)).all()
         )
-        db.rollback()
 
     report = role_slug_collision_report(rows)
     print(json.dumps(report.as_dict(), sort_keys=True))
