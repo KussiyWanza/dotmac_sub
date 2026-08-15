@@ -4143,6 +4143,14 @@ disagreement produces an OLT-only plan plus an explicit `ont_not_informing` /
 Repeated undeliverable passes are counted on the ONT and escalated so a
 permanently broken ONT cannot fail silently in the sweep.
 
+ONT Configure WiFi delivery remains owned by
+`network.ont_service_configuration`. Its executor recovers a typed field-only
+delivery scope from the exact immutable revision and passes that scope to the
+ONT reconciler. SSID and password values are not copied into dispatch or event
+payloads: the reconciler reads them from canonical desired state, forces only
+the explicitly admitted initial write, and disables forced writes during
+readback-only verification.
+
 Rule: pollers and map collectors write observations; `network.fiber_topology`
 validates passive asset identity and connectivity;
 `network.forwarding_topology` owns official forwarding declarations and

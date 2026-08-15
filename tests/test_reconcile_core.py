@@ -27,6 +27,7 @@ from app.services.credential_crypto import (
 from app.services.network.reconcile import (
     OntDesiredState,
     OntWanProposedChange,
+    OntWifiDeliveryScope,
     ReconcileFailureReason,
     reconcile_ont,
 )
@@ -569,6 +570,31 @@ def test_wifi_password_change_on_synced_ont_pushes_once(
     stored_password = ont.desired_config["wifi"]["password"]
     assert stored_password.startswith("enc:")
     assert decrypt_credential(stored_password) == "kursimining@98765"
+
+
+def test_persisted_wifi_password_scope_pushes_without_proposed_value(
+    db_session, ont, stub_desired, stub_ont_status
+):
+    """The lifecycle worker carries field intent, never the stored secret value."""
+    olt = _StubOltAdapter(present=True)
+    acs = _StubAcsClient(device=_synced_acs_device(ont))
+
+    result = reconcile_ont(
+        db_session,
+        ont.id,
+        wifi_delivery_scope=OntWifiDeliveryScope(
+            changed_fields=frozenset({"wifi_password_ref"})
+        ),
+        mode="sync",
+        olt_adapter=olt,
+        acs_client=acs,
+    )
+
+    assert result.success is True
+    psk_writes = [
+        call for call in acs.spv_calls if "PreSharedKey" in next(iter(call[1]))
+    ]
+    assert len(psk_writes) == 1
 
 
 def test_persisted_admin_wan_change_scopes_delivery_without_writing_back(
