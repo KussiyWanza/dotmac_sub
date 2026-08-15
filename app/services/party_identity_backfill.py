@@ -19,9 +19,9 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.db import begin_serializable_write
 from app.models.party import (
     Party,
     PartyIdentityBackfillReceipt,
@@ -79,8 +79,7 @@ class PartyBackfillExecutionOutcome:
 
 
 def _set_serializable_read_write(db: Session) -> None:
-    if db.get_bind().dialect.name == "postgresql":
-        db.execute(text("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE, READ WRITE"))
+    begin_serializable_write(db)
 
 
 def _text_digest(value: str) -> str:

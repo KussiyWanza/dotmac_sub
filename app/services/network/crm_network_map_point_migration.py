@@ -13,7 +13,7 @@ import math
 import uuid
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
@@ -22,6 +22,7 @@ from app.models.fiber_change_request import FiberChangeRequest
 from app.models.fiber_topology_identity import (
     FiberTopologyAssetSourceLink,
     FiberTopologyIdentityDecision,
+    FiberTopologyIdentityExecutionRun,
 )
 from app.models.fiber_topology_staging import (
     FiberTopologySourceBatch,
@@ -69,6 +70,8 @@ REQUIRED_METADATA = frozenset(
         "snapshot_timestamp",
         "importer_version",
         "source_count",
+        "active_source_count",
+        "valid_active_source_count",
         "restored_count",
         "staged_count",
         "reconciliation_status",
@@ -91,6 +94,8 @@ class CrmAuthoritativeBatchSet:
     importer_version: str
     full_manifest_sha256: str
     source_count: int
+    active_source_count: int
+    valid_active_source_count: int
     restored_count: int
     staged_count: int
     reconciliation_status: str
@@ -109,6 +114,8 @@ class CrmAuthoritativeBatchSet:
             "snapshot_timestamp": self.snapshot_timestamp,
             "source_archive_sha256": self.source_archive_sha256,
             "source_count": self.source_count,
+            "active_source_count": self.active_source_count,
+            "valid_active_source_count": self.valid_active_source_count,
             "staged_count": self.staged_count,
             "superseded_batch_ids": [str(value) for value in self.superseded_batch_ids],
         }
@@ -226,7 +233,13 @@ def _batch_metadata(batch: FiberTopologySourceBatch) -> dict[str, Any]:
     metadata["importer_version"] = _required_text(
         metadata["importer_version"], "importer_version"
     )
-    for field in ("source_count", "restored_count", "staged_count"):
+    for field in (
+        "source_count",
+        "active_source_count",
+        "valid_active_source_count",
+        "restored_count",
+        "staged_count",
+    ):
         metadata[field] = _required_int(metadata[field], field)
     return metadata
 
@@ -251,14 +264,11 @@ def _candidate_cohorts(
         FiberTopologySourceBatch.source_system == CRM_SOURCE_SYSTEM,
         FiberTopologySourceBatch.asset_type.in_(SUPPORTED_CRM_POINT_ASSET_TYPES),
     ]
+    # Validate operator input here, but never use it to hide newer cohorts before
+    # authority is resolved. Filtering first would let an operator make a stale
+    # archive appear authoritative merely by repeating its own digest.
     if expected_archive_sha256 is not None:
-        digest = _sha(expected_archive_sha256, "expected_archive_sha256")
-        filters.append(
-            FiberTopologySourceBatch.source_metadata[
-                "source_archive_sha256"
-            ].as_string()
-            == digest
-        )
+        _sha(expected_archive_sha256, "expected_archive_sha256")
     batches = list(
         db.scalars(
             select(FiberTopologySourceBatch)
@@ -318,6 +328,8 @@ def _selection_from_cohort(
         importer_version=importer_version,
         full_manifest_sha256=manifest_sha256,
         source_count=metadata["source_count"],
+        active_source_count=metadata["active_source_count"],
+        valid_active_source_count=metadata["valid_active_source_count"],
         restored_count=metadata["restored_count"],
         staged_count=metadata["staged_count"],
         reconciliation_status=metadata["reconciliation_status"],
@@ -353,7 +365,19 @@ def select_authoritative_crm_point_batches(
         selections.append(
             _selection_from_cohort(selected_key, selected_batches, superseded)
         )
-    return tuple(selections)
+    result = tuple(selections)
+    if expected_archive_sha256 is not None:
+        expected = _sha(expected_archive_sha256, "expected_archive_sha256")
+        mismatched = tuple(
+            selection.asset_type
+            for selection in result
+            if selection.source_archive_sha256 != expected
+        )
+        if mismatched:
+            raise CrmNetworkMapPointMigrationError(
+                "expected archive is not authoritative for: " + ", ".join(mismatched)
+            )
+    return result
 
 
 def _point(feature: FiberTopologyStagedFeature) -> tuple[float, float] | None:
@@ -653,6 +677,37 @@ def reconcile_authoritative_crm_points(
             )
             for feature in features
         )
+        superseded_features = tuple(
+            db.scalars(
+                select(FiberTopologyStagedFeature)
+                .options(joinedload(FiberTopologyStagedFeature.batch))
+                .where(
+                    FiberTopologyStagedFeature.batch_id.in_(
+                        selection.superseded_batch_ids
+                    )
+                )
+                .order_by(
+                    FiberTopologyStagedFeature.batch_id,
+                    FiberTopologyStagedFeature.row_number,
+                )
+            )
+            .unique()
+            .all()
+        )
+        rows.extend(
+            CrmFeatureReconciliation(
+                staged_feature_id=feature.id,
+                source_identity=stable_source_external_id(
+                    feature.batch.source_system,
+                    feature.asset_type,
+                    feature.external_id,
+                ),
+                asset_type=feature.asset_type,
+                classification="superseded_source",
+                reason_code="newer_authoritative_source_cohort_selected",
+            )
+            for feature in superseded_features
+        )
     return tuple(rows)
 
 
@@ -929,6 +984,107 @@ def build_crm_point_migration_report(
             .group_by(FiberChangeRequest.status)
         )
     }
+    decision_status_by_asset: dict[str, Counter[str]] = defaultdict(Counter)
+    for asset_type, status, count in db.execute(
+        select(
+            FiberTopologyIdentityDecision.source_asset_type,
+            FiberTopologyIdentityDecision.status,
+            func.count(FiberTopologyIdentityDecision.id),
+        )
+        .where(
+            FiberTopologyIdentityDecision.source_system == CRM_SOURCE_SYSTEM,
+            FiberTopologyIdentityDecision.source_asset_type.in_(
+                SUPPORTED_CRM_POINT_ASSET_TYPES
+            ),
+        )
+        .group_by(
+            FiberTopologyIdentityDecision.source_asset_type,
+            FiberTopologyIdentityDecision.status,
+        )
+    ):
+        decision_status_by_asset[str(asset_type)][str(status)] = int(count)
+
+    decision_asset_types = {
+        str(decision_id): asset_type
+        for decision_id, asset_type in db.execute(
+            select(
+                FiberTopologyIdentityDecision.id,
+                FiberTopologyIdentityDecision.source_asset_type,
+            ).where(
+                FiberTopologyIdentityDecision.source_system == CRM_SOURCE_SYSTEM,
+                FiberTopologyIdentityDecision.source_asset_type.in_(
+                    SUPPORTED_CRM_POINT_ASSET_TYPES
+                ),
+            )
+        )
+    }
+    failed_applies: Counter[str] = Counter()
+    for payload in db.scalars(
+        select(FiberTopologyIdentityExecutionRun.result_payload).where(
+            FiberTopologyIdentityExecutionRun.error_count > 0
+        )
+    ):
+        for outcome in payload.get("outcomes", []):
+            if outcome.get("outcome") != "error":
+                continue
+            asset_type = decision_asset_types.get(str(outcome.get("decision_id")))
+            if asset_type in SUPPORTED_CRM_POINT_ASSET_TYPES:
+                failed_applies[asset_type] += 1
+
+    selection_by_asset = {selection.asset_type: selection for selection in selections}
+    classifications_by_asset: dict[str, Counter[str]] = defaultdict(Counter)
+    for row in rows:
+        classifications_by_asset[row.asset_type][row.classification] += 1
+    per_asset: dict[str, dict[str, object]] = {}
+    for asset_type in sorted(SUPPORTED_CRM_POINT_ASSET_TYPES):
+        selection = selection_by_asset.get(asset_type)
+        classifications = classifications_by_asset[asset_type]
+        statuses = decision_status_by_asset[asset_type]
+        canonical_after = canonical_before[asset_type]
+        applied_creates = int(
+            db.scalar(
+                select(func.count(FiberTopologyIdentityDecision.id)).where(
+                    FiberTopologyIdentityDecision.source_system == CRM_SOURCE_SYSTEM,
+                    FiberTopologyIdentityDecision.source_asset_type == asset_type,
+                    FiberTopologyIdentityDecision.action == "create",
+                    FiberTopologyIdentityDecision.status == "applied",
+                )
+            )
+            or 0
+        )
+        per_asset[asset_type] = {
+            "source_total": selection.source_count if selection else 0,
+            "valid_active_source_total": (
+                selection.valid_active_source_count if selection else 0
+            ),
+            "authoritative_batch": (
+                [str(batch_id) for batch_id in selection.batch_ids] if selection else []
+            ),
+            "superseded_batches": (
+                [str(batch_id) for batch_id in selection.superseded_batch_ids]
+                if selection
+                else []
+            ),
+            "staged_total": selection.staged_count if selection else 0,
+            "already_linked": classifications["already_linked"],
+            "exact_matches": classifications["exact_match"],
+            "candidate_matches": classifications["candidate_match"],
+            "proposed_creates": classifications["create_new"],
+            "conflicts": classifications["conflict"],
+            "invalid_records": classifications["invalid"],
+            "approved_proposals": statuses["approved"],
+            "rejected_proposals": statuses["declined"],
+            "applied_proposals": statuses["applied"],
+            "failed_applies": failed_applies[asset_type],
+            "canonical_count_before": max(canonical_after - applied_creates, 0),
+            "canonical_count_after": canonical_after,
+            "hard_reconciliation_failure": bool(
+                classifications["conflict"] or classifications["invalid"]
+            ),
+            "total_mismatch": bool(
+                selection and selection.source_count != selection.restored_count
+            ),
+        }
     report = CrmPointMigrationReport(
         selections=selections,
         rows=rows,
@@ -936,7 +1092,21 @@ def build_crm_point_migration_report(
         proposal_status_counts=proposal_status_counts,
         change_request_status_counts=change_request_status_counts,
     )
-    return report.to_dict(include_rows=include_rows)
+    payload = report.to_dict(include_rows=include_rows)
+    payload["per_asset"] = per_asset
+    payload["canonical_count_before"] = {
+        asset_type: cast(int, summary["canonical_count_before"])
+        for asset_type, summary in per_asset.items()
+    }
+    payload["canonical_count_after"] = {
+        asset_type: cast(int, summary["canonical_count_after"])
+        for asset_type, summary in per_asset.items()
+    }
+    payload["hard_reconciliation_failure"] = any(
+        bool(summary["hard_reconciliation_failure"]) or bool(summary["total_mismatch"])
+        for summary in per_asset.values()
+    )
+    return payload
 
 
 __all__ = [

@@ -472,7 +472,7 @@ def test_assignment_constraint_cutover_is_exhaustive_read_only_evidence() -> Non
     for mutation in ("db.add(", "db.commit(", "db.flush(", "db.delete("):
         assert mutation not in owner_source
 
-    assert "SET TRANSACTION READ ONLY" in cli_source
+    assert "read_only_snapshot_session()" in cli_source
     assert "--apply" not in cli_source
     assert "--repair" not in cli_source
     assert "audit_ont_assignment_cutover(db)" in cli_source

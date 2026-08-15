@@ -27,7 +27,7 @@ observations must never be rendered directly as production map data.
 
 ## Immutable source
 
-The approved archive is:
+The historical 2026-08-12 rehearsal archive was:
 
 ```text
 /var/lib/dotmac-migration/incoming/network-map/20260812T153420Z/
@@ -40,7 +40,10 @@ Its SHA-256 is:
 2d549f2f996bae8a31ac735cf265da294e23c5c4c80cd544abfff934da14b9ac
 ```
 
-Keep that directory and every contained file immutable. Perform restore and
+This archive is stale historical evidence and must not be selected for a future
+production migration. A production migration requires a newly authorized,
+checksum-bound snapshot taken only after this code has been merged and deployed.
+Keep every archive directory and contained file immutable. Perform restore and
 inspection work from a separately permissioned working copy. A generated
 report belongs under the working/report directory, never beside or inside the
 immutable source.
@@ -168,6 +171,9 @@ completed staged status, archive SHA-256, snapshot timestamp, importer version,
 source count, restored count, staged count, full manifest hash, and
 `source_restore_staged_counts_match`. Older cohorts remain immutable evidence
 but are treated as superseded and cannot generate or execute new proposals.
+Authority is resolved across every eligible cohort before the operator-supplied
+archive hash is checked. Supplying a superseded archive's own hash cannot make
+that archive authoritative again.
 
 Stable CRM source identities use:
 

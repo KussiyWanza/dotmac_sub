@@ -399,13 +399,23 @@ def test_private_approval_loader_and_serializable_transaction_contract(tmp_path)
     with pytest.raises(ExecutionFileError, match="mode 0o600"):
         load_approval(approval_path)
 
+    # The contract is now requested as connection execution options, not issued
+    # as `SET TRANSACTION`: that statement is only legal as the first one in a
+    # transaction, and the operator-tenant hook has always run one before it.
+    requested: list[dict[str, object]] = []
     postgresql_db = SimpleNamespace(
         get_bind=lambda: SimpleNamespace(dialect=SimpleNamespace(name="postgresql")),
-        execute=lambda statement: executed.append(str(statement)),
+        connection=lambda **kwargs: requested.append(kwargs),
     )
-    executed: list[str] = []
     _set_serializable_read_write(postgresql_db)
-    assert executed == ["SET TRANSACTION ISOLATION LEVEL SERIALIZABLE, READ WRITE"]
+    assert requested == [
+        {
+            "execution_options": {
+                "isolation_level": "SERIALIZABLE",
+                "postgresql_readonly": False,
+            }
+        }
+    ]
 
 
 def test_receipt_stores_hashes_not_raw_approval_text(db_session):
@@ -452,7 +462,10 @@ def test_execution_entrypoint_keeps_confirmation_and_owner_boundaries():
     assert "SERIALIZABLE, READ WRITE" not in script_source
     assert "db.commit()" not in script_source
     assert "db.rollback()" not in script_source
-    assert "SERIALIZABLE, READ WRITE" in owner_source
+    # The owner still owns the write transaction's isolation contract; it now
+    # requests it through the shared seam instead of holding its own SQL.
+    assert "SERIALIZABLE, READ WRITE" not in owner_source
+    assert "begin_serializable_write(" in owner_source
     assert owner_source.count("db.commit()") == 1
     assert "merge_party" not in script_source
     assert "repoint_party" not in script_source

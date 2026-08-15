@@ -1553,6 +1553,26 @@ def test_reconstruction_preserves_only_balance_affecting_entry_types():
     assert normalize_splynx_entry_type("") == "other"
 
 
+def _assert_read_only_rails(db) -> None:
+    """The rails are half execution options and half SQL, and both must land.
+
+    Counting `db.execute` calls used to stand in for this. That count silently
+    encoded the retired mechanism: READ ONLY is no longer a statement, so the
+    old expectation of two would now be satisfied only by the broken form.
+    """
+
+    db.connection.assert_called_once_with(
+        execution_options={
+            "isolation_level": "REPEATABLE READ",
+            "postgresql_readonly": True,
+        }
+    )
+    # `SET LOCAL` stays raw SQL: it is legal mid-transaction, unlike the
+    # statement it now sits beside.
+    assert db.execute.call_count == 1
+    assert "SET LOCAL statement_timeout" in str(db.execute.call_args[0][0])
+
+
 def test_postgresql_primary_is_refused_by_default():
     db = MagicMock()
     db.get_bind.return_value = SimpleNamespace(
@@ -1565,7 +1585,7 @@ def test_postgresql_primary_is_refused_by_default():
             db, statement_timeout_ms=10000, allow_primary=False
         )
 
-    assert db.execute.call_count == 2
+    _assert_read_only_rails(db)
 
 
 def test_postgresql_replica_is_allowed():
@@ -1577,4 +1597,4 @@ def test_postgresql_replica_is_allowed():
 
     _configure_read_only_session(db, statement_timeout_ms=10000, allow_primary=False)
 
-    assert db.execute.call_count == 2
+    _assert_read_only_rails(db)

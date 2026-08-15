@@ -20,10 +20,12 @@ from scripts.migration import inspect_service_team_shadow_drift as script
 @pytest.fixture(autouse=True)
 def _script_reads_the_test_session(monkeypatch, db_session):
     @contextmanager
-    def read_session():
+    def read_only_snapshot_session():
         yield db_session
 
-    monkeypatch.setattr(script.db_session_adapter, "read_session", read_session)
+    monkeypatch.setattr(
+        script, "read_only_snapshot_session", read_only_snapshot_session
+    )
 
 
 def _run(capsys) -> tuple[int, dict]:

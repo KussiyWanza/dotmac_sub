@@ -6,9 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 
-from sqlalchemy import text
-
-from app.db import SessionLocal
+from app.db import read_only_snapshot_session
 from app.services.audit import audit_events
 
 
@@ -21,10 +19,8 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    with SessionLocal() as db:
-        db.execute(text("SET TRANSACTION READ ONLY"))
+    with read_only_snapshot_session() as db:
         report = audit_events.r1_parity(db)
-        db.rollback()
 
     print(json.dumps(report.as_dict(), sort_keys=True))
     if report.blocking_mismatches and not args.report_only:

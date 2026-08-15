@@ -7,9 +7,10 @@ import argparse
 import json
 from uuid import uuid4
 
-from sqlalchemy import inspect, text
+from sqlalchemy import inspect
 from sqlalchemy.exc import SQLAlchemyError
 
+from app.db import read_only_snapshot_session
 from app.services.db_session_adapter import db_session_adapter
 from app.services.domain_errors import DomainError
 from app.services.owner_commands import CommandContext
@@ -50,7 +51,7 @@ def main() -> int:
         _parser().error("--execute requires --actor and --reason")
     try:
         if args.check:
-            with db_session_adapter.read_session() as db:
+            with read_only_snapshot_session() as db:
                 bind = db.get_bind()
                 # This gate exists only to protect migration 426's one-time
                 # cutover. Once the composable schema from 440 is present the
@@ -65,12 +66,6 @@ def main() -> int:
                         )
                     )
                     return 0
-                if bind.dialect.name == "postgresql":
-                    db.execute(
-                        text(
-                            "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"
-                        )
-                    )
                 audit = audit_legacy_service_team_sources(db)
             print(json.dumps(audit.summary(), indent=2, sort_keys=True))
             return 0 if audit.ready else 2

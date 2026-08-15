@@ -270,7 +270,7 @@ def test_coverage_interface_has_no_mutation_or_constraint_mode(monkeypatch):
     assert 'add_parser("execute"' not in command_source
     assert 'add_parser("apply"' not in command_source
     assert "enable_constraint" not in source
-    assert "SET TRANSACTION READ ONLY" in command_source
+    assert "read_only_snapshot_session()" in command_source
 
 
 def test_admin_route_and_template_expose_read_only_coverage_projection():
