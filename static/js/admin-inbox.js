@@ -222,6 +222,7 @@
       pollTimer: null,
       typingTimer: null,
       inFlight: new Set(),
+      recentlyRefreshedMessageIds: new Set(),
       readStateInFlight: new Set(),
       locallyReadConversationIds: [],
       filterLoading: false,
@@ -1355,6 +1356,20 @@
         });
       },
 
+      refreshThreadForMessage(conversationId, messageId, force = false) {
+        const id = String(messageId || "");
+        if (id && this.recentlyRefreshedMessageIds.has(id)) return false;
+        if (id) {
+          this.recentlyRefreshedMessageIds.add(id);
+          window.setTimeout(
+            () => this.recentlyRefreshedMessageIds.delete(id),
+            10000,
+          );
+        }
+        this.refreshThread(conversationId, force);
+        return true;
+      },
+
       refreshSidebar(intent = "manual_refresh") {
         const url = new URL(window.location.href);
         if (this.selectedId) {
@@ -1545,7 +1560,9 @@
           this.newListActivityAvailable = true;
           if (data.conversation_id === this.selectedId) {
             if (this.composerFocused()) this.newMessagesAvailable = true;
-            else this.refreshThread(this.selectedId);
+            else if (eventType === "message_new") {
+              this.refreshThreadForMessage(this.selectedId, data.message_id);
+            } else this.refreshThread(this.selectedId);
           } else {
             this.showToast("New activity in the inbox.");
           }
@@ -2030,7 +2047,11 @@
         localStorage.removeItem(`${KEYS.draftPrefix}${this.conversationId}`);
 
         const workspace = this.workspace();
-        workspace?.refreshThread?.(this.conversationId, true);
+        workspace?.refreshThreadForMessage?.(
+          this.conversationId,
+          result.message_id,
+          true,
+        );
         workspace?.refreshConversationList?.("reply");
       },
 
