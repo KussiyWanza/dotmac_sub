@@ -1015,6 +1015,8 @@ def test_activation_projects_canonical_policy_to_runtime_config(db_session):
     _install_whatsapp_scope(db_session, account_scope=account_scope)
     fallback = _team(db_session, f"Fallback {uuid4()}")
     technical = _team(db_session, f"Technical {uuid4()}")
+    fallback_id = fallback.id
+    technical_id = technical.id
     db_session.commit()
     draft = ai_conversation_intake.create_draft_policy(
         db_session,
@@ -1027,13 +1029,13 @@ def test_activation_projects_canonical_policy_to_runtime_config(db_session):
             channel_type=InboxChannelType.whatsapp.value,
             provider=WHATSAPP_PROVIDER_META,
             account_scope=account_scope,
-            fallback_team_id=fallback.id,
+            fallback_team_id=fallback_id,
             welcome_message="Hello from the activated assistant.",
             intent_team_mappings=(
                 {
                     "intent": "technical_support",
                     "department": "technical_support",
-                    "service_team_id": str(technical.id),
+                    "service_team_id": str(technical_id),
                     "enabled": True,
                 },
             ),
@@ -1061,10 +1063,10 @@ def test_activation_projects_canonical_policy_to_runtime_config(db_session):
     config = db_session.get(AiIntakeConfig, policy.legacy_config_id)
     assert config.is_enabled is True
     assert config.scope_key == f"{WHATSAPP_PROVIDER_META}:{account_scope}"
-    assert config.fallback_team_id == fallback.id
+    assert config.fallback_team_id == fallback_id
     assert config.confidence_threshold == 0.82
     assert config.max_clarification_turns == 2
-    assert config.department_mappings[0]["service_team_id"] == str(technical.id)
+    assert config.department_mappings[0]["service_team_id"] == str(technical_id)
     assert config.metadata_["compatibility_source"] == "canonical_ai_intake_policy"
     assert config.metadata_["policy_version_id"] == str(activated.version_id)
 
@@ -1075,6 +1077,9 @@ def test_saving_replacement_draft_does_not_update_runtime_config(db_session):
     first_fallback = _team(db_session, f"Fallback {uuid4()}")
     second_fallback = _team(db_session, f"Fallback {uuid4()}")
     technical = _team(db_session, f"Technical {uuid4()}")
+    first_fallback_id = first_fallback.id
+    second_fallback_id = second_fallback.id
+    technical_id = technical.id
     db_session.commit()
     context = CommandContext.system(
         actor="test",
@@ -1088,12 +1093,12 @@ def test_saving_replacement_draft_does_not_update_runtime_config(db_session):
             channel_type=InboxChannelType.whatsapp.value,
             provider=WHATSAPP_PROVIDER_META,
             account_scope=account_scope,
-            fallback_team_id=first_fallback.id,
+            fallback_team_id=first_fallback_id,
             welcome_message="Hello from the first assistant.",
             intent_team_mappings=(
                 {
                     "intent": "technical_support",
-                    "service_team_id": str(technical.id),
+                    "service_team_id": str(technical_id),
                     "enabled": True,
                 },
             ),
@@ -1108,7 +1113,7 @@ def test_saving_replacement_draft_does_not_update_runtime_config(db_session):
     )
     policy = db_session.get(AiIntakePolicy, activated.policy_id)
     config = db_session.get(AiIntakeConfig, policy.legacy_config_id)
-    assert config.fallback_team_id == first_fallback.id
+    assert config.fallback_team_id == first_fallback_id
     db_session.commit()
 
     replacement = ai_conversation_intake.create_draft_policy(
@@ -1118,12 +1123,12 @@ def test_saving_replacement_draft_does_not_update_runtime_config(db_session):
             channel_type=InboxChannelType.whatsapp.value,
             provider=WHATSAPP_PROVIDER_META,
             account_scope=account_scope,
-            fallback_team_id=second_fallback.id,
+            fallback_team_id=second_fallback_id,
             welcome_message="Hello from the replacement assistant.",
             intent_team_mappings=(
                 {
                     "intent": "technical_support",
-                    "service_team_id": str(technical.id),
+                    "service_team_id": str(technical_id),
                     "enabled": True,
                 },
             ),
@@ -1136,7 +1141,7 @@ def test_saving_replacement_draft_does_not_update_runtime_config(db_session):
     assert replacement.version_status == "draft"
     assert policy.active_version_id == activated.version_id
     assert policy.is_enabled is True
-    assert config.fallback_team_id == first_fallback.id
+    assert config.fallback_team_id == first_fallback_id
     db_session.commit()
 
     ai_conversation_intake.activate_policy_version(
@@ -1148,7 +1153,7 @@ def test_saving_replacement_draft_does_not_update_runtime_config(db_session):
     )
 
     config = db_session.get(AiIntakeConfig, policy.legacy_config_id)
-    assert config.fallback_team_id == second_fallback.id
+    assert config.fallback_team_id == second_fallback_id
 
 
 def test_disable_prevents_new_sessions_and_keeps_existing_session_version(db_session):
@@ -1156,6 +1161,8 @@ def test_disable_prevents_new_sessions_and_keeps_existing_session_version(db_ses
     _install_whatsapp_scope(db_session, account_scope=account_scope)
     fallback = _team(db_session, f"Fallback {uuid4()}")
     technical = _team(db_session, f"Technical {uuid4()}")
+    fallback_id = fallback.id
+    technical_id = technical.id
     db_session.commit()
     draft = ai_conversation_intake.create_draft_policy(
         db_session,
@@ -1168,12 +1175,12 @@ def test_disable_prevents_new_sessions_and_keeps_existing_session_version(db_ses
             channel_type=InboxChannelType.whatsapp.value,
             provider=WHATSAPP_PROVIDER_META,
             account_scope=account_scope,
-            fallback_team_id=fallback.id,
+            fallback_team_id=fallback_id,
             welcome_message="Hello from the activated assistant.",
             intent_team_mappings=(
                 {
                     "intent": "technical_support",
-                    "service_team_id": str(technical.id),
+                    "service_team_id": str(technical_id),
                     "enabled": True,
                 },
             ),

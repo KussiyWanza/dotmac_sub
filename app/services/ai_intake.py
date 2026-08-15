@@ -44,7 +44,7 @@ from app.schemas.ai_operations import AiIntakeConfigUpsert
 from app.services.ai.client import AIClientError
 from app.services.ai.output_parsers import parse_json_object
 from app.services.ai.redaction import redact_text
-from app.services.audit_adapter import stage_audit_event
+from app.services.audit_adapter import AuditActor, stage_audit_event
 from app.services.domain_errors import DomainError
 from app.services.events import emit_event
 from app.services.events.types import EventType
@@ -216,14 +216,17 @@ class AiIntakeConfigurationError(DomainError):
         )
 
 
-def _command_actor(context: CommandContext) -> tuple[AuditActorType, str]:
+def _command_actor(context: CommandContext) -> AuditActor:
     actor_type, separator, actor_id = context.actor.partition(":")
     if context.scope != CONFIG_SCOPE or not separator or not actor_id.strip():
         raise AiIntakeConfigurationError(
             "AI intake configuration command context is invalid"
         )
     try:
-        return AuditActorType(actor_type), actor_id.strip()
+        return AuditActor(
+            actor_type=AuditActorType(actor_type),
+            actor_id=actor_id.strip(),
+        )
     except ValueError as exc:
         raise AiIntakeConfigurationError(
             "AI intake configuration actor type is invalid"
@@ -337,7 +340,7 @@ def _config_outcome(
 def _upsert_config_locked(
     db: Session, command: UpsertAiIntakeConfigCommand
 ) -> AiIntakeConfigOutcome:
-    actor_type, actor_id = _command_actor(command.context)
+    actor = _command_actor(command.context)
     policy = command.policy
     if policy.is_enabled:
         if policy.scope_key.strip().lower() in {"global", "default", "any"}:
@@ -452,8 +455,7 @@ def _upsert_config_locked(
         action="ai.intake_config_upserted",
         entity_type="ai_intake_config",
         entity_id=str(row.id),
-        actor_type=actor_type,
-        actor_id=actor_id,
+        actor=actor,
         request_id=str(command.context.correlation_id),
         metadata=evidence,
     )
@@ -490,7 +492,7 @@ def disable_projected_config(
     ).scalar_one_or_none()
     if row is None:
         return None
-    actor_type, actor_id = _command_actor(context)
+    actor = _command_actor(context)
     before = row.is_enabled
     row.is_enabled = False
     row.metadata_ = {
@@ -515,8 +517,7 @@ def disable_projected_config(
         action="ai.intake_config_disabled",
         entity_type="ai_intake_config",
         entity_id=str(row.id),
-        actor_type=actor_type,
-        actor_id=actor_id,
+        actor=actor,
         request_id=str(context.correlation_id),
         metadata=evidence,
     )
