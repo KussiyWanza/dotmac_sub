@@ -460,6 +460,7 @@ def test_wifi_worker_passes_typed_redacted_delivery_scope(db_session, monkeypatc
     ont_id = ont.id
     operation_id = operation.id
     head_id = head.id
+    revision_number = revision.revision
     db_session.commit()
     calls: list[dict[str, object]] = []
 
@@ -489,7 +490,7 @@ def test_wifi_worker_passes_typed_redacted_delivery_scope(db_session, monkeypatc
             ont_unit_id=ont_id,
             operation_id=operation_id,
             configuration_head_id=head_id,
-            revision=revision.revision,
+            revision=revision_number,
         ),
     )
 
