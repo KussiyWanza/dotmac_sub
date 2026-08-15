@@ -58,6 +58,25 @@ OntWanProposedField = Literal[
     "wan_static_ip_is_public",
     "ipv6_enabled",
 ]
+OntWifiDeliveryField = Literal[
+    "wifi_enabled",
+    "wifi_ssid",
+    "wifi_channel",
+    "wifi_security_mode",
+    "wifi_password_ref",
+]
+
+
+@dataclass(frozen=True)
+class OntWifiDeliveryScope:
+    """Typed fields admitted by the WiFi configuration lifecycle owner.
+
+    Values already live in encrypted canonical desired state.  This scope
+    carries delivery intent only, so it cannot duplicate or expose a WiFi
+    credential while crossing the asynchronous worker boundary.
+    """
+
+    changed_fields: frozenset[OntWifiDeliveryField]
 
 
 @dataclass(frozen=True)

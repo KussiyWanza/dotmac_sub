@@ -94,6 +94,7 @@ class InboxReplyPresentation(BaseModel):
     conversation_id: UUID
     status: Literal["success", "error"]
     message: str
+    message_id: UUID | None = None
 
 
 class InboxReadPresentation(BaseModel):
@@ -628,6 +629,7 @@ def _reply_presentation_response(
     *,
     status: Literal["success", "error"],
     message: str,
+    message_id: UUID | None = None,
     retry_after_seconds: int | None = None,
 ) -> Response:
     """Return the typed HTMX result consumed by the Inbox composer adapter."""
@@ -636,10 +638,15 @@ def _reply_presentation_response(
         conversation_id=conversation_id,
         status=status,
         message=message,
+        message_id=message_id,
     )
     headers = {
         "HX-Trigger": json.dumps(
-            {"inbox-reply-completed": payload.model_dump(mode="json")}
+            {
+                "inbox-reply-completed": payload.model_dump(
+                    mode="json", exclude_none=True
+                )
+            }
         )
     }
     if retry_after_seconds is not None:
@@ -1422,6 +1429,7 @@ def team_inbox_reply(
             conversation_id,
             status="success",
             message=message,
+            message_id=(UUID(outcome.message_id) if outcome.message_id else None),
         )
     return _detail_redirect(
         conversation_id,

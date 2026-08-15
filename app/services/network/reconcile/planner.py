@@ -219,7 +219,7 @@ def _is_wifi_only_change(mode: ReconcileMode, proposed_fields: frozenset[str]) -
     # event from GenieACS carries no proposed fields, so it still gets the full
     # plan via the ``bool(proposed_fields)`` guard.
     return (
-        mode in ("sync", "bootstrap")
+        mode in ("sync", "sweep", "bootstrap")
         and bool(proposed_fields)
         and proposed_fields <= _WIFI_ONLY_FIELDS
     )
@@ -1577,7 +1577,7 @@ def _should_push_wifi_password(
         return True
     if (
         force_proposed_writes
-        and mode == "sync"
+        and mode in ("sync", "sweep")
         and "wifi_password_ref" in proposed_fields
     ):
         return True

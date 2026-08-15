@@ -257,6 +257,7 @@ def test_reply_htmx_request_returns_typed_completion_event_without_redirect():
         "conversation_id": str(conversation_id),
         "status": "success",
         "message": "Reply queued from support@example.test.",
+        "message_id": str(outcome.message_id),
     }
     wake_delivery.assert_called_once_with(notification_id)
 
