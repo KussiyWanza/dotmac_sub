@@ -113,6 +113,16 @@ def set_network_device_active(
     cache, so a row that was deactivated before this transition existed is
     repaired the next time anything touches it.
     """
+    if active and device.archived_at is not None:
+        # Discovery and inventory synchronizers may request admission, but only
+        # the explicit restore command may clear the archive tombstone.
+        logger.warning(
+            "ignored admission of archived network device %s (reason=%s)",
+            device.id,
+            reason,
+        )
+        return device
+
     stamp = now or datetime.now(UTC)
     changed = bool(device.is_active) != bool(active)
 

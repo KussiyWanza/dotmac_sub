@@ -15,6 +15,7 @@ from app.models.network_monitoring import DeviceInterface, NetworkDevice, PopSit
 from app.schemas.status_presentation import StatusTone
 from app.services import device_projection_views
 from app.services import network as network_service
+from app.services.core_device_archive import ARCHIVE_SCOPE
 from app.services.device_operational_status import (
     NOT_WORKING,
     WORKING,
@@ -50,6 +51,7 @@ NETWORK_DEVICE_LIST_DEFINITION = ListDefinition(
         ListFieldDefinition("type", "Type", filterable=True),
         ListFieldDefinition("status", "Status", filterable=True),
         ListFieldDefinition("vendor", "Vendor", filterable=True),
+        ListFieldDefinition("lifecycle", "Lifecycle", filterable=True),
         ListFieldDefinition("name", "Name", sortable=True),
         ListFieldDefinition("last_seen", "Last seen", sortable=True),
     ),
@@ -64,6 +66,7 @@ def build_network_device_list_query(
     device_type: str | None = None,
     status: str | None = None,
     vendor: str | None = None,
+    lifecycle: str | None = None,
     search: str | None = None,
     sort_by: str | None = None,
     sort_dir: str | None = None,
@@ -77,6 +80,7 @@ def build_network_device_list_query(
             "type": device_type,
             "status": status,
             "vendor": vendor,
+            "lifecycle": lifecycle,
         },
         sort_by=sort_by,
         sort_dir=sort_dir,
@@ -248,6 +252,7 @@ def get_cpe_ports(db: Session, cpe_id: object) -> list[Port]:
 
 LIFECYCLE_ACTIVE = "active"
 LIFECYCLE_INACTIVE = "inactive"
+LIFECYCLE_ARCHIVED = "archived"
 
 
 def _lifecycle_state(device: object) -> str:
@@ -257,6 +262,8 @@ def _lifecycle_state(device: object) -> str:
     ledger instead of disappearing from it. Devices with no admission flag at
     all (types listed active-only upstream) read ``active``.
     """
+    if getattr(device, "archived_at", None) is not None:
+        return LIFECYCLE_ARCHIVED
     return (
         LIFECYCLE_ACTIVE
         if getattr(device, "is_active", True) is not False
@@ -267,8 +274,9 @@ def _lifecycle_state(device: object) -> str:
 def collect_devices(db: Session) -> list[dict]:
     """Collect all device types into a unified list of dicts.
 
-    Every dict carries ``lifecycle_state`` (``active``/``inactive``). Inactive
-    devices are included on purpose — see the core-device branch below.
+    Every dict carries ``lifecycle_state``
+    (``active``/``inactive``/``archived``). Inactive devices are included on
+    purpose — see the core-device branch below.
     """
     devices: list[dict] = []
     seen_keys: set[tuple[str, str]] = set()
@@ -469,6 +477,13 @@ def collect_devices(db: Session) -> list[dict]:
                         str(getattr(device, "pop_site_id", None))
                     ),
                     "lifecycle_state": _lifecycle_state(device),
+                    "archived_at": (
+                        device.archived_at.isoformat()
+                        if device.archived_at is not None
+                        else None
+                    ),
+                    "archived_by": device.archived_by,
+                    "archive_reason": device.archive_reason,
                 },
             }
         )
@@ -660,6 +675,7 @@ def _device_cohort_url(
         "status": status,
         "vendor": list_query.filter_value("vendor"),
         "search": list_query.search,
+        "lifecycle": list_query.filter_value("lifecycle"),
     }
     query = urlencode({key: value for key, value in params.items() if value})
     return "/admin/network/devices" + (f"?{query}" if query else "")
@@ -706,12 +722,16 @@ def _device_row_actions(device: dict) -> dict[str, Action]:
     IP, a device type that can be rebooted), computed once so the template hides
     or disables what cannot run instead of re-deriving it from a status string.
     """
-    has_ip = bool(str(device.get("ip_address") or "").strip())
     device_type = str(device.get("type") or "").strip().lower()
-    rebootable = device_type in _REBOOTABLE_DEVICE_TYPES
-    can_ping = has_ip
-    can_reboot = rebootable and has_ip
     device_id = str(device.get("id") or "").strip()
+    lifecycle = str(device.get("lifecycle_state") or "active").lower()
+    is_archived = lifecycle == LIFECYCLE_ARCHIVED
+    has_ip = bool(str(device.get("ip_address") or "").strip())
+    rebootable = device_type in _REBOOTABLE_DEVICE_TYPES
+    can_ping = has_ip and not is_archived
+    can_reboot = rebootable and has_ip and not is_archived
+    can_archive = device_type == "core" and not is_archived and bool(device_id)
+    can_restore = device_type == "core" and is_archived and bool(device_id)
     return {
         "view": Action(
             key="view",
@@ -723,7 +743,15 @@ def _device_row_actions(device: dict) -> dict[str, Action]:
             key="ping",
             label="Ping Device",
             allowed=can_ping,
-            reason=None if can_ping else "No management IP on record",
+            reason=(
+                None
+                if can_ping
+                else (
+                    "Archived devices are read-only"
+                    if is_archived
+                    else "No management IP on record"
+                )
+            ),
             permission="network:device:write",
             tone=StatusTone.positive,
         ),
@@ -734,9 +762,11 @@ def _device_row_actions(device: dict) -> dict[str, Action]:
             reason=None
             if can_reboot
             else (
-                "No management IP on record"
-                if rebootable
+                "Archived devices are read-only"
+                if is_archived
                 else "Reboot is not available for this device type"
+                if not rebootable
+                else "No management IP on record"
             ),
             permission="network:device:write",
             preview_url=(
@@ -748,13 +778,24 @@ def _device_row_actions(device: dict) -> dict[str, Action]:
             tone=StatusTone.warning,
             requires_confirmation=can_reboot and bool(device_id),
         ),
-        "delete": Action(
-            key="delete",
-            label="Remove Device",
-            allowed=False,
-            reason="Removal is not supported from this inventory",
-            permission="network:device:write",
-            tone=StatusTone.negative,
+        "archive": Action(
+            key="archive",
+            label="Restore Device" if is_archived else "Archive Device",
+            allowed=can_archive or can_restore,
+            reason=(
+                None
+                if can_archive or can_restore
+                else "Archive is available only for core devices"
+            ),
+            permission=ARCHIVE_SCOPE,
+            preview_url=(
+                f"/admin/network/core-devices/{device_id}/archive/preview"
+                if can_archive
+                else None
+            ),
+            affected=1 if can_archive else None,
+            tone=StatusTone.positive if is_archived else StatusTone.warning,
+            requires_confirmation=can_archive,
         ),
     }
 
@@ -766,6 +807,7 @@ def _query_page(db: Session, list_query: ListQuery) -> tuple[list[dict], int]:
         status=list_query.filter_value("status"),
         vendor=list_query.filter_value("vendor"),
         search=list_query.search,
+        lifecycle=list_query.filter_value("lifecycle"),
         sort_by=list_query.sort_by,
         sort_dir=list_query.sort_dir,
         offset=list_query.offset,
@@ -790,6 +832,7 @@ def devices_list_page_data(db: Session, list_query: ListQuery) -> dict[str, obje
         status=list_query.filter_value("status"),
         vendor=list_query.filter_value("vendor"),
         search=list_query.search,
+        lifecycle=list_query.filter_value("lifecycle"),
     )
     # KPI tiles are a fixed overview: each tile counts its own cohort across
     # every status and type, so the headline number never shrinks because the
@@ -802,6 +845,7 @@ def devices_list_page_data(db: Session, list_query: ListQuery) -> dict[str, obje
         status=None,
         vendor=list_query.filter_value("vendor"),
         search=list_query.search,
+        lifecycle=list_query.filter_value("lifecycle"),
     )
     per_page = list_query.per_page
     total_pages = (total + per_page - 1) // per_page if total else 1
@@ -815,6 +859,7 @@ def devices_list_page_data(db: Session, list_query: ListQuery) -> dict[str, obje
         "search": list_query.search or "",
         "status": list_query.filter_value("status") or "",
         "vendor": list_query.filter_value("vendor") or "",
+        "lifecycle": list_query.filter_value("lifecycle") or "current",
         # Pagination context consumed by components/data/table_pagination.html.
         "pagination": total > per_page,
         "offset": list_query.offset,
@@ -825,6 +870,7 @@ def devices_list_page_data(db: Session, list_query: ListQuery) -> dict[str, obje
         "per_page": per_page,
         "htmx_url": "/admin/network/devices/filter",
         "htmx_target": "devices-table-body",
+        "htmx_include": "#devices-filter-form",
     }
 
 

@@ -5,6 +5,22 @@
 
 {% block content %}
 <div class="space-y-6">
+    {% if device.archived_at %}
+    <div class="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
+        <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+                <p class="font-semibold">This device is archived and read-only.</p>
+                <p class="mt-1">Archived {{ device.archived_at | app_datetime('%b %d, %Y %H:%M', '') }}{% if device.archive_reason %} · {{ device.archive_reason }}{% endif %}</p>
+            </div>
+            {% if can_archive_network_device %}
+            <form method="post" action="/admin/network/core-devices/{{ device.id }}/restore" data-confirm="Restore this device as inactive?" data-confirm-label="Restore">
+                {% include "components/forms/csrf_input.html" %}
+                <button type="submit" class="inline-flex items-center rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white hover:bg-amber-700">Restore Device</button>
+            </form>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
     {% if message %}
     <div class="rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800 dark:border-green-900/50 dark:bg-green-900/20 dark:text-green-300">
         {{ message }}
@@ -18,7 +34,7 @@
     <div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
             <nav class="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400 mb-2">
-                <a href="/admin/network/core-devices" class="hover:text-primary-600">Network Devices</a>
+                <a href="/admin/network/devices?type=core{% if device.archived_at %}&lifecycle=archived{% endif %}" class="hover:text-primary-600">{{ 'Archived Devices' if device.archived_at else 'Network Devices' }}</a>
                 <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
                 <span class="text-slate-900 dark:text-white">{{ device.name }}</span>
             </nav>
@@ -56,6 +72,7 @@
                 {% elif device.last_snmp_at %}Failed
                 {% else %}Unknown{% endif %}
             </span>
+            {% if not device.archived_at %}
             <a href="/admin/network/core-devices/{{ device.id }}/edit" class="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">
                 <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
                 Edit
@@ -66,14 +83,17 @@
             <a href="/admin/network/core-devices/{{ device.id }}/backups" class="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">
                 Backup
             </a>
+            {% endif %}
         </div>
     </div>
 
     <div class="grid grid-cols-1 gap-6 lg:grid-cols-3">
+        {% if not device.archived_at %}
         <div class="hidden"
              hx-get="/admin/network/core-devices/{{ device.id }}/health{% if selected_interface %}?interface_id={{ selected_interface.id }}{% endif %}"
              hx-trigger="load"
              hx-swap="none"></div>
+        {% endif %}
         <!-- Main Content -->
         <div class="lg:col-span-2 space-y-6">
             <!-- Device Details -->

@@ -2347,13 +2347,16 @@ DOMAIN = DomainSOT(
             depends_on=("ui.list_contracts", "network.device_projection"),
             notes=(
                 "NETWORK_DEVICE_LIST_DEFINITION declares the list capabilities "
-                "(search, filter type/status/vendor, sort name/last_seen) and "
+                "(search, filter type/status/vendor/lifecycle, sort "
+                "name/last_seen) and "
                 "build_network_device_list_query normalizes request state; the "
                 "list reads the materialised device_projections table via "
                 "device_projection_views (SQL search/filter/sort/paginate), the "
                 "rebuildable read model owned by network.device_projection, "
                 "instead of aggregating every device in memory. Projected "
                 "operational_status is the binary network.device_state outcome; "
+                "archived core rows are excluded from the default cohort and "
+                "remain available from the explicit archived cohort; "
                 "refreshed_at is internal repair evidence and never a client "
                 "device state. Raw timestamped observations remain available at "
                 "diagnostic depth. collect_devices is "

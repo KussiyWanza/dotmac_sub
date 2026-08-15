@@ -231,6 +231,15 @@ class NetworkDevice(Base):
             unique=True,
             postgresql_where=text("uisp_device_id IS NOT NULL"),
         ),
+        CheckConstraint(
+            "archived_at IS NULL OR "
+            "(NOT is_active AND archived_by IS NOT NULL "
+            "AND length(trim(archived_by)) > 0 "
+            "AND archive_reason IS NOT NULL "
+            "AND length(trim(archive_reason)) BETWEEN 3 AND 500)",
+            name="ck_network_device_archive_state",
+        ),
+        Index("ix_network_devices_archived_at", "archived_at"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -275,6 +284,12 @@ class NetworkDevice(Base):
     notes: Mapped[str | None] = mapped_column(Text)
     splynx_monitoring_id: Mapped[int | None] = mapped_column(Integer)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Archival is a reversible administrative retirement. The row and all of
+    # its monitoring history remain authoritative; normal inventory reads hide
+    # it while the archived view and restore command continue to address it.
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    archived_by: Mapped[str | None] = mapped_column(String(160))
+    archive_reason: Mapped[str | None] = mapped_column(Text)
 
     # --- Topology reconcile (Zabbix linkage) ---
     # Stable Zabbix host id; the reconcile key. NULL until merged to a Zabbix host.
@@ -1458,13 +1473,13 @@ class DeviceProjection(Base):
             name="ck_device_projection_binary_operational_status",
         ),
         CheckConstraint(
-            "lifecycle_state IN ('active', 'inactive')",
+            "lifecycle_state IN ('active', 'inactive', 'archived')",
             name="ck_device_projection_lifecycle_state",
         ),
-        # RELEASE GATE. An inactive device is not polled, so nothing can keep
+        # RELEASE GATE. A non-active device is not polled, so nothing can keep
         # its reachability current; whatever it last reported is frozen. This
-        # constraint makes "an inactive device projects working" unrepresentable
-        # in the database, not merely unlikely in the code.
+        # constraint makes "a non-active device projects working"
+        # unrepresentable in the database, not merely unlikely in the code.
         CheckConstraint(
             "lifecycle_state = 'active' OR operational_status = 'not_working'",
             name="ck_device_projection_inactive_never_working",
@@ -1496,9 +1511,8 @@ class DeviceProjection(Base):
         index=True,
     )
     operational_reason: Mapped[str | None] = mapped_column(String(160))
-    # Admission state of the source device: 'active' or 'inactive'. A
-    # deactivated device stays projected (so it cannot vanish from the staff
-    # ledger) and is marked here instead of being pruned away.
+    # Administrative state of the source device. Inactive and archived rows
+    # stay projected so both states remain repairable and auditable.
     lifecycle_state: Mapped[str] = mapped_column(
         String(20),
         nullable=False,
