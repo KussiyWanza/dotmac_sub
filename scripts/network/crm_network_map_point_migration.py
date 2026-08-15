@@ -17,6 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.db import read_only_snapshot_session  # noqa: E402
+from app.services.db_session_adapter import db_session_adapter  # noqa: E402
 from app.services.network.crm_network_map_point_migration import (  # noqa: E402
     CrmNetworkMapPointMigrationError,
     build_crm_point_migration_report,
@@ -29,6 +30,11 @@ from app.services.network.crm_network_map_point_migration import (  # noqa: E402
 from app.services.network.fiber_topology_review import (  # noqa: E402
     FiberTopologyProposalBatchBlocked,
 )
+
+READ_ONLY_COMMANDS = frozenset(
+    {"report", "select", "preview-proposals", "dry-run-apply"}
+)
+WRITE_COMMANDS = frozenset({"propose-batch", "apply-approved"})
 
 
 def parse_args() -> argparse.Namespace:
@@ -84,55 +90,70 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _run_read_command(args: argparse.Namespace) -> dict[str, object]:
+    with read_only_snapshot_session() as db:
+        if args.command == "report":
+            return build_crm_point_migration_report(
+                db,
+                expected_archive_sha256=args.expected_archive_sha256,
+                include_rows=args.include_rows,
+            )
+        if args.command == "select":
+            return {
+                "selections": [
+                    selection.to_dict()
+                    for selection in select_authoritative_crm_point_batches(
+                        db,
+                        expected_archive_sha256=args.expected_archive_sha256,
+                    )
+                ]
+            }
+        if args.command == "preview-proposals":
+            return preview_crm_point_identity_proposals(
+                db,
+                expected_archive_sha256=args.expected_archive_sha256,
+                proposed_by=args.actor,
+                reason=args.reason,
+            ).to_dict()
+        if args.command == "dry-run-apply":
+            return dry_run_crm_point_identity_apply(
+                db,
+                proposal_batch_id=args.batch_id,
+                expected_archive_sha256=args.expected_archive_sha256,
+            )
+    raise AssertionError(f"unsupported read-only command: {args.command}")
+
+
+def _run_write_command(args: argparse.Namespace) -> dict[str, object]:
+    with db_session_adapter.owner_command_session() as db:
+        if args.command == "propose-batch":
+            return propose_crm_point_identity_proposals(
+                db,
+                expected_archive_sha256=args.expected_archive_sha256,
+                proposed_by=args.actor,
+                reason=args.reason,
+            ).to_dict()
+        if args.command == "apply-approved":
+            return execute_crm_point_identity_apply(
+                db,
+                proposal_batch_id=args.batch_id,
+                expected_manifest_sha256=args.expected_manifest_sha256,
+                expected_archive_sha256=args.expected_archive_sha256,
+                executed_by=args.actor,
+                limit=args.limit,
+            ).to_dict()
+    raise AssertionError(f"unsupported write command: {args.command}")
+
+
 def main() -> int:
     args = parse_args()
     try:
-        with read_only_snapshot_session() as db:
-            if args.command == "report":
-                output = build_crm_point_migration_report(
-                    db,
-                    expected_archive_sha256=args.expected_archive_sha256,
-                    include_rows=args.include_rows,
-                )
-            elif args.command == "select":
-                output = {
-                    "selections": [
-                        selection.to_dict()
-                        for selection in select_authoritative_crm_point_batches(
-                            db,
-                            expected_archive_sha256=args.expected_archive_sha256,
-                        )
-                    ]
-                }
-            elif args.command == "preview-proposals":
-                output = preview_crm_point_identity_proposals(
-                    db,
-                    expected_archive_sha256=args.expected_archive_sha256,
-                    proposed_by=args.actor,
-                    reason=args.reason,
-                ).to_dict()
-            elif args.command == "propose-batch":
-                output = propose_crm_point_identity_proposals(
-                    db,
-                    expected_archive_sha256=args.expected_archive_sha256,
-                    proposed_by=args.actor,
-                    reason=args.reason,
-                ).to_dict()
-            elif args.command == "dry-run-apply":
-                output = dry_run_crm_point_identity_apply(
-                    db,
-                    proposal_batch_id=args.batch_id,
-                    expected_archive_sha256=args.expected_archive_sha256,
-                )
-            else:
-                output = execute_crm_point_identity_apply(
-                    db,
-                    proposal_batch_id=args.batch_id,
-                    expected_manifest_sha256=args.expected_manifest_sha256,
-                    expected_archive_sha256=args.expected_archive_sha256,
-                    executed_by=args.actor,
-                    limit=args.limit,
-                ).to_dict()
+        if args.command in READ_ONLY_COMMANDS:
+            output = _run_read_command(args)
+        elif args.command in WRITE_COMMANDS:
+            output = _run_write_command(args)
+        else:  # pragma: no cover - argparse restricts this to registered commands.
+            raise AssertionError(f"unsupported command: {args.command}")
     except FiberTopologyProposalBatchBlocked as exc:
         print(json.dumps(exc.preview.to_dict(), indent=2, sort_keys=True))
         return 2
