@@ -127,6 +127,12 @@ def _open_whatsapp_window(
 
 
 def test_send_inbox_reply_uses_owner_team_sender(db_session, monkeypatch):
+    delivery_wakeups: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr(
+        notification_tasks.deliver_notification,
+        "apply_async",
+        lambda *args, **kwargs: delivery_wakeups.append((args, kwargs)),
+    )
     _smtp_sender(db_session, "support", from_email="support@dotmac.io")
     _activity_sender(db_session, "support_ticket", "support")
     team = _team(db_session, "Support", ServiceTeamType.support.value)
@@ -161,6 +167,7 @@ def test_send_inbox_reply_uses_owner_team_sender(db_session, monkeypatch):
     assert message.metadata_["sender_key"] == "support"
     assert message.notification_id == notification.id
     assert message.metadata_["delivery_status"] == "queued"
+    assert delivery_wakeups == [((), {"args": [str(notification.id)], "retry": False})]
 
 
 def test_send_inbox_reply_sends_whatsapp_text(db_session, monkeypatch):

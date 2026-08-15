@@ -677,29 +677,6 @@ def _read_presentation_response(
     )
 
 
-def _request_immediate_notification_delivery(notification_id: UUID) -> None:
-    """Wake the dedicated delivery transport for one committed outbox row.
-
-    Broker publication is best-effort because the durable periodic sweep is
-    the recovery owner. A broker outage must not turn a committed reply into an
-    HTTP failure that encourages the agent to submit a duplicate message.
-    """
-
-    try:
-        from app.tasks.notifications import deliver_notification
-
-        deliver_notification.apply_async(
-            args=[str(notification_id)],
-            retry=False,
-        )
-    except Exception:
-        logger.warning(
-            "team_inbox_immediate_delivery_dispatch_failed",
-            extra={"notification_id": str(notification_id)},
-            exc_info=True,
-        )
-
-
 @router.get(
     "/media/{asset_id}/content",
     dependencies=[Depends(require_permission("support:ticket:read"))],
@@ -1416,14 +1393,6 @@ def team_inbox_reply(
         if outcome.kind == "failed"
         else f"Reply sent from {outcome.sender}."
     )
-    if outcome.notification_id is not None:
-        # The outbox row is already committed. Publish after the HTTP response
-        # so broker latency never holds the agent's composer open; the periodic
-        # sweep recovers a missed best-effort wake-up.
-        background_tasks.add_task(
-            _request_immediate_notification_delivery,
-            outcome.notification_id,
-        )
     if _is_htmx_request(request):
         return _reply_presentation_response(
             conversation_id,
