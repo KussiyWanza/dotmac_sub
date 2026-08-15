@@ -35,6 +35,22 @@ def test_worker_claims_dispatch_and_never_creates_an_operation():
     assert "NetworkOperation(" not in source
 
 
+def test_wifi_delivery_scope_crosses_owner_to_reconciler_without_secret_values():
+    owner_source = _source("app/services/network/ont_service_configuration.py")
+    state_source = _source("app/services/network/reconcile/state.py")
+
+    assert "OntWifiDeliveryScope" in state_source
+    assert "changed_fields: frozenset[OntWifiDeliveryField]" in state_source
+    assert "wifi_delivery_scope=_wifi_delivery_scope(revision)" in owner_source
+    scope_slice = owner_source.split("def _wifi_delivery_scope(", 1)[1].split(
+        "def _execution_locked(", 1
+    )[0]
+    assert "wifi.password" in scope_slice
+    assert "wifi_password_ref" in scope_slice
+    assert "encrypt_credential" not in scope_slice
+    assert "decrypt" not in scope_slice
+
+
 def test_template_uses_owner_projection_for_retry_and_hides_ppp_secret_inputs():
     source = _source("templates/admin/network/onts/_configure_form.html")
 

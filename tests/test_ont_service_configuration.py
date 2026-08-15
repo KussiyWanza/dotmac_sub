@@ -41,6 +41,7 @@ from app.services.network.ont_service_configuration import (
     OntConfigurationSection,
     RetryOntServiceConfigurationCommand,
     WanConfigurationChange,
+    WifiConfigurationChange,
     configure_ont_service,
     execute_ont_service_configuration,
     get_ont_service_configuration_projection,
@@ -362,6 +363,8 @@ def _lifecycle(
     *,
     phase: OntServiceConfigurationPhase,
     suffix: str,
+    section: OntConfigurationSection = OntConfigurationSection.wan,
+    desired_change_evidence: dict[str, object] | None = None,
 ) -> tuple[
     OntServiceConfigurationHead,
     OntServiceConfigurationRevision,
@@ -381,16 +384,129 @@ def _lifecycle(
         head_id=head.id,
         assignment_id=assignment.id,
         revision=1,
-        section="wan",
+        section=section.value,
         command_fingerprint=suffix.ljust(64, "0")[:64],
         idempotency_key=f"key-{suffix}",
-        desired_change_evidence={},
+        desired_change_evidence=desired_change_evidence or {},
         operation_id=operation.id,
         phase=phase,
     )
     db_session.add(revision)
     db_session.flush()
     return head, revision, operation
+
+
+def test_wifi_admission_records_redacted_delivery_evidence(
+    db_session,
+    monkeypatch,
+    olt_device,
+    subscription,
+    subscriber,
+):
+    ont_id, _assignment_id = _admission_scope(
+        db_session,
+        monkeypatch,
+        olt_device=olt_device,
+        subscription=subscription,
+        subscriber=subscriber,
+    )
+    command = _configure_command(
+        ont_id,
+        idempotency_key="wifi-redacted-delivery-evidence",
+        section=OntConfigurationSection.wifi,
+        change=WifiConfigurationChange(
+            enabled=True,
+            ssid="Subscriber WiFi",
+            channel="auto",
+            security_mode="WPA2-PSK",
+            password="not-persisted-in-evidence",
+        ),
+    )
+
+    outcome = configure_ont_service(db_session, command)
+
+    revision = db_session.scalar(
+        select(OntServiceConfigurationRevision).where(
+            OntServiceConfigurationRevision.operation_id == outcome.operation_id
+        )
+    )
+    assert revision is not None
+    assert revision.desired_change_evidence["wifi.password"] == "changed"
+    assert "not-persisted-in-evidence" not in str(revision.desired_change_evidence)
+
+
+def test_wifi_worker_passes_typed_redacted_delivery_scope(db_session, monkeypatch):
+    ont = OntUnit(serial_number=f"WIFI-{uuid.uuid4().hex[:10]}", is_active=True)
+    db_session.add(ont)
+    db_session.flush()
+    assignment = OntAssignment(ont_unit_id=ont.id, active=True)
+    db_session.add(assignment)
+    db_session.flush()
+    head, revision, operation = _lifecycle(
+        db_session,
+        ont,
+        assignment,
+        phase=OntServiceConfigurationPhase.queued,
+        suffix="wifi-scope",
+        section=OntConfigurationSection.wifi,
+        desired_change_evidence={
+            "wifi.enabled": True,
+            "wifi.ssid": "Subscriber WiFi",
+            "wifi.channel": "auto",
+            "wifi.security_mode": "WPA2-PSK",
+            "wifi.password": "changed",
+        },
+    )
+    ont_id = ont.id
+    operation_id = operation.id
+    head_id = head.id
+    revision_number = revision.revision
+    db_session.commit()
+    calls: list[dict[str, object]] = []
+
+    def reconciled(*_args, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            success=True,
+            sync_status="synced",
+            drift_after=(),
+            failure=None,
+        )
+
+    monkeypatch.setattr("app.services.network.reconcile.core.reconcile_ont", reconciled)
+    command_id = uuid.uuid4()
+
+    outcome = execute_ont_service_configuration(
+        db_session,
+        ExecuteOntServiceConfigurationCommand(
+            context=CommandContext.system(
+                actor="test:worker",
+                scope="network:ont:execute",
+                reason="test WiFi delivery scope",
+                command_id=command_id,
+                correlation_id=operation_id,
+                idempotency_key="wifi-delivery-scope",
+            ),
+            ont_unit_id=ont_id,
+            operation_id=operation_id,
+            configuration_head_id=head_id,
+            revision=revision_number,
+        ),
+    )
+
+    assert outcome.phase is OntServiceConfigurationPhase.verified
+    scope = calls[-1]["wifi_delivery_scope"]
+    assert scope is not None
+    assert scope.changed_fields == frozenset(
+        {
+            "wifi_enabled",
+            "wifi_ssid",
+            "wifi_channel",
+            "wifi_security_mode",
+            "wifi_password_ref",
+        }
+    )
+    assert "Subscriber WiFi" not in str(scope)
 
 
 def test_inventory_retirement_clears_only_current_projection_and_keeps_history(

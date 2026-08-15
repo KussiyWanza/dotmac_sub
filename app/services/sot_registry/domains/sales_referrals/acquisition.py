@@ -1793,11 +1793,156 @@ SERVICES: tuple[SOTService, ...] = (
     SOTService(
         name="sales.orders",
         module="app.services.sales_orders",
-        owns=("sales order lifecycle",),
+        owns=(
+            "sales order lifecycle",
+            "order waiver decision evidence",
+        ),
         depends_on=(
             "sales.service",
             "sales.lead_lifecycle",
             "sales.fulfillment",
+        ),
+        notes=(
+            "Coverage is DERIVED, never asserted by an operator. "
+            "payment_status, amount_paid and paid_at are refused on the "
+            "generic order edit and on the admin form "
+            "(sales_orders.FUNDING_CONTROLLED_FIELDS); only a caller holding "
+            "a sales_orders.FundingAuthority can cross the funding edge that "
+            "stages sales_order.funding_satisfied. "
+            "An order waiver is a separate decision and NOT a payment: "
+            "SalesOrderWaivers in this same module grants and revokes it, "
+            "records "
+            "actor/grounds/amount/idempotency as evidence, and writes no "
+            "payment field, no settlement evidence and no funding event. "
+            "Historical payment_status='waived' rows stay readable; nothing "
+            "writes that value any more. While a waiver is active the order's "
+            "commercial terms are frozen, so re-pricing cannot silently change "
+            "what was forgiven. Extended credit is deliberately excluded — it "
+            "preserves a receivable and needs Billing/Collections ownership."
+        ),
+        contract=ServiceContract(
+            concerns=(
+                ConcernContract(
+                    name="sales order lifecycle",
+                    role=OwnerRole.AUTHORITATIVE_RECORD,
+                    input_names=("canonical sales order state",),
+                    canonical_writer="sales.orders",
+                ),
+                ConcernContract(
+                    name="order waiver decision evidence",
+                    role=OwnerRole.COMMAND_WRITER,
+                    input_names=(
+                        "canonical sales order state",
+                        "recorded waiver decisions",
+                    ),
+                    canonical_writer="sales.orders",
+                ),
+            ),
+            authoritative_inputs=(
+                AuthorityInput(
+                    name="canonical sales order state",
+                    owner="sales.orders",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source=(
+                        "locked SalesOrder identity, lifecycle, currency, and "
+                        "commercial terms"
+                    ),
+                ),
+                AuthorityInput(
+                    name="recorded waiver decisions",
+                    owner="sales.orders",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source=(
+                        "SalesOrderWaiver state, amount, grounds, actor, decision "
+                        "instants, fingerprints, and idempotency identities"
+                    ),
+                ),
+            ),
+            transaction=TransactionContract(
+                mode=TransactionMode.OWNER_MANAGED,
+                boundary=(
+                    "Grant and revoke each enter execute_owner_command once on a "
+                    "transaction-free adapter session; nested order helpers remain "
+                    "flush-only."
+                ),
+                locking=(
+                    "The exact SalesOrder is locked FOR UPDATE before inspecting or "
+                    "changing its waiver evidence."
+                ),
+                idempotency=(
+                    "Grant and revoke are replay-safe per order and command "
+                    "idempotency key; changed grant inputs fail closed by fingerprint."
+                ),
+                retries=(
+                    "The complete owner command is safely retryable after rollback; "
+                    "unique active-waiver and idempotency constraints prevent doubles."
+                ),
+            ),
+            errors=ErrorContract(
+                domain_codes=(
+                    *owner_command_boundary_error_codes("sales.orders"),
+                    "sales.order_waiver.idempotency_conflict",
+                    "sales.order_waiver.invalid_decision_instant",
+                    "sales.order_waiver.missing_idempotency_key",
+                    "sales.order_waiver.no_active_waiver",
+                    "sales.order_waiver.non_positive_amount",
+                    "sales.order_waiver.sales_order_not_found",
+                    "sales.order_waiver.unregistered_reason_code",
+                    "sales.order_waiver.waiver_already_active",
+                ),
+                mapping_owner="sales order adapters",
+                fail_closed_on=(
+                    "an active caller transaction",
+                    "ambiguous or changed idempotent input",
+                    "a concurrent active waiver",
+                    "unregistered grounds",
+                ),
+            ),
+            events=EventContract(
+                event_types=(
+                    "sales_order.fulfilled",
+                    "sales_order.funding_satisfied",
+                    "sales_order.paid",
+                ),
+                schema_version=1,
+                delivery_owner="events.dispatcher",
+                compatibility=(
+                    "Version 1 order lifecycle events retain their existing order, "
+                    "subscriber, and funding evidence identifiers; waiver decisions "
+                    "emit audit evidence only and never a funding event."
+                ),
+                replay=(
+                    "Owner-command idempotency and the locked order transition prevent "
+                    "duplicate state changes; durable staged events redeliver through "
+                    "the dispatcher."
+                ),
+            ),
+            migration=MigrationContract(
+                state=AuthorityMigrationState.COMPLETE,
+                old_owner="generic SalesOrder payment-status mutation",
+                new_owner="sales.orders",
+                verification=(
+                    "Waiver behavior, funding isolation, typed manifest, and "
+                    "architecture boundary tests pass."
+                ),
+                cutover_gate=(
+                    "Generic order edits refuse funding-controlled fields and all "
+                    "waiver decisions use SalesOrderWaivers."
+                ),
+                fallback_retirement=(
+                    "No writer sets payment_status='waived'; historical values remain "
+                    "read-only evidence."
+                ),
+            ),
+            steward="sales operations",
+            design_refs=(
+                "docs/SOT_RELATIONSHIP_MAP.md",
+                "docs/designs/SALES_TO_SERVICE_LIFECYCLE_SOT.md",
+            ),
+            test_refs=(
+                "tests/test_sales_order_waiver.py",
+                "tests/architecture/test_sales_order_funding_authority_boundary.py",
+            ),
         ),
     ),
     SOTService(

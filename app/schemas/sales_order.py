@@ -20,6 +20,7 @@ from app.models.sales import (
     SalesOrderPaymentStatus,
     SalesOrderStatus,
 )
+from app.models.sales_order_waiver import WaiverState
 
 
 class SalesOrderBase(BaseModel):
@@ -134,3 +135,43 @@ class SalesOrderLineRead(SalesOrderLineBase):
     id: UUID
     created_at: datetime
     updated_at: datetime
+
+
+class SalesOrderWaiverGrant(BaseModel):
+    """Grant a waiver on one order.
+
+    Carries no payment field. A waiver states that an amount will not be
+    pursued; it never asserts that money arrived and can never reach ``paid``.
+    """
+
+    waived_amount: Decimal = Field(gt=0)
+    reason_code: str = Field(max_length=80)
+    reason_text: str | None = None
+    #: A retried request with the same key and inputs returns the original
+    #: waiver; the same key with different inputs is a conflict.
+    idempotency_key: str = Field(min_length=8, max_length=255)
+
+
+class SalesOrderWaiverRevoke(BaseModel):
+    """Withdraw an active waiver. The order becomes pursuable again."""
+
+    reason_code: str = Field(max_length=80)
+    reason_text: str | None = None
+    idempotency_key: str = Field(min_length=8, max_length=255)
+
+
+class SalesOrderWaiverRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    sales_order_id: UUID
+    state: WaiverState
+    waived_amount: Decimal
+    currency: str
+    reason_code: str
+    reason_text: str | None
+    granted_by: str
+    granted_at: datetime
+    revoked_by: str | None
+    revoked_at: datetime | None
+    revoke_reason_code: str | None

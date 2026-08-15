@@ -1423,3 +1423,92 @@ def test_deactivate_system_user_revokes_sessions(db_session):
     )
     db_session.refresh(session)
     assert session.status == SessionStatus.revoked
+
+
+def test_disabled_principal_login_mutates_nothing(db_session, monkeypatch):
+    """A correct password on a disabled principal must leave no trace.
+
+    The eligibility gate used to run AFTER the successful-login mutations were
+    committed, so a right password against a deactivated account still cleared
+    the lockout window and stamped `last_login_at`. No token was ever issued —
+    the leak was the write: it corrupted last-login evidence and left a
+    credential-validity oracle in the data.
+    """
+
+    monkeypatch.setenv("JWT_SECRET", "test-secret")
+    user = SystemUser(
+        first_name="Disabled",
+        last_name="Principal",
+        email="disabled.principal@dotmac.io",
+        user_type=UserType.system_user,
+        is_active=False,
+    )
+    db_session.add(user)
+    db_session.flush()
+    locked_until = datetime.now(UTC) - timedelta(minutes=5)
+    credential = UserCredential(
+        system_user_id=user.id,
+        provider=AuthProvider.local,
+        username="disabled.principal@dotmac.io",
+        password_hash=hash_password("secret"),
+        failed_login_attempts=3,
+        locked_until=locked_until,
+        is_active=True,
+    )
+    db_session.add(credential)
+    db_session.commit()
+
+    request = _make_request()
+    with pytest.raises(HTTPException) as exc:
+        AuthFlow.login(
+            db_session, "disabled.principal@dotmac.io", "secret", request, None
+        )
+
+    assert exc.value.status_code == 403
+    assert exc.value.detail == "Account disabled"
+
+    db_session.expire_all()
+    persisted = db_session.get(UserCredential, credential.id)
+    assert persisted.last_login_at is None, "a refused login must not stamp last_login"
+    assert persisted.failed_login_attempts == 3, "counters must be untouched"
+    assert persisted.locked_until is not None, "the lockout window must survive"
+
+
+def test_disabled_principal_is_not_distinguishable_from_a_wrong_password(
+    db_session, monkeypatch
+):
+    """Eligibility stays AFTER password verification, on purpose.
+
+    Checking it first would let an unauthenticated caller tell a disabled
+    account from a wrong password without knowing the password — the same
+    account-state oracle the lock check is careful to avoid.
+    """
+
+    monkeypatch.setenv("JWT_SECRET", "test-secret")
+    user = SystemUser(
+        first_name="Oracle",
+        last_name="Probe",
+        email="oracle.probe@dotmac.io",
+        user_type=UserType.system_user,
+        is_active=False,
+    )
+    db_session.add(user)
+    db_session.flush()
+    credential = UserCredential(
+        system_user_id=user.id,
+        provider=AuthProvider.local,
+        username="oracle.probe@dotmac.io",
+        password_hash=hash_password("secret"),
+        is_active=True,
+    )
+    db_session.add(credential)
+    db_session.commit()
+
+    request = _make_request()
+    with pytest.raises(HTTPException) as wrong:
+        AuthFlow.login(db_session, "oracle.probe@dotmac.io", "nope", request, None)
+
+    assert wrong.value.status_code == 401, (
+        "a wrong password on a disabled account must answer 401 like any other "
+        "wrong password, not reveal the account state"
+    )

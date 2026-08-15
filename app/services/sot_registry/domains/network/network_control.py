@@ -449,7 +449,9 @@ SERVICES: tuple[SOTService, ...] = (
             "owned by the ONT reconciler; saved or queued state is never "
             "presented as verified. Historical events stay append-only and "
             "are excluded from the current UI projection unless their head "
-            "and revision exactly match the active lifecycle."
+            "and revision exactly match the active lifecycle. WiFi delivery "
+            "uses a typed, field-only scope recovered from redacted revision "
+            "evidence; credential values remain in encrypted desired state."
         ),
         contract=ServiceContract(
             concerns=(

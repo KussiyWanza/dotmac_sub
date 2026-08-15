@@ -608,6 +608,35 @@ def _ensure_login_identity_available(
         )
 
 
+def close_principal_access(db: Session, user_id: UUID) -> tuple[int, int]:
+    """Deactivate every credential mechanism and revoke every live session.
+
+    The single consequence of deactivating an authentication principal. It is
+    exported because `set_staff_account_active` is not the only caller that may
+    legitimately deactivate a principal — vendor revocation does too — and the
+    consequence must not be re-implemented per caller. A caller that flips
+    `SystemUser.is_active` without this leaves an authenticable account behind,
+    which is what `tests/architecture/test_principal_deactivation_guard.py`
+    refuses.
+
+    Idempotent: safe to re-invoke on a principal already inactive, which is the
+    remediation path for accounts deactivated before this consequence existed.
+
+    Returns (credentials_deactivated, sessions_revoked).
+    """
+
+    credentials = int(
+        db.query(UserCredential)
+        .filter(
+            UserCredential.system_user_id == user_id,
+            UserCredential.is_active.is_(True),
+        )
+        .update({"is_active": False}, synchronize_session=False)
+        or 0
+    )
+    return credentials, _revoke_active_sessions(db, user_id)
+
+
 def _revoke_active_sessions(db: Session, user_id: UUID) -> int:
     now = datetime.now(UTC)
     return int(
@@ -1671,21 +1700,17 @@ def set_staff_account_active(
             credential_changes = int(credential_created or not credential.is_active)
             credential.is_active = True
         else:
-            credential_changes = int(
-                db.query(UserCredential)
-                .filter(
-                    UserCredential.system_user_id == user.id,
-                    UserCredential.provider == AuthProvider.local,
-                    UserCredential.is_active.is_(True),
-                )
-                .update(
-                    {"is_active": False},
-                    synchronize_session=False,
-                )
-                or 0
-            )
+            credential_changes = 0
         revoked_sessions = 0
-        if not command.is_active or credential_reconciled:
+        if not command.is_active:
+            # EVERY mechanism, not only local. Deactivation is a statement about
+            # the principal, so leaving a RADIUS (or any future provider)
+            # credential active would keep an authentication path open for an
+            # account the operator believes is closed. The activation branch
+            # above stays local-only on purpose: re-enabling an account must not
+            # silently restore a mechanism nobody asked to restore.
+            credential_changes, revoked_sessions = close_principal_access(db, user.id)
+        elif credential_reconciled:
             revoked_sessions = _revoke_active_sessions(db, user.id)
         changed = bool(
             state_changed

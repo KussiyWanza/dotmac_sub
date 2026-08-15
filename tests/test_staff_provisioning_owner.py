@@ -597,3 +597,109 @@ def test_reviewed_repair_recreates_missing_inactive_credential(db_session) -> No
     assert replacement is not None
     assert replacement.username == email
     assert replacement.is_active is False
+
+
+def _radius_credential(db_session, user_id) -> UserCredential:
+    """A second, non-local authentication mechanism on the same principal."""
+    credential = UserCredential(
+        system_user_id=user_id,
+        provider=AuthProvider.radius,
+        username="radius.identity@dotmac.io",
+        password_hash="x" * 60,
+        is_active=True,
+    )
+    db_session.add(credential)
+    db_session.commit()
+    return credential
+
+
+def test_deactivation_closes_every_credential_mechanism_not_only_local(
+    db_session,
+) -> None:
+    """RADIUS canary: deactivation is a statement about the PRINCIPAL.
+
+    The sweep used to filter `provider == local`, so a RADIUS credential
+    survived deactivation and kept an authentication path open on an account
+    the operator believed was closed. Nothing in production exercised it, which
+    is exactly why it needs a canary rather than a comment.
+    """
+
+    _role(db_session)
+    result = staff_provisioning.provision_staff_account(
+        db_session,
+        _staff_command("radius.identity@dotmac.io", key="radius-identity"),
+    )
+    radius = _radius_credential(db_session, result.user_id)
+
+    staff_provisioning.set_staff_account_active(
+        db_session,
+        staff_provisioning.SetStaffAccountActiveCommand(
+            context=_context("deactivate-radius-identity"),
+            user_id=result.user_id,
+            is_active=False,
+        ),
+    )
+
+    db_session.expire_all()
+    remaining = (
+        db_session.query(UserCredential)
+        .filter(
+            UserCredential.system_user_id == result.user_id,
+            UserCredential.is_active.is_(True),
+        )
+        .all()
+    )
+    assert remaining == [], "a deactivated principal must hold no active credential"
+    assert db_session.get(UserCredential, radius.id).is_active is False
+
+
+def test_deactivation_remediates_a_principal_already_inactive(db_session) -> None:
+    """Remediation must converge, not no-op on an unchanged `is_active`.
+
+    Seven production principals were deactivated before this owner existed and
+    kept credentials or unrevoked sessions. Re-invoking the owner is the repair
+    path, so the credential sweep and session revocation must not be gated on
+    the principal's active flag actually changing.
+    """
+
+    _role(db_session)
+    result = staff_provisioning.provision_staff_account(
+        db_session,
+        _staff_command("drifted.identity@dotmac.io", key="drifted-identity"),
+    )
+    user = db_session.get(SystemUser, result.user_id)
+    credential = (
+        db_session.query(UserCredential)
+        .filter(UserCredential.system_user_id == result.user_id)
+        .one()
+    )
+    # The pre-owner state: principal already inactive, access left open.
+    user.is_active = False
+    credential.is_active = True
+    session = AuthSession(
+        system_user_id=result.user_id,
+        status=SessionStatus.active,
+        token_hash="drifted-identity-stale-session",
+        # Expired on purpose: the seven drifted production principals carry
+        # `status=active, revoked_at IS NULL` rows that are all past expiry, and
+        # the sweep must revoke them on expiry-independent criteria.
+        expires_at=datetime.now(UTC) - timedelta(days=1),
+    )
+    db_session.add(session)
+    db_session.commit()
+
+    outcome = staff_provisioning.set_staff_account_active(
+        db_session,
+        staff_provisioning.SetStaffAccountActiveCommand(
+            context=_context("remediate-drifted-identity"),
+            user_id=result.user_id,
+            is_active=False,
+        ),
+    )
+
+    db_session.expire_all()
+    assert outcome.changed is True
+    assert db_session.get(UserCredential, credential.id).is_active is False
+    revoked = db_session.get(AuthSession, session.id)
+    assert revoked.status == SessionStatus.revoked
+    assert revoked.revoked_at is not None

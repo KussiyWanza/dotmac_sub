@@ -761,10 +761,10 @@ def resolve_channel_routing_decision(
         and confidence is not None
         and not route_candidates
     ):
+        raw_department_team_id = _metadata_text(metadata, "ai_department_team_id")
         department_team_id = _active_team_id(
             db,
-            team_id=_metadata_text(metadata, "ai_department_team_id"),
-            department=_metadata_text(metadata, "ai_department"),
+            team_id=raw_department_team_id,
         )
         if department_team_id is not None:
             return ChannelRoutingDecision(
@@ -777,6 +777,22 @@ def resolve_channel_routing_decision(
                 ai_intent_key=intent,
                 ai_confidence=confidence,
                 reason="ai_intake_department",
+            )
+        if _metadata_text(metadata, "ai_department") is not None:
+            return ChannelRoutingDecision(
+                primary_service_team_id=base_team_id,
+                channel_service_team_id=channel_team_id,
+                ai_service_team_id=None,
+                channel_route_id=str(route.id) if route is not None else None,
+                ai_route_id=None,
+                ai_routing_allowed=ai_allowed,
+                ai_intent_key=intent,
+                ai_confidence=confidence,
+                reason=(
+                    "ai_intake_invalid_team_id"
+                    if raw_department_team_id
+                    else "ai_intake_missing_team_id"
+                ),
             )
     return ChannelRoutingDecision(
         primary_service_team_id=base_team_id,
