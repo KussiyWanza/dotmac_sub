@@ -19,7 +19,7 @@ app/services/web_billing_reconciliation.py 1
 app/services/web_catalog_offers.py 18
 app/services/web_catalog_settings.py 24
 app/services/web_catalog_subscription_workflows.py 7
-app/services/web_catalog_subscriptions.py 57
+app/services/web_catalog_subscriptions.py 53
 app/services/web_configuration.py 2
 app/services/web_consolidated_billing.py 4
 app/services/web_control_plane.py 15

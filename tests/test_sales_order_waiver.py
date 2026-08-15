@@ -93,13 +93,32 @@ def _ctx(key: str, actor: str = "user:ada") -> CommandContext:
 
 
 def _grant(db, order, *, amount="1000.00", reason="goodwill", key="waive-key-0001"):
+    order_id = order.id
     db.commit()  # release any read transaction opened by prior assertions
     return SalesOrderWaivers.grant(
         db,
-        sales_order_id=order.id,
+        sales_order_id=order_id,
         waived_amount=Decimal(amount),
         reason_code=reason,
         context=_ctx(key),
+    )
+
+
+def _revoke(
+    db,
+    order,
+    *,
+    reason="granted_in_error",
+    key="revoke-key-0001",
+    actor="user:ada",
+):
+    order_id = order.id
+    db.commit()
+    return SalesOrderWaivers.revoke(
+        db,
+        sales_order_id=order_id,
+        reason_code=reason,
+        context=_ctx(key, actor=actor),
     )
 
 
@@ -236,12 +255,10 @@ def test_revocation_reopens_the_order(db_session):
     order = _order(db_session, subscriber)
     _grant(db_session, order)
 
-    db_session.commit()
-    revoked = SalesOrderWaivers.revoke(
+    revoked = _revoke(
         db_session,
-        sales_order_id=order.id,
-        reason_code="granted_in_error",
-        context=_ctx("revoke-key-0001", actor="user:grace"),
+        order,
+        actor="user:grace",
     )
 
     assert revoked.state is WaiverState.revoked
@@ -263,20 +280,8 @@ def test_revoking_twice_is_idempotent(db_session):
     order = _order(db_session, subscriber)
     _grant(db_session, order)
 
-    db_session.commit()
-    first = SalesOrderWaivers.revoke(
-        db_session,
-        sales_order_id=order.id,
-        reason_code="granted_in_error",
-        context=_ctx("revoke-key-0001"),
-    )
-    db_session.commit()
-    second = SalesOrderWaivers.revoke(
-        db_session,
-        sales_order_id=order.id,
-        reason_code="granted_in_error",
-        context=_ctx("revoke-key-0001"),
-    )
+    first = _revoke(db_session, order)
+    second = _revoke(db_session, order)
     assert first.id == second.id
 
 
@@ -301,13 +306,7 @@ def test_a_new_waiver_is_allowed_after_revocation(db_session):
     subscriber = _make_subscriber(db_session)
     order = _order(db_session, subscriber)
     _grant(db_session, order, key="waive-key-0001")
-    db_session.commit()
-    SalesOrderWaivers.revoke(
-        db_session,
-        sales_order_id=order.id,
-        reason_code="superseded",
-        context=_ctx("revoke-key-0001"),
-    )
+    _revoke(db_session, order, reason="superseded")
 
     again = _grant(db_session, order, key="waive-key-0002")
     assert again.state is WaiverState.active
@@ -462,13 +461,7 @@ def test_the_freeze_lifts_after_revocation(db_session):
     subscriber = _make_subscriber(db_session)
     order = _order(db_session, subscriber)
     _grant(db_session, order)
-    db_session.commit()
-    SalesOrderWaivers.revoke(
-        db_session,
-        sales_order_id=order.id,
-        reason_code="policy_change",
-        context=_ctx("revoke-key-0001"),
-    )
+    _revoke(db_session, order, reason="policy_change")
 
     updated = sales_order_service.sales_orders.update(
         db_session, str(order.id), SalesOrderUpdate(total=Decimal("1200.00"))
