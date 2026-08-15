@@ -1793,11 +1793,31 @@ SERVICES: tuple[SOTService, ...] = (
     SOTService(
         name="sales.orders",
         module="app.services.sales_orders",
-        owns=("sales order lifecycle",),
+        owns=(
+            "sales order lifecycle",
+            "order waiver decision evidence",
+        ),
         depends_on=(
             "sales.service",
             "sales.lead_lifecycle",
             "sales.fulfillment",
+        ),
+        notes=(
+            "Coverage is DERIVED, never asserted by an operator. "
+            "payment_status, amount_paid and paid_at are refused on the "
+            "generic order edit and on the admin form "
+            "(sales_orders.FUNDING_CONTROLLED_FIELDS); only a caller holding "
+            "a sales_orders.FundingAuthority can cross the funding edge that "
+            "stages sales_order.funding_satisfied. "
+            "An order waiver is a separate decision and NOT a payment: "
+            "app.services.sales_order_waiver grants and revokes it, records "
+            "actor/grounds/amount/idempotency as evidence, and writes no "
+            "payment field, no settlement evidence and no funding event. "
+            "Historical payment_status='waived' rows stay readable; nothing "
+            "writes that value any more. While a waiver is active the order's "
+            "commercial terms are frozen, so re-pricing cannot silently change "
+            "what was forgiven. Extended credit is deliberately excluded — it "
+            "preserves a receivable and needs Billing/Collections ownership."
         ),
     ),
     SOTService(

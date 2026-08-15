@@ -159,3 +159,71 @@ def test_a_truthy_non_member_cannot_satisfy_the_hatch():
     # The real member still works, so the check above is not simply refusing
     # everything.
     assert_funding_authority(forged, funding_authority=FundingAuthority.settlement)
+
+
+# ---------------------------------------------------------------------------
+# The waiver owner is on the other side of the same boundary
+# ---------------------------------------------------------------------------
+
+WAIVER_OWNER = APP / "services" / "sales_order_waiver.py"
+
+#: Names that would mean the waiver had become a payment. Checked against code,
+#: not prose — the module docstring names several of them while explaining that
+#: it does not use them, and a naive substring scan would fail on that.
+_FORBIDDEN_IN_WAIVER = (
+    "payment_status",
+    "amount_paid",
+    "paid_at",
+    "funding_authority",
+    "stage_funding_transition",
+    "funding_satisfied",
+)
+
+
+def _waiver_code_without_docstrings() -> str:
+    """The waiver module's source with every docstring removed."""
+    tree = ast.parse(
+        WAIVER_OWNER.read_text(encoding="utf-8"), filename=str(WAIVER_OWNER)
+    )
+    for node in ast.walk(tree):
+        if isinstance(
+            node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+        ):
+            if (
+                node.body
+                and isinstance(node.body[0], ast.Expr)
+                and isinstance(node.body[0].value, ast.Constant)
+                and isinstance(node.body[0].value.value, str)
+            ):
+                node.body.pop(0)
+    return ast.unparse(tree)
+
+
+def test_the_waiver_owner_never_becomes_a_payment():
+    """A waiver must not touch coverage, funding or the escape hatch.
+
+    This is the whole point of splitting waiver out of ``payment_status``: a
+    waived order was NOT paid, so nothing downstream may treat it as funded.
+    """
+    code = _waiver_code_without_docstrings()
+    leaked = [name for name in _FORBIDDEN_IN_WAIVER if name in code]
+    assert not leaked, (
+        f"The waiver owner references {leaked}. A waiver records a decision "
+        "not to pursue an amount; it never asserts coverage, never stages "
+        "funding, and never lifts the funding refusal."
+    )
+
+
+def test_the_docstring_stripper_actually_strips():
+    """Sensitivity proof.
+
+    The module docstring names every forbidden term while explaining that the
+    module does not use them. If the stripper silently returned the raw source
+    the test above would fail for the wrong reason; if it returned nothing it
+    would pass for the wrong reason.
+    """
+    code = _waiver_code_without_docstrings()
+    assert "funding_authority" not in code
+    assert "payment_status" in WAIVER_OWNER.read_text(encoding="utf-8")
+    # Real code survived the strip.
+    assert "def grant" in code and "SalesOrderWaiver" in code

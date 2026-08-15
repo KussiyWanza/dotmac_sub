@@ -295,13 +295,13 @@ def test_payment_field_transitions(db_session):
     assert order.paid_at is not None
 
 
-def test_waived_payment_confirms_draft_order(db_session):
-    """Waiver still confirms the order — but is no longer operator input.
+def test_waiver_is_no_longer_a_payment_status_edit(db_session):
+    """Waiver left this surface entirely.
 
-    A waiver is a credit decision, not evidence that money arrived, and
-    ``payment_status`` is now refused on the generic edit whatever value it
-    carries. Until waiver gets its own command and state (ADR-0030 §5b), the
-    behaviour is reached only by a caller holding explicit authority.
+    It travelled on ``payment_status`` — the field that means money arrived —
+    so closing the manufacture-funding hole closed it too. The replacement is
+    ``app.services.sales_order_waiver``, which records the decision and writes
+    no payment field at all; see ``tests/test_sales_order_waiver.py``.
     """
     subscriber = _make_subscriber(db_session)
     order = sales_order_service.sales_orders.create(
@@ -319,17 +319,15 @@ def test_waived_payment_confirms_draft_order(db_session):
         )
     assert exc.value.status_code == 422
 
-    # No rollback: the refusal happens before `update` assigns anything, so
-    # there is nothing pending. Rolling back here discarded the committed order
-    # and the authorised call below then failed on a deleted instance.
-    order = sales_order_service.sales_orders.update(
-        db_session,
-        str(order_id),
-        SalesOrderUpdate(payment_status=SalesOrderPaymentStatus.waived),
-        funding_authority=FundingAuthority.funding_gate,
-    )
-    assert order.payment_status == SalesOrderPaymentStatus.waived.value
-    assert order.status == SalesOrderStatus.confirmed.value
+    # No rollback. The refusal happens before `update` assigns anything, so
+    # nothing is pending — and rolling back would discard the order the fixture
+    # committed, leaving the assertion below with no row to read. Expire and
+    # re-read instead, which asserts on what is actually persisted.
+    db_session.expire_all()
+    persisted = db_session.get(SalesOrder, order_id)
+    assert persisted is not None
+    assert persisted.payment_status == SalesOrderPaymentStatus.pending.value
+    assert persisted.status == SalesOrderStatus.draft.value
 
 
 def test_update_from_input_parses_strings(db_session):

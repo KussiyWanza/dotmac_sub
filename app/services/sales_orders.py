@@ -1304,6 +1304,46 @@ def assert_funding_authority(
     )
 
 
+#: Fields that change what the customer was sold or what it is worth. While an
+#: order carries an active waiver these are frozen: the waiver recorded an exact
+#: amount as not-pursued, and re-pricing underneath it would silently change
+#: what was forgiven without any new decision being taken.
+COMMERCIAL_FIELDS: frozenset[str] = frozenset(
+    {"subtotal", "tax_total", "total", "discount_type", "discount_value"}
+)
+
+#: The same rule at line level.
+COMMERCIAL_LINE_FIELDS: frozenset[str] = frozenset(
+    {"description", "quantity", "unit_price", "amount", "inventory_item_id"}
+)
+
+
+def assert_no_active_waiver(
+    db: Session, sales_order_id, data: dict[str, Any], fields: frozenset[str]
+) -> None:
+    """Refuse a commercial change while a waiver is active.
+
+    Revoke the waiver first — that is a recorded decision with an accountable
+    actor, which is exactly what re-pricing a waived order should require.
+    """
+    offending = sorted(fields & set(data))
+    if not offending:
+        return
+    from app.services.sales_order_waiver import active_waiver
+
+    if active_waiver(db, coerce_uuid(sales_order_id)) is None:
+        return
+    raise HTTPException(
+        status_code=409,
+        detail=(
+            "This order has an active waiver, so its commercial terms are "
+            f"frozen: {', '.join(offending)}. Revoke the waiver first — the "
+            "waiver recorded an exact amount as not-pursued, and re-pricing "
+            "underneath it would change what was forgiven with no new decision."
+        ),
+    )
+
+
 def stage_funding_transition(
     db: Session,
     sales_order: SalesOrder,
@@ -1668,6 +1708,7 @@ class SalesOrders(ListResponseMixin):
         previous_payment_status = sales_order.payment_status
         data = payload.model_dump(exclude_unset=True)
         assert_funding_authority(data, funding_authority=funding_authority)
+        assert_no_active_waiver(db, sales_order_id, data, COMMERCIAL_FIELDS)
         if "status" in data:
             data["status"] = _enum_str(data["status"], SalesOrderStatus, "status")
         if "payment_status" in data:
@@ -1812,6 +1853,11 @@ class SalesOrderLines(ListResponseMixin):
         if not sales_order:
             raise HTTPException(status_code=404, detail="Sales order not found")
         data = payload.model_dump()
+        # Adding a line changes what the order is worth, so it is a commercial
+        # mutation even though no existing line moves.
+        assert_no_active_waiver(
+            db, sales_order.id, {"amount": data.get("amount")}, COMMERCIAL_LINE_FIELDS
+        )
         if not data.get("amount"):
             data["amount"] = Decimal(data.get("quantity") or 0) * Decimal(
                 data.get("unit_price") or 0
@@ -1833,6 +1879,7 @@ class SalesOrderLines(ListResponseMixin):
         if not line:
             raise HTTPException(status_code=404, detail="Sales order line not found")
         data = payload.model_dump(exclude_unset=True)
+        assert_no_active_waiver(db, line.sales_order_id, data, COMMERCIAL_LINE_FIELDS)
         for key, value in data.items():
             setattr(line, key, value)
         if "quantity" in data or "unit_price" in data:

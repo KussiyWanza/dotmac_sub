@@ -8,7 +8,7 @@ CRM left sales orders auth-only; sub gates them on
 ``crm:sales_order:{read,write}``, which are part of the native sales RBAC contract.
 """
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, require_permission
@@ -20,8 +20,14 @@ from app.schemas.sales_order import (
     SalesOrderLineUpdate,
     SalesOrderRead,
     SalesOrderUpdate,
+    SalesOrderWaiverGrant,
+    SalesOrderWaiverRead,
+    SalesOrderWaiverRevoke,
 )
 from app.services import sales_orders as sales_order_service
+from app.services.common import coerce_uuid
+from app.services.owner_commands import CommandContext
+from app.services.sales_order_waiver import SalesOrderWaivers
 
 router = APIRouter(prefix="/sales-orders", tags=["sales-orders"])
 
@@ -136,3 +142,72 @@ def update_sales_order_line(
     line_id: str, payload: SalesOrderLineUpdate, db: Session = Depends(get_db)
 ):
     return sales_order_service.sales_order_lines.update(db, line_id, payload)
+
+
+def _waiver_actor(principal: dict) -> str:
+    """A waiver with no accountable actor is not evidence."""
+    actor_id = str(principal.get("principal_id") or "") or None
+    if actor_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="An order waiver requires an identified actor.",
+        )
+    return f"{principal.get('principal_type') or 'user'}:{actor_id}"
+
+
+@router.post(
+    "/{sales_order_id}/waiver",
+    response_model=SalesOrderWaiverRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def grant_order_waiver(
+    sales_order_id: str,
+    payload: SalesOrderWaiverGrant,
+    db: Session = Depends(get_db),
+    principal: dict = Depends(require_permission("crm:sales_order:waive")),
+):
+    """Record a decision not to pursue what this order is worth.
+
+    Gated on ``crm:sales_order:waive``, deliberately NOT on
+    ``crm:sales_order:write``. This writes no payment field, creates no
+    settlement evidence and stages no funding event — a waived order was not
+    paid. While the waiver is active the order's commercial terms are frozen.
+    """
+    return SalesOrderWaivers.grant(
+        db,
+        sales_order_id=coerce_uuid(sales_order_id),
+        waived_amount=payload.waived_amount,
+        reason_code=payload.reason_code,
+        reason_text=payload.reason_text,
+        context=CommandContext.system(
+            actor=_waiver_actor(principal),
+            scope="api.sales_order.waiver.grant",
+            reason=payload.reason_code,
+            idempotency_key=payload.idempotency_key,
+        ),
+    )
+
+
+@router.post(
+    "/{sales_order_id}/waiver/revoke",
+    response_model=SalesOrderWaiverRead,
+)
+def revoke_order_waiver(
+    sales_order_id: str,
+    payload: SalesOrderWaiverRevoke,
+    db: Session = Depends(get_db),
+    principal: dict = Depends(require_permission("crm:sales_order:waive")),
+):
+    """Withdraw an active waiver, making the order pursuable again."""
+    return SalesOrderWaivers.revoke(
+        db,
+        sales_order_id=coerce_uuid(sales_order_id),
+        reason_code=payload.reason_code,
+        reason_text=payload.reason_text,
+        context=CommandContext.system(
+            actor=_waiver_actor(principal),
+            scope="api.sales_order.waiver.revoke",
+            reason=payload.reason_code,
+            idempotency_key=payload.idempotency_key,
+        ),
+    )
