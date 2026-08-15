@@ -28,24 +28,23 @@ from fastapi.responses import (
     StreamingResponse,
 )
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.db import finish_read_transaction, get_db
 from app.models.audit import AuditActorType
+from app.models.domain_settings import SettingDomain
 from app.models.team_inbox import InboxChannelType
-from app.schemas.ai_operations import (
-    AiIntakeConfigMetadata,
-    AiIntakeConfigUpsert,
-    AiIntakeDepartmentMapping,
-)
 from app.schemas.plan_family_catalogue import ResolveShareablePlanFamilyCatalogueQuery
+from app.schemas.settings import DomainSettingUpdate
 from app.services import (
-    ai_intake,
+    ai_conversation_intake,
     conversation_lead_relationships,
     conversation_ticket_handoff,
     inbox_lead_actions,
     lead_intake_ai,
+    settings_api,
+    settings_spec,
     team_inbox_agent_introduction,
     team_inbox_commands,
     team_inbox_contact_links,
@@ -675,29 +674,6 @@ def _read_presentation_response(
         content=payload.model_dump(mode="json"),
         status_code=status_code,
     )
-
-
-def _request_immediate_notification_delivery(notification_id: UUID) -> None:
-    """Wake the dedicated delivery transport for one committed outbox row.
-
-    Broker publication is best-effort because the durable periodic sweep is
-    the recovery owner. A broker outage must not turn a committed reply into an
-    HTTP failure that encourages the agent to submit a duplicate message.
-    """
-
-    try:
-        from app.tasks.notifications import deliver_notification
-
-        deliver_notification.apply_async(
-            args=[str(notification_id)],
-            retry=False,
-        )
-    except Exception:
-        logger.warning(
-            "team_inbox_immediate_delivery_dispatch_failed",
-            extra={"notification_id": str(notification_id)},
-            exc_info=True,
-        )
 
 
 @router.get(
@@ -1416,14 +1392,6 @@ def team_inbox_reply(
         if outcome.kind == "failed"
         else f"Reply sent from {outcome.sender}."
     )
-    if outcome.notification_id is not None:
-        # The outbox row is already committed. Publish after the HTTP response
-        # so broker latency never holds the agent's composer open; the periodic
-        # sweep recovers a missed best-effort wake-up.
-        background_tasks.add_task(
-            _request_immediate_notification_delivery,
-            outcome.notification_id,
-        )
     if _is_htmx_request(request):
         return _reply_presentation_response(
             conversation_id,
@@ -2539,6 +2507,23 @@ def team_inbox_email_routes(
     )
 
 
+def _polish_settings_context(db: Session) -> dict[str, object]:
+    return {
+        "ai_polish_business_voice": settings_spec.resolve_value(
+            db,
+            SettingDomain.integration,
+            "inbox_ai_polish_business_voice",
+        )
+        or "",
+        "ai_polish_channel_guidance": settings_spec.resolve_value(
+            db,
+            SettingDomain.integration,
+            "inbox_ai_polish_channel_guidance",
+        )
+        or "",
+    }
+
+
 def _settings_context(
     request: Request,
     db: Session,
@@ -2553,35 +2538,12 @@ def _settings_context(
         if actor_person_id
         else None
     )
-    intake_configs = ai_intake.list_configs(db, limit=100)
-    selected_intake_config = next(
-        (item for item in intake_configs if item.scope_key == "global"),
-        intake_configs[0] if intake_configs else None,
-    )
-    if selected_intake_config is None:
-        intake_mapping_json = "[]"
-    else:
-        intake_mapping_json = json.dumps(
-            [
-                {
-                    "intent": mapping.intent.value,
-                    "department": mapping.department,
-                    "service_team_id": str(mapping.service_team_id)
-                    if mapping.service_team_id
-                    else None,
-                }
-                for mapping in selected_intake_config.department_mappings
-            ],
-            indent=2,
-        )
+    ai_policy_context = ai_conversation_intake.admin_policy_context(db)
     context.update(
         {
             "email_routes": team_inbox_routing.list_email_routes(db),
             "channel_routes": team_inbox_routing.list_channel_routes(db),
             "ai_routes": team_inbox_routing.list_ai_routes(db),
-            "ai_intake_configs": intake_configs,
-            "ai_intake_config": selected_intake_config,
-            "ai_intake_mapping_json": intake_mapping_json,
             "service_team_options": team_inbox_metrics.active_service_team_options(db),
             "smtp_sender_options": email_service.list_smtp_sender_options(db),
             "channel_options": [
@@ -2608,6 +2570,8 @@ def _settings_context(
             "introduction_preference": introduction_preference,
         }
     )
+    context.update(ai_policy_context)
+    context.update(_polish_settings_context(db))
     return context
 
 
@@ -2674,14 +2638,14 @@ def _routes_redirect(*, status: str, message: str) -> RedirectResponse:
 
 
 @settings_router.post(
-    "/ai-intake-policy",
+    "/ai-intake-policy/draft",
     dependencies=[Depends(require_permission("support:ticket:update"))],
 )
-def team_inbox_ai_intake_policy_update(
+def team_inbox_ai_intake_policy_draft_update(
     request: Request,
-    scope_key: str = Form(...),
-    channel_type: str = Form("any"),
-    is_enabled: bool = Form(default=False),
+    channel_type: str = Form(...),
+    provider: str = Form(...),
+    account_scope: str = Form(...),
     confidence_threshold: float = Form(default=0.75),
     allow_followup_questions: bool = Form(default=True),
     max_clarification_turns: int = Form(default=1),
@@ -2699,22 +2663,19 @@ def team_inbox_ai_intake_policy_update(
     queue_handoff_template: str | None = Form(default=None),
     queue_position_update_minutes: int = Form(default=5),
     queue_heartbeat_minutes: int = Form(default=15),
-    data_cleanup_enabled: bool = Form(default=False),
     data_cleanup_prompt: str | None = Form(default=None),
     data_cleanup_gender_choices_json: str | None = Form(default=None),
     data_cleanup_dob_formats: str | None = Form(default=None),
     instructions: str | None = Form(default=None),
     department_mappings_json: str | None = Form(default=None),
+    replace_existing_draft: bool = Form(default=True),
     db: Session = Depends(get_db),
 ):
     actor_person_id = _actor_uuid_from_request(request)
     if actor_person_id is None:
         return _routes_redirect(status="error", message="Agent identity is required.")
     try:
-        department_mappings = tuple(
-            AiIntakeDepartmentMapping.model_validate(item)
-            for item in _json_mapping_list(department_mappings_json)
-        )
+        intent_mappings = tuple(_json_mapping_list(department_mappings_json))
         gender_choices = (
             json.loads(data_cleanup_gender_choices_json)
             if data_cleanup_gender_choices_json
@@ -2727,72 +2688,200 @@ def team_inbox_ai_intake_policy_update(
             for item in str(data_cleanup_dob_formats or "").splitlines()
             if item.strip()
         ]
-        policy = AiIntakeConfigUpsert(
-            scope_key=scope_key,
-            channel_type=channel_type,
-            is_enabled=is_enabled,
-            confidence_threshold=confidence_threshold,
-            allow_followup_questions=allow_followup_questions,
-            max_clarification_turns=max_clarification_turns,
-            escalate_after_minutes=escalate_after_minutes,
-            exclude_campaign_attribution=exclude_campaign_attribution,
-            fallback_team_id=_uuid_form_value(fallback_team_id),
-            instructions=(instructions or None),
-            department_mappings=department_mappings,
-            metadata=AiIntakeConfigMetadata(
-                data_cleaning_support_team_id=_uuid_form_value(
-                    data_cleaning_support_team_id
-                ),
-                display_name=(display_name or "Dotmac Virtual Assistant"),
-                welcome_message=welcome_message,
-                business_tone=business_tone,
-                approved_isp_information=approved_isp_information,
-                queue_templates={
-                    "initial": queue_initial_template or "",
-                    "position_update": queue_position_update_template or "",
-                    "heartbeat": queue_heartbeat_template or "",
-                    "handoff": queue_handoff_template or "",
-                    "position_update_minutes": max(
-                        1, min(int(queue_position_update_minutes), 120)
-                    ),
-                    "heartbeat_minutes": max(5, min(int(queue_heartbeat_minutes), 240)),
-                },
-                data_cleanup_enabled=data_cleanup_enabled,
-                data_cleanup_policy={
-                    "production_collection_enabled": bool(data_cleanup_enabled),
-                    "prompt": data_cleanup_prompt or "",
-                    "max_attempts": 2,
-                    "gender_choices": gender_choices,
-                    "dob_formats": dob_formats,
-                    "eligible_channels": [
-                        "whatsapp",
-                        "facebook_messenger",
-                        "instagram_dm",
-                    ],
-                },
+        queue_templates = {
+            "initial": queue_initial_template or "",
+            "position_update": queue_position_update_template or "",
+            "heartbeat": queue_heartbeat_template or "",
+            "handoff": queue_handoff_template or "",
+            "position_update_minutes": max(
+                1, min(int(queue_position_update_minutes), 120)
             ),
-        )
-    except (TypeError, ValueError, ValidationError, json.JSONDecodeError) as exc:
+            "heartbeat_minutes": max(5, min(int(queue_heartbeat_minutes), 240)),
+        }
+        escalation_rules = {
+            "confidence_threshold": min(max(float(confidence_threshold), 0.0), 1.0),
+            "allow_followup_questions": bool(allow_followup_questions),
+            "max_clarification_turns": max(0, min(int(max_clarification_turns), 5)),
+            "escalate_after_minutes": max(1, min(int(escalate_after_minutes), 1440)),
+            "exclude_campaign_attribution": bool(exclude_campaign_attribution),
+        }
+        data_cleanup_policy = {
+            "production_collection_enabled": False,
+            "prompt": data_cleanup_prompt or "",
+            "max_attempts": 2,
+            "gender_choices": gender_choices,
+            "dob_formats": dob_formats,
+            "eligible_channels": [
+                "whatsapp",
+                "facebook_messenger",
+                "instagram_dm",
+            ],
+            "support_team_id": str(_uuid_form_value(data_cleaning_support_team_id))
+            if _uuid_form_value(data_cleaning_support_team_id)
+            else None,
+        }
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
         return _routes_redirect(status="error", message=str(exc))
 
     _prepare_mutation(db)
     try:
-        ai_intake.upsert_config(
+        ai_conversation_intake.create_draft_policy(
             db,
-            ai_intake.UpsertAiIntakeConfigCommand(
+            ai_conversation_intake.AiDraftPolicyCommand(
                 context=CommandContext.system(
                     actor=f"person:{actor_person_id}",
-                    scope=ai_intake.CONFIG_SCOPE,
-                    reason="update Team Inbox AI intake policy from admin UI",
+                    scope="ai:intake-policy-draft",
+                    reason="save Team Inbox AI intake draft from admin UI",
                 ),
-                policy=policy,
+                channel_type=channel_type,
+                provider=provider,
+                account_scope=account_scope,
+                display_name=display_name,
+                fallback_team_id=_uuid_form_value(fallback_team_id),
+                welcome_message=welcome_message,
+                business_tone=business_tone,
+                business_instructions=instructions,
+                approved_isp_information=approved_isp_information,
+                intent_team_mappings=intent_mappings,
+                queue_templates=queue_templates,
+                escalation_rules=escalation_rules,
+                data_cleanup_policy=data_cleanup_policy,
+                replace_existing_draft=replace_existing_draft,
             ),
         )
     except DomainError as exc:
         return _routes_redirect(status="error", message=exc.message)
     except ValueError as exc:
         return _routes_redirect(status="error", message=str(exc))
-    return _routes_redirect(status="success", message="AI intake policy saved.")
+    return _routes_redirect(
+        status="success",
+        message="AI intake draft saved. Validate and activate separately.",
+    )
+
+
+@settings_router.post(
+    "/ai-intake-policy/{version_id}/validate",
+    dependencies=[Depends(require_permission("support:ticket:update"))],
+)
+def team_inbox_ai_intake_policy_validate(
+    request: Request,
+    version_id: UUID,
+    db: Session = Depends(get_db),
+):
+    actor_person_id = _actor_uuid_from_request(request)
+    if actor_person_id is None:
+        return _routes_redirect(status="error", message="Agent identity is required.")
+    outcome = ai_conversation_intake.validate_policy_version(
+        db,
+        ai_conversation_intake.AiPolicyVersionActivateCommand(
+            context=CommandContext.system(
+                actor=f"person:{actor_person_id}",
+                scope="ai:intake-policy-validate",
+                reason="validate Team Inbox AI intake draft from admin UI",
+            ),
+            version_id=version_id,
+            actor_person_id=actor_person_id,
+        ),
+    )
+    if not outcome.valid:
+        return _routes_redirect(status="error", message="; ".join(outcome.errors))
+    return _routes_redirect(status="success", message="AI intake draft is valid.")
+
+
+@settings_router.post(
+    "/ai-intake-policy/{version_id}/activate",
+    dependencies=[Depends(require_permission("support:ticket:update"))],
+)
+def team_inbox_ai_intake_policy_activate(
+    request: Request,
+    version_id: UUID,
+    confirm_activation: bool = Form(default=False),
+    db: Session = Depends(get_db),
+):
+    actor_person_id = _actor_uuid_from_request(request)
+    if actor_person_id is None:
+        return _routes_redirect(status="error", message="Agent identity is required.")
+    if not confirm_activation:
+        return _routes_redirect(
+            status="error", message="Confirm activation before enabling AI intake."
+        )
+    _prepare_mutation(db)
+    try:
+        ai_conversation_intake.activate_policy_version(
+            db,
+            ai_conversation_intake.AiPolicyVersionActivateCommand(
+                context=CommandContext.system(
+                    actor=f"person:{actor_person_id}",
+                    scope="ai:intake-policy-activate",
+                    reason="activate Team Inbox AI intake policy from admin UI",
+                ),
+                version_id=version_id,
+                actor_person_id=actor_person_id,
+            ),
+        )
+    except ValueError as exc:
+        return _routes_redirect(status="error", message=str(exc))
+    return _routes_redirect(status="success", message="AI intake policy activated.")
+
+
+@settings_router.post(
+    "/ai-intake-policy/{policy_id}/disable",
+    dependencies=[Depends(require_permission("support:ticket:update"))],
+)
+def team_inbox_ai_intake_policy_disable(
+    request: Request,
+    policy_id: UUID,
+    confirm_disable: bool = Form(default=False),
+    db: Session = Depends(get_db),
+):
+    actor_person_id = _actor_uuid_from_request(request)
+    if actor_person_id is None:
+        return _routes_redirect(status="error", message="Agent identity is required.")
+    if not confirm_disable:
+        return _routes_redirect(
+            status="error", message="Confirm disable before stopping new AI sessions."
+        )
+    _prepare_mutation(db)
+    try:
+        ai_conversation_intake.disable_policy(
+            db,
+            ai_conversation_intake.AiPolicyDisableCommand(
+                context=CommandContext.system(
+                    actor=f"person:{actor_person_id}",
+                    scope="ai:intake-policy-disable",
+                    reason="disable Team Inbox AI intake policy from admin UI",
+                ),
+                policy_id=policy_id,
+            ),
+        )
+    except ValueError as exc:
+        return _routes_redirect(status="error", message=str(exc))
+    return _routes_redirect(
+        status="success",
+        message="AI intake disabled for new sessions. Existing sessions keep their version evidence.",
+    )
+
+
+@settings_router.post(
+    "/ai-polish-settings",
+    dependencies=[Depends(require_permission("support:ticket:update"))],
+)
+def team_inbox_ai_polish_settings_update(
+    inbox_ai_polish_business_voice: str = Form(...),
+    inbox_ai_polish_channel_guidance: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    _prepare_mutation(db)
+    for key, value in (
+        ("inbox_ai_polish_business_voice", inbox_ai_polish_business_voice),
+        ("inbox_ai_polish_channel_guidance", inbox_ai_polish_channel_guidance),
+    ):
+        settings_api.upsert_integration_setting(
+            db,
+            key,
+            DomainSettingUpdate(value_text=str(value or "").strip()),
+        )
+    return _routes_redirect(status="success", message="AI Polish settings saved.")
 
 
 @router.post(

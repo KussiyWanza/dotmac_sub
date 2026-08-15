@@ -17479,6 +17479,30 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "POST /api/v1/sales-orders/{sales_order_id}/waiver": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:sales_order_id!"
+   ],
+   "request": "833e38a79f75",
+   "responses": {
+    "201": "7ba549df2b1a",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "POST /api/v1/sales-orders/{sales_order_id}/waiver/revoke": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:sales_order_id!"
+   ],
+   "request": "3a8d7b908c75",
+   "responses": {
+    "200": "7ba549df2b1a",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "POST /api/v1/scheduler/tasks": {
    "params": [
     "header:authorization",
@@ -19920,6 +19944,9 @@
   "SalesOrderRead": "dd732a95353f",
   "SalesOrderStatus": "c4e8325ddc57",
   "SalesOrderUpdate": "f0a42bcded23",
+  "SalesOrderWaiverGrant": "0dd2abc2d312",
+  "SalesOrderWaiverRead": "5b42a0562281",
+  "SalesOrderWaiverRevoke": "41405e63a061",
   "ScheduleType": "be67068873a3",
   "ScheduledTaskCreate": "c2447ba32ccf",
   "ScheduledTaskRead": "56b8c0be8019",
@@ -20156,6 +20183,7 @@
   "VlanUpdate": "138eccdb4b21",
   "VoiceExtractRequest": "d18369f8bb2f",
   "VoiceExtractResponse": "609f68eff893",
+  "WaiverState": "1d3fd31595c9",
   "WireGuardConnectionLogRead": "764b756791eb",
   "WireGuardPeerConfig": "341eff1766fd",
   "WireGuardPeerCreate": "cad388466ca5",

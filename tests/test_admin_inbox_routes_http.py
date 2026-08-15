@@ -238,9 +238,6 @@ def test_reply_htmx_request_returns_typed_completion_event_without_redirect():
     with (
         patch("app.web.admin.inbox._prepare_mutation"),
         patch("app.services.team_inbox_commands.reply", return_value=outcome),
-        patch(
-            "app.web.admin.inbox._request_immediate_notification_delivery"
-        ) as wake_delivery,
         patch("app.services.web_admin.get_actor_id", return_value=None),
     ):
         response = client.post(
@@ -259,7 +256,6 @@ def test_reply_htmx_request_returns_typed_completion_event_without_redirect():
         "message": "Reply queued from support@example.test.",
         "message_id": str(outcome.message_id),
     }
-    wake_delivery.assert_called_once_with(notification_id)
 
 
 def test_reply_htmx_command_error_stays_in_workspace_with_failure_event():

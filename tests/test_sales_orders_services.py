@@ -37,6 +37,7 @@ from app.schemas.sales_order import (
 from app.services import crm_api
 from app.services import sales as sales_service
 from app.services import sales_orders as sales_order_service
+from app.services.sales_orders import FundingAuthority
 
 
 def _make_subscriber(db) -> Subscriber:
@@ -270,7 +271,10 @@ def test_payment_field_transitions(db_session):
     assert order.balance_due == Decimal("100.00")
 
     order = sales_order_service.sales_orders.update(
-        db_session, str(order.id), SalesOrderUpdate(amount_paid=Decimal("40.00"))
+        db_session,
+        str(order.id),
+        SalesOrderUpdate(amount_paid=Decimal("40.00")),
+        funding_authority=FundingAuthority.settlement,
     )
     assert order.payment_status == SalesOrderPaymentStatus.partial.value
     assert order.balance_due == Decimal("60.00")
@@ -282,6 +286,7 @@ def test_payment_field_transitions(db_session):
             payment_status=SalesOrderPaymentStatus.paid,
             paid_at=datetime.now(UTC),
         ),
+        funding_authority=FundingAuthority.settlement,
     )
     assert order.payment_status == SalesOrderPaymentStatus.paid.value
     assert order.amount_paid == Decimal("100.00")
@@ -290,19 +295,39 @@ def test_payment_field_transitions(db_session):
     assert order.paid_at is not None
 
 
-def test_waived_payment_confirms_draft_order(db_session):
+def test_waiver_is_no_longer_a_payment_status_edit(db_session):
+    """Waiver left this surface entirely.
+
+    It travelled on ``payment_status`` — the field that means money arrived —
+    so closing the manufacture-funding hole closed it too. The replacement is
+    ``sales_orders.SalesOrderWaivers``, which records the decision and writes
+    no payment field at all; see ``tests/test_sales_order_waiver.py``.
+    """
     subscriber = _make_subscriber(db_session)
     order = sales_order_service.sales_orders.create(
         db_session, SalesOrderCreate(subscriber_id=subscriber.id)
     )
     assert order.status == SalesOrderStatus.draft.value
-    order = sales_order_service.sales_orders.update(
-        db_session,
-        str(order.id),
-        SalesOrderUpdate(payment_status=SalesOrderPaymentStatus.waived),
-    )
-    assert order.payment_status == SalesOrderPaymentStatus.waived.value
-    assert order.status == SalesOrderStatus.confirmed.value
+
+    order_id = order.id
+
+    with pytest.raises(HTTPException) as exc:
+        sales_order_service.sales_orders.update(
+            db_session,
+            str(order_id),
+            SalesOrderUpdate(payment_status=SalesOrderPaymentStatus.waived),
+        )
+    assert exc.value.status_code == 422
+
+    # No rollback. The refusal happens before `update` assigns anything, so
+    # nothing is pending — and rolling back would discard the order the fixture
+    # committed, leaving the assertion below with no row to read. Expire and
+    # re-read instead, which asserts on what is actually persisted.
+    db_session.expire_all()
+    persisted = db_session.get(SalesOrder, order_id)
+    assert persisted is not None
+    assert persisted.payment_status == SalesOrderPaymentStatus.pending.value
+    assert persisted.status == SalesOrderStatus.draft.value
 
 
 def test_update_from_input_parses_strings(db_session):
@@ -313,13 +338,13 @@ def test_update_from_input_parses_strings(db_session):
     updated = sales_order_service.sales_orders.update_from_input(
         db_session,
         str(order.id),
-        payment_status="paid",
         total="250.00",
         notes="  settled in cash  ",
     )
     assert updated.total == Decimal("250.00")
-    assert updated.payment_status == SalesOrderPaymentStatus.paid.value
     assert updated.notes == "settled in cash"
+    # The form seam carries no funding fields at all; coverage stays derived.
+    assert updated.payment_status == SalesOrderPaymentStatus.pending.value
 
 
 # ---------------------------------------------------------------------------
@@ -352,6 +377,7 @@ def test_paid_order_pushes_subscription_then_payment(db_session, billing_calls):
             payment_status=SalesOrderPaymentStatus.paid,
             paid_at=datetime.now(UTC),
         ),
+        funding_authority=FundingAuthority.settlement,
     )
 
     names = [name for name, _ in billing_calls]
@@ -407,6 +433,7 @@ def test_partial_order_records_money_without_creating_service(
         db_session,
         str(order.id),
         SalesOrderUpdate(amount_paid=Decimal("40.00")),
+        funding_authority=FundingAuthority.settlement,
     )
 
     assert [name for name, _kwargs in billing_calls] == ["record_external_payment"]
@@ -730,6 +757,7 @@ def test_lines_without_offer_tags_push_no_subscription(db_session, billing_calls
             payment_status=SalesOrderPaymentStatus.paid,
             paid_at=datetime.now(UTC),
         ),
+        funding_authority=FundingAuthority.settlement,
     )
     names = [name for name, _ in billing_calls]
     assert "create_subscription" not in names

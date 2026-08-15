@@ -61,6 +61,7 @@ from app.services.events.handlers.sales_lifecycle_projection import (
 )
 from app.services.events.types import Event, EventType
 from app.services.sales import selfserve
+from app.services.sales_orders import FundingAuthority
 
 
 def _make_subscriber(db) -> Subscriber:
@@ -176,6 +177,7 @@ def test_full_funding_chains_subscription_and_service_order(
             payment_status=SalesOrderPaymentStatus.paid,
             paid_at=datetime.now(UTC),
         ),
+        funding_authority=FundingAuthority.settlement,
     )
 
     # The output event committed atomically with the paid transition and the
@@ -315,6 +317,7 @@ def test_unresolved_offer_keeps_delivery_failed_and_visible(db_session):
             payment_status=SalesOrderPaymentStatus.paid,
             paid_at=datetime.now(UTC),
         ),
+        funding_authority=FundingAuthority.settlement,
     )
 
     # The sale itself is committed; the unresolved consequence is a durable

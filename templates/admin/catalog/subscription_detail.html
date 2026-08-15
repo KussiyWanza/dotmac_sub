@@ -14,13 +14,6 @@
 {% set can_cancel = status_val not in ('canceled', 'expired', 'hidden', 'archived') %}
 {% set can_change_plan = status_val in ('active', 'pending', 'suspended') %}
 {% set provisioning_router = subscription.provisioning_nas_device %}
-{% set assigned_ipv4_list = [] %}
-{% for assignment in subscription.ip_assignments or [] %}
-    {% if assignment.is_active and assignment.ipv4_address %}
-        {% set _ = assigned_ipv4_list.append(assignment.ipv4_address.address) %}
-    {% endif %}
-{% endfor %}
-{% set display_ipv4 = subscription.ipv4_address or (assigned_ipv4_list | join(', ')) %}
 {% set conn = connection_status or {} %}
 {% set conn_state = conn.state | default('offline') %}
 <div class="space-y-6">
@@ -532,6 +525,11 @@
                                 </div>
                             </div>
                         </div>
+                    </div>
+                    <div>
+                        <p class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Service IPv4</p>
+                        <p class="mt-1 font-mono text-sm font-semibold text-slate-700 dark:text-slate-300">{{ service_ipv4.address or 'Not assigned' }}</p>
+                        <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">{{ service_ipv4.detail }}</p>
                     </div>
                     <div>
                         <p class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Contract Term</p>

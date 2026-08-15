@@ -853,6 +853,10 @@ from app.models.sales_order_funding import (  # noqa: F401
     SalesOrderFundingGate,
     SalesOrderFundingObligation,
 )
+from app.models.sales_order_waiver import (  # noqa: F401
+    SalesOrderWaiver,
+    WaiverState,
+)
 from app.models.scheduler import ScheduledTask, ScheduleType  # noqa: F401
 from app.models.sequence import DocumentSequence  # noqa: F401
 from app.models.service_extension import (  # noqa: F401

@@ -277,6 +277,10 @@ DEFAULT_PERMISSIONS = [
     ("crm:quote:send", "Send quotes to customers"),
     ("crm:sales_order:read", "View sales orders"),
     ("crm:sales_order:write", "Manage sales orders"),
+    # Deliberately NOT covered by :write. Deciding not to pursue an order is a
+    # commercial decision, not order maintenance, and it was only reachable
+    # before because waiver shared a field with settlement.
+    ("crm:sales_order:waive", "Grant or revoke an order waiver"),
     # Projects
     ("project:read", "View projects"),
     ("project:create", "Create projects"),

@@ -97,6 +97,11 @@ from app.services.network.radius_sessions import (
     latest_open_accounting_session_for_subscription,
 )
 from app.services.owner_commands import CommandContext
+from app.services.subscription_ipv4_projection import (
+    ServiceIPv4Source,
+    SubscriptionServiceIPv4,
+    resolve_subscription_service_ipv4,
+)
 from app.timezone import APP_TIMEZONE_NAME, format_in_app_timezone
 
 logger = logging.getLogger(__name__)
@@ -1086,33 +1091,23 @@ def _subscription_ipv4_form_rows(
     *,
     subscription_obj: Subscription,
 ) -> tuple[list[str], list[str]]:
-    # Query by subscriber_id since IP assignments link to subscribers, not subscriptions
-    assignments = (
-        db.query(IPAssignment)
-        .filter(IPAssignment.subscriber_id == subscription_obj.subscriber_id)
-        .filter(IPAssignment.ip_version == IPVersion.ipv4)
-        .filter(IPAssignment.is_active.is_(True))
-        .order_by(IPAssignment.created_at.asc())
-        .all()
+    service_ipv4 = resolve_subscription_service_ipv4(
+        db,
+        subscription_id=subscription_obj.id,
     )
-    if not assignments:
-        return (
-            [],
-            [subscription_obj.ipv4_address] if subscription_obj.ipv4_address else [],
-        )
-
-    selectors: list[str] = []
-    addresses: list[str] = []
-    for assignment in assignments:
-        address = getattr(assignment, "ipv4_address", None)
-        if not isinstance(address, IPv4Address):
-            continue
-        ip_text = str(getattr(address, "address", "") or "").strip()
-        if not ip_text:
-            continue
-        addresses.append(ip_text)
-        selectors.append(_service_ipv4_selector_for_address(db, address=address))
-    return selectors, addresses
+    if not service_ipv4.address:
+        return [], []
+    address = (
+        db.get(IPv4Address, service_ipv4.ipv4_address_id)
+        if service_ipv4.ipv4_address_id
+        else None
+    )
+    selector = (
+        _service_ipv4_selector_for_address(db, address=address)
+        if isinstance(address, IPv4Address)
+        else ""
+    )
+    return [selector], [service_ipv4.address]
 
 
 def _validate_unique_selected_ipv4s(selected_ips: list[str] | None) -> None:
@@ -1817,26 +1812,15 @@ def _sync_ipv4_assignments_for_subscription(
 
 
 def active_service_ipv4_address(db: Session, subscription_id: str) -> str | None:
-    """Return the one exact active service IPv4, or fail on ledger ambiguity."""
+    """Return the selected IPv4 for one exact service, or fail on ambiguity."""
 
-    rows = list(
-        db.execute(
-            select(IPAssignment, IPv4Address.address)
-            .join(IPv4Address, IPAssignment.ipv4_address_id == IPv4Address.id)
-            .where(
-                IPAssignment.subscription_id == UUID(subscription_id),
-                IPAssignment.ip_version == IPVersion.ipv4,
-                IPAssignment.is_active.is_(True),
-            )
-            .order_by(IPAssignment.id)
-        ).all()
+    selection = resolve_subscription_service_ipv4(
+        db,
+        subscription_id=UUID(subscription_id),
     )
-    if len(rows) > 1:
-        raise ValueError(
-            "This service has multiple active IPv4 assignments. Review IPAM "
-            "before replacing its address."
-        )
-    return str(rows[0][1]) if rows else None
+    if selection.source is ServiceIPv4Source.ambiguous_exact_assignments:
+        raise ValueError(selection.detail)
+    return selection.address
 
 
 def replace_subscription_ipv4_with_owner(
@@ -3353,13 +3337,16 @@ def _password_sync_evidence(credential: AccessCredential | None) -> dict[str, st
     }
 
 
-def _subscription_ip_pool(db: Session, subscription: Subscription) -> IpPool | None:
+def _subscription_ip_pool(
+    db: Session,
+    service_ipv4: SubscriptionServiceIPv4,
+) -> IpPool | None:
     """Return the IpPool that the subscription's current IPv4 address belongs to.
 
     Surfaced on the detail page so operators can jump from a sub's IP back to
     its source pool without having to reason about radius_pool tag chains.
     """
-    address = (subscription.ipv4_address or "").strip()
+    address = str(service_ipv4.address or "").strip()
     if not address:
         return None
     try:
@@ -3374,7 +3361,10 @@ def _subscription_ip_pool(db: Session, subscription: Subscription) -> IpPool | N
     return row.pool if row else None
 
 
-def _ip_assignment_mode(db: Session, subscription: Subscription) -> tuple[str, str]:
+def _ip_assignment_mode(
+    subscription: Subscription,
+    service_ipv4: SubscriptionServiceIPv4,
+) -> tuple[str, str]:
     mode = str(subscription.service_status_raw or "").strip().lower()
     if mode == "dynamic":
         return ("Dynamic pool", "IP is assigned from RADIUS/DHCP pool at session time.")
@@ -3383,22 +3373,15 @@ def _ip_assignment_mode(db: Session, subscription: Subscription) -> tuple[str, s
             "Static assignment",
             "Subscription is configured with a fixed IPv4 assignment.",
         )
-    if subscription.ipv4_address:
+    if service_ipv4.address:
         return (
             "Static assignment",
-            "Subscription stores a fixed IPv4 address directly.",
+            service_ipv4.detail,
         )
-    # Query IP assignments by subscriber (devices link to subscribers, not subscriptions)
-    has_active_ip = (
-        db.query(IPAssignment)
-        .filter(IPAssignment.subscriber_id == subscription.subscriber_id)
-        .filter(IPAssignment.is_active.is_(True))
-        .first()
-    ) is not None
-    if has_active_ip:
+    if service_ipv4.source is ServiceIPv4Source.ambiguous_exact_assignments:
         return (
-            "Assigned IP",
-            "Subscriber has active IP assignments linked in inventory.",
+            "Review required",
+            service_ipv4.detail,
         )
     return (
         "Unspecified",
@@ -3842,8 +3825,15 @@ def subscription_detail_context(
         key=lambda event: event.created_at or datetime.min.replace(tzinfo=UTC),
         reverse=True,
     )
-    ip_assignment_mode, ip_assignment_detail = _ip_assignment_mode(db, subscription)
-    ip_pool = _subscription_ip_pool(db, subscription)
+    service_ipv4 = resolve_subscription_service_ipv4(
+        db,
+        subscription_id=subscription.id,
+    )
+    ip_assignment_mode, ip_assignment_detail = _ip_assignment_mode(
+        subscription,
+        service_ipv4,
+    )
+    ip_pool = _subscription_ip_pool(db, service_ipv4)
     has_service_orders = bool(subscription.service_orders)
     domain_events = _subscription_domain_events(db, subscription)
     notification_evidence = _subscription_notifications(db, subscription)
@@ -3863,6 +3853,7 @@ def subscription_detail_context(
         "lifecycle_events": lifecycle_events,
         "ip_assignment_mode": ip_assignment_mode,
         "ip_assignment_detail": ip_assignment_detail,
+        "service_ipv4": service_ipv4,
         "ip_pool": ip_pool,
         "active_additional_routes": active_additional_routes,
         "active_additional_route_rows": active_additional_route_rows,
