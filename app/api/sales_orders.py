@@ -26,8 +26,9 @@ from app.schemas.sales_order import (
 )
 from app.services import sales_orders as sales_order_service
 from app.services.common import coerce_uuid
+from app.services.db_session_adapter import db_session_adapter
 from app.services.owner_commands import CommandContext
-from app.services.sales_order_waiver import SalesOrderWaivers
+from app.services.sales_orders import SalesOrderWaivers
 
 router = APIRouter(prefix="/sales-orders", tags=["sales-orders"])
 
@@ -173,6 +174,11 @@ def grant_order_waiver(
     settlement evidence and stages no funding event — a waived order was not
     paid. While the waiver is active the order's commercial terms are frozen.
     """
+    # The request already opened an implicit read transaction (permission
+    # check, then `coerce_uuid`'s caller reads). An owner command requires a
+    # transaction-free session at entry and fails closed otherwise, so release
+    # it here exactly as every other owner-command route does.
+    db_session_adapter.release_read_transaction(db)
     return SalesOrderWaivers.grant(
         db,
         sales_order_id=coerce_uuid(sales_order_id),
@@ -199,6 +205,7 @@ def revoke_order_waiver(
     principal: dict = Depends(require_permission("crm:sales_order:waive")),
 ):
     """Withdraw an active waiver, making the order pursuable again."""
+    db_session_adapter.release_read_transaction(db)
     return SalesOrderWaivers.revoke(
         db,
         sales_order_id=coerce_uuid(sales_order_id),

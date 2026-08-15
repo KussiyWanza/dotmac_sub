@@ -300,7 +300,7 @@ def test_waiver_is_no_longer_a_payment_status_edit(db_session):
 
     It travelled on ``payment_status`` — the field that means money arrived —
     so closing the manufacture-funding hole closed it too. The replacement is
-    ``app.services.sales_order_waiver``, which records the decision and writes
+    ``sales_orders.SalesOrderWaivers``, which records the decision and writes
     no payment field at all; see ``tests/test_sales_order_waiver.py``.
     """
     subscriber = _make_subscriber(db_session)

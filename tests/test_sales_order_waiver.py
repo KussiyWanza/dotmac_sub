@@ -36,7 +36,7 @@ from app.schemas.sales_order import (
 from app.services import sales_orders as sales_order_service
 from app.services.domain_errors import DomainError
 from app.services.owner_commands import CommandContext
-from app.services.sales_order_waiver import (
+from app.services.sales_orders import (
     AUDIT_WAIVER_GRANTED,
     AUDIT_WAIVER_REVOKED,
     SalesOrderWaivers,
@@ -66,7 +66,7 @@ def _make_subscriber(db) -> Subscriber:
 
 
 def _order(db, subscriber) -> SalesOrder:
-    return sales_order_service.sales_orders.create(
+    order = sales_order_service.sales_orders.create(
         db,
         SalesOrderCreate(
             subscriber_id=subscriber.id,
@@ -75,6 +75,15 @@ def _order(db, subscriber) -> SalesOrder:
             total=Decimal("1000.00"),
         ),
     )
+    # `create` commits, which expires the instance; the first attribute access
+    # then autobegins a read transaction. `execute_owner_command` requires a
+    # transaction-free session at entry and fails closed, so touch the
+    # attributes here and release the transaction before any command runs —
+    # the same thing `db_session_adapter.release_read_transaction` does for a
+    # route.
+    _ = (order.id, order.currency, order.total)
+    db.commit()
+    return order
 
 
 def _ctx(key: str, actor: str = "user:ada") -> CommandContext:
@@ -84,6 +93,7 @@ def _ctx(key: str, actor: str = "user:ada") -> CommandContext:
 
 
 def _grant(db, order, *, amount="1000.00", reason="goodwill", key="waive-key-0001"):
+    db.commit()  # release any read transaction opened by prior assertions
     return SalesOrderWaivers.grant(
         db,
         sales_order_id=order.id,
@@ -226,6 +236,7 @@ def test_revocation_reopens_the_order(db_session):
     order = _order(db_session, subscriber)
     _grant(db_session, order)
 
+    db_session.commit()
     revoked = SalesOrderWaivers.revoke(
         db_session,
         sales_order_id=order.id,
@@ -252,12 +263,14 @@ def test_revoking_twice_is_idempotent(db_session):
     order = _order(db_session, subscriber)
     _grant(db_session, order)
 
+    db_session.commit()
     first = SalesOrderWaivers.revoke(
         db_session,
         sales_order_id=order.id,
         reason_code="granted_in_error",
         context=_ctx("revoke-key-0001"),
     )
+    db_session.commit()
     second = SalesOrderWaivers.revoke(
         db_session,
         sales_order_id=order.id,
@@ -271,10 +284,13 @@ def test_revoking_without_a_waiver_is_refused(db_session):
     subscriber = _make_subscriber(db_session)
     order = _order(db_session, subscriber)
 
+    order_id = order.id
+    db_session.commit()
+
     with pytest.raises(DomainError) as exc:
         SalesOrderWaivers.revoke(
             db_session,
-            sales_order_id=order.id,
+            sales_order_id=order_id,
             reason_code="granted_in_error",
             context=_ctx("revoke-key-0001"),
         )
@@ -285,6 +301,7 @@ def test_a_new_waiver_is_allowed_after_revocation(db_session):
     subscriber = _make_subscriber(db_session)
     order = _order(db_session, subscriber)
     _grant(db_session, order, key="waive-key-0001")
+    db_session.commit()
     SalesOrderWaivers.revoke(
         db_session,
         sales_order_id=order.id,
@@ -445,6 +462,7 @@ def test_the_freeze_lifts_after_revocation(db_session):
     subscriber = _make_subscriber(db_session)
     order = _order(db_session, subscriber)
     _grant(db_session, order)
+    db_session.commit()
     SalesOrderWaivers.revoke(
         db_session,
         sales_order_id=order.id,

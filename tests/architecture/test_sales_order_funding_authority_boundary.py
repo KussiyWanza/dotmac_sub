@@ -165,11 +165,15 @@ def test_a_truthy_non_member_cannot_satisfy_the_hatch():
 # The waiver owner is on the other side of the same boundary
 # ---------------------------------------------------------------------------
 
-WAIVER_OWNER = APP / "services" / "sales_order_waiver.py"
+WAIVER_OWNER = APP / "services" / "sales_orders.py"
 
-#: Names that would mean the waiver had become a payment. Checked against code,
-#: not prose — the module docstring names several of them while explaining that
-#: it does not use them, and a naive substring scan would fail on that.
+#: The waiver definitions inside the sales-orders module. The waiver lives in
+#: `sales.orders` because the SOT registry maps one owner to exactly one
+#: module — so this test cannot scan the whole file, which legitimately handles
+#: coverage elsewhere. It scans exactly the waiver's own definitions.
+_WAIVER_DEFINITIONS = ("SalesOrderWaivers", "active_waiver", "_grant_fingerprint")
+
+#: Names that would mean the waiver had become a payment.
 _FORBIDDEN_IN_WAIVER = (
     "payment_status",
     "amount_paid",
@@ -180,23 +184,39 @@ _FORBIDDEN_IN_WAIVER = (
 )
 
 
-def _waiver_code_without_docstrings() -> str:
-    """The waiver module's source with every docstring removed."""
+def _strip_docstrings(node: ast.AST) -> ast.AST:
+    for child in ast.walk(node):
+        if isinstance(
+            child, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+        ):
+            body = getattr(child, "body", None)
+            if (
+                body
+                and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)
+            ):
+                body.pop(0)
+    return node
+
+
+def _waiver_code() -> str:
+    """Source of the waiver definitions only, with docstrings removed."""
     tree = ast.parse(
         WAIVER_OWNER.read_text(encoding="utf-8"), filename=str(WAIVER_OWNER)
     )
-    for node in ast.walk(tree):
-        if isinstance(
-            node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
-        ):
-            if (
-                node.body
-                and isinstance(node.body[0], ast.Expr)
-                and isinstance(node.body[0].value, ast.Constant)
-                and isinstance(node.body[0].value.value, str)
-            ):
-                node.body.pop(0)
-    return ast.unparse(tree)
+    found = [
+        node
+        for node in tree.body
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef))
+        and node.name in _WAIVER_DEFINITIONS
+    ]
+    assert len(found) == len(_WAIVER_DEFINITIONS), (
+        "The waiver definitions moved or were renamed. Expected "
+        f"{sorted(_WAIVER_DEFINITIONS)}, found {sorted(n.name for n in found)}. "
+        "Fix this list — a scan that finds nothing proves nothing."
+    )
+    return "\n".join(ast.unparse(_strip_docstrings(node)) for node in found)
 
 
 def test_the_waiver_owner_never_becomes_a_payment():
@@ -205,25 +225,27 @@ def test_the_waiver_owner_never_becomes_a_payment():
     This is the whole point of splitting waiver out of ``payment_status``: a
     waived order was NOT paid, so nothing downstream may treat it as funded.
     """
-    code = _waiver_code_without_docstrings()
+    code = _waiver_code()
     leaked = [name for name in _FORBIDDEN_IN_WAIVER if name in code]
     assert not leaked, (
-        f"The waiver owner references {leaked}. A waiver records a decision "
-        "not to pursue an amount; it never asserts coverage, never stages "
-        "funding, and never lifts the funding refusal."
+        f"The waiver definitions reference {leaked}. A waiver records a "
+        "decision not to pursue an amount; it never asserts coverage, never "
+        "stages funding, and never lifts the funding refusal."
     )
 
 
-def test_the_docstring_stripper_actually_strips():
+def test_the_waiver_scan_reads_real_code():
     """Sensitivity proof.
 
-    The module docstring names every forbidden term while explaining that the
-    module does not use them. If the stripper silently returned the raw source
-    the test above would fail for the wrong reason; if it returned nothing it
-    would pass for the wrong reason.
+    The test above passes trivially if the extraction returns nothing, and the
+    surrounding module DOES contain every forbidden term — so this pins that
+    real waiver code was extracted and that the extraction is narrower than
+    the file.
     """
-    code = _waiver_code_without_docstrings()
-    assert "funding_authority" not in code
-    assert "payment_status" in WAIVER_OWNER.read_text(encoding="utf-8")
-    # Real code survived the strip.
+    code = _waiver_code()
     assert "def grant" in code and "SalesOrderWaiver" in code
+    whole_file = WAIVER_OWNER.read_text(encoding="utf-8")
+    assert "payment_status" in whole_file, (
+        "The sales-orders module no longer mentions payment_status at all, so "
+        "the scan above is no longer discriminating anything."
+    )
