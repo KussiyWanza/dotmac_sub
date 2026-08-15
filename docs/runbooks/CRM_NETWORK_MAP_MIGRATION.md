@@ -43,6 +43,12 @@ Its SHA-256 is:
 This archive is stale historical evidence and must not be selected for a future
 production migration. A production migration requires a newly authorized,
 checksum-bound snapshot taken only after this code has been merged and deployed.
+The snapshot operation must produce a restricted receipt containing the actual
+UTC dump capture time. Pass that receipt value to every dry-run and staging
+invocation with `--snapshot-captured-at`; restore time and staging execution time
+are not snapshot provenance. Batches produced with this capture-time contract
+record importer version `stage_crm_network_map:v2`; historical `v1` batches stay
+immutable evidence.
 Keep every archive directory and contained file immutable. Perform restore and
 inspection work from a separately permissioned working copy. A generated
 report belongs under the working/report directory, never beside or inside the
@@ -106,6 +112,7 @@ reports, shell history, Git, or logs.
 ```bash
 python scripts/network/stage_crm_network_map.py \
   --archive /var/lib/dotmac-migration/work/network-map/20260812T153420Z/crm-network-map-20260812T153420Z.dump \
+  --snapshot-captured-at 2026-08-12T15:34:20Z \
   --batch-size 50 \
   --report-path /var/lib/dotmac-migration/work/network-map/20260812T153420Z/reports/dry-run.json
 ```
@@ -133,6 +140,7 @@ same full archive digest explicitly:
 ```bash
 python scripts/network/stage_crm_network_map.py \
   --archive /var/lib/dotmac-migration/work/network-map/20260812T153420Z/crm-network-map-20260812T153420Z.dump \
+  --snapshot-captured-at 2026-08-12T15:34:20Z \
   --batch-size 50 \
   --stage \
   --confirm-archive-sha256 2d549f2f996bae8a31ac735cf265da294e23c5c4c80cd544abfff934da14b9ac \
@@ -227,6 +235,13 @@ python scripts/network/crm_network_map_point_migration.py apply-approved \
   --actor "approved executor identity" \
   --limit 50
 ```
+
+The `report`, `select`, `preview-proposals`, and `dry-run-apply` adapters run in
+a PostgreSQL-enforced repeatable-read, read-only snapshot. `propose-batch` and
+`apply-approved` instead open a transaction-free, write-capable owner-command
+session; the owning service, not the CLI, completes each business transaction.
+Do not route either mutation through the read-only reporting session. None of
+these commands runs during application startup or deployment.
 
 Creates emit pending `network.fiber_asset_changes` requests and do not
 self-approve canonical asset mutations. Link decisions create only durable CRM
