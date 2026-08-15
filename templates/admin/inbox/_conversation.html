@@ -213,8 +213,9 @@
     </div>
 
     <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-5 sm:px-6" data-thread-scroll>
-        {% if timeline_entries %}
         <div class="mx-auto flex max-w-6xl flex-col gap-4">
+            <div id="inbox-message-list" class="flex flex-col gap-4" aria-live="polite">
+            {% if timeline_entries %}
             {% for entry in timeline_entries %}
                 {% if entry.kind == 'system' and entry.event %}
                     {% set event = entry.event %}
@@ -228,9 +229,15 @@
                         <span class="h-px w-8 bg-slate-200 dark:bg-slate-800"></span>
                     </div>
                 {% elif entry.message %}
-                    {{ message_bubble(entry.message) }}
+                    <div data-inbox-message-id="{{ entry.message.id }}">
+                        {{ message_bubble(entry.message) }}
+                    </div>
                 {% endif %}
             {% endfor %}
+            {% else %}
+                <div data-inbox-empty-thread class="mx-auto mt-10 max-w-sm text-center"><p class="text-sm font-semibold text-slate-700 dark:text-slate-200">No messages yet</p><p class="mt-1 text-xs text-slate-500">Send the first reply to begin the timeline.</p></div>
+            {% endif %}
+            </div>
             <div x-show="presenceText" x-cloak class="flex items-center gap-2 text-xs font-medium text-slate-500">
                 <span class="flex gap-1 rounded-2xl bg-slate-200 px-3 py-2 dark:bg-slate-800" aria-label="Another agent is typing">
                     <span class="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-500"></span>
@@ -240,9 +247,6 @@
                 <span x-text="presenceText"></span>
             </div>
         </div>
-        {% else %}
-        <div class="mx-auto mt-10 max-w-sm text-center"><p class="text-sm font-semibold text-slate-700 dark:text-slate-200">No messages yet</p><p class="mt-1 text-xs text-slate-500">Send the first reply to begin the timeline.</p></div>
-        {% endif %}
     </div>
 
     <div class="shrink-0 border-t border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-900"

@@ -483,6 +483,9 @@
       bindHtmx() {
         if (window.__dotmacInboxHtmxBound) return;
         window.__dotmacInboxHtmxBound = true;
+        // A stalled fragment must release the inbox loader and leave the
+        // operator in control. HTMX defaults to no timeout.
+        if (!window.htmx.config.timeout) window.htmx.config.timeout = 15000;
         document.body.addEventListener("htmx:configRequest", (event) => {
           const form = event.detail?.elt;
           if (form?.id !== "inbox-filter-form") return;
@@ -558,6 +561,12 @@
             this.conversationOpening = false;
             this.showToast("Could not open conversation. Try again.");
           }
+          if (failed && event.detail?.target?.id === "inbox-message-list") {
+            this.newMessagesAvailable = true;
+            this.showToast(
+              "A new message is available. Refresh the thread to load it.",
+            );
+          }
           const key = event.detail?.xhr?.__inboxRequestKey;
           if (key) this.inFlight.delete(key);
         };
@@ -599,6 +608,11 @@
                 this.markConversationRead(this.selectedId);
               }
             }
+          }
+          if (target.id === "inbox-message-list") {
+            target.querySelector("[data-inbox-empty-thread]")?.remove();
+            this.newMessagesAvailable = false;
+            this.scrollThread();
           }
           if (
             target.id === "inbox-sidebar-content" ||
@@ -1358,6 +1372,13 @@
 
       refreshThreadForMessage(conversationId, messageId, force = false) {
         const id = String(messageId || "");
+        if (!id || String(conversationId || "") !== String(this.selectedId)) {
+          this.newMessagesAvailable = true;
+          return false;
+        }
+        if (document.querySelector(`[data-inbox-message-id="${CSS.escape(id)}"]`)) {
+          return false;
+        }
         if (id && this.recentlyRefreshedMessageIds.has(id)) return false;
         if (id) {
           this.recentlyRefreshedMessageIds.add(id);
@@ -1366,7 +1387,37 @@
             10000,
           );
         }
-        this.refreshThread(conversationId, force);
+        const target = document.querySelector("#inbox-message-list");
+        if (!target) {
+          this.newMessagesAvailable = true;
+          return false;
+        }
+        window.htmx.ajax(
+          "GET",
+          `/admin/inbox/${conversationId}/messages/${id}`,
+          { target, swap: "beforeend" },
+        );
+        this.refreshConversationRow(conversationId);
+        return true;
+      },
+
+      refreshConversationRow(conversationId) {
+        const id = String(conversationId || "");
+        const row = document.querySelector(
+          `[data-conversation-id="${CSS.escape(id)}"]`,
+        );
+        if (!id || !row) return false;
+        const url = new URL(
+          window.__inboxReturnUrl || window.location.href,
+          window.location.origin,
+        );
+        url.pathname = `/admin/inbox/${id}/queue-row`;
+        url.searchParams.delete("conversation_id");
+        if (this.selectedId) url.searchParams.set("c", this.selectedId);
+        window.htmx.ajax("GET", `${url.pathname}${url.search}`, {
+          target: row,
+          swap: "outerHTML",
+        });
         return true;
       },
 
@@ -2052,7 +2103,6 @@
           result.message_id,
           true,
         );
-        workspace?.refreshConversationList?.("reply");
       },
 
       finishSendRequest(event) {
