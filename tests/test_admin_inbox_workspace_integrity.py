@@ -181,11 +181,26 @@ def test_reply_submission_refreshes_inbox_fragments_without_page_navigation():
     assert 'hx-swap="none"' in CONVERSATION
     assert '@inbox-reply-completed.window="completeSend($event.detail)"' in CONVERSATION
     assert "completeSend(result)" in JAVASCRIPT
-    assert "workspace?.refreshThread?.(this.conversationId, true)" in JAVASCRIPT
+    assert "workspace?.refreshThreadForMessage?.(" in JAVASCRIPT
     assert 'workspace?.refreshConversationList?.("reply")' in JAVASCRIPT
     assert 'this.draft = ""' in JAVASCRIPT
     assert "window.location.reload" not in JAVASCRIPT
-    assert "admin-inbox.js?v=20260813a" in INDEX
+    assert "admin-inbox.js?v=20260815a" in INDEX
+
+
+def test_reply_and_realtime_refresh_the_message_once():
+    marker = JAVASCRIPT.index("refreshThreadForMessage(conversationId")
+    body = JAVASCRIPT[marker : marker + 700]
+    assert "recentlyRefreshedMessageIds.has(id)" in body
+    assert "recentlyRefreshedMessageIds.add(id)" in body
+    assert "recentlyRefreshedMessageIds.delete(id)" in body
+
+    realtime_marker = JAVASCRIPT.index('eventType === "message_new"')
+    realtime_body = JAVASCRIPT[realtime_marker : realtime_marker + 900]
+    assert (
+        "this.refreshThreadForMessage(this.selectedId, data.message_id)"
+        in realtime_body
+    )
 
 
 def test_delivery_status_updates_in_place_from_authoritative_realtime_hint():
