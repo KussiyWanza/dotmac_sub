@@ -169,6 +169,17 @@ def test_authoritative_selection_supersedes_older_batches_without_using_largest_
     assert selections == replay
     assert selections[0].batch_ids == (selected.id,)
     assert selections[0].superseded_batch_ids == (old.id,)
+    rows = reconcile_authoritative_crm_points(db_session)
+    assert [row.classification for row in rows] == [
+        "create_new",
+        "superseded_source",
+    ]
+    assert rows[1].reason_code == "newer_authoritative_source_cohort_selected"
+
+    with pytest.raises(CrmNetworkMapPointMigrationError, match="not authoritative"):
+        select_authoritative_crm_point_batches(
+            db_session, expected_archive_sha256=OLD_ARCHIVE
+        )
 
 
 def test_authoritative_selection_requires_complete_reconciliation_metadata(db_session):
@@ -423,6 +434,13 @@ def test_superseded_source_batch_refuses_apply(db_session):
             expected_archive_sha256=ARCHIVE,
         )
 
+    with pytest.raises(CrmNetworkMapPointMigrationError, match="not authoritative"):
+        dry_run_crm_point_identity_apply(
+            db_session,
+            proposal_batch_id=proposed.batch_id,
+            expected_archive_sha256=OLD_ARCHIVE,
+        )
+
 
 def test_report_is_sanitized_and_read_only(db_session):
     batch = _batch(db_session)
@@ -437,3 +455,25 @@ def test_report_is_sanitized_and_read_only(db_session):
         "splice_closure": 0,
     }
     assert report["canonical_count_after"] == report["canonical_count_before"]
+    assert report["per_asset"]["fdh_cabinet"] == {
+        "source_total": 1,
+        "valid_active_source_total": 1,
+        "authoritative_batch": [str(batch.id)],
+        "superseded_batches": [],
+        "staged_total": 1,
+        "already_linked": 0,
+        "exact_matches": 0,
+        "candidate_matches": 0,
+        "proposed_creates": 1,
+        "conflicts": 0,
+        "invalid_records": 0,
+        "approved_proposals": 0,
+        "rejected_proposals": 0,
+        "applied_proposals": 0,
+        "failed_applies": 0,
+        "canonical_count_before": 0,
+        "canonical_count_after": 0,
+        "hard_reconciliation_failure": False,
+        "total_mismatch": False,
+    }
+    assert report["hard_reconciliation_failure"] is False
