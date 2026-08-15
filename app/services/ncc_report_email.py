@@ -745,14 +745,6 @@ def run_due_delivery(
             )
             filename = ncc_workbook.export_filename(local_now)
             artifact_sha256 = hashlib.sha256(workbook).hexdigest()
-            run.artifact_filename = filename
-            run.artifact_content_type = XLSX_CONTENT_TYPE
-            run.artifact_content = workbook
-            run.artifact_sha256 = artifact_sha256
-            run.row_count = snapshot.total_complaints
-            run.not_filable_count = not_filable_count
-            run.failure_code = None
-            run.failure_detail = None
             body_text, body_html = _render_body(
                 config,
                 run_id=run.id,
@@ -801,8 +793,16 @@ def run_due_delivery(
                     "The NCC workbook delivery could not be queued.",
                 )
             notification = intent.queued[0]
+            run.artifact_filename = filename
+            run.artifact_content_type = XLSX_CONTENT_TYPE
+            run.artifact_content = workbook
+            run.artifact_sha256 = artifact_sha256
+            run.row_count = snapshot.total_complaints
+            run.not_filable_count = not_filable_count
             run.notification_id = notification.id
             run.status = NccWeeklyReportRunStatus.queued
+            run.failure_code = None
+            run.failure_detail = None
             db.flush()
             return notification.id, snapshot.total_complaints, not_filable_count
 
