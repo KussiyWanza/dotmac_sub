@@ -1274,8 +1274,20 @@ def assert_funding_authority(
 
     Raises 422 naming the offending field rather than silently dropping it —
     a dropped field would let a caller believe it had recorded a payment.
+
+    ``funding_authority`` must be an actual :class:`FundingAuthority` member.
+    A truthy value of any other type is a programming error and is refused
+    rather than honoured: the whole point of the parameter is that it cannot
+    be satisfied by a generic boolean, a request-derived string, or a
+    ``True`` that leaked in from a caller's own flag.
     """
     if funding_authority is not None:
+        if not isinstance(funding_authority, FundingAuthority):
+            raise TypeError(
+                "funding_authority must be a FundingAuthority member, got "
+                f"{type(funding_authority).__name__!r}. Coverage authority is "
+                "not a boolean and not a request value."
+            )
         return
     offending = sorted(FUNDING_CONTROLLED_FIELDS & set(data))
     if not offending:
