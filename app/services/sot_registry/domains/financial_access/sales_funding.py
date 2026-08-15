@@ -37,7 +37,14 @@ SERVICES: tuple[SOTService, ...] = (
             "funding advances it exactly once, and recurring "
             "obligations on the subscription contract cannot reopen "
             "or inflate the historical order result. "
-            "SalesOrder.amount_paid remains provenance during shadow."
+            "SalesOrder.amount_paid remains provenance during shadow. "
+            "Coverage is DERIVED, never asserted by an operator: "
+            "payment_status, amount_paid and paid_at are refused on the "
+            "generic sales-order edit and on the admin form "
+            "(sales_orders.FUNDING_CONTROLLED_FIELDS), so only a caller "
+            "holding a sales_orders.FundingAuthority — recorded settlement, "
+            "verified deposit evidence, or this gate — can cross the funding "
+            "edge that stages sales_order.funding_satisfied."
         ),
         contract=ServiceContract(
             concerns=(
@@ -164,6 +171,7 @@ SERVICES: tuple[SOTService, ...] = (
             ),
             test_refs=(
                 "tests/test_sales_order_funding.py",
+                "tests/test_sales_order_funding_authority.py",
                 "tests/architecture/test_billing_target_architecture.py",
             ),
         ),

@@ -46,6 +46,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
+from enum import Enum
 from typing import Any
 from uuid import UUID
 
@@ -1234,6 +1235,63 @@ def _sync_sales_order_financials(db: Session, sales_order: SalesOrder) -> None:
     _record_sales_order_payment(db, sales_order)
 
 
+#: Fields whose value asserts that money was received. Writing one of these
+#: declares coverage, and coverage is what ``stage_funding_transition`` turns
+#: into subscriptions and provisioning. They are therefore NOT operator input:
+#: a generic order edit that could set them would let anyone with ordinary
+#: sales-order write permission manufacture funding.
+#:
+#: ``total`` is deliberately absent. Changing what an order is worth is a real
+#: sales edit, and coverage stays DERIVED from it and from recorded receipts.
+FUNDING_CONTROLLED_FIELDS: frozenset[str] = frozenset(
+    {"payment_status", "amount_paid", "paid_at"}
+)
+
+
+class FundingAuthority(str, Enum):
+    """Why a caller is permitted to assert coverage on a sales order.
+
+    A member of this enum is evidence that money was independently confirmed.
+    There is deliberately no ``operator`` member: an operator's assertion that
+    an order is paid is not settlement evidence, and the only way to fund an
+    order is to record the receipt through the owner that saw it.
+    """
+
+    #: A payment accepted and recorded by the billing settlement owner.
+    settlement = "settlement"
+    #: Verified deposit evidence returned by quote acceptance.
+    deposit_verification = "deposit_verification"
+    #: Exact obligation resolution through :mod:`app.services.sales_order_funding`.
+    funding_gate = "funding_gate"
+    #: Derivation from the order's own lines — never a new assertion of money.
+    derived_recalculation = "derived_recalculation"
+
+
+def assert_funding_authority(
+    data: dict[str, Any], *, funding_authority: FundingAuthority | None
+) -> None:
+    """Refuse operator-supplied coverage fields.
+
+    Raises 422 naming the offending field rather than silently dropping it —
+    a dropped field would let a caller believe it had recorded a payment.
+    """
+    if funding_authority is not None:
+        return
+    offending = sorted(FUNDING_CONTROLLED_FIELDS & set(data))
+    if not offending:
+        return
+    raise HTTPException(
+        status_code=422,
+        detail=(
+            "Funding fields cannot be set through a sales-order edit: "
+            f"{', '.join(offending)}. Coverage is derived from recorded "
+            "settlement evidence. Record the payment through the billing "
+            "settlement owner, or resolve the order's funding obligations "
+            "through the funding gate."
+        ),
+    )
+
+
 def stage_funding_transition(
     db: Session,
     sales_order: SalesOrder,
@@ -1372,8 +1430,25 @@ def _ensure_project_for_manual_sales_order(db: Session, sales_order: SalesOrder)
 
 class SalesOrders(ListResponseMixin):
     @staticmethod
-    def create(db: Session, payload):
+    def create(
+        db: Session, payload, *, funding_authority: FundingAuthority | None = None
+    ):
         data = payload.model_dump()
+        # A create carries every field, so only an EXPLICITLY-SET funding field
+        # counts as an assertion — a schema default of pending/0 is not one.
+        # ``SalesOrderPaymentStatus`` is a plain Enum, so unwrap before
+        # comparing: the member is not equal to its own string value.
+        assert_funding_authority(
+            {
+                key: value
+                for key, value in data.items()
+                if key in FUNDING_CONTROLLED_FIELDS
+                and key in payload.model_fields_set
+                and getattr(value, "value", value)
+                not in (None, _PENDING, Decimal("0.00"))
+            },
+            funding_authority=funding_authority,
+        )
         if data.get("status"):
             data["status"] = _enum_str(data["status"], SalesOrderStatus, "status")
         if data.get("payment_status"):
@@ -1568,12 +1643,19 @@ class SalesOrders(ListResponseMixin):
         return apply_pagination(query, limit, offset).all()
 
     @staticmethod
-    def update(db: Session, sales_order_id: str, payload):
+    def update(
+        db: Session,
+        sales_order_id: str,
+        payload,
+        *,
+        funding_authority: FundingAuthority | None = None,
+    ):
         sales_order = db.get(SalesOrder, coerce_uuid(sales_order_id))
         if not sales_order:
             raise HTTPException(status_code=404, detail="Sales order not found")
         previous_payment_status = sales_order.payment_status
         data = payload.model_dump(exclude_unset=True)
+        assert_funding_authority(data, funding_authority=funding_authority)
         if "status" in data:
             data["status"] = _enum_str(data["status"], SalesOrderStatus, "status")
         if "payment_status" in data:
@@ -1661,34 +1743,32 @@ class SalesOrders(ListResponseMixin):
         sales_order_id: str,
         *,
         status: str | None = None,
-        payment_status: str | None = None,
         total: str | None = None,
-        amount_paid: str | None = None,
-        paid_at: str | None = None,
         notes: str | None = None,
         owner_agent_id: str | None = None,
         source: str | None = None,
+        **rejected: Any,
     ):
-        """Update a sales order using raw string inputs (e.g. web forms)."""
+        """Update a sales order using raw string inputs (e.g. web forms).
+
+        This is the operator surface, so it carries no funding fields at all.
+        ``**rejected`` exists so a caller still passing ``payment_status``,
+        ``amount_paid`` or ``paid_at`` fails loudly with the same 422 as the
+        typed path, instead of a ``TypeError`` or — worse — a silent drop.
+        """
+        assert_funding_authority(rejected, funding_authority=None)
+        if rejected:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unknown sales-order fields: {', '.join(sorted(rejected))}",
+            )
         update_data: dict[str, Any] = {}
         if status:
             update_data["status"] = validate_enum(status, SalesOrderStatus, "status")
-        if payment_status:
-            update_data["payment_status"] = validate_enum(
-                payment_status, SalesOrderPaymentStatus, "payment_status"
-            )
 
         total_value = _parse_decimal(total)
         if total_value is not None:
             update_data["total"] = total_value
-
-        amount_paid_value = _parse_decimal(amount_paid)
-        if amount_paid_value is not None:
-            update_data["amount_paid"] = amount_paid_value
-
-        paid_at_value = _parse_datetime(paid_at)
-        if paid_at is not None:
-            update_data["paid_at"] = paid_at_value
 
         if notes is not None:
             update_data["notes"] = notes.strip() or None
@@ -1698,14 +1778,6 @@ class SalesOrders(ListResponseMixin):
             )
         if source is not None:
             update_data["source"] = source.strip() or None
-
-        # If payment status is paid and paid_at is missing, set it now to
-        # satisfy the schema validation.
-        if (
-            update_data.get("payment_status") == SalesOrderPaymentStatus.paid
-            and update_data.get("paid_at") is None
-        ):
-            update_data["paid_at"] = datetime.now(UTC)
 
         from app.schemas.sales_order import SalesOrderUpdate
 
