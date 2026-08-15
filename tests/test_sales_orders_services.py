@@ -309,18 +309,22 @@ def test_waived_payment_confirms_draft_order(db_session):
     )
     assert order.status == SalesOrderStatus.draft.value
 
+    order_id = order.id
+
     with pytest.raises(HTTPException) as exc:
         sales_order_service.sales_orders.update(
             db_session,
-            str(order.id),
+            str(order_id),
             SalesOrderUpdate(payment_status=SalesOrderPaymentStatus.waived),
         )
     assert exc.value.status_code == 422
-    db_session.rollback()
 
+    # No rollback: the refusal happens before `update` assigns anything, so
+    # there is nothing pending. Rolling back here discarded the committed order
+    # and the authorised call below then failed on a deleted instance.
     order = sales_order_service.sales_orders.update(
         db_session,
-        str(order.id),
+        str(order_id),
         SalesOrderUpdate(payment_status=SalesOrderPaymentStatus.waived),
         funding_authority=FundingAuthority.funding_gate,
     )
