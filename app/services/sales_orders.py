@@ -72,7 +72,7 @@ from app.models.sales import (
 from app.models.sales_order_waiver import SalesOrderWaiver, WaiverState
 from app.models.subscriber import Subscriber
 from app.services import numbering
-from app.services.audit_adapter import AuditActor, record_audit_event
+from app.services.audit_adapter import AuditActor, stage_audit_event
 from app.services.common import (
     apply_ordering,
     apply_pagination,
@@ -2179,7 +2179,7 @@ class SalesOrderWaivers:
 
         # Note what is absent: no payment_status write, no funding event, no
         # settlement row. The waiver is the whole effect.
-        record_audit_event(
+        stage_audit_event(
             db,
             action=AUDIT_WAIVER_GRANTED,
             entity_type="sales_order",
@@ -2279,7 +2279,7 @@ class SalesOrderWaivers:
         waiver.revoke_idempotency_key = context.idempotency_key
         db.flush()
 
-        record_audit_event(
+        stage_audit_event(
             db,
             action=AUDIT_WAIVER_REVOKED,
             entity_type="sales_order",
