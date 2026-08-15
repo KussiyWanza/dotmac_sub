@@ -694,6 +694,7 @@ def test_whatsapp_follow_up_dispatcher_sends_the_approved_question(
 def test_policy_version_activation_supersedes_without_mutating_active_version(
     db_session,
 ):
+    _install_whatsapp_scope(db_session, account_scope="phone-policy")
     fallback = _team(db_session, "Configured Fallback Team")
     technical = _team(db_session, "Configured Technical Team")
     policy = AiIntakePolicy(
@@ -971,6 +972,7 @@ def test_activation_stays_separate_and_requires_fallback_team(db_session):
 def test_policy_validation_reports_errors_without_activating(db_session):
     account_scope = f"test-phone-{uuid4().hex}"
     _install_whatsapp_scope(db_session, account_scope=account_scope)
+    db_session.commit()
     draft = ai_conversation_intake.create_draft_policy(
         db_session,
         ai_conversation_intake.AiDraftPolicyCommand(
@@ -1013,6 +1015,7 @@ def test_activation_projects_canonical_policy_to_runtime_config(db_session):
     _install_whatsapp_scope(db_session, account_scope=account_scope)
     fallback = _team(db_session, f"Fallback {uuid4()}")
     technical = _team(db_session, f"Technical {uuid4()}")
+    db_session.commit()
     draft = ai_conversation_intake.create_draft_policy(
         db_session,
         ai_conversation_intake.AiDraftPolicyCommand(
@@ -1072,6 +1075,7 @@ def test_saving_replacement_draft_does_not_update_runtime_config(db_session):
     first_fallback = _team(db_session, f"Fallback {uuid4()}")
     second_fallback = _team(db_session, f"Fallback {uuid4()}")
     technical = _team(db_session, f"Technical {uuid4()}")
+    db_session.commit()
     context = CommandContext.system(
         actor="test",
         scope="ai:intake-policy-draft",
@@ -1105,6 +1109,7 @@ def test_saving_replacement_draft_does_not_update_runtime_config(db_session):
     policy = db_session.get(AiIntakePolicy, activated.policy_id)
     config = db_session.get(AiIntakeConfig, policy.legacy_config_id)
     assert config.fallback_team_id == first_fallback.id
+    db_session.commit()
 
     replacement = ai_conversation_intake.create_draft_policy(
         db_session,
@@ -1132,6 +1137,7 @@ def test_saving_replacement_draft_does_not_update_runtime_config(db_session):
     assert policy.active_version_id == activated.version_id
     assert policy.is_enabled is True
     assert config.fallback_team_id == first_fallback.id
+    db_session.commit()
 
     ai_conversation_intake.activate_policy_version(
         db_session,
@@ -1150,6 +1156,7 @@ def test_disable_prevents_new_sessions_and_keeps_existing_session_version(db_ses
     _install_whatsapp_scope(db_session, account_scope=account_scope)
     fallback = _team(db_session, f"Fallback {uuid4()}")
     technical = _team(db_session, f"Technical {uuid4()}")
+    db_session.commit()
     draft = ai_conversation_intake.create_draft_policy(
         db_session,
         ai_conversation_intake.AiDraftPolicyCommand(
@@ -1205,6 +1212,7 @@ def test_disable_prevents_new_sessions_and_keeps_existing_session_version(db_ses
     db_session.add(session)
     db_session.flush()
     session_id = session.id
+    db_session.commit()
 
     outcome = ai_conversation_intake.disable_policy(
         db_session,
@@ -1229,6 +1237,7 @@ def test_disable_prevents_new_sessions_and_keeps_existing_session_version(db_ses
 
 
 def test_active_session_remains_pinned_to_original_policy_version(db_session):
+    _install_whatsapp_scope(db_session, account_scope="phone-pin")
     fallback = _team(db_session, "Configured Fallback Team")
     technical = _team(db_session, "Configured Technical Team")
     policy = AiIntakePolicy(
@@ -1323,6 +1332,7 @@ def test_active_session_remains_pinned_to_original_policy_version(db_session):
 
 
 def test_policy_activation_rejects_missing_active_intent_mapping(db_session):
+    _install_whatsapp_scope(db_session, account_scope="phone-policy-invalid")
     fallback = _team(db_session, "Configured Fallback Team")
     policy = AiIntakePolicy(
         scope_key="meta_cloud_api:phone-policy-invalid",

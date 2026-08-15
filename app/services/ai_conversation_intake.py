@@ -7,6 +7,7 @@ routing, queueing, assignment and outbound delivery.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -33,7 +34,12 @@ from app.models.team_inbox import (
     InboxMessageDirection,
 )
 from app.schemas.ai_intake import AiIntakeOutcome, AiIntakeStatus
-from app.services import team_inbox_status
+from app.schemas.ai_operations import (
+    AiIntakeConfigMetadata,
+    AiIntakeConfigUpsert,
+    AiIntakeDepartmentMapping,
+)
+from app.services import ai_intake, team_inbox_status
 from app.services.integrations import (
     installations,
     meta_social_capability,
@@ -705,6 +711,113 @@ def validate_policy_version(
     )
 
 
+def _policy_status(policy: AiIntakePolicy, draft: AiIntakePolicyVersion | None) -> str:
+    if not policy.is_enabled and policy.active_version_id is not None:
+        return "Disabled"
+    if policy.is_enabled:
+        return "Active"
+    if draft is not None:
+        return "Draft"
+    return "Disabled"
+
+
+def admin_policy_context(db: Session) -> dict[str, object]:
+    """Build the admin AI intake policy read model for the settings template."""
+
+    rows = (
+        db.query(AiIntakePolicy)
+        .order_by(AiIntakePolicy.updated_at.desc(), AiIntakePolicy.created_at.desc())
+        .all()
+    )
+    versions_by_policy: dict[UUID, list[AiIntakePolicyVersion]] = {}
+    if rows:
+        versions = (
+            db.query(AiIntakePolicyVersion)
+            .filter(AiIntakePolicyVersion.policy_id.in_([row.id for row in rows]))
+            .order_by(
+                AiIntakePolicyVersion.policy_id.asc(),
+                AiIntakePolicyVersion.version_number.desc(),
+            )
+            .all()
+        )
+        for version in versions:
+            versions_by_policy.setdefault(version.policy_id, []).append(version)
+    selected_policy = rows[0] if rows else None
+    selected_versions = (
+        versions_by_policy.get(selected_policy.id, []) if selected_policy else []
+    )
+    selected_draft = next(
+        (version for version in selected_versions if version.status == "draft"),
+        None,
+    )
+    selected_active = (
+        db.get(AiIntakePolicyVersion, selected_policy.active_version_id)
+        if selected_policy and selected_policy.active_version_id is not None
+        else None
+    )
+    editable_version = selected_draft or selected_active
+    escalation_rules = (
+        dict(editable_version.escalation_rules or {})
+        if editable_version is not None
+        and isinstance(editable_version.escalation_rules, dict)
+        else {}
+    )
+    queue_templates = (
+        dict(editable_version.queue_templates or {})
+        if editable_version is not None
+        and isinstance(editable_version.queue_templates, dict)
+        else {}
+    )
+    data_cleanup_policy = (
+        dict(editable_version.data_cleanup_policy or {})
+        if editable_version is not None
+        and isinstance(editable_version.data_cleanup_policy, dict)
+        else {}
+    )
+    mapping_json = "[]"
+    if editable_version is not None:
+        mapping_json = json.dumps(editable_version.intent_team_mappings or [], indent=2)
+    return {
+        "ai_intake_policies": [
+            {
+                "id": str(policy.id),
+                "scope_key": policy.scope_key,
+                "channel_type": policy.channel_type,
+                "provider": policy.provider,
+                "account_scope": policy.account_scope,
+                "status": _policy_status(
+                    policy,
+                    next(
+                        (
+                            version
+                            for version in versions_by_policy.get(policy.id, [])
+                            if version.status == "draft"
+                        ),
+                        None,
+                    ),
+                ),
+                "active_version_id": str(policy.active_version_id)
+                if policy.active_version_id
+                else None,
+            }
+            for policy in rows
+        ],
+        "ai_intake_policy": selected_policy,
+        "ai_intake_draft_version": selected_draft,
+        "ai_intake_active_version": selected_active,
+        "ai_intake_edit_version": editable_version,
+        "ai_intake_policy_status": (
+            _policy_status(selected_policy, selected_draft)
+            if selected_policy
+            else "Draft"
+        ),
+        "ai_intake_mapping_json": mapping_json,
+        "ai_intake_escalation_rules": escalation_rules,
+        "ai_intake_queue_templates": queue_templates,
+        "ai_intake_data_cleanup_policy": data_cleanup_policy,
+    }
+
+
 def _bounded_int(value: object, *, default: int, minimum: int, maximum: int) -> int:
     if isinstance(value, bool) or not isinstance(value, (int, float, str)):
         parsed = default
@@ -733,20 +846,6 @@ def _sync_active_policy_to_legacy_config(
     db: Session, *, policy: AiIntakePolicy, version: AiIntakePolicyVersion
 ) -> AiIntakeConfig:
     """Project the activated canonical policy into the current receive-path row."""
-
-    config = (
-        db.query(AiIntakeConfig)
-        .filter(AiIntakeConfig.scope_key == policy.scope_key)
-        .with_for_update()
-        .one_or_none()
-    )
-    if config is None:
-        config = AiIntakeConfig(
-            scope_key=policy.scope_key,
-            channel_type=policy.channel_type,
-        )
-        db.add(config)
-        db.flush()
     escalation_rules = (
         dict(version.escalation_rules or {})
         if isinstance(version.escalation_rules, Mapping)
@@ -762,7 +861,7 @@ def _sync_active_policy_to_legacy_config(
         if isinstance(version.data_cleanup_policy, Mapping)
         else {}
     )
-    mappings: list[dict[str, object | None]] = []
+    mappings: list[AiIntakeDepartmentMapping] = []
     for raw in version.intent_team_mappings or []:
         if not isinstance(raw, Mapping) or raw.get("enabled") is False:
             continue
@@ -770,54 +869,80 @@ def _sync_active_policy_to_legacy_config(
         intent = raw.get("intent") or raw.get("keyword")
         department = raw.get("department") or raw.get("team") or intent
         mappings.append(
-            {
-                "intent": str(intent or "").strip(),
-                "department": str(department or "").strip(),
-                "service_team_id": str(team_id) if team_id else None,
-            }
+            AiIntakeDepartmentMapping.model_validate(
+                {
+                    "intent": str(intent or "").strip(),
+                    "department": str(department or "").strip(),
+                    "service_team_id": str(team_id) if team_id else None,
+                }
+            )
         )
-    config.channel_type = policy.channel_type
-    config.is_enabled = True
-    config.confidence_threshold = _bounded_float(
-        escalation_rules.get("confidence_threshold"),
-        default=0.75,
-        minimum=0.0,
-        maximum=1.0,
+    outcome = ai_intake.project_config_from_canonical_policy(
+        db,
+        ai_intake.UpsertAiIntakeConfigCommand(
+            context=CommandContext.system(
+                actor="service:ai.conversation_intake",
+                scope=ai_intake.CONFIG_SCOPE,
+                reason="project activated canonical AI intake policy",
+            ),
+            policy=AiIntakeConfigUpsert(
+                scope_key=policy.scope_key,
+                channel_type=policy.channel_type,
+                is_enabled=True,
+                confidence_threshold=_bounded_float(
+                    escalation_rules.get("confidence_threshold"),
+                    default=0.75,
+                    minimum=0.0,
+                    maximum=1.0,
+                ),
+                allow_followup_questions=bool(
+                    escalation_rules.get("allow_followup_questions", True)
+                ),
+                max_clarification_turns=_bounded_int(
+                    escalation_rules.get("max_clarification_turns"),
+                    default=1,
+                    minimum=0,
+                    maximum=5,
+                ),
+                escalate_after_minutes=_bounded_int(
+                    escalation_rules.get("escalate_after_minutes"),
+                    default=5,
+                    minimum=1,
+                    maximum=1440,
+                ),
+                exclude_campaign_attribution=bool(
+                    escalation_rules.get("exclude_campaign_attribution", True)
+                ),
+                fallback_team_id=policy.fallback_team_id,
+                instructions=version.business_instructions,
+                department_mappings=tuple(mappings),
+                metadata=AiIntakeConfigMetadata(
+                    display_name=version.display_name,
+                    welcome_message=version.welcome_message,
+                    business_tone=version.business_tone,
+                    approved_isp_information=version.approved_isp_information,
+                    intent_definitions=version.intent_definitions or [],
+                    clarification_questions=version.clarification_questions or [],
+                    queue_templates=queue_templates,
+                    escalation_rules=escalation_rules,
+                    data_cleanup_enabled=bool(
+                        data_cleanup_policy.get("production_collection_enabled", False)
+                    ),
+                    data_cleanup_policy=data_cleanup_policy,
+                ),
+            ),
+        ),
     )
-    config.allow_followup_questions = bool(
-        escalation_rules.get("allow_followup_questions", True)
-    )
-    config.max_clarification_turns = _bounded_int(
-        escalation_rules.get("max_clarification_turns"),
-        default=1,
-        minimum=0,
-        maximum=5,
-    )
-    config.escalate_after_minutes = _bounded_int(
-        escalation_rules.get("escalate_after_minutes"),
-        default=5,
-        minimum=1,
-        maximum=1440,
-    )
-    config.exclude_campaign_attribution = bool(
-        escalation_rules.get("exclude_campaign_attribution", True)
-    )
-    config.fallback_team_id = policy.fallback_team_id
-    config.instructions = version.business_instructions
-    config.department_mappings = mappings
+    config = db.get(AiIntakeConfig, outcome.id)
+    if config is None:
+        raise ValueError("Projected AI intake runtime config was not found")
     config.metadata_ = {
+        **dict(config.metadata_ or {}),
         "compatibility_source": "canonical_ai_intake_policy",
         "policy_id": str(policy.id),
         "policy_version_id": str(version.id),
         "provider": policy.provider,
         "account_scope": policy.account_scope,
-        "display_name": version.display_name,
-        "welcome_message": version.welcome_message,
-        "business_tone": version.business_tone,
-        "approved_isp_information": version.approved_isp_information,
-        "intent_definitions": version.intent_definitions or [],
-        "clarification_questions": version.clarification_questions or [],
-        "queue_templates": queue_templates,
         "queue_position_update_minutes": _bounded_int(
             queue_templates.get("position_update_minutes"),
             default=DEFAULT_QUEUE_POSITION_UPDATE_MINUTES,
@@ -830,11 +955,6 @@ def _sync_active_policy_to_legacy_config(
             minimum=5,
             maximum=240,
         ),
-        "escalation_rules": escalation_rules,
-        "data_cleanup_enabled": bool(
-            data_cleanup_policy.get("production_collection_enabled", False)
-        ),
-        "data_cleanup_policy": data_cleanup_policy,
     }
     policy.legacy_config_id = config.id
     db.flush()
@@ -948,16 +1068,18 @@ def disable_policy(
         legacy_config_enabled: bool | None = None
         legacy_config_id = policy.legacy_config_id
         if policy.legacy_config_id is not None:
-            config = (
-                db.query(AiIntakeConfig)
-                .filter(AiIntakeConfig.id == policy.legacy_config_id)
-                .with_for_update()
-                .one_or_none()
+            disabled = ai_intake.disable_projected_config(
+                db,
+                context=CommandContext.system(
+                    actor="service:ai.conversation_intake",
+                    scope=ai_intake.CONFIG_SCOPE,
+                    reason=command.context.reason,
+                ),
+                config_id=policy.legacy_config_id,
             )
-            if config is not None:
-                config.is_enabled = False
-                legacy_config_id = config.id
-                legacy_config_enabled = False
+            if disabled is not None:
+                legacy_config_id = disabled.id
+                legacy_config_enabled = disabled.is_enabled
         db.flush()
         return AiPolicyDisableOutcome(
             policy_id=policy.id,

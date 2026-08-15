@@ -32,7 +32,6 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.db import finish_read_transaction, get_db
-from app.models.ai_intake import AiIntakePolicy, AiIntakePolicyVersion
 from app.models.audit import AuditActorType
 from app.models.domain_settings import SettingDomain
 from app.models.team_inbox import InboxChannelType
@@ -2508,113 +2507,6 @@ def team_inbox_email_routes(
     )
 
 
-def _ai_intake_policy_status(
-    policy: AiIntakePolicy, draft: AiIntakePolicyVersion | None
-) -> str:
-    if not policy.is_enabled and policy.active_version_id is not None:
-        return "Disabled"
-    if policy.is_enabled:
-        return "Active"
-    if draft is not None:
-        return "Draft"
-    return "Disabled"
-
-
-def _ai_intake_policy_context(db: Session) -> dict[str, object]:
-    rows = (
-        db.query(AiIntakePolicy)
-        .order_by(AiIntakePolicy.updated_at.desc(), AiIntakePolicy.created_at.desc())
-        .all()
-    )
-    versions_by_policy: dict[UUID, list[AiIntakePolicyVersion]] = {}
-    if rows:
-        versions = (
-            db.query(AiIntakePolicyVersion)
-            .filter(AiIntakePolicyVersion.policy_id.in_([row.id for row in rows]))
-            .order_by(
-                AiIntakePolicyVersion.policy_id.asc(),
-                AiIntakePolicyVersion.version_number.desc(),
-            )
-            .all()
-        )
-        for version in versions:
-            versions_by_policy.setdefault(version.policy_id, []).append(version)
-    selected_policy = rows[0] if rows else None
-    selected_versions = (
-        versions_by_policy.get(selected_policy.id, []) if selected_policy else []
-    )
-    selected_draft = next(
-        (version for version in selected_versions if version.status == "draft"),
-        None,
-    )
-    selected_active = (
-        db.get(AiIntakePolicyVersion, selected_policy.active_version_id)
-        if selected_policy and selected_policy.active_version_id is not None
-        else None
-    )
-    editable_version = selected_draft or selected_active
-    escalation_rules = (
-        dict(editable_version.escalation_rules or {})
-        if editable_version is not None
-        and isinstance(editable_version.escalation_rules, dict)
-        else {}
-    )
-    queue_templates = (
-        dict(editable_version.queue_templates or {})
-        if editable_version is not None
-        and isinstance(editable_version.queue_templates, dict)
-        else {}
-    )
-    data_cleanup_policy = (
-        dict(editable_version.data_cleanup_policy or {})
-        if editable_version is not None
-        and isinstance(editable_version.data_cleanup_policy, dict)
-        else {}
-    )
-    mapping_json = "[]"
-    if editable_version is not None:
-        mapping_json = json.dumps(editable_version.intent_team_mappings or [], indent=2)
-    return {
-        "ai_intake_policies": [
-            {
-                "id": str(policy.id),
-                "scope_key": policy.scope_key,
-                "channel_type": policy.channel_type,
-                "provider": policy.provider,
-                "account_scope": policy.account_scope,
-                "status": _ai_intake_policy_status(
-                    policy,
-                    next(
-                        (
-                            version
-                            for version in versions_by_policy.get(policy.id, [])
-                            if version.status == "draft"
-                        ),
-                        None,
-                    ),
-                ),
-                "active_version_id": str(policy.active_version_id)
-                if policy.active_version_id
-                else None,
-            }
-            for policy in rows
-        ],
-        "ai_intake_policy": selected_policy,
-        "ai_intake_draft_version": selected_draft,
-        "ai_intake_active_version": selected_active,
-        "ai_intake_edit_version": editable_version,
-        "ai_intake_policy_status": (
-            _ai_intake_policy_status(selected_policy, selected_draft)
-            if selected_policy
-            else "Draft"
-        ),
-        "ai_intake_mapping_json": mapping_json,
-        "ai_intake_escalation_rules": escalation_rules,
-        "ai_intake_queue_templates": queue_templates,
-        "ai_intake_data_cleanup_policy": data_cleanup_policy,
-    }
-
-
 def _polish_settings_context(db: Session) -> dict[str, object]:
     return {
         "ai_polish_business_voice": settings_spec.resolve_value(
@@ -2646,7 +2538,7 @@ def _settings_context(
         if actor_person_id
         else None
     )
-    ai_policy_context = _ai_intake_policy_context(db)
+    ai_policy_context = ai_conversation_intake.admin_policy_context(db)
     context.update(
         {
             "email_routes": team_inbox_routing.list_email_routes(db),
