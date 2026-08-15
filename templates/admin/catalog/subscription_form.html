@@ -729,7 +729,7 @@ function subscriptionProvisioning() {
         const block = blocks.find((item) => item.id === blockId);
         return block ? block.display : "";
     };
-    const rows = initialAddresses.slice(0, 1).map((ip, idx) => ({
+    const rows = initialAddresses.map((ip, idx) => ({
         blockId: initialBlocks[idx] || "",
         blockQuery: blockLabel(initialBlocks[idx] || ""),
         ip: ip || "",

@@ -137,7 +137,6 @@ runtime.infrastructure_polling
 runtime.task_heartbeat
 runtime.task_idempotency
 sales.lead_lifecycle
-sales.orders
 sales.selfserve
 sales.service
 scheduler.operations

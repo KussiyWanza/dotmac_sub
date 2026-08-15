@@ -189,6 +189,67 @@ def test_ai_route_confidence_threshold_is_not_bypassed_by_department(db_session)
     assert decision.reason == "channel_route"
 
 
+def test_ai_classification_does_not_guess_team_by_department_name(db_session):
+    default_team_id = _team(db_session, "Customer Experience")
+    _team(db_session, "Technical Support")
+    team_inbox_commands.create_channel_route(
+        db_session,
+        channel_type="whatsapp",
+        provider="meta_cloud_api",
+        account_scope="phone-1",
+        service_team_id=default_team_id,
+        allow_ai_routing=True,
+    )
+
+    decision = team_inbox_routing.resolve_channel_routing_decision(
+        db_session,
+        channel_type="whatsapp",
+        provider="meta_cloud_api",
+        account_scope="phone-1",
+        metadata={
+            "ai_intake_status": "classified",
+            "ai_intent": "technical_support",
+            "ai_department": "technical_support",
+            "ai_confidence": 0.9,
+        },
+    )
+
+    assert decision.primary_service_team_id == str(default_team_id)
+    assert decision.ai_service_team_id is None
+    assert decision.reason == "ai_intake_missing_team_id"
+
+
+def test_ai_classification_routes_to_explicit_active_department_team_id(db_session):
+    default_team_id = _team(db_session, "Customer Experience")
+    technical_team_id = _team(db_session, "Technical Support")
+    team_inbox_commands.create_channel_route(
+        db_session,
+        channel_type="whatsapp",
+        provider="meta_cloud_api",
+        account_scope="phone-1",
+        service_team_id=default_team_id,
+        allow_ai_routing=True,
+    )
+
+    decision = team_inbox_routing.resolve_channel_routing_decision(
+        db_session,
+        channel_type="whatsapp",
+        provider="meta_cloud_api",
+        account_scope="phone-1",
+        metadata={
+            "ai_intake_status": "classified",
+            "ai_intent": "technical_support",
+            "ai_department": "technical_support",
+            "ai_department_team_id": str(technical_team_id),
+            "ai_confidence": 0.9,
+        },
+    )
+
+    assert decision.primary_service_team_id == str(technical_team_id)
+    assert decision.ai_service_team_id == str(technical_team_id)
+    assert decision.reason == "ai_intake_department"
+
+
 def test_a_duplicate_address_for_the_same_team_is_refused(db_session):
     team_id = _team(db_session, "Support")
     team_inbox_commands.create_email_route(
@@ -381,3 +442,24 @@ def test_the_page_states_what_it_does_not_control():
     assert "components/forms/csrf_input.html" in ROUTES_TEMPLATE
     assert 'name="outbound_email_sender_key"' in ROUTES_TEMPLATE
     assert "Default SMTP profile" in ROUTES_TEMPLATE
+
+
+def test_ai_intake_admin_lifecycle_uses_canonical_separate_actions():
+    assert "/admin/crm/inbox/ai-intake-policy/draft" in ROUTES_TEMPLATE
+    assert "/validate" in ROUTES_TEMPLATE
+    assert "/activate" in ROUTES_TEMPLATE
+    assert "/disable" in ROUTES_TEMPLATE
+    assert 'name="is_enabled"' not in ROUTES_TEMPLATE
+    assert "ai_conversation_intake.create_draft_policy" in ROUTES_MODULE
+    assert "ai_conversation_intake.validate_policy_version" in ROUTES_MODULE
+    assert "ai_conversation_intake.activate_policy_version" in ROUTES_MODULE
+    assert "ai_conversation_intake.disable_policy" in ROUTES_MODULE
+    assert "ai_intake.upsert_config" not in ROUTES_MODULE
+    assert '"production_collection_enabled": False' in ROUTES_MODULE
+
+
+def test_ai_polish_settings_are_editable_on_inbox_settings_page():
+    assert "/admin/crm/inbox/ai-polish-settings" in ROUTES_TEMPLATE
+    assert 'name="inbox_ai_polish_business_voice"' in ROUTES_TEMPLATE
+    assert 'name="inbox_ai_polish_channel_guidance"' in ROUTES_TEMPLATE
+    assert "settings_api.upsert_integration_setting" in ROUTES_MODULE

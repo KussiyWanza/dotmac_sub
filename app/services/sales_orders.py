@@ -41,11 +41,14 @@ native models, with Sub ownership deltas applied:
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
+from enum import Enum
 from typing import Any
 from uuid import UUID
 
@@ -53,6 +56,7 @@ from fastapi import HTTPException
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
+from app.models.audit import AuditActorType
 from app.models.catalog import Subscription
 from app.models.project import Project, ProjectTask
 from app.models.sales import (
@@ -65,8 +69,10 @@ from app.models.sales import (
     SalesOrderPaymentStatus,
     SalesOrderStatus,
 )
+from app.models.sales_order_waiver import SalesOrderWaiver, WaiverState
 from app.models.subscriber import Subscriber
 from app.services import numbering
+from app.services.audit_adapter import AuditActor, stage_audit_event
 from app.services.common import (
     apply_ordering,
     apply_pagination,
@@ -75,7 +81,13 @@ from app.services.common import (
     round_money,
     validate_enum,
 )
+from app.services.domain_errors import DomainError
 from app.services.events import EventType, emit_event
+from app.services.owner_commands import (
+    CommandContext,
+    OwnerCommandDefinition,
+    execute_owner_command,
+)
 from app.services.response import ListResponseMixin
 from app.services.sales import lifecycle as lead_lifecycle
 
@@ -1234,6 +1246,113 @@ def _sync_sales_order_financials(db: Session, sales_order: SalesOrder) -> None:
     _record_sales_order_payment(db, sales_order)
 
 
+#: Fields whose value asserts that money was received. Writing one of these
+#: declares coverage, and coverage is what ``stage_funding_transition`` turns
+#: into subscriptions and provisioning. They are therefore NOT operator input:
+#: a generic order edit that could set them would let anyone with ordinary
+#: sales-order write permission manufacture funding.
+#:
+#: ``total`` is deliberately absent. Changing what an order is worth is a real
+#: sales edit, and coverage stays DERIVED from it and from recorded receipts.
+FUNDING_CONTROLLED_FIELDS: frozenset[str] = frozenset(
+    {"payment_status", "amount_paid", "paid_at"}
+)
+
+
+class FundingAuthority(str, Enum):
+    """Why a caller is permitted to assert coverage on a sales order.
+
+    A member of this enum is evidence that money was independently confirmed.
+    There is deliberately no ``operator`` member: an operator's assertion that
+    an order is paid is not settlement evidence, and the only way to fund an
+    order is to record the receipt through the owner that saw it.
+    """
+
+    #: A payment accepted and recorded by the billing settlement owner.
+    settlement = "settlement"
+    #: Verified deposit evidence returned by quote acceptance.
+    deposit_verification = "deposit_verification"
+    #: Exact obligation resolution through :mod:`app.services.sales_order_funding`.
+    funding_gate = "funding_gate"
+    #: Derivation from the order's own lines — never a new assertion of money.
+    derived_recalculation = "derived_recalculation"
+
+
+def assert_funding_authority(
+    data: dict[str, Any], *, funding_authority: FundingAuthority | None
+) -> None:
+    """Refuse operator-supplied coverage fields.
+
+    Raises 422 naming the offending field rather than silently dropping it —
+    a dropped field would let a caller believe it had recorded a payment.
+
+    ``funding_authority`` must be an actual :class:`FundingAuthority` member.
+    A truthy value of any other type is a programming error and is refused
+    rather than honoured: the whole point of the parameter is that it cannot
+    be satisfied by a generic boolean, a request-derived string, or a
+    ``True`` that leaked in from a caller's own flag.
+    """
+    if funding_authority is not None:
+        if not isinstance(funding_authority, FundingAuthority):
+            raise TypeError(
+                "funding_authority must be a FundingAuthority member, got "
+                f"{type(funding_authority).__name__!r}. Coverage authority is "
+                "not a boolean and not a request value."
+            )
+        return
+    offending = sorted(FUNDING_CONTROLLED_FIELDS & set(data))
+    if not offending:
+        return
+    raise HTTPException(
+        status_code=422,
+        detail=(
+            "Funding fields cannot be set through a sales-order edit: "
+            f"{', '.join(offending)}. Coverage is derived from recorded "
+            "settlement evidence. Record the payment through the billing "
+            "settlement owner, or resolve the order's funding obligations "
+            "through the funding gate."
+        ),
+    )
+
+
+#: Fields that change what the customer was sold or what it is worth. While an
+#: order carries an active waiver these are frozen: the waiver recorded an exact
+#: amount as not-pursued, and re-pricing underneath it would silently change
+#: what was forgiven without any new decision being taken.
+COMMERCIAL_FIELDS: frozenset[str] = frozenset(
+    {"subtotal", "tax_total", "total", "discount_type", "discount_value"}
+)
+
+#: The same rule at line level.
+COMMERCIAL_LINE_FIELDS: frozenset[str] = frozenset(
+    {"description", "quantity", "unit_price", "amount", "inventory_item_id"}
+)
+
+
+def assert_no_active_waiver(
+    db: Session, sales_order_id, data: dict[str, Any], fields: frozenset[str]
+) -> None:
+    """Refuse a commercial change while a waiver is active.
+
+    Revoke the waiver first — that is a recorded decision with an accountable
+    actor, which is exactly what re-pricing a waived order should require.
+    """
+    offending = sorted(fields & set(data))
+    if not offending:
+        return
+    if active_waiver(db, coerce_uuid(sales_order_id)) is None:
+        return
+    raise HTTPException(
+        status_code=409,
+        detail=(
+            "This order has an active waiver, so its commercial terms are "
+            f"frozen: {', '.join(offending)}. Revoke the waiver first — the "
+            "waiver recorded an exact amount as not-pursued, and re-pricing "
+            "underneath it would change what was forgiven with no new decision."
+        ),
+    )
+
+
 def stage_funding_transition(
     db: Session,
     sales_order: SalesOrder,
@@ -1372,8 +1491,25 @@ def _ensure_project_for_manual_sales_order(db: Session, sales_order: SalesOrder)
 
 class SalesOrders(ListResponseMixin):
     @staticmethod
-    def create(db: Session, payload):
+    def create(
+        db: Session, payload, *, funding_authority: FundingAuthority | None = None
+    ):
         data = payload.model_dump()
+        # A create carries every field, so only an EXPLICITLY-SET funding field
+        # counts as an assertion — a schema default of pending/0 is not one.
+        # ``SalesOrderPaymentStatus`` is a plain Enum, so unwrap before
+        # comparing: the member is not equal to its own string value.
+        assert_funding_authority(
+            {
+                key: value
+                for key, value in data.items()
+                if key in FUNDING_CONTROLLED_FIELDS
+                and key in payload.model_fields_set
+                and getattr(value, "value", value)
+                not in (None, _PENDING, Decimal("0.00"))
+            },
+            funding_authority=funding_authority,
+        )
         if data.get("status"):
             data["status"] = _enum_str(data["status"], SalesOrderStatus, "status")
         if data.get("payment_status"):
@@ -1568,12 +1704,20 @@ class SalesOrders(ListResponseMixin):
         return apply_pagination(query, limit, offset).all()
 
     @staticmethod
-    def update(db: Session, sales_order_id: str, payload):
+    def update(
+        db: Session,
+        sales_order_id: str,
+        payload,
+        *,
+        funding_authority: FundingAuthority | None = None,
+    ):
         sales_order = db.get(SalesOrder, coerce_uuid(sales_order_id))
         if not sales_order:
             raise HTTPException(status_code=404, detail="Sales order not found")
         previous_payment_status = sales_order.payment_status
         data = payload.model_dump(exclude_unset=True)
+        assert_funding_authority(data, funding_authority=funding_authority)
+        assert_no_active_waiver(db, sales_order_id, data, COMMERCIAL_FIELDS)
         if "status" in data:
             data["status"] = _enum_str(data["status"], SalesOrderStatus, "status")
         if "payment_status" in data:
@@ -1661,34 +1805,32 @@ class SalesOrders(ListResponseMixin):
         sales_order_id: str,
         *,
         status: str | None = None,
-        payment_status: str | None = None,
         total: str | None = None,
-        amount_paid: str | None = None,
-        paid_at: str | None = None,
         notes: str | None = None,
         owner_agent_id: str | None = None,
         source: str | None = None,
+        **rejected: Any,
     ):
-        """Update a sales order using raw string inputs (e.g. web forms)."""
+        """Update a sales order using raw string inputs (e.g. web forms).
+
+        This is the operator surface, so it carries no funding fields at all.
+        ``**rejected`` exists so a caller still passing ``payment_status``,
+        ``amount_paid`` or ``paid_at`` fails loudly with the same 422 as the
+        typed path, instead of a ``TypeError`` or — worse — a silent drop.
+        """
+        assert_funding_authority(rejected, funding_authority=None)
+        if rejected:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unknown sales-order fields: {', '.join(sorted(rejected))}",
+            )
         update_data: dict[str, Any] = {}
         if status:
             update_data["status"] = validate_enum(status, SalesOrderStatus, "status")
-        if payment_status:
-            update_data["payment_status"] = validate_enum(
-                payment_status, SalesOrderPaymentStatus, "payment_status"
-            )
 
         total_value = _parse_decimal(total)
         if total_value is not None:
             update_data["total"] = total_value
-
-        amount_paid_value = _parse_decimal(amount_paid)
-        if amount_paid_value is not None:
-            update_data["amount_paid"] = amount_paid_value
-
-        paid_at_value = _parse_datetime(paid_at)
-        if paid_at is not None:
-            update_data["paid_at"] = paid_at_value
 
         if notes is not None:
             update_data["notes"] = notes.strip() or None
@@ -1698,14 +1840,6 @@ class SalesOrders(ListResponseMixin):
             )
         if source is not None:
             update_data["source"] = source.strip() or None
-
-        # If payment status is paid and paid_at is missing, set it now to
-        # satisfy the schema validation.
-        if (
-            update_data.get("payment_status") == SalesOrderPaymentStatus.paid
-            and update_data.get("paid_at") is None
-        ):
-            update_data["paid_at"] = datetime.now(UTC)
 
         from app.schemas.sales_order import SalesOrderUpdate
 
@@ -1728,6 +1862,11 @@ class SalesOrderLines(ListResponseMixin):
         if not sales_order:
             raise HTTPException(status_code=404, detail="Sales order not found")
         data = payload.model_dump()
+        # Adding a line changes what the order is worth, so it is a commercial
+        # mutation even though no existing line moves.
+        assert_no_active_waiver(
+            db, sales_order.id, {"amount": data.get("amount")}, COMMERCIAL_LINE_FIELDS
+        )
         if not data.get("amount"):
             data["amount"] = Decimal(data.get("quantity") or 0) * Decimal(
                 data.get("unit_price") or 0
@@ -1749,6 +1888,7 @@ class SalesOrderLines(ListResponseMixin):
         if not line:
             raise HTTPException(status_code=404, detail="Sales order line not found")
         data = payload.model_dump(exclude_unset=True)
+        assert_no_active_waiver(db, line.sales_order_id, data, COMMERCIAL_LINE_FIELDS)
         for key, value in data.items():
             setattr(line, key, value)
         if "quantity" in data or "unit_price" in data:
@@ -1787,3 +1927,370 @@ class SalesOrderLines(ListResponseMixin):
 
 sales_orders = SalesOrders()
 sales_order_lines = SalesOrderLines()
+
+
+# ---------------------------------------------------------------------------
+# Order waivers — a concern of this owner, and never a payment
+# ---------------------------------------------------------------------------
+#
+# Closing the manufacture-funding hole refused `payment_status` on the generic
+# order edit, which also removed the only path to a waiver: waiver travelled on
+# the same field as settlement. The replacement lives HERE, in `sales.orders`,
+# rather than in a module of its own, because the SOT registry maps one owner
+# to exactly one module and a waiver is a concern of the order, not a new
+# authority.
+#
+# What a waiver is: a recorded decision not to pursue what an order is worth,
+# naming the actor, grounds, exact amount and an idempotency identity.
+#
+# What it never does:
+#   * write `payment_status`, `amount_paid` or `paid_at` — a waived order was
+#     not paid, and must not be reported as though it were;
+#   * stage `sales_order.funding_satisfied`, so no subscription and no
+#     provisioning order can follow;
+#   * create settlement evidence;
+#   * use the `funding_authority` escape hatch. That hatch is for callers
+#     asserting money arrived; a waiver asserts the opposite.
+#
+# Extended credit is deliberately out of scope: it preserves a receivable,
+# which is a Billing and Collections concern with its own ownership.
+
+OWNER = "sales.orders"
+
+AUDIT_WAIVER_GRANTED = "sales_order.waiver_granted"
+AUDIT_WAIVER_REVOKED = "sales_order.waiver_revoked"
+
+_GRANT_COMMAND = OwnerCommandDefinition(
+    owner=OWNER,
+    concern="order waiver decision evidence",
+    name="grant_order_waiver",
+)
+_REVOKE_COMMAND = OwnerCommandDefinition(
+    owner=OWNER,
+    concern="order waiver decision evidence",
+    name="revoke_order_waiver",
+)
+
+#: Open registered vocabulary (ADR-0008). Grounds are declared here rather than
+#: in an enum so a product adds one without a migration — but never free text
+#: alone, because "why was this order waived" must be answerable later.
+WAIVER_REASON_CODES: frozenset[str] = frozenset(
+    {
+        "goodwill",
+        "service_failure",
+        "billing_error",
+        "contractual_allowance",
+        "uncollectible",
+        "internal_account",
+        "promotional",
+    }
+)
+
+REVOCATION_REASON_CODES: frozenset[str] = frozenset(
+    {
+        "granted_in_error",
+        "customer_disputed",
+        "policy_change",
+        "superseded",
+    }
+)
+
+
+class OrderWaiverError(DomainError):
+    """Fail-closed order-waiver error."""
+
+
+def _error(suffix: str, message: str, **details: object) -> OrderWaiverError:
+    return OrderWaiverError(
+        code=f"sales.order_waiver.{suffix}", message=message, details=dict(details)
+    )
+
+
+def _grant_fingerprint(
+    *, sales_order_id: UUID, amount: Decimal, currency: str, reason_code: str
+) -> str:
+    """Digest of the grant inputs.
+
+    Excludes actor and instant on purpose: a retried request is the same
+    decision, while a changed amount or grounds must conflict.
+    """
+    payload = json.dumps(
+        {
+            "sales_order_id": str(sales_order_id),
+            "waived_amount": str(amount),
+            "currency": currency.upper(),
+            "reason_code": reason_code,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def active_waiver(db: Session, sales_order_id: UUID) -> SalesOrderWaiver | None:
+    """The order's active waiver, if it has one.
+
+    Read-only, and safe to call from the sales-order service: it is how the
+    commercial-mutation guard knows to refuse.
+    """
+    return (
+        db.query(SalesOrderWaiver)
+        .filter(
+            SalesOrderWaiver.sales_order_id == sales_order_id,
+            SalesOrderWaiver.state == WaiverState.active,
+        )
+        .one_or_none()
+    )
+
+
+class SalesOrderWaivers:
+    """Public command surface for order waivers."""
+
+    @staticmethod
+    def grant(
+        db: Session,
+        *,
+        sales_order_id: UUID,
+        waived_amount: Decimal,
+        reason_code: str,
+        reason_text: str | None = None,
+        granted_at: datetime | None = None,
+        context: CommandContext,
+    ) -> SalesOrderWaiver:
+        """Record a waiver on one order.
+
+        Idempotent per ``(sales_order_id, context.idempotency_key)``. A replay
+        with the same inputs returns the original waiver; a replay with
+        different inputs is a conflict, never a second waiver.
+        """
+        if context.idempotency_key is None:
+            raise _error(
+                "missing_idempotency_key",
+                "A waiver requires an idempotency identity.",
+            )
+        if reason_code not in WAIVER_REASON_CODES:
+            raise _error(
+                "unregistered_reason_code",
+                "A waiver must state registered grounds.",
+                reason_code=reason_code,
+                registered=sorted(WAIVER_REASON_CODES),
+            )
+        if waived_amount <= Decimal("0"):
+            raise _error(
+                "non_positive_amount",
+                "A waiver must waive a positive amount.",
+                waived_amount=str(waived_amount),
+            )
+        if granted_at is not None and granted_at.tzinfo is None:
+            raise _error(
+                "invalid_decision_instant",
+                "Waiver evidence requires a timezone-aware instant.",
+            )
+
+        return execute_owner_command(
+            db,
+            definition=_GRANT_COMMAND,
+            context=context,
+            operation=lambda: SalesOrderWaivers._grant(
+                db,
+                sales_order_id=sales_order_id,
+                waived_amount=waived_amount,
+                reason_code=reason_code,
+                reason_text=reason_text,
+                granted_at=granted_at or datetime.now(UTC),
+                context=context,
+            ),
+        )
+
+    @staticmethod
+    def _grant(
+        db: Session,
+        *,
+        sales_order_id: UUID,
+        waived_amount: Decimal,
+        reason_code: str,
+        reason_text: str | None,
+        granted_at: datetime,
+        context: CommandContext,
+    ) -> SalesOrderWaiver:
+        # Lock the order: two concurrent grants must serialise, or both see no
+        # active waiver and both create one.
+        sales_order = (
+            db.query(SalesOrder)
+            .filter(SalesOrder.id == sales_order_id)
+            .with_for_update()
+            .one_or_none()
+        )
+        if sales_order is None:
+            raise _error(
+                "sales_order_not_found",
+                "No sales order for this waiver.",
+                sales_order_id=str(sales_order_id),
+            )
+
+        currency = sales_order.currency or "NGN"
+        fingerprint = _grant_fingerprint(
+            sales_order_id=sales_order_id,
+            amount=waived_amount,
+            currency=currency,
+            reason_code=reason_code,
+        )
+
+        existing = (
+            db.query(SalesOrderWaiver)
+            .filter(
+                SalesOrderWaiver.sales_order_id == sales_order_id,
+                SalesOrderWaiver.grant_idempotency_key == context.idempotency_key,
+            )
+            .one_or_none()
+        )
+        if existing is not None:
+            if existing.grant_fingerprint != fingerprint:
+                raise _error(
+                    "idempotency_conflict",
+                    "This idempotency key already granted a different waiver.",
+                    idempotency_key=context.idempotency_key,
+                )
+            return existing
+
+        if active_waiver(db, sales_order_id) is not None:
+            raise _error(
+                "waiver_already_active",
+                "This order already has an active waiver. Revoke it first.",
+                sales_order_id=str(sales_order_id),
+            )
+
+        waiver = SalesOrderWaiver(
+            sales_order_id=sales_order_id,
+            state=WaiverState.active,
+            waived_amount=waived_amount,
+            currency=currency,
+            reason_code=reason_code,
+            reason_text=reason_text,
+            granted_by=context.actor,
+            granted_at=granted_at,
+            grant_idempotency_key=context.idempotency_key,
+            grant_fingerprint=fingerprint,
+            command_id=context.command_id,
+            correlation_id=context.correlation_id,
+        )
+        db.add(waiver)
+        db.flush()
+
+        # Note what is absent: no payment_status write, no funding event, no
+        # settlement row. The waiver is the whole effect.
+        stage_audit_event(
+            db,
+            action=AUDIT_WAIVER_GRANTED,
+            entity_type="sales_order",
+            entity_id=str(sales_order_id),
+            actor=AuditActor(actor_type=AuditActorType.user, actor_id=context.actor),
+            metadata={
+                "waiver_id": str(waiver.id),
+                "waived_amount": str(waived_amount),
+                "currency": currency,
+                "reason_code": reason_code,
+            },
+        )
+        return waiver
+
+    @staticmethod
+    def revoke(
+        db: Session,
+        *,
+        sales_order_id: UUID,
+        reason_code: str,
+        reason_text: str | None = None,
+        context: CommandContext,
+    ) -> SalesOrderWaiver:
+        """Withdraw an active waiver. The order becomes pursuable again."""
+        if context.idempotency_key is None:
+            raise _error(
+                "missing_idempotency_key",
+                "A revocation requires an idempotency identity.",
+            )
+        if reason_code not in REVOCATION_REASON_CODES:
+            raise _error(
+                "unregistered_reason_code",
+                "A revocation must state registered grounds.",
+                reason_code=reason_code,
+                registered=sorted(REVOCATION_REASON_CODES),
+            )
+        return execute_owner_command(
+            db,
+            definition=_REVOKE_COMMAND,
+            context=context,
+            operation=lambda: SalesOrderWaivers._revoke(
+                db,
+                sales_order_id=sales_order_id,
+                reason_code=reason_code,
+                reason_text=reason_text,
+                context=context,
+            ),
+        )
+
+    @staticmethod
+    def _revoke(
+        db: Session,
+        *,
+        sales_order_id: UUID,
+        reason_code: str,
+        reason_text: str | None,
+        context: CommandContext,
+    ) -> SalesOrderWaiver:
+        sales_order = (
+            db.query(SalesOrder)
+            .filter(SalesOrder.id == sales_order_id)
+            .with_for_update()
+            .one_or_none()
+        )
+        if sales_order is None:
+            raise _error(
+                "sales_order_not_found",
+                "No sales order for this revocation.",
+                sales_order_id=str(sales_order_id),
+            )
+
+        waiver = active_waiver(db, sales_order_id)
+        if waiver is None:
+            # Replay of an already-applied revocation returns the row it
+            # revoked, so a retried request is not an error.
+            already = (
+                db.query(SalesOrderWaiver)
+                .filter(
+                    SalesOrderWaiver.sales_order_id == sales_order_id,
+                    SalesOrderWaiver.revoke_idempotency_key == context.idempotency_key,
+                )
+                .one_or_none()
+            )
+            if already is not None:
+                return already
+            raise _error(
+                "no_active_waiver",
+                "This order has no active waiver to revoke.",
+                sales_order_id=str(sales_order_id),
+            )
+
+        waiver.state = WaiverState.revoked
+        waiver.revoked_by = context.actor
+        waiver.revoked_at = datetime.now(UTC)
+        waiver.revoke_reason_code = reason_code
+        waiver.revoke_reason_text = reason_text
+        waiver.revoke_idempotency_key = context.idempotency_key
+        db.flush()
+
+        stage_audit_event(
+            db,
+            action=AUDIT_WAIVER_REVOKED,
+            entity_type="sales_order",
+            entity_id=str(sales_order_id),
+            actor=AuditActor(actor_type=AuditActorType.user, actor_id=context.actor),
+            metadata={
+                "waiver_id": str(waiver.id),
+                "reason_code": reason_code,
+            },
+        )
+        return waiver
+
+
+sales_order_waivers = SalesOrderWaivers()

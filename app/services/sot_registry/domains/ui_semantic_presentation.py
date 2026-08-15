@@ -106,6 +106,114 @@ DOMAIN = DomainSOT(
             ),
         ),
         SOTService(
+            name="ui.subscription_ipv4_projection",
+            module="app.services.subscription_ipv4_projection",
+            owns=("exact-subscription current service IPv4 projection",),
+            depends_on=(
+                "access.subscription_lifecycle",
+                "network.ip_assignment_lifecycle",
+            ),
+            notes=(
+                "The subscription detail and edit pages share one typed, "
+                "read-only selection. It prefers the active exact-service "
+                "primary IPAM assignment, accepts a sole exact assignment as "
+                "unambiguous migration evidence, never reads subscriber-wide "
+                "or sibling-subscription assignments, and labels the served "
+                "Subscription.ipv4_address copy when it is the only available "
+                "fallback. Multiple unmarked exact assignments are surfaced as "
+                "ambiguous instead of being sorted into an arbitrary choice."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name="exact-subscription current service IPv4 projection",
+                        role=OwnerRole.RESOLVER,
+                        input_names=(
+                            "canonical subscription identity",
+                            "canonical exact-service IPv4 assignments",
+                            "served IPv4 compatibility projection",
+                        ),
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="canonical subscription identity",
+                        owner="access.subscription_lifecycle",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="Exact Subscription UUID and lifecycle record.",
+                    ),
+                    AuthorityInput(
+                        name="canonical exact-service IPv4 assignments",
+                        owner="network.ip_assignment_lifecycle",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "Active IPv4 IPAssignment rows linked by the exact "
+                            "subscription_id, including the primary marker."
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="served IPv4 compatibility projection",
+                        owner="network.ip_assignment_lifecycle",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source=(
+                            "Subscription.ipv4_address, used only when no active "
+                            "exact-service assignment is linked."
+                        ),
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.READ_ONLY,
+                    boundary=(
+                        "The resolver reads committed subscription and IPAM facts "
+                        "on the adapter session and never mutates or completes a "
+                        "transaction."
+                    ),
+                    locking="Display resolution requires no mutation lock.",
+                    idempotency=(
+                        "The same exact subscription, active assignment set, and "
+                        "served projection produce the same typed selection."
+                    ),
+                    retries="The read-only resolution is safe to retry.",
+                ),
+                errors=ErrorContract(
+                    domain_codes=(),
+                    mapping_owner="app.web.admin.catalog",
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.COMPLETE,
+                    old_owner=(
+                        "subscriber-wide oldest-first IPv4 selection in "
+                        "app.services.web_catalog_subscriptions and template "
+                        "first-row truncation"
+                    ),
+                    new_owner="ui.subscription_ipv4_projection",
+                    verification=(
+                        "Focused resolver, form-context, detail-context, and "
+                        "template architecture tests."
+                    ),
+                    cutover_gate=(
+                        "Both subscription pages consume only the typed exact-"
+                        "subscription selection."
+                    ),
+                    fallback_retirement=(
+                        "Subscriber-wide assignment lookup, oldest-first ordering, "
+                        "and client-side first-row selection are removed."
+                    ),
+                ),
+                steward="network operations UI",
+                design_refs=(
+                    "docs/designs/IP_ASSIGNMENT_LIFECYCLE_SOT.md",
+                    "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                ),
+                test_refs=(
+                    "tests/test_subscription_ipv4_projection.py",
+                    "tests/test_web_catalog_subscriptions.py",
+                    "tests/architecture/test_ip_assignment_service_ownership.py",
+                ),
+            ),
+        ),
+        SOTService(
             name="ui.operational_evidence_projection",
             module="app.services.operational_checks",
             owns=(
@@ -1592,10 +1700,12 @@ DOMAIN = DomainSOT(
         "app.services.web_customer_lists",
         "app.services.web_customer_details",
         "app.services.customer_portal_context",
+        "app.web.admin.catalog",
         "app.schemas.field.FieldJobSummary",
         "app.schemas.field.FieldManagerJob",
         "app.services.field.map_search",
         "templates.admin.customers",
+        "templates.admin.catalog",
         "templates.admin.billing",
         "templates.admin.network.outages",
         "templates.admin.network.core-devices",

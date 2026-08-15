@@ -163,6 +163,26 @@ def test_admin_ipv4_replacement_is_owner_backed_and_billing_isolated() -> None:
     assert "It does not purchase or change an IP add-on" in template_source
 
 
+def test_subscription_pages_share_exact_service_ipv4_projection() -> None:
+    adapter_tree = ast.parse(WEB_ADAPTER.read_text(encoding="utf-8"))
+    form_rows = next(
+        node
+        for node in adapter_tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == "_subscription_ipv4_form_rows"
+    )
+    form_rows_source = ast.unparse(form_rows)
+    form_source = SUBSCRIPTION_FORM.read_text(encoding="utf-8")
+    detail_source = SUBSCRIPTION_DETAIL.read_text(encoding="utf-8")
+
+    assert "resolve_subscription_service_ipv4(" in form_rows_source
+    assert "IPAssignment.subscriber_id" not in form_rows_source
+    assert "IPAssignment.created_at.asc()" not in form_rows_source
+    assert "initialAddresses.slice(0, 1)" not in form_source
+    assert "service_ipv4.address" in detail_source
+    assert "assigned_ipv4_list" not in detail_source
+
+
 def test_admin_projection_reconciliation_is_a_thin_confirmed_owner_adapter() -> None:
     workflow_tree = ast.parse(WEB_WORKFLOW.read_text(encoding="utf-8"))
     execute = next(
