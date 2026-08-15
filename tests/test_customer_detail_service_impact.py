@@ -18,7 +18,24 @@ from app.models.lifecycle import LifecycleEventType, SubscriptionLifecycleEvent
 from app.models.network_monitoring import NetworkDevice
 from app.models.usage import AccountingStatus, RadiusAccountingSession
 from app.services import web_customer_details as details
+from app.services.subscription_ipv4_projection import (
+    ServiceIPv4Source,
+    SubscriptionServiceIPv4,
+)
 from app.services.topology.outage import declare_outage
+
+
+def _service_ipv4(subscription):
+    return {
+        str(subscription.id): SubscriptionServiceIPv4(
+            subscription_id=subscription.id,
+            address=subscription.ipv4_address,
+            assignment_id=None,
+            ipv4_address_id=None,
+            source=ServiceIPv4Source.served_projection,
+            detail="Test service IPv4 projection.",
+        )
+    }
 
 
 def _covered_subscription(db, subscription):
@@ -181,6 +198,7 @@ def test_cards_carry_the_panels(db_session, subscription, monkeypatch):
     cards = details._build_network_access_cards(
         [subscription],
         {},
+        _service_ipv4(subscription),
         service_impact_by_subscription={
             str(subscription.id): details._build_service_impact(
                 db_session, subscription

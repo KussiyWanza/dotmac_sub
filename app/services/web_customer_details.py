@@ -106,6 +106,11 @@ from app.services.status_presentation import (
     payment_status_presentation,
     subscription_status_presentation,
 )
+from app.services.subscription_ipv4_projection import (
+    SubscriptionServiceIPv4,
+    SubscriptionServiceIPv4BatchQuery,
+    resolve_subscription_service_ipv4_batch,
+)
 from app.services.subscription_lifecycle import is_subscription_restore_candidate
 from app.services.subscription_lifecycle_policy import (
     is_customer_impact_service_status,
@@ -1325,6 +1330,7 @@ def _ticket_prefill_url(subscription, card: dict[str, object]) -> str:
 def _build_network_access_cards(
     subscriptions: list,
     connection_by_subscription: dict[str, dict[str, object]],
+    service_ipv4_by_subscription: Mapping[str, SubscriptionServiceIPv4],
     additional_routes_by_subscriber: dict[UUID, list[dict[str, object]]] | None = None,
     endpoints_by_subscription: dict[str, dict[str, object]] | None = None,
     traces_by_subscription: dict[str, dict[str, object] | None] | None = None,
@@ -1352,9 +1358,10 @@ def _build_network_access_cards(
         status = str(
             status_value if status_value is not None else raw_status or "unknown"
         )
-        if not sub.login and not sub.ipv4_address:
-            continue
         sub_id = str(sub.id)
+        service_ipv4 = service_ipv4_by_subscription[sub_id]
+        if not sub.login and not service_ipv4.address:
+            continue
         nas = getattr(sub, "provisioning_nas_device", None)
         pop_site = getattr(nas, "pop_site", None) if nas else None
         cards.append(
@@ -1365,7 +1372,9 @@ def _build_network_access_cards(
                 "status_presentation": subscription_status_presentation(raw_status),
                 "connection_status": connection_by_subscription.get(sub_id, {}),
                 "login": sub.login,
-                "ipv4_address": sub.ipv4_address,
+                "ipv4_address": service_ipv4.address,
+                "ipv4_detail": service_ipv4.detail,
+                "ipv4_source": service_ipv4.source.value,
                 "additional_routes": additional_routes_by_subscriber.get(
                     sub.subscriber_id, []
                 )
@@ -1884,8 +1893,20 @@ def build_customer_detail_snapshot(
     service_impact_by_subscription: dict[str, dict[str, object] | None] = {}
     service_level_by_subscription: dict[str, dict[str, object] | None] = {}
     include_network = network_query is None or network_query.include
+    service_ipv4_batch = resolve_subscription_service_ipv4_batch(
+        db,
+        query=SubscriptionServiceIPv4BatchQuery(
+            subscription_ids=tuple(subscription.id for subscription in subscriptions),
+        ),
+    )
+    service_ipv4_by_subscription = {
+        str(selection.subscription_id): selection
+        for selection in service_ipv4_batch.selections
+    }
     network_subscriptions = [
-        sub for sub in subscriptions if sub.login or sub.ipv4_address
+        sub
+        for sub in subscriptions
+        if sub.login or service_ipv4_by_subscription[str(sub.id)].address
     ]
     network_access_total_count = len(network_subscriptions)
     if network_query is not None:
@@ -1906,8 +1927,6 @@ def build_customer_detail_snapshot(
     else:
         additional_routes_by_subscriber = {}
     for sub in network_subscriptions if include_network else ():
-        if not sub.login and not sub.ipv4_address:
-            continue
         # One composition per subscription: access facts, known incident,
         # live impact word, this period's SLA context, and one path
         # resolution feeding the endpoint card, the graph view, and the
@@ -1924,6 +1943,7 @@ def build_customer_detail_snapshot(
     network_access_cards = _build_network_access_cards(
         subscriptions,
         connection_by_subscription,
+        service_ipv4_by_subscription,
         additional_routes_by_subscriber,
         endpoints_by_subscription,
         traces_by_subscription,
@@ -2002,6 +2022,7 @@ def build_customer_detail_snapshot(
             for account in accounts
         },
         "subscriptions": subscriptions,
+        "service_ipv4_by_subscription": service_ipv4_by_subscription,
         "restorable_subscription_ids": {
             str(subscription.id)
             for subscription in subscriptions

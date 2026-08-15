@@ -21,6 +21,8 @@ WEB_WORKFLOW = ROOT / "app/services/web_catalog_subscription_workflows.py"
 ADMIN_ROUTE = ROOT / "app/web/admin/catalog.py"
 SUBSCRIPTION_FORM = ROOT / "templates/admin/catalog/subscription_form.html"
 SUBSCRIPTION_DETAIL = ROOT / "templates/admin/catalog/subscription_detail.html"
+CUSTOMER_DETAIL_SERVICE = ROOT / "app/services/web_customer_details.py"
+CUSTOMER_DETAIL = ROOT / "templates/admin/customers/detail.html"
 PROJECTION_ACTION = (
     ROOT / "templates/admin/catalog/_ipv4_projection_reconciliation.html"
 )
@@ -174,6 +176,8 @@ def test_subscription_pages_share_exact_service_ipv4_projection() -> None:
     form_rows_source = ast.unparse(form_rows)
     form_source = SUBSCRIPTION_FORM.read_text(encoding="utf-8")
     detail_source = SUBSCRIPTION_DETAIL.read_text(encoding="utf-8")
+    customer_service_source = CUSTOMER_DETAIL_SERVICE.read_text(encoding="utf-8")
+    customer_detail_source = CUSTOMER_DETAIL.read_text(encoding="utf-8")
 
     assert "resolve_subscription_service_ipv4(" in form_rows_source
     assert "IPAssignment.subscriber_id" not in form_rows_source
@@ -181,6 +185,9 @@ def test_subscription_pages_share_exact_service_ipv4_projection() -> None:
     assert "initialAddresses.slice(0, 1)" not in form_source
     assert "service_ipv4.address" in detail_source
     assert "assigned_ipv4_list" not in detail_source
+    assert "resolve_subscription_service_ipv4_batch(" in customer_service_source
+    assert "service_ipv4.address" in customer_detail_source
+    assert "subscription.ipv4_address" not in customer_detail_source
 
 
 def test_admin_projection_reconciliation_is_a_thin_confirmed_owner_adapter() -> None:
