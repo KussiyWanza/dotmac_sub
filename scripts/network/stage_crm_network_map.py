@@ -39,6 +39,20 @@ from app.services.network.fiber_topology_staging import (  # noqa: E402
 SOURCE_DATABASE_URL_ENV = "CRM_NETWORK_MAP_SOURCE_DATABASE_URL"
 
 
+def _snapshot_captured_at(value: str) -> datetime:
+    try:
+        captured_at = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "snapshot capture time must be a valid ISO-8601 timestamp"
+        ) from exc
+    if captured_at.tzinfo is None or captured_at.utcoffset() is None:
+        raise argparse.ArgumentTypeError(
+            "snapshot capture time must include a UTC offset"
+        )
+    return captured_at.astimezone(UTC)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -51,6 +65,15 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         required=True,
         help="Read-only CRM PostgreSQL dump whose SHA-256 binds the run.",
+    )
+    parser.add_argument(
+        "--snapshot-captured-at",
+        type=_snapshot_captured_at,
+        required=True,
+        help=(
+            "Actual ISO-8601 CRM dump capture time from the immutable snapshot "
+            "receipt; this is not the restore or staging time."
+        ),
     )
     parser.add_argument(
         "--batch-size",
@@ -151,7 +174,7 @@ def _stage_profiles(
                         "source_database": "dotmac_omni isolated restore",
                         "extraction_format_version": 1,
                         "snapshot_timestamp": snapshot_timestamp,
-                        "importer_version": "stage_crm_network_map:v1",
+                        "importer_version": "stage_crm_network_map:v2",
                         "source_count": profile.source_count,
                         "restored_count": profile.source_count,
                         "active_source_count": (
@@ -200,7 +223,7 @@ def main() -> int:
         )
     finally:
         source_engine.dispose()
-    snapshot_timestamp = datetime.now(UTC).isoformat()
+    snapshot_timestamp = args.snapshot_captured_at.isoformat()
 
     with tempfile.TemporaryDirectory(prefix="crm-network-map-") as temp_dir:
         previews = _preview_profiles(extraction, Path(temp_dir))
