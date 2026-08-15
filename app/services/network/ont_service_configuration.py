@@ -14,7 +14,7 @@ import uuid
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
-from typing import TypeAlias
+from typing import TYPE_CHECKING, TypeAlias
 
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
@@ -83,6 +83,9 @@ from app.services.owner_commands import (
     OwnerCommandDefinition,
     execute_owner_command,
 )
+
+if TYPE_CHECKING:
+    from app.services.network.reconcile.state import OntWifiDeliveryScope
 
 OWNER = "network.ont_service_configuration"
 _COORDINATION_CONCERN = "atomic ONT service configuration coordination"
@@ -881,6 +884,34 @@ def _record_execution_event(
     )
 
 
+def _wifi_delivery_scope(
+    revision: OntServiceConfigurationRevision,
+) -> OntWifiDeliveryScope | None:
+    """Recover typed delivery intent from immutable, redacted revision evidence."""
+
+    from app.services.network.reconcile.state import (
+        OntWifiDeliveryField,
+        OntWifiDeliveryScope,
+    )
+
+    if revision.section != OntConfigurationSection.wifi.value:
+        return None
+    evidence = revision.desired_change_evidence or {}
+    field_by_evidence_key: dict[str, OntWifiDeliveryField] = {
+        "wifi.enabled": "wifi_enabled",
+        "wifi.ssid": "wifi_ssid",
+        "wifi.channel": "wifi_channel",
+        "wifi.security_mode": "wifi_security_mode",
+        "wifi.password": "wifi_password_ref",
+    }
+    changed_fields = frozenset(
+        field
+        for evidence_key, field in field_by_evidence_key.items()
+        if evidence_key in evidence
+    )
+    return OntWifiDeliveryScope(changed_fields=changed_fields)
+
+
 def _execution_locked(
     db: Session, command: ExecuteOntServiceConfigurationCommand
 ) -> ExecuteOntServiceConfigurationOutcome:
@@ -956,6 +987,7 @@ def _execution_locked(
         db,
         ont.id,
         mode="sweep" if command.explicit_repair else "sync",
+        wifi_delivery_scope=_wifi_delivery_scope(revision),
         lifecycle_binding=ReconcileLifecycleBinding(
             ont_unit_id=ont.id,
             assignment_id=assignment.id,

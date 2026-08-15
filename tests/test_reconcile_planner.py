@@ -651,6 +651,21 @@ def test_wifi_password_change_not_re_emitted_on_verify_plan():
     assert OltModifyDescription not in _types(plan)
 
 
+def test_reviewed_wifi_password_repair_stays_scoped_and_pushes_once():
+    """Explicit repair uses sweep guard bypass without becoming a fleet sweep."""
+    desired = _desired(wifi_password_ref="new-pass")
+    observed = _synced_observed(_desired(description="old-description"))
+    plan = compute_plan(
+        desired,
+        observed,
+        "sweep",
+        proposed_fields=frozenset({"wifi_password_ref"}),
+    )
+
+    assert _types(plan) == [AcsSetWifiConfig]
+    assert plan.actions[0].password_ref == "new-pass"
+
+
 def test_wifi_only_change_in_bootstrap_mode_stays_scoped():
     """A WiFi edit carrying a password must not widen into an OLT-side plan.
 
@@ -778,6 +793,25 @@ def test_wifi_ssid_change_scopes_out_unrelated_olt_drift():
         "sync",
         proposed_fields=frozenset({"wifi_ssid"}),
     )
+    assert _types(plan) == [AcsSetWifiConfig]
+    assert plan.actions[0].ssid == "NEW_SSID"
+
+
+def test_explicit_wifi_ssid_pushes_when_acs_observation_is_missing():
+    desired = _desired(wifi_ssid="NEW_SSID")
+    observed = _synced_observed(desired)
+    observed = dataclasses.replace(
+        observed,
+        acs=dataclasses.replace(observed.acs, acs_observed_ssid=None),
+    )
+
+    plan = compute_plan(
+        desired,
+        observed,
+        "sync",
+        proposed_fields=frozenset({"wifi_ssid"}),
+    )
+
     assert _types(plan) == [AcsSetWifiConfig]
     assert plan.actions[0].ssid == "NEW_SSID"
 
