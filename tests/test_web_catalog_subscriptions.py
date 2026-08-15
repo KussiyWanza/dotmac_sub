@@ -1439,7 +1439,7 @@ def test_generic_update_form_rejects_router_change_before_technical_write(
     assert subscription.provisioning_nas_device_id == source_nas.id
 
 
-def test_edit_form_data_includes_active_ipv4_assignments(
+def test_edit_form_data_includes_only_current_primary_ipv4_assignment(
     db_session,
     subscriber,
     catalog_offer,
@@ -1499,8 +1499,8 @@ def test_edit_form_data_includes_active_ipv4_assignments(
         db_session, subscription
     )
 
-    assert form_data["ipv4_addresses"] == ["10.83.0.1", "10.83.0.5"]
-    assert form_data["ipv4_block_ids"] == [str(first_block.id), str(second_block.id)]
+    assert form_data["ipv4_addresses"] == ["10.83.0.1"]
+    assert form_data["ipv4_block_ids"] == [str(first_block.id)]
 
 
 def test_create_subscription_with_audit_persists_additional_routes(

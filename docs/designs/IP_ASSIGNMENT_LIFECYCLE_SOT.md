@@ -363,6 +363,17 @@ and enables permanent idempotent drift repair.
 
 ## Operator flow
 
+The admin subscription detail and edit pages resolve the displayed service IPv4
+through the typed `ui.subscription_ipv4_projection` read owner. The resolver is
+scoped by the exact Subscription UUID, prefers its active primary IPAM
+assignment, and may use a sole exact assignment as unambiguous migration
+evidence. Subscriber-wide legacy assignments and assignments belonging to a
+sibling subscription are never display candidates. When no exact assignment is
+linked, the existing `Subscription.ipv4_address` served copy is shown with its
+fallback provenance; multiple exact assignments without a primary are surfaced
+as an ambiguity instead of being sorted into an arbitrary choice. Both pages
+consume the same typed result, and the read path performs no mutation.
+
 The adapter is invoked as
 `python -m scripts.one_off.repair_service_ipv4_assignment` and is dry-run by
 default. Apply requires the exact preview fingerprint, idempotency key, actor,
