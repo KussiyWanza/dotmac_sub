@@ -360,6 +360,13 @@ class Session(Base):
     reseller_user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("reseller_users.id"), nullable=True
     )
+    #: The authenticated identity. A staff session is a bound pair: `party_id`
+    #: says WHO, `system_user_id` says which Sub-owned staff context they act
+    #: in. Nullable only until the approved backfill fills the sessions that
+    #: predate migration 533; the reader ratchet that requires it lands after.
+    party_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("parties.id"), nullable=True, index=True
+    )
     # Backwards-compatible alias used by older code/tests.
     person_id: Mapped[uuid.UUID] = synonym("subscriber_id")
     status: Mapped[SessionStatus] = mapped_column(
