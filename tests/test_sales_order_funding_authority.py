@@ -115,10 +115,17 @@ def test_operator_update_cannot_assert_coverage(db_session, forged):
     for field in forged:
         assert field in exc.value.detail
 
-    db_session.rollback()
-    db_session.refresh(order)
-    assert order.payment_status == SalesOrderPaymentStatus.pending.value
-    assert _funding_events(db_session, order.id) == []
+    # `assert_funding_authority` runs before `update` touches the order, so
+    # there is nothing pending to roll back. Rolling back anyway dropped the
+    # order the fixture had committed, leaving `refresh` with no row to read.
+    # Expiring instead forces a fresh SELECT, which asserts on what is
+    # persisted rather than on whatever the identity map still holds.
+    order_id = order.id
+    db_session.expire_all()
+    persisted = db_session.get(SalesOrder, order_id)
+    assert persisted is not None
+    assert persisted.payment_status == SalesOrderPaymentStatus.pending.value
+    assert _funding_events(db_session, order_id) == []
 
 
 def test_forged_paid_update_creates_no_subscription_and_no_provisioning(db_session):
@@ -144,11 +151,15 @@ def test_forged_paid_update_creates_no_subscription_and_no_provisioning(db_sessi
         )
     assert exc.value.status_code == 422
 
-    db_session.rollback()
-    db_session.refresh(order)
-    assert order.payment_status == SalesOrderPaymentStatus.pending.value
-    assert order.status != SalesOrderStatus.paid.value
-    assert len(_funding_events(db_session, order.id)) == before
+    # Same reason as above: the refusal happens before any mutation, so the
+    # order is still committed and must be re-read, not rolled back.
+    order_id = order.id
+    db_session.expire_all()
+    persisted = db_session.get(SalesOrder, order_id)
+    assert persisted is not None
+    assert persisted.payment_status == SalesOrderPaymentStatus.pending.value
+    assert persisted.status != SalesOrderStatus.paid.value
+    assert len(_funding_events(db_session, order_id)) == before
 
 
 def test_operator_create_cannot_open_an_already_paid_order(db_session):
