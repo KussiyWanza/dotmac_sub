@@ -1125,6 +1125,22 @@ class AuthFlow(ListResponseMixin):
                 _record_login_failure(db, credential, now)
                 raise HTTPException(status_code=401, detail="Invalid credentials")
 
+        # Eligibility is decided BEFORE any successful-login mutation. It used to
+        # run after `db.commit()` below, so a correct password against a disabled
+        # principal still cleared the lockout window and stamped `last_login_at`:
+        # no token was issued, but the write happened, which both corrupted
+        # last-login evidence and left a credential-validity oracle in the data.
+        #
+        # It stays AFTER password verification deliberately. Checking eligibility
+        # first would answer an unauthenticated caller differently for a disabled
+        # account than for a wrong password, which is the account-state oracle the
+        # lock check above is careful to avoid.
+        principal_type, principal_id, principal = _principal_for_credential(
+            db, credential
+        )
+        if not principal or not getattr(principal, "is_active", False):
+            raise HTTPException(status_code=403, detail="Account disabled")
+
         if credential.must_change_password:
             raise HTTPException(
                 status_code=428,
@@ -1138,12 +1154,6 @@ class AuthFlow(ListResponseMixin):
         credential.locked_until = None
         credential.last_login_at = now
         db.commit()
-
-        principal_type, principal_id, principal = _principal_for_credential(
-            db, credential
-        )
-        if not principal or not getattr(principal, "is_active", False):
-            raise HTTPException(status_code=403, detail="Account disabled")
         if _primary_totp_method(db, principal_type, principal_id):
             return {
                 "mfa_required": True,

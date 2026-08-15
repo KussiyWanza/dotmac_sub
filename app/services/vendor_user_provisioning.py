@@ -39,6 +39,7 @@ from app.models.field_vendor import (
 from app.models.subscriber import UserType
 from app.models.system_user import SystemUser
 from app.services import auth_flow as auth_flow_service
+from app.services import staff_provisioning
 from app.services.common import coerce_uuid
 from app.services.events import emit_event
 from app.services.events.types import EventType
@@ -292,6 +293,13 @@ def revoke(
     principal = db.get(SystemUser, membership.system_user_id)
     if principal is not None and principal.user_type == UserType.vendor:
         principal.is_active = False
+        # Deactivating the principal is not the revocation — it is the flag. The
+        # consequence (every credential mechanism closed, every live session
+        # revoked) belongs to one owner, so it cannot drift between the staff
+        # path and this one. Without it this was the half-revocation the
+        # docstring above warns about, one level down: no membership, no active
+        # principal, and a still-usable credential.
+        staff_provisioning.close_principal_access(db, principal.id)
     db.flush()
     emit_event(
         db,
