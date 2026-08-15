@@ -39,10 +39,10 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from dataclasses import field as dc_field
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.db import SessionLocal
+from app.db import read_only_snapshot_session
 from app.models.fiber_access_attachment import FiberAccessAttachmentDecision
 from app.models.fiber_physical import FiberConnectorPort
 from app.models.network import (
@@ -161,11 +161,6 @@ class Row:
         return "canonical"
 
 
-def _read_only(db: Session) -> None:
-    if db.get_bind().dialect.name == "postgresql":
-        db.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"))
-
-
 def collect(db: Session) -> list[Row]:
     # Structural identity, straight from the hardware chain. An outer join so a
     # row with no card-port link still appears -- those are the ones that matter.
@@ -217,8 +212,7 @@ def collect(db: Session) -> list[Row]:
 
 
 def main() -> int:
-    with SessionLocal() as db:
-        _read_only(db)
+    with read_only_snapshot_session() as db:
         rows = collect(db)
         db.rollback()
 

@@ -84,8 +84,10 @@ def test_worklist_cli_is_full_cohort_read_only_and_has_no_readiness_exit():
     source = COMMAND.read_text()
 
     assert commands == set()
-    assert "SET TRANSACTION READ ONLY" in source
-    assert "REPEATABLE READ" in source
+    # The read-only guarantee now comes from the shared seam, which pins
+    # REPEATABLE READ and postgresql_readonly together. Asserting the raw
+    # SQL would require the broken form this repair removed.
+    assert "read_only_snapshot_session()" in source
     assert "return 0" in source
     assert "return 2" not in source
     assert "--limit" not in source

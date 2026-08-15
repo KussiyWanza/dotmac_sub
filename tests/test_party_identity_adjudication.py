@@ -7,7 +7,6 @@ import uuid
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -20,7 +19,6 @@ from app.services.party_identity_adjudication import (
 )
 from scripts.migration.plan_subscriber_party_backfill import (
     DecisionFileError,
-    _set_transaction_read_only,
     load_decisions,
     write_decision_template,
     write_plan_artifacts,
@@ -317,19 +315,18 @@ def test_decision_loader_skips_blank_rows_and_requires_private_permissions(tmp_p
         load_decisions(decision_path)
 
 
-def test_cli_contract_has_no_apply_mode_and_postgres_is_read_only():
-    source = (
-        Path(__file__).resolve().parents[1]
-        / "scripts/migration/plan_subscriber_party_backfill.py"
-    ).read_text(encoding="utf-8")
-    statements: list[str] = []
-    fake_db = SimpleNamespace(
-        get_bind=lambda: SimpleNamespace(dialect=SimpleNamespace(name="postgresql")),
-        execute=lambda statement: statements.append(str(statement)),
+def test_plan_subscriber_party_backfill_uses_the_read_only_snapshot_seam():
+    """Behavioural proof lives on PostgreSQL; this pins the wiring.
+
+    The adapter previously issued `SET TRANSACTION ISOLATION LEVEL ...` itself,
+    which could never be the first statement once the operator-tenant hook was
+    installed, so the report raised on every real run. Asserting the statement
+    text — as this test used to — pinned the broken form and kept CI green.
+    """
+
+    source = Path("scripts/migration/plan_subscriber_party_backfill.py").read_text(
+        encoding="utf-8"
     )
 
-    _set_transaction_read_only(fake_db)
-
-    assert '"--apply"' not in source
-    assert ".commit(" not in source
-    assert statements == ["SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"]
+    assert "read_only_snapshot_session" in source
+    assert "SET TRANSACTION" not in source

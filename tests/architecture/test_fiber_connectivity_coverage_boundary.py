@@ -86,8 +86,10 @@ def test_coverage_cli_is_exhaustive_read_only_report_only():
     source = COMMAND.read_text()
 
     assert commands == set()
-    assert "SET TRANSACTION READ ONLY" in source
-    assert "REPEATABLE READ" in source
+    # The read-only guarantee now comes from the shared seam, which pins
+    # REPEATABLE READ and postgresql_readonly together. Asserting the raw
+    # SQL would require the broken form this repair removed.
+    assert "read_only_snapshot_session()" in source
     assert "--limit" not in source
     assert "--profile" not in source
     for forbidden in ("propose", "approve", "execute", "reconcile", "apply"):

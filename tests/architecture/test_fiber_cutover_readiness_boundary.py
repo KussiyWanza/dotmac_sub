@@ -94,8 +94,10 @@ def test_cutover_readiness_cli_is_complete_read_only_and_has_no_apply_mode():
     }
 
     assert commands == set()
-    assert "SET TRANSACTION READ ONLY" in source
-    assert "REPEATABLE READ" in source
+    # The read-only guarantee now comes from the shared seam, which pins
+    # REPEATABLE READ and postgresql_readonly together. Asserting the raw
+    # SQL would require the broken form this repair removed.
+    assert "read_only_snapshot_session()" in source
     assert "cannot authorize or" in source
     assert "--limit" not in source
     assert "--profile" not in source

@@ -7,12 +7,10 @@ import json
 import sys
 from pathlib import Path
 
-from sqlalchemy import text
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.db import SessionLocal  # noqa: E402
+from app.db import SessionLocal, begin_read_only_snapshot  # noqa: E402
 from app.services.network.ont_assignment_constraint_authorization import (  # noqa: E402
     OntAssignmentConstraintAuthorizationError,
     OntAssignmentConstraintAuthorizationRequestBlocked,
@@ -82,11 +80,20 @@ def parse_args() -> argparse.Namespace:
 
 
 def _configure_snapshot(db, *, read_only: bool) -> None:
+    """Pin the snapshot, and make a preview structurally unable to write.
+
+    Only the read-only half was broken: the write commands already asked
+    for their isolation level as an execution option, while the preview
+    commands issued `SET TRANSACTION READ ONLY` after the operator-tenant
+    hook had already run a statement.
+    """
+
     if db.get_bind().dialect.name != "postgresql":
         return
-    db.connection(execution_options={"isolation_level": "REPEATABLE READ"})
     if read_only:
-        db.execute(text("SET TRANSACTION READ ONLY"))
+        begin_read_only_snapshot(db)
+        return
+    db.connection(execution_options={"isolation_level": "REPEATABLE READ"})
 
 
 def main() -> int:

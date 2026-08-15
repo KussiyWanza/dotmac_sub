@@ -18,10 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from sqlalchemy import text
-from sqlalchemy.orm import Session
-
-from app.db import SessionLocal
+from app.db import read_only_snapshot_session
 from app.services import party_identity_audit
 from app.services.party_identity_adjudication import (
     PartyAdjudicationError,
@@ -316,18 +313,12 @@ def write_plan_artifacts(
     return summary_path, groups_path, bindings_path, deferred_path
 
 
-def _set_transaction_read_only(db: Session) -> None:
-    if db.get_bind().dialect.name == "postgresql":
-        db.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"))
-
-
 def _file_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _build_current_audit() -> party_identity_audit.SubscriberIdentityAudit:
-    with SessionLocal() as db:
-        _set_transaction_read_only(db)
+    with read_only_snapshot_session() as db:
         audit = party_identity_audit.build_subscriber_identity_audit(db)
         db.rollback()
     return audit

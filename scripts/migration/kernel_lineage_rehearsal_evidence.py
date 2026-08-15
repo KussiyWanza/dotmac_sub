@@ -23,7 +23,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import RowMapping
 from sqlalchemy.orm import Session
 
-from app.db import SessionLocal
+from app.db import read_only_snapshot_session
 
 BUNDLE_SCHEMA_VERSION: Literal[1] = 1
 LineageTableName = Literal[
@@ -475,8 +475,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    with SessionLocal() as db:
-        db.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"))
+    with read_only_snapshot_session() as db:
         evidence = collect_kernel_lineage_evidence(db)
         db.rollback()
 
