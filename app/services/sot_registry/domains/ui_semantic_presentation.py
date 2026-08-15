@@ -114,8 +114,8 @@ DOMAIN = DomainSOT(
                 "network.ip_assignment_lifecycle",
             ),
             notes=(
-                "The subscription detail and edit pages share one typed, "
-                "read-only selection. It prefers the active exact-service "
+                "The subscription detail, edit, and customer detail pages share "
+                "one typed, read-only selection. It prefers the active exact-service "
                 "primary IPAM assignment, accepts a sole exact assignment as "
                 "unambiguous migration evidence, never reads subscriber-wide "
                 "or sibling-subscription assignments, and labels the served "
@@ -188,12 +188,12 @@ DOMAIN = DomainSOT(
                     ),
                     new_owner="ui.subscription_ipv4_projection",
                     verification=(
-                        "Focused resolver, form-context, detail-context, and "
-                        "template architecture tests."
+                        "Focused resolver, form-context, detail-context, customer "
+                        "detail render, and template architecture tests."
                     ),
                     cutover_gate=(
-                        "Both subscription pages consume only the typed exact-"
-                        "subscription selection."
+                        "Subscription detail, subscription edit, and customer "
+                        "detail consume only the typed exact-subscription selection."
                     ),
                     fallback_retirement=(
                         "Subscriber-wide assignment lookup, oldest-first ordering, "
@@ -209,6 +209,7 @@ DOMAIN = DomainSOT(
                 test_refs=(
                     "tests/test_subscription_ipv4_projection.py",
                     "tests/test_web_catalog_subscriptions.py",
+                    "tests/test_web_customer_details.py",
                     "tests/architecture/test_ip_assignment_service_ownership.py",
                 ),
             ),

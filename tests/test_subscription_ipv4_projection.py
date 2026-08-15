@@ -5,7 +5,9 @@ from app.models.network import IPAssignment, IPv4Address, IPVersion
 from app.services import web_catalog_subscriptions
 from app.services.subscription_ipv4_projection import (
     ServiceIPv4Source,
+    SubscriptionServiceIPv4BatchQuery,
     resolve_subscription_service_ipv4,
+    resolve_subscription_service_ipv4_batch,
 )
 
 
@@ -131,3 +133,47 @@ def test_subscription_ipv4_projection_refuses_unmarked_exact_ambiguity(
 
     assert selection.address is None
     assert selection.source is ServiceIPv4Source.ambiguous_exact_assignments
+
+
+def test_subscription_ipv4_batch_projection_preserves_requested_order(
+    db_session,
+    subscription,
+):
+    sibling = Subscription(
+        subscriber_id=subscription.subscriber_id,
+        offer_id=subscription.offer_id,
+        status=SubscriptionStatus.active,
+        ipv4_address="172.16.142.20",
+    )
+    assigned_address = IPv4Address(address="172.16.142.99")
+    db_session.add_all([sibling, assigned_address])
+    db_session.flush()
+    db_session.add(
+        IPAssignment(
+            subscriber_id=subscription.subscriber_id,
+            subscription_id=subscription.id,
+            ip_version=IPVersion.ipv4,
+            ipv4_address_id=assigned_address.id,
+            is_active=True,
+            is_primary=True,
+        )
+    )
+    db_session.commit()
+
+    batch = resolve_subscription_service_ipv4_batch(
+        db_session,
+        query=SubscriptionServiceIPv4BatchQuery(
+            subscription_ids=(sibling.id, subscription.id),
+        ),
+    )
+
+    assert [selection.subscription_id for selection in batch.selections] == [
+        sibling.id,
+        subscription.id,
+    ]
+    assert [selection.address for selection in batch.selections] == [
+        "172.16.142.20",
+        "172.16.142.99",
+    ]
+    assert batch.selections[0].source is ServiceIPv4Source.served_projection
+    assert batch.selections[1].source is ServiceIPv4Source.exact_primary_assignment
