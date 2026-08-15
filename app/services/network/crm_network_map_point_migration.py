@@ -375,8 +375,7 @@ def select_authoritative_crm_point_batches(
         )
         if mismatched:
             raise CrmNetworkMapPointMigrationError(
-                "expected archive is not authoritative for: "
-                + ", ".join(mismatched)
+                "expected archive is not authoritative for: " + ", ".join(mismatched)
             )
     return result
 
@@ -1059,9 +1058,7 @@ def build_crm_point_migration_report(
                 selection.valid_active_source_count if selection else 0
             ),
             "authoritative_batch": (
-                [str(batch_id) for batch_id in selection.batch_ids]
-                if selection
-                else []
+                [str(batch_id) for batch_id in selection.batch_ids] if selection else []
             ),
             "superseded_batches": (
                 [str(batch_id) for batch_id in selection.superseded_batch_ids]
@@ -1085,9 +1082,7 @@ def build_crm_point_migration_report(
                 classifications["conflict"] or classifications["invalid"]
             ),
             "total_mismatch": bool(
-                selection
-                and selection.source_count
-                != selection.restored_count
+                selection and selection.source_count != selection.restored_count
             ),
         }
     report = CrmPointMigrationReport(
@@ -1108,8 +1103,7 @@ def build_crm_point_migration_report(
         for asset_type, summary in per_asset.items()
     }
     payload["hard_reconciliation_failure"] = any(
-        bool(summary["hard_reconciliation_failure"])
-        or bool(summary["total_mismatch"])
+        bool(summary["hard_reconciliation_failure"]) or bool(summary["total_mismatch"])
         for summary in per_asset.values()
     )
     return payload
