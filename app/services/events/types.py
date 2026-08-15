@@ -173,6 +173,10 @@ class EventType(enum.Enum):
     workqueue_action_coordinated = "workqueue.action_coordinated"
     ai_intake_config_updated = "ai.intake_config_updated"
     plan_family_catalogue_published = "catalog.plan_family_catalogue_published"
+    ncc_weekly_delivery_configuration_changed = (
+        "ncc.weekly_delivery_configuration_changed"
+    )
+    ncc_weekly_report_queued = "ncc.weekly_report_queued"
 
     # Operations - vendor installation project lifecycle
     # Materials / vendor / ERP chain outputs

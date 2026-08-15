@@ -591,6 +591,10 @@ from app.models.nextcloud_talk import (  # noqa: F401
     NextcloudTalkNotificationRoom,
     NextcloudTalkStaffAccount,
 )
+from app.models.ncc_reporting import (  # noqa: F401
+    NccWeeklyReportRun,
+    NccWeeklyReportRunStatus,
+)
 from app.models.notification import (  # noqa: F401
     AlertNotificationLog,
     AlertNotificationPolicy,

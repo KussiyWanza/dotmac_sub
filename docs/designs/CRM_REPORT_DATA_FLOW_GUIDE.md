@@ -13,15 +13,15 @@ gateway, it reads committed Self-Care records at request time. The module named
 
 REPORT: NCC Complaints
 Data source: Native support Tickets, TicketComments, Subscribers, addresses, assignees, and service teams.
-Backend query/service: `ncc_complaints_report.build_report`.
+Backend query/service: typed `ncc_complaints_report.query_report`; compatibility adapters use `build_report`; scheduled delivery is owned by `communications.ncc_weekly_delivery`.
 Transformation/calculation: Filters the requested Ticket-created window, excludes cancelled/merged/test records, maps stored category/channel/status into NCC vocabulary, derives SLA status only when authoritative timestamps exist, canonicalizes geography, and validates filing readiness.
-Route/API: `/admin/reports/ncc-complaints`; XLSX at `/admin/reports/ncc-complaints/export`.
+Route/API: `/admin/reports/ncc-complaints`; on-demand XLSX at `/admin/reports/ncc-complaints/export`; preserved scheduled XLSX at `/admin/reports/ncc-weekly-runs/{run_id}/download`.
 UI component/template: `templates/admin/reports/ncc_complaints.html`.
-Displayed as: Complaints, Not Yet Filable, and Unclassified cards plus the filing-readiness table and workbook download.
+Displayed as: Complaints, Not Yet Filable, and Unclassified cards, filing-readiness table, on-demand workbook, complete Tuesday delivery configuration, and recent run/delivery/artifact evidence.
 Permission: `provisioning:read`; notification-setting writes separately require `notification:write`.
 Ownership: Self-Care-owned.
-Data freshness/synchronization: Live request-time database read.
-Plain-English flow: Self-Care support records are translated into the NCC filing contract, validated, and rendered or exported without inventing missing classifications.
+Data freshness/synchronization: Live request-time database read. The scheduler polls every five minutes; the owner admits one configured Tuesday occurrence after local delivery time and retries recorded failures.
+Plain-English flow: Self-Care support records are translated into the NCC filing contract without inventing missing classifications. On Tuesday, the delivery owner preserves the exact validated workbook and queues it once to the configured To/CC/BCC recipients.
 
 ## NCC regulatory pack
 

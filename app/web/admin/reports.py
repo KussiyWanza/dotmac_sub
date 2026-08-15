@@ -6,7 +6,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from html import escape
 from io import StringIO
 from typing import Literal, TypedDict
-from urllib.parse import quote_plus
+from urllib.parse import quote, quote_plus
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
@@ -22,6 +22,7 @@ from app.models.sales import QuoteStatus
 from app.models.team_inbox import InboxConversation, InboxConversationStatus
 from app.services import crm_reporting as crm_reporting_service
 from app.services import ncc_complaints_report as ncc_complaints_service
+from app.services import ncc_report_email as ncc_weekly_delivery_service
 from app.services import ncc_regulatory_pack as ncc_pack_service
 from app.services import ncc_subscriber_report as ncc_report_service
 from app.services import ncc_workbook, team_inbox_assignment, team_inbox_outbound
@@ -1773,7 +1774,11 @@ def reports_ncc_complaints(
     from app.web.admin import get_current_user, get_sidebar_stats
 
     start, end = _ncc_complaints_window(date_from, date_to)
-    report = ncc_complaints_service.build_report(db, start=start, end=end)
+    snapshot = ncc_complaints_service.query_report(
+        db=db,
+        query=ncc_complaints_service.NccComplaintsReportQuery(start=start, end=end),
+    )
+    report = snapshot.as_legacy_dict()
     # Surface, per row, whether it is filable — the workbook's own validator
     # is the authority, so the officer sees exactly what CRM's export would.
     rows = []
@@ -1783,6 +1788,11 @@ def reports_ncc_complaints(
             {"record": record, "validation": status, "ok": status.startswith("[OK]")}
         )
     not_filable = sum(1 for row in rows if not row["ok"])
+    weekly_configuration = ncc_weekly_delivery_service.get_configuration(db=db)
+    weekly_runs = ncc_weekly_delivery_service.list_recent_runs(
+        db=db,
+        query=ncc_weekly_delivery_service.NccWeeklyRunHistoryQuery(limit=10),
+    )
     context = {
         "request": request,
         "active_page": "reports-ncc-complaints",
@@ -1796,6 +1806,10 @@ def reports_ncc_complaints(
         "date_from": date_from or "",
         "date_to": date_to or "",
         "window": {"start": start.isoformat(), "end": end.isoformat()},
+        "weekly_configuration": weekly_configuration,
+        "weekly_runs": weekly_runs,
+        "ncc_weekdays": tuple(ncc_weekly_delivery_service.NccWeekday),
+        "can_manage_ncc_email": can(request, "notification:write"),
     }
     return templates.TemplateResponse("admin/reports/ncc_complaints.html", context)
 
@@ -1966,33 +1980,87 @@ def reports_ncc_email_settings(
     request: Request,
     enabled: bool = Form(default=False),
     recipient: str = Form(default=""),
+    cc: str = Form(default=""),
+    bcc: str = Form(default=""),
+    sender_key: str = Form(default=""),
     subject: str = Form(default=""),
+    body_template: str = Form(default=""),
+    local_time: str = Form(default="08:00"),
+    timezone: str = Form(default="Africa/Lagos"),
+    send_day: str = Form(default="tuesday"),
     lookback_days: int = Form(default=7),
     db: Session = Depends(get_db),
 ):
-    """Save the weekly NCC digest email settings (notification domain)."""
-    from app.schemas.settings import DomainSettingUpdate
-    from app.services.domain_settings import notification_settings
+    """Map the form to the typed NCC weekly-delivery configuration owner."""
+    from app.services.owner_commands import CommandContext
+    from app.web.admin import get_current_user
 
-    def _save_text(key: str, value: str) -> None:
-        notification_settings.upsert_by_key(
-            db, key, DomainSettingUpdate(value_text=value)
+    current_user = get_current_user(request)
+    if isinstance(current_user, dict):
+        actor_value = current_user.get("actor_id") or current_user.get("email")
+    else:
+        actor_value = getattr(current_user, "id", None) or getattr(
+            current_user, "email", None
         )
-
-    notification_settings.upsert_by_key(
-        db,
-        "ncc_report_email_enabled",
-        DomainSettingUpdate(value_json=bool(enabled)),
-    )
-    _save_text("ncc_report_email_to", recipient.strip())
-    _save_text("ncc_report_email_subject", subject.strip() or "Weekly NCC Report")
-    notification_settings.upsert_by_key(
-        db,
-        "ncc_report_email_lookback_days",
-        DomainSettingUpdate(value_json=max(int(lookback_days), 1)),
-    )
+    actor = str(actor_value or "admin")
+    try:
+        ncc_weekly_delivery_service.update_configuration(
+            db=db,
+            command=ncc_weekly_delivery_service.UpdateNccWeeklyDeliveryConfigurationCommand(
+                context=CommandContext.system(
+                    actor=actor,
+                    scope="ncc.weekly_delivery_configuration",
+                    reason="administrator updated NCC weekly delivery configuration",
+                ),
+                enabled=enabled,
+                to_address=recipient,
+                cc_addresses=cc,
+                bcc_addresses=bcc,
+                sender_key=sender_key,
+                subject=subject,
+                body_template=body_template,
+                local_time=local_time,
+                timezone=timezone,
+                send_day=send_day,
+                lookback_days=lookback_days,
+            ),
+        )
+    except ncc_weekly_delivery_service.NccWeeklyDeliveryError as exc:
+        return RedirectResponse(
+            url=(
+                "/admin/reports/ncc-complaints?settings_error="
+                f"{quote_plus(exc.message)}"
+            ),
+            status_code=303,
+        )
     return RedirectResponse(
         url="/admin/reports/ncc-complaints?saved=1", status_code=303
+    )
+
+
+@router.get(
+    "/ncc-weekly-runs/{run_id}/download",
+    dependencies=[Depends(require_permission("provisioning:read"))],
+)
+def reports_ncc_weekly_run_download(
+    run_id: UUID,
+    db: Session = Depends(get_db),
+):
+    try:
+        artifact = ncc_weekly_delivery_service.get_artifact(
+            db=db,
+            query=ncc_weekly_delivery_service.NccWeeklyArtifactQuery(run_id=run_id),
+        )
+    except ncc_weekly_delivery_service.NccWeeklyDeliveryError as exc:
+        raise HTTPException(status_code=404, detail=exc.message) from exc
+    return Response(
+        artifact.content,
+        media_type=artifact.content_type,
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename*=UTF-8''{quote(artifact.filename)}"
+            )
+        },
     )
 
 

@@ -10,11 +10,10 @@ from unittest.mock import patch
 
 from app.models.ai_insight import AIInsight
 from app.models.domain_settings import DomainSetting, SettingDomain, SettingValueType
-from app.schemas.settings import DomainSettingUpdate
+from app.models.ncc_reporting import NccWeeklyReportRun, NccWeeklyReportRunStatus
 from app.services import control_registry, ncc_report_email
 from app.services.ai import engine as ai_engine
-from app.services.domain_settings import notification_settings
-from app.services.settings_spec import get_spec, resolve_value
+from app.services.owner_commands import CommandContext
 from app.web.admin import reports as reports_web
 
 
@@ -82,8 +81,11 @@ def test_ncc_report_email_beat_is_registered_and_default_off(db_session):
 
     # Default OFF: no setting row means disabled.
     assert ncc_report_email.is_enabled(db_session) is False
-    result = ncc_report_email.run_scheduled_ncc_report_email(db_session)
-    assert result == {"sent": False, "reason": "disabled"}
+    configuration = ncc_report_email.get_configuration(db=db_session)
+    assert configuration.send_day is ncc_report_email.NccWeekday.tuesday
+    assert configuration.local_time.strftime("%H:%M") == "08:00"
+    result = ncc_report_email.run_scheduled_ncc_report_email(db=db_session)
+    assert result.decision is ncc_report_email.NccWeeklyRunDecision.disabled
 
 
 def test_ncc_report_email_task_is_importable():
@@ -92,69 +94,139 @@ def test_ncc_report_email_task_is_importable():
     assert callable(send_scheduled_ncc_report)
 
 
-def test_ncc_report_email_marker_is_registered_and_prevents_a_second_send(
+def _weekly_configuration_command(*, enabled: bool = True):
+    return ncc_report_email.UpdateNccWeeklyDeliveryConfigurationCommand(
+        context=CommandContext.system(
+            actor="pytest",
+            scope="ncc.weekly_delivery_configuration",
+            reason="test Tuesday report delivery",
+        ),
+        enabled=enabled,
+        to_address="compliance@example.test",
+        cc_addresses="copy@example.test",
+        bcc_addresses="archive@example.test",
+        sender_key="",
+        subject="Tuesday NCC workbook",
+        body_template=ncc_report_email.DEFAULT_BODY_TEMPLATE,
+        local_time="08:00",
+        timezone="Africa/Lagos",
+        send_day="tuesday",
+        lookback_days=7,
+    )
+
+
+def _run_command(observed_at: datetime):
+    return ncc_report_email.RunNccWeeklyDeliveryCommand(
+        context=CommandContext.system(
+            actor="pytest",
+            scope="ncc.weekly_report",
+            reason="test scheduled NCC occurrence",
+            idempotency_key=f"pytest-ncc:{observed_at.isoformat()}",
+        ),
+        observed_at=observed_at,
+    )
+
+
+def test_ncc_weekly_configuration_validates_tuesday_and_full_recipients():
+    preview = ncc_report_email.preview_configuration(_weekly_configuration_command())
+
+    assert preview.send_day is ncc_report_email.NccWeekday.tuesday
+    assert preview.recipients.to == "compliance@example.test"
+    assert preview.recipients.cc == ("copy@example.test",)
+    assert preview.recipients.bcc == ("archive@example.test",)
+
+
+def test_ncc_weekly_owner_only_queues_on_tuesday_after_local_time(
     db_session, monkeypatch
 ):
-    assert (
-        get_spec(SettingDomain.notification, "ncc_report_email_last_sent_local_date")
-        is not None
-    )
-    notification_settings.upsert_by_key(
-        db_session,
-        "ncc_report_email_enabled",
-        DomainSettingUpdate(
-            value_type=SettingValueType.boolean,
-            value_text="true",
-        ),
-    )
-    notification_settings.upsert_by_key(
-        db_session,
-        "ncc_report_email_to",
-        DomainSettingUpdate(value_text="compliance@example.test"),
-    )
-    now = datetime(2026, 7, 18, 8, 0, tzinfo=UTC)
-    sent_bodies: list[str] = []
-    monkeypatch.setattr(ncc_report_email, "_local_now", lambda db: now)
-    monkeypatch.setattr(
-        ncc_report_email.ncc_complaints_report,
-        "build_report",
-        lambda db, **kwargs: {"records": []},
-    )
     monkeypatch.setattr(
         ncc_report_email,
         "get_brand",
         lambda: {"app_url": "https://selfcare.dotmac.io"},
     )
+    ncc_report_email.update_configuration(
+        db=db_session, command=_weekly_configuration_command()
+    )
+
+    monday = ncc_report_email.run_due_delivery(
+        db=db_session,
+        command=_run_command(datetime(2026, 7, 20, 8, 0, tzinfo=UTC)),
+    )
+    before = ncc_report_email.run_due_delivery(
+        db=db_session,
+        command=_run_command(datetime(2026, 7, 21, 6, 59, tzinfo=UTC)),
+    )
+    first = ncc_report_email.run_due_delivery(
+        db=db_session,
+        command=_run_command(datetime(2026, 7, 21, 7, 0, tzinfo=UTC)),
+    )
+    second = ncc_report_email.run_due_delivery(
+        db=db_session,
+        command=_run_command(datetime(2026, 7, 21, 7, 5, tzinfo=UTC)),
+    )
+
+    assert (
+        monday.decision
+        is ncc_report_email.NccWeeklyRunDecision.not_scheduled_day
+    )
+    assert (
+        before.decision
+        is ncc_report_email.NccWeeklyRunDecision.before_scheduled_time
+    )
+    assert first.decision is ncc_report_email.NccWeeklyRunDecision.queued
+    assert second.decision is ncc_report_email.NccWeeklyRunDecision.already_queued
+    run = db_session.get(NccWeeklyReportRun, first.run_id)
+    assert run is not None
+    assert run.status is NccWeeklyReportRunStatus.queued
+    assert run.artifact_content is not None
+    assert run.artifact_content.startswith(b"PK\x03\x04")
+    assert run.window_end.replace(tzinfo=UTC) == datetime(
+        2026, 7, 21, 7, 0, tzinfo=UTC
+    )
+    assert run.notification is not None
+    assert run.notification.metadata_["cc"] == ["copy@example.test"]
+    assert run.notification.metadata_["bcc"] == ["archive@example.test"]
+
+
+def test_ncc_weekly_failed_occurrence_is_durable_and_retried(
+    db_session, monkeypatch
+):
     monkeypatch.setattr(
         ncc_report_email,
-        "send_email",
-        lambda db, recipient, subject, body_html, **kwargs: (
-            sent_bodies.append(body_html) or True
-        ),
+        "get_brand",
+        lambda: {"app_url": "https://selfcare.dotmac.io"},
+    )
+    ncc_report_email.update_configuration(
+        db=db_session, command=_weekly_configuration_command()
+    )
+    original_builder = ncc_report_email.ncc_workbook.build_workbook
+    attempts = 0
+
+    def flaky_builder(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("simulated workbook failure")
+        return original_builder(*args, **kwargs)
+
+    monkeypatch.setattr(
+        ncc_report_email.ncc_workbook, "build_workbook", flaky_builder
+    )
+    failed = ncc_report_email.run_due_delivery(
+        db=db_session,
+        command=_run_command(datetime(2026, 7, 21, 7, 0, tzinfo=UTC)),
+    )
+    retried = ncc_report_email.run_due_delivery(
+        db=db_session,
+        command=_run_command(datetime(2026, 7, 21, 7, 5, tzinfo=UTC)),
     )
 
-    first = ncc_report_email.run_scheduled_ncc_report_email(db_session)
-    second = ncc_report_email.run_scheduled_ncc_report_email(db_session)
-
-    assert first["sent"] is True
-    assert second == {
-        "sent": False,
-        "reason": "already_sent",
-        "local_date": "2026-07-18",
-    }
-    assert len(sent_bodies) == 1
-    assert (
-        "https://selfcare.dotmac.io/admin/reports/ncc-complaints/export"
-        in sent_bodies[0]
+    assert failed.decision is ncc_report_email.NccWeeklyRunDecision.failed
+    assert failed.failure_code == (
+        "communications.ncc_weekly_delivery.artifact_or_delivery_failed"
     )
-    assert (
-        resolve_value(
-            db_session,
-            SettingDomain.notification,
-            "ncc_report_email_last_sent_local_date",
-        )
-        == "2026-07-18"
-    )
+    assert retried.decision is ncc_report_email.NccWeeklyRunDecision.queued
+    assert retried.run_id == failed.run_id
 
 
 # ── AI insight route ─────────────────────────────────────────────────────────

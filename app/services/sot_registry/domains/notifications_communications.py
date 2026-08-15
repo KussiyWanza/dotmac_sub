@@ -366,6 +366,194 @@ DOMAIN = DomainSOT(
             ),
         ),
         SOTService(
+            name="communications.ncc_weekly_delivery",
+            module="app.services.ncc_report_email",
+            owns=(
+                "NCC weekly delivery configuration",
+                "NCC weekly report occurrence and artifact",
+            ),
+            depends_on=(
+                "compliance.ncc_complaints_reporting",
+                "communications.intents",
+                "control.settings_spec",
+                "events.dispatcher",
+                "observability.audit_log",
+                "scheduler.registry",
+            ),
+            notes=(
+                "The scheduler polls only. This owner decides Tuesday/local-time "
+                "eligibility, stores the exact XLSX, arbitrates one local-date "
+                "occurrence, and stages one durable attachment delivery intent."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name="NCC weekly delivery configuration",
+                        role=OwnerRole.COMMAND_WRITER,
+                        input_names=(
+                            "typed NCC delivery configuration command",
+                            "registered NCC delivery settings",
+                        ),
+                        canonical_writer="communications.ncc_weekly_delivery",
+                    ),
+                    ConcernContract(
+                        name="NCC weekly report occurrence and artifact",
+                        role=OwnerRole.AUTHORITATIVE_RECORD,
+                        input_names=(
+                            "registered NCC delivery settings",
+                            "typed NCC complaints snapshot",
+                            "scheduled evaluation time",
+                            "durable communication intent outcome",
+                        ),
+                        canonical_writer="communications.ncc_weekly_delivery",
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="typed NCC delivery configuration command",
+                        owner="communications.ncc_weekly_delivery",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source="validated operator command and CommandContext",
+                    ),
+                    AuthorityInput(
+                        name="registered NCC delivery settings",
+                        owner="control.settings_spec",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "database-authoritative notification settings with "
+                            "Tuesday default"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="typed NCC complaints snapshot",
+                        owner="compliance.ncc_complaints_reporting",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source="native bounded-window NCC complaint rows",
+                    ),
+                    AuthorityInput(
+                        name="scheduled evaluation time",
+                        owner="external:system_clock",
+                        kind=AuthorityKind.EXTERNAL_OBSERVATION,
+                        source=(
+                            "explicit UTC scheduler observation converted to the "
+                            "configured zone"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="durable communication intent outcome",
+                        owner="communications.intents",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "queued operational email notification and typed "
+                            "attachment reference"
+                        ),
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.OWNER_MANAGED,
+                    boundary=(
+                        "Each public configuration or occurrence command enters "
+                        "execute_owner_command once; settings, run evidence, artifact, "
+                        "intent, audit, and event commit atomically."
+                    ),
+                    locking=(
+                        "The enabled setting and existing scheduled-local-date run are "
+                        "locked; a database unique constraint arbitrates concurrent "
+                        "first runs."
+                    ),
+                    idempotency=(
+                        "The schedule key plus local date identifies one occurrence "
+                        "and "
+                        "the communication intent uses the same stable dedupe identity."
+                    ),
+                    retries=(
+                        "Failed artifact or intent work is rolled back to a durable "
+                        "failed run through the owner savepoint; a later Tuesday poll "
+                        "repairs it."
+                    ),
+                ),
+                errors=ErrorContract(
+                    domain_codes=(
+                        "communications.ncc_weekly_delivery.invalid_configuration",
+                        "communications.ncc_weekly_delivery."
+                        "artifact_generation_failed",
+                        "communications.ncc_weekly_delivery."
+                        "artifact_or_delivery_failed",
+                        "communications.ncc_weekly_delivery.delivery_intent_failed",
+                        "communications.ncc_weekly_delivery.artifact_not_found",
+                        "communications.ncc_weekly_delivery."
+                        "artifact_integrity_failed",
+                        *owner_command_boundary_error_codes(
+                            "communications.ncc_weekly_delivery"
+                        ),
+                    ),
+                    mapping_owner="NCC report web and Celery adapters",
+                    retryable_codes=(
+                        "communications.ncc_weekly_delivery."
+                        "artifact_generation_failed",
+                        "communications.ncc_weekly_delivery."
+                        "artifact_or_delivery_failed",
+                        "communications.ncc_weekly_delivery.delivery_intent_failed",
+                    ),
+                    fail_closed_on=(
+                        "missing or malformed recipient configuration",
+                        "invalid timezone or local schedule",
+                        "artifact integrity failure",
+                        "ambiguous occurrence identity",
+                    ),
+                ),
+                events=EventContract(
+                    event_types=(
+                        "ncc.weekly_delivery_configuration_changed",
+                        "ncc.weekly_report_queued",
+                    ),
+                    schema_version=1,
+                    delivery_owner="events.dispatcher",
+                    compatibility=(
+                        "Version 1 exposes stable run, notification, local-date, and "
+                        "aggregate count evidence without recipient addresses or "
+                        "workbook data."
+                    ),
+                    replay=(
+                        "The run row and immutable artifact rebuild queue evidence; "
+                        "the communication-intent dedupe key prevents a second "
+                        "delivery."
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.SHADOWING,
+                    old_owner=(
+                        "dotmac_crm ncc_report_email service and five-minute task"
+                    ),
+                    new_owner="communications.ncc_weekly_delivery",
+                    verification=(
+                        "Tuesday eligibility, CRM configuration parity, XLSX "
+                        "attachment, concurrency, retry, route, migration, and "
+                        "delivery evidence tests"
+                    ),
+                    cutover_gate=(
+                        "one accepted staging Tuesday delivery of the migrated "
+                        "configuration"
+                    ),
+                    fallback_retirement=(
+                        "disable and remove the CRM NCC scheduled task after cutover "
+                        "evidence"
+                    ),
+                ),
+                steward="regulatory compliance and customer communications",
+                design_refs=(
+                    "docs/designs/NCC_WEEKLY_REPORT_DELIVERY.md",
+                    "docs/designs/CRM_WEB_RETIREMENT.md",
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                ),
+                test_refs=(
+                    "tests/test_ncc_weekly_delivery.py",
+                    "tests/integration/test_ncc_weekly_delivery_migration.py",
+                    "tests/architecture/test_ncc_weekly_delivery_boundary.py",
+                ),
+            ),
+        ),
+        SOTService(
             name="communications.surveys",
             module="app.services.surveys",
             owns=(
