@@ -80,9 +80,7 @@ class NccWeeklyReportRun(Base):
     artifact_content: Mapped[bytes | None] = mapped_column(LargeBinary)
     artifact_sha256: Mapped[str | None] = mapped_column(String(64))
     row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    not_filable_count: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=0
-    )
+    not_filable_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     notification_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("notifications.id", ondelete="SET NULL"),

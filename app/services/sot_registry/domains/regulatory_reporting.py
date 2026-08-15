@@ -17,7 +17,6 @@ from app.services.sot_manifest import (
 )
 from app.services.sot_registry.model import DomainSOT
 
-
 DOMAIN = DomainSOT(
     domain="regulatory_reporting",
     services=(
@@ -92,9 +91,7 @@ DOMAIN = DomainSOT(
                     ),
                 ),
                 errors=ErrorContract(
-                    domain_codes=(
-                        "compliance.ncc_complaints_reporting.invalid_query",
-                    ),
+                    domain_codes=("compliance.ncc_complaints_reporting.invalid_query",),
                     mapping_owner=(
                         "NCC report web, pack, and scheduled-delivery adapters"
                     ),

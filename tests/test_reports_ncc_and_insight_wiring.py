@@ -84,6 +84,7 @@ def test_ncc_report_email_beat_is_registered_and_default_off(db_session):
     configuration = ncc_report_email.get_configuration(db=db_session)
     assert configuration.send_day is ncc_report_email.NccWeekday.tuesday
     assert configuration.local_time.strftime("%H:%M") == "08:00"
+    db_session.rollback()
     result = ncc_report_email.run_scheduled_ncc_report_email(db=db_session)
     assert result.decision is ncc_report_email.NccWeeklyRunDecision.disabled
 
@@ -165,13 +166,9 @@ def test_ncc_weekly_owner_only_queues_on_tuesday_after_local_time(
         command=_run_command(datetime(2026, 7, 21, 7, 5, tzinfo=UTC)),
     )
 
+    assert monday.decision is ncc_report_email.NccWeeklyRunDecision.not_scheduled_day
     assert (
-        monday.decision
-        is ncc_report_email.NccWeeklyRunDecision.not_scheduled_day
-    )
-    assert (
-        before.decision
-        is ncc_report_email.NccWeeklyRunDecision.before_scheduled_time
+        before.decision is ncc_report_email.NccWeeklyRunDecision.before_scheduled_time
     )
     assert first.decision is ncc_report_email.NccWeeklyRunDecision.queued
     assert second.decision is ncc_report_email.NccWeeklyRunDecision.already_queued
@@ -180,17 +177,13 @@ def test_ncc_weekly_owner_only_queues_on_tuesday_after_local_time(
     assert run.status is NccWeeklyReportRunStatus.queued
     assert run.artifact_content is not None
     assert run.artifact_content.startswith(b"PK\x03\x04")
-    assert run.window_end.replace(tzinfo=UTC) == datetime(
-        2026, 7, 21, 7, 0, tzinfo=UTC
-    )
+    assert run.window_end.replace(tzinfo=UTC) == datetime(2026, 7, 21, 7, 0, tzinfo=UTC)
     assert run.notification is not None
     assert run.notification.metadata_["cc"] == ["copy@example.test"]
     assert run.notification.metadata_["bcc"] == ["archive@example.test"]
 
 
-def test_ncc_weekly_failed_occurrence_is_durable_and_retried(
-    db_session, monkeypatch
-):
+def test_ncc_weekly_failed_occurrence_is_durable_and_retried(db_session, monkeypatch):
     monkeypatch.setattr(
         ncc_report_email,
         "get_brand",
@@ -209,9 +202,7 @@ def test_ncc_weekly_failed_occurrence_is_durable_and_retried(
             raise RuntimeError("simulated workbook failure")
         return original_builder(*args, **kwargs)
 
-    monkeypatch.setattr(
-        ncc_report_email.ncc_workbook, "build_workbook", flaky_builder
-    )
+    monkeypatch.setattr(ncc_report_email.ncc_workbook, "build_workbook", flaky_builder)
     failed = ncc_report_email.run_due_delivery(
         db=db_session,
         command=_run_command(datetime(2026, 7, 21, 7, 0, tzinfo=UTC)),

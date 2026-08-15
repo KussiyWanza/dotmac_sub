@@ -23,6 +23,7 @@ def test_domain_sot_relationships_cover_expected_domains():
         "tenancy",
         "ai_advisory",
         "provisioning_operations",
+        "regulatory_reporting",
         "feature_control_plane",
         "authorization_control_plane",
         "scheduler_control_plane",

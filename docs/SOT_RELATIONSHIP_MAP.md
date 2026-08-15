@@ -124,20 +124,21 @@ but equivalent state and actions resolve through the same backend owners.
 14. `tenancy`
 15. `ai_advisory`
 16. `provisioning_operations`
-17. `feature_control_plane`
-18. `authorization_control_plane`
-19. `scheduler_control_plane`
-20. `network_access_control_plane`
-21. `service_intent_control_plane`
-22. `integration_control_plane`
-23. `ui_list_projection`
-24. `ui_bulk_actions`
-25. `ui_display_formatting`
-26. `ui_action_forms`
-27. `ui_semantic_presentation`
-28. `vpn_remote_access`
-29. `geospatial`
-30. `sales_referrals`
+17. `regulatory_reporting`
+18. `feature_control_plane`
+19. `authorization_control_plane`
+20. `scheduler_control_plane`
+21. `network_access_control_plane`
+22. `service_intent_control_plane`
+23. `integration_control_plane`
+24. `ui_list_projection`
+25. `ui_bulk_actions`
+26. `ui_display_formatting`
+27. `ui_action_forms`
+28. `ui_semantic_presentation`
+29. `vpn_remote_access`
+30. `geospatial`
+31. `sales_referrals`
 
 Rule: each change should finish one coherent domain boundary: define the owner
 service, migrate the highest-risk callers, and add focused tests. Avoid broad

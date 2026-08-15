@@ -124,6 +124,7 @@ class NccComplaintsReportSnapshot:
             "records": self.record_mappings(),
         }
 
+
 # NCC files complaints as Resolved or Pending. Michael's call (2026-07-17):
 # Closed is the one native status for a resolved complaint. The filing label
 # remains "Resolved" because that is the NCC workbook's external vocabulary.

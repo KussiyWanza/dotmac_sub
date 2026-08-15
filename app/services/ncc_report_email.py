@@ -10,25 +10,24 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from string import Formatter
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from enum import StrEnum
 from html import escape
+from string import Formatter
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.audit import AuditActorType
-from app.models.domain_settings import DomainSetting, SettingDomain
+from app.models.domain_settings import SettingDomain
 from app.models.ncc_reporting import NccWeeklyReportRun, NccWeeklyReportRunStatus
 from app.models.notification import NotificationChannel, NotificationStatus
 from app.models.subscription_engine import SettingValueType
 from app.schemas.settings import DomainSettingUpdate
 from app.services import ncc_complaints_report, ncc_workbook
-from app.services.audit_adapter import stage_audit_event
+from app.services.audit_adapter import AuditActor, stage_audit_event
 from app.services.branding_config import get_brand
 from app.services.communication_intents import (
     MAX_EMAIL_ATTACHMENT_BYTES,
@@ -36,6 +35,8 @@ from app.services.communication_intents import (
     CommunicationAttachmentKind,
     CommunicationClass,
     CommunicationIntent,
+)
+from app.services.communication_intents import (
     submit as submit_communication_intent,
 )
 from app.services.domain_errors import DomainError
@@ -55,9 +56,7 @@ OWNER = "communications.ncc_weekly_delivery"
 CONFIGURATION_CONCERN = "NCC weekly delivery configuration"
 OCCURRENCE_CONCERN = "NCC weekly report occurrence and artifact"
 SCHEDULE_KEY = "ncc_complaints"
-XLSX_CONTENT_TYPE = (
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-)
+XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 ENABLED_KEY = "ncc_report_email_enabled"
 TO_KEY = "ncc_report_email_to"
@@ -109,11 +108,6 @@ class NccWeekday(StrEnum):
         return tuple(NccWeekday).index(self)
 
 
-class NccWeeklyConfigurationSource(StrEnum):
-    database = "database"
-    registered_default = "registered_default"
-
-
 class NccWeeklyRunDecision(StrEnum):
     disabled = "disabled"
     missing_recipient = "missing_recipient"
@@ -142,7 +136,6 @@ class NccWeeklyDeliveryConfiguration:
     timezone: str
     send_day: NccWeekday
     lookback_days: int
-    sources: tuple[tuple[str, NccWeeklyConfigurationSource], ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,21 +249,6 @@ def _error(
         details["field"] = field
     return NccWeeklyDeliveryError(
         code=f"{OWNER}.{suffix}", message=message, details=details
-    )
-
-
-def _setting_source(db: Session, key: str) -> NccWeeklyConfigurationSource:
-    stored = db.execute(
-        select(DomainSetting.id).where(
-            DomainSetting.domain == SettingDomain.notification,
-            DomainSetting.key == key,
-            DomainSetting.is_active.is_(True),
-        )
-    ).scalar_one_or_none()
-    return (
-        NccWeeklyConfigurationSource.database
-        if stored is not None
-        else NccWeeklyConfigurationSource.registered_default
     )
 
 
@@ -443,21 +421,8 @@ def preview_configuration(
 
 
 def get_configuration(db: Session) -> NccWeeklyDeliveryConfiguration:
-    """Return the effective typed configuration and source provenance."""
+    """Return the effective typed configuration."""
 
-    keys = (
-        ENABLED_KEY,
-        TO_KEY,
-        CC_KEY,
-        BCC_KEY,
-        SENDER_KEY,
-        SUBJECT_KEY,
-        BODY_TEMPLATE_KEY,
-        LOCAL_TIME_KEY,
-        TIMEZONE_KEY,
-        SEND_DAY_KEY,
-        LOOKBACK_KEY,
-    )
     enabled = _bool_value(db, ENABLED_KEY)
     recipients = _parse_recipient_set(
         to_address=_text_value(db, TO_KEY),
@@ -489,8 +454,7 @@ def get_configuration(db: Session) -> NccWeeklyDeliveryConfiguration:
             or DEFAULT_BODY_TEMPLATE
         ),
         local_time=_parse_local_time(
-            _text_value(db, LOCAL_TIME_KEY, DEFAULT_LOCAL_TIME)
-            or DEFAULT_LOCAL_TIME
+            _text_value(db, LOCAL_TIME_KEY, DEFAULT_LOCAL_TIME) or DEFAULT_LOCAL_TIME
         ),
         timezone=_parse_timezone(
             _text_value(db, TIMEZONE_KEY, DEFAULT_TIMEZONE) or DEFAULT_TIMEZONE
@@ -499,7 +463,6 @@ def get_configuration(db: Session) -> NccWeeklyDeliveryConfiguration:
             _text_value(db, SEND_DAY_KEY, DEFAULT_SEND_DAY) or DEFAULT_SEND_DAY
         ),
         lookback_days=lookback_days,
-        sources=tuple((key, _setting_source(db, key)) for key in keys),
     )
 
 
@@ -525,7 +488,8 @@ def _stage_boolean(db: Session, key: str, value: bool) -> None:
         key,
         DomainSettingUpdate(
             value_type=SettingValueType.boolean,
-            value_json=value,
+            value_text="true" if value else "false",
+            value_json=None,
             is_active=True,
         ),
     )
@@ -567,8 +531,7 @@ def update_configuration(
             db,
             action="ncc.weekly_delivery_configuration_changed",
             entity_type="ncc_weekly_delivery_configuration",
-            actor_type=AuditActorType.system,
-            actor_label=command.context.actor,
+            actor=AuditActor.system(command.context.actor),
             metadata={
                 "owner": OWNER,
                 "enabled": command.enabled,
@@ -659,25 +622,11 @@ def _render_body(
     return body_text, body_html
 
 
-def _local_observation(
-    observed_at: datetime, timezone: str
-) -> datetime:
+def _local_observation(observed_at: datetime, timezone: str) -> datetime:
     normalized = observed_at
     if normalized.tzinfo is None:
         normalized = normalized.replace(tzinfo=UTC)
     return normalized.astimezone(ZoneInfo(timezone))
-
-
-def _lock_schedule_configuration(db: Session) -> None:
-    db.execute(
-        select(DomainSetting.id)
-        .where(
-            DomainSetting.domain == SettingDomain.notification,
-            DomainSetting.key == ENABLED_KEY,
-            DomainSetting.is_active.is_(True),
-        )
-        .with_for_update()
-    ).all()
 
 
 def _existing_run(
@@ -699,7 +648,6 @@ def run_due_delivery(
     """Queue the due Tuesday artifact exactly once, recording retry evidence."""
 
     def operation() -> NccWeeklyDeliveryOutcome:
-        _lock_schedule_configuration(db)
         config = get_configuration(db)
         if not config.enabled:
             return NccWeeklyDeliveryOutcome(NccWeeklyRunDecision.disabled)
@@ -882,8 +830,7 @@ def run_due_delivery(
                 action="ncc.weekly_report_failed",
                 entity_type="ncc_weekly_report_run",
                 entity_id=str(run.id),
-                actor_type=AuditActorType.system,
-                actor_label=command.context.actor,
+                actor=AuditActor.system(command.context.actor),
                 is_success=False,
                 metadata={"failure_code": run.failure_code},
             )
@@ -900,8 +847,7 @@ def run_due_delivery(
             action="ncc.weekly_report_queued",
             entity_type="ncc_weekly_report_run",
             entity_id=str(run.id),
-            actor_type=AuditActorType.system,
-            actor_label=command.context.actor,
+            actor=AuditActor.system(command.context.actor),
             metadata={
                 "scheduled_local_date": local_date_text,
                 "row_count": row_count,
@@ -963,9 +909,7 @@ def list_recent_runs(
     )
 
 
-def get_artifact(
-    db: Session, query: NccWeeklyArtifactQuery
-) -> NccWeeklyArtifact:
+def get_artifact(db: Session, query: NccWeeklyArtifactQuery) -> NccWeeklyArtifact:
     run = db.get(NccWeeklyReportRun, query.run_id)
     if (
         run is None

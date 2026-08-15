@@ -2,7 +2,6 @@ from pathlib import Path
 
 from app.services.sot_registry.registry import service_relationship
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -25,7 +24,7 @@ def test_ncc_adapters_delegate_transaction_and_schedule_decisions():
     route = _source("app/web/admin/reports.py")
     owner = _source("app/services/ncc_report_email.py")
     route_adapter = route.split("def reports_ncc_email_settings(", 1)[1].split(
-        "@router.get(\n    \"/ncc-weekly-runs", 1
+        '@router.get(\n    "/ncc-weekly-runs', 1
     )[0]
 
     assert "execute_owner_command(" in owner
@@ -86,9 +85,7 @@ def test_admin_ui_exposes_complete_configuration_and_run_evidence():
 
 
 def test_crm_configuration_import_is_dry_run_first_and_uses_typed_owner():
-    migration_script = _source(
-        "scripts/migration/migrate_ncc_weekly_report_config.py"
-    )
+    migration_script = _source("scripts/migration/migrate_ncc_weekly_report_config.py")
 
     assert '"--apply"' in migration_script
     assert "preview_configuration(command)" in migration_script

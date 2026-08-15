@@ -475,22 +475,19 @@ DOMAIN = DomainSOT(
                 errors=ErrorContract(
                     domain_codes=(
                         "communications.ncc_weekly_delivery.invalid_configuration",
-                        "communications.ncc_weekly_delivery."
-                        "artifact_generation_failed",
+                        "communications.ncc_weekly_delivery.artifact_generation_failed",
                         "communications.ncc_weekly_delivery."
                         "artifact_or_delivery_failed",
                         "communications.ncc_weekly_delivery.delivery_intent_failed",
                         "communications.ncc_weekly_delivery.artifact_not_found",
-                        "communications.ncc_weekly_delivery."
-                        "artifact_integrity_failed",
+                        "communications.ncc_weekly_delivery.artifact_integrity_failed",
                         *owner_command_boundary_error_codes(
                             "communications.ncc_weekly_delivery"
                         ),
                     ),
                     mapping_owner="NCC report web and Celery adapters",
                     retryable_codes=(
-                        "communications.ncc_weekly_delivery."
-                        "artifact_generation_failed",
+                        "communications.ncc_weekly_delivery.artifact_generation_failed",
                         "communications.ncc_weekly_delivery."
                         "artifact_or_delivery_failed",
                         "communications.ncc_weekly_delivery.delivery_intent_failed",

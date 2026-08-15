@@ -38,9 +38,9 @@ def _boolean(value: object) -> bool:
     raise ValueError("enabled must be a JSON boolean or a recognized boolean value")
 
 
-def _command(payload: dict[str, object]) -> (
-    ncc_report_email.UpdateNccWeeklyDeliveryConfigurationCommand
-):
+def _command(
+    payload: dict[str, object],
+) -> ncc_report_email.UpdateNccWeeklyDeliveryConfigurationCommand:
     return ncc_report_email.UpdateNccWeeklyDeliveryConfigurationCommand(
         context=CommandContext.system(
             actor="script:migrate-ncc-weekly-report-config",

@@ -23,10 +23,10 @@ a report is due.
 
 The owner converts the scheduler observation to the configured timezone. On
 the configured weekday, once local time reaches the configured delivery time,
-it locks the schedule control and the occurrence row, creates the workbook,
-stores its bytes and SHA-256 digest, and queues a required XLSX attachment in
-one owner transaction. A unique `(schedule_key, scheduled_local_date)`
-constraint prevents duplicate Tuesday occurrences.
+it locks an existing occurrence row, creates the workbook, stores its bytes and
+SHA-256 digest, and queues a required XLSX attachment in one owner transaction.
+For a first occurrence, the unique `(schedule_key, scheduled_local_date)`
+constraint arbitrates concurrent attempts and prevents duplicate Tuesday runs.
 The report window is anchored to the configured Tuesday time, not the poll's
 arrival time, so a delayed poll or retry rebuilds the same bounded window.
 

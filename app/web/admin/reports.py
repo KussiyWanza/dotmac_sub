@@ -22,8 +22,8 @@ from app.models.sales import QuoteStatus
 from app.models.team_inbox import InboxConversation, InboxConversationStatus
 from app.services import crm_reporting as crm_reporting_service
 from app.services import ncc_complaints_report as ncc_complaints_service
-from app.services import ncc_report_email as ncc_weekly_delivery_service
 from app.services import ncc_regulatory_pack as ncc_pack_service
+from app.services import ncc_report_email as ncc_weekly_delivery_service
 from app.services import ncc_subscriber_report as ncc_report_service
 from app.services import ncc_workbook, team_inbox_assignment, team_inbox_outbound
 from app.services import team_inbox_metrics as team_inbox_metrics_service

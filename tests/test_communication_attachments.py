@@ -11,8 +11,8 @@ from app.models.billing import (
     InvoicePdfExportStatus,
     InvoiceStatus,
 )
-from app.models.notification import Notification, NotificationChannel
 from app.models.ncc_reporting import NccWeeklyReportRun, NccWeeklyReportRunStatus
+from app.models.notification import Notification, NotificationChannel
 from app.models.subscriber import Subscriber
 from app.services import communication_attachments
 
@@ -161,6 +161,4 @@ def test_resolve_ncc_xlsx_verifies_scope_and_digest(db_session):
         communication_attachments.CommunicationAttachmentError,
         match="ncc_xlsx_integrity_failed",
     ):
-        communication_attachments.resolve_email_attachments(
-            db_session, notification
-        )
+        communication_attachments.resolve_email_attachments(db_session, notification)

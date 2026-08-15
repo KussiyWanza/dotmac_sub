@@ -174,9 +174,7 @@ def test_send_email_attaches_ncc_xlsx_with_correct_mime_type(db_session, monkeyp
     monkeypatch.setattr("smtplib.SMTP_SSL", lambda *args, **kwargs: fake_smtp)
     monkeypatch.setenv("SMTP_HOST", "smtp.test.local")
     monkeypatch.setenv("SMTP_FROM", "noreply@test.local")
-    content_type = (
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
     result = email_service.send_email(
         db=db_session,

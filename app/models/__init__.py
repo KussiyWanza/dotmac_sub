@@ -455,6 +455,10 @@ from app.models.location_capture_prompt import (  # noqa: F401
     LocationCapturePromptState,
 )
 from app.models.mrr_snapshot import MrrSnapshot  # noqa: F401
+from app.models.ncc_reporting import (  # noqa: F401
+    NccWeeklyReportRun,
+    NccWeeklyReportRunStatus,
+)
 from app.models.network import (  # noqa: F401
     AuthorizationPreset,
     BulkProvisioningItem,
@@ -590,10 +594,6 @@ from app.models.network_operation import (  # noqa: F401
 from app.models.nextcloud_talk import (  # noqa: F401
     NextcloudTalkNotificationRoom,
     NextcloudTalkStaffAccount,
-)
-from app.models.ncc_reporting import (  # noqa: F401
-    NccWeeklyReportRun,
-    NccWeeklyReportRunStatus,
 )
 from app.models.notification import (  # noqa: F401
     AlertNotificationLog,
