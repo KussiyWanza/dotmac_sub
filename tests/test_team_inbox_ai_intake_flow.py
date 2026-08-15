@@ -968,6 +968,266 @@ def test_activation_stays_separate_and_requires_fallback_team(db_session):
         )
 
 
+def test_policy_validation_reports_errors_without_activating(db_session):
+    account_scope = f"test-phone-{uuid4().hex}"
+    _install_whatsapp_scope(db_session, account_scope=account_scope)
+    draft = ai_conversation_intake.create_draft_policy(
+        db_session,
+        ai_conversation_intake.AiDraftPolicyCommand(
+            context=CommandContext.system(
+                actor="test",
+                scope="ai:intake-policy-draft",
+                reason="validate only",
+            ),
+            channel_type=InboxChannelType.whatsapp.value,
+            provider=WHATSAPP_PROVIDER_META,
+            account_scope=account_scope,
+            welcome_message="Hello from the draft assistant.",
+            intent_team_mappings=(),
+        ),
+    )
+
+    outcome = ai_conversation_intake.validate_policy_version(
+        db_session,
+        ai_conversation_intake.AiPolicyVersionActivateCommand(
+            context=CommandContext.system(
+                actor="test",
+                scope="ai:intake-policy-validate",
+                reason="validate only",
+            ),
+            version_id=draft.version_id,
+        ),
+    )
+
+    policy = db_session.get(AiIntakePolicy, draft.policy_id)
+    version = db_session.get(AiIntakePolicyVersion, draft.version_id)
+    assert outcome.valid is False
+    assert "fallback team" in outcome.errors[0]
+    assert policy.is_enabled is False
+    assert policy.active_version_id is None
+    assert version.status == "draft"
+
+
+def test_activation_projects_canonical_policy_to_runtime_config(db_session):
+    account_scope = f"test-phone-{uuid4().hex}"
+    _install_whatsapp_scope(db_session, account_scope=account_scope)
+    fallback = _team(db_session, f"Fallback {uuid4()}")
+    technical = _team(db_session, f"Technical {uuid4()}")
+    draft = ai_conversation_intake.create_draft_policy(
+        db_session,
+        ai_conversation_intake.AiDraftPolicyCommand(
+            context=CommandContext.system(
+                actor="test",
+                scope="ai:intake-policy-draft",
+                reason="prepare activation projection",
+            ),
+            channel_type=InboxChannelType.whatsapp.value,
+            provider=WHATSAPP_PROVIDER_META,
+            account_scope=account_scope,
+            fallback_team_id=fallback.id,
+            welcome_message="Hello from the activated assistant.",
+            intent_team_mappings=(
+                {
+                    "intent": "technical_support",
+                    "department": "technical_support",
+                    "service_team_id": str(technical.id),
+                    "enabled": True,
+                },
+            ),
+            escalation_rules={
+                "confidence_threshold": 0.82,
+                "max_clarification_turns": 2,
+                "escalate_after_minutes": 7,
+            },
+        ),
+    )
+
+    activated = ai_conversation_intake.activate_policy_version(
+        db_session,
+        ai_conversation_intake.AiPolicyVersionActivateCommand(
+            context=CommandContext.system(
+                actor="test",
+                scope="ai:intake-policy-activate",
+                reason="activate projection",
+            ),
+            version_id=draft.version_id,
+        ),
+    )
+
+    policy = db_session.get(AiIntakePolicy, activated.policy_id)
+    config = db_session.get(AiIntakeConfig, policy.legacy_config_id)
+    assert config.is_enabled is True
+    assert config.scope_key == f"{WHATSAPP_PROVIDER_META}:{account_scope}"
+    assert config.fallback_team_id == fallback.id
+    assert config.confidence_threshold == 0.82
+    assert config.max_clarification_turns == 2
+    assert config.department_mappings[0]["service_team_id"] == str(technical.id)
+    assert config.metadata_["compatibility_source"] == "canonical_ai_intake_policy"
+    assert config.metadata_["policy_version_id"] == str(activated.version_id)
+
+
+def test_saving_replacement_draft_does_not_update_runtime_config(db_session):
+    account_scope = f"test-phone-{uuid4().hex}"
+    _install_whatsapp_scope(db_session, account_scope=account_scope)
+    first_fallback = _team(db_session, f"Fallback {uuid4()}")
+    second_fallback = _team(db_session, f"Fallback {uuid4()}")
+    technical = _team(db_session, f"Technical {uuid4()}")
+    context = CommandContext.system(
+        actor="test",
+        scope="ai:intake-policy-draft",
+        reason="prepare active policy draft edit",
+    )
+    first = ai_conversation_intake.create_draft_policy(
+        db_session,
+        ai_conversation_intake.AiDraftPolicyCommand(
+            context=context,
+            channel_type=InboxChannelType.whatsapp.value,
+            provider=WHATSAPP_PROVIDER_META,
+            account_scope=account_scope,
+            fallback_team_id=first_fallback.id,
+            welcome_message="Hello from the first assistant.",
+            intent_team_mappings=(
+                {
+                    "intent": "technical_support",
+                    "service_team_id": str(technical.id),
+                    "enabled": True,
+                },
+            ),
+        ),
+    )
+    activated = ai_conversation_intake.activate_policy_version(
+        db_session,
+        ai_conversation_intake.AiPolicyVersionActivateCommand(
+            context=context,
+            version_id=first.version_id,
+        ),
+    )
+    policy = db_session.get(AiIntakePolicy, activated.policy_id)
+    config = db_session.get(AiIntakeConfig, policy.legacy_config_id)
+    assert config.fallback_team_id == first_fallback.id
+
+    replacement = ai_conversation_intake.create_draft_policy(
+        db_session,
+        ai_conversation_intake.AiDraftPolicyCommand(
+            context=context,
+            channel_type=InboxChannelType.whatsapp.value,
+            provider=WHATSAPP_PROVIDER_META,
+            account_scope=account_scope,
+            fallback_team_id=second_fallback.id,
+            welcome_message="Hello from the replacement assistant.",
+            intent_team_mappings=(
+                {
+                    "intent": "technical_support",
+                    "service_team_id": str(technical.id),
+                    "enabled": True,
+                },
+            ),
+            replace_existing_draft=True,
+        ),
+    )
+
+    policy = db_session.get(AiIntakePolicy, activated.policy_id)
+    config = db_session.get(AiIntakeConfig, policy.legacy_config_id)
+    assert replacement.version_status == "draft"
+    assert policy.active_version_id == activated.version_id
+    assert policy.is_enabled is True
+    assert config.fallback_team_id == first_fallback.id
+
+    ai_conversation_intake.activate_policy_version(
+        db_session,
+        ai_conversation_intake.AiPolicyVersionActivateCommand(
+            context=context,
+            version_id=replacement.version_id,
+        ),
+    )
+
+    config = db_session.get(AiIntakeConfig, policy.legacy_config_id)
+    assert config.fallback_team_id == second_fallback.id
+
+
+def test_disable_prevents_new_sessions_and_keeps_existing_session_version(db_session):
+    account_scope = f"test-phone-{uuid4().hex}"
+    _install_whatsapp_scope(db_session, account_scope=account_scope)
+    fallback = _team(db_session, f"Fallback {uuid4()}")
+    technical = _team(db_session, f"Technical {uuid4()}")
+    draft = ai_conversation_intake.create_draft_policy(
+        db_session,
+        ai_conversation_intake.AiDraftPolicyCommand(
+            context=CommandContext.system(
+                actor="test",
+                scope="ai:intake-policy-draft",
+                reason="prepare disable",
+            ),
+            channel_type=InboxChannelType.whatsapp.value,
+            provider=WHATSAPP_PROVIDER_META,
+            account_scope=account_scope,
+            fallback_team_id=fallback.id,
+            welcome_message="Hello from the activated assistant.",
+            intent_team_mappings=(
+                {
+                    "intent": "technical_support",
+                    "service_team_id": str(technical.id),
+                    "enabled": True,
+                },
+            ),
+        ),
+    )
+    activated = ai_conversation_intake.activate_policy_version(
+        db_session,
+        ai_conversation_intake.AiPolicyVersionActivateCommand(
+            context=CommandContext.system(
+                actor="test",
+                scope="ai:intake-policy-activate",
+                reason="activate before disable",
+            ),
+            version_id=draft.version_id,
+        ),
+    )
+    conversation = InboxConversation(
+        channel_type=InboxChannelType.whatsapp.value,
+        status="pending",
+        contact_address="2348012345678",
+        external_thread_id=f"disable-{uuid4()}",
+    )
+    db_session.add(conversation)
+    db_session.flush()
+    session = AiIntakeSession(
+        conversation_id=conversation.id,
+        policy_id=activated.policy_id,
+        policy_version_id=activated.version_id,
+        state="awaiting_customer",
+        channel_type=InboxChannelType.whatsapp.value,
+        provider=WHATSAPP_PROVIDER_META,
+        account_scope=account_scope,
+        display_name="Dotmac Virtual Assistant",
+        turn_count=1,
+    )
+    db_session.add(session)
+    db_session.flush()
+    session_id = session.id
+
+    outcome = ai_conversation_intake.disable_policy(
+        db_session,
+        ai_conversation_intake.AiPolicyDisableCommand(
+            context=CommandContext.system(
+                actor="test",
+                scope="ai:intake-policy-disable",
+                reason="disable for new sessions",
+            ),
+            policy_id=activated.policy_id,
+        ),
+    )
+
+    policy = db_session.get(AiIntakePolicy, activated.policy_id)
+    config = db_session.get(AiIntakeConfig, outcome.legacy_config_id)
+    session = db_session.get(AiIntakeSession, session_id)
+    assert outcome.policy_enabled is False
+    assert policy.is_enabled is False
+    assert config.is_enabled is False
+    assert session.policy_version_id == activated.version_id
+    assert session.state == "awaiting_customer"
+
+
 def test_active_session_remains_pinned_to_original_policy_version(db_session):
     fallback = _team(db_session, "Configured Fallback Team")
     technical = _team(db_session, "Configured Technical Team")
