@@ -9,6 +9,10 @@ from types import SimpleNamespace
 import pytest
 
 from app.services import web_customer_details as details
+from app.services.subscription_ipv4_projection import (
+    ServiceIPv4Source,
+    SubscriptionServiceIPv4,
+)
 from app.services.topology.customer_path import CustomerPath
 
 
@@ -32,6 +36,19 @@ def _subscription_stub():
         mac_address=None,
         ipv6_address=None,
     )
+
+
+def _service_ipv4(subscription):
+    return {
+        str(subscription.id): SubscriptionServiceIPv4(
+            subscription_id=subscription.id,
+            address=subscription.ipv4_address,
+            assignment_id=None,
+            ipv4_address_id=None,
+            source=ServiceIPv4Source.served_projection,
+            detail="Test service IPv4 projection.",
+        )
+    }
 
 
 def _fiber_path():
@@ -98,6 +115,7 @@ def test_card_carries_endpoint_separately_from_provisioned_site():
     cards = details._build_network_access_cards(
         [sub],
         {},
+        _service_ipv4(sub),
         {},
         {
             sub_id: {
@@ -117,7 +135,7 @@ def test_card_carries_endpoint_separately_from_provisioned_site():
 def test_cards_tolerate_missing_endpoint_projection():
     sub = _subscription_stub()
 
-    cards = details._build_network_access_cards([sub], {})
+    cards = details._build_network_access_cards([sub], {}, _service_ipv4(sub))
 
     assert cards[0]["access_endpoint"] == {}
     assert cards[0]["topology_trace"] is None

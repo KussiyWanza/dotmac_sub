@@ -14,6 +14,10 @@ from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
 from app.services import web_customer_details as details
+from app.services.subscription_ipv4_projection import (
+    ServiceIPv4Source,
+    SubscriptionServiceIPv4,
+)
 
 
 def _subscription():
@@ -28,6 +32,19 @@ def _subscription():
         mac_address=None,
         ipv6_address=None,
     )
+
+
+def _service_ipv4(subscription):
+    return {
+        str(subscription.id): SubscriptionServiceIPv4(
+            subscription_id=subscription.id,
+            address=subscription.ipv4_address,
+            assignment_id=None,
+            ipv4_address_id=None,
+            source=ServiceIPv4Source.served_projection,
+            detail="Test service IPv4 projection.",
+        )
+    }
 
 
 def _decision(**overrides):
@@ -157,7 +174,13 @@ def test_card_carries_access_state_and_prefill(monkeypatch):
     facts = details._build_access_state_facts(subscription)
 
     cards = details._build_network_access_cards(
-        [subscription], {}, {}, {}, {}, {str(subscription.id): facts}
+        [subscription],
+        {},
+        _service_ipv4(subscription),
+        {},
+        {},
+        {},
+        {str(subscription.id): facts},
     )
 
     assert cards[0]["access_state"]["radius_state"] == "suspended"
@@ -269,7 +292,14 @@ def test_card_carries_the_known_incident(monkeypatch):
     payload = {"area_outage": True, "incident_id": "abc"}
 
     cards = details._build_network_access_cards(
-        [subscription], {}, {}, {}, {}, {}, {str(subscription.id): payload}
+        [subscription],
+        {},
+        _service_ipv4(subscription),
+        {},
+        {},
+        {},
+        {},
+        {str(subscription.id): payload},
     )
 
     assert cards[0]["known_incident"] == payload
@@ -283,6 +313,7 @@ def test_card_carries_the_matching_service_health_projection(monkeypatch):
     cards = details._build_network_access_cards(
         [subscription],
         {},
+        _service_ipv4(subscription),
         service_health_by_subscription={str(subscription.id): service_health},
     )
 

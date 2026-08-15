@@ -1340,6 +1340,7 @@
                 {% for subscription in subscriptions %}
                 {% set sub_status = subscription.status.value if subscription.status is not string and subscription.status else (subscription.status | default('pending')) %}
                 {% set show_service_assignments = sub_status != 'disabled' %}
+                {% set service_ipv4 = service_ipv4_by_subscription.get(subscription.id|string) %}
                 {% set account = account_lookup.get(subscription.subscriber_id|string) %}
                 {% set service_health = (service_health_by_subscription or {}).get(subscription.id|string) %}
                 <div x-show="showAllSubscriptions || '{{ sub_status }}' === 'active'" x-cloak class="px-5 py-4 hover:bg-slate-50 dark:hover:bg-slate-700/30 transition">
@@ -1367,10 +1368,14 @@
                                         {{ subscription.login }}
                                     </span>
                                     {% endif %}
-                                    {% if show_service_assignments and subscription.ipv4_address %}
-                                    <span class="flex items-center gap-1">
+                                    {% if show_service_assignments and service_ipv4 and service_ipv4.address %}
+                                    <span class="flex items-center gap-1" data-testid="subscription-service-ipv4-{{ subscription.id }}" title="{{ service_ipv4.detail }}">
                                         <svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"/></svg>
-                                        {{ subscription.ipv4_address }}
+                                        {{ service_ipv4.address }}
+                                    </span>
+                                    {% elif show_service_assignments and service_ipv4 and service_ipv4.source.value == 'ambiguous_exact_assignments' %}
+                                    <span class="flex items-center gap-1 text-amber-600 dark:text-amber-400" data-testid="subscription-service-ipv4-review-{{ subscription.id }}" title="{{ service_ipv4.detail }}">
+                                        IPv4 needs review
                                     </span>
                                     {% endif %}
                                     {% if show_service_assignments and subscription.ipv6_address %}
@@ -1917,7 +1922,7 @@
                                 {% if card.ipv4_address %}
                                 <div>
                                     <p class="text-xs text-slate-500 dark:text-slate-400">IPv4 Address</p>
-                                    <p class="font-mono font-medium text-slate-900 dark:text-white">{{ card.ipv4_address }}</p>
+                                    <p class="font-mono font-medium text-slate-900 dark:text-white" title="{{ card.ipv4_detail }}">{{ card.ipv4_address }}</p>
                                 </div>
                                 {% endif %}
                                 {% if card.additional_routes %}
