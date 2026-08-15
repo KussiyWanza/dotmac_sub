@@ -349,6 +349,13 @@ class InboxConversationProjection:
 
 
 @dataclass(frozen=True, slots=True)
+class InboxMessageFragmentProjection:
+    conversation_id: UUID
+    message_id: UUID
+    message: team_inbox_read.InboxTimelineMessage
+
+
+@dataclass(frozen=True, slots=True)
 class InboxServiceTeamOption:
     id: UUID
     name: str
@@ -455,6 +462,15 @@ class InboxQueueProjection:
     selected_id: str | None
     selected: InboxConversationProjection | None
     canonical_url: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class InboxQueueRowProjection:
+    conversation_id: UUID
+    row: team_inbox_read.InboxConversationListRow | None
+    list_query: ListQuery
+    agent_options: tuple[InboxAgentOption, ...]
+    selected_id: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1298,6 +1314,28 @@ def get_conversation_projection(
     )
 
 
+def get_message_fragment_projection(
+    db: Session,
+    *,
+    conversation_id: UUID,
+    message_id: UUID,
+) -> InboxMessageFragmentProjection | None:
+    """Return one confirmed message for an incremental timeline refresh."""
+
+    message = team_inbox_read.get_conversation_message(
+        db,
+        conversation_id=conversation_id,
+        message_id=message_id,
+    )
+    if message is None:
+        return None
+    return InboxMessageFragmentProjection(
+        conversation_id=conversation_id,
+        message_id=message_id,
+        message=message,
+    )
+
+
 def list_whatsapp_contacts(
     db: Session,
     *,
@@ -2045,6 +2083,134 @@ def build_social_comments_projection(
         status_options=tuple(item.value for item in InboxConversationStatus),
         channel_options=SOCIAL_COMMENT_CHANNELS,
         canonical_url=canonical_url,
+    )
+
+
+def get_queue_row_projection(
+    db: Session,
+    *,
+    conversation_id: UUID,
+    request: InboxQueueRequest,
+) -> InboxQueueRowProjection:
+    """Project only the affected queue row under the active queue filters."""
+
+    advanced_filter_query, _active_team_options = (
+        team_inbox_filters.resolve_filter_query(db, request.advanced_filters)
+    )
+    status = (
+        request.status
+        if request.status in {item.value for item in InboxConversationStatus}
+        else None
+    )
+    channel = (
+        request.channel_type
+        if request.channel_type in {item.value for item in InboxChannelType}
+        else None
+    )
+    team_id_scope = tuple(
+        str(value)
+        for value in (_uuid(item) for item in request.service_team_ids)
+        if value is not None
+    )
+    team_id = _uuid(request.service_team_id)
+    assignee_id = _uuid(request.assigned_person_id)
+    contact_status = str(request.contact_resolution_status or "").strip() or None
+    priority = (
+        request.priority_at_most
+        if request.priority_at_most is not None and 0 <= request.priority_at_most <= 999
+        else None
+    )
+    reply_window_status = (
+        "expired"
+        if str(request.reply_window_status or "").strip().lower() == "expired"
+        else None
+    )
+    sort = (
+        InboxListSort(request.sort_by).value
+        if request.sort_by in {item.value for item in InboxListSort}
+        else INBOX_LIST_DEFINITION.default_sort
+    )
+    direction = (
+        InboxSortDirection(request.sort_dir).value
+        if request.sort_dir in {item.value for item in InboxSortDirection}
+        else None
+    )
+    safe_per_page = (
+        request.per_page
+        if request.per_page in INBOX_LIST_DEFINITION.per_page_options
+        else INBOX_LIST_DEFINITION.default_per_page
+    )
+    filters = _filter_params(
+        status=status,
+        channel_type=channel,
+        service_team_id=str(team_id) if team_id else None,
+        service_team_ids=team_id_scope,
+        advanced_filters_json=advanced_filter_query.canonical_json(),
+        assigned_person_id=str(assignee_id) if assignee_id else None,
+        contact_resolution_status=contact_status,
+        needs_response=request.needs_response,
+        needs_attention=request.needs_attention,
+        ai_handling=request.ai_handling,
+        has_ticket=request.has_ticket,
+        activity_from=request.activity_from,
+        activity_to=request.activity_to,
+        muted=request.muted,
+        snoozed=request.snoozed,
+        open_only=request.open_only,
+        unassigned=request.unassigned,
+        unread=request.unread,
+        reply_window_status=reply_window_status,
+        priority_at_most=priority,
+    )
+    list_query = INBOX_LIST_DEFINITION.build_query(
+        search=request.search,
+        filters=filters,
+        sort_by=sort,
+        sort_dir=direction,
+        page=max(1, request.page),
+        per_page=safe_per_page,
+    )
+    result = team_inbox_read.list_conversations(
+        db,
+        conversation_id=conversation_id,
+        search=list_query.search,
+        status=status,
+        channel_type=channel,
+        service_team_id=team_id,
+        service_team_ids=team_id_scope,
+        advanced_filters=advanced_filter_query,
+        assigned_person_id=assignee_id,
+        needs_response=request.needs_response,
+        needs_attention=request.needs_attention,
+        contact_resolution_status=contact_status,
+        priority_at_most=priority,
+        muted=request.muted,
+        snoozed=request.snoozed,
+        open_only=request.open_only or status is None,
+        unassigned=request.unassigned,
+        operator_person_id=request.actor_person_id,
+        unread_only=request.unread,
+        reply_window_status=reply_window_status,
+        ai_handling=request.ai_handling,
+        has_ticket=request.has_ticket,
+        activity_from=request.activity_from,
+        activity_to=request.activity_to,
+        order_by=list_query.sort_by,
+        order_dir=list_query.sort_dir,
+        limit=1,
+        offset=0,
+        include_total_count=False,
+    )
+    return InboxQueueRowProjection(
+        conversation_id=conversation_id,
+        row=result.items[0] if result.items else None,
+        list_query=list_query,
+        agent_options=list_agent_options(db) if result.items else (),
+        selected_id=(
+            str(_uuid(request.selected_conversation_id))
+            if _uuid(request.selected_conversation_id) is not None
+            else None
+        ),
     )
 
 

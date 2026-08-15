@@ -56,6 +56,8 @@ def test_inbox_workspace_templates_compile():
         "admin/inbox/index.html",
         "admin/inbox/_sidebar.html",
         "admin/inbox/_conversation.html",
+        "admin/inbox/_message.html",
+        "admin/inbox/_queue_row.html",
         "admin/inbox/_comment_thread.html",
         "admin/inbox/_contact_drawer.html",
         "admin/inbox/_authoritative_context.html",
@@ -366,6 +368,70 @@ def test_queue_row_projects_real_contact_name_and_unread_message_count(db_sessio
     assert projection.rows[0].contact_name == "Amina Customer"
     assert projection.rows[0].is_unread is True
     assert projection.rows[0].unread_count == 2
+
+
+def test_message_fragment_projects_only_the_confirmed_message(db_session, monkeypatch):
+    conversation = InboxConversation(
+        channel_type="email",
+        contact_address="customer@example.test",
+    )
+    db_session.add(conversation)
+    db_session.flush()
+    message = InboxMessage(
+        conversation_id=conversation.id,
+        channel_type="email",
+        direction="outbound",
+        body="The router replacement is scheduled.",
+        sent_at=datetime.now(UTC),
+    )
+    db_session.add(message)
+    db_session.commit()
+
+    def reject_full_timeline(*_args, **_kwargs):
+        raise AssertionError("incremental refresh rebuilt the full timeline")
+
+    monkeypatch.setattr(
+        team_inbox_read,
+        "get_conversation_timeline",
+        reject_full_timeline,
+    )
+    projection = team_inbox_projection.get_message_fragment_projection(
+        db_session,
+        conversation_id=conversation.id,
+        message_id=message.id,
+    )
+
+    assert projection is not None
+    assert projection.message_id == message.id
+    assert projection.message.body == "The router replacement is scheduled."
+
+
+def test_targeted_queue_row_honours_the_active_response_filter(db_session):
+    conversation = InboxConversation(
+        channel_type="email",
+        contact_address="customer@example.test",
+        status=InboxConversationStatus.open.value,
+    )
+    db_session.add(conversation)
+    db_session.flush()
+    db_session.add(
+        InboxMessage(
+            conversation_id=conversation.id,
+            channel_type="email",
+            direction="outbound",
+            body="We have replied.",
+            sent_at=datetime.now(UTC),
+        )
+    )
+    db_session.commit()
+
+    projection = team_inbox_projection.get_queue_row_projection(
+        db_session,
+        conversation_id=conversation.id,
+        request=team_inbox_projection.InboxQueueRequest(needs_response=True),
+    )
+
+    assert projection.row is None
 
 
 def test_queue_row_prefers_canonical_party_name_over_provider_name(db_session):

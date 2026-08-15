@@ -767,6 +767,131 @@ def team_inbox_manager_ai_ask(
 
 
 @router.get(
+    "/{conversation_id}/messages/{message_id}",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("support:ticket:read"))],
+)
+def team_inbox_message_fragment(
+    conversation_id: UUID,
+    message_id: UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    projection = team_inbox_projection.get_message_fragment_projection(
+        db,
+        conversation_id=conversation_id,
+        message_id=message_id,
+    )
+    if projection is None:
+        raise HTTPException(status_code=404, detail="Message not found")
+    return templates.TemplateResponse(
+        request=request,
+        name="admin/inbox/_message.html",
+        context={"request": request, "message": projection.message},
+        headers={"Cache-Control": "private, no-store"},
+    )
+
+
+@router.get(
+    "/{conversation_id}/queue-row",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("support:ticket:read"))],
+)
+def team_inbox_queue_row(
+    conversation_id: UUID,
+    request: Request,
+    search: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    channel_type: str | None = Query(default=None),
+    service_team_id: str | None = Query(default=None),
+    service_team_ids: str | None = Query(default=None),
+    filters: str | None = Query(default=None),
+    assigned_person_id: str | None = Query(default=None),
+    needs_response: bool = Query(default=False),
+    needs_attention: bool = Query(default=False),
+    contact_resolution_status: str | None = Query(default=None),
+    priority_at_most: str | None = Query(default=None),
+    muted: bool | None = Query(default=None),
+    snoozed: bool | None = Query(default=None),
+    open_only: bool = Query(default=False),
+    unassigned: bool = Query(default=False),
+    unread: bool = Query(default=False),
+    reply_window_status: str | None = Query(default=None),
+    ai_handling: bool | None = Query(default=None),
+    has_ticket: bool | None = Query(default=None),
+    activity_from: str | None = Query(default=None),
+    activity_to: str | None = Query(default=None),
+    sort_by: str | None = Query(default=None, alias="sort"),
+    sort_dir: str | None = Query(default=None, alias="dir"),
+    page: int = Query(default=1),
+    per_page: int = Query(default=25),
+    c: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    projection = team_inbox_projection.get_queue_row_projection(
+        db,
+        conversation_id=conversation_id,
+        request=team_inbox_projection.InboxQueueRequest(
+            search=_query_text(search),
+            status=_query_text(status),
+            channel_type=_query_text(channel_type),
+            service_team_id=_query_text(service_team_id),
+            service_team_ids=tuple(
+                item.strip()
+                for item in (_query_text(service_team_ids) or "").split(",")
+                if item.strip()
+            ),
+            advanced_filters=team_inbox_filters.InboxAdvancedFilterPayload(
+                raw_json=_query_text(filters)
+            ),
+            assigned_person_id=_query_text(assigned_person_id),
+            needs_response=_query_bool(needs_response),
+            needs_attention=_query_bool(needs_attention),
+            contact_resolution_status=_query_text(contact_resolution_status),
+            priority_at_most=_query_int(priority_at_most),
+            muted=_query_optional_bool(muted),
+            snoozed=_query_optional_bool(snoozed),
+            open_only=_query_bool(open_only),
+            unassigned=_query_bool(unassigned),
+            unread=_query_bool(unread),
+            reply_window_status=_query_text(reply_window_status),
+            ai_handling=_query_optional_bool(ai_handling),
+            has_ticket=_query_optional_bool(has_ticket),
+            activity_from=_parse_datetime_field(activity_from),
+            activity_to=_parse_datetime_field(activity_to),
+            sort_by=_query_text(sort_by),
+            sort_dir=_query_text(sort_dir),
+            page=_query_int(page, default=1) or 1,
+            per_page=_query_int(per_page, default=25) or 25,
+            selected_conversation_id=_query_text(c),
+            actor_person_id=_actor_uuid_from_request(request),
+            composition=team_inbox_projection.InboxQueueComposition.sidebar,
+            include_total_count=False,
+        ),
+    )
+    if projection.row is None:
+        return Response(
+            status_code=200,
+            headers={
+                "HX-Reswap": "delete",
+                "Cache-Control": "private, no-store",
+            },
+        )
+    return templates.TemplateResponse(
+        request=request,
+        name="admin/inbox/_queue_row.html",
+        context={
+            "request": request,
+            "row": projection.row,
+            "list_query": projection.list_query,
+            "agent_options": projection.agent_options,
+            "selected_id": projection.selected_id,
+        },
+        headers={"Cache-Control": "private, no-store"},
+    )
+
+
+@router.get(
     "/{conversation_id}",
     response_class=HTMLResponse,
     dependencies=[Depends(require_permission("support:ticket:read"))],
