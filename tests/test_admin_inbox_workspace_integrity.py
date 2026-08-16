@@ -182,18 +182,21 @@ def test_reply_submission_refreshes_inbox_fragments_without_page_navigation():
     assert '@inbox-reply-completed.window="completeSend($event.detail)"' in CONVERSATION
     assert "completeSend(result)" in JAVASCRIPT
     assert "workspace?.refreshThreadForMessage?.(" in JAVASCRIPT
-    assert 'workspace?.refreshConversationList?.("reply")' in JAVASCRIPT
+    assert "/messages/${id}" in JAVASCRIPT
+    assert "this.refreshConversationRow(conversationId)" in JAVASCRIPT
+    assert 'workspace?.refreshConversationList?.("reply")' not in JAVASCRIPT
     assert 'this.draft = ""' in JAVASCRIPT
     assert "window.location.reload" not in JAVASCRIPT
-    assert "admin-inbox.js?v=20260815a" in INDEX
+    assert "admin-inbox.js?v=20260815b" in INDEX
 
 
 def test_reply_and_realtime_refresh_the_message_once():
     marker = JAVASCRIPT.index("refreshThreadForMessage(conversationId")
-    body = JAVASCRIPT[marker : marker + 700]
+    body = JAVASCRIPT[marker : marker + 1300]
     assert "recentlyRefreshedMessageIds.has(id)" in body
     assert "recentlyRefreshedMessageIds.add(id)" in body
     assert "recentlyRefreshedMessageIds.delete(id)" in body
+    assert 'swap: "beforeend"' in body
 
     realtime_marker = JAVASCRIPT.index('eventType === "message_new"')
     realtime_body = JAVASCRIPT[realtime_marker : realtime_marker + 900]
@@ -201,6 +204,13 @@ def test_reply_and_realtime_refresh_the_message_once():
         "this.refreshThreadForMessage(this.selectedId, data.message_id)"
         in realtime_body
     )
+
+
+def test_incremental_refresh_is_bounded_and_has_stable_fragment_targets():
+    assert "window.htmx.config.timeout = 15000" in JAVASCRIPT
+    assert 'id="inbox-message-list"' in CONVERSATION
+    assert 'data-inbox-message-id="{{ entry.message.id }}"' in CONVERSATION
+    assert 'id="inbox-conversation-row-{{ row.id }}"' in QUEUE
 
 
 def test_delivery_status_updates_in_place_from_authoritative_realtime_hint():

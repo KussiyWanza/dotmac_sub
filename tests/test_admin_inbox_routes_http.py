@@ -32,6 +32,7 @@ from app.services import (
     team_inbox_commands,
     team_inbox_filters,
     team_inbox_projection,
+    team_inbox_read,
     team_inbox_read_state,
 )
 from app.web.admin.inbox import _detail_redirect, _read_new_conversation_uploads, router
@@ -256,6 +257,81 @@ def test_reply_htmx_request_returns_typed_completion_event_without_redirect():
         "message": "Reply queued from support@example.test.",
         "message_id": str(outcome.message_id),
     }
+
+
+def test_message_fragment_route_renders_one_authoritative_message():
+    conversation_id = uuid.uuid4()
+    message_id = uuid.uuid4()
+    message = team_inbox_read.InboxTimelineMessage(
+        id=str(message_id),
+        channel_type="email",
+        direction="internal",
+        subject=None,
+        body="Targeted fragment body",
+        from_address=None,
+        to_addresses=[],
+        cc_addresses=[],
+        sent_at=None,
+        received_at=None,
+        created_at=datetime.now(UTC),
+        metadata=None,
+        attachments=[],
+        sender=None,
+    )
+    projection = team_inbox_projection.InboxMessageFragmentProjection(
+        conversation_id=conversation_id,
+        message_id=message_id,
+        message=message,
+    )
+    client = _client(object())
+
+    with patch(
+        "app.web.admin.inbox.team_inbox_projection.get_message_fragment_projection",
+        return_value=projection,
+    ):
+        response = client.get(f"/inbox/{conversation_id}/messages/{message_id}")
+
+    assert response.status_code == 200
+    assert response.headers["Cache-Control"] == "private, no-store"
+    assert f'data-inbox-message-id="{message_id}"' in response.text
+    assert "Targeted fragment body" in response.text
+
+
+def test_queue_row_route_deletes_a_row_that_no_longer_matches_filters():
+    conversation_id = uuid.uuid4()
+    seen: list[team_inbox_projection.InboxQueueRequest] = []
+
+    def project(_db, *, conversation_id, request):
+        seen.append(request)
+        return team_inbox_projection.InboxQueueRowProjection(
+            conversation_id=conversation_id,
+            row=None,
+            list_query=team_inbox_projection.INBOX_LIST_DEFINITION.build_query(
+                search=None,
+                filters={"needs_response": "true"},
+            ),
+            agent_options=(),
+            selected_id=str(conversation_id),
+        )
+
+    client = _client(object())
+    with (
+        patch(
+            "app.web.admin.inbox.team_inbox_projection.get_queue_row_projection",
+            side_effect=project,
+        ),
+        patch("app.services.web_admin.get_actor_id", return_value=None),
+    ):
+        response = client.get(
+            f"/inbox/{conversation_id}/queue-row",
+            params={"needs_response": "true", "c": str(conversation_id)},
+        )
+
+    assert response.status_code == 200
+    assert response.headers["HX-Reswap"] == "delete"
+    assert response.headers["Cache-Control"] == "private, no-store"
+    assert seen[0].needs_response is True
+    assert seen[0].selected_conversation_id == str(conversation_id)
 
 
 def test_reply_htmx_command_error_stays_in_workspace_with_failure_event():
