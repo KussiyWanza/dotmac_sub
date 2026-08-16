@@ -1,9 +1,23 @@
+import hashlib
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+import pytest
+from fastapi import HTTPException
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from starlette.requests import Request
+
+from app.models.auth import AuthProvider, SessionStatus, UserCredential
+from app.models.auth import Session as AuthSession
+from app.models.system_user import SystemUser
+from app.services import staff_party_authentication as resolver
+from app.services.auth_flow import AuthFlow, hash_password
 from app.services.staff_party_authentication import (
     StaffProjectionError,
     StaffProjectionRefusal,
 )
+from tests.staff_identity_fixtures import add_bound_staff_user, project_staff_login
 
 
 def test_staff_projection_error_allows_runtime_traceback_state() -> None:
@@ -29,17 +43,6 @@ def test_staff_projection_error_allows_runtime_traceback_state() -> None:
 # said the right words; only real rows prove which key actually resolved.
 # ---------------------------------------------------------------------------
 
-import pytest
-from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
-
-from app.models.auth import AuthProvider, UserCredential
-from app.models.auth import Session as AuthSession
-from app.models.system_user import SystemUser
-from app.services import staff_party_authentication as resolver
-from app.services.auth_flow import hash_password
-from tests.staff_identity_fixtures import add_bound_staff_user, project_staff_login
-
 
 def _bound_login(db_session, email: str = "cutover@example.test"):
     """A fully projected staff login: principal, Party, credential."""
@@ -54,6 +57,44 @@ def _bound_login(db_session, email: str = "cutover@example.test"):
     project_staff_login(db_session, user=user, credential=credential)
     db_session.commit()
     return user, person, credential
+
+
+def _request(*, device_id: str | None = None) -> Request:
+    headers = [(b"user-agent", b"staff-party-cutover-test")]
+    if device_id is not None:
+        headers.append((b"x-device-id", device_id.encode()))
+    return Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/auth/refresh",
+            "headers": headers,
+            "client": ("127.0.0.1", 12345),
+        }
+    )
+
+
+def _staff_session(
+    db_session,
+    *,
+    refresh_token: str,
+    system_user_id,
+    party_id,
+    device_id: str | None = None,
+) -> AuthSession:
+    session = AuthSession(
+        system_user_id=system_user_id,
+        party_id=party_id,
+        status=SessionStatus.active,
+        token_hash=hashlib.sha256(refresh_token.encode()).hexdigest(),
+        device_id=device_id,
+        created_at=datetime.now(UTC),
+        last_seen_at=datetime.now(UTC),
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    db_session.add(session)
+    db_session.commit()
+    return session
 
 
 def _unproject_credential(credential) -> None:
@@ -190,6 +231,150 @@ def test_a_mismatched_session_pair_fails_closed(db_session) -> None:
         resolver.resolve_staff_principal_by_party(db_session, person.id, impostor.id)
 
     assert exc.value.refusal is resolver.StaffProjectionRefusal.projection_conflict
+
+
+def test_refresh_resolves_a_populated_session_from_party(
+    db_session, monkeypatch
+) -> None:
+    monkeypatch.setenv("JWT_SECRET", "test-secret")
+    user, person, _credential = _bound_login(db_session, "refresh-party@example.test")
+    refresh_token = "refresh-party-token"
+    session = _staff_session(
+        db_session,
+        refresh_token=refresh_token,
+        system_user_id=user.id,
+        party_id=person.id,
+    )
+
+    result = AuthFlow.refresh(db_session, refresh_token, _request())
+
+    db_session.refresh(session)
+    assert result["refresh_token"] != refresh_token
+    assert session.party_id == person.id
+    assert session.system_user_id == user.id
+
+
+def test_refresh_refuses_a_mismatched_pair_before_rotating(
+    db_session, monkeypatch
+) -> None:
+    """The Party decision must happen before any successful-refresh mutation."""
+
+    monkeypatch.setenv("JWT_SECRET", "test-secret")
+    _user, person, _credential = _bound_login(
+        db_session, "refresh-mismatch@example.test"
+    )
+    other, _other_party = add_bound_staff_user(
+        db_session, email="refresh-other@example.test"
+    )
+    refresh_token = "refresh-mismatch-token"
+    session = _staff_session(
+        db_session,
+        refresh_token=refresh_token,
+        system_user_id=other.id,
+        party_id=person.id,
+    )
+    before = (
+        session.token_hash,
+        session.previous_token_hash,
+        session.token_rotated_at,
+        session.last_seen_at,
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        AuthFlow.refresh(db_session, refresh_token, _request())
+
+    assert exc.value.status_code == 401
+    db_session.expire_all()
+    persisted = db_session.get(AuthSession, session.id)
+    assert persisted is not None
+    assert (
+        persisted.token_hash,
+        persisted.previous_token_hash,
+        persisted.token_rotated_at,
+        persisted.last_seen_at,
+    ) == before
+
+
+def test_refresh_keeps_the_null_only_pre_534_bridge(db_session, monkeypatch) -> None:
+    monkeypatch.setenv("JWT_SECRET", "test-secret")
+    user, _person, _credential = _bound_login(db_session, "refresh-bridge@example.test")
+    refresh_token = "refresh-bridge-token"
+    _staff_session(
+        db_session,
+        refresh_token=refresh_token,
+        system_user_id=user.id,
+        party_id=None,
+    )
+
+    result = AuthFlow.refresh(db_session, refresh_token, _request())
+
+    assert result["refresh_token"] != refresh_token
+
+
+def test_new_staff_session_is_minted_from_a_typed_party_binding(
+    db_session, monkeypatch
+) -> None:
+    monkeypatch.setenv("JWT_SECRET", "test-secret")
+    user, person, _credential = _bound_login(db_session, "mint-party@example.test")
+    binding = resolver.StaffSessionBinding(
+        party_id=person.id,
+        system_user_id=user.id,
+    )
+
+    AuthFlow._issue_tokens(
+        db_session,
+        "system_user",
+        str(user.id),
+        _request(),
+        staff_binding=binding,
+    )
+
+    session = (
+        db_session.execute(
+            select(AuthSession).where(AuthSession.system_user_id == user.id)
+        )
+        .scalars()
+        .one()
+    )
+    assert session.party_id == person.id
+    assert session.system_user_id == user.id
+
+
+def test_session_mint_refuses_a_conflicting_binding_before_device_revocation(
+    db_session, monkeypatch
+) -> None:
+    monkeypatch.setenv("JWT_SECRET", "test-secret")
+    user, person, _credential = _bound_login(db_session, "mint-owner@example.test")
+    other, _other_party = add_bound_staff_user(
+        db_session, email="mint-other@example.test"
+    )
+    existing = _staff_session(
+        db_session,
+        refresh_token="existing-device-token",
+        system_user_id=other.id,
+        party_id=other.person_party_id,
+        device_id="known-device",
+    )
+    conflicting = resolver.StaffSessionBinding(
+        party_id=person.id,
+        system_user_id=other.id,
+    )
+
+    with pytest.raises(resolver.StaffProjectionError) as exc:
+        AuthFlow._issue_tokens(
+            db_session,
+            "system_user",
+            str(other.id),
+            _request(device_id="known-device"),
+            staff_binding=conflicting,
+        )
+
+    assert exc.value.refusal is resolver.StaffProjectionRefusal.projection_conflict
+    db_session.expire_all()
+    persisted = db_session.get(AuthSession, existing.id)
+    assert persisted is not None
+    assert persisted.status is SessionStatus.active
+    assert persisted.revoked_at is None
 
 
 def test_the_null_bridge_accepts_a_pre_migration_session(db_session) -> None:

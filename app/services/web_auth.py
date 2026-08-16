@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from starlette.responses import Response
 
 from app.services import auth_flow as auth_flow_service
-from app.services import credential_recovery
+from app.services import credential_recovery, staff_party_authentication
 from app.services.auth_flow import AuthFlow
 from app.services.domain_errors import DomainError
 from app.services.owner_commands import CommandContext
@@ -345,13 +345,27 @@ def mfa_submit(
         )
 
 
-def _mfa_enrollment_payload(db: Session, token: str) -> dict:
+def _mfa_enrollment_binding(
+    db: Session,
+    token: str,
+) -> staff_party_authentication.StaffSessionBinding:
     payload = auth_flow_service._decode_jwt(db, token, "mfa_enrollment")  # noqa: SLF001
     if payload.get("principal_type") != "system_user":
         raise ValueError("Invalid MFA enrollment token")
-    if not (payload.get("principal_id") or payload.get("sub")):
-        raise ValueError("Invalid MFA enrollment token")
-    return payload
+    binding = auth_flow_service.staff_binding_from_token_payload(
+        payload,
+        invalid_detail="Invalid MFA enrollment token",
+    )
+    try:
+        staff_party_authentication.resolve_staff_principal_by_party(
+            db,
+            binding.party_id,
+            binding.system_user_id,
+            reference=binding.system_user_id,
+        )
+    except staff_party_authentication.StaffProjectionError as exc:
+        raise ValueError("Invalid MFA enrollment token") from exc
+    return binding
 
 
 def mfa_enroll_page(
@@ -364,8 +378,8 @@ def mfa_enroll_page(
     if not enrollment_token:
         return RedirectResponse(url="/auth/login", status_code=303)
     try:
-        payload = _mfa_enrollment_payload(db, enrollment_token)
-        principal_id = str(payload.get("principal_id") or payload.get("sub"))
+        binding = _mfa_enrollment_binding(db, enrollment_token)
+        principal_id = str(binding.system_user_id)
         setup = auth_flow_service.auth_flow.admin_mfa_setup(
             db, principal_id, "Authenticator app"
         )
@@ -401,8 +415,8 @@ def mfa_enroll_confirm(
         return RedirectResponse(url="/auth/login", status_code=303)
     redirect_url = _safe_next(next_url)
     try:
-        payload = _mfa_enrollment_payload(db, enrollment_token)
-        principal_id = str(payload.get("principal_id") or payload.get("sub"))
+        binding = _mfa_enrollment_binding(db, enrollment_token)
+        principal_id = str(binding.system_user_id)
         method = auth_flow_service.auth_flow.admin_mfa_confirm(
             db, method_id, code.strip(), principal_id
         )
@@ -412,7 +426,11 @@ def mfa_enroll_confirm(
             else []
         )
         result = auth_flow_service.auth_flow._issue_tokens(  # noqa: SLF001
-            db, "system_user", principal_id, request
+            db,
+            "system_user",
+            principal_id,
+            request,
+            staff_binding=binding,
         )
         response: Response
         if recovery_codes:

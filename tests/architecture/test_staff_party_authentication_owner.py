@@ -1,16 +1,16 @@
 """Staff authentication resolves through one named owner — stage 1.
 
-Three entry points authenticate a staff principal: login, refresh, and
-per-request session validation. Before the cutover each resolved the principal
-itself, straight from `credential.system_user_id` or `session.system_user_id`.
-That is three authorities wearing one name.
+Four entry points authenticate a staff principal: login, refresh, per-request
+session validation, and vendor admission. Before the cutover each resolved the
+principal itself, straight from `credential.system_user_id` or
+`session.system_user_id`. That is four authorities wearing one name.
 
 This guard fixes the shape for deploy 1:
 
-- all three call `staff_party_authentication`
+- all four call `staff_party_authentication`
 - `resolve_staff_principal_assertion` — the ONE-DEPLOY compatibility bridge —
-  is referenced only by the owner that defines it and by `auth_flow`, so it
-  cannot spread while it exists
+  is referenced only by the owner that defines it; readers use the typed
+  session resolver, so the bridge cannot spread while it exists
 - nothing outside the owner resolves a staff principal by handing
   `credential.system_user_id` or `session.system_user_id` to `db.get`
 
@@ -32,7 +32,6 @@ APP = PROJECT_ROOT / "app"
 OWNER_MODULE = "staff_party_authentication"
 OWNER_PATH = Path("app/services/staff_party_authentication.py")
 BRIDGE = "resolve_staff_principal_assertion"
-READER = Path("app/services/auth_flow.py")
 
 #: The FOUR staff authentication entry points, as (module, function). Named
 #: individually so deleting one is a failure, not a silent pass. The vendor one
@@ -83,20 +82,22 @@ def _legacy_resolvers(root: Path = APP) -> dict[str, list[int]]:
     return offenders
 
 
-def test_the_owner_defines_both_resolution_entry_points() -> None:
+def test_the_owner_defines_the_party_primitive_and_transition_entry_points() -> None:
     """A rename must fail here rather than silently empty every other check."""
 
     source = (PROJECT_ROOT / OWNER_PATH).read_text(encoding="utf-8")
 
+    assert "def resolve_staff_principal_by_party(" in source
     assert "def resolve_staff_principal(" in source
+    assert "def resolve_staff_session_principal(" in source
     assert f"def {BRIDGE}(" in source
 
 
 def test_every_staff_entry_point_delegates_to_the_owner() -> None:
-    """Login, refresh and session validation each call the named owner.
+    """All four staff authentication entry points call the named owner.
 
-    Checked per function, so removing the call from one of the three is a
-    failure even while the other two keep the module import alive.
+    Checked per function, so removing one call fails even while the other three
+    keep the module import alive.
     """
 
     missing: list[str] = []
@@ -135,10 +136,9 @@ def test_the_compatibility_bridge_is_confined() -> None:
 
     referencing = _modules_referencing(BRIDGE)
 
-    assert referencing <= {str(OWNER_PATH), str(READER)}, (
+    assert referencing <= {str(OWNER_PATH)}, (
         f"{BRIDGE} is the temporary compatibility bridge and must stay confined "
-        f"to the owner and the reader; also referenced by "
-        f"{referencing - {str(OWNER_PATH), str(READER)}}"
+        f"to the owner; also referenced by {referencing - {str(OWNER_PATH)}}"
     )
 
 
@@ -154,17 +154,22 @@ def test_no_module_resolves_a_staff_principal_from_the_legacy_key() -> None:
 #: The primitive. Identity in, staff context out — the only correct query
 #: direction for a session that carries a Party.
 PRIMITIVE = "resolve_staff_principal_by_party"
+CREDENTIAL_RESOLVER = "resolve_staff_principal"
+SESSION_RESOLVER = "resolve_staff_session_principal"
 
 #: Functions that must reach the primitive, because they resolve a principal
 #: for a subject that carries `party_id`.
 PARTY_KEYED = (
     (Path("app/services/auth_flow.py"), "validate_active_session"),
+    (Path("app/services/auth_flow.py"), "refresh"),
+    (Path("app/services/auth_flow.py"), "_issue_tokens"),
+    (Path("app/services/auth_flow.py"), "mfa_verify"),
     (Path("app/services/auth_flow.py"), "_principal_for_credential"),
 )
 
 
 def _resolves_party_keyed(source: str, function_name: str) -> bool:
-    """Does this function reach the primitive, directly or via the credential wrapper?"""
+    """Does this function reach a resolver whose query starts at Party?"""
 
     tree = ast.parse(source)
     for node in ast.walk(tree):
@@ -172,8 +177,17 @@ def _resolves_party_keyed(source: str, function_name: str) -> bool:
             isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
             and node.name == function_name
         ):
-            dumped = ast.dump(node)
-            return PRIMITIVE in dumped or "resolve_staff_principal'" in dumped
+            owner_calls = {
+                call.func.attr
+                for call in ast.walk(node)
+                if isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Attribute)
+                and isinstance(call.func.value, ast.Name)
+                and call.func.value.id == OWNER_MODULE
+            }
+            return bool(
+                owner_calls & {PRIMITIVE, CREDENTIAL_RESOLVER, SESSION_RESOLVER}
+            )
     return False
 
 
@@ -210,26 +224,26 @@ def test_the_guard_detects_assertion_first_regression() -> None:
     """
 
     regressed = (
-        "def validate_active_session(db, session):\n"
+        "def refresh(db, session):\n"
         "    # the exact regression: party_id ignored, legacy key resolves\n"
         "    return staff_party_authentication.resolve_staff_principal_assertion(\n"
         "        db, session.system_user_id\n"
         "    )\n"
     )
 
-    assert not _resolves_party_keyed(regressed, "validate_active_session"), (
+    assert not _resolves_party_keyed(regressed, "refresh"), (
         "the guard accepted assertion-first resolution for a Party-carrying "
         "session — it cannot tell query direction, so it certifies nothing"
     )
 
     correct = (
-        "def validate_active_session(db, session):\n"
-        "    return staff_party_authentication.resolve_staff_principal_by_party(\n"
-        "        db, session.party_id, session.system_user_id\n"
+        "def refresh(db, session):\n"
+        "    return staff_party_authentication.resolve_staff_session_principal(\n"
+        "        db, party_id=session.party_id, system_user_id=session.system_user_id\n"
         "    )\n"
     )
 
-    assert _resolves_party_keyed(correct, "validate_active_session"), (
+    assert _resolves_party_keyed(correct, "refresh"), (
         "the guard rejected correct Party-keyed resolution"
     )
 

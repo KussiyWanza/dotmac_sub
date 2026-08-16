@@ -6,6 +6,7 @@ import os
 import secrets
 import string
 import warnings
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import UUID
@@ -469,6 +470,8 @@ def _issue_mfa_token(
     db: Session | None,
     principal_id: str,
     principal_type: str = "subscriber",
+    *,
+    staff_binding: staff_party_authentication.StaffSessionBinding | None = None,
 ) -> str:
     now = _now()
     payload = {
@@ -479,6 +482,18 @@ def _issue_mfa_token(
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(minutes=5)).timestamp()),
     }
+    if principal_type == "system_user":
+        if staff_binding is None:
+            raise staff_party_authentication.StaffProjectionError(
+                staff_party_authentication.StaffProjectionRefusal.projection_missing,
+                principal_id,
+            )
+        if str(staff_binding.system_user_id) != str(principal_id):
+            raise staff_party_authentication.StaffProjectionError(
+                staff_party_authentication.StaffProjectionRefusal.projection_conflict,
+                principal_id,
+            )
+        payload["party_id"] = str(staff_binding.party_id)
     return _jwt_encode_token(payload, _jwt_secret(db), _jwt_algorithm(db))
 
 
@@ -486,6 +501,8 @@ def _issue_mfa_enrollment_token(
     db: Session | None,
     principal_id: str,
     principal_type: str = "system_user",
+    *,
+    staff_binding: staff_party_authentication.StaffSessionBinding | None = None,
 ) -> str:
     now = _now()
     payload = {
@@ -496,7 +513,39 @@ def _issue_mfa_enrollment_token(
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(minutes=5)).timestamp()),
     }
+    if principal_type == "system_user":
+        if staff_binding is None:
+            raise staff_party_authentication.StaffProjectionError(
+                staff_party_authentication.StaffProjectionRefusal.projection_missing,
+                principal_id,
+            )
+        if str(staff_binding.system_user_id) != str(principal_id):
+            raise staff_party_authentication.StaffProjectionError(
+                staff_party_authentication.StaffProjectionRefusal.projection_conflict,
+                principal_id,
+            )
+        payload["party_id"] = str(staff_binding.party_id)
     return _jwt_encode_token(payload, _jwt_secret(db), _jwt_algorithm(db))
+
+
+def staff_binding_from_token_payload(
+    payload: Mapping[str, object],
+    *,
+    invalid_detail: str,
+) -> staff_party_authentication.StaffSessionBinding:
+    """Parse the signed staff identity/context pair carried across an MFA hop."""
+
+    principal_id = payload.get("principal_id") or payload.get("sub")
+    party_id = payload.get("party_id")
+    if not principal_id or not party_id:
+        raise HTTPException(status_code=401, detail=invalid_detail)
+    try:
+        return staff_party_authentication.StaffSessionBinding(
+            party_id=UUID(str(party_id)),
+            system_user_id=UUID(str(principal_id)),
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=401, detail=invalid_detail) from exc
 
 
 # Admin reset links are capped to one hour regardless of the (customer-facing)
@@ -1156,6 +1205,11 @@ class AuthFlow(ListResponseMixin):
             raise HTTPException(status_code=403, detail="Account disabled") from exc
         if not principal or not getattr(principal, "is_active", False):
             raise HTTPException(status_code=403, detail="Account disabled")
+        staff_binding = (
+            staff_party_authentication.binding_for_principal(principal)
+            if principal_type == "system_user"
+            else None
+        )
 
         if credential.must_change_password:
             raise HTTPException(
@@ -1173,17 +1227,31 @@ class AuthFlow(ListResponseMixin):
         if _primary_totp_method(db, principal_type, principal_id):
             return {
                 "mfa_required": True,
-                "mfa_token": _issue_mfa_token(db, principal_id, principal_type),
+                "mfa_token": _issue_mfa_token(
+                    db,
+                    principal_id,
+                    principal_type,
+                    staff_binding=staff_binding,
+                ),
             }
         if principal_type == "system_user" and _force_admin_mfa(db):
             return {
                 "mfa_enrollment_required": True,
                 "mfa_enrollment_token": _issue_mfa_enrollment_token(
-                    db, principal_id, principal_type
+                    db,
+                    principal_id,
+                    principal_type,
+                    staff_binding=staff_binding,
                 ),
             }
 
-        return AuthFlow._issue_tokens(db, principal_type, principal_id, request)
+        return AuthFlow._issue_tokens(
+            db,
+            principal_type,
+            principal_id,
+            request,
+            staff_binding=staff_binding,
+        )
 
     @staticmethod
     def admin_mfa_setup(db: Session, system_user_id: str, label: str | None):
@@ -1458,6 +1526,30 @@ class AuthFlow(ListResponseMixin):
         principal_type = payload.get("principal_type") or "subscriber"
         if not principal_id:
             raise HTTPException(status_code=401, detail="Invalid MFA token")
+        staff_binding: staff_party_authentication.StaffSessionBinding | None = None
+        if principal_type == "system_user":
+            staff_binding = staff_binding_from_token_payload(
+                payload,
+                invalid_detail="Invalid MFA token",
+            )
+            try:
+                principal = staff_party_authentication.resolve_staff_principal_by_party(
+                    db,
+                    staff_binding.party_id,
+                    staff_binding.system_user_id,
+                    reference=staff_binding.system_user_id,
+                )
+            except staff_party_authentication.StaffProjectionError as exc:
+                logger.error(
+                    "Staff MFA verification refused: %s (subject=%s)",
+                    exc.refusal.value,
+                    exc.credential_id,
+                )
+                raise HTTPException(
+                    status_code=401,
+                    detail="Invalid MFA token",
+                ) from exc
+            principal_id = str(principal.id)
 
         method = _primary_totp_method(db, principal_type, str(principal_id))
         if not method:
@@ -1476,7 +1568,13 @@ class AuthFlow(ListResponseMixin):
 
         method.last_used_at = _now()
         db.commit()
-        return AuthFlow._issue_tokens(db, principal_type, str(principal_id), request)
+        return AuthFlow._issue_tokens(
+            db,
+            principal_type,
+            str(principal_id),
+            request,
+            staff_binding=staff_binding,
+        )
 
     @staticmethod
     def mfa_verify_response(db: Session, mfa_token: str, code: str, request: Request):
@@ -1520,6 +1618,30 @@ class AuthFlow(ListResponseMixin):
             db.commit()
             raise HTTPException(status_code=401, detail="Refresh token expired")
 
+        principal_type, principal_id = principal_from_session(session)
+        if principal_type == "system_user":
+            # Resolve identity BEFORE rotating the refresh token. A projection
+            # refusal is an authorization failure and must leave the session
+            # byte-for-byte unchanged rather than consuming the caller's token.
+            try:
+                principal = staff_party_authentication.resolve_staff_session_principal(
+                    db,
+                    party_id=session.party_id,
+                    system_user_id=session.system_user_id,
+                    reference=str(session.id),
+                )
+            except staff_party_authentication.StaffProjectionError as exc:
+                logger.error(
+                    "Staff refresh refused: %s (subject=%s)",
+                    exc.refusal.value,
+                    exc.credential_id,
+                )
+                raise HTTPException(
+                    status_code=401,
+                    detail="Invalid refresh token",
+                ) from exc
+            principal_id = str(principal.id)
+
         new_refresh = secrets.token_urlsafe(48)
         session.previous_token_hash = session.token_hash
         session.token_hash = _hash_token(new_refresh)
@@ -1529,26 +1651,6 @@ class AuthFlow(ListResponseMixin):
             session.ip_address = request.client.host
         session.user_agent = _truncate_user_agent(request.headers.get("user-agent"))
         db.commit()
-
-        principal_type, principal_id = principal_from_session(session)
-        if principal_type == "system_user":
-            # Refresh re-validates through the same resolver rather than
-            # trusting the session's assertion. Otherwise refresh would extend
-            # the legacy authority indefinitely — a session issued before the
-            # cutover could keep minting access tokens on the old key.
-            try:
-                staff_party_authentication.resolve_staff_principal_assertion(
-                    db, principal_id
-                )
-            except staff_party_authentication.StaffProjectionError as exc:
-                logger.error(
-                    "Staff refresh refused: %s (system_user=%s)",
-                    exc.refusal.value,
-                    exc.credential_id,
-                )
-                raise HTTPException(
-                    status_code=401, detail="Invalid refresh token"
-                ) from exc
         access_token = _issue_access_token(
             db, principal_id, principal_type, str(session.id)
         )
@@ -1624,6 +1726,8 @@ class AuthFlow(ListResponseMixin):
         principal_type_or_principal_id: str,
         principal_id_or_request: str | Request,
         request: Request | None = None,
+        *,
+        staff_binding: staff_party_authentication.StaffSessionBinding | None = None,
     ):
         # Backward compatibility: older callers passed (db, principal_id, request)
         # and implicitly targeted subscriber principals.
@@ -1637,6 +1741,27 @@ class AuthFlow(ListResponseMixin):
             active_request = request
 
         principal_uuid = coerce_uuid(principal_id)
+        if principal_type == "system_user":
+            if staff_binding is None:
+                raise staff_party_authentication.StaffProjectionError(
+                    staff_party_authentication.StaffProjectionRefusal.projection_missing,
+                    principal_uuid,
+                )
+            # Validate the Party-keyed identity/context pair before revoking a
+            # prior device session or performing any other write.
+            staff_principal = (
+                staff_party_authentication.resolve_staff_principal_by_party(
+                    db,
+                    staff_binding.party_id,
+                    staff_binding.system_user_id,
+                    reference=principal_uuid,
+                )
+            )
+            if staff_principal.id != principal_uuid:
+                raise staff_party_authentication.StaffProjectionError(
+                    staff_party_authentication.StaffProjectionRefusal.projection_conflict,
+                    principal_uuid,
+                )
         refresh_token = secrets.token_urlsafe(48)
         now = _now()
         expires_at = now + timedelta(days=_refresh_ttl_days(db))
@@ -1675,17 +1800,12 @@ class AuthFlow(ListResponseMixin):
         if principal_type == "system_user":
             # Write BOTH halves of the bound pair. `party_id` is the identity
             # the later ratchet will validate from; `system_user_id` stays as
-            # the Sub-owned staff context and is not being retired. Resolved
-            # through the typed resolver so a session can never be minted with
-            # an identity the projection would refuse.
-            staff_principal = (
-                staff_party_authentication.resolve_staff_principal_assertion(
-                    db, principal_uuid
-                )
-            )
+            # the Sub-owned staff context and is not being retired. The typed
+            # binding was resolved from Party before any mutation above.
+            assert staff_binding is not None
             session = AuthSession(
                 system_user_id=principal_uuid,
-                party_id=staff_principal.person_party_id,
+                party_id=staff_binding.party_id,
                 **session_kwargs,
             )
         elif principal_type == "reseller_user":
@@ -2098,25 +2218,18 @@ def validate_active_session(
         #                       with system_user_id compared as the Sub-context
         #                       assertion. This is the destination.
         #   party_id absent  -> the named assertion-first bridge, for sessions
-        #                       predating migration 533 only. Deploy 2 deletes
+        #                       predating migration 534 only. Deploy 2 deletes
         #                       this branch and requires party_id.
         #
         # Returning None is the fail-closed answer — the request is
         # unauthenticated and the caller learns nothing about why.
         try:
-            if session.party_id is not None:
-                principal = staff_party_authentication.resolve_staff_principal_by_party(
-                    db,
-                    session.party_id,
-                    session.system_user_id,
-                    reference=str(session.id),
-                )
-            else:
-                principal = (
-                    staff_party_authentication.resolve_staff_principal_assertion(
-                        db, active_id
-                    )
-                )
+            principal = staff_party_authentication.resolve_staff_session_principal(
+                db,
+                party_id=session.party_id,
+                system_user_id=session.system_user_id,
+                reference=str(session.id),
+            )
         except staff_party_authentication.StaffProjectionError as exc:
             logger.error(
                 "Staff session refused: %s (system_user=%s)",
