@@ -1,7 +1,7 @@
 """Add reversible core-device archival lifecycle.
 
-Revision ID: 533_core_device_archive
-Revises: 532_sales_order_waivers
+Revision ID: 535_core_device_archive
+Revises: 534_session_party_projection
 Create Date: 2026-08-15
 """
 
@@ -14,8 +14,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision = "533_core_device_archive"
-down_revision = "532_sales_order_waivers"
+revision = "535_core_device_archive"
+down_revision = "534_session_party_projection"
 branch_labels = None
 depends_on = None
 
@@ -122,7 +122,7 @@ def downgrade() -> None:
     if archived_count:
         raise RuntimeError(
             "Restore all archived core devices before downgrading "
-            "533_core_device_archive"
+            "535_core_device_archive"
         )
     op.execute(
         "UPDATE device_projections SET lifecycle_state = 'inactive' "

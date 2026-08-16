@@ -17,8 +17,8 @@ approval, no per-row disagreement report, and no way to refuse an unmappable
 row. The backfill is a separate, approved, digest-bound operation; the reader
 ratchet that makes ``party_id`` required comes after it, in a later deploy.
 
-Revision ID: 533_session_party_projection
-Revises: 532_sales_order_waivers
+Revision ID: 534_session_party_projection
+Revises: 533_ncc_weekly_report_delivery
 Create Date: 2026-08-15
 """
 
@@ -29,8 +29,8 @@ from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
-revision = "533_session_party_projection"
-down_revision = "532_sales_order_waivers"
+revision = "534_session_party_projection"
+down_revision = "533_ncc_weekly_report_delivery"
 branch_labels = None
 depends_on = None
 

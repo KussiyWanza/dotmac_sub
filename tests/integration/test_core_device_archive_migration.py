@@ -18,8 +18,8 @@ from alembic import command
 from app import config as app_config
 
 ROOT = Path(__file__).resolve().parents[2]
-PREDECESSOR = "532_sales_order_waivers"
-CANDIDATE = "533_core_device_archive"
+PREDECESSOR = "534_session_party_projection"
+CANDIDATE = "535_core_device_archive"
 
 
 def _render(url: URL) -> str:

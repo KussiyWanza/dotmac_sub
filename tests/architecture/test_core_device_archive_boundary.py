@@ -13,7 +13,7 @@ ROUTE = ROOT / "app" / "web" / "admin" / "network_core_devices.py"
 CONSOLIDATED_ROUTE = ROOT / "app" / "web" / "admin" / "network.py"
 MONITORING_API = ROOT / "app" / "api" / "domains_monitoring.py"
 LEGACY_MUTATIONS = ROOT / "app" / "services" / "web_network_core_devices_forms.py"
-MIGRATION = ROOT / "alembic" / "versions" / "533_core_device_archive.py"
+MIGRATION = ROOT / "alembic" / "versions" / "535_core_device_archive.py"
 DETAIL_TEMPLATE = (
     ROOT / "templates" / "admin" / "network" / "core-devices" / "detail.html"
 )
@@ -55,7 +55,7 @@ def test_archive_is_reversible_and_never_raw_deletes_the_device() -> None:
 
 def test_schema_and_detail_surface_preserve_reversible_state() -> None:
     migration = MIGRATION.read_text(encoding="utf-8")
-    assert 'down_revision = "532_sales_order_waivers"' in migration
+    assert 'down_revision = "534_session_party_projection"' in migration
     for field in ("archived_at", "archived_by", "archive_reason"):
         assert field in migration
     assert "network:device:archive" in migration
