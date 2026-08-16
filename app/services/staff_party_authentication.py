@@ -20,6 +20,7 @@ lifecycle. Party identifies the *person*; it does not absorb staff ownership.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import StrEnum
 from uuid import UUID
 
@@ -45,6 +46,9 @@ class StaffProjectionRefusal(StrEnum):
     projection_conflict = "staff_projection_conflict"
 
 
+StaffProjectionReference = UUID | str | None
+
+
 class StaffProjectionError(Exception):
     """A staff credential cannot be resolved through its Party projection.
 
@@ -56,11 +60,21 @@ class StaffProjectionError(Exception):
     __slots__ = ("credential_id", "refusal")
 
     def __init__(
-        self, refusal: StaffProjectionRefusal, credential_id: UUID | None
+        self,
+        refusal: StaffProjectionRefusal,
+        credential_id: StaffProjectionReference,
     ) -> None:
         self.refusal = refusal
         self.credential_id = credential_id
         super().__init__(f"{refusal.value} for credential {credential_id}")
+
+
+@dataclass(frozen=True, slots=True)
+class StaffSessionBinding:
+    """The authenticated identity and its Sub-owned staff context."""
+
+    party_id: UUID
+    system_user_id: UUID
 
 
 def resolve_staff_principal_by_party(
@@ -68,7 +82,7 @@ def resolve_staff_principal_by_party(
     party_id: UUID | None,
     asserted_system_user_id: UUID | None = None,
     *,
-    reference: UUID | None = None,
+    reference: StaffProjectionReference = None,
 ) -> SystemUser:
     """THE primitive. Identity in, staff context out.
 
@@ -128,14 +142,56 @@ def resolve_staff_principal(db: Session, credential: UserCredential) -> SystemUs
     )
 
 
-def resolve_staff_principal_assertion(db: Session, system_user_id: UUID) -> SystemUser:
-    """Validate a staff principal asserted by an existing session or token.
+def binding_for_principal(principal: SystemUser) -> StaffSessionBinding:
+    """Return the typed identity/context pair for a resolved staff principal."""
 
-    Sessions carry `system_user_id`, not `party_id`, so the assertion arrives in
-    the legacy shape. This does not make the legacy key authoritative: the
-    assertion is only accepted when the Party projection backs it, and the same
-    typed refusals apply. A session whose principal has no Party, or whose Party
-    owns more than one principal, is refused rather than resolved.
+    if principal.person_party_id is None:
+        raise StaffProjectionError(
+            StaffProjectionRefusal.projection_missing,
+            principal.id,
+        )
+    return StaffSessionBinding(
+        party_id=principal.person_party_id,
+        system_user_id=principal.id,
+    )
+
+
+def resolve_staff_session_principal(
+    db: Session,
+    *,
+    party_id: UUID | None,
+    system_user_id: UUID | None,
+    reference: StaffProjectionReference = None,
+) -> SystemUser:
+    """Resolve one deploy-1 session, preferring Party whenever it is present.
+
+    A populated session starts at ``party_id`` and treats ``system_user_id`` as
+    the Sub-context assertion. Only a session predating migration 534 may use
+    the assertion-first compatibility bridge. Deploy 2 deletes that null arm.
+    """
+
+    if party_id is not None:
+        return resolve_staff_principal_by_party(
+            db,
+            party_id,
+            system_user_id,
+            reference=reference,
+        )
+    if system_user_id is None:
+        raise StaffProjectionError(
+            StaffProjectionRefusal.projection_missing,
+            reference,
+        )
+    return resolve_staff_principal_assertion(db, system_user_id)
+
+
+def resolve_staff_principal_assertion(db: Session, system_user_id: UUID) -> SystemUser:
+    """Validate the principal asserted by a pre-534 session.
+
+    This is the one-deploy bridge. New sessions carry ``party_id`` and must not
+    call it; readers reach it only through ``resolve_staff_session_principal``
+    when that projection is null. A session whose principal has no Party, or
+    whose Party owns more than one principal, is refused rather than resolved.
 
     Deliberately does NOT re-derive identity from any other attribute. If the
     projection cannot vouch for the assertion, the answer is refusal — never a

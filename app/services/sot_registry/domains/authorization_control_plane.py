@@ -1457,9 +1457,13 @@ DOMAIN = DomainSOT(
                 "on healthy data while leaving the legacy key authoritative. "
                 "Fails closed with typed refusals and no legacy fallback. "
                 "The assertion-first resolver is a TEMPORARY bridge for "
-                "sessions predating migration 534 (party_id IS NULL) and is "
-                "deleted in deploy 2. Rollback floor is migration 534: never "
-                "roll back below it, or new sessions mint without party_id."
+                "sessions predating migration 534 (party_id IS NULL), is "
+                "reachable only through the typed session resolver, and is "
+                "deleted in deploy 2. Refresh resolves identity before token "
+                "rotation, and every new staff session is minted from an "
+                "explicit typed Party/context binding. Rollback floor is "
+                "migration 534: never roll back below it, or new sessions "
+                "mint without party_id."
             ),
             contract=ServiceContract(
                 concerns=(
@@ -1526,7 +1530,7 @@ DOMAIN = DomainSOT(
                     ),
                 ),
                 migration=MigrationContract(
-                    state=AuthorityMigrationState.CUT_OVER,
+                    state=AuthorityMigrationState.CUTOVER_READY,
                     old_owner="direct credential and session system_user_id lookup",
                     new_owner="party.staff_authentication_reader",
                     verification=(
@@ -1534,8 +1538,9 @@ DOMAIN = DomainSOT(
                         "architecture, and SOT contract tests."
                     ),
                     cutover_gate=(
-                        "All staff authentication entry points delegate to the "
-                        "Party-keyed primitive and fail closed on projection drift."
+                        "Every live staff session has an approved Party projection, "
+                        "all readers require it, and the assertion-first bridge is "
+                        "deleted."
                     ),
                     fallback_retirement=(
                         "Delete the assertion-first compatibility bridge after the "

@@ -19,6 +19,7 @@ from app.models.subscriber import UserType
 from app.models.system_user import SystemUser
 from app.services import auth_dependencies as auth_dep
 from app.services import session_manager as session_manager_service
+from app.services import staff_party_authentication
 from app.services.auth import hash_api_key
 from app.services.auth_dependencies import require_audit_auth, require_user_auth
 from app.services.auth_flow import AuthFlow, hash_password, hash_session_token
@@ -148,7 +149,11 @@ def test_require_user_auth_accepts_system_user_token(db_session, monkeypatch):
     db_session.commit()
 
     tokens = AuthFlow._issue_tokens(
-        db_session, "system_user", str(user.id), _make_request()
+        db_session,
+        "system_user",
+        str(user.id),
+        _make_request(),
+        staff_binding=staff_party_authentication.binding_for_principal(user),
     )
     auth = require_user_auth(
         authorization=f"Bearer {tokens['access_token']}", db=db_session
@@ -188,7 +193,11 @@ def test_validate_session_token_accepts_system_user_cookie(db_session, monkeypat
     db_session.commit()
 
     tokens = AuthFlow._issue_tokens(
-        db_session, "system_user", str(user.id), _make_request()
+        db_session,
+        "system_user",
+        str(user.id),
+        _make_request(),
+        staff_binding=staff_party_authentication.binding_for_principal(user),
     )
     request = _make_request()
     request._cookies = {"session_token": tokens["access_token"]}

@@ -363,7 +363,7 @@ class Session(Base):
     #: The authenticated identity. A staff session is a bound pair: `party_id`
     #: says WHO, `system_user_id` says which Sub-owned staff context they act
     #: in. Nullable only until the approved backfill fills the sessions that
-    #: predate migration 533; the reader ratchet that requires it lands after.
+    #: predate migration 534; the reader ratchet that requires it lands after.
     party_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("parties.id"), nullable=True, index=True
     )

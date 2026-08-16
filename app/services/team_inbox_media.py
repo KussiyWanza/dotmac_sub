@@ -533,6 +533,38 @@ def bind_assets_to_message(
     return assets
 
 
+def validate_staged_asset_ids(
+    db: Session,
+    *,
+    conversation_id: UUID,
+    asset_ids: list[str] | tuple[str, ...],
+) -> tuple[str, ...]:
+    """Resolve staged uploads before an outbound intent can reference them."""
+    from app.services.common import coerce_uuid
+
+    requested = tuple(
+        value for value in (coerce_uuid(item) for item in asset_ids) if value
+    )
+    if len(requested) != len(asset_ids) or len(set(requested)) != len(requested):
+        raise MediaUploadError("One or more selected attachments are invalid.")
+    if not requested:
+        return ()
+    rows = (
+        db.query(InboxMediaAsset)
+        .filter(InboxMediaAsset.id.in_(requested))
+        .filter(InboxMediaAsset.conversation_id == conversation_id)
+        .filter(InboxMediaAsset.direction == "outbound")
+        .filter(InboxMediaAsset.message_id.is_(None))
+        .all()
+    )
+    found = {row.id for row in rows}
+    if found != set(requested):
+        raise MediaUploadError(
+            "One or more attachments are unavailable. Remove them and upload again."
+        )
+    return tuple(str(asset_id) for asset_id in requested)
+
+
 def pending_outbound_assets(db: Session, conversation_id) -> list[InboxMediaAsset]:
     """Uploads staged for this conversation that no message carries yet."""
     from app.services.common import coerce_uuid
