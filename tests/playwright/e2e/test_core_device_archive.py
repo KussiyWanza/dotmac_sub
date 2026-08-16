@@ -70,7 +70,9 @@ def test_admin_can_archive_view_and_restore_core_device(
         admin_page.get_by_role("heading", name="Archive core device")
     ).to_be_visible()
     admin_page.get_by_label("Reason").fill("Removed from service in browser test")
-    admin_page.get_by_role("button", name="Archive device").click()
+    admin_page.locator("#core-device-archive-modal").get_by_role(
+        "button", name="Archive device", exact=True
+    ).click()
 
     admin_page.wait_for_url(
         f"**/admin/network/core-devices/{device_id}?message=*",

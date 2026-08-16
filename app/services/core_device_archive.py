@@ -12,12 +12,11 @@ from uuid import UUID
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app.models.audit import AuditActorType
 from app.models.catalog import NasDevice
 from app.models.forwarding_topology import ForwardingTopologyDeclaration
 from app.models.network_monitoring import NetworkDevice
 from app.models.router_management import Router
-from app.services.audit_adapter import stage_audit_event
+from app.services.audit_adapter import AuditActor, stage_audit_event
 from app.services.domain_errors import DomainError
 from app.services.events import emit_event
 from app.services.events.types import EventType
@@ -160,16 +159,16 @@ class CoreDeviceArchiveOutcome:
     replayed: bool
 
 
-def _actor(context: CommandContext) -> tuple[AuditActorType, str]:
+def _actor(context: CommandContext) -> AuditActor:
     prefix, separator, identifier = context.actor.partition(":")
     actor_id = identifier if separator and identifier else context.actor
     if prefix == "api_key":
-        return AuditActorType.api_key, actor_id
+        return AuditActor.api_key(actor_id)
     if prefix == "user":
-        return AuditActorType.user, actor_id
+        return AuditActor.user(actor_id)
     if prefix == "service":
-        return AuditActorType.service, actor_id
-    return AuditActorType.system, actor_id
+        return AuditActor.service(actor_id)
+    return AuditActor.system(actor_id)
 
 
 def _device(db: Session, device_id: UUID, *, lock: bool = False) -> NetworkDevice:
@@ -353,7 +352,7 @@ def _stage_evidence(
     action: str,
     archived_at: datetime | None,
 ) -> None:
-    actor_type, actor_id = _actor(context)
+    actor = _actor(context)
     metadata: dict[str, object] = {
         "schema_version": 1,
         "device_id": str(device.id),
@@ -369,8 +368,7 @@ def _stage_evidence(
         action=action,
         entity_type="core_device",
         entity_id=str(device.id),
-        actor_type=actor_type,
-        actor_id=actor_id,
+        actor=actor,
         request_id=str(context.correlation_id),
         metadata=metadata,
     )

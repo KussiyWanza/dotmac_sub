@@ -60,9 +60,10 @@ def _no_affected_customers(monkeypatch):
 
 def test_archive_and_restore_are_evidenced_and_restore_as_inactive(db_session):
     device = _device(db_session, "retiring-core")
+    device_id = device.id
     preview = core_device_archive.preview_core_device_archive(
         db_session,
-        core_device_archive.PreviewCoreDeviceArchiveRequest(device_id=device.id),
+        core_device_archive.PreviewCoreDeviceArchiveRequest(device_id=device_id),
     )
     assert preview.allowed
     db_session_adapter.release_read_transaction(db_session)
@@ -71,14 +72,14 @@ def test_archive_and_restore_are_evidenced_and_restore_as_inactive(db_session):
         db_session,
         core_device_archive.ArchiveCoreDeviceCommand(
             context=_context(),
-            device_id=device.id,
+            device_id=device_id,
             expected_preview_fingerprint=preview.fingerprint,
         ),
     )
     assert archived.lifecycle_state == "archived"
     assert archived.replayed is False
 
-    stored = db_session.get(NetworkDevice, device.id)
+    stored = db_session.get(NetworkDevice, device_id)
     assert stored is not None
     assert stored.is_active is False
     assert stored.archived_at is not None
@@ -86,7 +87,7 @@ def test_archive_and_restore_are_evidenced_and_restore_as_inactive(db_session):
     assert db_session.scalar(
         select(AuditEvent).where(
             AuditEvent.action == "network.core_device_archived",
-            AuditEvent.entity_id == str(device.id),
+            AuditEvent.entity_id == str(device_id),
         )
     )
     assert db_session.scalar(
@@ -98,11 +99,11 @@ def test_archive_and_restore_are_evidenced_and_restore_as_inactive(db_session):
         db_session,
         core_device_archive.RestoreCoreDeviceCommand(
             context=_context("Restore archived device to inactive inventory"),
-            device_id=device.id,
+            device_id=device_id,
         ),
     )
     assert restored.lifecycle_state == "inactive"
-    stored = db_session.get(NetworkDevice, device.id)
+    stored = db_session.get(NetworkDevice, device_id)
     assert stored is not None
     assert stored.is_active is False
     assert stored.archived_at is None
@@ -148,9 +149,10 @@ def test_archive_preview_blocks_affected_customers(db_session, monkeypatch):
 
 def test_archive_rejects_stale_impact_preview(db_session):
     device = _device(db_session, "changing-core")
+    device_id = device.id
     preview = core_device_archive.preview_core_device_archive(
         db_session,
-        core_device_archive.PreviewCoreDeviceArchiveRequest(device_id=device.id),
+        core_device_archive.PreviewCoreDeviceArchiveRequest(device_id=device_id),
     )
     device.notes = "changed after preview"
     db_session.commit()
@@ -160,27 +162,28 @@ def test_archive_rejects_stale_impact_preview(db_session):
             db_session,
             core_device_archive.ArchiveCoreDeviceCommand(
                 context=_context(),
-                device_id=device.id,
+                device_id=device_id,
                 expected_preview_fingerprint=preview.fingerprint,
             ),
         )
 
     assert captured.value.code == "network.core_device_archive.stale_preview"
-    assert db_session.get(NetworkDevice, device.id).archived_at is None
+    assert db_session.get(NetworkDevice, device_id).archived_at is None
 
 
 def test_external_sync_cannot_reactivate_archived_device(db_session):
     device = _device(db_session, "archived-core")
+    device_id = device.id
     preview = core_device_archive.preview_core_device_archive(
         db_session,
-        core_device_archive.PreviewCoreDeviceArchiveRequest(device_id=device.id),
+        core_device_archive.PreviewCoreDeviceArchiveRequest(device_id=device_id),
     )
     db_session_adapter.release_read_transaction(db_session)
     core_device_archive.archive_core_device(
         db_session,
         core_device_archive.ArchiveCoreDeviceCommand(
             context=_context(),
-            device_id=device.id,
+            device_id=device_id,
             expected_preview_fingerprint=preview.fingerprint,
         ),
     )
@@ -200,16 +203,17 @@ def test_external_sync_cannot_reactivate_archived_device(db_session):
 @pytest.mark.parametrize("mutation", list(core_device_archive.CoreDeviceMutation))
 def test_archived_device_rejects_every_legacy_mutation(db_session, mutation):
     device = _device(db_session, f"archived-{mutation.value}")
+    device_id = device.id
     preview = core_device_archive.preview_core_device_archive(
         db_session,
-        core_device_archive.PreviewCoreDeviceArchiveRequest(device_id=device.id),
+        core_device_archive.PreviewCoreDeviceArchiveRequest(device_id=device_id),
     )
     db_session_adapter.release_read_transaction(db_session)
     core_device_archive.archive_core_device(
         db_session,
         core_device_archive.ArchiveCoreDeviceCommand(
             context=_context(),
-            device_id=device.id,
+            device_id=device_id,
             expected_preview_fingerprint=preview.fingerprint,
         ),
     )
@@ -218,7 +222,7 @@ def test_archived_device_rejects_every_legacy_mutation(db_session, mutation):
         core_device_archive.require_core_device_mutable(
             db_session,
             core_device_archive.RequireCoreDeviceMutableRequest(
-                device_id=device.id,
+                device_id=device_id,
                 mutation=mutation,
             ),
         )
