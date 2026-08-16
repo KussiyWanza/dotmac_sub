@@ -2621,6 +2621,7 @@ DOMAIN = DomainSOT(
                 ),
                 projections=(
                     "Inbox queue detail metrics response cohorts actions and unread cohorts",
+                    "Exact-message and filter-aware single-row Inbox UI fragments",
                     "Outbound message sender display name initials and provenance source",
                     "MIME-allowlisted inline image or download-only attachment presentation",
                     "Google Maps link presentation for a validated structured location attachment",
@@ -2631,6 +2632,9 @@ DOMAIN = DomainSOT(
                     "tests/test_team_inbox_needs_attention.py",
                     "tests/test_team_inbox_filters.py",
                     "tests/test_team_inbox_attachments.py",
+                    "tests/test_admin_inbox_workspace.py",
+                    "tests/test_admin_inbox_routes_http.py",
+                    "tests/test_admin_inbox_workspace_integrity.py",
                     "tests/architecture/test_team_inbox_boundaries.py",
                     "tests/architecture/test_team_inbox_sot_contracts.py",
                 ),

@@ -1019,6 +1019,7 @@ def _asset_attachment(asset: InboxMediaAsset) -> InboxTimelineAttachment:
 def list_conversations(
     db: Session,
     *,
+    conversation_id: str | UUID | None = None,
     search: str | None = None,
     status: str | None = None,
     channel_type: str | None = None,
@@ -1056,6 +1057,14 @@ def list_conversations(
         )
         .filter(InboxConversation.is_active.is_(True))
     )
+    try:
+        target_conversation_id = _optional_uuid(conversation_id)
+    except ValueError:
+        return InboxConversationListResult(
+            items=[], count=0, limit=limit, offset=offset
+        )
+    if target_conversation_id is not None:
+        query = query.filter(InboxConversation.id == target_conversation_id)
     if channel_type != InboxChannelType.field_job.value:
         # A job chat is held directly by the technician who is en route, so it
         # is not triage work and must not land in the queue. The one exception
@@ -1781,30 +1790,10 @@ def get_conversation_timeline(
             for assignment, team in assignment_rows
         ],
         messages=[
-            InboxTimelineMessage(
-                id=str(message.id),
-                channel_type=message.channel_type,
-                direction=message.direction,
-                subject=message.subject,
-                body=message.body,
-                from_address=message.from_address,
-                to_addresses=[str(value) for value in (message.to_addresses or [])],
-                cc_addresses=[str(value) for value in (message.cc_addresses or [])],
-                sent_at=message.sent_at,
-                received_at=message.received_at,
-                created_at=message.created_at,
-                metadata=message.metadata_,
-                attachments=(
-                    [
-                        _asset_attachment(asset)
-                        for asset in assets_by_message.get(message.id, [])
-                    ]
-                    or _message_attachments(message)
-                ),
-                sender=_timeline_sender_identity(
-                    message,
-                    outbound_sender_identities,
-                ),
+            _timeline_message_projection(
+                message,
+                assets=assets_by_message.get(message.id, []),
+                outbound_sender_identities=outbound_sender_identities,
             )
             for message in messages
         ],
@@ -1827,4 +1816,57 @@ def get_conversation_timeline(
             )
             for comment in comments
         ],
+    )
+
+
+def _timeline_message_projection(
+    message: InboxMessage,
+    *,
+    assets: Sequence[InboxMediaAsset],
+    outbound_sender_identities: Mapping[UUID, InboxTimelineSenderIdentity],
+) -> InboxTimelineMessage:
+    return InboxTimelineMessage(
+        id=str(message.id),
+        channel_type=message.channel_type,
+        direction=message.direction,
+        subject=message.subject,
+        body=message.body,
+        from_address=message.from_address,
+        to_addresses=[str(value) for value in (message.to_addresses or [])],
+        cc_addresses=[str(value) for value in (message.cc_addresses or [])],
+        sent_at=message.sent_at,
+        received_at=message.received_at,
+        created_at=message.created_at,
+        metadata=message.metadata_,
+        attachments=(
+            [_asset_attachment(asset) for asset in assets]
+            or _message_attachments(message)
+        ),
+        sender=_timeline_sender_identity(message, outbound_sender_identities),
+    )
+
+
+def get_conversation_message(
+    db: Session,
+    *,
+    conversation_id: UUID,
+    message_id: UUID,
+) -> InboxTimelineMessage | None:
+    """Project one authoritative message without rebuilding its full thread."""
+
+    message = (
+        db.query(InboxMessage)
+        .join(InboxConversation, InboxConversation.id == InboxMessage.conversation_id)
+        .filter(InboxConversation.id == conversation_id)
+        .filter(InboxConversation.is_active.is_(True))
+        .filter(InboxMessage.id == message_id)
+        .one_or_none()
+    )
+    if message is None:
+        return None
+    assets_by_message = team_inbox_media.assets_for_messages(db, [message.id])
+    return _timeline_message_projection(
+        message,
+        assets=assets_by_message.get(message.id, []),
+        outbound_sender_identities=_outbound_sender_identities(db, [message]),
     )
