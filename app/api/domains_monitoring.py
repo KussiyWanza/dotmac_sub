@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from uuid import UUID
+
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
@@ -32,10 +34,26 @@ from app.schemas.network_monitoring import (
     UptimeReportRequest,
     UptimeReportResponse,
 )
+from app.services import core_device_archive
 from app.services import network_monitoring as monitoring_service
 from app.services.auth_dependencies import require_permission
 
 router = APIRouter()
+
+
+def _require_core_device_mutable(
+    db: Session,
+    *,
+    device_id: str | UUID,
+    mutation: core_device_archive.CoreDeviceMutation,
+) -> None:
+    core_device_archive.require_core_device_mutable(
+        db,
+        core_device_archive.RequireCoreDeviceMutableRequest(
+            device_id=UUID(str(device_id)),
+            mutation=mutation,
+        ),
+    )
 
 
 def _with_device_operational_status(value):
@@ -180,6 +198,11 @@ def get_network_device(device_id: str, db: Session = Depends(get_db)):
 def update_network_device(
     device_id: str, payload: NetworkDeviceUpdate, db: Session = Depends(get_db)
 ):
+    _require_core_device_mutable(
+        db,
+        device_id=device_id,
+        mutation=core_device_archive.CoreDeviceMutation.EDIT,
+    )
     return _with_device_operational_status(
         monitoring_service.network_devices.update_committed(db, device_id, payload)
     )
@@ -192,6 +215,11 @@ def update_network_device(
     dependencies=[Depends(require_permission("monitoring:write"))],
 )
 def delete_network_device(device_id: str, db: Session = Depends(get_db)):
+    _require_core_device_mutable(
+        db,
+        device_id=device_id,
+        mutation=core_device_archive.CoreDeviceMutation.DEACTIVATE,
+    )
     monitoring_service.network_devices.delete_committed(db, device_id)
 
 
@@ -224,6 +252,11 @@ def list_device_interfaces(
 def create_device_interface(
     payload: DeviceInterfaceCreate, db: Session = Depends(get_db)
 ):
+    _require_core_device_mutable(
+        db,
+        device_id=payload.device_id,
+        mutation=core_device_archive.CoreDeviceMutation.INTERFACE_MONITORING,
+    )
     return monitoring_service.device_interfaces.create_committed(db, payload)
 
 
@@ -246,6 +279,12 @@ def get_device_interface(interface_id: str, db: Session = Depends(get_db)):
 def update_device_interface(
     interface_id: str, payload: DeviceInterfaceUpdate, db: Session = Depends(get_db)
 ):
+    interface = monitoring_service.device_interfaces.get(db, interface_id)
+    _require_core_device_mutable(
+        db,
+        device_id=interface.device_id,
+        mutation=core_device_archive.CoreDeviceMutation.INTERFACE_MONITORING,
+    )
     return monitoring_service.device_interfaces.update_committed(
         db, interface_id, payload
     )
@@ -258,6 +297,12 @@ def update_device_interface(
     dependencies=[Depends(require_permission("monitoring:write"))],
 )
 def delete_device_interface(interface_id: str, db: Session = Depends(get_db)):
+    interface = monitoring_service.device_interfaces.get(db, interface_id)
+    _require_core_device_mutable(
+        db,
+        device_id=interface.device_id,
+        mutation=core_device_archive.CoreDeviceMutation.INTERFACE_MONITORING,
+    )
     monitoring_service.device_interfaces.delete_committed(db, interface_id)
 
 

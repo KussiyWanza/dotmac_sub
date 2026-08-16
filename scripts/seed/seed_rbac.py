@@ -17,6 +17,10 @@ ADMIN_ONLY_PERMISSION_KEYS = {
     "auth:credential:read",
     "auth:credential:write",
     "network:admin",
+    # Ingress authority for a machine principal. Kept out of the role builder
+    # so "accept inbound observations" cannot be attached to an ordinary role;
+    # the read-only mirror scope beside it stays assignable on purpose.
+    "integration:observations:write",
     "reseller:impersonate",
     "system:db_admin",
     "system:read",
@@ -51,6 +55,14 @@ DEFAULT_PERMISSIONS = [
     ("attendance:self:use", "Use personal ERP attendance from the dashboard"),
     # Integrations (service ApiKey scopes)
     ("integration:crm", "CRM service integration API access"),
+    (
+        "integration:observations:write",
+        "Integrator inbound observation ingress (messaging.receive.v1)",
+    ),
+    (
+        "integration:observations:mirror",
+        "Integrator inbound observation parity evidence, read-only",
+    ),
     # Auth & System
     ("auth:manage", "Manage authentication settings"),
     ("auth:credential:read", "View authentication credential metadata"),
@@ -164,6 +176,7 @@ DEFAULT_PERMISSIONS = [
     ("network:map:read", "View the comprehensive network map"),
     ("network:device:read", "View network devices"),
     ("network:device:write", "Manage network devices"),
+    ("network:device:archive", "Archive and restore core network devices"),
     (
         "network:operation:redrive",
         "Retry eligible failed network operations",
@@ -277,6 +290,10 @@ DEFAULT_PERMISSIONS = [
     ("crm:quote:send", "Send quotes to customers"),
     ("crm:sales_order:read", "View sales orders"),
     ("crm:sales_order:write", "Manage sales orders"),
+    # Deliberately NOT covered by :write. Deciding not to pursue an order is a
+    # commercial decision, not order maintenance, and it was only reachable
+    # before because waiver shared a field with settlement.
+    ("crm:sales_order:waive", "Grant or revoke an order waiver"),
     # Projects
     ("project:read", "View projects"),
     ("project:create", "Create projects"),
@@ -386,6 +403,7 @@ ROLE_PERMISSIONS = {
         "network:map:read",
         "network:device:read",
         "network:device:write",
+        "network:device:archive",
         "network:olt:read",
         "network:olt:write",
         "network:ont:commission",

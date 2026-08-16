@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from types import SimpleNamespace
+from pathlib import Path
 
 from app.models.field_vendor import FieldVendor, FieldVendorUser
 from app.models.organization import (
@@ -16,9 +16,6 @@ from app.models.system_user import SystemUser
 from app.models.vendor_routes import Vendor
 from app.services import party as party_service
 from app.services.party_principal_audit import build_party_principal_context_audit
-from scripts.migration.audit_party_principal_contexts import (
-    _set_transaction_read_only,
-)
 
 _EVIDENCE = {
     "source": "reviewed_principal_context_worklist",
@@ -201,13 +198,18 @@ def test_principal_context_audit_reports_unbound_and_bridge_debt(db_session):
     assert audit["field_vendor_user_contexts"]["invalid_vendor_profile_bridge"] == 1
 
 
-def test_operator_audit_uses_read_only_repeatable_read_transaction():
-    executed: list[str] = []
-    postgresql_db = SimpleNamespace(
-        get_bind=lambda: SimpleNamespace(dialect=SimpleNamespace(name="postgresql")),
-        execute=lambda statement: executed.append(str(statement)),
+def test_audit_party_principal_contexts_uses_the_read_only_snapshot_seam():
+    """Behavioural proof lives on PostgreSQL; this pins the wiring.
+
+    The adapter previously issued `SET TRANSACTION ISOLATION LEVEL ...` itself,
+    which could never be the first statement once the operator-tenant hook was
+    installed, so the report raised on every real run. Asserting the statement
+    text — as this test used to — pinned the broken form and kept CI green.
+    """
+
+    source = Path("scripts/migration/audit_party_principal_contexts.py").read_text(
+        encoding="utf-8"
     )
 
-    _set_transaction_read_only(postgresql_db)
-
-    assert executed == ["SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"]
+    assert "read_only_snapshot_session" in source
+    assert "SET TRANSACTION" not in source

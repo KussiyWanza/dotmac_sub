@@ -28,7 +28,13 @@ from fastapi.testclient import TestClient
 from starlette.datastructures import UploadFile
 
 from app.db import get_db
-from app.services import team_inbox_commands, team_inbox_filters, team_inbox_projection
+from app.services import (
+    team_inbox_commands,
+    team_inbox_filters,
+    team_inbox_projection,
+    team_inbox_read,
+    team_inbox_read_state,
+)
 from app.web.admin.inbox import _detail_redirect, _read_new_conversation_uploads, router
 
 
@@ -93,6 +99,39 @@ def test_has_ticket_false_is_distinct_from_absent(captured_request):
 
 def test_queue_requests_exact_total_for_numbered_pagination(captured_request):
     assert captured_request("?page=7").include_total_count is True
+
+
+def test_mark_read_returns_typed_browser_result_without_redirect(db_session):
+    conversation_id = uuid.uuid4()
+    actor_id = uuid.uuid4()
+    command_id = uuid.uuid4()
+    outcome = team_inbox_read_state.ConversationReadOutcome(
+        conversation_id=conversation_id,
+        person_id=actor_id,
+        through_message_id=None,
+        last_read_at=datetime.now(UTC),
+        changed=True,
+        command_id=command_id,
+    )
+    client = _client(db_session)
+
+    with (
+        patch("app.services.web_admin.get_actor_id", return_value=str(actor_id)),
+        patch("app.web.admin.inbox._prepare_mutation"),
+        patch(
+            "app.web.admin.inbox.team_inbox_read_state.mark_conversation_read",
+            return_value=outcome,
+        ),
+    ):
+        response = client.post(f"/inbox/{conversation_id}/read")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "conversation_id": str(conversation_id),
+        "status": "success",
+        "changed": True,
+        "message": "Conversation marked read.",
+    }
 
 
 def test_reply_fallback_preserves_page_filters_and_uses_separate_notice_status():
@@ -200,9 +239,6 @@ def test_reply_htmx_request_returns_typed_completion_event_without_redirect():
     with (
         patch("app.web.admin.inbox._prepare_mutation"),
         patch("app.services.team_inbox_commands.reply", return_value=outcome),
-        patch(
-            "app.web.admin.inbox._request_immediate_notification_delivery"
-        ) as wake_delivery,
         patch("app.services.web_admin.get_actor_id", return_value=None),
     ):
         response = client.post(
@@ -219,8 +255,83 @@ def test_reply_htmx_request_returns_typed_completion_event_without_redirect():
         "conversation_id": str(conversation_id),
         "status": "success",
         "message": "Reply queued from support@example.test.",
+        "message_id": str(outcome.message_id),
     }
-    wake_delivery.assert_called_once_with(notification_id)
+
+
+def test_message_fragment_route_renders_one_authoritative_message():
+    conversation_id = uuid.uuid4()
+    message_id = uuid.uuid4()
+    message = team_inbox_read.InboxTimelineMessage(
+        id=str(message_id),
+        channel_type="email",
+        direction="internal",
+        subject=None,
+        body="Targeted fragment body",
+        from_address=None,
+        to_addresses=[],
+        cc_addresses=[],
+        sent_at=None,
+        received_at=None,
+        created_at=datetime.now(UTC),
+        metadata=None,
+        attachments=[],
+        sender=None,
+    )
+    projection = team_inbox_projection.InboxMessageFragmentProjection(
+        conversation_id=conversation_id,
+        message_id=message_id,
+        message=message,
+    )
+    client = _client(object())
+
+    with patch(
+        "app.web.admin.inbox.team_inbox_projection.get_message_fragment_projection",
+        return_value=projection,
+    ):
+        response = client.get(f"/inbox/{conversation_id}/messages/{message_id}")
+
+    assert response.status_code == 200
+    assert response.headers["Cache-Control"] == "private, no-store"
+    assert f'data-inbox-message-id="{message_id}"' in response.text
+    assert "Targeted fragment body" in response.text
+
+
+def test_queue_row_route_deletes_a_row_that_no_longer_matches_filters():
+    conversation_id = uuid.uuid4()
+    seen: list[team_inbox_projection.InboxQueueRequest] = []
+
+    def project(_db, *, conversation_id, request):
+        seen.append(request)
+        return team_inbox_projection.InboxQueueRowProjection(
+            conversation_id=conversation_id,
+            row=None,
+            list_query=team_inbox_projection.INBOX_LIST_DEFINITION.build_query(
+                search=None,
+                filters={"needs_response": "true"},
+            ),
+            agent_options=(),
+            selected_id=str(conversation_id),
+        )
+
+    client = _client(object())
+    with (
+        patch(
+            "app.web.admin.inbox.team_inbox_projection.get_queue_row_projection",
+            side_effect=project,
+        ),
+        patch("app.services.web_admin.get_actor_id", return_value=None),
+    ):
+        response = client.get(
+            f"/inbox/{conversation_id}/queue-row",
+            params={"needs_response": "true", "c": str(conversation_id)},
+        )
+
+    assert response.status_code == 200
+    assert response.headers["HX-Reswap"] == "delete"
+    assert response.headers["Cache-Control"] == "private, no-store"
+    assert seen[0].needs_response is True
+    assert seen[0].selected_conversation_id == str(conversation_id)
 
 
 def test_reply_htmx_command_error_stays_in_workspace_with_failure_event():

@@ -435,6 +435,67 @@ def _meta_social_manifest(
     )
 
 
+def _whatsapp_manifest(
+    *,
+    version: str,
+    include_phone_number_id: bool,
+) -> ConnectorManifest:
+    properties: dict[str, object] = {
+        "provider": {"type": "string", "enum": ["meta_cloud_api"]},
+        "phone_number": {"type": "string"},
+        "waba_id": {"type": "string"},
+        "webhook_url": {"type": "string"},
+        "graph_version": {"type": "string"},
+        "timeout_seconds": {"type": "integer"},
+        "templates": {"type": "array"},
+    }
+    if include_phone_number_id:
+        properties["phone_number_id"] = {"type": "string", "minLength": 1}
+    return ConnectorManifest(
+        key="whatsapp",
+        name="WhatsApp",
+        version=version,
+        connector_type="messaging",
+        description="Template and notification messaging connector.",
+        runtime=RuntimeManifest(
+            type=ConnectorRuntimeType.builtin_worker,
+            module="app.services.integrations.connectors.whatsapp_runtime",
+        ),
+        capabilities=(
+            CapabilityManifest(
+                id="messaging.send.v1",
+                modes=(CapabilityMode.interactive, CapabilityMode.event),
+            ),
+            CapabilityManifest(
+                id="messaging.receive.v1",
+                modes=(CapabilityMode.inbound,),
+            ),
+            CapabilityManifest(
+                id="messaging.templates.read.v1",
+                modes=(CapabilityMode.interactive, CapabilityMode.manual),
+            ),
+        ),
+        config_schema={
+            "type": "object",
+            "properties": properties,
+            "required": ["provider"],
+            "additionalProperties": False,
+        },
+        secrets=(
+            SecretBindingManifest(name="service_credentials"),
+            SecretBindingManifest(name="webhook_signing_secret", required=False),
+            SecretBindingManifest(name="webhook_verify_token", required=False),
+        ),
+        data_access=DataAccessManifest(
+            reads=("communications.outbound_message",),
+            emits=("communications.inbound_message_observation",),
+            classifications=("customer_contact", "message_content"),
+        ),
+        egress=EgressManifest(hosts=("graph.facebook.com",)),
+        health=HealthManifest(operation="connection.validate.v1"),
+    )
+
+
 _DEFINITIONS: tuple[ConnectorManifest, ...] = (
     ConnectorManifest(
         key="fiber.inquiry.http",
@@ -517,6 +578,41 @@ _DEFINITIONS: tuple[ConnectorManifest, ...] = (
         health=HealthManifest(operation="connection.validate.v1"),
     ),
     ConnectorManifest(
+        key="dotmac.integrator.http",
+        name="Dotmac Integrator",
+        version="1.0.0",
+        connector_type="messaging",
+        description=(
+            "Independently deployed Integrator delivering provider-neutral "
+            "inbound message observations. Sub authenticates the Integrator as "
+            "a scoped machine principal; the provider signature is verified in "
+            "the Integrator's own deployment, over the bytes it actually covers."
+        ),
+        catalogue_visible=False,
+        runtime=RuntimeManifest(
+            type=ConnectorRuntimeType.builtin_worker,
+            module="app.services.integrations.connectors.integrator_http",
+        ),
+        capabilities=(
+            CapabilityManifest(
+                id="messaging.receive.v1",
+                modes=(CapabilityMode.inbound,),
+            ),
+        ),
+        config_schema={
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+        secrets=(),
+        data_access=DataAccessManifest(
+            emits=("communications.inbound_message_observation",),
+            classifications=("customer_contact", "message_content"),
+        ),
+        egress=EgressManifest(),
+        health=HealthManifest(operation="connection.validate.v1"),
+    ),
+    ConnectorManifest(
         key="webhook.http",
         name="HTTP Webhook",
         version="1.0.0",
@@ -560,56 +656,9 @@ _DEFINITIONS: tuple[ConnectorManifest, ...] = (
         version="1.1.0",
         include_chat_session=True,
     ),
-    ConnectorManifest(
-        key="whatsapp",
-        name="WhatsApp",
-        version="1.0.0",
-        connector_type="messaging",
-        description="Template and notification messaging connector.",
-        runtime=RuntimeManifest(
-            type=ConnectorRuntimeType.builtin_worker,
-            module="app.services.integrations.connectors.whatsapp_runtime",
-        ),
-        capabilities=(
-            CapabilityManifest(
-                id="messaging.send.v1",
-                modes=(CapabilityMode.interactive, CapabilityMode.event),
-            ),
-            CapabilityManifest(
-                id="messaging.receive.v1",
-                modes=(CapabilityMode.inbound,),
-            ),
-            CapabilityManifest(
-                id="messaging.templates.read.v1",
-                modes=(CapabilityMode.interactive, CapabilityMode.manual),
-            ),
-        ),
-        config_schema={
-            "type": "object",
-            "properties": {
-                "provider": {"type": "string", "enum": ["meta_cloud_api"]},
-                "phone_number": {"type": "string"},
-                "waba_id": {"type": "string"},
-                "webhook_url": {"type": "string"},
-                "graph_version": {"type": "string"},
-                "timeout_seconds": {"type": "integer"},
-                "templates": {"type": "array"},
-            },
-            "required": ["provider"],
-            "additionalProperties": False,
-        },
-        secrets=(
-            SecretBindingManifest(name="service_credentials"),
-            SecretBindingManifest(name="webhook_signing_secret", required=False),
-            SecretBindingManifest(name="webhook_verify_token", required=False),
-        ),
-        data_access=DataAccessManifest(
-            reads=("communications.outbound_message",),
-            emits=("communications.inbound_message_observation",),
-            classifications=("customer_contact", "message_content"),
-        ),
-        egress=EgressManifest(hosts=("graph.facebook.com",)),
-        health=HealthManifest(operation="connection.validate.v1"),
+    _whatsapp_manifest(
+        version="1.1.0",
+        include_phone_number_id=True,
     ),
     ConnectorManifest(
         key="nextcloud.talk",
@@ -734,6 +783,7 @@ _DEFINITIONS: tuple[ConnectorManifest, ...] = (
 )
 
 _HISTORICAL_DEFINITIONS: tuple[ConnectorManifest, ...] = (
+    _whatsapp_manifest(version="1.0.0", include_phone_number_id=False),
     _dotmac_erp_manifest(version="1.1.0", include_workforce_attendance=True),
     # ERP 1.0.0 remains executable while installations explicitly adopt the
     # workforce attendance capability introduced in 1.1.0.

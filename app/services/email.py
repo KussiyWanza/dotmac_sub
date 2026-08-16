@@ -148,12 +148,19 @@ def _build_email_message(
         msg.attach(body)
     if sum(len(item.content) for item in attachments) > MAX_EMAIL_ATTACHMENT_BYTES:
         raise ValueError("Email attachments exceed the total size limit")
+    attachment_subtypes = {
+        "application/pdf": "pdf",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": (
+            "vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+    }
     for attachment in attachments:
-        if attachment.content_type != "application/pdf":
-            raise ValueError("Only PDF email attachments are supported")
+        subtype = attachment_subtypes.get(attachment.content_type)
+        if subtype is None:
+            raise ValueError("Email attachment content type is not allowed")
         if len(attachment.content) > MAX_EMAIL_ATTACHMENT_BYTES:
             raise ValueError("Email attachment exceeds the size limit")
-        part = MIMEApplication(attachment.content, _subtype="pdf")
+        part = MIMEApplication(attachment.content, _subtype=subtype)
         part.add_header(
             "Content-Disposition",
             "attachment",

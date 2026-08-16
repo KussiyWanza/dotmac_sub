@@ -79,7 +79,6 @@ rollback 2 app/tasks/quotes.py
 rollback 3 app/tasks/radius.py
 rollback 3 app/tasks/radius_health.py
 rollback 1 app/tasks/radius_population.py
-rollback 1 app/tasks/reports.py
 rollback 5 app/tasks/router_sync.py
 rollback 2 app/tasks/topology_lldp.py
 rollback 2 app/tasks/topology_outage.py

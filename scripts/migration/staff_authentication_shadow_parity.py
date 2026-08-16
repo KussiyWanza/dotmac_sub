@@ -15,9 +15,7 @@ import argparse
 import json
 from collections.abc import Sequence
 
-from sqlalchemy import text
-
-from app.db import SessionLocal
+from app.db import read_only_snapshot_session
 from app.services.staff_authentication_shadow import (
     staff_authentication_parity_report,
 )
@@ -32,16 +30,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    with SessionLocal() as db:
-        # A parity claim assembled from several statements has to see one
-        # snapshot, or a login landing mid-run can make the cohorts disagree
-        # with each other and with themselves.
-        if db.bind is not None and db.bind.dialect.name == "postgresql":
-            db.execute(
-                text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
-            )
+    with read_only_snapshot_session() as db:
         report = staff_authentication_parity_report(db)
-        db.rollback()
 
     print(json.dumps(report.as_dict(), sort_keys=True))
     if not report.is_read_cutover_safe and not args.report_only:

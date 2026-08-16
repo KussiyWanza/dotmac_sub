@@ -213,8 +213,9 @@
     </div>
 
     <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-5 sm:px-6" data-thread-scroll>
-        {% if timeline_entries %}
         <div class="mx-auto flex max-w-6xl flex-col gap-4">
+            <div id="inbox-message-list" class="flex flex-col gap-4" aria-live="polite">
+            {% if timeline_entries %}
             {% for entry in timeline_entries %}
                 {% if entry.kind == 'system' and entry.event %}
                     {% set event = entry.event %}
@@ -228,9 +229,15 @@
                         <span class="h-px w-8 bg-slate-200 dark:bg-slate-800"></span>
                     </div>
                 {% elif entry.message %}
-                    {{ message_bubble(entry.message) }}
+                    <div data-inbox-message-id="{{ entry.message.id }}">
+                        {{ message_bubble(entry.message) }}
+                    </div>
                 {% endif %}
             {% endfor %}
+            {% else %}
+                <div data-inbox-empty-thread class="mx-auto mt-10 max-w-sm text-center"><p class="text-sm font-semibold text-slate-700 dark:text-slate-200">No messages yet</p><p class="mt-1 text-xs text-slate-500">Send the first reply to begin the timeline.</p></div>
+            {% endif %}
+            </div>
             <div x-show="presenceText" x-cloak class="flex items-center gap-2 text-xs font-medium text-slate-500">
                 <span class="flex gap-1 rounded-2xl bg-slate-200 px-3 py-2 dark:bg-slate-800" aria-label="Another agent is typing">
                     <span class="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-500"></span>
@@ -240,9 +247,6 @@
                 <span x-text="presenceText"></span>
             </div>
         </div>
-        {% else %}
-        <div class="mx-auto mt-10 max-w-sm text-center"><p class="text-sm font-semibold text-slate-700 dark:text-slate-200">No messages yet</p><p class="mt-1 text-xs text-slate-500">Send the first reply to begin the timeline.</p></div>
-        {% endif %}
     </div>
 
     <div class="shrink-0 border-t border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-900"
@@ -352,7 +356,9 @@
               class="space-y-2"
               data-reply-form>
             {% include "components/forms/csrf_input.html" %}
-            <input type="hidden" name="next_url" value="{{ queue_return_url | default('/admin/inbox') }}">
+            <input type="hidden" name="next_url"
+                   value="{{ queue_return_url | default('/admin/inbox') }}"
+                   :value="window.__inboxReturnUrl || {{ queue_return_url | default('/admin/inbox') | tojson | forceescape }}">
             <input type="hidden" name="idempotency_key" :value="idempotencyKey">
             <input type="hidden" name="reply_to_message_id" :value="replyTo ? replyTo.id : ''">
             {# Provenance for the reply owner: macro execution, template audit,
@@ -421,6 +427,9 @@
         {% if reply_window and reply_window.status == 'expired' and reply_window.channel_type == 'whatsapp' and reply_window.whatsapp_template_available %}
         <form method="post" action="/admin/inbox/{{ timeline.id }}/reply" x-show="mode === 'reply'" class="mt-2 space-y-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs dark:border-amber-800 dark:bg-amber-950/20" data-whatsapp-template-reopen data-template-endpoint="/admin/inbox/whatsapp-templates">
             {% include "components/forms/csrf_input.html" %}
+            <input type="hidden" name="next_url"
+                   value="{{ queue_return_url | default('/admin/inbox') }}"
+                   :value="window.__inboxReturnUrl || {{ queue_return_url | default('/admin/inbox') | tojson | forceescape }}">
             <input type="hidden" name="idempotency_key" value="">
             <input type="hidden" name="body_text" data-whatsapp-template-body value="">
             <input type="hidden" name="whatsapp_template_name" data-whatsapp-template-name value="">

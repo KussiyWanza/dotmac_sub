@@ -31,12 +31,16 @@ DOMAIN = DomainSOT(
             owns=(
                 "audit event persistence and queries",
                 "request audit payload redaction",
+                "typed actor provenance normalization",
                 "staged and deferred audit recording",
             ),
             notes=(
                 "AuditEvents is the sole AuditEvent constructor and query owner. "
                 "Kernel audit R1 keeps legacy metadata and forensic columns live "
-                "while every sanctioned writer dual-populates details; migration "
+                "while every sanctioned writer dual-populates details. AuditActor "
+                "keeps principal identity and optional Party enrichment one typed "
+                "value; a two-directional caller ratchet retires the temporary "
+                "scalar compatibility surface owner by owner. Migration "
                 "524 adds actor_party_id, details, and created_at without an "
                 "authority transfer or kernel-lineage stamp. The aggregate-only "
                 "r1_parity query owns drift detection during expansion."
@@ -68,6 +72,11 @@ DOMAIN = DomainSOT(
                             "audit actor and redaction contract",
                         ),
                         canonical_writer="observability.audit_log",
+                    ),
+                    ConcernContract(
+                        name="typed actor provenance normalization",
+                        role=OwnerRole.POLICY,
+                        input_names=("audit actor and redaction contract",),
                     ),
                 ),
                 authoritative_inputs=(
@@ -141,6 +150,7 @@ DOMAIN = DomainSOT(
                         "a non-system actor without a non-empty identifier",
                         "an actor type outside the kernel-owned closed taxonomy",
                         "R1 details or actor parity drift",
+                        "a system or service actor carrying a Party identity",
                     ),
                 ),
                 events=EventContract(
@@ -164,12 +174,15 @@ DOMAIN = DomainSOT(
                     ),
                     new_owner="observability.audit_log",
                     verification=(
-                        "AST writer ratchet, PostgreSQL 523-to-524 rehearsal, and the "
-                        "aggregate-only audit R1 parity report"
+                        "AST writer guard, two-directional typed-actor adoption "
+                        "ratchet, PostgreSQL 523-to-524 rehearsal, and the "
+                        "aggregate-only audit R1 payload and actor report"
                     ),
                     cutover_gate=(
-                        "released kernel a42 exact pin plus observed post-R1 rows with "
-                        "zero parity mismatches"
+                        "released kernel a42 exact pin, zero legacy scalar actor "
+                        "callers, and observed post-R1 rows with zero parity "
+                        "mismatches; user/API-key Party enrichment comes only from "
+                        "a canonical binding"
                     ),
                     fallback_retirement=(
                         "retire the remaining standalone immediate-write compatibility "
@@ -183,6 +196,7 @@ DOMAIN = DomainSOT(
                 ),
                 test_refs=(
                     "tests/architecture/test_audit_writer_surfaces.py",
+                    "tests/architecture/test_audit_actor_provenance.py",
                     "tests/integration/test_audit_r1_migration.py",
                     "tests/test_audit_r1_parity.py",
                     "tests/test_transactional_audit_events.py",

@@ -10344,7 +10344,15 @@
         "router": "router",
         "templates": []
       },
-      "tracking": {}
+      "tracking": {
+        "assessment_state": "implementation_in_progress",
+        "replacement": {
+          "capability": "Tuesday NCC complaints workbook configuration and durable delivery",
+          "kind": "native_web_route",
+          "notes": "Selfcare implements the complete typed configuration and exact XLSX delivery under communications.ncc_weekly_delivery. Configuration comparison, staging acceptance, CRM scheduled-job disablement, production traffic evidence, and source deletion remain governed by docs/runbooks/NCC_WEEKLY_REPORT_CUTOVER.md.",
+          "owner_service": "communications.ncc_weekly_delivery"
+        }
+      }
     },
     {
       "id": "app.web.admin.reports:ncc_reports_export:GET:/admin/reports/ncc/export:56530ecd4173",

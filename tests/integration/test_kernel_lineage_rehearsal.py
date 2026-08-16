@@ -19,6 +19,12 @@ rejects existing rows, or an RLS policy collides.
    to run that lineage on top.
 4. Records exactly which revision fails and why.
 
+When ``KERNEL_LINEAGE_EVIDENCE_PATH`` is supplied, the test first verifies the
+scratch schema against a PII-free production catalog/cohort bundle and creates
+synthetic representatives of every observed shape. It never restores a
+production row. CI uses the same materializer with a fixed representative
+bundle so the safety mechanism remains exercised without production access.
+
 The kernel lineage is expected to fail today, and the point is to pin WHERE.
 Each disposition that lands moves the failure later; when it stops failing, the
 gate is closed and the kernel lineage runs in a product database. That is a
@@ -50,9 +56,33 @@ from alembic.script import ScriptDirectory
 from psycopg import sql
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL, make_url
+from sqlalchemy.orm import Session
 
 from alembic import command
 from app import config as app_config
+from scripts.migration.kernel_lineage_rehearsal_canaries import (
+    CanaryTableDigest,
+    fingerprint_rehearsal_canaries,
+    seed_rehearsal_canaries,
+)
+from scripts.migration.kernel_lineage_rehearsal_evidence import (
+    AuditActorKind,
+    AuditCohort,
+    CredentialCohort,
+    CredentialPrincipalKind,
+    CredentialProvider,
+    KernelLineageRehearsalEvidence,
+    PartyRoleCohort,
+    PartyRoleKey,
+    PartyRoleKind,
+    PartyRoleState,
+    ProjectionState,
+    RoleCohort,
+    ValidWindowShape,
+    collect_kernel_lineage_evidence,
+    read_bundle,
+    target_contract_errors,
+)
 
 #: The first kernel revision expected to fail against Sub's schema.
 #:
@@ -236,6 +266,145 @@ def _tables(database_url: URL) -> set[str]:
         engine.dispose()
 
 
+def _synthetic_evidence(
+    current: KernelLineageRehearsalEvidence,
+) -> KernelLineageRehearsalEvidence:
+    """Representative CI cohorts when no production bundle is supplied."""
+
+    return current.model_copy(
+        update={
+            "roles": (
+                RoleCohort(
+                    projection_state=ProjectionState.LEGACY,
+                    is_active=True,
+                    count=1,
+                    maximum_name_length=32,
+                ),
+                RoleCohort(
+                    projection_state=ProjectionState.PROJECTED,
+                    is_active=False,
+                    count=1,
+                    maximum_name_length=32,
+                ),
+            ),
+            "credentials": (
+                CredentialCohort(
+                    principal_kind=CredentialPrincipalKind.SUBSCRIBER,
+                    provider=CredentialProvider.LOCAL,
+                    projection_state=ProjectionState.LEGACY,
+                    is_active=True,
+                    has_radius_override=False,
+                    count=1,
+                ),
+                CredentialCohort(
+                    principal_kind=CredentialPrincipalKind.SYSTEM_USER,
+                    provider=CredentialProvider.RADIUS,
+                    projection_state=ProjectionState.PROJECTED,
+                    is_active=True,
+                    has_radius_override=False,
+                    count=1,
+                ),
+                CredentialCohort(
+                    principal_kind=CredentialPrincipalKind.RESELLER_USER,
+                    provider=CredentialProvider.LOCAL,
+                    projection_state=ProjectionState.LEGACY,
+                    is_active=False,
+                    has_radius_override=False,
+                    count=1,
+                ),
+            ),
+            "audit_events": (
+                AuditCohort(
+                    actor_type=AuditActorKind.SYSTEM,
+                    has_actor_id=False,
+                    has_actor_party_id=False,
+                    has_details=False,
+                    has_created_at=False,
+                    is_active=True,
+                    count=1,
+                ),
+                AuditCohort(
+                    actor_type=AuditActorKind.USER,
+                    has_actor_id=True,
+                    has_actor_party_id=True,
+                    has_details=True,
+                    has_created_at=True,
+                    is_active=True,
+                    count=1,
+                ),
+                AuditCohort(
+                    actor_type=AuditActorKind.SERVICE,
+                    has_actor_id=True,
+                    has_actor_party_id=False,
+                    has_details=True,
+                    has_created_at=True,
+                    is_active=False,
+                    count=1,
+                ),
+            ),
+            "party_roles": (
+                PartyRoleCohort(
+                    role_type=PartyRoleKind.STAFF,
+                    role_key=PartyRoleKey.DEFAULT,
+                    status=PartyRoleState.ACTIVE,
+                    valid_window=ValidWindowShape.NONE,
+                    has_metadata=False,
+                    count=1,
+                ),
+                PartyRoleCohort(
+                    role_type=PartyRoleKind.PARTNER,
+                    role_key=PartyRoleKey.STRATEGIC,
+                    status=PartyRoleState.SUSPENDED,
+                    valid_window=ValidWindowShape.BOUNDED,
+                    has_metadata=True,
+                    count=1,
+                ),
+            ),
+        }
+    )
+
+
+def _load_rehearsal_evidence(database_url: URL) -> KernelLineageRehearsalEvidence:
+    bundle_path = os.getenv("KERNEL_LINEAGE_EVIDENCE_PATH")
+    engine = create_engine(database_url)
+    try:
+        with Session(engine) as db:
+            current = collect_kernel_lineage_evidence(db)
+            if not bundle_path:
+                return _synthetic_evidence(current)
+            evidence = read_bundle(Path(bundle_path))
+            errors = target_contract_errors(db, evidence)
+            assert not errors, (
+                "production evidence does not describe this scratch schema: "
+                + "; ".join(errors)
+            )
+            return evidence
+    finally:
+        engine.dispose()
+
+
+def _seed_and_fingerprint_canaries(
+    database_url: URL,
+    evidence: KernelLineageRehearsalEvidence,
+) -> tuple[CanaryTableDigest, ...]:
+    engine = create_engine(database_url)
+    try:
+        with Session(engine) as db:
+            seed_rehearsal_canaries(db, evidence)
+            return fingerprint_rehearsal_canaries(db)
+    finally:
+        engine.dispose()
+
+
+def _fingerprint_canaries(database_url: URL) -> tuple[CanaryTableDigest, ...]:
+    engine = create_engine(database_url)
+    try:
+        with Session(engine) as db:
+            return fingerprint_rehearsal_canaries(db)
+    finally:
+        engine.dispose()
+
+
 def test_subs_own_chain_builds_the_schema_the_rehearsal_needs(
     isolated_database: URL,
 ) -> None:
@@ -290,6 +459,9 @@ def test_the_kernel_lineage_fails_exactly_where_expected(
     point forward, and this test is how that progress is measured.
     """
     command.upgrade(_sub_config(isolated_database), "heads")
+    evidence = _load_rehearsal_evidence(isolated_database)
+    before = _seed_and_fingerprint_canaries(isolated_database, evidence)
+    assert all(item.row_count > 0 for item in before)
 
     with pytest.raises(KernelLineageFailure) as captured:
         _run_kernel_lineage(isolated_database)
@@ -300,4 +472,9 @@ def test_the_kernel_lineage_fails_exactly_where_expected(
         f"({EXPECTED_FIRST_FAILURE}). This is progress or regression, not "
         "noise — read it and move EXPECTED_FIRST_FAILURE deliberately:\n"
         f"{failure}"
+    )
+    assert _fingerprint_canaries(isolated_database) == before, (
+        "the failed kernel lineage changed or hid a synthetic canary; the "
+        "disposition must preserve populated roles, credentials, audit facts, "
+        "parties, and Sub business capacities byte-for-byte"
     )

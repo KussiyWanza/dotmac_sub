@@ -9672,6 +9672,34 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "GET /api/v1/settings/projects": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "query:is_active",
+    "query:limit",
+    "query:offset",
+    "query:order_by",
+    "query:order_dir"
+   ],
+   "request": null,
+   "responses": {
+    "200": "4eee36edaba3",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "GET /api/v1/settings/projects/{key}": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:key!"
+   ],
+   "request": null,
+   "responses": {
+    "200": "ae0aacc33266",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "GET /api/v1/settings/provisioning": {
    "params": [
     "header:authorization",
@@ -14849,6 +14877,30 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "POST /api/v1/integration/observations/{capability_binding_id}": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:capability_binding_id!"
+   ],
+   "request": "9906f9ed0cda",
+   "responses": {
+    "200": "07abb959e3ab",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "POST /api/v1/integration/observations/{capability_binding_id}/mirror": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:capability_binding_id!"
+   ],
+   "request": "9906f9ed0cda",
+   "responses": {
+    "200": "7f48e9ae8d40",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "POST /api/v1/integrations/deliveries/{delivery_id}/replay": {
    "params": [
     "header:authorization",
@@ -17451,6 +17503,30 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "POST /api/v1/sales-orders/{sales_order_id}/waiver": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:sales_order_id!"
+   ],
+   "request": "833e38a79f75",
+   "responses": {
+    "201": "7ba549df2b1a",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "POST /api/v1/sales-orders/{sales_order_id}/waiver/revoke": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:sales_order_id!"
+   ],
+   "request": "3a8d7b908c75",
+   "responses": {
+    "200": "7ba549df2b1a",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "POST /api/v1/scheduler/tasks": {
    "params": [
     "header:authorization",
@@ -18630,6 +18706,18 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "PUT /api/v1/settings/projects/{key}": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:key!"
+   ],
+   "request": "97fabd9d85d0",
+   "responses": {
+    "200": "ae0aacc33266",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "PUT /api/v1/settings/provisioning/{key}": {
    "params": [
     "header:authorization",
@@ -19242,6 +19330,15 @@
   "IntegrationTargetType": "1057bdd0097d",
   "IntegrationTargetUpdate": "906accaca660",
   "IntegrationValidationStatus": "79f1b4c935f6",
+  "IntegratorAttachment": "901e906ccea2",
+  "IntegratorContactProfile": "887833aaf679",
+  "IntegratorDeliveryReceiptObservation": "2d3606b598a3",
+  "IntegratorMessageObservation": "dde24f08aa8b",
+  "IntegratorMirrorFieldDisagreement": "780a4e635a4c",
+  "IntegratorMirrorReport": "55ef993dbdb9",
+  "IntegratorObservationEnvelope": "6bb093cec679",
+  "IntegratorObservationReceipt": "2eab03972b4b",
+  "IntegratorScope": "83009a38b35b",
   "InterfaceStatus": "20c251764046",
   "InvoiceBulkActionResponse": "4f4b4d0b09e5",
   "InvoiceBulkVoidRequest": "20ea34f498f7",
@@ -19880,6 +19977,9 @@
   "SalesOrderRead": "dd732a95353f",
   "SalesOrderStatus": "c4e8325ddc57",
   "SalesOrderUpdate": "f0a42bcded23",
+  "SalesOrderWaiverGrant": "0dd2abc2d312",
+  "SalesOrderWaiverRead": "5b42a0562281",
+  "SalesOrderWaiverRevoke": "41405e63a061",
   "ScheduleType": "be67068873a3",
   "ScheduledTaskCreate": "c2447ba32ccf",
   "ScheduledTaskRead": "56b8c0be8019",
@@ -20116,6 +20216,7 @@
   "VlanUpdate": "138eccdb4b21",
   "VoiceExtractRequest": "d18369f8bb2f",
   "VoiceExtractResponse": "609f68eff893",
+  "WaiverState": "1d3fd31595c9",
   "WireGuardConnectionLogRead": "764b756791eb",
   "WireGuardPeerConfig": "341eff1766fd",
   "WireGuardPeerCreate": "cad388466ca5",

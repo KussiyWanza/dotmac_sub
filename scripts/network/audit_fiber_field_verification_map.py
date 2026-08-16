@@ -7,12 +7,10 @@ import json
 import sys
 from pathlib import Path
 
-from sqlalchemy import text
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.db import SessionLocal  # noqa: E402
+from app.db import read_only_snapshot_session  # noqa: E402
 from app.services.network.fiber_topology_field_map import (  # noqa: E402
     FiberTopologyFieldMapError,
     project_fiber_field_verification_map,
@@ -43,11 +41,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     try:
-        with SessionLocal() as db:
-            bind = db.get_bind()
-            if bind.dialect.name == "postgresql":
-                db.connection(execution_options={"isolation_level": "REPEATABLE READ"})
-                db.execute(text("SET TRANSACTION READ ONLY"))
+        with read_only_snapshot_session() as db:
             report = project_fiber_field_verification_map(db)
     except (FiberTopologyFieldMapError, FiberTopologyFieldWorklistError) as exc:
         raise SystemExit(str(exc)) from exc

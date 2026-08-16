@@ -38,7 +38,12 @@ from app.models.catalog import (
 )
 from app.models.crm_sync_failure import CrmSyncFailure, CrmSyncFailureStatus
 from app.models.domain_settings import DomainSetting, SettingDomain
-from app.models.network import SubscriberAdditionalRoute
+from app.models.network import (
+    IPAssignment,
+    IPv4Address,
+    IPVersion,
+    SubscriberAdditionalRoute,
+)
 from app.models.subscriber import (
     Address,
     Subscriber,
@@ -488,6 +493,105 @@ def test_person_detail_preserves_disabled_service_network_access(
     assert context["network_access_cards"][0]["ipv4_address"] == "10.70.0.25"
 
 
+def test_person_detail_renders_exact_assignment_instead_of_stale_served_copy(
+    db_session,
+    subscriber,
+    subscription,
+    monkeypatch,
+):
+    subscriber.user_type = UserType.customer
+    subscription.status = SubscriptionStatus.active
+    subscription.login = "exact-ipv4-login"
+    subscription.ipv4_address = "10.70.0.25"
+    address = IPv4Address(address="10.70.0.99")
+    db_session.add(address)
+    db_session.flush()
+    db_session.add(
+        IPAssignment(
+            subscriber_id=subscriber.id,
+            subscription_id=subscription.id,
+            ip_version=IPVersion.ipv4,
+            ipv4_address_id=address.id,
+            is_active=True,
+            is_primary=True,
+        )
+    )
+    db_session.commit()
+
+    context = build_person_detail_snapshot(db_session, str(subscriber.id))
+
+    selection = context["service_ipv4_by_subscription"][str(subscription.id)]
+    assert selection.address == "10.70.0.99"
+    assert context["network_access_cards"][0]["ipv4_address"] == "10.70.0.99"
+
+    monkeypatch.setattr(
+        customer_routes.web_notifications_service,
+        "bulk_notification_setup_context",
+        lambda _db: {},
+    )
+    monkeypatch.setattr(
+        customer_routes.subscriber_party_binding_repair,
+        "resolve_repair_context",
+        lambda _db, *, subscriber_id: None,
+    )
+    import app.web.admin as admin_module
+
+    monkeypatch.setattr(admin_module, "get_current_user", lambda request: None)
+    monkeypatch.setattr(admin_module, "get_sidebar_stats", lambda db: {})
+    request = _bare_request(f"/admin/customers/person/{subscriber.id}#subscriptions")
+    request.state.auth = {}
+
+    response = customer_routes.person_detail(
+        request=request,
+        customer_id=str(subscriber.id),
+        panel=None,
+        usage_period="current",
+        usage_page=1,
+        usage_per_page=25,
+        usage_view="chart",
+        db=db_session,
+    )
+    rendered = response.body.decode("utf-8")
+
+    assert f'data-testid="subscription-service-ipv4-{subscription.id}"' in rendered
+    assert "10.70.0.99" in rendered
+    assert "10.70.0.25" not in rendered
+
+
+def test_person_detail_refuses_stale_copy_when_exact_assignments_are_ambiguous(
+    db_session,
+    subscriber,
+    subscription,
+):
+    subscriber.user_type = UserType.customer
+    subscription.login = "ambiguous-ipv4-login"
+    subscription.ipv4_address = "10.71.0.25"
+    first = IPv4Address(address="10.71.0.98")
+    second = IPv4Address(address="10.71.0.99")
+    db_session.add_all([first, second])
+    db_session.flush()
+    db_session.add_all(
+        [
+            IPAssignment(
+                subscriber_id=subscriber.id,
+                subscription_id=subscription.id,
+                ip_version=IPVersion.ipv4,
+                ipv4_address_id=address.id,
+                is_active=True,
+            )
+            for address in (first, second)
+        ]
+    )
+    db_session.commit()
+
+    context = build_person_detail_snapshot(db_session, str(subscriber.id))
+
+    selection = context["service_ipv4_by_subscription"][str(subscription.id)]
+    assert selection.address is None
+    assert selection.source.value == "ambiguous_exact_assignments"
+    assert context["network_access_cards"][0]["ipv4_address"] is None
+
+
 def test_person_detail_projects_subscription_status_for_network_access(
     db_session, subscriber, subscription
 ):
@@ -697,6 +801,11 @@ def test_person_detail_normalizes_usage_period(monkeypatch, db_session):
         customer_routes.web_notifications_service,
         "bulk_notification_setup_context",
         lambda db: {},
+    )
+    monkeypatch.setattr(
+        customer_routes.subscriber_party_binding_repair,
+        "resolve_repair_context",
+        lambda db, *, subscriber_id: None,
     )
 
     import app.web.admin as admin_module

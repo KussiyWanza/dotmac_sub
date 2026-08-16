@@ -1,0 +1,128 @@
+"""Transport shape of one Integrator-delivered `messaging.receive.v1` envelope.
+
+This is the wire contract only. It carries no destination: a field naming a
+conversation, a team, a queue or a subscriber is deliberately absent, because
+`dotmac_integration.destination_binding` establishes where an observation lands
+from a trusted binding, never from the message. `scope` is the Integrator's
+record of which of ITS bindings produced the delivery and is provenance on this
+side of the wire — see the module docstring of
+`app.services.team_inbox_integrator_envelope`.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+
+from pydantic import BaseModel, ConfigDict, Field
+
+MESSAGING_RECEIVE_CAPABILITY = "messaging.receive.v1"
+#: The contract versions this deployment has actually deployed. An envelope
+#: naming any other version is refused rather than best-effort parsed.
+SUPPORTED_CONTRACT_VERSIONS: frozenset[int] = frozenset({1})
+
+
+class IntegratorScope(BaseModel):
+    """The Integrator's own binding scope. Provenance, never a routing input."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str = Field(min_length=1, max_length=60)
+    ref: str = Field(min_length=1, max_length=160)
+
+
+class IntegratorAttachment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    asset_type: str = Field(min_length=1, max_length=40)
+    file_name: str | None = Field(default=None, max_length=255)
+    mime_type: str | None = Field(default=None, max_length=160)
+    provider_media_id: str | None = Field(default=None, max_length=255)
+    source_url: str | None = Field(default=None, max_length=2000)
+    caption: str | None = Field(default=None, max_length=2000)
+    file_size: int | None = Field(default=None, ge=0)
+    download_status: str | None = Field(default=None, max_length=40)
+
+
+class IntegratorContactProfile(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    display_name: str | None = Field(default=None, max_length=255)
+    username: str | None = Field(default=None, max_length=255)
+    profile_pic: str | None = Field(default=None, max_length=2000)
+
+
+class IntegratorMessageObservation(BaseModel):
+    """One inbound message, already translated out of the provider's wire form."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    contact_address: str = Field(min_length=1, max_length=320)
+    body: str = Field(min_length=1)
+    contact_name: str | None = Field(default=None, max_length=255)
+    subject: str | None = Field(default=None, max_length=500)
+    external_message_id: str = Field(min_length=1, max_length=255)
+    external_thread_id: str | None = Field(default=None, max_length=255)
+    provider_account_id: str | None = Field(default=None, max_length=255)
+    external_account_id: str | None = Field(default=None, max_length=255)
+    page_id: str | None = Field(default=None, max_length=255)
+    instagram_account_id: str | None = Field(default=None, max_length=255)
+    surface: str | None = Field(default=None, max_length=60)
+    permalink_url: str | None = Field(default=None, max_length=2000)
+    media_url: str | None = Field(default=None, max_length=2000)
+    contact_profile: IntegratorContactProfile | None = None
+    attachments: tuple[IntegratorAttachment, ...] = ()
+
+
+class IntegratorDeliveryReceiptObservation(BaseModel):
+    """One provider delivery-state report for a message Sub previously sent."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    external_message_id: str = Field(min_length=1, max_length=255)
+    status: str = Field(min_length=1, max_length=40)
+    recipient_id: str | None = Field(default=None, max_length=255)
+    error_codes: tuple[str, ...] = ()
+
+
+class IntegratorObservationEnvelope(BaseModel):
+    """The provider-neutral capability envelope Sub's port accepts."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    capability_id: str = Field(min_length=1, max_length=120)
+    contract_version: int = Field(ge=1)
+    provider: str = Field(min_length=1, max_length=80)
+    provider_account_scope: str = Field(min_length=1, max_length=160)
+    provider_event_id: str = Field(min_length=1, max_length=255)
+    channel: str = Field(min_length=1, max_length=40)
+    observed_at: datetime
+    payload_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    scope: IntegratorScope
+    message: IntegratorMessageObservation | None = None
+    delivery_receipt: IntegratorDeliveryReceiptObservation | None = None
+
+
+class IntegratorObservationReceipt(BaseModel):
+    """What the port answers. It reports, and never decides, the consequence."""
+
+    observation_id: str
+    outcome: str
+    processing_status: str
+    replayed: bool
+
+
+class IntegratorMirrorFieldDisagreement(BaseModel):
+    field: str
+    integrator: str | None
+    sub: str | None
+
+
+class IntegratorMirrorReport(BaseModel):
+    """Read-only parity verdict for one envelope against Sub's own receiver."""
+
+    verdict: str
+    identity: str
+    counterpart_identity: str | None
+    blocking_reasons: tuple[str, ...]
+    disagreements: tuple[IntegratorMirrorFieldDisagreement, ...]
+    agrees: bool

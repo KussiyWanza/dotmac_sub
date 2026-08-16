@@ -911,6 +911,7 @@ DOMAIN = DomainSOT(
                 "ui.list_contracts",
                 "support.ticket_lifecycle",
                 "support.ticket_configuration",
+                "operations.service_team_lifecycle",
             ),
             notes=(
                 "app.services.support.Tickets owns the canonical filtered "
@@ -935,6 +936,7 @@ DOMAIN = DomainSOT(
                             "typed support Ticket list query",
                             "canonical ticket lifecycle state",
                             "ticket configuration",
+                            "resolved staff ticket audience",
                         ),
                     )
                     for name in (
@@ -968,6 +970,15 @@ DOMAIN = DomainSOT(
                         kind=AuthorityKind.CONTROL_INPUT,
                         source="configured filter option vocabulary",
                     ),
+                    AuthorityInput(
+                        name="resolved staff ticket audience",
+                        owner="operations.service_team_lifecycle",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source=(
+                            "authenticated SystemUser identity, compatible Person Party "
+                            "identity, and direct active ServiceTeam membership set"
+                        ),
+                    ),
                 ),
                 transaction=TransactionContract(
                     mode=TransactionMode.READ_ONLY,
@@ -979,7 +990,11 @@ DOMAIN = DomainSOT(
                 errors=ErrorContract(
                     domain_codes=("support_ticket_list_invalid_query",),
                     mapping_owner="admin support list and export HTTP adapters",
-                    fail_closed_on=("unsupported filter", "unsupported sort"),
+                    fail_closed_on=(
+                        "unsupported filter",
+                        "unsupported sort",
+                        "assigned-to-me staff identity unavailable",
+                    ),
                 ),
                 migration=MigrationContract(
                     state=AuthorityMigrationState.COMPLETE,
@@ -2332,13 +2347,16 @@ DOMAIN = DomainSOT(
             depends_on=("ui.list_contracts", "network.device_projection"),
             notes=(
                 "NETWORK_DEVICE_LIST_DEFINITION declares the list capabilities "
-                "(search, filter type/status/vendor, sort name/last_seen) and "
+                "(search, filter type/status/vendor/lifecycle, sort "
+                "name/last_seen) and "
                 "build_network_device_list_query normalizes request state; the "
                 "list reads the materialised device_projections table via "
                 "device_projection_views (SQL search/filter/sort/paginate), the "
                 "rebuildable read model owned by network.device_projection, "
                 "instead of aggregating every device in memory. Projected "
                 "operational_status is the binary network.device_state outcome; "
+                "archived core rows are excluded from the default cohort and "
+                "remain available from the explicit archived cohort; "
                 "refreshed_at is internal repair evidence and never a client "
                 "device state. Raw timestamped observations remain available at "
                 "diagnostic depth. collect_devices is "

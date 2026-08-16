@@ -8,18 +8,24 @@ import pytest
 
 from app.models.audit import AuditEvent
 from app.models.event_store import EventStore
+from app.models.party import Party, PartyType
 from app.models.rbac import Permission, Role, SystemUserPermission, SystemUserRole
 from app.models.system_user import SystemUser
+from app.services import party as party_service
 from app.services import staff_provisioning, system_user_assignments
 from app.services.owner_commands import CommandContext
 
 
-def _context(key: str = "assignment-owner-test") -> CommandContext:
+def _context(
+    key: str = "assignment-owner-test",
+    *,
+    actor: str = "service:assignment-test",
+) -> CommandContext:
     command_id = uuid.uuid4()
     return CommandContext(
         command_id=command_id,
         correlation_id=command_id,
-        actor="service:assignment-test",
+        actor=actor,
         scope=system_user_assignments.ASSIGNMENT_SCOPE,
         reason="verify canonical system-user assignment semantics",
         idempotency_key=key,
@@ -41,11 +47,12 @@ def _replace(
     user_id,
     role_ids=(),
     permission_ids=(),
+    context: CommandContext | None = None,
 ):
     return system_user_assignments.replace_system_user_assignments(
         db_session,
         system_user_assignments.ReplaceSystemUserAssignmentsCommand(
-            context=_context(),
+            context=context or _context(),
             user_id=user_id,
             role_ids=tuple(role_ids),
             direct_permission_ids=tuple(permission_ids),
@@ -104,6 +111,38 @@ def test_replace_commits_grants_audit_event_and_preserves_managed_roles(
         .count()
         == 1
     )
+
+
+def test_user_actor_projects_reviewed_person_party_into_audit(db_session) -> None:
+    operator = _user("assignment-operator@dotmac.io")
+    target = _user("assignment-target@dotmac.io")
+    person = Party(
+        party_type=PartyType.person.value,
+        display_name="Reviewed assignment operator",
+    )
+    db_session.add_all((operator, target, person))
+    db_session.flush()
+    party_service.bind_system_user_principal(
+        db_session,
+        system_user_id=operator.id,
+        person_party_id=person.id,
+        source="reviewed_test_evidence",
+        reason="prove audit actor provenance uses the canonical staff binding",
+    )
+    operator_id = operator.id
+    target_id = target.id
+    party_id = person.id
+    db_session.commit()
+
+    _replace(
+        db_session,
+        user_id=target_id,
+        context=_context(actor=f"user:{operator_id}"),
+    )
+
+    event = db_session.query(AuditEvent).filter_by(entity_id=str(target_id)).one()
+    assert event.actor_id == str(operator_id)
+    assert event.actor_party_id == party_id
 
 
 def test_invalid_permission_rolls_back_role_replacement(db_session) -> None:

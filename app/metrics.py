@@ -38,6 +38,13 @@ DATABASE_TRANSACTION_SPANS_SLOW = Counter(
     "Root SQLAlchemy transactions lasting at least the slow-span threshold",
 )
 
+ENTITLEMENT_REVOCATION_CACHE_FAILURES = Counter(
+    "entitlement_revocation_cache_failures_total",
+    "Post-commit auth-cache invalidations that failed after an entitlement "
+    "reduction revoked sessions (authorization is already correct in the "
+    "database; this counts stale-read risk needing replay)",
+)
+
 JOB_DURATION = Histogram(
     "job_duration_seconds",
     "Background job duration",

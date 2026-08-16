@@ -455,6 +455,10 @@ from app.models.location_capture_prompt import (  # noqa: F401
     LocationCapturePromptState,
 )
 from app.models.mrr_snapshot import MrrSnapshot  # noqa: F401
+from app.models.ncc_reporting import (  # noqa: F401
+    NccWeeklyReportRun,
+    NccWeeklyReportRunStatus,
+)
 from app.models.network import (  # noqa: F401
     AuthorizationPreset,
     BulkProvisioningItem,
@@ -852,6 +856,10 @@ from app.models.sales_order_funding import (  # noqa: F401
     FundingGateState,
     SalesOrderFundingGate,
     SalesOrderFundingObligation,
+)
+from app.models.sales_order_waiver import (  # noqa: F401
+    SalesOrderWaiver,
+    WaiverState,
 )
 from app.models.scheduler import ScheduledTask, ScheduleType  # noqa: F401
 from app.models.sequence import DocumentSequence  # noqa: F401

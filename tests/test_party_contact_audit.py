@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
+from pathlib import Path
 
 from app.models.party import (
     PartyContactConsentStatus,
@@ -15,7 +15,6 @@ from app.models.team_inbox import InboxChannelType, InboxContactLink
 from app.services import party as party_service
 from app.services import team_inbox_contact_links
 from app.services.party_contact_audit import build_party_contact_inbox_audit
-from scripts.migration.audit_party_contact_inbox import _set_transaction_read_only
 
 _EVIDENCE = {
     "source": "reviewed_contact_projection_worklist",
@@ -180,13 +179,12 @@ def test_contact_inbox_audit_reports_unbound_and_unsupported_debt(db_session):
     assert audit["inbox_contact_point_projections"]["missing_target_party_binding"] == 1
 
 
-def test_contact_operator_audit_uses_read_only_repeatable_read_transaction():
-    executed: list[str] = []
-    postgresql_db = SimpleNamespace(
-        get_bind=lambda: SimpleNamespace(dialect=SimpleNamespace(name="postgresql")),
-        execute=lambda statement: executed.append(str(statement)),
+def test_audit_party_contact_inbox_uses_the_read_only_snapshot_seam():
+    """Behavioural proof lives on PostgreSQL; this pins the wiring."""
+
+    source = Path("scripts/migration/audit_party_contact_inbox.py").read_text(
+        encoding="utf-8"
     )
 
-    _set_transaction_read_only(postgresql_db)
-
-    assert executed == ["SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"]
+    assert "read_only_snapshot_session" in source
+    assert "SET TRANSACTION" not in source

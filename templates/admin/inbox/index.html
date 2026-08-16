@@ -61,20 +61,22 @@
         </button>
     </section>
 
-    <div x-show="conversationOpening" x-cloak class="pointer-events-none absolute inset-0 z-[65] flex items-center justify-center bg-white/70 backdrop-blur-[1px] dark:bg-slate-950/70" aria-live="polite" aria-busy="true">
-        <div class="inline-flex items-center gap-3 rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 shadow-lg dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100">
-            <span class="h-5 w-5 animate-spin rounded-full border-2 border-slate-300 border-t-amber-500" aria-hidden="true"></span>
-            <span>Opening conversation...</span>
+    <div class="relative flex min-w-0 flex-1 overflow-hidden" data-conversation-pane>
+        <div x-show="conversationOpening" x-cloak class="pointer-events-none absolute inset-0 z-[65] flex items-center justify-center bg-white/70 backdrop-blur-[1px] dark:bg-slate-950/70" aria-live="polite" aria-busy="true">
+            <div class="inline-flex items-center gap-3 rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 shadow-lg dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100">
+                <span class="h-5 w-5 animate-spin rounded-full border-2 border-slate-300 border-t-amber-500" aria-hidden="true"></span>
+                <span>Opening conversation...</span>
+            </div>
         </div>
-    </div>
 
-    <main id="triage-detail" class="flex min-w-0 flex-1 overflow-hidden" aria-live="polite">
-        {% if selected %}
-            {% include "admin/inbox/_conversation.html" %}
-        {% else %}
-            {% include "admin/inbox/_empty_state.html" %}
-        {% endif %}
-    </main>
+        <main id="triage-detail" class="flex min-w-0 flex-1 overflow-hidden" aria-live="polite">
+            {% if selected %}
+                {% include "admin/inbox/_conversation.html" %}
+            {% else %}
+                {% include "admin/inbox/_empty_state.html" %}
+            {% endif %}
+        </main>
+    </div>
 
     <div x-show="contactOpen" x-cloak class="fixed inset-0 z-40 bg-slate-950/40 lg:hidden" @click="closeContact()" aria-hidden="true"></div>
     <aside x-show="contactOpen"
@@ -131,6 +133,6 @@
 
 {% block scripts %}
 {{ super() }}
-<script src="/static/js/admin-inbox.js?v=20260813a"></script>
+<script src="/static/js/admin-inbox.js?v=20260815b"></script>
 <script src="/static/js/voice-input.js?v=20260730a"></script>
 {% endblock %}

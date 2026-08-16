@@ -1,7 +1,7 @@
 """Backfill readable Team Inbox email bodies.
 
-Revision ID: 532_team_inbox_plain_email_bodies
-Revises: 531_consolidated_open_prs
+Revision ID: 537_team_inbox_plain_email_bodies
+Revises: 536_integrator_ingress_scopes
 Create Date: 2026-08-16
 """
 
@@ -14,8 +14,8 @@ import sqlalchemy as sa
 from alembic import op
 from app.services.team_inbox_rfc822 import html_to_readable_text
 
-revision = "532_team_inbox_plain_email_bodies"
-down_revision = "531_consolidated_open_prs"
+revision = "537_team_inbox_plain_email_bodies"
+down_revision = "536_integrator_ingress_scopes"
 branch_labels = None
 depends_on = None
 

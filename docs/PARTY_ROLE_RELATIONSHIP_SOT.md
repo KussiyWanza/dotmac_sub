@@ -191,6 +191,28 @@ versus Organization from `company_name`, copy legacy contacts, or activate a
 subscriber role. The reviewed identity worklist must decide those facts in a
 later backfill slice.
 
+### Admin single-account binding repair page
+
+The customer-detail **Repair Party Binding** action is a narrow exception for
+one currently unbound account. Its audience is an administrator resolving a
+specific blocked customer workflow, not a bulk identity-cleanup operator.
+`party.subscriber_binding_repair` owns the typed read context, action
+eligibility, validation, transaction, and audit evidence; the route and form
+only render that contract and submit one typed command.
+
+The first viewport identifies the exact customer, states that the account is
+unbound, explains the non-effects (no lifecycle, billing, contact, access, or
+permission change), and offers one primary action. The reviewer either enters
+an exact existing Party UUID or explicitly supplies a Party type and display
+name to create a new Party. The UI never matches by name, email, phone, or
+other contact data. Both paths require review evidence and an explicit
+confirmation. A bound account renders the reason the action is unavailable.
+
+The command locks canonical rows, calls `party.registry` for every native
+write, stages PII-free audit metadata, and refuses a repoint. A different
+existing Party remains a merge/repoint decision until that separately reviewed
+workflow and its domain reconcilers exist.
+
 ## Current structures and target links
 
 | Current structure | Target relationship | Migration state |

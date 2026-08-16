@@ -3664,9 +3664,6 @@ def save_manual_sales_order(
     source: str | None,
     project_type: str,
     status: str,
-    payment_status: str,
-    amount_paid: str,
-    paid_at: str | None,
     notes: str | None,
     descriptions: list[str],
     quantities: list[str],
@@ -3675,7 +3672,12 @@ def save_manual_sales_order(
     subscription_plan_ids: list[str],
     line_ids: list[str] | None = None,
 ) -> SalesOrder:
-    """Adapt an admin form into native sales-order owner commands."""
+    """Adapt an admin form into native sales-order owner commands.
+
+    Carries no funding fields. An operator states what was SOLD; whether it is
+    paid is derived from recorded settlement evidence, never from this form.
+    See ``sales_orders.FUNDING_CONTROLLED_FIELDS``.
+    """
 
     lines = _manual_line_inputs(
         descriptions=descriptions,
@@ -3688,20 +3690,8 @@ def save_manual_sales_order(
     totals = sales_orders_service.calculate_manual_order_totals(
         [(line["quantity"], line["unit_price"]) for line in lines]
     )
-    try:
-        paid = Decimal((amount_paid or "0").strip() or "0")
-    except ArithmeticError as exc:
-        raise ValueError("Amount paid must be a valid amount.") from exc
-    paid = sales_orders_service.validate_manual_payment_amount(
-        amount_paid=paid, total=totals.total
-    )
     if project_type not in {item.value for item in ProjectType}:
         raise ValueError("Select a valid project type.")
-    paid_at_value = None
-    if paid_at:
-        paid_at_value = datetime.fromisoformat(paid_at).replace(tzinfo=UTC)
-    if payment_status == SalesOrderPaymentStatus.paid.value and paid_at_value is None:
-        paid_at_value = datetime.now(UTC)
     agent_id = _validated_sales_agent_id(db, owner_agent_id)
 
     if sales_order_id:
@@ -3713,13 +3703,9 @@ def save_manual_sales_order(
             owner_agent_id=agent_id,
             source=(source or "").strip() or None,
             status=SalesOrderStatus(status),
-            payment_status=SalesOrderPaymentStatus(payment_status),
             subtotal=totals.subtotal,
             tax_total=totals.tax_total,
             total=totals.total,
-            amount_paid=paid,
-            balance_due=totals.total - paid,
-            paid_at=paid_at_value,
             notes=(notes or "").strip() or None,
             metadata_=metadata,
         )
@@ -3751,13 +3737,9 @@ def save_manual_sales_order(
         owner_agent_id=agent_id,
         source=(source or "").strip() or None,
         status=SalesOrderStatus(status),
-        payment_status=SalesOrderPaymentStatus(payment_status),
         subtotal=totals.subtotal,
         tax_total=totals.tax_total,
         total=totals.total,
-        amount_paid=paid,
-        balance_due=totals.total - paid,
-        paid_at=paid_at_value,
         notes=(notes or "").strip() or None,
         metadata_={"project_type": project_type},
     )

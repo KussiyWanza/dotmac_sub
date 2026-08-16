@@ -27,10 +27,11 @@ from app.schemas.auth import (
 )
 from app.services import auth as auth_service
 from app.services import auth_flow as auth_flow_service
-from app.services import settings_spec
+from app.services import settings_spec, staff_party_authentication
 from app.services import web_auth as web_auth_service
 from app.services import web_system_config as web_system_config_service
 from app.services.auth_flow import hash_password
+from tests.staff_identity_fixtures import project_staff_login
 
 
 class _FakeRedis:
@@ -111,7 +112,7 @@ def _make_system_user_with_login(db_session, *, email: str):
         password_hash=hash_password("secret"),
         is_active=True,
     )
-    db_session.add(credential)
+    project_staff_login(db_session, user=user, credential=credential)
     db_session.commit()
     return user
 
@@ -550,7 +551,7 @@ def test_web_login_submit_supports_system_user(db_session, monkeypatch):
         password_hash=hash_password("secret"),
         is_active=True,
     )
-    db_session.add(credential)
+    project_staff_login(db_session, user=user, credential=credential)
     db_session.commit()
 
     response = web_auth_service.login_submit(
@@ -598,7 +599,10 @@ def test_web_mfa_enroll_confirm_creates_admin_session(db_session, monkeypatch):
         db_session, str(system_user.id), "Authenticator app"
     )
     enrollment_token = auth_flow_service._issue_mfa_enrollment_token(  # noqa: SLF001
-        db_session, str(system_user.id), "system_user"
+        db_session,
+        str(system_user.id),
+        "system_user",
+        staff_binding=staff_party_authentication.binding_for_principal(system_user),
     )
     request = _make_request()
     request.scope["headers"].append(
@@ -662,7 +666,7 @@ def test_web_login_submit_issues_lean_session_cookie_for_system_user(
         password_hash=hash_password("secret"),
         is_active=True,
     )
-    db_session.add(credential)
+    project_staff_login(db_session, user=user, credential=credential)
     db_session.commit()
 
     response = web_auth_service.login_submit(

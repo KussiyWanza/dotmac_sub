@@ -44,7 +44,7 @@ from app.schemas.ai_operations import AiIntakeConfigUpsert
 from app.services.ai.client import AIClientError
 from app.services.ai.output_parsers import parse_json_object
 from app.services.ai.redaction import redact_text
-from app.services.audit_adapter import stage_audit_event
+from app.services.audit_adapter import AuditActor, stage_audit_event
 from app.services.domain_errors import DomainError
 from app.services.events import emit_event
 from app.services.events.types import EventType
@@ -216,14 +216,17 @@ class AiIntakeConfigurationError(DomainError):
         )
 
 
-def _command_actor(context: CommandContext) -> tuple[AuditActorType, str]:
+def _command_actor(context: CommandContext) -> AuditActor:
     actor_type, separator, actor_id = context.actor.partition(":")
     if context.scope != CONFIG_SCOPE or not separator or not actor_id.strip():
         raise AiIntakeConfigurationError(
             "AI intake configuration command context is invalid"
         )
     try:
-        return AuditActorType(actor_type), actor_id.strip()
+        return AuditActor(
+            actor_type=AuditActorType(actor_type),
+            actor_id=actor_id.strip(),
+        )
     except ValueError as exc:
         raise AiIntakeConfigurationError(
             "AI intake configuration actor type is invalid"
@@ -334,147 +337,212 @@ def _config_outcome(
     )
 
 
+def _upsert_config_locked(
+    db: Session, command: UpsertAiIntakeConfigCommand
+) -> AiIntakeConfigOutcome:
+    actor = _command_actor(command.context)
+    policy = command.policy
+    if policy.is_enabled:
+        if policy.scope_key.strip().lower() in {"global", "default", "any"}:
+            raise AiIntakeConfigurationError(
+                "AI intake activation requires an explicit provider/account scope"
+            )
+        if policy.fallback_team_id is None:
+            raise AiIntakeConfigurationError(
+                "AI intake activation requires an active fallback team"
+            )
+    if policy.fallback_team_id is not None:
+        team = db.get(ServiceTeam, policy.fallback_team_id)
+        if team is None or not team.is_active:
+            raise AiIntakeConfigurationError("AI intake fallback team must be active")
+    for mapping in policy.department_mappings:
+        if mapping.service_team_id is None:
+            continue
+        team = db.get(ServiceTeam, mapping.service_team_id)
+        if team is None or not team.is_active:
+            raise AiIntakeConfigurationError(
+                "AI intake department mapping team must be active"
+            )
+    if (
+        policy.metadata is not None
+        and policy.metadata.data_cleaning_support_team_id is not None
+    ):
+        support_team = db.get(
+            ServiceTeam, policy.metadata.data_cleaning_support_team_id
+        )
+        if support_team is None or not support_team.is_active:
+            raise AiIntakeConfigurationError(
+                "AI intake data-cleaning Support team must be active"
+            )
+    row = db.execute(
+        select(AiIntakeConfig)
+        .where(AiIntakeConfig.scope_key == policy.scope_key)
+        .with_for_update()
+    ).scalar_one_or_none()
+    created = row is None
+    if row is None:
+        row = AiIntakeConfig(
+            scope_key=policy.scope_key,
+            channel_type=policy.channel_type,
+        )
+        db.add(row)
+    new_mappings = [
+        {
+            "intent": mapping.intent.value,
+            "department": _normalize_key(mapping.department),
+            "service_team_id": str(mapping.service_team_id)
+            if mapping.service_team_id
+            else None,
+        }
+        for mapping in policy.department_mappings
+    ]
+    new_metadata = (
+        policy.metadata.model_dump(exclude_none=True)
+        if policy.metadata is not None
+        else {}
+    )
+    before = (
+        row.channel_type,
+        row.is_enabled,
+        row.confidence_threshold,
+        row.allow_followup_questions,
+        row.max_clarification_turns,
+        row.escalate_after_minutes,
+        row.exclude_campaign_attribution,
+        row.fallback_team_id,
+        row.instructions,
+        row.department_mappings,
+        row.metadata_,
+    )
+    row.channel_type = policy.channel_type
+    row.is_enabled = policy.is_enabled
+    row.confidence_threshold = policy.confidence_threshold
+    row.allow_followup_questions = policy.allow_followup_questions
+    row.max_clarification_turns = policy.max_clarification_turns
+    row.escalate_after_minutes = policy.escalate_after_minutes
+    row.exclude_campaign_attribution = policy.exclude_campaign_attribution
+    row.fallback_team_id = policy.fallback_team_id
+    row.instructions = policy.instructions
+    row.department_mappings = new_mappings
+    row.metadata_ = new_metadata
+    after = (
+        row.channel_type,
+        row.is_enabled,
+        row.confidence_threshold,
+        row.allow_followup_questions,
+        row.max_clarification_turns,
+        row.escalate_after_minutes,
+        row.exclude_campaign_attribution,
+        row.fallback_team_id,
+        row.instructions,
+        row.department_mappings,
+        row.metadata_,
+    )
+    changed = created or before != after
+    db.flush()
+    evidence = {
+        "schema_version": 1,
+        "command_id": str(command.context.command_id),
+        "correlation_id": str(command.context.correlation_id),
+        "reason": command.context.reason,
+        "scope_key": row.scope_key,
+        "channel_type": row.channel_type,
+        "enabled": bool(row.is_enabled),
+        "changed": changed,
+    }
+    stage_audit_event(
+        db,
+        action="ai.intake_config_upserted",
+        entity_type="ai_intake_config",
+        entity_id=str(row.id),
+        actor=actor,
+        request_id=str(command.context.correlation_id),
+        metadata=evidence,
+    )
+    if changed:
+        emit_event(
+            db,
+            EventType.ai_intake_config_updated,
+            {
+                **evidence,
+                "aggregate_type": "ai_intake_config",
+                "aggregate_id": str(row.id),
+                "aggregate_version": str(command.context.command_id),
+            },
+            actor=command.context.actor,
+        )
+    return _config_outcome(row, changed=changed, context=command.context)
+
+
+def project_config_from_canonical_policy(
+    db: Session, command: UpsertAiIntakeConfigCommand
+) -> AiIntakeConfigOutcome:
+    """Flush a canonical policy projection during the surrounding owner command."""
+
+    return _upsert_config_locked(db, command)
+
+
+def disable_projected_config(
+    db: Session, *, context: CommandContext, config_id: UUID
+) -> AiIntakeConfigOutcome | None:
+    """Disable a projected runtime config during the surrounding owner command."""
+
+    row = db.execute(
+        select(AiIntakeConfig).where(AiIntakeConfig.id == config_id).with_for_update()
+    ).scalar_one_or_none()
+    if row is None:
+        return None
+    actor = _command_actor(context)
+    before = row.is_enabled
+    row.is_enabled = False
+    row.metadata_ = {
+        **dict(row.metadata_ or {}),
+        "disabled_reason": context.reason,
+        "disabled_at": datetime.now(UTC).isoformat(),
+    }
+    db.flush()
+    changed = before is not False
+    evidence = {
+        "schema_version": 1,
+        "command_id": str(context.command_id),
+        "correlation_id": str(context.correlation_id),
+        "reason": context.reason,
+        "scope_key": row.scope_key,
+        "channel_type": row.channel_type,
+        "enabled": False,
+        "changed": changed,
+    }
+    stage_audit_event(
+        db,
+        action="ai.intake_config_disabled",
+        entity_type="ai_intake_config",
+        entity_id=str(row.id),
+        actor=actor,
+        request_id=str(context.correlation_id),
+        metadata=evidence,
+    )
+    if changed:
+        emit_event(
+            db,
+            EventType.ai_intake_config_updated,
+            {
+                **evidence,
+                "aggregate_type": "ai_intake_config",
+                "aggregate_id": str(row.id),
+                "aggregate_version": str(context.command_id),
+            },
+            actor=context.actor,
+        )
+    return _config_outcome(row, changed=changed, context=context)
+
+
 def upsert_config(
     db: Session, command: UpsertAiIntakeConfigCommand
 ) -> AiIntakeConfigOutcome:
     """Create or replace one scope policy through the canonical writer."""
 
     def operation() -> AiIntakeConfigOutcome:
-        actor_type, actor_id = _command_actor(command.context)
-        policy = command.policy
-        if policy.is_enabled:
-            if policy.scope_key.strip().lower() in {"global", "default", "any"}:
-                raise AiIntakeConfigurationError(
-                    "AI intake activation requires an explicit provider/account scope"
-                )
-            if policy.fallback_team_id is None:
-                raise AiIntakeConfigurationError(
-                    "AI intake activation requires an active fallback team"
-                )
-        if policy.fallback_team_id is not None:
-            team = db.get(ServiceTeam, policy.fallback_team_id)
-            if team is None or not team.is_active:
-                raise AiIntakeConfigurationError(
-                    "AI intake fallback team must be active"
-                )
-        for mapping in policy.department_mappings:
-            if mapping.service_team_id is None:
-                continue
-            team = db.get(ServiceTeam, mapping.service_team_id)
-            if team is None or not team.is_active:
-                raise AiIntakeConfigurationError(
-                    "AI intake department mapping team must be active"
-                )
-        if (
-            policy.metadata is not None
-            and policy.metadata.data_cleaning_support_team_id is not None
-        ):
-            support_team = db.get(
-                ServiceTeam, policy.metadata.data_cleaning_support_team_id
-            )
-            if support_team is None or not support_team.is_active:
-                raise AiIntakeConfigurationError(
-                    "AI intake data-cleaning Support team must be active"
-                )
-        row = db.execute(
-            select(AiIntakeConfig)
-            .where(AiIntakeConfig.scope_key == policy.scope_key)
-            .with_for_update()
-        ).scalar_one_or_none()
-        created = row is None
-        if row is None:
-            row = AiIntakeConfig(
-                scope_key=policy.scope_key,
-                channel_type=policy.channel_type,
-            )
-            db.add(row)
-        new_mappings = [
-            {
-                "intent": mapping.intent.value,
-                "department": _normalize_key(mapping.department),
-                "service_team_id": str(mapping.service_team_id)
-                if mapping.service_team_id
-                else None,
-            }
-            for mapping in policy.department_mappings
-        ]
-        new_metadata = (
-            policy.metadata.model_dump(exclude_none=True)
-            if policy.metadata is not None
-            else {}
-        )
-        before = (
-            row.channel_type,
-            row.is_enabled,
-            row.confidence_threshold,
-            row.allow_followup_questions,
-            row.max_clarification_turns,
-            row.escalate_after_minutes,
-            row.exclude_campaign_attribution,
-            row.fallback_team_id,
-            row.instructions,
-            row.department_mappings,
-            row.metadata_,
-        )
-        row.channel_type = policy.channel_type
-        row.is_enabled = policy.is_enabled
-        row.confidence_threshold = policy.confidence_threshold
-        row.allow_followup_questions = policy.allow_followup_questions
-        row.max_clarification_turns = policy.max_clarification_turns
-        row.escalate_after_minutes = policy.escalate_after_minutes
-        row.exclude_campaign_attribution = policy.exclude_campaign_attribution
-        row.fallback_team_id = policy.fallback_team_id
-        row.instructions = policy.instructions
-        row.department_mappings = new_mappings
-        row.metadata_ = new_metadata
-        after = (
-            row.channel_type,
-            row.is_enabled,
-            row.confidence_threshold,
-            row.allow_followup_questions,
-            row.max_clarification_turns,
-            row.escalate_after_minutes,
-            row.exclude_campaign_attribution,
-            row.fallback_team_id,
-            row.instructions,
-            row.department_mappings,
-            row.metadata_,
-        )
-        changed = created or before != after
-        db.flush()
-        evidence = {
-            "schema_version": 1,
-            "command_id": str(command.context.command_id),
-            "correlation_id": str(command.context.correlation_id),
-            "reason": command.context.reason,
-            "scope_key": row.scope_key,
-            "channel_type": row.channel_type,
-            "enabled": bool(row.is_enabled),
-            "changed": changed,
-        }
-        stage_audit_event(
-            db,
-            action="ai.intake_config_upserted",
-            entity_type="ai_intake_config",
-            entity_id=str(row.id),
-            actor_type=actor_type,
-            actor_id=actor_id,
-            request_id=str(command.context.correlation_id),
-            metadata=evidence,
-        )
-        if changed:
-            emit_event(
-                db,
-                EventType.ai_intake_config_updated,
-                {
-                    **evidence,
-                    "aggregate_type": "ai_intake_config",
-                    "aggregate_id": str(row.id),
-                    "aggregate_version": str(command.context.command_id),
-                },
-                actor=command.context.actor,
-            )
-        return _config_outcome(row, changed=changed, context=command.context)
+        return _upsert_config_locked(db, command)
 
     return execute_owner_command(
         db,

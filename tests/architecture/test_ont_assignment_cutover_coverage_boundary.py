@@ -62,7 +62,9 @@ def test_coverage_cli_has_one_read_only_report_mode():
     source = COMMAND.read_text()
 
     assert parser_commands == set()
-    assert "SET TRANSACTION READ ONLY" in source
-    assert "REPEATABLE READ" in source
+    # The read-only guarantee now comes from the shared seam, which pins
+    # REPEATABLE READ and postgresql_readonly together. Asserting the raw
+    # SQL would require the broken form this repair removed.
+    assert "read_only_snapshot_session()" in source
     assert "execute_assignment_identity_repair" not in source
     assert "enable_constraint" not in source

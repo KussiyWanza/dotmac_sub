@@ -121,6 +121,9 @@ def test_social_comments_have_dedicated_workspace_and_filter_entry_point():
     assert "Top-level public comments unavailable" in COMMENTS
     assert "data-inline-comment-reply" in COMMENTS
     assert '"/comments"' in ROUTES
+    assert "can_reply_to_social_comments" in COMMENTS
+    assert "selected.action_eligibility" not in COMMENTS
+    assert '"can_reply_to_social_comments": can_reply_to_social_comments' in ROUTES
 
 
 # --- Slice 1: read state -------------------------------------------------
@@ -136,9 +139,26 @@ def test_thread_publishes_unread_state_and_composer_clears_it():
 
 def test_mark_read_posts_with_csrf_header():
     marker = JAVASCRIPT.index("async markConversationRead")
-    body = JAVASCRIPT[marker : marker + 500]
+    body = JAVASCRIPT[marker : marker + 1200]
     assert '"X-CSRF-Token": csrfToken()' in body
     assert 'method: "POST"' in body
+    assert 'Accept: "application/json"' in body
+    assert "this.applyConversationRead(id)" in body
+    assert 'this.refreshSidebar("read_state")' not in body
+    assert "this.markConversationRead(id, 1)" in body
+
+
+def test_mark_read_updates_only_the_unread_row_and_total():
+    assert "data-inbox-unread-total" in SIDEBAR
+    assert "data-conversation-unread=" in QUEUE
+    assert "conversationIsLocallyRead" in QUEUE
+    marker = JAVASCRIPT.index("applyConversationRead(conversationId)")
+    body = JAVASCRIPT[marker : marker + 1300]
+    assert 'row.dataset.conversationUnread = "false"' in body
+    assert 'document.querySelector("[data-inbox-unread-total]")' in body
+    assert "Math.max(0, current - 1)" in body
+    assert 'get("unread") === "true"' in body
+    assert 'this.refreshConversationList("read_state")' in body
 
 
 # --- Slice 1: reply provenance ------------------------------------------
@@ -161,11 +181,36 @@ def test_reply_submission_refreshes_inbox_fragments_without_page_navigation():
     assert 'hx-swap="none"' in CONVERSATION
     assert '@inbox-reply-completed.window="completeSend($event.detail)"' in CONVERSATION
     assert "completeSend(result)" in JAVASCRIPT
-    assert "workspace?.refreshThread?.(this.conversationId, true)" in JAVASCRIPT
-    assert 'workspace?.refreshConversationList?.("reply")' in JAVASCRIPT
+    assert "workspace?.refreshThreadForMessage?.(" in JAVASCRIPT
+    assert "/messages/${id}" in JAVASCRIPT
+    assert "this.refreshConversationRow(conversationId)" in JAVASCRIPT
+    assert 'workspace?.refreshConversationList?.("reply")' not in JAVASCRIPT
     assert 'this.draft = ""' in JAVASCRIPT
     assert "window.location.reload" not in JAVASCRIPT
-    assert "admin-inbox.js?v=20260813a" in INDEX
+    assert "admin-inbox.js?v=20260815b" in INDEX
+
+
+def test_reply_and_realtime_refresh_the_message_once():
+    marker = JAVASCRIPT.index("refreshThreadForMessage(conversationId")
+    body = JAVASCRIPT[marker : marker + 1300]
+    assert "recentlyRefreshedMessageIds.has(id)" in body
+    assert "recentlyRefreshedMessageIds.add(id)" in body
+    assert "recentlyRefreshedMessageIds.delete(id)" in body
+    assert 'swap: "beforeend"' in body
+
+    realtime_marker = JAVASCRIPT.index('eventType === "message_new"')
+    realtime_body = JAVASCRIPT[realtime_marker : realtime_marker + 900]
+    assert (
+        "this.refreshThreadForMessage(this.selectedId, data.message_id)"
+        in realtime_body
+    )
+
+
+def test_incremental_refresh_is_bounded_and_has_stable_fragment_targets():
+    assert "window.htmx.config.timeout = 15000" in JAVASCRIPT
+    assert 'id="inbox-message-list"' in CONVERSATION
+    assert 'data-inbox-message-id="{{ entry.message.id }}"' in CONVERSATION
+    assert 'id="inbox-conversation-row-{{ row.id }}"' in QUEUE
 
 
 def test_delivery_status_updates_in_place_from_authoritative_realtime_hint():
@@ -181,6 +226,19 @@ def test_conversation_drilldown_and_reply_fallback_preserve_queue_page_state():
     assert "conversation_queue_item(row, list_query" in SIDEBAR
     assert 'name="next_url"' in CONVERSATION
     assert "queue_return_url | default('/admin/inbox')" in CONVERSATION
+    assert ':value="window.__inboxReturnUrl ||' in CONVERSATION
+
+    refresh_marker = JAVASCRIPT.index("refreshConversationList(intent")
+    refresh_body = JAVASCRIPT[refresh_marker : refresh_marker + 900]
+    assert "window.__inboxReturnUrl || window.location.href" in refresh_body
+    assert 'url.pathname = "/admin/inbox"' in refresh_body
+    assert 'url.searchParams.set("c", this.selectedId)' in refresh_body
+    assert 'historyMode: intent === "reply" ? "replace" : "none"' in refresh_body
+
+    pagination_marker = JAVASCRIPT.index("navigatePage(urlValue)")
+    pagination_body = JAVASCRIPT[pagination_marker : pagination_marker + 500]
+    assert 'url.searchParams.set("c", this.selectedId)' in pagination_body
+    assert "window.__inboxReturnUrl" in pagination_body
 
 
 def test_macro_menu_dispatches_identity_not_just_text():
@@ -336,11 +394,10 @@ def test_live_indicator_and_search_match_the_sidebar_contract():
 
 
 def test_stats_filters_scroll_without_hiding_the_conversation_queue():
-    summary_filters = SIDEBAR.index('aria-label="Inbox summary filters"')
-    secondary_filters = SIDEBAR.index('aria-label="Secondary inbox filters"')
+    summary_filters = SIDEBAR.index('aria-label="Inbox views and statistics"')
     filter_panel = SIDEBAR.index('id="inbox-stats-filters"')
     filter_form = SIDEBAR.index('id="inbox-filter-form"')
-    assert filter_panel < summary_filters < secondary_filters < filter_form
+    assert filter_panel < summary_filters < filter_form
     assert 'class="inbox-filter-scroll space-y-3 pt-2"' in SIDEBAR
     assert filter_panel < SIDEBAR.index('id="inbox-conversation-queue"')
     for contract in (
@@ -358,7 +415,7 @@ def test_sidebar_filters_replace_stale_requests_and_expose_busy_state():
     assert 'hx-sync="this:replace"' in SIDEBAR
     assert 'hx-sync="#inbox-sidebar-content:replace"' in SIDEBAR
     assert ':aria-busy="filterLoading.toString()"' in SIDEBAR
-    assert "Updating conversations" in SIDEBAR
+    assert "Checking for updates" in JAVASCRIPT
     assert "stale.xhr.abort()" in JAVASCRIPT
     assert "if (this.filterLoading) return" in JAVASCRIPT
     assert 'document.body.addEventListener("htmx:sendAbort", release)' in JAVASCRIPT
@@ -369,7 +426,36 @@ def test_sidebar_filters_replace_stale_requests_and_expose_busy_state():
     assert 'htmx_target == "inbox-conversation-queue"' in ROUTES
 
 
+def test_inbox_refresh_status_precedes_stats_filters_and_conversation_list():
+    status = SIDEBAR.index("data-inbox-refresh-status")
+    disclosure = SIDEBAR.index('aria-controls="inbox-stats-filters"')
+    queue = SIDEBAR.index('id="inbox-conversation-queue"')
+    assert status < disclosure < queue
+    for label in (
+        "Waiting for new activity",
+        "Checking for updates",
+        "Inbox updated just now",
+        "Couldn’t update — retrying",
+    ):
+        assert label in SIDEBAR or label in JAVASCRIPT
+    for contract in (
+        'inboxRefreshState: "idle"',
+        "this.inboxRefreshStarted()",
+        "this.inboxRefreshFinished(requestFailed)",
+        "event.detail?.successful === false",
+    ):
+        assert contract in JAVASCRIPT
+
+
 def test_conversation_click_shows_loading_without_hiding_list_until_swap():
+    pane = INDEX.index("data-conversation-pane")
+    loader = INDEX.index('x-show="conversationOpening"')
+    detail = INDEX.index('id="triage-detail"')
+    assert pane < loader < detail
+    pane_markup = INDEX[pane - 100 : detail]
+    assert "relative flex min-w-0 flex-1 overflow-hidden" in pane_markup
+    assert "absolute inset-0" in pane_markup
+
     select_start = JAVASCRIPT.index("selectConversation(id) {")
     select_end = JAVASCRIPT.index("updateSelectedHighlight()", select_start)
     select_block = JAVASCRIPT[select_start:select_end]
@@ -768,6 +854,31 @@ def test_assignment_filter_colours_and_counts_are_present():
         assert selected_colour in SIDEBAR
     assert "assignmentFilterActive" in SIDEBAR
     assert "assignmentFilterActive(value)" in JAVASCRIPT
+
+
+def test_stats_and_filters_use_one_grouped_progressive_disclosure():
+    assert "Inbox Stats &amp; Filters" in SIDEBAR
+    assert 'x-text="activeFilterCount()"' in SIDEBAR
+    assert "Inbox views &amp; stats" in SIDEBAR
+    assert ">Active</span>" in SIDEBAR
+    assert "Active filters" in SIDEBAR
+    assert "activeFilterChips()" in SIDEBAR
+    assert "removeActiveFilter(chip)" in SIDEBAR
+    for group in (
+        "Status",
+        "Assignment",
+        "Attention",
+        "Routing",
+        "Advanced",
+        "Saved views",
+    ):
+        assert f"<span>{group}</span>" in SIDEBAR
+    assert SIDEBAR.count("<span>Unreplied</span>") == 1
+    assert SIDEBAR.count("<span>Unassigned</span>") == 1
+    assert 'aria-label="Secondary inbox filters"' not in SIDEBAR
+    assert "activeFilterChips()" in JAVASCRIPT
+    assert "activeFilterCount()" in JAVASCRIPT
+    assert "removeActiveFilter(chip)" in JAVASCRIPT
 
 
 def test_needs_attention_is_a_live_saved_filter():

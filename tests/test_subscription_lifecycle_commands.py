@@ -622,9 +622,14 @@ def test_identical_schedules_replay_their_own_idempotency_artifact(
             idempotency_key=key,
         )
 
-    first = execute_subscription_command(db_session, _command("cancel-first"))
-    second = execute_subscription_command(db_session, _command("cancel-second"))
-    replay = execute_subscription_command(db_session, _command("cancel-second"))
+    now = datetime(2026, 7, 14, tzinfo=UTC)
+    first = execute_subscription_command(db_session, _command("cancel-first"), now=now)
+    second = execute_subscription_command(
+        db_session, _command("cancel-second"), now=now
+    )
+    replay = execute_subscription_command(
+        db_session, _command("cancel-second"), now=now
+    )
 
     assert first.artifact_ids != second.artifact_ids
     assert replay.replayed is True

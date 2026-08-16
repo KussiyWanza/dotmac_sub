@@ -35,6 +35,7 @@ class CommunicationClass(enum.StrEnum):
 class CommunicationAttachmentKind(enum.StrEnum):
     invoice_pdf = "invoice_pdf"
     quote_pdf = "quote_pdf"
+    ncc_weekly_xlsx = "ncc_weekly_xlsx"
 
 
 @dataclass(frozen=True)
@@ -191,7 +192,12 @@ def _reseller_addresses(
 def submit(db: Session, intent: CommunicationIntent) -> CommunicationIntentResult:
     from app.services.notification import notifications as notification_service
 
-    if intent.audience_type not in {"subscriber", "system_user", "reseller_user"}:
+    if intent.audience_type not in {
+        "subscriber",
+        "system_user",
+        "reseller_user",
+        "operational",
+    }:
         raise ValueError("Unsupported communication audience type")
     if intent.audience_type != "subscriber" and (
         intent.subscriber_id is not None

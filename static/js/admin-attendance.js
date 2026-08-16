@@ -40,7 +40,11 @@
     }
 
     function csrfToken() {
-        return document.querySelector('meta[name="csrf-token"]')?.content || "";
+        const metaToken = document.querySelector('meta[name="csrf-token"]')?.content;
+        if (metaToken) return metaToken;
+        return decodeURIComponent(
+            (document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/) || [])[1] || ""
+        );
     }
 
     function showError(message) {
@@ -131,7 +135,18 @@
                 },
                 body: JSON.stringify(payload),
             });
-            if (!response.ok) throw new Error("attendance_punch_failed");
+            if (!response.ok) {
+                // A non-2xx response is a confirmed Selfcare rejection (for example,
+                // CSRF or authorization), not an uncertain ERP mutation.
+                showError(
+                    response.status === 403
+                        ? "Your session security token expired. Refresh the page and try again."
+                        : "Attendance could not be submitted. Please refresh the page and try again."
+                );
+                button.disabled = false;
+                button.textContent = originalText;
+                return;
+            }
             replaceWidget(await response.text());
         } catch (_error) {
             // A timed-out mutation is ambiguous. Read ERP's authoritative state

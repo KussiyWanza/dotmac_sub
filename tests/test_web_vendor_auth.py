@@ -20,6 +20,7 @@ from app.models.system_user import SystemUser
 from app.models.vendor_routes import Vendor
 from app.services.auth_flow import AuthFlow, hash_password
 from app.web import vendor_auth_flow as web_vendor_auth
+from tests.staff_identity_fixtures import project_staff_login
 
 
 def _request(
@@ -92,8 +93,8 @@ def _vendor_identity(db_session, *, username: str):
         is_active=True,
         must_change_password=False,
     )
-    db_session.add_all([field_vendor, credential])
-    db_session.flush()
+    db_session.add(field_vendor)
+    project_staff_login(db_session, user=system_user, credential=credential)
     db_session.add(
         FieldVendorUser(
             vendor_id=field_vendor.id,
@@ -123,7 +124,7 @@ def _non_vendor_identity(db_session, *, username: str, email: str | None = None)
         password_hash=hash_password("secret-123"),
         is_active=True,
     )
-    db_session.add(credential)
+    project_staff_login(db_session, user=system_user, credential=credential)
     db_session.commit()
     return system_user
 

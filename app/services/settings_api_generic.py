@@ -356,3 +356,71 @@ def upsert_comms_setting(db: Session, key: str, payload: DomainSettingUpdate):
 
 def get_comms_setting(db: Session, key: str):
     return _get_domain_setting(db, SettingDomain.comms, key)
+
+
+def list_integration_settings(
+    db: Session,
+    is_active: bool | None,
+    order_by: str,
+    order_dir: str,
+    limit: int,
+    offset: int,
+):
+    return _list_domain_settings(
+        db, SettingDomain.integration, is_active, order_by, order_dir, limit, offset
+    )
+
+
+def list_integration_settings_response(
+    db: Session,
+    is_active: bool | None,
+    order_by: str,
+    order_dir: str,
+    limit: int,
+    offset: int,
+):
+    return _list_domain_settings_response(
+        db, SettingDomain.integration, is_active, order_by, order_dir, limit, offset
+    )
+
+
+def upsert_integration_setting(db: Session, key: str, payload: DomainSettingUpdate):
+    return _upsert_domain_setting(db, SettingDomain.integration, key, payload)
+
+
+def get_integration_setting(db: Session, key: str):
+    return _get_domain_setting(db, SettingDomain.integration, key)
+
+
+def list_projects_settings(
+    db: Session,
+    is_active: bool | None,
+    order_by: str,
+    order_dir: str,
+    limit: int,
+    offset: int,
+):
+    return _list_domain_settings(
+        db, SettingDomain.projects, is_active, order_by, order_dir, limit, offset
+    )
+
+
+def list_projects_settings_response(
+    db: Session,
+    is_active: bool | None,
+    order_by: str,
+    order_dir: str,
+    limit: int,
+    offset: int,
+):
+    return _list_domain_settings_response(
+        db, SettingDomain.projects, is_active, order_by, order_dir, limit, offset
+    )
+
+
+def upsert_projects_setting(db: Session, key: str, payload: DomainSettingUpdate):
+    return _upsert_domain_setting(db, SettingDomain.projects, key, payload)
+
+
+def get_projects_setting(db: Session, key: str):
+    return _get_domain_setting(db, SettingDomain.projects, key)

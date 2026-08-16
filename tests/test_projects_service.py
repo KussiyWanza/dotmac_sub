@@ -37,7 +37,8 @@ from app.schemas.project import (
     ProjectTaskUpdate,
     ProjectUpdate,
 )
-from app.schemas.settings import DomainSettingCreate
+from app.schemas.settings import DomainSettingCreate, DomainSettingUpdate
+from app.services import settings_api
 from app.services.domain_settings import projects_settings
 from app.services.owner_commands import CommandContext
 from app.services.projects import (
@@ -325,6 +326,42 @@ def test_project_completion_queues_configured_finance_email_once(
     assert emails[0].recipient == "finance@example.com"
     assert emails[0].dedupe_key == (
         f"project-completed-finance:{project.id}:finance@example.com"
+    )
+
+
+def test_project_update_notification_is_opt_in(db_session, subscriber):
+    project = _create_fiber_project(db_session, subscriber)
+
+    projects.update(db_session, str(project.id), ProjectUpdate(name="Silent rename"))
+
+    assert (
+        db_session.query(Notification)
+        .filter(Notification.event_type == "project_updated")
+        .count()
+        == 0
+    )
+
+    settings_api.upsert_notification_setting(
+        db_session,
+        "document_change_notification_events_enabled",
+        DomainSettingUpdate(
+            value_type=SettingValueType.json,
+            value_json={"project_updated": True},
+        ),
+    )
+
+    projects.update(db_session, str(project.id), ProjectUpdate(name="Notified rename"))
+
+    notice = (
+        db_session.query(Notification)
+        .filter(Notification.event_type == "project_updated")
+        .one()
+    )
+    assert notice.channel == NotificationChannel.email
+    assert notice.metadata_["changed_fields"] == ["name"]
+    assert notice.communication_intent is not None
+    assert notice.communication_intent.dedupe_key == (
+        f"project_updated:{project.id}:{notice.metadata_['transition_id']}"
     )
 
 

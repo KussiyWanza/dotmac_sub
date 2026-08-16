@@ -160,6 +160,43 @@ def test_social_workspace_platform_filter_and_selection_scope(db_session):
     assert all(node.message.body != "FB" for node in projection.selected_post.comments)
 
 
+def test_social_workspace_stale_selection_falls_back_to_visible_post(db_session):
+    facebook = _post_conversation(
+        db_session,
+        channel_type=InboxChannelType.facebook_comment.value,
+        external_thread_id="facebook_comment:fb-post-1",
+        subject="Facebook outage post",
+        metadata={"page_id": "page-1"},
+    )
+    instagram = _post_conversation(
+        db_session,
+        channel_type=InboxChannelType.instagram_comment.value,
+        external_thread_id="instagram_comment:ig-media-1",
+        subject="Instagram promo post",
+        metadata={"instagram_account_id": "ig-1"},
+    )
+    _comment(db_session, facebook, provider_comment_id="fb-comment-1", body="FB")
+    _comment(
+        db_session,
+        instagram,
+        provider_comment_id="ig-comment-1",
+        body="IG",
+        metadata={"media_id": "ig-media-1"},
+    )
+    db_session.commit()
+
+    projection = team_inbox_projection.build_social_comments_projection(
+        db_session,
+        channel_type=InboxChannelType.instagram_comment.value,
+        selected_conversation_id=facebook.id,
+    )
+
+    assert [row.row.id for row in projection.post_rows] == [str(instagram.id)]
+    assert projection.selected_post is not None
+    assert projection.selected_post.timeline.id == str(instagram.id)
+    assert projection.selected_id == str(instagram.id)
+
+
 def test_social_comment_hierarchy_and_dotmac_replies_are_preserved(db_session):
     conversation = _post_conversation(
         db_session,

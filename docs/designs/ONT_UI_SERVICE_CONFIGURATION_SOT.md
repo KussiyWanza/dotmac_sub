@@ -61,6 +61,12 @@ to infer whether evidence belongs to the current lifecycle.
 section, desired-change evidence with secrets redacted, operation identity,
 delivery phase, waiting/failure reason, and verification time.
 
+For WiFi revisions, the executor derives a typed field-only delivery scope
+from this redacted evidence. The actual SSID and encrypted password remain in
+canonical desired state. Initial delivery may force those explicitly admitted
+fields even when ACS has no readable observation; readback-only attempts retain
+the scope but never force or repeat a write-only password action.
+
 The current reconciler projection is bound explicitly on `OntUnit` to:
 
 - configuration head ID;

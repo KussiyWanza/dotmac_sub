@@ -59,9 +59,12 @@
         <label class="text-xs font-semibold text-slate-600 dark:text-slate-300">Order Status
           <select name="status" class="{{ field }}">{% for item in statuses %}<option value="{{ item }}" {% if (order.status if order else 'draft') == item %}selected{% endif %}>{{ item|title }}</option>{% endfor %}</select>
         </label>
-        <label class="text-xs font-semibold text-slate-600 dark:text-slate-300">Payment Status
-          <select name="payment_status" class="{{ field }}">{% for item in payment_statuses %}<option value="{{ item }}" {% if (order.payment_status if order else 'pending') == item %}selected{% endif %}>{{ item|title }}</option>{% endfor %}</select>
-        </label>
+        {# Payment status is DERIVED from recorded settlement evidence and is
+           deliberately not editable here — an operator editing it would be
+           manufacturing funding. Record the payment through billing instead. #}
+        <div class="text-xs font-semibold text-slate-600 dark:text-slate-300">Payment Status
+          <p class="mt-2 rounded-lg border border-slate-200 px-3 py-2 font-normal text-slate-700 dark:border-slate-600 dark:text-slate-200">{{ (order.payment_status if order else 'pending')|title }}<span class="block text-xs text-slate-500">Derived from recorded payments</span></p>
+        </div>
       </div>
     </section>
 
@@ -75,7 +78,10 @@
       <div class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-800"><label class="text-xs font-semibold text-slate-600 dark:text-slate-300">Notes<textarea name="notes" rows="7" class="{{ field }}" placeholder="Internal order notes">{{ order.notes if order else '' }}</textarea></label></div>
       <div class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-800">
         <dl class="space-y-3 text-sm"><div class="flex justify-between"><dt class="text-slate-500">Subtotal</dt><dd id="subtotal" class="font-semibold tabular-nums">NGN 0.00</dd></div><div class="flex justify-between"><dt class="text-slate-500">VAT (7.5%)</dt><dd id="vat" class="font-semibold tabular-nums">NGN 0.00</dd></div><div class="flex justify-between border-t border-slate-200 pt-3 text-base dark:border-slate-700"><dt class="font-semibold">Grand Total</dt><dd id="grand-total" class="font-bold tabular-nums">NGN 0.00</dd></div></dl>
-        <div class="mt-5 grid gap-3 sm:grid-cols-2"><label class="text-xs font-semibold text-slate-600 dark:text-slate-300">Amount Paid<input name="amount_paid" type="number" min="0" step="0.01" value="{{ order.amount_paid if order else '0.00' }}" class="{{ field }}"></label><label class="text-xs font-semibold text-slate-600 dark:text-slate-300">Paid Date<input name="paid_at" type="datetime-local" value="{{ order.paid_at.strftime('%Y-%m-%dT%H:%M') if order and order.paid_at else '' }}" class="{{ field }}"></label></div>
+        {# Amount paid and paid date are recorded settlement facts, not order
+           fields. They are shown read-only; the writer is the billing owner. #}
+        <div class="mt-5 grid gap-3 sm:grid-cols-2 text-xs font-semibold text-slate-600 dark:text-slate-300"><div>Amount Paid<p class="mt-2 rounded-lg border border-slate-200 px-3 py-2 font-normal tabular-nums text-slate-700 dark:border-slate-600 dark:text-slate-200">{{ order.amount_paid if order else '0.00' }}</p></div><div>Paid Date<p class="mt-2 rounded-lg border border-slate-200 px-3 py-2 font-normal text-slate-700 dark:border-slate-600 dark:text-slate-200">{{ order.paid_at.strftime('%Y-%m-%d %H:%M') if order and order.paid_at else '—' }}</p></div></div>
+        <p class="mt-3 text-xs text-slate-500">Recorded from settlement evidence. To register a payment, use the billing payment record.</p>
       </div>
     </section>
     <div class="flex justify-end gap-3"><a href="{{ '/admin/sales/sales-order/' ~ order.id if order else '/admin/sales/sales-order' }}" class="rounded-lg border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-600 dark:border-slate-600 dark:text-slate-200">Cancel</a><button type="submit" class="rounded-lg bg-cyan-600 px-5 py-2 text-sm font-semibold text-white hover:bg-cyan-700">{{ 'Save Changes' if order else 'Create Sales Order' }}</button></div>

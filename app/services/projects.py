@@ -1394,6 +1394,133 @@ def _queue_customer_status_transition(
     return True
 
 
+def _queue_customer_document_update(
+    db: Session,
+    *,
+    project: Project,
+    task: ProjectTask | None,
+    changed_fields: list[str],
+    context: CommandContext,
+) -> bool:
+    """Queue an opt-in customer message for non-status document changes."""
+
+    effective_changed_fields = tuple(
+        sorted(
+            {
+                field
+                for field in changed_fields
+                if field
+                and field
+                not in {
+                    "status",
+                    "completed_at",
+                    "updated_at",
+                    "metadata_",
+                }
+            }
+        )
+    )
+    if not effective_changed_fields or project.subscriber_id is None:
+        return False
+
+    from app.services import customer_experience_communications
+
+    if task is None:
+        event_type = "project_updated"
+        if not customer_experience_communications.document_change_notification_enabled(
+            db, event_type, default=False
+        ):
+            return False
+        project_ref = project.number or str(project.id)
+        subject = f"Project updated: {project.name}"
+        body = (
+            f"Your project '{project.name}' ({project_ref}) was updated.\n"
+            f"Updated fields: {', '.join(effective_changed_fields)}."
+        )
+        metadata: dict[str, object] = {
+            "type": "project",
+            "project_id": str(project.id),
+            "changed_fields": list(effective_changed_fields),
+            "transition_id": str(context.command_id),
+        }
+        aggregate_id = project.id
+    else:
+        event_type = "project_task_updated"
+        if not customer_experience_communications.document_change_notification_enabled(
+            db, event_type, default=False
+        ):
+            return False
+        project_ref = project.number or str(project.id)
+        task_ref = task.number or str(task.id)
+        subject = f"Project task updated: {task.title}"
+        body = (
+            f"The task '{task.title}' ({task_ref}) in your project "
+            f"'{project.name}' ({project_ref}) was updated.\n"
+            f"Updated fields: {', '.join(effective_changed_fields)}."
+        )
+        metadata = {
+            "type": "project_task",
+            "project_id": str(project.id),
+            "project_task_id": str(task.id),
+            "changed_fields": list(effective_changed_fields),
+            "transition_id": str(context.command_id),
+        }
+        aggregate_id = task.id
+
+    customer_experience_communications.request_update(
+        db,
+        subscriber_id=project.subscriber_id,
+        event_type=event_type,
+        subject=subject,
+        body=body,
+        metadata=metadata,
+        dedupe_key=f"{event_type}:{aggregate_id}:{context.command_id}",
+        default_channels=(NotificationChannel.email,),
+    )
+    return True
+
+
+def _stage_customer_document_update(
+    db: Session,
+    *,
+    project: Project,
+    task: ProjectTask | None,
+    changed_fields: list[str],
+    context: CommandContext,
+) -> bool:
+    try:
+        return execute_owner_savepoint(
+            db,
+            lambda: _queue_customer_document_update(
+                db,
+                project=project,
+                task=task,
+                changed_fields=changed_fields,
+                context=context,
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001 - document update must remain valid
+        entity_type = "project_task" if task is not None else "project"
+        entity_id = task.id if task is not None else project.id
+        logger.error(
+            "project_customer_update_notification_failed entity_type=%s "
+            "entity_id=%s command_id=%s error=%s",
+            entity_type,
+            entity_id,
+            context.command_id,
+            exc,
+        )
+        _stage_project_audit(
+            db,
+            context=context,
+            action="customer_update_notification_failed",
+            entity_type=entity_type,
+            entity_id=entity_id,
+            changed_fields=changed_fields,
+        )
+        return False
+
+
 def _stage_customer_status_transition(
     db: Session,
     *,
@@ -3122,6 +3249,14 @@ class Projects(ListResponseMixin):
                     new_status=new_status,
                     context=context,
                 )
+            else:
+                _stage_customer_document_update(
+                    db,
+                    project=project,
+                    task=None,
+                    changed_fields=changed_fields,
+                    context=context,
+                )
 
         if "project_template_id" in data:
             new_template_id = (
@@ -3910,6 +4045,14 @@ class ProjectTasks(ListResponseMixin):
                     task=task,
                     previous_status=previous_status,
                     new_status=task.status,
+                    context=context,
+                )
+            else:
+                _stage_customer_document_update(
+                    db,
+                    project=project,
+                    task=task,
+                    changed_fields=changed_fields,
                     context=context,
                 )
         _stage_project_audit(

@@ -153,10 +153,12 @@ Extracted from the rendered templates + `static/js/admin-inbox.js` (845 lines, o
 
 Reply submission is an HTMX workspace action. The route still delegates the
 write to `team_inbox_commands.reply`, then returns a typed completion event that
-causes the browser adapter to refresh only the authoritative thread and current
-filtered queue. It must not navigate or reload the full workspace. The ordinary
-POST/303 response remains the progressive-enhancement fallback when HTMX is not
-available.
+names the committed message UUID. The browser fetches that one authoritative
+message fragment and the affected row under the current queue filters; it does
+not rebuild the full thread, full queue, or workspace. Fragment requests have a
+bounded timeout so a stalled read releases the operator-facing loader. The
+ordinary POST/303 response remains the progressive-enhancement fallback when
+HTMX is not available.
 
 **Backend exists, active workspace never calls it:** `{id}/read` ·
 `{id}/comments` · `comments/{id}/resolve` · `{id}/macros/create` ·

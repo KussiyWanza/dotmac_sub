@@ -85,6 +85,7 @@ from .state import (
     OntDesiredState,
     OntObservedState,
     OntWanProposedChange,
+    OntWifiDeliveryScope,
     ReconcileFailure,
     ReconcileFailureReason,
     ReconcileMode,
@@ -138,6 +139,7 @@ def reconcile_ont(
     ont_unit_id: str | uuid.UUID,
     *,
     proposed_change: OntWanProposedChange | dict[str, Any] | None = None,
+    wifi_delivery_scope: OntWifiDeliveryScope | None = None,
     timeout_sec: int = 60,
     mode: ReconcileMode = "sync",
     olt_adapter: Any = None,
@@ -161,6 +163,9 @@ def reconcile_ont(
             effective values back as per-ONT overrides. Both forms are
             validated before any network call; rejected changes return
             ``INVALID_CHANGE`` with no network side effects.
+        wifi_delivery_scope: Explicit WiFi fields already admitted and stored
+            by the configuration lifecycle owner. Values are read from current
+            desired state; this scope carries no credential material.
         timeout_sec: Outer deadline for the whole reconcile (read + plan +
             apply + persist). Default 60s.
         mode: ``sync`` (operator-initiated; refuses ``out_of_sync``),
@@ -245,7 +250,11 @@ def reconcile_ont(
 
             # ── Resolve desired ─────────────────────────────────────────────
             desired_current = desired_from_ont_unit(db, ont)
-            proposed_fields: frozenset[str] = frozenset()
+            proposed_fields: frozenset[str] = (
+                frozenset(wifi_delivery_scope.changed_fields)
+                if wifi_delivery_scope is not None
+                else frozenset()
+            )
             if proposed_values:
                 # Filter the proposed_change to OntDesiredState fields only —
                 # callers may have copy-pasted extras.
@@ -326,6 +335,7 @@ def reconcile_ont(
                 observed_before,
                 mode,
                 proposed_fields=proposed_fields,
+                force_proposed_writes=not readback_only,
             )
 
             # ── Precondition: surfaces the plan needs must be reachable ─────

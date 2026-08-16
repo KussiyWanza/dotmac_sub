@@ -322,8 +322,10 @@ stale. Realtime has no replay authority.
   mute, snooze, open, unassigned, and unread.
 - Pagination uses the projection owner's exact filtered total and compact page
   sequence. Conversation drill-down URLs preserve the active filters, sort,
-  page size, and page number; reply refreshes and non-HTMX mutation fallbacks
-  return to that same queue location rather than resetting to page one.
+  page size, and page number. A confirmed HTMX reply uses its exact message UUID
+  to fetch one typed message fragment and one filter-aware queue-row fragment;
+  it does not rebuild the complete timeline or queue. Non-HTMX mutation
+  fallbacks return to the same queue location rather than resetting to page one.
 - Advanced Service Team conditions use the shared JSON filter grammar, but the
   Inbox projection owns their typed allow-list and relationship semantics. The
   only advanced field is `InboxConversation.service_team_id`; `=`, `!=`, `in`,
@@ -366,6 +368,14 @@ stale. Realtime has no replay authority.
   polling share that coordination boundary. This ordering is transport state
   only: the server projection remains authoritative for filter meaning, queue
   membership, counts, sorting, pagination, and canonical query normalization.
+- Incremental message and queue-row fragments are also typed projections of the
+  same database authority. Their message/conversation identifiers are lookup
+  keys, not cache authority; a row that no longer matches the active filters is
+  removed, and normal projection refetch remains the idempotent rebuild path.
+  Browser drafts and presentation preferences remain non-authoritative local
+  state; sent messages and queue rows are never browser cache authority.
+  Fragment reads are bounded to 15 seconds so a lost transport cannot hold the
+  workspace busy.
 - Advanced conditions are canonicalized into the URL and saved views. A normal
   projection refetch is their idempotent rebuild path.
 - Queue-row unread totals count inbound messages after the authenticated
