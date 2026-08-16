@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from app.db import finish_read_transaction
 from app.models.party import Party, PartyContactPoint, PartyType
@@ -27,11 +27,20 @@ PERMISSIONS = inbox_lead_actions.InboxActionPermissions(
 )
 
 
-def _conversation(db_session, *, address: str) -> InboxConversation:
+def _conversation(
+    db_session,
+    *,
+    address: str,
+    subscriber_id: UUID | None = None,
+    subject: str = "Service enquiry",
+    last_message_at: datetime | None = None,
+) -> InboxConversation:
     row = InboxConversation(
+        subscriber_id=subscriber_id,
         channel_type="email",
         contact_address=address,
-        subject="Service enquiry",
+        subject=subject,
+        last_message_at=last_message_at,
         is_active=True,
     )
     db_session.add(row)
@@ -209,3 +218,60 @@ def test_contact_context_uses_zero_only_for_successful_empty_query(db_session):
         is team_inbox_contact_context.ContextAvailability.not_applicable
     )
     assert projection.projects.total_count is None
+
+
+def test_contact_context_projects_cross_agent_customer_conversation_history(
+    db_session, subscriber
+):
+    observed_at = datetime(2026, 8, 16, 10, 0, tzinfo=UTC)
+    current = _conversation(
+        db_session,
+        address=subscriber.email,
+        subscriber_id=subscriber.id,
+        subject="Current relocation request",
+        last_message_at=observed_at,
+    )
+    previous = tuple(
+        _conversation(
+            db_session,
+            address=subscriber.email,
+            subscriber_id=subscriber.id,
+            subject=f"Previous conversation {index}",
+            last_message_at=observed_at - timedelta(days=index),
+        )
+        for index in range(1, 7)
+    )
+    _conversation(
+        db_session,
+        address=f"other-{uuid4()}@example.com",
+        subject="Another customer's conversation",
+        last_message_at=observed_at + timedelta(hours=1),
+    )
+
+    projection = team_inbox_contact_context.build_contact_context(
+        db_session,
+        conversation_id=current.id,
+        permissions=team_inbox_contact_context.InboxContactContextPermissions(
+            can_read_profile=True,
+            can_edit_profile=False,
+            can_read_leads=True,
+            can_write_leads=False,
+            can_read_tickets=True,
+            can_read_projects=True,
+            can_read_project_tasks=True,
+        ),
+    )
+
+    assert projection is not None
+    history = projection.recent_conversations
+    assert (
+        history.availability is team_inbox_contact_context.ContextAvailability.available
+    )
+    assert history.total_count == 6
+    assert tuple(item.id for item in history.items) == tuple(
+        row.id for row in previous[:5]
+    )
+    assert all(item.id != current.id for item in history.items)
+    assert tuple(item.url for item in history.items) == tuple(
+        f"/admin/inbox?c={row.id}" for row in previous[:5]
+    )

@@ -381,6 +381,12 @@ implementation.
   never selects identity, pipeline defaults, or duplicate-prevention policy.
 - Successful actions return to the exact originating conversation and trigger
   a fresh drawer query; read failure never replays the mutation.
+- The drawer keeps customer identity visible while Details and Conversations
+  tabs provide progressive disclosure. The Conversations badge is the
+  authoritative full count of previous conversations for the exact Subscriber;
+  its bounded newest-first list shows channel, status, and last activity and
+  routes each row to the exact prior Inbox conversation. Assignment does not
+  narrow this customer history.
 
 ## ONT Configure Page Contract
 

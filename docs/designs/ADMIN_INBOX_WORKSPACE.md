@@ -296,6 +296,14 @@ empty query renders `0`; missing/not-applicable values render `—`; unavailable
 not-calculated, stale, and restricted outcomes remain distinct and are never
 coerced to zero. Sections fail independently.
 
+The contact drawer keeps identity visible and separates customer details from
+conversation history with two keyboard-operable tabs. The Conversations tab
+shows the authoritative previous-conversation count and the five newest
+cross-agent records with channel, status, and last activity date. Each row
+routes to the exact prior thread through `/admin/inbox?c=<conversation-id>`;
+the UI does not filter history to the current assignee or infer customer
+identity from contact text.
+
 `communications.inbox_lead_actions` resolves the profile and Lead controls.
 It reuses a direct Lead, requires an authoritative pipeline before examining
 Party Leads, requires explicit selection when several are eligible, creates a

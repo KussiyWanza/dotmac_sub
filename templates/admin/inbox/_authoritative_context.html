@@ -56,12 +56,14 @@
     {% else %}{{ state(contact_context.tickets, "No active Tickets.") }}{% endif %}
 {% endcall %}
 
+{% if not conversation_history_in_tab %}
 {% call ctx_section("Recent conversations") %}
     {% if contact_context.recent_conversations.availability.value == 'available' %}
         <p class="mb-2 text-[11px] text-slate-500">{{ contact_context.recent_conversations.total_count }} previous</p>
         <div class="space-y-2">{% for item in contact_context.recent_conversations.items %}<a href="{{ item.url }}" class="block rounded-lg border border-slate-200 p-2 text-xs dark:border-slate-700"><strong>{{ item.subject }}</strong><span class="mt-1 block text-[11px] text-slate-500">{{ item.channel_type | replace('_', ' ') | title }}{% if item.last_message_at %} · {{ ts(item.last_message_at) }}{% endif %}</span></a>{% endfor %}</div>
     {% else %}{{ state(contact_context.recent_conversations, "No previous conversations.") }}{% endif %}
 {% endcall %}
+{% endif %}
 
 {% call ctx_section("Projects") %}
     {% if contact_context.projects.availability.value == 'available' %}

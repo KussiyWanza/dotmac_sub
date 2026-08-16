@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
@@ -28,6 +29,7 @@ from fastapi.testclient import TestClient
 from starlette.datastructures import UploadFile
 
 from app.db import get_db
+from app.models.team_inbox import InboxConversation
 from app.services import (
     team_inbox_commands,
     team_inbox_filters,
@@ -208,6 +210,65 @@ def test_invalid_advanced_team_filter_returns_controlled_422(db_session):
 
     assert response.status_code == 422
     assert response.json()["detail"] == "Invalid JSON in filters payload"
+
+
+def test_contact_drawer_renders_previous_conversation_tab_and_route(
+    db_session, subscriber
+):
+    previous = InboxConversation(
+        subscriber_id=subscriber.id,
+        channel_type="email",
+        status="resolved",
+        subject="Previous installation chat",
+        contact_address=subscriber.email,
+        last_message_at=datetime(2026, 8, 15, 9, 30, tzinfo=UTC),
+        is_active=True,
+    )
+    current = InboxConversation(
+        subscriber_id=subscriber.id,
+        channel_type="email",
+        status="open",
+        subject="Current relocation chat",
+        contact_address=subscriber.email,
+        last_message_at=datetime(2026, 8, 16, 10, 0, tzinfo=UTC),
+        is_active=True,
+    )
+    db_session.add_all((previous, current))
+    db_session.commit()
+    client = _client(db_session)
+
+    with (
+        patch("app.web.admin.inbox.can", return_value=True),
+        patch("app.web.admin.get_current_user", return_value=None),
+        patch("app.web.admin.get_sidebar_stats", return_value={}),
+        patch("app.services.web_admin.get_actor_id", return_value=None),
+    ):
+        response = client.get(f"/inbox/{current.id}/contact")
+
+    assert response.status_code == 200
+    assert 'role="tablist"' in response.text
+    assert "Conversations" in response.text
+    assert "Previous installation chat" in response.text
+    assert f'href="/admin/inbox?c={previous.id}"' in response.text
+    # The machine-readable value is the stable cross-database contract. Keep
+    # the assertion scoped to this exact history row and compare instants:
+    # SQLite drops UTC metadata while the renderer emits the configured local
+    # offset, so deleting tzinfo would incorrectly compare different wall
+    # clocks (09:30 UTC and 10:30+01:00).
+    history_time = re.search(
+        rf'href="/admin/inbox\?c={previous.id}".*?'
+        r'<time datetime="([^"]+)">([^<]+)</time>',
+        response.text,
+        re.DOTALL,
+    )
+    assert history_time is not None
+    rendered_at = datetime.fromisoformat(history_time.group(1))
+    stored_at = previous.last_message_at
+    assert stored_at is not None
+    if stored_at.tzinfo is None:
+        stored_at = stored_at.replace(tzinfo=UTC)
+    assert rendered_at.astimezone(UTC) == stored_at.astimezone(UTC)
+    assert history_time.group(2).strip()
 
 
 def test_every_route_declares_a_permission_guard():

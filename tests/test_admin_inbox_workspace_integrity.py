@@ -21,6 +21,9 @@ EMPTY_STATE = Path("templates/admin/inbox/_empty_state.html").read_text()
 AUTHORITATIVE_CONTEXT = Path(
     "templates/admin/inbox/_authoritative_context.html"
 ).read_text()
+CONVERSATION_HISTORY = Path(
+    "templates/admin/inbox/_conversation_history.html"
+).read_text()
 FLOATING_SURFACES = Path("templates/admin/inbox/_floating_surfaces.html").read_text()
 INDEX = Path("templates/admin/inbox/index.html").read_text()
 COMMENTS = Path("templates/admin/inbox/comments.html").read_text()
@@ -91,6 +94,19 @@ def test_crm_replication_surfaces_exclude_customer_placeholder_data():
         "z-index: 200",
     ):
         assert contract in REPLICA_CSS
+
+
+def test_contact_drawer_exposes_authoritative_conversation_history_tab():
+    assert 'role="tablist"' in DRAWER
+    assert "contactTab = 'conversations'" in DRAWER
+    assert "conversation_history.total_count" in DRAWER
+    assert 'role="tabpanel"' in DRAWER
+    assert "contact_context.recent_conversations" in CONVERSATION_HISTORY
+    assert 'href="{{ item.url }}"' in CONVERSATION_HISTORY
+    assert 'datetime="{{ item.last_message_at.isoformat() }}"' in CONVERSATION_HISTORY
+    assert (
+        "Showing the {{ history.items | length }} most recent" in CONVERSATION_HISTORY
+    )
 
 
 def test_social_comments_have_dedicated_workspace_and_filter_entry_point():

@@ -61,6 +61,7 @@ def test_inbox_workspace_templates_compile():
         "admin/inbox/_comment_thread.html",
         "admin/inbox/_contact_drawer.html",
         "admin/inbox/_authoritative_context.html",
+        "admin/inbox/_conversation_history.html",
         "admin/inbox/action_resolver.html",
         "admin/inbox/_empty_state.html",
         "admin/inbox/_floating_surfaces.html",
