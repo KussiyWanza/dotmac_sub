@@ -1,18 +1,26 @@
 import pytest
 
-from app.models.auth import AuthProvider, UserCredential
+from app.models.auth import AuthenticationBinding, AuthProvider, UserCredential
 from app.models.party import Party, PartyDataClassification, PartyType
 from app.models.rbac import Role, SystemUserRole
 from app.models.subscriber import Subscriber
 from app.models.system_user import SystemUser
 from app.services.auth_flow import verify_password
+from app.services.operator_tenant import OPERATOR_TENANT_ID, provision_operator_tenant
 from scripts.seed.seed_admin import seed_admin_user
 from scripts.seed.seed_rbac import _ensure_system_user_role
 
 
 def _add_admin_role(db_session) -> Role:
+    provision_operator_tenant(db_session)
     role = Role(name="admin", description="Full system access", is_active=True)
-    db_session.add(role)
+    binding = AuthenticationBinding(
+        binding_key="local.default",
+        mechanism_code=AuthProvider.local.value,
+        name="Local password",
+        is_active=True,
+    )
+    db_session.add_all((role, binding))
     db_session.commit()
     return role
 
@@ -62,6 +70,15 @@ def test_seed_admin_user_creates_canonical_system_user(db_session):
     )
     assert credential.username == "admin"
     assert credential.subscriber_id is None
+    assert credential.party_id == system_user.person_party_id
+    assert credential.authentication_binding_id is not None
+    assert credential.tenant_id == OPERATOR_TENANT_ID
+    assert credential.party_bound_at is not None
+    assert credential.party_binding_source == "admin_seeder"
+    assert (
+        credential.party_binding_reason
+        == "Operator-seeded local administrator credential"
+    )
     assert verify_password("AdminPass123!", credential.password_hash) is True
     assert credential.must_change_password is False
     assert credential.password_updated_at is not None
@@ -125,6 +142,11 @@ def test_seed_admin_user_updates_existing_system_user_and_role(db_session):
     assert existing.is_active is True
     assert existing.failed_login_attempts == 0
     assert existing.locked_until is None
+    assert existing.party_id == system_user.person_party_id
+    assert existing.authentication_binding_id is not None
+    assert existing.tenant_id == OPERATOR_TENANT_ID
+    assert existing.party_bound_at is not None
+    assert existing.party_binding_source == "admin_seeder"
     assert (
         db_session.query(SystemUserRole)
         .filter(
@@ -133,6 +155,42 @@ def test_seed_admin_user_updates_existing_system_user_and_role(db_session):
         )
         .count()
         == 1
+    )
+
+
+def test_seed_admin_user_replays_complete_credential_projection(db_session):
+    _add_admin_role(db_session)
+    seed_admin_user(
+        db_session,
+        email="admin@example.com",
+        first_name="Admin",
+        last_name="User",
+        username="admin",
+        password="AdminPass123!",
+    )
+    credential = (
+        db_session.query(UserCredential)
+        .filter(UserCredential.username == "admin")
+        .one()
+    )
+    first_bound_at = credential.party_bound_at
+
+    message = seed_admin_user(
+        db_session,
+        email="admin@example.com",
+        first_name="Admin",
+        last_name="User",
+        username="admin",
+        password="AdminPass123!",
+    )
+    db_session.refresh(credential)
+
+    assert message == "Admin user updated."
+    assert credential.party_bound_at == first_bound_at
+    assert credential.party_binding_source == "admin_seeder"
+    assert (
+        credential.party_binding_reason
+        == "Operator-seeded local administrator credential"
     )
 
 

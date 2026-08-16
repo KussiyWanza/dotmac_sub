@@ -132,6 +132,13 @@ investigation/evidence depth. It must not derive a different status from them.
 Administrative lifecycle and impairments remain separately labeled facts, not
 extra operational badges.
 
+For core devices, administrative lifecycle is `active`, `inactive`, or
+`archived`. Archived devices still project as `not_working` so their identity
+and history remain repairable; the normal inventory cohort excludes them and
+the explicit archived cohort provides review and restoration. Restore returns
+the device to `inactive` and does not claim fresh operational evidence. See
+`docs/designs/CORE_DEVICE_ARCHIVE.md`.
+
 ## Drift repair and enforcement
 
 - `reconcile_device_projections` deterministically rebuilds binary status from

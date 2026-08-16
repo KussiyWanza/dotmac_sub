@@ -51,7 +51,7 @@ from app.models.subscriber import ResellerUser, Subscriber
 from app.models.system_user import SystemUser
 from app.request_meta import client_ip
 from app.schemas.auth_flow import LoginResponse, LogoutResponse, TokenResponse
-from app.services import auth_cache
+from app.services import auth_cache, staff_party_authentication
 from app.services import radius_auth as radius_auth_service
 from app.services.capability_recipient import resolve_capability_recipient
 from app.services.common import coerce_uuid
@@ -745,11 +745,14 @@ def _principal_for_credential(
     db: Session, credential: UserCredential
 ) -> tuple[str, str, object | None]:
     if credential.system_user_id:
-        return (
-            "system_user",
-            str(credential.system_user_id),
-            db.get(SystemUser, credential.system_user_id),
-        )
+        # `system_user_id` still discriminates the KIND of principal — staff
+        # rather than subscriber or reseller — because SystemUser remains the
+        # product-owned staff context. It no longer supplies the IDENTITY: that
+        # comes from the Party projection, with no legacy fallback.
+        # `staff_party_authentication` raises rather than returning None, so an
+        # unresolvable projection cannot be mistaken for an anonymous principal.
+        principal = staff_party_authentication.resolve_staff_principal(db, credential)
+        return "system_user", str(principal.id), principal
     if (
         getattr(credential, "reseller_user_id", None)
         and settings.reseller_user_principal_enabled
@@ -1135,9 +1138,22 @@ class AuthFlow(ListResponseMixin):
         # first would answer an unauthenticated caller differently for a disabled
         # account than for a wrong password, which is the account-state oracle the
         # lock check above is careful to avoid.
-        principal_type, principal_id, principal = _principal_for_credential(
-            db, credential
-        )
+        try:
+            principal_type, principal_id, principal = _principal_for_credential(
+                db, credential
+            )
+        except staff_party_authentication.StaffProjectionError as exc:
+            # Fail closed. A staff credential whose Party projection is missing,
+            # conflicting or ambiguous does not authenticate — it does not fall
+            # back to the legacy principal key. The refusal code is logged for
+            # the operator; the caller is told only "Account disabled", so this
+            # cannot be used to probe projection state.
+            logger.error(
+                "Staff login refused: %s (credential=%s)",
+                exc.refusal.value,
+                exc.credential_id,
+            )
+            raise HTTPException(status_code=403, detail="Account disabled") from exc
         if not principal or not getattr(principal, "is_active", False):
             raise HTTPException(status_code=403, detail="Account disabled")
 
@@ -1515,6 +1531,24 @@ class AuthFlow(ListResponseMixin):
         db.commit()
 
         principal_type, principal_id = principal_from_session(session)
+        if principal_type == "system_user":
+            # Refresh re-validates through the same resolver rather than
+            # trusting the session's assertion. Otherwise refresh would extend
+            # the legacy authority indefinitely — a session issued before the
+            # cutover could keep minting access tokens on the old key.
+            try:
+                staff_party_authentication.resolve_staff_principal_assertion(
+                    db, principal_id
+                )
+            except staff_party_authentication.StaffProjectionError as exc:
+                logger.error(
+                    "Staff refresh refused: %s (system_user=%s)",
+                    exc.refusal.value,
+                    exc.credential_id,
+                )
+                raise HTTPException(
+                    status_code=401, detail="Invalid refresh token"
+                ) from exc
         access_token = _issue_access_token(
             db, principal_id, principal_type, str(session.id)
         )
@@ -1639,7 +1673,21 @@ class AuthFlow(ListResponseMixin):
                 synchronize_session=False,
             )
         if principal_type == "system_user":
-            session = AuthSession(system_user_id=principal_uuid, **session_kwargs)
+            # Write BOTH halves of the bound pair. `party_id` is the identity
+            # the later ratchet will validate from; `system_user_id` stays as
+            # the Sub-owned staff context and is not being retired. Resolved
+            # through the typed resolver so a session can never be minted with
+            # an identity the projection would refuse.
+            staff_principal = (
+                staff_party_authentication.resolve_staff_principal_assertion(
+                    db, principal_uuid
+                )
+            )
+            session = AuthSession(
+                system_user_id=principal_uuid,
+                party_id=staff_principal.person_party_id,
+                **session_kwargs,
+            )
         elif principal_type == "reseller_user":
             session = AuthSession(reseller_user_id=principal_uuid, **session_kwargs)
         else:
@@ -2044,7 +2092,22 @@ def validate_active_session(
         return None
 
     if principal_type == "system_user":
-        principal = db.get(SystemUser, active_id)
+        # Per-request validation goes through the same typed resolver as login.
+        # The session asserts a principal in the legacy shape; the Party
+        # projection is what accepts or refuses it. Returning None here is the
+        # fail-closed answer — the request is unauthenticated, and the caller
+        # learns nothing about why.
+        try:
+            principal = staff_party_authentication.resolve_staff_principal_assertion(
+                db, active_id
+            )
+        except staff_party_authentication.StaffProjectionError as exc:
+            logger.error(
+                "Staff session refused: %s (system_user=%s)",
+                exc.refusal.value,
+                exc.credential_id,
+            )
+            return None
     else:
         principal = db.get(Subscriber, active_id)
     if not principal:

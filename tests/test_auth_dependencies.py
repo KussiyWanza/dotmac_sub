@@ -27,6 +27,7 @@ from app.web.auth.dependencies import (
     require_web_auth,
     validate_session_token,
 )
+from tests.staff_identity_fixtures import project_staff_login
 
 
 def _make_access_token(
@@ -143,7 +144,7 @@ def test_require_user_auth_accepts_system_user_token(db_session, monkeypatch):
         password_hash=hash_password("secret"),
         is_active=True,
     )
-    db_session.add(credential)
+    project_staff_login(db_session, user=user, credential=credential)
     db_session.commit()
 
     tokens = AuthFlow._issue_tokens(
@@ -183,7 +184,7 @@ def test_validate_session_token_accepts_system_user_cookie(db_session, monkeypat
         password_hash=hash_password("secret"),
         is_active=True,
     )
-    db_session.add(credential)
+    project_staff_login(db_session, user=user, credential=credential)
     db_session.commit()
 
     tokens = AuthFlow._issue_tokens(

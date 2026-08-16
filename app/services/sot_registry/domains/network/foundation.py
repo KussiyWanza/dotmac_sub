@@ -16,6 +16,7 @@ from app.services.sot_manifest import (
     SOTService,
     TransactionContract,
     TransactionMode,
+    owner_command_boundary_error_codes,
 )
 
 SERVICES: tuple[SOTService, ...] = (
@@ -63,6 +64,151 @@ SERVICES: tuple[SOTService, ...] = (
             "Inventory absence must not open a customer-facing outage: "
             "an unpolled device supports no reachability verdict, which "
             "is why deactivation classifies as unknown."
+        ),
+    ),
+    SOTService(
+        name="network.core_device_archive",
+        module="app.services.core_device_archive",
+        owns=("reviewed core device archive and restoration",),
+        depends_on=(
+            "network.identity",
+            "network.monitoring_inventory",
+            "network.forwarding_topology",
+            "network.outage_impact",
+        ),
+        notes=(
+            "Archives only canonical NetworkDevice core rows. Archive is a "
+            "reversible retirement, never projection deletion: it withdraws "
+            "monitoring admission through network.monitoring_inventory, retains "
+            "the row and history, and marks the device archived for the permanent "
+            "device projection. Active child devices, reviewed forwarding "
+            "declarations, linked NAS/router inventories, and attached customers "
+            "block confirmation. Restore clears the archive tombstone but leaves "
+            "the device inactive until a separate admission decision. Every "
+            "legacy core-device edit or operation asks this owner for typed "
+            "mutation eligibility and fails closed while the tombstone exists."
+        ),
+        contract=ServiceContract(
+            concerns=(
+                ConcernContract(
+                    name="reviewed core device archive and restoration",
+                    role=OwnerRole.APPLICATION_COORDINATOR,
+                    input_names=(
+                        "canonical core device identity",
+                        "monitoring admission lifecycle",
+                        "reviewed forwarding dependencies",
+                        "customer impact projection",
+                    ),
+                ),
+            ),
+            authoritative_inputs=(
+                AuthorityInput(
+                    name="canonical core device identity",
+                    owner="network.identity",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source="NetworkDevice identity and archive tombstone",
+                ),
+                AuthorityInput(
+                    name="monitoring admission lifecycle",
+                    owner="network.monitoring_inventory",
+                    kind=AuthorityKind.CONTROL_INPUT,
+                    source="set_network_device_active transition",
+                ),
+                AuthorityInput(
+                    name="reviewed forwarding dependencies",
+                    owner="network.forwarding_topology",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source="active ForwardingTopologyDeclaration endpoints",
+                ),
+                AuthorityInput(
+                    name="customer impact projection",
+                    owner="network.outage_impact",
+                    kind=AuthorityKind.DERIVED_PROJECTION,
+                    source="active subscriptions in the device failure domain",
+                ),
+            ),
+            transaction=TransactionContract(
+                mode=TransactionMode.COORDINATOR_MANAGED,
+                boundary=(
+                    "Archive and restore enter execute_owner_command once on a "
+                    "transaction-free session; admission, tombstone, audit, and "
+                    "event evidence commit atomically."
+                ),
+                locking=(
+                    "The command locks the exact NetworkDevice row, then reads "
+                    "dependency identities in stable primary-key order and "
+                    "revalidates the preview fingerprint."
+                ),
+                idempotency=(
+                    "Archive and restore are target-state transitions. Replaying "
+                    "a command after that state is reached returns the stable "
+                    "current outcome without duplicating evidence."
+                ),
+                retries=(
+                    "Adapters may retry only after rollback. A changed device or "
+                    "dependency set invalidates the preview and requires review."
+                ),
+            ),
+            errors=ErrorContract(
+                domain_codes=owner_command_boundary_error_codes(
+                    "network.core_device_archive"
+                )
+                + (
+                    "network.core_device_archive.device_not_found",
+                    "network.core_device_archive.impact_unavailable",
+                    "network.core_device_archive.scope_mismatch",
+                    "network.core_device_archive.invalid_reason",
+                    "network.core_device_archive.invalid_preview_fingerprint",
+                    "network.core_device_archive.stale_preview",
+                    "network.core_device_archive.dependencies_block_archive",
+                    "network.core_device_archive.archived_device_read_only",
+                ),
+                mapping_owner=(
+                    "shared HTTP adapters app.web.admin.network_core_devices, "
+                    "app.web.admin.network, and app.api.domains_monitoring"
+                ),
+                fail_closed_on=(
+                    "missing device identity",
+                    "unavailable impact evidence",
+                    "stale preview evidence",
+                    "active device dependencies",
+                    "an archive tombstone on a legacy mutation target",
+                    "invalid actor scope or reason",
+                ),
+            ),
+            events=EventContract(
+                event_types=(
+                    "network_device.archived",
+                    "network_device.restored",
+                ),
+                schema_version=1,
+                delivery_owner="events.dispatcher",
+                compatibility=(
+                    "Additive payload evolution within schema version 1; breaking "
+                    "changes require a new event version."
+                ),
+                replay=(
+                    "Consumers deduplicate by event identity; the authoritative "
+                    "NetworkDevice tombstone remains the current-state record."
+                ),
+            ),
+            migration=MigrationContract(
+                state=AuthorityMigrationState.NATIVE,
+                new_owner="network.core_device_archive",
+            ),
+            steward="network operations",
+            design_refs=(
+                "docs/designs/CORE_DEVICE_ARCHIVE.md",
+                "docs/SOT_RELATIONSHIP_MAP.md",
+                "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+            ),
+            test_refs=(
+                "tests/test_core_device_archive.py",
+                "tests/test_device_projection_views.py",
+                "tests/integration/test_core_device_archive_migration.py",
+                "tests/architecture/test_core_device_archive_boundary.py",
+                "tests/playwright/e2e/test_core_device_archive.py",
+            ),
         ),
     ),
     SOTService(

@@ -62,10 +62,6 @@ LEDGER_BYPASS_BACKLOG = {
     "app/services/web_catalog_subscriptions.py",
     "app/services/web_notifications.py",
     "app/services/web_system_export_tool.py",
-    # The NCC report digest goes to internal compliance staff, not customers —
-    # it is a regulatory ops email, not a marketing/customer send, so it is
-    # not subject to the customer-consent ledger. Direct send is correct here.
-    "app/services/ncc_report_email.py",
     "app/tasks/imports.py",
 }
 

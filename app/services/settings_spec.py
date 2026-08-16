@@ -4894,8 +4894,9 @@ SETTINGS_SPECS: list[SettingSpec] = [
         default=True,
         label="Configured RADIUS sync jobs",
     ),
-    # Weekly NCC complaints digest email — default OFF. Sends a summary + a
-    # link to the filing workbook (Monday 08:00 in the celery timezone).
+    # Weekly NCC complaints workbook delivery — default OFF until an operator
+    # migrates and verifies the CRM recipient configuration. Tuesday is the
+    # authoritative default; the owner evaluates local time and timezone.
     SettingSpec(
         domain=SettingDomain.notification,
         key="ncc_report_email_enabled",
@@ -4904,22 +4905,13 @@ SETTINGS_SPECS: list[SettingSpec] = [
         default=False,
     ),
     SettingSpec(
-        # Service-owned idempotency cursor. This must be registered because
-        # resolve_value deliberately ignores unregistered database keys.
-        domain=SettingDomain.notification,
-        key="ncc_report_email_last_sent_local_date",
-        env_var=None,
-        value_type=SettingValueType.string,
-        default=None,
-        label="NCC report email last sent date (managed)",
-    ),
-    SettingSpec(
         domain=SettingDomain.notification,
         key="ncc_report_email_lookback_days",
         env_var="NCC_REPORT_EMAIL_LOOKBACK_DAYS",
         value_type=SettingValueType.integer,
         default=7,
         min_value=1,
+        max_value=366,
     ),
     SettingSpec(
         domain=SettingDomain.notification,
@@ -4941,6 +4933,63 @@ SETTINGS_SPECS: list[SettingSpec] = [
         env_var="NCC_REPORT_EMAIL_TO",
         value_type=SettingValueType.string,
         default="",
+    ),
+    SettingSpec(
+        domain=SettingDomain.notification,
+        key="ncc_report_email_cc",
+        env_var="NCC_REPORT_EMAIL_CC",
+        value_type=SettingValueType.string,
+        default="",
+    ),
+    SettingSpec(
+        domain=SettingDomain.notification,
+        key="ncc_report_email_bcc",
+        env_var="NCC_REPORT_EMAIL_BCC",
+        value_type=SettingValueType.string,
+        default="",
+    ),
+    SettingSpec(
+        domain=SettingDomain.notification,
+        key="ncc_report_email_sender_key",
+        env_var="NCC_REPORT_EMAIL_SENDER_KEY",
+        value_type=SettingValueType.string,
+        default="",
+    ),
+    SettingSpec(
+        domain=SettingDomain.notification,
+        key="ncc_report_email_body_template",
+        env_var="NCC_REPORT_EMAIL_BODY_TEMPLATE",
+        value_type=SettingValueType.string,
+        default=(
+            "Please find attached the NCC complaints report for the last "
+            "{lookback_days} day(s).\nRows included: {row_count}.\n"
+            "Rows not yet filable: {not_filable_count}.\n"
+            "Download: {download_url}"
+        ),
+    ),
+    SettingSpec(
+        domain=SettingDomain.notification,
+        key="ncc_report_email_local_time",
+        env_var="NCC_REPORT_EMAIL_LOCAL_TIME",
+        value_type=SettingValueType.string,
+        default="08:00",
+    ),
+    SettingSpec(
+        domain=SettingDomain.notification,
+        key="ncc_report_email_send_day",
+        env_var="NCC_REPORT_EMAIL_SEND_DAY",
+        value_type=SettingValueType.string,
+        default="tuesday",
+        allowed={
+            "monday",
+            "tuesday",
+            "wednesday",
+            "thursday",
+            "friday",
+            "saturday",
+            "sunday",
+        },
+        string_normalization=SettingStringNormalization.LOWERCASE,
     ),
 ]
 

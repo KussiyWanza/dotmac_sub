@@ -173,6 +173,10 @@ class EventType(enum.Enum):
     workqueue_action_coordinated = "workqueue.action_coordinated"
     ai_intake_config_updated = "ai.intake_config_updated"
     plan_family_catalogue_published = "catalog.plan_family_catalogue_published"
+    ncc_weekly_delivery_configuration_changed = (
+        "ncc.weekly_delivery_configuration_changed"
+    )
+    ncc_weekly_report_queued = "ncc.weekly_report_queued"
 
     # Operations - vendor installation project lifecycle
     # Materials / vendor / ERP chain outputs
@@ -236,9 +240,11 @@ class EventType(enum.Enum):
     customer_experience_accepted = "customer_experience.accepted"
     customer_experience_needs_attention = "customer_experience.needs_attention"
 
-    # Network events (5)
+    # Network events
     device_offline = "device.offline"
     device_online = "device.online"
+    network_device_archived = "network_device.archived"
+    network_device_restored = "network_device.restored"
     device_projection_reconciled = "device_projection.reconciled"
     session_started = "session.started"
     session_ended = "session.ended"

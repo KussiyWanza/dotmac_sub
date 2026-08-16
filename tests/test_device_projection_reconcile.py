@@ -133,6 +133,28 @@ def test_reconcile_updates_changed_status_and_repair_evidence(db_session, monkey
     assert _naive(row.refreshed_at) == _naive(later)
 
 
+def test_reconcile_projects_archived_core_device_as_not_working(
+    db_session, monkeypatch
+):
+    _patch_collect(
+        monkeypatch,
+        [
+            _device(
+                "1",
+                "core",
+                lifecycle_state="archived",
+                status="working",
+            )
+        ],
+    )
+
+    reconcile_device_projections(db_session, _command())
+
+    row = _rows(db_session)[("core", "1")]
+    assert row.lifecycle_state == "archived"
+    assert row.operational_status == "not_working"
+
+
 def test_reconcile_prunes_orphaned_devices(db_session, monkeypatch):
     _patch_collect(monkeypatch, [_device("1", "olt"), _device("2", "core")])
     reconcile_device_projections(db_session, _command())

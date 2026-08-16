@@ -15,12 +15,12 @@ The pass is idempotent and self-healing:
 * rows whose source device no longer exists are pruned, so the table cannot
   drift into holding phantom devices.
 
-Pruning follows *existence*, not admission. A deactivated device still exists,
-so it is still derived and still projected — marked ``lifecycle_state =
-'inactive'`` and forced to ``not_working`` by :func:`_gated_status`. Filtering
-inactive devices out of the derivation instead made deactivation delete the
-device from the staff ledger, because this reconciler removes whatever the
-derivation stops returning.
+Pruning follows *existence*, not admission. A deactivated or archived device
+still exists, so it is still derived and projected with its administrative
+``lifecycle_state`` and forced to ``not_working`` by :func:`_gated_status`.
+Filtering non-active devices out of the derivation instead makes lifecycle
+changes delete the device from the staff ledger, because this reconciler
+removes whatever the derivation stops returning.
 
 The table is a rebuildable cache — the authoritative device tables remain the
 source of truth. Callers that need a live device list read the projection; they
@@ -74,13 +74,13 @@ _RECONCILE_COMMAND = OwnerCommandDefinition(
 # operator-triggered rebuilds from racing the natural-key upsert.
 _RECONCILE_LOCK_KEY = 328_160_319
 
-_LIFECYCLE_STATES = ("active", "inactive")
+_LIFECYCLE_STATES = ("active", "inactive", "archived")
 
 
 def _gated_status(lifecycle_state: str, status: str) -> str:
-    """Release gate: an inactive device can never project ``working``.
+    """Release gate: a non-active device can never project ``working``.
 
-    An inactive device has left the poll sweep, so nothing refreshes its
+    A non-active device has left the poll sweep, so nothing refreshes its
     reachability — anything it still claims is frozen, and a frozen ``working``
     is what let a decommissioned device keep vetoing outage detection. The
     matching CHECK constraint makes the violation unrepresentable in the
@@ -89,7 +89,7 @@ def _gated_status(lifecycle_state: str, status: str) -> str:
     """
     if lifecycle_state != "active" and status != "not_working":
         logger.warning(
-            "device_projection: forcing inactive device status %r -> not_working",
+            "device_projection: forcing non-active device status %r -> not_working",
             status,
         )
         return "not_working"

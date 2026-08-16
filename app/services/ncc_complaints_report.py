@@ -36,6 +36,7 @@ from __future__ import annotations
 import re
 import uuid
 from collections import Counter
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -45,6 +46,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.models.subscriber import Subscriber
 from app.models.support import Ticket, TicketComment
 from app.services import ncc_location
+from app.services.domain_errors import DomainError
 from app.services.ncc_subscriber_report import _UNKNOWN, infer_state, normalize_state
 from app.services.ncc_workbook import (
     COLUMNS,
@@ -61,6 +63,67 @@ from app.services.ncc_workbook import (
 )
 
 OPERATOR_PREFIX = "DOTMAC"
+
+
+class NccComplaintsReportError(DomainError):
+    """Transport-neutral NCC report query error."""
+
+
+@dataclass(frozen=True, slots=True)
+class NccComplaintsReportQuery:
+    """Exact inclusive UTC complaint-created window requested by a caller."""
+
+    start: datetime
+    end: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class NccComplaintRecord:
+    """One row whose positional values are locked to the NCC column contract."""
+
+    values: tuple[str, ...]
+    status_variant: str
+
+    @classmethod
+    def from_mapping(cls, record: dict[str, str]) -> NccComplaintRecord:
+        return cls(
+            values=tuple(str(record.get(column, "")) for column in COLUMNS),
+            status_variant=str(record.get("_status_variant", "")),
+        )
+
+    def as_mapping(self) -> dict[str, str]:
+        result = dict(zip(COLUMNS, self.values, strict=True))
+        result["_status_variant"] = self.status_variant
+        return result
+
+
+@dataclass(frozen=True, slots=True)
+class NccComplaintsReportSnapshot:
+    """Typed, deterministic report projection consumed by UI and delivery."""
+
+    query: NccComplaintsReportQuery
+    records: tuple[NccComplaintRecord, ...]
+    by_category: tuple[tuple[str, int], ...]
+    by_status: tuple[tuple[str, int], ...]
+    unclassified_count: int
+
+    @property
+    def total_complaints(self) -> int:
+        return len(self.records)
+
+    def record_mappings(self) -> list[dict[str, str]]:
+        return [record.as_mapping() for record in self.records]
+
+    def as_legacy_dict(self) -> dict[str, Any]:
+        return {
+            "total_complaints": self.total_complaints,
+            "by_category": dict(self.by_category),
+            "by_status": dict(self.by_status),
+            "unclassified_count": self.unclassified_count,
+            "columns": list(COLUMNS),
+            "records": self.record_mappings(),
+        }
+
 
 # NCC files complaints as Resolved or Pending. Michael's call (2026-07-17):
 # Closed is the one native status for a resolved complaint. The filing label
@@ -502,8 +565,20 @@ def build_records(
     return records
 
 
-def build_report(db: Session, *, start: datetime, end: datetime) -> dict[str, Any]:
-    """The ① section payload. Entrypoint for ``ncc_regulatory_pack``."""
+def query_report(
+    db: Session, query: NccComplaintsReportQuery
+) -> NccComplaintsReportSnapshot:
+    """Resolve the typed NCC complaints projection without side effects."""
+
+    start = _as_utc(query.start)
+    end = _as_utc(query.end)
+    if start is None or end is None or start > end:
+        raise NccComplaintsReportError(
+            code="compliance.ncc_complaints_reporting.invalid_query",
+            message="The NCC reporting window is invalid.",
+            details={"field": "reporting_window"},
+        )
+    normalized_query = NccComplaintsReportQuery(start=start, end=end)
     records = build_records(db, start=start, end=end)
     by_category: Counter[str] = Counter()
     by_status: Counter[str] = Counter()
@@ -516,13 +591,20 @@ def build_report(db: Session, *, start: datetime, end: datetime) -> dict[str, An
         else:
             unclassified += 1
 
-    return {
-        "total_complaints": len(records),
-        "by_category": dict(sorted(by_category.items())),
-        "by_status": dict(sorted(by_status.items())),
+    return NccComplaintsReportSnapshot(
+        query=normalized_query,
+        records=tuple(NccComplaintRecord.from_mapping(row) for row in records),
+        by_category=tuple(sorted(by_category.items())),
+        by_status=tuple(sorted(by_status.items())),
         # Non-zero means tickets reached the filing with no captured
         # classification: a capture gap, not a display problem.
-        "unclassified_count": unclassified,
-        "columns": list(COLUMNS),
-        "records": records,
-    }
+        unclassified_count=unclassified,
+    )
+
+
+def build_report(db: Session, *, start: datetime, end: datetime) -> dict[str, Any]:
+    """Compatibility projection for retained JSON and pack adapters."""
+
+    return query_report(
+        db, NccComplaintsReportQuery(start=start, end=end)
+    ).as_legacy_dict()

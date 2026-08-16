@@ -44,6 +44,7 @@ def _apply_filters(
     status: str | None,
     vendor: str | None,
     search: str | None,
+    lifecycle: str | None,
 ):
     if device_type and device_type != "all":
         stmt = stmt.where(DeviceProjection.device_type == device_type)
@@ -56,6 +57,13 @@ def _apply_filters(
             func.lower(func.coalesce(DeviceProjection.vendor, ""))
             == vendor.strip().lower()
         )
+    normalized_lifecycle = (lifecycle or "current").strip().lower()
+    if normalized_lifecycle == "archived":
+        stmt = stmt.where(DeviceProjection.lifecycle_state == "archived")
+    elif normalized_lifecycle in {"active", "inactive"}:
+        stmt = stmt.where(DeviceProjection.lifecycle_state == normalized_lifecycle)
+    else:
+        stmt = stmt.where(DeviceProjection.lifecycle_state != "archived")
     term = (search or "").strip().lower()
     if term:
         like = f"%{term}%"
@@ -86,6 +94,7 @@ def _row_to_dict(row: DeviceProjection) -> dict:
         "class_facts": row.class_facts,
         "lifecycle_state": row.lifecycle_state,
         "is_inactive": row.lifecycle_state != "active",
+        "is_archived": row.lifecycle_state == "archived",
     }
 
 
@@ -96,6 +105,7 @@ def query_device_projections(
     status: str | None = None,
     vendor: str | None = None,
     search: str | None = None,
+    lifecycle: str | None = None,
     sort_by: str = "name",
     sort_dir: str = "asc",
     offset: int = 0,
@@ -108,6 +118,7 @@ def query_device_projections(
         status=status,
         vendor=vendor,
         search=search,
+        lifecycle=lifecycle,
     )
     total = db.scalar(select(func.count()).select_from(filtered.subquery())) or 0
     column = _SORT_COLUMNS.get(sort_by, DeviceProjection.name)
@@ -129,6 +140,7 @@ def device_projection_stats(
     status: str | None = None,
     vendor: str | None = None,
     search: str | None = None,
+    lifecycle: str | None = None,
 ) -> dict[str, int]:
     """Summary counts by type and status over the filtered set (SQL-aggregated)."""
     filtered = _apply_filters(
@@ -142,6 +154,7 @@ def device_projection_stats(
         status=status,
         vendor=vendor,
         search=search,
+        lifecycle=lifecycle,
     ).group_by(
         DeviceProjection.device_type,
         DeviceProjection.operational_status,
@@ -159,15 +172,24 @@ def device_projection_stats(
         "working": 0,
         "not_working": 0,
         "inactive": 0,
+        "archived": 0,
     }
     # Inactive devices stay in the projection (and in the device list) but are
     # counted separately and excluded from every in-service total. Folding them
     # into ``not_working`` would drag the operating percentage down with
     # equipment that was deliberately taken out of service, and folding them
     # into ``total`` alone would break ``working + not_working == total``.
-    for dtype, dstatus, lifecycle, count in db.execute(filtered).all():
+    requested_lifecycle = (lifecycle or "current").strip().lower()
+    for dtype, dstatus, row_lifecycle, count in db.execute(filtered).all():
         count = int(count or 0)
-        if str(lifecycle or "active") != "active":
+        if str(row_lifecycle or "active") == "archived":
+            stats["archived"] += count
+            if requested_lifecycle == "archived":
+                stats["total"] += count
+                if dtype in stats:
+                    stats[dtype] += count
+            continue
+        if str(row_lifecycle or "active") != "active":
             stats["inactive"] += count
             continue
         stats["total"] += count

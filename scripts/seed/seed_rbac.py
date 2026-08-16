@@ -164,6 +164,7 @@ DEFAULT_PERMISSIONS = [
     ("network:map:read", "View the comprehensive network map"),
     ("network:device:read", "View network devices"),
     ("network:device:write", "Manage network devices"),
+    ("network:device:archive", "Archive and restore core network devices"),
     (
         "network:operation:redrive",
         "Retry eligible failed network operations",
@@ -390,6 +391,7 @@ ROLE_PERMISSIONS = {
         "network:map:read",
         "network:device:read",
         "network:device:write",
+        "network:device:archive",
         "network:olt:read",
         "network:olt:write",
         "network:ont:commission",

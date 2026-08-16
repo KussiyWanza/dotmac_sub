@@ -2,7 +2,7 @@
 
 from typing import Literal
 from urllib.parse import quote_plus
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Form, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -10,6 +10,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.services import core_device_archive
 from app.services import web_network_core_devices as web_network_core_devices_service
 from app.services import web_network_core_runtime as web_network_core_runtime_service
 from app.services.audit_helpers import (
@@ -19,6 +20,9 @@ from app.services.audit_helpers import (
     model_to_dict,
 )
 from app.services.auth_dependencies import has_permission, require_permission
+from app.services.db_session_adapter import db_session_adapter
+from app.services.domain_errors import DomainError
+from app.services.owner_commands import CommandContext
 from app.web.request_parsing import parse_form_data_sync
 
 templates = Jinja2Templates(directory="templates")
@@ -41,6 +45,22 @@ def _coerce_uuid_or_none(value: str | None) -> UUID | None:
         return None
 
 
+def _archive_command_context(auth: dict[str, object], *, reason: str) -> CommandContext:
+    principal_id = str(auth.get("principal_id") or "").strip()
+    if not principal_id:
+        raise ValueError("Authorized actor identity is missing")
+    actor_type = "api_key" if auth.get("principal_type") == "api_key" else "user"
+    command_id = uuid4()
+    return CommandContext(
+        command_id=command_id,
+        correlation_id=command_id,
+        actor=f"{actor_type}:{principal_id}",
+        scope=core_device_archive.ARCHIVE_SCOPE,
+        reason=reason.strip(),
+        idempotency_key=f"core-device-lifecycle:{command_id}",
+    )
+
+
 def _base_context(
     request: Request, db: Session, active_page: str, active_menu: str = "network"
 ) -> dict:
@@ -55,6 +75,8 @@ def _base_context(
         "sidebar_stats": get_sidebar_stats(db),
         "can_write_network": bool(auth)
         and has_permission(auth, db, "network:device:write"),
+        "can_archive_network_device": bool(auth)
+        and has_permission(auth, db, core_device_archive.ARCHIVE_SCOPE),
     }
 
 
@@ -334,6 +356,116 @@ def core_device_parent_options(
 
 
 @router.get(
+    "/core-devices/{device_id}/archive/preview",
+    response_class=HTMLResponse,
+)
+def core_device_archive_preview(
+    request: Request,
+    device_id: UUID,
+    db: Session = Depends(get_db),
+    _auth: dict[str, object] = Depends(
+        require_permission(core_device_archive.ARCHIVE_SCOPE)
+    ),
+) -> HTMLResponse:
+    """Render owner-resolved archive impact and confirmation."""
+    try:
+        preview = core_device_archive.preview_core_device_archive(
+            db,
+            core_device_archive.PreviewCoreDeviceArchiveRequest(device_id=device_id),
+        )
+        error = None
+    except DomainError as exc:
+        preview = None
+        error = exc.message
+    return templates.TemplateResponse(
+        "admin/network/core-devices/_archive_preview.html",
+        {
+            "request": request,
+            "device_id": device_id,
+            "preview": preview,
+            "error": error,
+        },
+        status_code=200 if preview is not None else 409,
+    )
+
+
+@router.post("/core-devices/{device_id}/archive")
+def core_device_archive_execute(
+    device_id: UUID,
+    reason: str = Form(...),
+    preview_fingerprint: str = Form(...),
+    db: Session = Depends(get_db),
+    auth: dict[str, object] = Depends(
+        require_permission(core_device_archive.ARCHIVE_SCOPE)
+    ),
+) -> RedirectResponse:
+    context = _archive_command_context(auth, reason=reason)
+    try:
+        db_session_adapter.release_read_transaction(db)
+        outcome = core_device_archive.archive_core_device(
+            db,
+            core_device_archive.ArchiveCoreDeviceCommand(
+                context=context,
+                device_id=device_id,
+                expected_preview_fingerprint=(
+                    core_device_archive.ArchivePreviewFingerprint.parse(
+                        preview_fingerprint
+                    )
+                ),
+            ),
+        )
+    except DomainError as exc:
+        return RedirectResponse(
+            f"/admin/network/core-devices/{device_id}?error={quote_plus(exc.message)}",
+            status_code=303,
+        )
+    return RedirectResponse(
+        f"/admin/network/core-devices/{outcome.device_id}?message="
+        + quote_plus(f"{outcome.device_name} archived."),
+        status_code=303,
+    )
+
+
+@router.post("/core-devices/{device_id}/restore")
+def core_device_restore_execute(
+    device_id: UUID,
+    db: Session = Depends(get_db),
+    auth: dict[str, object] = Depends(
+        require_permission(core_device_archive.ARCHIVE_SCOPE)
+    ),
+) -> RedirectResponse:
+    context = _archive_command_context(
+        auth,
+        reason="Restore archived core device to inactive inventory",
+    )
+    try:
+        db_session_adapter.release_read_transaction(db)
+        outcome = core_device_archive.restore_core_device(
+            db,
+            core_device_archive.RestoreCoreDeviceCommand(
+                context=context,
+                device_id=device_id,
+            ),
+        )
+    except DomainError as exc:
+        return RedirectResponse(
+            "/admin/network/devices?type=core&lifecycle=archived&error="
+            + quote_plus(exc.message),
+            status_code=303,
+        )
+    message = (
+        f"{outcome.device_name} was not archived; no changes were made."
+        if outcome.replayed
+        else f"{outcome.device_name} restored as inactive."
+    )
+    return RedirectResponse(
+        f"/admin/network/core-devices/{outcome.device_id}?message="
+        + quote_plus(message),
+        status_code=303,
+    )
+
+
+@router.get(
     "/core-devices/{device_id}/edit",
     response_class=HTMLResponse,
     dependencies=[Depends(require_permission("network:device:read"))],
@@ -345,6 +477,12 @@ def core_device_edit(request: Request, device_id: str, db: Session = Depends(get
             "admin/errors/404.html",
             {"request": request, "message": "Device not found"},
             status_code=404,
+        )
+    if device.archived_at is not None:
+        return RedirectResponse(
+            f"/admin/network/core-devices/{device.id}?error="
+            + quote_plus("Restore this archived device before editing it."),
+            status_code=303,
         )
     pop_sites = web_network_core_devices_service.pop_sites_for_forms(db)
     parent_devices = web_network_core_devices_service.parent_devices_for_forms(
@@ -396,14 +534,20 @@ def core_device_detail(request: Request, device_id: str, db: Session = Depends(g
     )
     context.update(page_data)
     context["activities"] = activities
+    if page_data["device"].archived_at is not None:
+        context["can_write_network"] = False
     # Sort monitored interfaces to the top so admins don't have to scroll past
     # all the unwatched ones. Stable secondary sort by name keeps things predictable.
     interfaces = list(page_data.get("interfaces") or [])
     interfaces.sort(key=lambda i: (not bool(i.monitored), (i.name or "").lower()))
     context["interfaces"] = interfaces
     # Live per-interface bandwidth (no-op if no monitored interfaces)
-    context["bandwidth"] = core_router_metrics.get_interface_bandwidth(
-        db, page_data["device"], interfaces
+    context["bandwidth"] = (
+        {}
+        if page_data["device"].archived_at is not None
+        else core_router_metrics.get_interface_bandwidth(
+            db, page_data["device"], interfaces
+        )
     )
     context["format_bps"] = _format_bps
     return templates.TemplateResponse("admin/network/core-devices/detail.html", context)
@@ -447,9 +591,14 @@ def core_device_interface_toggle_monitored(
     db: Session = Depends(get_db),
 ):
     """Toggle whether an interface is included in bandwidth monitoring."""
-    web_network_core_devices_service.toggle_interface_monitored(
+    ok, msg = web_network_core_devices_service.toggle_interface_monitored(
         db, device_id=device_id, interface_id=interface_id, monitored=monitored
     )
+    if not ok:
+        return RedirectResponse(
+            f"/admin/network/core-devices/{device_id}?error={quote_plus(msg)}",
+            status_code=303,
+        )
     # Invalidate the live-bandwidth cache so the next poll reflects the new set.
     from app.services import core_router_metrics
 
@@ -489,6 +638,8 @@ def core_device_interfaces_bandwidth_partial(
         return Response(status_code=404)
 
     device = page_data.get("device")
+    if device is not None and device.archived_at is not None:
+        return Response(status_code=409)
     interfaces = list(page_data.get("interfaces") or [])
     interfaces.sort(key=lambda i: (not bool(i.monitored), (i.name or "").lower()))
     bandwidth = core_router_metrics.get_interface_bandwidth(db, device, interfaces)
@@ -532,6 +683,8 @@ def core_device_graphs(
         request, db, active_page="core-devices", active_menu="core-network"
     )
     context.update(page_data)
+    if page_data["device"].archived_at is not None:
+        context["can_write_network"] = False
     return templates.TemplateResponse("admin/network/core-devices/graphs.html", context)
 
 
@@ -698,6 +851,8 @@ def core_device_backups(
         request, db, active_page="core-devices", active_menu="core-network"
     )
     context.update(page_data)
+    if page_data["device"].archived_at is not None:
+        context["can_write_network"] = False
     return templates.TemplateResponse(
         "admin/network/core-devices/backups.html", context
     )
@@ -890,6 +1045,12 @@ def core_device_update(request: Request, device_id: str, db: Session = Depends(g
             "admin/errors/404.html",
             {"request": request, "message": "Device not found"},
             status_code=404,
+        )
+    if device.archived_at is not None:
+        return RedirectResponse(
+            f"/admin/network/core-devices/{device.id}?error="
+            + quote_plus("Restore this archived device before editing it."),
+            status_code=303,
         )
     before_snapshot = model_to_dict(device)
 

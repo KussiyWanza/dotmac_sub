@@ -33,6 +33,9 @@ from app.services.sot_registry.domains.party_identity import DOMAIN as PARTY_IDE
 from app.services.sot_registry.domains.provisioning_operations import (
     DOMAIN as PROVISIONING_OPERATIONS,
 )
+from app.services.sot_registry.domains.regulatory_reporting import (
+    DOMAIN as REGULATORY_REPORTING,
+)
 from app.services.sot_registry.domains.runtime_infrastructure import (
     DOMAIN as RUNTIME_INFRASTRUCTURE,
 )
@@ -88,6 +91,7 @@ DOMAIN_DECLARATIONS = (
     TENANCY,
     AI_ADVISORY,
     PROVISIONING_OPERATIONS,
+    REGULATORY_REPORTING,
     FEATURE_CONTROL_PLANE,
     AUTHORIZATION_CONTROL_PLANE,
     SCHEDULER_CONTROL_PLANE,

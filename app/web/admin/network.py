@@ -18,7 +18,7 @@ from app.schemas.network_map_asset_changes import (
     ReviewNetworkAssetProposalCommand,
     SubmitNetworkAssetProposalCommand,
 )
-from app.services import network_map_asset_changes
+from app.services import core_device_archive, network_map_asset_changes
 from app.services import web_network_core_devices as web_network_core_devices_service
 from app.services.auth_dependencies import has_permission, require_permission
 from app.services.db_session_adapter import db_session_adapter
@@ -27,6 +27,28 @@ from app.services.owner_commands import CommandContext
 
 templates = Jinja2Templates(directory="templates")
 router = APIRouter(prefix="/network", tags=["web-admin-network"])
+
+
+def _require_core_device_action_allowed(
+    db: Session,
+    *,
+    device_id: str,
+    mutation: core_device_archive.CoreDeviceMutation,
+) -> None:
+    """Apply archive policy when a consolidated action targets a core row."""
+    try:
+        normalized_id = UUID(device_id)
+    except ValueError:
+        return
+    if web_network_core_devices_service.get_device(db, str(normalized_id)) is None:
+        return
+    core_device_archive.require_core_device_mutable(
+        db,
+        core_device_archive.RequireCoreDeviceMutableRequest(
+            device_id=normalized_id,
+            mutation=mutation,
+        ),
+    )
 
 
 def _network_map_actor(
@@ -134,6 +156,7 @@ def _build_device_query(
     search: str | None,
     status: str | None,
     vendor: str | None,
+    lifecycle: str | None,
     sort_by: str | None = None,
     sort_dir: str | None = None,
     page: int = 1,
@@ -156,6 +179,7 @@ def _build_device_query(
             device_type=selected_type,
             status=status,
             vendor=vendor,
+            lifecycle=lifecycle,
             search=search,
             sort_by=sort_by,
             sort_dir=sort_dir,
@@ -180,6 +204,7 @@ def devices_list(
     search: str | None = None,
     status: str | None = None,
     vendor: str | None = None,
+    lifecycle: str | None = None,
     sort_by: str | None = None,
     sort_dir: str | None = None,
     page: int = Query(default=1, ge=1),
@@ -195,6 +220,7 @@ def devices_list(
         search=search,
         status=status,
         vendor=vendor,
+        lifecycle=lifecycle,
         sort_by=sort_by,
         sort_dir=sort_dir,
         page=page,
@@ -226,6 +252,7 @@ def devices_search(
         search=search,
         status=None,
         vendor=None,
+        lifecycle=None,
         offset=offset,
         limit=limit,
     )
@@ -248,6 +275,7 @@ def devices_filter(
     search: str | None = None,
     status: str | None = None,
     vendor: str | None = None,
+    lifecycle: str | None = None,
     sort_by: str | None = None,
     sort_dir: str | None = None,
     offset: int | None = Query(default=None),
@@ -260,6 +288,7 @@ def devices_filter(
         search=search,
         status=status,
         vendor=vendor,
+        lifecycle=lifecycle,
         sort_by=sort_by,
         sort_dir=sort_dir,
         offset=offset,
@@ -309,6 +338,11 @@ def device_detail(
     dependencies=[Depends(require_permission("network:device:write"))],
 )
 def device_ping(request: Request, device_id: str, db: Session = Depends(get_db)):
+    _require_core_device_action_allowed(
+        db,
+        device_id=device_id,
+        mutation=core_device_archive.CoreDeviceMutation.PING,
+    )
     return HTMLResponse(
         '<div class="rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600 shadow-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">'
         f"Ping queued for device {device_id}."
@@ -322,6 +356,11 @@ def device_ping(request: Request, device_id: str, db: Session = Depends(get_db))
     dependencies=[Depends(require_permission("network:device:write"))],
 )
 def device_reboot(request: Request, device_id: str, db: Session = Depends(get_db)):
+    _require_core_device_action_allowed(
+        db,
+        device_id=device_id,
+        mutation=core_device_archive.CoreDeviceMutation.REBOOT,
+    )
     return HTMLResponse(
         '<div class="rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600 shadow-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">'
         f"Reboot request queued for device {device_id}."
@@ -338,6 +377,11 @@ def device_reboot_preview(
     request: Request, device_id: str, db: Session = Depends(get_db)
 ):
     """Safe impact-preview step before the existing reboot command adapter."""
+    _require_core_device_action_allowed(
+        db,
+        device_id=device_id,
+        mutation=core_device_archive.CoreDeviceMutation.REBOOT,
+    )
     context = _base_context(request, db, active_page="devices")
     context.update({"device_id": device_id, "affected": 1})
     return templates.TemplateResponse(
