@@ -265,6 +265,24 @@ def _fingerprint(command: RecordProviderObservationCommand) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def observation_fingerprint(command: RecordProviderObservationCommand) -> str:
+    """The domain fingerprint this owner arbitrates replay against collision by.
+
+    Public because a parity harness must compare against the SAME rule the
+    owner enforces. A caller that recomputed its own equivalent would be a
+    second definition of "is this the same fact?", and the two would drift.
+    Callers may read it; only this module writes it to a row.
+    """
+
+    return _fingerprint(command)
+
+
+def normalized_payload(payload: NormalizedObservation) -> dict[str, object]:
+    """The exact JSON shape this owner persists for one normalized payload."""
+
+    return _payload_dict(payload)
+
+
 def _validate(command: RecordProviderObservationCommand) -> tuple[str, str, str]:
     provider_scope = command.provider_account_scope.strip()
     provider_event_id = command.provider_event_id.strip()

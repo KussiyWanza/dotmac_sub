@@ -57,6 +57,10 @@ def test_explicit_registry_preserves_marketplace_catalogue_parity() -> None:
     assert tuple(definition.key for definition in connector_definitions()) == (
         "fiber.inquiry.http",
         "lead.capture.http",
+        # Inbound-only and deliberately catalogue-invisible: an operator does
+        # not "install" the Integrator from the marketplace, so it is absent
+        # from EXPECTED_MARKETPLACE above but present in the definition order.
+        "dotmac.integrator.http",
         "webhook.http",
         "dotmac.crm",
         "whatsapp",

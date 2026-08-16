@@ -80,6 +80,10 @@ _CORE_ROUTER_SPECS = [
     ("app.api.fiber_inquiry_webhooks", "router", "api", "none"),
     ("app.api.erp_material_webhooks", "router", "api", "none"),
     ("app.api.lead_capture_webhooks", "router", "api", "none"),
+    # Inbound like the webhooks above and must not 404 during the deferred
+    # load window. Its guard is per-route (a scoped ApiKey), so the
+    # router-level mode stays "none".
+    ("app.api.integrator_observations", "router", "api", "none"),
     ("app.api.chat_widget", "router", "web", "none"),
     ("app.api.crm", "router", "api", "none"),
     ("app.api.search", "router", "api", "readperm:customer:read"),

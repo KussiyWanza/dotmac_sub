@@ -26,6 +26,10 @@ from app.services.integrations.connectors.fiber_inquiry_http import (
     FiberInquiryHttpRunner,
 )
 from app.services.integrations.connectors.http_webhook import HttpWebhookRunner
+from app.services.integrations.connectors.integrator_http import (
+    INTEGRATOR_CONNECTOR_KEY,
+    IntegratorHttpRunner,
+)
 from app.services.integrations.connectors.lead_capture_http import (
     LeadCaptureHttpRunner,
 )
@@ -79,6 +83,7 @@ def default_runner_registry() -> RunnerRegistry:
     registry.register("webhook.http", HttpWebhookRunner())
     registry.register("fiber.inquiry.http", FiberInquiryHttpRunner())
     registry.register("lead.capture.http", LeadCaptureHttpRunner())
+    registry.register(INTEGRATOR_CONNECTOR_KEY, IntegratorHttpRunner())
     registry.register("dotmac.crm", DotmacCrmRunner())
     registry.register("dotmac.erp", DotmacErpRunner())
     registry.register("paystack", PaymentGatewayRunner("paystack"))

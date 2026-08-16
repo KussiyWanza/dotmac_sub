@@ -578,6 +578,41 @@ _DEFINITIONS: tuple[ConnectorManifest, ...] = (
         health=HealthManifest(operation="connection.validate.v1"),
     ),
     ConnectorManifest(
+        key="dotmac.integrator.http",
+        name="Dotmac Integrator",
+        version="1.0.0",
+        connector_type="messaging",
+        description=(
+            "Independently deployed Integrator delivering provider-neutral "
+            "inbound message observations. Sub authenticates the Integrator as "
+            "a scoped machine principal; the provider signature is verified in "
+            "the Integrator's own deployment, over the bytes it actually covers."
+        ),
+        catalogue_visible=False,
+        runtime=RuntimeManifest(
+            type=ConnectorRuntimeType.builtin_worker,
+            module="app.services.integrations.connectors.integrator_http",
+        ),
+        capabilities=(
+            CapabilityManifest(
+                id="messaging.receive.v1",
+                modes=(CapabilityMode.inbound,),
+            ),
+        ),
+        config_schema={
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+        secrets=(),
+        data_access=DataAccessManifest(
+            emits=("communications.inbound_message_observation",),
+            classifications=("customer_contact", "message_content"),
+        ),
+        egress=EgressManifest(),
+        health=HealthManifest(operation="connection.validate.v1"),
+    ),
+    ConnectorManifest(
         key="webhook.http",
         name="HTTP Webhook",
         version="1.0.0",

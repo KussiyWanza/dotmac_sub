@@ -1792,6 +1792,227 @@ DOMAIN = DomainSOT(
             ),
         ),
         SOTService(
+            name="communications.team_inbox_integrator_envelope",
+            module="app.services.team_inbox_integrator_envelope",
+            owns=("Integrator capability envelope normalization",),
+            depends_on=("communications.team_inbox_observations",),
+            notes=(
+                "Pure conversion of one provider-neutral Integrator envelope "
+                "into the observation owner's typed command. It takes no "
+                "session, writes no row, reaches no network, and decides "
+                "nothing. It applies Sub's OWN identity conventions - the "
+                "message:/receipt: prefix, the account-scope truncation - so an "
+                "Integrator-fed observation and a webhook-fed observation for "
+                "one upstream event land on one identity. It records the "
+                "provider family, never a transport, as the provider: a "
+                "transport recorded as a provider would give the same upstream "
+                "event two identities either side of a cutover."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name="Integrator capability envelope normalization",
+                        role=OwnerRole.TRANSPORT,
+                        input_names=("Integrator capability envelope",),
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="Integrator capability envelope",
+                        owner="external:dotmac_integrator",
+                        kind=AuthorityKind.EXTERNAL_OBSERVATION,
+                        source=(
+                            "Provider-neutral messaging.receive.v1 envelope "
+                            "delivered by an authenticated machine principal, "
+                            "carrying provider family, account scope, provider "
+                            "event identity, observed_at, a canonical-JSON "
+                            "transport fingerprint, and the Integrator binding "
+                            "scope as provenance."
+                        ),
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.NOT_APPLICABLE,
+                    boundary=(
+                        "Pure function. It is called by the port adapter before "
+                        "any transaction is opened and completes no unit of work."
+                    ),
+                    locking="No rows are read or written, so nothing is locked.",
+                    idempotency=(
+                        "One envelope always normalizes to one byte-identical "
+                        "command; the function holds no state between calls."
+                    ),
+                    retries=(
+                        "Free to retry: a rejection is deterministic for one "
+                        "envelope and never partially applied."
+                    ),
+                ),
+                errors=ErrorContract(
+                    domain_codes=(
+                        "communications.team_inbox_integrator_envelope.unknown_capability",
+                        "communications.team_inbox_integrator_envelope.unsupported_contract_version",
+                        "communications.team_inbox_integrator_envelope.invalid_envelope",
+                        "communications.team_inbox_integrator_envelope.empty_observation",
+                        "communications.team_inbox_integrator_envelope.payload_fingerprint_mismatch",
+                        "communications.team_inbox_integrator_envelope.unknown_provider",
+                        "communications.team_inbox_integrator_envelope.unsupported_provider",
+                        "communications.team_inbox_integrator_envelope.unknown_channel",
+                        "communications.team_inbox_integrator_envelope.channel_provider_mismatch",
+                        "communications.team_inbox_integrator_envelope.invalid_observed_at",
+                    ),
+                    mapping_owner="app.api.integrator_observations",
+                    fail_closed_on=(
+                        "a capability this deployment does not accept",
+                        "a contract version this deployment has not deployed",
+                        "an observation body that does not match its fingerprint",
+                        "a channel not carried by the declared provider family",
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.NATIVE,
+                    new_owner="communications.team_inbox_integrator_envelope",
+                ),
+                steward="customer experience platform",
+                design_refs=(
+                    "docs/INTEGRATOR_MESSAGING_RECEIVE_CUTOVER.md",
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                ),
+                test_refs=(
+                    "tests/test_integrator_observation_port.py",
+                    "tests/architecture/test_integrator_port_boundary.py",
+                ),
+            ),
+        ),
+        SOTService(
+            name="communications.team_inbox_integrator_mirror",
+            module="app.services.team_inbox_integrator_mirror",
+            owns=(
+                "Integrator and webhook inbound observation parity",
+                "Integrator producer cutover readiness",
+            ),
+            depends_on=(
+                "communications.team_inbox_integrator_envelope",
+                "communications.team_inbox_observations",
+            ),
+            notes=(
+                "Read-only migration evidence. It normalizes an Integrator "
+                "envelope exactly as the live port would, then compares it "
+                "field by field against the observation Sub's own receiver "
+                "already recorded. It writes no row, advances no processing "
+                "status, and cannot authorize a cutover by itself. Its most "
+                "valuable verdict is identity_shape_mismatch: a row recorded "
+                "for the same upstream event under a different identity, which "
+                "is what would double-record every message during the "
+                "producer-overlap window. Reports are aggregate and PII-free, "
+                "naming values only for provider and Sub identifiers."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name="Integrator and webhook inbound observation parity",
+                        role=OwnerRole.RESOLVER,
+                        input_names=(
+                            "normalized Integrator command",
+                            "committed webhook observation",
+                        ),
+                    ),
+                    ConcernContract(
+                        name="Integrator producer cutover readiness",
+                        role=OwnerRole.POLICY,
+                        input_names=(
+                            "normalized Integrator command",
+                            "committed webhook observation",
+                        ),
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="normalized Integrator command",
+                        owner="communications.team_inbox_integrator_envelope",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source=(
+                            "The typed RecordProviderObservationCommand the live "
+                            "port would submit for one envelope, produced by the "
+                            "same normalization function so the comparison "
+                            "cannot drift from the thing it measures."
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="committed webhook observation",
+                        owner="communications.team_inbox_observations",
+                        kind=AuthorityKind.OBSERVATION,
+                        source=(
+                            "Immutable InboxProviderObservation rows recorded by "
+                            "Sub's existing provider webhook receivers, with the "
+                            "domain fingerprint computed by the observation "
+                            "owner's own published rule."
+                        ),
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.READ_ONLY,
+                    boundary=(
+                        "The port or operator adapter opens one read-only "
+                        "transaction, resolves the report, then rolls back."
+                    ),
+                    locking=(
+                        "No row locks: one snapshot prevents a concurrent "
+                        "webhook delivery from splitting the report."
+                    ),
+                    idempotency=(
+                        "The sorted report is deterministic for one database "
+                        "snapshot and stores no execution marker."
+                    ),
+                    retries=(
+                        "Retry the complete report on a fresh snapshot; never "
+                        "combine verdicts from separate attempts."
+                    ),
+                ),
+                errors=ErrorContract(
+                    domain_codes=(),
+                    mapping_owner="app.api.integrator_observations",
+                    fail_closed_on=(
+                        "one identity carrying two different domain fingerprints",
+                        "an observation Sub recorded under a different identity",
+                        "any normalized field on which the producers disagree",
+                        "an empty comparison population, which proves nothing",
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.SHADOWING,
+                    old_owner=(
+                        "Sub's direct provider webhook receivers "
+                        "(app.api.inbox_webhooks, app.api.meta_inbox_webhooks)"
+                    ),
+                    new_owner="communications.team_inbox_integrator_mirror",
+                    verification=(
+                        "Stable per-event verdicts and PII-free aggregate "
+                        "counts compare both producers on live traffic without "
+                        "either being repointed."
+                    ),
+                    cutover_gate=(
+                        "A non-empty population in which every blocking reason "
+                        "count is zero, evidenced from production shadow data."
+                    ),
+                    fallback_retirement=(
+                        "Retire the mirror only after the separately approved "
+                        "callback repoint and its rollback window close, and "
+                        "after Sub's own receiver and its credentials are "
+                        "removed."
+                    ),
+                ),
+                steward="customer experience platform",
+                design_refs=(
+                    "docs/INTEGRATOR_MESSAGING_RECEIVE_CUTOVER.md",
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                ),
+                test_refs=(
+                    "tests/test_integrator_observation_mirror.py",
+                    "tests/architecture/test_integrator_port_boundary.py",
+                ),
+            ),
+        ),
+        SOTService(
             name="communications.team_inbox_threads",
             module="app.services.team_inbox_receive",
             owns=(

@@ -17,6 +17,10 @@ ADMIN_ONLY_PERMISSION_KEYS = {
     "auth:credential:read",
     "auth:credential:write",
     "network:admin",
+    # Ingress authority for a machine principal. Kept out of the role builder
+    # so "accept inbound observations" cannot be attached to an ordinary role;
+    # the read-only mirror scope beside it stays assignable on purpose.
+    "integration:observations:write",
     "reseller:impersonate",
     "system:db_admin",
     "system:read",
@@ -51,6 +55,14 @@ DEFAULT_PERMISSIONS = [
     ("attendance:self:use", "Use personal ERP attendance from the dashboard"),
     # Integrations (service ApiKey scopes)
     ("integration:crm", "CRM service integration API access"),
+    (
+        "integration:observations:write",
+        "Integrator inbound observation ingress (messaging.receive.v1)",
+    ),
+    (
+        "integration:observations:mirror",
+        "Integrator inbound observation parity evidence, read-only",
+    ),
     # Auth & System
     ("auth:manage", "Manage authentication settings"),
     ("auth:credential:read", "View authentication credential metadata"),
