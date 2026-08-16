@@ -28,13 +28,20 @@ _SAMPLE_STATS = {
     "cpe": 4,
     "working": 22,
     "not_working": 20,
+    "archived": 0,
 }
 
 
 def _query(**filters):
     return NETWORK_DEVICE_LIST_DEFINITION.build_query(
         search=filters.pop("search", None),
-        filters={"type": None, "status": None, "vendor": None, **filters},
+        filters={
+            "type": None,
+            "status": None,
+            "vendor": None,
+            "lifecycle": None,
+            **filters,
+        },
     )
 
 
@@ -98,13 +105,22 @@ def test_kpi_tiles_show_overview_counts_independent_of_page_filter(monkeypatch) 
 
     stats_calls: list[dict] = []
 
-    def fake_stats(db, *, device_type=None, status=None, vendor=None, search=None):
+    def fake_stats(
+        db,
+        *,
+        device_type=None,
+        status=None,
+        vendor=None,
+        search=None,
+        lifecycle=None,
+    ):
         stats_calls.append(
             {
                 "device_type": device_type,
                 "status": status,
                 "vendor": vendor,
                 "search": search,
+                "lifecycle": lifecycle,
             }
         )
         # The page-filtered call returns a shrunken subset; the overview call
@@ -123,7 +139,12 @@ def test_kpi_tiles_show_overview_counts_independent_of_page_filter(monkeypatch) 
     )
     list_query = NETWORK_DEVICE_LIST_DEFINITION.build_query(
         search=None,
-        filters={"type": "core", "status": "not_working", "vendor": None},
+        filters={
+            "type": "core",
+            "status": "not_working",
+            "vendor": None,
+            "lifecycle": None,
+        },
     )
     data = mod.devices_list_page_data(object(), list_query)
     kpis = data["device_kpis"]
@@ -155,8 +176,25 @@ def test_row_actions_allowed_ping_carries_no_reason() -> None:
     assert actions["reboot"].allowed  # core + ip is rebootable
     assert actions["reboot"].requires_confirmation is True
     assert actions["reboot"].preview_url.endswith("/reboot/preview")
-    assert actions["delete"].allowed is False
-    assert actions["delete"].reason
+    assert actions["archive"].allowed
+    assert actions["archive"].label == "Archive Device"
+    assert actions["archive"].preview_url.endswith("/archive/preview")
+
+
+def test_archived_core_device_action_restores_without_preview() -> None:
+    actions = _device_row_actions(
+        {
+            "id": "d1",
+            "type": "core",
+            "ip_address": "10.0.0.1",
+            "lifecycle_state": "archived",
+        }
+    )
+    assert actions["archive"].allowed
+    assert actions["archive"].label == "Restore Device"
+    assert actions["archive"].preview_url is None
+    assert not actions["ping"].allowed
+    assert not actions["reboot"].allowed
 
 
 def test_row_actions_block_ping_without_ip_and_reboot_for_cpe() -> None:
@@ -185,6 +223,7 @@ def test_table_rows_template_gates_actions_on_eligibility() -> None:
     text = (_TEMPLATES / "devices" / "_table_rows.html").read_text()
     assert "device.actions.ping" in text
     assert "device.actions.reboot" in text
+    assert "device.actions.archive" in text
     assert "action_permitted(request, ping)" in text
     assert "action_permitted(request, reboot)" in text
     assert "action_permitted(request, remove)" in text

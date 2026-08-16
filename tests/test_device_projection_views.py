@@ -47,7 +47,7 @@ def _proj(
 
 def test_network_device_list_definition_capabilities():
     d = inventory.NETWORK_DEVICE_LIST_DEFINITION
-    assert d.filterable_keys == ("type", "status", "vendor")
+    assert d.filterable_keys == ("type", "status", "vendor", "lifecycle")
     assert d.sortable_keys == ("name", "last_seen")
     assert d.default_sort == "name"
     assert d.default_per_page == 25
@@ -126,6 +126,30 @@ def test_query_filters_sorts_and_paginates(db_session):
 
     # each row carries a projected status presentation (tone from the owner)
     assert rows[0]["status_presentation"].value == "working"
+
+
+def test_archived_rows_are_hidden_by_default_and_queryable_explicitly(db_session):
+    _proj(db_session, "1", name="current", lifecycle_state="active")
+    _proj(
+        db_session,
+        "2",
+        name="retired",
+        status="not_working",
+        lifecycle_state="archived",
+    )
+
+    current, current_total = device_projection_views.query_device_projections(
+        db_session
+    )
+    assert current_total == 1
+    assert [row["name"] for row in current] == ["current"]
+
+    archived, archived_total = device_projection_views.query_device_projections(
+        db_session, lifecycle="archived"
+    )
+    assert archived_total == 1
+    assert archived[0]["name"] == "retired"
+    assert archived[0]["is_archived"] is True
 
 
 def test_stats_and_repair_evidence(db_session):

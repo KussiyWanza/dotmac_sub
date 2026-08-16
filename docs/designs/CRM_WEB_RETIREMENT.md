@@ -91,6 +91,13 @@ Two legacy surfaces are explicitly outside this migration:
   preferences, reminders, and suppression remain CRM-owned. Self-Care neither
   copies those records nor creates a competing retention state machine.
 
+The legacy CRM **scheduled NCC complaints email is not part of the orphaned
+Quarterly Report exclusion**. Its replacement is
+`communications.ncc_weekly_delivery`: a configurable Tuesday XLSX delivery
+with durable occurrence and artifact evidence. It remains disabled until the
+comparison, staging acceptance, CRM-job disablement, and rollback gates in
+`docs/runbooks/NCC_WEEKLY_REPORT_CUTOVER.md` are complete.
+
 Where an aggregate needs a fact with no authoritative owner—currently downtime
 credit decisions and project-task actual effort—the report renders the value as
 unavailable and names the ownership gap. It must not estimate or fabricate it.

@@ -366,6 +366,191 @@ DOMAIN = DomainSOT(
             ),
         ),
         SOTService(
+            name="communications.ncc_weekly_delivery",
+            module="app.services.ncc_report_email",
+            owns=(
+                "NCC weekly delivery configuration",
+                "NCC weekly report occurrence and artifact",
+            ),
+            depends_on=(
+                "compliance.ncc_complaints_reporting",
+                "communications.intents",
+                "control.settings_spec",
+                "events.dispatcher",
+                "observability.audit_log",
+                "scheduler.registry",
+            ),
+            notes=(
+                "The scheduler polls only. This owner decides Tuesday/local-time "
+                "eligibility, stores the exact XLSX, arbitrates one local-date "
+                "occurrence, and stages one durable attachment delivery intent."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name="NCC weekly delivery configuration",
+                        role=OwnerRole.COMMAND_WRITER,
+                        input_names=(
+                            "typed NCC delivery configuration command",
+                            "registered NCC delivery settings",
+                        ),
+                        canonical_writer="communications.ncc_weekly_delivery",
+                    ),
+                    ConcernContract(
+                        name="NCC weekly report occurrence and artifact",
+                        role=OwnerRole.AUTHORITATIVE_RECORD,
+                        input_names=(
+                            "registered NCC delivery settings",
+                            "typed NCC complaints snapshot",
+                            "scheduled evaluation time",
+                            "durable communication intent outcome",
+                        ),
+                        canonical_writer="communications.ncc_weekly_delivery",
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="typed NCC delivery configuration command",
+                        owner="communications.ncc_weekly_delivery",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source="validated operator command and CommandContext",
+                    ),
+                    AuthorityInput(
+                        name="registered NCC delivery settings",
+                        owner="control.settings_spec",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "database-authoritative notification settings with "
+                            "Tuesday default"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="typed NCC complaints snapshot",
+                        owner="compliance.ncc_complaints_reporting",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source="native bounded-window NCC complaint rows",
+                    ),
+                    AuthorityInput(
+                        name="scheduled evaluation time",
+                        owner="external:system_clock",
+                        kind=AuthorityKind.EXTERNAL_OBSERVATION,
+                        source=(
+                            "explicit UTC scheduler observation converted to the "
+                            "configured zone"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="durable communication intent outcome",
+                        owner="communications.intents",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "queued operational email notification and typed "
+                            "attachment reference"
+                        ),
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.OWNER_MANAGED,
+                    boundary=(
+                        "Each public configuration or occurrence command enters "
+                        "execute_owner_command once; settings, run evidence, artifact, "
+                        "intent, audit, and event commit atomically."
+                    ),
+                    locking=(
+                        "The enabled setting and existing scheduled-local-date run are "
+                        "locked; a database unique constraint arbitrates concurrent "
+                        "first runs."
+                    ),
+                    idempotency=(
+                        "The schedule key plus local date identifies one occurrence "
+                        "and "
+                        "the communication intent uses the same stable dedupe identity."
+                    ),
+                    retries=(
+                        "Failed artifact or intent work is rolled back to a durable "
+                        "failed run through the owner savepoint; a later Tuesday poll "
+                        "repairs it."
+                    ),
+                ),
+                errors=ErrorContract(
+                    domain_codes=(
+                        "communications.ncc_weekly_delivery.invalid_configuration",
+                        "communications.ncc_weekly_delivery.artifact_generation_failed",
+                        "communications.ncc_weekly_delivery."
+                        "artifact_or_delivery_failed",
+                        "communications.ncc_weekly_delivery.delivery_intent_failed",
+                        "communications.ncc_weekly_delivery.artifact_not_found",
+                        "communications.ncc_weekly_delivery.artifact_integrity_failed",
+                        *owner_command_boundary_error_codes(
+                            "communications.ncc_weekly_delivery"
+                        ),
+                    ),
+                    mapping_owner="NCC report web and Celery adapters",
+                    retryable_codes=(
+                        "communications.ncc_weekly_delivery.artifact_generation_failed",
+                        "communications.ncc_weekly_delivery."
+                        "artifact_or_delivery_failed",
+                        "communications.ncc_weekly_delivery.delivery_intent_failed",
+                    ),
+                    fail_closed_on=(
+                        "missing or malformed recipient configuration",
+                        "invalid timezone or local schedule",
+                        "artifact integrity failure",
+                        "ambiguous occurrence identity",
+                    ),
+                ),
+                events=EventContract(
+                    event_types=(
+                        "ncc.weekly_delivery_configuration_changed",
+                        "ncc.weekly_report_queued",
+                    ),
+                    schema_version=1,
+                    delivery_owner="events.dispatcher",
+                    compatibility=(
+                        "Version 1 exposes stable run, notification, local-date, and "
+                        "aggregate count evidence without recipient addresses or "
+                        "workbook data."
+                    ),
+                    replay=(
+                        "The run row and immutable artifact rebuild queue evidence; "
+                        "the communication-intent dedupe key prevents a second "
+                        "delivery."
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.SHADOWING,
+                    old_owner=(
+                        "dotmac_crm ncc_report_email service and five-minute task"
+                    ),
+                    new_owner="communications.ncc_weekly_delivery",
+                    verification=(
+                        "Tuesday eligibility, CRM configuration parity, XLSX "
+                        "attachment, concurrency, retry, route, migration, and "
+                        "delivery evidence tests"
+                    ),
+                    cutover_gate=(
+                        "one accepted staging Tuesday delivery of the migrated "
+                        "configuration"
+                    ),
+                    fallback_retirement=(
+                        "disable and remove the CRM NCC scheduled task after cutover "
+                        "evidence"
+                    ),
+                ),
+                steward="regulatory compliance and customer communications",
+                design_refs=(
+                    "docs/designs/NCC_WEEKLY_REPORT_DELIVERY.md",
+                    "docs/designs/CRM_WEB_RETIREMENT.md",
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                ),
+                test_refs=(
+                    "tests/test_ncc_weekly_delivery.py",
+                    "tests/integration/test_ncc_weekly_delivery_migration.py",
+                    "tests/architecture/test_ncc_weekly_delivery_boundary.py",
+                ),
+            ),
+        ),
+        SOTService(
             name="communications.surveys",
             module="app.services.surveys",
             owns=(
@@ -1607,6 +1792,227 @@ DOMAIN = DomainSOT(
             ),
         ),
         SOTService(
+            name="communications.team_inbox_integrator_envelope",
+            module="app.services.team_inbox_integrator_envelope",
+            owns=("Integrator capability envelope normalization",),
+            depends_on=("communications.team_inbox_observations",),
+            notes=(
+                "Pure conversion of one provider-neutral Integrator envelope "
+                "into the observation owner's typed command. It takes no "
+                "session, writes no row, reaches no network, and decides "
+                "nothing. It applies Sub's OWN identity conventions - the "
+                "message:/receipt: prefix, the account-scope truncation - so an "
+                "Integrator-fed observation and a webhook-fed observation for "
+                "one upstream event land on one identity. It records the "
+                "provider family, never a transport, as the provider: a "
+                "transport recorded as a provider would give the same upstream "
+                "event two identities either side of a cutover."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name="Integrator capability envelope normalization",
+                        role=OwnerRole.TRANSPORT,
+                        input_names=("Integrator capability envelope",),
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="Integrator capability envelope",
+                        owner="external:dotmac_integrator",
+                        kind=AuthorityKind.EXTERNAL_OBSERVATION,
+                        source=(
+                            "Provider-neutral messaging.receive.v1 envelope "
+                            "delivered by an authenticated machine principal, "
+                            "carrying provider family, account scope, provider "
+                            "event identity, observed_at, a canonical-JSON "
+                            "transport fingerprint, and the Integrator binding "
+                            "scope as provenance."
+                        ),
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.NOT_APPLICABLE,
+                    boundary=(
+                        "Pure function. It is called by the port adapter before "
+                        "any transaction is opened and completes no unit of work."
+                    ),
+                    locking="No rows are read or written, so nothing is locked.",
+                    idempotency=(
+                        "One envelope always normalizes to one byte-identical "
+                        "command; the function holds no state between calls."
+                    ),
+                    retries=(
+                        "Free to retry: a rejection is deterministic for one "
+                        "envelope and never partially applied."
+                    ),
+                ),
+                errors=ErrorContract(
+                    domain_codes=(
+                        "communications.team_inbox_integrator_envelope.unknown_capability",
+                        "communications.team_inbox_integrator_envelope.unsupported_contract_version",
+                        "communications.team_inbox_integrator_envelope.invalid_envelope",
+                        "communications.team_inbox_integrator_envelope.empty_observation",
+                        "communications.team_inbox_integrator_envelope.payload_fingerprint_mismatch",
+                        "communications.team_inbox_integrator_envelope.unknown_provider",
+                        "communications.team_inbox_integrator_envelope.unsupported_provider",
+                        "communications.team_inbox_integrator_envelope.unknown_channel",
+                        "communications.team_inbox_integrator_envelope.channel_provider_mismatch",
+                        "communications.team_inbox_integrator_envelope.invalid_observed_at",
+                    ),
+                    mapping_owner="app.api.integrator_observations",
+                    fail_closed_on=(
+                        "a capability this deployment does not accept",
+                        "a contract version this deployment has not deployed",
+                        "an observation body that does not match its fingerprint",
+                        "a channel not carried by the declared provider family",
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.NATIVE,
+                    new_owner="communications.team_inbox_integrator_envelope",
+                ),
+                steward="customer experience platform",
+                design_refs=(
+                    "docs/INTEGRATOR_MESSAGING_RECEIVE_CUTOVER.md",
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                ),
+                test_refs=(
+                    "tests/test_integrator_observation_port.py",
+                    "tests/architecture/test_integrator_port_boundary.py",
+                ),
+            ),
+        ),
+        SOTService(
+            name="communications.team_inbox_integrator_mirror",
+            module="app.services.team_inbox_integrator_mirror",
+            owns=(
+                "Integrator and webhook inbound observation parity",
+                "Integrator producer cutover readiness",
+            ),
+            depends_on=(
+                "communications.team_inbox_integrator_envelope",
+                "communications.team_inbox_observations",
+            ),
+            notes=(
+                "Read-only migration evidence. It normalizes an Integrator "
+                "envelope exactly as the live port would, then compares it "
+                "field by field against the observation Sub's own receiver "
+                "already recorded. It writes no row, advances no processing "
+                "status, and cannot authorize a cutover by itself. Its most "
+                "valuable verdict is identity_shape_mismatch: a row recorded "
+                "for the same upstream event under a different identity, which "
+                "is what would double-record every message during the "
+                "producer-overlap window. Reports are aggregate and PII-free, "
+                "naming values only for provider and Sub identifiers."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name="Integrator and webhook inbound observation parity",
+                        role=OwnerRole.RESOLVER,
+                        input_names=(
+                            "normalized Integrator command",
+                            "committed webhook observation",
+                        ),
+                    ),
+                    ConcernContract(
+                        name="Integrator producer cutover readiness",
+                        role=OwnerRole.POLICY,
+                        input_names=(
+                            "normalized Integrator command",
+                            "committed webhook observation",
+                        ),
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="normalized Integrator command",
+                        owner="communications.team_inbox_integrator_envelope",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source=(
+                            "The typed RecordProviderObservationCommand the live "
+                            "port would submit for one envelope, produced by the "
+                            "same normalization function so the comparison "
+                            "cannot drift from the thing it measures."
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="committed webhook observation",
+                        owner="communications.team_inbox_observations",
+                        kind=AuthorityKind.OBSERVATION,
+                        source=(
+                            "Immutable InboxProviderObservation rows recorded by "
+                            "Sub's existing provider webhook receivers, with the "
+                            "domain fingerprint computed by the observation "
+                            "owner's own published rule."
+                        ),
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.READ_ONLY,
+                    boundary=(
+                        "The port or operator adapter opens one read-only "
+                        "transaction, resolves the report, then rolls back."
+                    ),
+                    locking=(
+                        "No row locks: one snapshot prevents a concurrent "
+                        "webhook delivery from splitting the report."
+                    ),
+                    idempotency=(
+                        "The sorted report is deterministic for one database "
+                        "snapshot and stores no execution marker."
+                    ),
+                    retries=(
+                        "Retry the complete report on a fresh snapshot; never "
+                        "combine verdicts from separate attempts."
+                    ),
+                ),
+                errors=ErrorContract(
+                    domain_codes=(),
+                    mapping_owner="app.api.integrator_observations",
+                    fail_closed_on=(
+                        "one identity carrying two different domain fingerprints",
+                        "an observation Sub recorded under a different identity",
+                        "any normalized field on which the producers disagree",
+                        "an empty comparison population, which proves nothing",
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.SHADOWING,
+                    old_owner=(
+                        "Sub's direct provider webhook receivers "
+                        "(app.api.inbox_webhooks, app.api.meta_inbox_webhooks)"
+                    ),
+                    new_owner="communications.team_inbox_integrator_mirror",
+                    verification=(
+                        "Stable per-event verdicts and PII-free aggregate "
+                        "counts compare both producers on live traffic without "
+                        "either being repointed."
+                    ),
+                    cutover_gate=(
+                        "A non-empty population in which every blocking reason "
+                        "count is zero, evidenced from production shadow data."
+                    ),
+                    fallback_retirement=(
+                        "Retire the mirror only after the separately approved "
+                        "callback repoint and its rollback window close, and "
+                        "after Sub's own receiver and its credentials are "
+                        "removed."
+                    ),
+                ),
+                steward="customer experience platform",
+                design_refs=(
+                    "docs/INTEGRATOR_MESSAGING_RECEIVE_CUTOVER.md",
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                ),
+                test_refs=(
+                    "tests/test_integrator_observation_mirror.py",
+                    "tests/architecture/test_integrator_port_boundary.py",
+                ),
+            ),
+        ),
+        SOTService(
             name="communications.team_inbox_threads",
             module="app.services.team_inbox_receive",
             owns=(
@@ -2621,6 +3027,7 @@ DOMAIN = DomainSOT(
                 ),
                 projections=(
                     "Inbox queue detail metrics response cohorts actions and unread cohorts",
+                    "Exact-message and filter-aware single-row Inbox UI fragments",
                     "Outbound message sender display name initials and provenance source",
                     "MIME-allowlisted inline image or download-only attachment presentation",
                     "Google Maps link presentation for a validated structured location attachment",
@@ -2631,6 +3038,9 @@ DOMAIN = DomainSOT(
                     "tests/test_team_inbox_needs_attention.py",
                     "tests/test_team_inbox_filters.py",
                     "tests/test_team_inbox_attachments.py",
+                    "tests/test_admin_inbox_workspace.py",
+                    "tests/test_admin_inbox_routes_http.py",
+                    "tests/test_admin_inbox_workspace_integrity.py",
                     "tests/architecture/test_team_inbox_boundaries.py",
                     "tests/architecture/test_team_inbox_sot_contracts.py",
                 ),

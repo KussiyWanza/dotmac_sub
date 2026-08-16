@@ -13,6 +13,7 @@
 {% set total_pages = ((total - 1) // limit) + 1 if limit and total else 1 %}
 {% set start_item = offset + 1 if total else 0 %}
 {% set end_item = [offset + limit, total] | min if total else 0 %}
+{% set include_selector = htmx_include | default("[name=search],[name=filters],[name=order_by],[name=order_dir]") %}
 
 <div class="flex flex-col items-center justify-between gap-4 border-t border-slate-200 px-4 py-3 dark:border-slate-700 sm:flex-row">
     <!-- Info -->
@@ -28,7 +29,7 @@
              x-data="{ perPage: {{ limit }} }">
             <span>Show</span>
             <select x-model="perPage"
-                    @change="htmx.ajax('GET', '{{ htmx_url }}?offset=0&limit=' + perPage, {target: '#{{ htmx_target }}', include: '[name=search],[name=filters],[name=order_by],[name=order_dir]'})"
+                    @change="htmx.ajax('GET', '{{ htmx_url }}?offset=0&limit=' + perPage, {target: '#{{ htmx_target }}', include: '{{ include_selector }}'})"
                     class="rounded-lg border-0 bg-slate-100 py-1 pl-2 pr-7 text-sm text-slate-700 focus:ring-2 focus:ring-primary-500 dark:bg-slate-700 dark:text-slate-300">
                 {% for size in [10, 25, 50, 100] %}
                 <option value="{{ size }}" {% if limit == size %}selected{% endif %}>{{ size }}</option>
@@ -43,7 +44,7 @@
             {% if current_page > 1 %}
             <button hx-get="{{ htmx_url }}?offset={{ offset - limit }}&limit={{ limit }}"
                     hx-target="#{{ htmx_target }}"
-                    hx-include="[name='search'],[name='filters'],[name='order_by'],[name='order_dir']"
+                    hx-include="{{ include_selector }}"
                     class="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-300 bg-white text-slate-500 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-400 dark:hover:bg-slate-700">
                 <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
@@ -67,7 +68,7 @@
                 {% elif page == 1 or page == total_pages or (page >= current_page - 1 and page <= current_page + 1) %}
                 <button hx-get="{{ htmx_url }}?offset={{ (page - 1) * limit }}&limit={{ limit }}"
                         hx-target="#{{ htmx_target }}"
-                        hx-include="[name='search'],[name='filters'],[name='order_by'],[name='order_dir']"
+                        hx-include="{{ include_selector }}"
                         class="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-300 bg-white text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700">
                     {{ page }}
                 </button>
@@ -80,7 +81,7 @@
             {% if current_page < total_pages %}
             <button hx-get="{{ htmx_url }}?offset={{ offset + limit }}&limit={{ limit }}"
                     hx-target="#{{ htmx_target }}"
-                    hx-include="[name='search'],[name='filters'],[name='order_by'],[name='order_dir']"
+                    hx-include="{{ include_selector }}"
                     class="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-300 bg-white text-slate-500 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-400 dark:hover:bg-slate-700">
                 <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>

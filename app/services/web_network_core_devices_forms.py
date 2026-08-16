@@ -36,6 +36,7 @@ from app.models.network_monitoring import (
 )
 from app.models.radius import RadiusClient
 from app.schemas.catalog import NasDeviceUpdate
+from app.services import core_device_archive
 from app.services import nas as nas_service
 from app.services import network as network_service
 from app.services import ping as ping_service
@@ -148,6 +149,30 @@ def get_device(db: Session, device_id: str) -> NetworkDevice | None:
     return db.scalars(
         select(NetworkDevice).where(NetworkDevice.id == device_id)
     ).first()
+
+
+def _mutable_device(
+    db: Session,
+    *,
+    device_id: str,
+    mutation: core_device_archive.CoreDeviceMutation,
+) -> tuple[NetworkDevice | None, str | None]:
+    """Resolve a legacy mutation target through the archive policy owner."""
+    try:
+        normalized_id = UUID(str(device_id))
+    except (TypeError, ValueError):
+        return None, "Device not found."
+    try:
+        core_device_archive.require_core_device_mutable(
+            db,
+            core_device_archive.RequireCoreDeviceMutableRequest(
+                device_id=normalized_id,
+                mutation=mutation,
+            ),
+        )
+    except core_device_archive.CoreDeviceArchiveError as exc:
+        return None, exc.message
+    return db.get(NetworkDevice, normalized_id), None
 
 
 def build_form_context(
@@ -439,6 +464,16 @@ def update_device(
     db: Session, device: NetworkDevice, values: dict[str, object]
 ) -> CoreDeviceSubmitResult:
     """Update a core device with optional ping probe and monitoring fields."""
+    try:
+        core_device_archive.require_core_device_mutable(
+            db,
+            core_device_archive.RequireCoreDeviceMutableRequest(
+                device_id=device.id,
+                mutation=core_device_archive.CoreDeviceMutation.EDIT,
+            ),
+        )
+    except core_device_archive.CoreDeviceArchiveError as exc:
+        return CoreDeviceSubmitResult(device=None, error=exc.message)
     previous_mgmt_ip = (device.mgmt_ip or "").strip() or None
     warnings: list[str] = []
 
@@ -985,9 +1020,13 @@ def update_provisioning_access_for_device(
     ssh_password: str | None,
     shared_secret: str | None,
 ) -> tuple[bool, str]:
-    device = get_device(db, device_id)
+    device, guard_error = _mutable_device(
+        db,
+        device_id=device_id,
+        mutation=core_device_archive.CoreDeviceMutation.PROVISIONING_ACCESS,
+    )
     if not device:
-        return False, "Device not found."
+        return False, guard_error or "Device not found."
     nas_device = _core_mapped_nas_device(db, device)
     if not nas_device:
         return False, "No linked NAS device for this core device."
@@ -1011,9 +1050,13 @@ def toggle_interface_monitored(
     db: Session, *, device_id: str, interface_id: str, monitored: bool
 ) -> tuple[bool, str]:
     """Toggle whether an interface is included in bandwidth monitoring."""
-    device = get_device(db, device_id)
+    device, guard_error = _mutable_device(
+        db,
+        device_id=device_id,
+        mutation=core_device_archive.CoreDeviceMutation.INTERFACE_MONITORING,
+    )
     if not device:
-        return False, "Device not found."
+        return False, guard_error or "Device not found."
     item = db.get(DeviceInterface, interface_id)
     if not item or str(item.device_id) != str(device.id):
         return False, "Interface not found."
@@ -1090,9 +1133,13 @@ def create_bandwidth_graph_for_device(
     height_px: int,
     is_public: bool,
 ) -> tuple[bool, str]:
-    device = get_device(db, device_id)
+    device, guard_error = _mutable_device(
+        db,
+        device_id=device_id,
+        mutation=core_device_archive.CoreDeviceMutation.GRAPH_CONFIGURATION,
+    )
     if not device:
-        return False, "Device not found."
+        return False, guard_error or "Device not found."
     if not title.strip():
         return False, "Title is required."
 
@@ -1122,9 +1169,13 @@ def add_bandwidth_graph_source(
     stack_enabled: bool,
     value_unit: str,
 ) -> tuple[bool, str]:
-    device = get_device(db, device_id)
+    device, guard_error = _mutable_device(
+        db,
+        device_id=device_id,
+        mutation=core_device_archive.CoreDeviceMutation.GRAPH_CONFIGURATION,
+    )
     if not device:
-        return False, "Device not found."
+        return False, guard_error or "Device not found."
     graph = db.get(NetworkDeviceBandwidthGraph, graph_id)
     if not graph or str(graph.device_id) != str(device.id):
         return False, "Graph not found."
@@ -1132,6 +1183,16 @@ def add_bandwidth_graph_source(
     snmp_oid = db.get(NetworkDeviceSnmpOid, snmp_oid_id)
     if not source_device or not snmp_oid:
         return False, "Source device or OID not found."
+    try:
+        core_device_archive.require_core_device_mutable(
+            db,
+            core_device_archive.RequireCoreDeviceMutableRequest(
+                device_id=source_device.id,
+                mutation=core_device_archive.CoreDeviceMutation.GRAPH_CONFIGURATION,
+            ),
+        )
+    except core_device_archive.CoreDeviceArchiveError as exc:
+        return False, exc.message
     if str(snmp_oid.device_id) != str(source_device.id):
         return False, "Selected OID does not belong to selected source device."
 
@@ -1177,9 +1238,13 @@ def toggle_bandwidth_graph_public(
     graph_id: str,
     is_public: bool,
 ) -> tuple[bool, str]:
-    device = get_device(db, device_id)
+    device, guard_error = _mutable_device(
+        db,
+        device_id=device_id,
+        mutation=core_device_archive.CoreDeviceMutation.GRAPH_CONFIGURATION,
+    )
     if not device:
-        return False, "Device not found."
+        return False, guard_error or "Device not found."
     graph = db.get(NetworkDeviceBandwidthGraph, graph_id)
     if not graph or str(graph.device_id) != str(device.id):
         return False, "Graph not found."
@@ -1198,9 +1263,13 @@ def clone_bandwidth_graph_for_device(
     device_id: str,
     graph_id: str,
 ) -> tuple[bool, str]:
-    device = get_device(db, device_id)
+    device, guard_error = _mutable_device(
+        db,
+        device_id=device_id,
+        mutation=core_device_archive.CoreDeviceMutation.GRAPH_CONFIGURATION,
+    )
     if not device:
-        return False, "Device not found."
+        return False, guard_error or "Device not found."
     graph = db.scalars(
         select(NetworkDeviceBandwidthGraph)
         .where(NetworkDeviceBandwidthGraph.id == graph_id)
@@ -1408,9 +1477,13 @@ def update_backup_settings_for_device(
     backup_commands: str | None,
     hours_csv: str | None,
 ) -> tuple[bool, str]:
-    device = get_device(db, device_id)
+    device, guard_error = _mutable_device(
+        db,
+        device_id=device_id,
+        mutation=core_device_archive.CoreDeviceMutation.BACKUP_SETTINGS,
+    )
     if not device:
-        return False, "Device not found."
+        return False, guard_error or "Device not found."
     nas_device = _core_mapped_nas_device(db, device)
     if not nas_device:
         return False, "No linked NAS device for this core device."
@@ -1458,9 +1531,13 @@ def update_backup_settings_for_device(
 def trigger_backup_for_core_device(
     db: Session, *, device_id: str, triggered_by: str = "web"
 ) -> tuple[bool, str]:
-    device = get_device(db, device_id)
+    device, guard_error = _mutable_device(
+        db,
+        device_id=device_id,
+        mutation=core_device_archive.CoreDeviceMutation.BACKUP_TRIGGER,
+    )
     if not device:
-        return False, "Device not found."
+        return False, guard_error or "Device not found."
     nas_device = _core_mapped_nas_device(db, device)
     if not nas_device:
         return False, "No linked NAS device for this core device."

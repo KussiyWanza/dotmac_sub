@@ -37,6 +37,7 @@ from app.services.auth_flow import (
     verify_password,
 )
 from app.services.owner_commands import CommandContext
+from tests.staff_identity_fixtures import project_staff_login
 
 
 def _make_request(user_agent: str = "pytest"):
@@ -574,7 +575,7 @@ def _system_user_with_credential(db_session, email: str):
         password_hash=hash_password("secret"),
         is_active=True,
     )
-    db_session.add(credential)
+    project_staff_login(db_session, user=system_user, credential=credential)
     db_session.commit()
     return system_user, credential
 

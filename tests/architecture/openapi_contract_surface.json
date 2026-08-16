@@ -14877,6 +14877,30 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "POST /api/v1/integration/observations/{capability_binding_id}": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:capability_binding_id!"
+   ],
+   "request": "9906f9ed0cda",
+   "responses": {
+    "200": "07abb959e3ab",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "POST /api/v1/integration/observations/{capability_binding_id}/mirror": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:capability_binding_id!"
+   ],
+   "request": "9906f9ed0cda",
+   "responses": {
+    "200": "7f48e9ae8d40",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "POST /api/v1/integrations/deliveries/{delivery_id}/replay": {
    "params": [
     "header:authorization",
@@ -19306,6 +19330,15 @@
   "IntegrationTargetType": "1057bdd0097d",
   "IntegrationTargetUpdate": "906accaca660",
   "IntegrationValidationStatus": "79f1b4c935f6",
+  "IntegratorAttachment": "901e906ccea2",
+  "IntegratorContactProfile": "887833aaf679",
+  "IntegratorDeliveryReceiptObservation": "2d3606b598a3",
+  "IntegratorMessageObservation": "dde24f08aa8b",
+  "IntegratorMirrorFieldDisagreement": "780a4e635a4c",
+  "IntegratorMirrorReport": "55ef993dbdb9",
+  "IntegratorObservationEnvelope": "6bb093cec679",
+  "IntegratorObservationReceipt": "2eab03972b4b",
+  "IntegratorScope": "83009a38b35b",
   "InterfaceStatus": "20c251764046",
   "InvoiceBulkActionResponse": "4f4b4d0b09e5",
   "InvoiceBulkVoidRequest": "20ea34f498f7",

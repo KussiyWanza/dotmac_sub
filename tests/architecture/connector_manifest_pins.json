@@ -13,6 +13,12 @@
     },
     {
         "current": true,
+        "key": "dotmac.integrator.http",
+        "manifest_digest": "66a5963fcffe6e950a496644606225deefabef63533f09409e015d9b153b7b85",
+        "version": "1.0.0"
+    },
+    {
+        "current": true,
         "key": "webhook.http",
         "manifest_digest": "cd12010918d2171928d5ab7ba3b117ccfe90189ec4842f0595bd33545cd20871",
         "version": "1.0.0"
