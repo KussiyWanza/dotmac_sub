@@ -21,7 +21,6 @@ from app.services.credential_party_binding import (
 from app.services.operator_tenant import operator_tenant_id
 from app.services.owner_commands import CommandContext
 
-
 _CREDENTIAL_PROJECTION_SCOPE = "party:credential_authentication_projection"
 _CREDENTIAL_BINDING_SOURCE = "admin_seeder"
 _CREDENTIAL_BINDING_REASON = "Operator-seeded local administrator credential"
