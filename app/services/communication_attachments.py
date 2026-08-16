@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 from uuid import UUID
@@ -9,6 +10,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.models.billing import Invoice, InvoicePdfExportStatus, InvoiceStatus
+from app.models.ncc_reporting import NccWeeklyReportRun, NccWeeklyReportRunStatus
 from app.models.notification import Notification
 from app.models.sales import QuotePdfExport
 from app.services import billing_invoice_pdf
@@ -128,6 +130,38 @@ def _resolve_quote_pdf(
     )
 
 
+def _resolve_ncc_weekly_xlsx(
+    db: Session, notification: Notification, descriptor: dict[str, object]
+) -> ResolvedEmailAttachment:
+    try:
+        run_id = UUID(str(descriptor.get("entity_id") or ""))
+    except ValueError as exc:
+        raise CommunicationAttachmentError("ncc_xlsx_invalid_reference") from exc
+    run = db.get(NccWeeklyReportRun, run_id)
+    expected_run_id = str(
+        (notification.metadata_ or {}).get("ncc_weekly_report_run_id") or ""
+    )
+    if run is None or run.status is not NccWeeklyReportRunStatus.queued:
+        raise CommunicationAttachmentError("ncc_xlsx_not_found")
+    if expected_run_id != str(run.id) or run.notification_id != notification.id:
+        raise CommunicationAttachmentError("ncc_xlsx_scope_mismatch")
+    content = run.artifact_content or b""
+    if not content.startswith(b"PK\x03\x04"):
+        raise CommunicationAttachmentError("ncc_xlsx_invalid_content")
+    if hashlib.sha256(content).hexdigest() != run.artifact_sha256:
+        raise CommunicationAttachmentError("ncc_xlsx_integrity_failed")
+    if len(content) > MAX_EMAIL_ATTACHMENT_BYTES:
+        raise CommunicationAttachmentError("ncc_xlsx_too_large")
+    return ResolvedEmailAttachment(
+        filename=_safe_filename(descriptor.get("filename") or run.artifact_filename),
+        content_type=(
+            run.artifact_content_type
+            or "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+        content=content,
+    )
+
+
 def resolve_email_attachments(
     db: Session, notification: Notification
 ) -> tuple[ResolvedEmailAttachment, ...]:
@@ -146,4 +180,6 @@ def resolve_email_attachments(
             resolved.append(_resolve_invoice_pdf(db, notification, item))
         elif kind == CommunicationAttachmentKind.quote_pdf:
             resolved.append(_resolve_quote_pdf(db, notification, item))
+        elif kind == CommunicationAttachmentKind.ncc_weekly_xlsx:
+            resolved.append(_resolve_ncc_weekly_xlsx(db, notification, item))
     return tuple(resolved)

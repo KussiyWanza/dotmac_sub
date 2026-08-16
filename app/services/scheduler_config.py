@@ -2267,10 +2267,9 @@ def build_beat_schedule() -> dict:
             interval_seconds=channel_health_interval_seconds,
         )
 
-        # Weekly NCC complaints digest — default OFF. Monday 08:00 in the
-        # configured celery timezone (Africa/Lagos in prod). The service
-        # short-circuits when disabled or already sent today, so a missed
-        # beat self-heals on the next fire without double-sending.
+        # NCC weekly delivery admission poll — default OFF. The registered
+        # owner resolves Tuesday/local-time eligibility and one-occurrence
+        # idempotency. Five-minute polling self-heals a missed exact-time beat.
         ncc_report_email_enabled = _scheduler_setting_enabled(
             session,
             SettingDomain.notification,
@@ -2279,7 +2278,7 @@ def build_beat_schedule() -> dict:
         if ncc_report_email_enabled:
             schedule["ncc_report_email"] = {
                 "task": "app.tasks.reports.send_scheduled_ncc_report",
-                "schedule": crontab(hour=8, minute=0, day_of_week="mon"),
+                "schedule": timedelta(minutes=5),
             }
 
         tasks = (

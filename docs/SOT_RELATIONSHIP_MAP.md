@@ -124,20 +124,21 @@ but equivalent state and actions resolve through the same backend owners.
 14. `tenancy`
 15. `ai_advisory`
 16. `provisioning_operations`
-17. `feature_control_plane`
-18. `authorization_control_plane`
-19. `scheduler_control_plane`
-20. `network_access_control_plane`
-21. `service_intent_control_plane`
-22. `integration_control_plane`
-23. `ui_list_projection`
-24. `ui_bulk_actions`
-25. `ui_display_formatting`
-26. `ui_action_forms`
-27. `ui_semantic_presentation`
-28. `vpn_remote_access`
-29. `geospatial`
-30. `sales_referrals`
+17. `regulatory_reporting`
+18. `feature_control_plane`
+19. `authorization_control_plane`
+20. `scheduler_control_plane`
+21. `network_access_control_plane`
+22. `service_intent_control_plane`
+23. `integration_control_plane`
+24. `ui_list_projection`
+25. `ui_bulk_actions`
+26. `ui_display_formatting`
+27. `ui_action_forms`
+28. `ui_semantic_presentation`
+29. `vpn_remote_access`
+30. `geospatial`
+31. `sales_referrals`
 
 Rule: each change should finish one coherent domain boundary: define the owner
 service, migrate the highest-risk callers, and add focused tests. Avoid broad
@@ -624,6 +625,8 @@ Edit the owning domain shard and regenerate; do not hand-edit these rows.
 | `sessions.radius_resolution` | historical subscription monitoring coverage | `resolver` | subscription-bound accounting observations ← `sessions.radius_reconciliation` | `read_only` | `native` | network operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/DASHBOARD_OVERVIEW_PAGE_CONTRACT.md`<br>`tests/test_network_sot_services.py`<br>`tests/test_customer_service_level.py`<br>`tests/test_sot_relationships.py` |
 | `communication.document_delivery` | branded document email delivery sequence | `command_writer` | resolved email recipient ← `party.registry`<br>staged document artifact ← `sales.quote_documents`<br>document composition ← `sales.quote_delivery` | `participant` | `cut_over` | Sales and Communications | `docs/PLAN_FAMILY_ARCHITECTURE.md`<br>`tests/test_quote_documents_and_delivery.py`<br>`tests/test_party_email_recipient.py`<br>`tests/architecture/test_quote_document_delivery_boundary.py` |
 | `communication.document_delivery` | document delivery idempotency arbitration | `policy` | prior delivery under the same key ← `sales.quote_delivery` | `participant` | `cut_over` | Sales and Communications | `docs/PLAN_FAMILY_ARCHITECTURE.md`<br>`tests/test_quote_documents_and_delivery.py`<br>`tests/test_party_email_recipient.py`<br>`tests/architecture/test_quote_document_delivery_boundary.py` |
+| `communications.ncc_weekly_delivery` | NCC weekly delivery configuration | `command_writer` | typed NCC delivery configuration command ← `communications.ncc_weekly_delivery`<br>registered NCC delivery settings ← `control.settings_spec` | `owner_managed` | `shadowing` | regulatory compliance and customer communications | `docs/designs/NCC_WEEKLY_REPORT_DELIVERY.md`<br>`docs/designs/CRM_WEB_RETIREMENT.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_ncc_weekly_delivery.py`<br>`tests/integration/test_ncc_weekly_delivery_migration.py`<br>`tests/architecture/test_ncc_weekly_delivery_boundary.py` |
+| `communications.ncc_weekly_delivery` | NCC weekly report occurrence and artifact | `authoritative_record` | registered NCC delivery settings ← `control.settings_spec`<br>typed NCC complaints snapshot ← `compliance.ncc_complaints_reporting`<br>scheduled evaluation time ← `external:system_clock`<br>durable communication intent outcome ← `communications.intents` | `owner_managed` | `shadowing` | regulatory compliance and customer communications | `docs/designs/NCC_WEEKLY_REPORT_DELIVERY.md`<br>`docs/designs/CRM_WEB_RETIREMENT.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_ncc_weekly_delivery.py`<br>`tests/integration/test_ncc_weekly_delivery_migration.py`<br>`tests/architecture/test_ncc_weekly_delivery_boundary.py` |
 | `communications.surveys` | survey lifecycle and content | `command_writer` | typed Survey command ← `communications.surveys`<br>authenticated administrator Person binding ← `party.registry`<br>persisted Survey aggregate ← `communications.surveys` | `owner_managed` | `complete` | customer experience platform | `docs/designs/SURVEY_LIFECYCLE_AND_CREATION.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`tests/test_surveys.py`<br>`tests/architecture/test_survey_boundary.py` |
 | `communications.surveys` | survey invitation records | `command_writer` | persisted Survey aggregate ← `communications.surveys`<br>committed ticket closure outcome ← `support.ticket_lifecycle`<br>committed work-order completion outcome ← `operations.field_completion`<br>canonical subscriber identity ← `customer.accounts`<br>durable communication intent outcome ← `communications.intents` | `owner_managed` | `complete` | customer experience platform | `docs/designs/SURVEY_LIFECYCLE_AND_CREATION.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`tests/test_surveys.py`<br>`tests/architecture/test_survey_boundary.py` |
 | `communications.surveys` | survey response records | `command_writer` | persisted Survey aggregate ← `communications.surveys`<br>typed public Survey response ← `communications.surveys` | `owner_managed` | `complete` | customer experience platform | `docs/designs/SURVEY_LIFECYCLE_AND_CREATION.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`tests/test_surveys.py`<br>`tests/architecture/test_survey_boundary.py` |
@@ -851,6 +854,7 @@ Edit the owning domain shard and regenerate; do not hand-edit these rows.
 | `operations.vendor_as_built_review_confirmation` | short-lived signed staff as-built review proposal | `policy` | authenticated staff as-built review context ← `auth.permission_gate`<br>canonical staff as-built review preview ← `operations.vendor_project_workspace`<br>capability signing envelope ← `auth.token_signing`<br>staff as-built review confirmation protocol ← `operations.vendor_as_built_review_confirmation` | `coordinator_managed` | `complete` | vendor operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`tests/test_vendor_as_built_review.py`<br>`tests/architecture/test_vendor_project_workspace_boundary.py` |
 | `operations.vendor_as_built_review_confirmation` | staff as-built review stale-preview verification | `policy` | authenticated staff as-built review context ← `auth.permission_gate`<br>canonical staff as-built review preview ← `operations.vendor_project_workspace`<br>capability signing envelope ← `auth.token_signing` | `coordinator_managed` | `complete` | vendor operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`tests/test_vendor_as_built_review.py`<br>`tests/architecture/test_vendor_project_workspace_boundary.py` |
 | `operations.vendor_as_built_review_confirmation` | staff as-built review idempotency and replay result | `application_coordinator` | authenticated staff as-built review context ← `auth.permission_gate`<br>canonical staff as-built review preview ← `operations.vendor_project_workspace`<br>capability signing envelope ← `auth.token_signing`<br>canonical staff as-built review replay record ← `operations.vendor_as_built_review_confirmation` | `coordinator_managed` | `complete` | vendor operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`tests/test_vendor_as_built_review.py`<br>`tests/architecture/test_vendor_project_workspace_boundary.py` |
+| `compliance.ncc_complaints_reporting` | NCC complaints report projection | `resolver` | typed NCC report query ← `compliance.ncc_complaints_reporting`<br>native support ticket facts ← `support.ticket_lifecycle`<br>native subscriber facts ← `customer.accounts`<br>NCC filing vocabulary ← `external:ncc` | `read_only` | `cut_over` | regulatory compliance | `docs/designs/NCC_WEEKLY_REPORT_DELIVERY.md`<br>`docs/designs/CRM_REPORT_DATA_FLOW_GUIDE.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_ncc_complaints_report.py`<br>`tests/test_ncc_workbook.py` |
 | `auth.subscriber_assignments` | subscriber role and direct-permission assignments | `command_writer` | authorized subscriber assignment principal ← `auth.permission_gate`<br>active role and permission catalog ← `auth.rbac_catalog`<br>canonical subscriber assignment state ← `auth.subscriber_assignments` | `owner_managed` | `complete` | platform security | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`docs/designs/SOT_CODING_STANDARDS_REFACTOR.md`<br>`tests/test_subscriber_assignments.py`<br>`tests/architecture/test_subscriber_assignment_boundary.py` |
 | `auth.rbac_catalog` | role catalog and role-permission policy | `command_writer` | authorized RBAC catalog principal ← `auth.permission_gate`<br>canonical role and role-permission catalog ← `auth.rbac_catalog`<br>system-user role grant references ← `auth.system_user_assignments`<br>subscriber role grant references ← `auth.subscriber_assignments` | `owner_managed` | `shadowing` | platform security | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/PLATFORM_ADOPTION_LEDGER.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`docs/designs/SOT_CODING_STANDARDS_REFACTOR.md`<br>`tests/test_rbac_catalog_owner.py`<br>`tests/test_roles_r1_kernel_identity.py`<br>`tests/test_roles_r1_migration.py`<br>`tests/integration/test_roles_r1_migration.py`<br>`tests/architecture/test_rbac_catalog_boundary.py` |
 | `auth.rbac_catalog` | permission catalog | `command_writer` | authorized RBAC catalog principal ← `auth.permission_gate`<br>canonical permission catalog ← `auth.rbac_catalog`<br>system-user permission grant references ← `auth.system_user_assignments`<br>subscriber permission grant references ← `auth.subscriber_assignments` | `owner_managed` | `shadowing` | platform security | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/PLATFORM_ADOPTION_LEDGER.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`docs/designs/SOT_CODING_STANDARDS_REFACTOR.md`<br>`tests/test_rbac_catalog_owner.py`<br>`tests/test_roles_r1_kernel_identity.py`<br>`tests/test_roles_r1_migration.py`<br>`tests/integration/test_roles_r1_migration.py`<br>`tests/architecture/test_rbac_catalog_boundary.py` |
