@@ -264,6 +264,30 @@ bounded, auditable, and safe to repeat.
 - When realtime is disconnected, the visible page polls the list projection.
 - Partial failures remain inside the affected pane and do not blank the
   workspace.
+- Conversation navigation and background projection updates use separate
+  request intents. Only an explicit operator navigation may show the
+  conversation-pane loading veil; realtime, delivery, polling, row, and
+  message-fragment work remains non-blocking.
+- Conversation-detail and contact-context requests are latest-request-wins.
+  Each carries a monotonic browser sequence, superseded transport is aborted,
+  and an obsolete response is rejected at the swap boundary even when abort
+  loses the race. Every success, failure, abort, timeout, or refused swap
+  releases only the loading state owned by that request.
+- Delivery status received before its exact message fragment is buffered by
+  message identifier and applied after the fragment arrives. Missing browser
+  markup is never a reason to rebuild the whole conversation.
+- A composer is protected whenever it contains draft text, staged attachments,
+  reply provenance, scheduling state, or an AI suggestion; focus alone is not
+  the dirty-state signal. Background activity must not replace that state.
+- The reply HTTP lifecycle owns the Send button busy state. Realtime hints and
+  presentation events may clear the draft or append the committed message, but
+  the button is released on every terminal HTTP outcome independently.
+- Realtime conversation-topic subscriptions are reconciled to the current
+  queue and selected conversation. HTMX cleanup stops element-owned timers,
+  searches, and document listeners before replaced fragments are discarded.
+- Bursts of conversation-level realtime hints are coalesced into one bounded
+  background refresh; exact new-message fragments and delivery statuses retain
+  their message-level handling.
 
 ## Responsive contract
 

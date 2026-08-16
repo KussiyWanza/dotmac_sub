@@ -26,6 +26,22 @@
     );
   const csrfToken = () =>
     document.querySelector('meta[name="csrf-token"]')?.content || "";
+  const fetchWithTimeout = async (url, options = {}, timeoutMs = 15000) => {
+    const controller = new AbortController();
+    const upstreamSignal = options.signal;
+    const abortFromUpstream = () => controller.abort();
+    if (upstreamSignal?.aborted) controller.abort();
+    else upstreamSignal?.addEventListener("abort", abortFromUpstream, {
+      once: true,
+    });
+    const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(url, { ...options, signal: controller.signal });
+    } finally {
+      window.clearTimeout(timer);
+      upstreamSignal?.removeEventListener("abort", abortFromUpstream);
+    }
+  };
 
   window.inboxTeamFilterBuilder = function inboxTeamFilterBuilder(initialJson) {
     const blankCondition = (bucket = "and") => ({
@@ -217,12 +233,15 @@
       callMuted: false,
       callOnHold: false,
       socket: null,
+      subscribedTopics: new Set(),
       reconnectTimer: null,
       reconnectAttempts: 0,
       pollTimer: null,
       typingTimer: null,
       inFlight: new Set(),
       recentlyRefreshedMessageIds: new Set(),
+      pendingDeliveryStatuses: new Map(),
+      threadRefreshTimer: null,
       readStateInFlight: new Set(),
       locallyReadConversationIds: [],
       filterLoading: false,
@@ -236,6 +255,14 @@
       pendingListRequest: null,
       listRequestError: "",
       lastSuccessfulListUrl: window.location.href,
+      detailRequestSequence: 0,
+      activeDetailRequest: null,
+      pendingDetailRequest: null,
+      contactRequestSequence: 0,
+      activeContactRequest: null,
+      pendingContactRequest: null,
+      contactSearchSequence: 0,
+      contactSearchController: null,
       newConversation: {
         channel: "email",
         contactName: "",
@@ -528,8 +555,54 @@
             return;
           }
           if (target === "triage-detail") {
-            this.conversationOpening = true;
-            event.detail.xhr.__inboxConversationRequest = true;
+            const request = this.pendingDetailRequest || {
+              sequence: ++this.detailRequestSequence,
+              conversationId: this.conversationIdFromPath(path) || this.selectedId,
+              intent: "external",
+              blocking: false,
+            };
+            this.pendingDetailRequest = null;
+            if (
+              this.activeDetailRequest &&
+              this.activeDetailRequest.sequence < request.sequence
+            ) {
+              const stale = this.activeDetailRequest;
+              this.activeDetailRequest = null;
+              stale.xhr.abort();
+            }
+            event.detail.xhr.__inboxDetailSequence = request.sequence;
+            event.detail.xhr.__inboxDetailConversationId = request.conversationId;
+            event.detail.xhr.__inboxDetailBlocking = request.blocking;
+            this.activeDetailRequest = { ...request, xhr: event.detail.xhr };
+            this.conversationOpening = request.blocking;
+            return;
+          }
+          if (target === "inbox-contact-content") {
+            const request = this.pendingContactRequest || {
+              sequence: ++this.contactRequestSequence,
+              conversationId: this.conversationIdFromPath(path),
+            };
+            this.pendingContactRequest = null;
+            if (
+              this.activeContactRequest &&
+              this.activeContactRequest.sequence < request.sequence
+            ) {
+              const stale = this.activeContactRequest;
+              this.activeContactRequest = null;
+              stale.xhr.abort();
+            }
+            event.detail.xhr.__inboxContactSequence = request.sequence;
+            event.detail.xhr.__inboxContactConversationId = request.conversationId;
+            this.activeContactRequest = { ...request, xhr: event.detail.xhr };
+            return;
+          }
+          if (target === "inbox-message-list") {
+            event.detail.xhr.__inboxMessageConversationId =
+              event.detail.target
+                ?.closest("[data-conversation-thread]")
+                ?.dataset.conversationThread || this.conversationIdFromPath(path);
+            event.detail.xhr.__inboxMessageDetailSequence =
+              this.detailRequestSequence;
           }
           const key = `${event.detail?.requestConfig?.verb || "GET"}:${path}:${target}`;
           if (this.inFlight.has(key)) {
@@ -557,9 +630,23 @@
             this.listRequestError = "Could not update conversations. Try again.";
             history.replaceState({}, "", this.lastSuccessfulListUrl);
           }
-          if (event.detail?.xhr?.__inboxConversationRequest && failed) {
-            this.conversationOpening = false;
-            this.showToast("Could not open conversation. Try again.");
+          const detailSequence = event.detail?.xhr?.__inboxDetailSequence;
+          if (detailSequence === this.activeDetailRequest?.sequence) {
+            const wasBlocking = this.activeDetailRequest.blocking;
+            this.activeDetailRequest = null;
+            if (wasBlocking && detailSequence === this.detailRequestSequence) {
+              this.conversationOpening = false;
+            }
+            if (requestFailed && detailSequence === this.detailRequestSequence) {
+              this.showToast("Could not open conversation. Try again.");
+            }
+          }
+          const contactSequence = event.detail?.xhr?.__inboxContactSequence;
+          if (contactSequence === this.activeContactRequest?.sequence) {
+            this.activeContactRequest = null;
+            if (requestFailed) {
+              this.showToast("Could not load contact details. Try again.");
+            }
           }
           if (failed && event.detail?.target?.id === "inbox-message-list") {
             this.newMessagesAvailable = true;
@@ -586,6 +673,31 @@
           if (sequence && sequence !== this.listRequestSequence) {
             event.detail.shouldSwap = false;
           }
+          const detailSequence = event.detail?.xhr?.__inboxDetailSequence;
+          const detailConversationId =
+            event.detail?.xhr?.__inboxDetailConversationId;
+          if (
+            detailSequence &&
+            (detailSequence !== this.detailRequestSequence ||
+              String(detailConversationId || "") !== String(this.selectedId || ""))
+          ) {
+            event.detail.shouldSwap = false;
+          }
+          const contactSequence = event.detail?.xhr?.__inboxContactSequence;
+          if (contactSequence && contactSequence !== this.contactRequestSequence) {
+            event.detail.shouldSwap = false;
+          }
+          const messageConversationId =
+            event.detail?.xhr?.__inboxMessageConversationId;
+          const messageDetailSequence =
+            event.detail?.xhr?.__inboxMessageDetailSequence;
+          if (
+            messageConversationId &&
+            (String(messageConversationId) !== String(this.selectedId || "") ||
+              messageDetailSequence !== this.detailRequestSequence)
+          ) {
+            event.detail.shouldSwap = false;
+          }
         });
         document.body.addEventListener("htmx:afterSwap", (event) => {
           const target = event.detail?.target;
@@ -607,10 +719,13 @@
               if (thread.dataset.conversationUnread === "true") {
                 this.markConversationRead(this.selectedId);
               }
+              this.applyPendingDeliveryStatuses();
             }
           }
           if (target.id === "inbox-message-list") {
+            if (!document.contains(target)) return;
             target.querySelector("[data-inbox-empty-thread]")?.remove();
+            this.applyPendingDeliveryStatuses();
             this.newMessagesAvailable = false;
             this.scrollThread();
           }
@@ -624,6 +739,9 @@
             this.updateSelectedHighlight();
             this.subscribeVisibleTopics();
           }
+        });
+        document.body.addEventListener("htmx:beforeCleanupElement", (event) => {
+          this.cleanupInboxElement(event.detail?.elt);
         });
         document.addEventListener("click", (event) => {
           const link = event.target.closest(
@@ -660,7 +778,12 @@
             intent: "history",
             historyMode: "none",
           });
-          if (selected) this.refreshThread(selected, true);
+          if (selected) {
+            this.refreshThread(selected, true, {
+              intent: "history",
+              blocking: true,
+            });
+          }
           else this.showList();
         });
       },
@@ -716,7 +839,53 @@
         });
       },
 
+      conversationIdFromPath(path) {
+        const match = String(path || "").match(
+          /^\/admin\/inbox\/([0-9a-f-]{36})(?:\/|$)/i,
+        );
+        return match?.[1] || "";
+      },
+
+      beginDetailRequest(conversationId, intent, blocking) {
+        const request = {
+          sequence: ++this.detailRequestSequence,
+          conversationId: String(conversationId || ""),
+          intent,
+          blocking: Boolean(blocking),
+        };
+        this.pendingDetailRequest = request;
+        if (request.blocking) this.conversationOpening = true;
+        return request;
+      },
+
+      beginContactRequest(conversationId) {
+        this.pendingContactRequest = {
+          sequence: ++this.contactRequestSequence,
+          conversationId: String(conversationId || ""),
+        };
+      },
+
+      cancelDetailRequest() {
+        window.clearTimeout(this.threadRefreshTimer);
+        this.threadRefreshTimer = null;
+        this.detailRequestSequence += 1;
+        this.pendingDetailRequest = null;
+        const active = this.activeDetailRequest;
+        this.activeDetailRequest = null;
+        active?.xhr.abort();
+        this.conversationOpening = false;
+      },
+
+      cancelContactRequest() {
+        this.contactRequestSequence += 1;
+        this.pendingContactRequest = null;
+        const active = this.activeContactRequest;
+        this.activeContactRequest = null;
+        active?.xhr.abort();
+      },
+
       showList() {
+        this.cancelDetailRequest();
         this.mode = "list";
         this.clearTypingPresence();
         document
@@ -738,7 +907,8 @@
         returnUrl.searchParams.set("c", id);
         window.__inboxReturnUrl = `${returnUrl.pathname}${returnUrl.search}`;
         this.selectedId = id;
-        this.conversationOpening = true;
+        this.pendingDeliveryStatuses.clear();
+        this.beginDetailRequest(id, "navigation", true);
         this.newMessagesAvailable = false;
         this.clearTypingPresence();
         this.updateSelectedHighlight();
@@ -884,7 +1054,7 @@
         if (!id || this.readStateInFlight.has(id)) return;
         this.readStateInFlight.add(id);
         try {
-          const response = await fetch(`/admin/inbox/${id}/read`, {
+          const response = await fetchWithTimeout(`/admin/inbox/${id}/read`, {
             method: "POST",
             headers: {
               Accept: "application/json",
@@ -1044,7 +1214,7 @@
           if (source.has(queryKey)) data.set(formKey, source.get(queryKey));
         });
         try {
-          const response = await fetch("/admin/inbox/filters/save", {
+          const response = await fetchWithTimeout("/admin/inbox/filters/save", {
             method: "POST",
             body: data,
             headers: { "X-CSRF-Token": csrfToken() },
@@ -1061,9 +1231,10 @@
       openContact(id) {
         this.ticketPanelOpen = false;
         this.contactOpen = true;
-        if (id) this.selectedId = id;
+        if (id) this.beginContactRequest(id);
       },
       closeContact() {
+        this.cancelContactRequest();
         this.contactOpen = false;
       },
       openNewConversation() {
@@ -1079,6 +1250,8 @@
       },
       closeNewConversation() {
         if (this.newConversationSubmitting) return;
+        this.contactSearchController?.abort();
+        this.contactSearchController = null;
         this.newConversationOpen = false;
       },
       prepareNewConversation() {
@@ -1099,24 +1272,41 @@
         this.newConversation.subscriberId = "";
         this.newConversation.contactName = term;
         if (term.length < 2) {
+          this.contactSearchController?.abort();
+          this.contactSearchController = null;
           this.newConversation.contactResults = [];
+          this.newConversation.contactLoading = false;
           return;
         }
+        const sequence = ++this.contactSearchSequence;
+        this.contactSearchController?.abort();
+        this.contactSearchController = new AbortController();
         this.newConversation.contactLoading = true;
         this.newConversation.contactError = "";
         try {
-          const response = await fetch(
+          const response = await fetchWithTimeout(
             `/admin/inbox/whatsapp-contacts?search=${encodeURIComponent(term)}`,
+            { signal: this.contactSearchController.signal },
           );
           const payload = await response.json().catch(() => ({}));
+          if (
+            sequence !== this.contactSearchSequence ||
+            this.newConversation.contactQuery.trim() !== term
+          ) {
+            return;
+          }
           if (!response.ok) throw new Error("Contact search failed.");
           this.newConversation.contactResults = payload.contacts || [];
         } catch (error) {
+          if (error?.name === "AbortError") return;
           this.newConversation.contactResults = [];
           this.newConversation.contactError =
             error.message || "Contact search failed.";
         } finally {
-          this.newConversation.contactLoading = false;
+          if (sequence === this.contactSearchSequence) {
+            this.newConversation.contactLoading = false;
+            this.contactSearchController = null;
+          }
         }
       },
       selectWhatsAppContact(contact) {
@@ -1136,7 +1326,7 @@
         this.newConversation.templateLoading = true;
         this.newConversation.templateError = "";
         try {
-          const response = await fetch("/admin/inbox/whatsapp-templates");
+          const response = await fetchWithTimeout("/admin/inbox/whatsapp-templates");
           const payload = await response.json().catch(() => ({}));
           if (!response.ok || payload.error) {
             throw new Error(payload.error || "WhatsApp templates are unavailable.");
@@ -1357,17 +1547,45 @@
         );
       },
 
-      refreshThread(id, force) {
+      composerHasTransientState() {
+        const composer = document.querySelector("[data-reply-composer]");
+        return composer?.dataset.composerDirty === "true";
+      },
+
+      refreshThread(id, force = false, options = {}) {
         const conversationId = id || this.selectedId;
         if (!conversationId) return;
-        if (!force && this.composerFocused()) {
+        if (
+          !force &&
+          (this.composerFocused() || this.composerHasTransientState())
+        ) {
           this.newMessagesAvailable = true;
           return;
         }
+        if (!options.blocking && this.activeDetailRequest?.blocking) {
+          this.newMessagesAvailable = true;
+          return;
+        }
+        this.beginDetailRequest(
+          conversationId,
+          options.intent || "background",
+          Boolean(options.blocking),
+        );
         window.htmx.ajax("GET", `/admin/inbox/${conversationId}`, {
           target: "#triage-detail",
           swap: "innerHTML",
         });
+      },
+
+      scheduleThreadRefresh(conversationId, intent = "realtime") {
+        window.clearTimeout(this.threadRefreshTimer);
+        this.threadRefreshTimer = window.setTimeout(() => {
+          this.threadRefreshTimer = null;
+          if (String(conversationId || "") !== String(this.selectedId || "")) {
+            return;
+          }
+          this.refreshThread(conversationId, false, { intent });
+        }, 150);
       },
 
       refreshThreadForMessage(conversationId, messageId, force = false) {
@@ -1379,6 +1597,11 @@
         if (document.querySelector(`[data-inbox-message-id="${CSS.escape(id)}"]`)) {
           return false;
         }
+        const target = document.querySelector("#inbox-message-list");
+        if (!target) {
+          this.newMessagesAvailable = true;
+          return false;
+        }
         if (id && this.recentlyRefreshedMessageIds.has(id)) return false;
         if (id) {
           this.recentlyRefreshedMessageIds.add(id);
@@ -1386,11 +1609,6 @@
             () => this.recentlyRefreshedMessageIds.delete(id),
             10000,
           );
-        }
-        const target = document.querySelector("#inbox-message-list");
-        if (!target) {
-          this.newMessagesAvailable = true;
-          return false;
         }
         window.htmx.ajax(
           "GET",
@@ -1479,6 +1697,7 @@
         this.socket.addEventListener("open", () => {
           this.realtimeConnected = true;
           this.reconnectAttempts = 0;
+          this.subscribedTopics = new Set();
           this.subscribeVisibleTopics();
         });
         this.socket.addEventListener("message", (event) => {
@@ -1490,6 +1709,7 @@
         });
         this.socket.addEventListener("close", () => {
           this.realtimeConnected = false;
+          this.subscribedTopics = new Set();
           this.clearTypingPresence();
           this.scheduleReconnect();
         });
@@ -1514,11 +1734,20 @@
             .filter(Boolean),
         );
         if (this.selectedId) ids.add(this.selectedId);
-        ids.forEach((id) => {
+        const desiredTopics = new Set(
+          Array.from(ids).map((id) => `conversation:${id}`),
+        );
+        this.subscribedTopics.forEach((topic) => {
+          if (desiredTopics.has(topic)) return;
+          this.socket.send(JSON.stringify({ type: "unsubscribe", topic }));
+        });
+        desiredTopics.forEach((topic) => {
+          if (this.subscribedTopics.has(topic)) return;
           this.socket.send(
-            JSON.stringify({ type: "subscribe", topic: `conversation:${id}` }),
+            JSON.stringify({ type: "subscribe", topic }),
           );
         });
+        this.subscribedTopics = desiredTopics;
       },
 
       publishTyping(conversationId, isTyping) {
@@ -1613,7 +1842,9 @@
             if (this.composerFocused()) this.newMessagesAvailable = true;
             else if (eventType === "message_new") {
               this.refreshThreadForMessage(this.selectedId, data.message_id);
-            } else this.refreshThread(this.selectedId);
+            } else if (eventType !== "message_status_changed") {
+              this.scheduleThreadRefresh(this.selectedId, "realtime");
+            }
           } else {
             this.showToast("New activity in the inbox.");
           }
@@ -1642,9 +1873,10 @@
           document.querySelectorAll("[data-inbox-delivery-status]"),
         ).find((node) => node.dataset.inboxDeliveryStatus === messageId);
         if (!statusNode) {
-          if (!this.composerFocused()) this.refreshThread(this.selectedId);
+          this.pendingDeliveryStatuses.set(messageId, { ...data });
           return;
         }
+        this.pendingDeliveryStatuses.delete(messageId);
         statusNode.textContent = status
           .replace(/_/g, " ")
           .replace(/^./, (value) => value.toUpperCase());
@@ -1655,6 +1887,24 @@
             "Message delivery failed. Open the message status to retry.",
           );
         }
+      },
+
+      applyPendingDeliveryStatuses() {
+        Array.from(this.pendingDeliveryStatuses.values()).forEach((data) => {
+          this.applyDeliveryStatus(data);
+        });
+      },
+
+      cleanupInboxElement(root) {
+        if (!root) return;
+        const elements = [root, ...(root.querySelectorAll?.("*") || [])];
+        elements.forEach((element) => {
+          if (element.__inboxReplyWindowTimer) {
+            window.clearInterval(element.__inboxReplyWindowTimer);
+            element.__inboxReplyWindowTimer = null;
+          }
+          element.__inboxMentionCleanup?.();
+        });
       },
 
       // Polling never stops entirely, it only slows down. A healthy socket used
@@ -1910,7 +2160,7 @@
         this.aiDraftError = "";
         this.aiDraftResult = null;
         try {
-          const response = await fetch(
+          const response = await fetchWithTimeout(
             `/admin/inbox/${this.conversationId}/ai-draft`,
             { method: "POST", headers: { "X-CSRF-Token": csrfToken() } },
           );
@@ -1942,7 +2192,7 @@
         this.polishError = "";
         this.polishOriginalDraft = this.draft;
         try {
-          const response = await fetch(
+          const response = await fetchWithTimeout(
             `/admin/inbox/${this.conversationId}/ai-polish`,
             {
               method: "POST",
@@ -2016,7 +2266,7 @@
         const body = new FormData();
         chosen.forEach((file) => body.append("files", file));
         try {
-          const response = await fetch(
+          const response = await fetchWithTimeout(
             `/admin/inbox/${this.conversationId}/attachments`,
             { method: "POST", body, headers: { "X-CSRF-Token": csrfToken() } },
           );
@@ -2044,6 +2294,16 @@
           .filter((file) => file.id)
           .map((file) => file.id)
           .join(",");
+      },
+      composerDirty() {
+        return Boolean(
+          this.draft.trim() ||
+            this.files.length ||
+            this.replyTo ||
+            this.scheduled ||
+            this.polishSuggestion ||
+            this.aiDraftResult,
+        );
       },
       toggleSchedule() {
         this.scheduled = !this.scheduled;
@@ -2106,8 +2366,8 @@
       },
 
       finishSendRequest(event) {
-        if (event.detail?.successful) return;
         this.sending = false;
+        if (event.detail?.successful) return;
         this.workspace()?.showToast?.("Could not send reply. Try again.");
       },
 
@@ -2184,7 +2444,10 @@
       if (el.dataset.replyWindowReady) return;
       el.dataset.replyWindowReady = "true";
       updateReplyWindow(el);
-      window.setInterval(() => updateReplyWindow(el), 30000);
+      el.__inboxReplyWindowTimer = window.setInterval(
+        () => updateReplyWindow(el),
+        30000,
+      );
     });
   }
 
@@ -2201,6 +2464,8 @@
     textarea.parentElement?.appendChild(menu);
     const selected = new Map();
     let activeIndex = -1;
+    let searchSequence = 0;
+    let searchController = null;
 
     const syncHidden = () => {
       if (hidden) hidden.value = Array.from(selected.keys()).join(",");
@@ -2245,16 +2510,31 @@
     const search = async () => {
       const token = queryAtCursor();
       if (!token || token.text.length < 1) {
+        searchController?.abort();
         close();
         return;
       }
+      const sequence = ++searchSequence;
+      searchController?.abort();
+      searchController = new AbortController();
       menu.classList.remove("hidden");
       menu.innerHTML = '<div class="px-3 py-2 text-slate-500">Searching...</div>';
       try {
         const url = new URL(textarea.dataset.mentionEndpoint, window.location.origin);
         url.searchParams.set("q", token.text);
-        const response = await fetch(url, { headers: { Accept: "application/json" } });
+        const response = await fetchWithTimeout(url, {
+          headers: { Accept: "application/json" },
+          signal: searchController.signal,
+        });
         const data = await response.json();
+        const currentToken = queryAtCursor();
+        if (
+          sequence !== searchSequence ||
+          !currentToken ||
+          currentToken.text !== token.text
+        ) {
+          return;
+        }
         const users = Array.isArray(data.users) ? data.users : [];
         if (!users.length) {
           menu.innerHTML = '<div class="px-3 py-2 text-slate-500">No eligible colleagues</div>';
@@ -2276,7 +2556,8 @@
           menu.appendChild(button);
         });
         setActive(0);
-      } catch {
+      } catch (error) {
+        if (error?.name === "AbortError") return;
         menu.innerHTML = '<div class="px-3 py-2 text-rose-600">Mentions unavailable</div>';
       }
     };
@@ -2304,9 +2585,15 @@
         items[activeIndex]?.click();
       }
     });
-    document.addEventListener("click", (event) => {
+    const closeOnOutsideClick = (event) => {
       if (!menu.contains(event.target) && event.target !== textarea) close();
-    });
+    };
+    document.addEventListener("click", closeOnOutsideClick);
+    textarea.__inboxMentionCleanup = () => {
+      searchController?.abort();
+      document.removeEventListener("click", closeOnOutsideClick);
+      textarea.__inboxMentionCleanup = null;
+    };
   }
 
   function initMentions(root = document) {
@@ -2468,7 +2755,9 @@
       sync();
     });
 
-    fetch(form.dataset.templateEndpoint, { headers: { Accept: "application/json" } })
+    fetchWithTimeout(form.dataset.templateEndpoint, {
+      headers: { Accept: "application/json" },
+    })
       .then((response) => response.json().then((payload) => ({ response, payload })))
       .then(({ response, payload }) => {
         if (!response.ok || payload.error) {

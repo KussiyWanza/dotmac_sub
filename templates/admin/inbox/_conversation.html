@@ -255,6 +255,7 @@
          @inbox-quote.window="setReply($event.detail)"
          @inbox-insert-text.window="insertQuickResponse($event.detail)"
          @inbox-reply-completed.window="completeSend($event.detail)"
+         :data-composer-dirty="composerDirty().toString()"
          data-reply-composer>
         <div x-show="replyTo" x-cloak class="mb-2 flex items-start justify-between rounded-lg border-l-4 border-amber-400 bg-amber-50 px-3 py-2 text-xs dark:bg-amber-950/20">
             <div class="min-w-0"><p class="font-semibold text-amber-900 dark:text-amber-200">Replying to <span x-text="replyTo && replyTo.author"></span></p><p class="truncate text-amber-700 dark:text-amber-300" x-text="replyTo && replyTo.excerpt"></p></div>
