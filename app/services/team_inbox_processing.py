@@ -97,6 +97,8 @@ def _message_payload(
     return team_inbox_observations.InboundMessageObservation(
         contact_address=str(data.get("contact_address") or ""),
         body=str(data.get("body") or ""),
+        body_text=str(data["body_text"]) if data.get("body_text") else None,
+        html_body=str(data["html_body"]) if data.get("html_body") else None,
         contact_name=str(data["contact_name"]) if data.get("contact_name") else None,
         subject=str(data["subject"]) if data.get("subject") else None,
         external_thread_id=(
@@ -276,6 +278,8 @@ def process_provider_observation(
                             # Carried onto the message so the evidence sits
                             # beside the claim it would be used to judge.
                             "authentication": payload.authentication,
+                            "body_text": payload.body_text or payload.body,
+                            "html_body": payload.html_body,
                             "attachments": [
                                 _attachment_metadata(item)
                                 for item in payload.attachments

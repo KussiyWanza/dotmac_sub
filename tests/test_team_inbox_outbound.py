@@ -167,6 +167,9 @@ def test_send_inbox_reply_uses_owner_team_sender(db_session, monkeypatch):
     assert message.metadata_["sender_key"] == "support"
     assert message.notification_id == notification.id
     assert message.metadata_["delivery_status"] == "queued"
+    assert message.body == "We are checking."
+    assert message.metadata_["body_html"] == "<p>We are checking.</p>"
+    assert message.metadata_["body_text"] == "We are checking."
     assert delivery_wakeups == [((), {"args": [str(notification.id)], "retry": False})]
 
 
@@ -205,6 +208,53 @@ def test_send_inbox_reply_sends_whatsapp_text(db_session, monkeypatch):
     assert message.to_addresses == ["+2348035550114"]
     assert message.metadata_["delivery_status"] == "queued"
     assert conversation.last_message_at == datetime(2026, 7, 10, 8, 5)
+
+
+def test_email_notification_delivers_inbox_attachment(db_session, monkeypatch):
+    _smtp_sender(db_session, "support", from_email="support@dotmac.io")
+    _activity_sender(db_session, "support_ticket", "support")
+    team = _team(db_session, "Support", ServiceTeamType.support.value)
+    conversation = _conversation(db_session, team)
+    attachment_id = uuid4()
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        notification_tasks.team_inbox_media,
+        "resolve_delivery_attachments",
+        lambda *_args, **_kwargs: (
+            team_inbox_media.InboxDeliveryAttachment(
+                asset_id=attachment_id,
+                filename="router.pdf",
+                content_type="application/pdf",
+                content=b"pdf-bytes",
+                asset_type="document",
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        notification_tasks.email_service,
+        "send_email",
+        lambda *args, **kwargs: calls.append(kwargs) or True,
+    )
+    db_session.commit()
+
+    result = team_inbox_outbound.send_inbox_reply(
+        db_session,
+        conversation=conversation,
+        payload=team_inbox_outbound.InboxReplyPayload(
+            body_html="<p>Document attached.</p>",
+            body_text="Document attached.",
+            metadata={"inbox_attachment_ids": [str(attachment_id)]},
+        ),
+    )
+    notification_tasks._deliver_notification_queue_stats(db_session)
+
+    assert result.kind == "queued"
+    assert len(calls) == 1
+    assert calls[0]["body_html"] == "<p>Document attached.</p>"
+    assert calls[0]["body_text"] == "Document attached."
+    assert len(calls[0]["attachments"]) == 1
+    assert calls[0]["attachments"][0].filename == "router.pdf"
+    assert calls[0]["attachments"][0].content == b"pdf-bytes"
 
 
 def test_send_inbox_reply_sends_whatsapp_template(db_session, monkeypatch):

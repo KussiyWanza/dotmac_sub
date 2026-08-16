@@ -661,9 +661,21 @@ def reply(
             + "<br>".join(escape(line) for line in clean_body.splitlines())
             + "</p>"
         )
-        staged_attachment_ids = [
+        submitted_attachment_ids = [
             str(item).strip() for item in command.attachment_ids if str(item).strip()
         ]
+        try:
+            staged_attachment_ids = list(
+                team_inbox_media.validate_staged_asset_ids(
+                    db,
+                    conversation_id=conversation.id,
+                    asset_ids=submitted_attachment_ids,
+                )
+            )
+        except team_inbox_media.MediaUploadError as exc:
+            raise InboxCommandRejected(
+                str(exc), conversation_id=conversation.id
+            ) from exc
         reply_metadata: dict[str, object] = {
             "source_route": "admin_inbox_detail_reply",
             "template_id": str(template.id) if template is not None else None,
@@ -2561,6 +2573,18 @@ def start_conversation(
                 uploaded_by=str(actor_person_id) if actor_person_id else None,
             )
             staged_attachment_ids.append(str(asset.id))
+        try:
+            staged_attachment_ids = list(
+                team_inbox_media.validate_staged_asset_ids(
+                    db,
+                    conversation_id=conversation.id,
+                    asset_ids=staged_attachment_ids,
+                )
+            )
+        except team_inbox_media.MediaUploadError as exc:
+            raise InboxCommandRejected(
+                str(exc), conversation_id=conversation.id
+            ) from exc
 
         body_html = (
             "<p>"

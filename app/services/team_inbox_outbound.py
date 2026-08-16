@@ -242,18 +242,7 @@ def _queue_outbox_reply(
     message.channel_type = channel.value
     message.direction = InboxMessageDirection.outbound.value
     message.subject = subject
-    message.body = (
-        body
-        if channel
-        in {
-            NotificationChannel.whatsapp,
-            NotificationChannel.facebook_messenger,
-            NotificationChannel.instagram_dm,
-            NotificationChannel.facebook_comment,
-            NotificationChannel.instagram_comment,
-        }
-        else payload.body_html or body
-    )
+    message.body = body
     message.external_thread_id = conversation.external_thread_id
     message.from_address = from_address
     message.to_addresses = [recipient]
