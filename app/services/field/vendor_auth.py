@@ -15,6 +15,7 @@ from app.models.auth import AuthProvider, UserCredential
 from app.models.field_vendor import FieldVendor, FieldVendorUser
 from app.models.system_user import SystemUser
 from app.models.vendor_routes import Vendor
+from app.services import staff_party_authentication
 from app.services.auth_dependencies import require_user_auth
 from app.services.common import coerce_uuid
 
@@ -88,7 +89,17 @@ def resolve_vendor_login_eligibility(
         return VendorLoginEligibilityResult(
             status=VendorLoginEligibilityStatus.VENDOR_ACCESS_REQUIRED
         )
-    principal = db.get(SystemUser, credential.system_user_id)
+    # Vendor login eligibility is a staff authentication decision, so it
+    # resolves through the same owner as login, refresh and session validation.
+    # A projection this path cannot resolve is not eligible — never fall back to
+    # the legacy key just because this entry point is not the main one.
+    try:
+        principal = staff_party_authentication.resolve_staff_principal(db, credential)
+    except staff_party_authentication.StaffProjectionError:
+        return VendorLoginEligibilityResult(
+            status=VendorLoginEligibilityStatus.VENDOR_ACCESS_REQUIRED,
+            system_user_id=credential.system_user_id,
+        )
     membership = _active_membership(db, credential.system_user_id)
     if principal is None or not principal.is_active or membership is None:
         return VendorLoginEligibilityResult(
