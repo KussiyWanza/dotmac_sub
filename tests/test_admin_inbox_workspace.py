@@ -830,6 +830,11 @@ def test_start_conversation_keeps_whatsapp_template_values_and_uploads(
     )
     monkeypatch.setattr(
         team_inbox_commands.team_inbox_media,
+        "validate_staged_asset_ids",
+        lambda _db, *, conversation_id, asset_ids: tuple(asset_ids),
+    )
+    monkeypatch.setattr(
+        team_inbox_commands.team_inbox_media,
         "bind_assets_to_message",
         fake_bind,
     )
