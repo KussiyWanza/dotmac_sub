@@ -179,6 +179,8 @@ class InboundMessageObservation:
     media_url: str | None = None
     contact_profile: dict[str, str | None] | None = None
     attachments: tuple[InboundAttachmentObservation, ...] = ()
+    body_text: str | None = None
+    html_body: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
