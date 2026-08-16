@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 from getpass import getpass
 
 from dotenv import load_dotenv
+from sqlalchemy.orm import Session
 
 from app.db import SessionLocal
 from app.models.auth import AuthProvider, UserCredential
@@ -11,6 +12,19 @@ from app.models.rbac import Role, SystemUserRole
 from app.models.system_user import SystemUser
 from app.services import party as party_service
 from app.services.auth_flow import hash_password
+from app.services.credential_party_binding import (
+    CredentialPartyBinding,
+    CredentialPrincipalKind,
+    bind_credential_party,
+    resolve_binding_for_mechanism,
+)
+from app.services.operator_tenant import operator_tenant_id
+from app.services.owner_commands import CommandContext
+
+
+_CREDENTIAL_PROJECTION_SCOPE = "party:credential_authentication_projection"
+_CREDENTIAL_BINDING_SOURCE = "admin_seeder"
+_CREDENTIAL_BINDING_REASON = "Operator-seeded local administrator credential"
 
 
 def parse_args():
@@ -28,7 +42,7 @@ def parse_args():
 
 
 def seed_admin_user(
-    db,
+    db: Session,
     *,
     email: str,
     first_name: str,
@@ -45,6 +59,7 @@ def seed_admin_user(
             "Active admin role not found. Run `python -m scripts.seed.seed_rbac` "
             "before seeding an admin user."
         )
+    local_binding = resolve_binding_for_mechanism(db, AuthProvider.local.value)
 
     system_user = db.query(SystemUser).filter(SystemUser.email == email).first()
     username_owner = (
@@ -102,6 +117,8 @@ def seed_admin_user(
         )
         db.add(credential)
 
+    db.flush()
+
     role_link = (
         db.query(SystemUserRole)
         .filter(
@@ -139,7 +156,49 @@ def seed_admin_user(
             reason="Operator-seeded local administrator identity",
         )
 
+    db.flush()
+    credential_id = credential.id
+    system_user_id = system_user.id
+    person_party_id = system_user.person_party_id
+    if person_party_id is None:
+        raise RuntimeError("Admin system user has no Person Party binding.")
+    if (
+        credential.party_id is not None
+        and credential.authentication_binding_id is not None
+        and credential.tenant_id is not None
+        and credential.party_bound_at is not None
+        and credential.party_binding_source is not None
+        and credential.party_binding_reason is not None
+    ):
+        authentication_binding_id = credential.authentication_binding_id
+        tenant_id = credential.tenant_id
+        binding_source = credential.party_binding_source
+        binding_reason = credential.party_binding_reason
+    else:
+        authentication_binding_id = local_binding.id
+        tenant_id = operator_tenant_id()
+        binding_source = _CREDENTIAL_BINDING_SOURCE
+        binding_reason = _CREDENTIAL_BINDING_REASON
+
     db.commit()
+    bind_credential_party(
+        db,
+        CredentialPartyBinding(
+            context=CommandContext.system(
+                actor="scripts.seed.seed_admin",
+                scope=_CREDENTIAL_PROJECTION_SCOPE,
+                reason=binding_reason,
+            ),
+            credential_id=credential_id,
+            expected_principal_kind=CredentialPrincipalKind.system_user,
+            expected_principal_id=system_user_id,
+            party_id=person_party_id,
+            authentication_binding_id=authentication_binding_id,
+            tenant_id=tenant_id,
+            binding_source=binding_source,
+            binding_reason=binding_reason,
+        ),
+    )
     return "Admin user created." if created else "Admin user updated."
 
 
