@@ -77,6 +77,60 @@ def test_parse_rfc822_email_falls_back_to_envelope_recipients():
     assert parsed.payload.body == "Hello."
 
 
+def test_html_only_email_has_readable_body_and_preserves_html():
+    raw = dedent(
+        """\
+        From: customer@example.com
+        To: support@dotmac.io
+        Subject: HTML only
+        Message-ID: <html-only@example.com>
+        Content-Type: text/html; charset=utf-8
+
+        <html><head><style>.hidden { display:none }</style><title>Ignore</title></head>
+        <body><p>Hello &amp; welcome</p><div>Second line<br>after break</div>
+        <ul><li>First</li><li>Second</li></ul><script>alert('no')</script></body></html>
+        """
+    ).replace("\n", "\r\n")
+
+    parsed = team_inbox_rfc822.parse_rfc822_email(raw.encode())
+
+    assert parsed.payload.body == (
+        "Hello & welcome\n\nSecond line\nafter break\n\n- First\n- Second"
+    )
+    assert parsed.payload.metadata["body_text"] == parsed.payload.body
+    assert parsed.payload.metadata["html_body"].startswith("<html>")
+    assert "alert" not in parsed.payload.body
+
+
+def test_multipart_email_prefers_text_and_preserves_html():
+    raw = dedent(
+        """\
+        From: customer@example.com
+        To: support@dotmac.io
+        Subject: Alternative
+        Message-ID: <alternative@example.com>
+        MIME-Version: 1.0
+        Content-Type: multipart/alternative; boundary="alt"
+
+        --alt
+        Content-Type: text/plain; charset=utf-8
+
+        Preferred plain text.
+        --alt
+        Content-Type: text/html; charset=utf-8
+
+        <p>Different <strong>HTML</strong> text.</p>
+        --alt--
+        """
+    ).replace("\n", "\r\n")
+
+    parsed = team_inbox_rfc822.parse_rfc822_email(raw.encode())
+
+    assert parsed.payload.body == "Preferred plain text."
+    assert parsed.payload.metadata["body_text"] == "Preferred plain text."
+    assert "<strong>HTML</strong>" in parsed.payload.metadata["html_body"]
+
+
 def test_smtp_intake_routes_and_stores_attachment_metadata(db_session):
     """Same coverage, now over the path production actually uses.
 
@@ -121,6 +175,7 @@ def test_smtp_intake_routes_and_stores_attachment_metadata(db_session):
 
     assert result.kind == "received"
     assert message.body == "See attached."
+    assert message.metadata_["body_text"] == "See attached."
     assert message.metadata_["attachments"][0]["filename"] == "note.txt"
     assert message.metadata_["attachments"][0]["mime_type"] == "text/plain"
     assert message.conversation.primary_service_team_id == support.id
