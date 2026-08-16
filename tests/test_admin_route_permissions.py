@@ -16,6 +16,7 @@ from app.web.admin import gis as admin_gis
 from app.web.admin import inbox as admin_inbox
 from app.web.admin import integrations as admin_integrations
 from app.web.admin import legal as admin_legal
+from app.web.admin import network_core_devices as admin_network_core_devices
 from app.web.admin import network_device_groups as admin_network_device_groups
 from app.web.admin import network_olts_profiles as admin_network_olts_profiles
 from app.web.admin import notifications as admin_notifications
@@ -346,6 +347,20 @@ def test_device_group_routes_require_network_permissions():
         "POST",
         "network:device:write",
     )
+
+
+def test_core_device_archive_routes_require_archive_permission():
+    for path, method in (
+        ("/network/core-devices/{device_id}/archive/preview", "GET"),
+        ("/network/core-devices/{device_id}/archive", "POST"),
+        ("/network/core-devices/{device_id}/restore", "POST"),
+    ):
+        assert _route_has_permission(
+            admin_network_core_devices.router,
+            path,
+            method,
+            "network:device:archive",
+        )
 
 
 def test_device_group_api_routes_require_network_permissions():

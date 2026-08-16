@@ -240,9 +240,11 @@ class EventType(enum.Enum):
     customer_experience_accepted = "customer_experience.accepted"
     customer_experience_needs_attention = "customer_experience.needs_attention"
 
-    # Network events (5)
+    # Network events
     device_offline = "device.offline"
     device_online = "device.online"
+    network_device_archived = "network_device.archived"
+    network_device_restored = "network_device.restored"
     device_projection_reconciled = "device_projection.reconciled"
     session_started = "session.started"
     session_ended = "session.ended"
