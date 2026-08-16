@@ -151,6 +151,89 @@ def test_no_module_resolves_a_staff_principal_from_the_legacy_key() -> None:
     )
 
 
+#: The primitive. Identity in, staff context out — the only correct query
+#: direction for a session that carries a Party.
+PRIMITIVE = "resolve_staff_principal_by_party"
+
+#: Functions that must reach the primitive, because they resolve a principal
+#: for a subject that carries `party_id`.
+PARTY_KEYED = (
+    (Path("app/services/auth_flow.py"), "validate_active_session"),
+    (Path("app/services/auth_flow.py"), "_principal_for_credential"),
+)
+
+
+def _resolves_party_keyed(source: str, function_name: str) -> bool:
+    """Does this function reach the primitive, directly or via the credential wrapper?"""
+
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+            and node.name == function_name
+        ):
+            dumped = ast.dump(node)
+            return PRIMITIVE in dumped or "resolve_staff_principal'" in dumped
+    return False
+
+
+def test_party_carrying_subjects_resolve_through_the_primitive() -> None:
+    """Query direction, not just delegation.
+
+    A session with `party_id` must be resolved BY that Party. Falling back to
+    assertion-first here would still delegate to the owner, still return the
+    right principal on healthy data, and still pass every parity test — while
+    quietly restoring the legacy key as the authority.
+    """
+
+    undirected = [
+        f"{module}::{name}"
+        for module, name in PARTY_KEYED
+        if not _resolves_party_keyed(
+            (PROJECT_ROOT / module).read_text(encoding="utf-8"), name
+        )
+    ]
+
+    assert undirected == [], (
+        f"these resolve a Party-carrying subject without {PRIMITIVE}, which "
+        f"leaves the legacy key authoritative: {undirected}"
+    )
+
+
+def test_the_guard_detects_assertion_first_regression() -> None:
+    """Direction-sensitivity proof: plant the exact regression.
+
+    This is the one an ordinary parity test cannot make. Both directions return
+    the same principal on healthy data, so comparing answers proves nothing
+    about which key was authoritative. Only planting the reversed direction and
+    showing the guard rejects it establishes that.
+    """
+
+    regressed = (
+        "def validate_active_session(db, session):\n"
+        "    # the exact regression: party_id ignored, legacy key resolves\n"
+        "    return staff_party_authentication.resolve_staff_principal_assertion(\n"
+        "        db, session.system_user_id\n"
+        "    )\n"
+    )
+
+    assert not _resolves_party_keyed(regressed, "validate_active_session"), (
+        "the guard accepted assertion-first resolution for a Party-carrying "
+        "session — it cannot tell query direction, so it certifies nothing"
+    )
+
+    correct = (
+        "def validate_active_session(db, session):\n"
+        "    return staff_party_authentication.resolve_staff_principal_by_party(\n"
+        "        db, session.party_id, session.system_user_id\n"
+        "    )\n"
+    )
+
+    assert _resolves_party_keyed(correct, "validate_active_session"), (
+        "the guard rejected correct Party-keyed resolution"
+    )
+
+
 def test_the_guard_detects_a_planted_legacy_resolver(tmp_path: Path) -> None:
     """Sensitivity proof: a guard that cannot fail is not a guard."""
 

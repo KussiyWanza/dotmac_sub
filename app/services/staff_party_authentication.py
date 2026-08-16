@@ -46,57 +46,86 @@ class StaffProjectionRefusal(StrEnum):
 
 
 class StaffProjectionError(Exception):
-    """A staff credential cannot be resolved through its Party projection."""
+    """A staff credential cannot be resolved through its Party projection.
+
+    `credential_id` is the subject the refusal is about: a credential id, a
+    session id, or the Party itself. It is optional because the most basic
+    refusal is "there is no identity here at all", which has no subject to name.
+    """
 
     __slots__ = ("credential_id", "refusal")
 
-    def __init__(self, refusal: StaffProjectionRefusal, credential_id: UUID) -> None:
+    def __init__(
+        self, refusal: StaffProjectionRefusal, credential_id: UUID | None
+    ) -> None:
         self.refusal = refusal
         self.credential_id = credential_id
         super().__init__(f"{refusal.value} for credential {credential_id}")
 
 
-def resolve_staff_principal(db: Session, credential: UserCredential) -> SystemUser:
-    """Return the staff principal named by this credential's Party projection.
+def resolve_staff_principal_by_party(
+    db: Session,
+    party_id: UUID | None,
+    asserted_system_user_id: UUID | None = None,
+    *,
+    reference: UUID | None = None,
+) -> SystemUser:
+    """THE primitive. Identity in, staff context out.
 
-    Raises `StaffProjectionError` rather than returning None, so a caller cannot
-    accidentally treat "unresolvable" as "anonymous" and continue.
+    The query direction is the whole point: it starts at the Party and finds the
+    principal, never the reverse. Starting from `system_user_id` and checking the
+    Party afterwards would agree on healthy data while leaving the legacy key
+    authoritative — which is the defect this cutover exists to remove, and which
+    no parity test can detect because both directions return the same answer.
+
+    `asserted_system_user_id` is the Sub-owned staff context travelling
+    alongside the identity. It is compared, never used to resolve.
+
+    Both credential login and populated-session validation delegate here, so
+    there is one direction and one set of refusals rather than near-duplicates
+    that can drift apart.
     """
 
-    credential_id = credential.id
-    if credential.party_id is None:
-        raise StaffProjectionError(
-            StaffProjectionRefusal.projection_missing, credential_id
-        )
+    subject = reference if reference is not None else party_id
+    if party_id is None:
+        raise StaffProjectionError(StaffProjectionRefusal.projection_missing, subject)
 
     principals = (
-        db.execute(
-            select(SystemUser).where(SystemUser.person_party_id == credential.party_id)
-        )
+        db.execute(select(SystemUser).where(SystemUser.person_party_id == party_id))
         .scalars()
         .all()
     )
     if not principals:
         raise StaffProjectionError(
-            StaffProjectionRefusal.party_has_no_principal, credential_id
+            StaffProjectionRefusal.party_has_no_principal, subject
         )
     if len(principals) > 1:
         # `uq_system_users_person_party_id` makes this unreachable on a migrated
         # catalog. Reaching it means the constraint was lost, not that the
         # population drifted — so refuse loudly rather than pick one.
         raise StaffProjectionError(
-            StaffProjectionRefusal.party_owns_multiple_principals, credential_id
+            StaffProjectionRefusal.party_owns_multiple_principals, subject
         )
 
     principal = principals[0]
-    if (
-        credential.system_user_id is not None
-        and credential.system_user_id != principal.id
-    ):
-        raise StaffProjectionError(
-            StaffProjectionRefusal.projection_conflict, credential_id
-        )
+    if asserted_system_user_id is not None and asserted_system_user_id != principal.id:
+        raise StaffProjectionError(StaffProjectionRefusal.projection_conflict, subject)
     return principal
+
+
+def resolve_staff_principal(db: Session, credential: UserCredential) -> SystemUser:
+    """Resolve a login credential's staff principal through the primitive.
+
+    Raises `StaffProjectionError` rather than returning None, so a caller cannot
+    accidentally treat "unresolvable" as "anonymous" and continue.
+    """
+
+    return resolve_staff_principal_by_party(
+        db,
+        credential.party_id,
+        credential.system_user_id,
+        reference=credential.id,
+    )
 
 
 def resolve_staff_principal_assertion(db: Session, system_user_id: UUID) -> SystemUser:

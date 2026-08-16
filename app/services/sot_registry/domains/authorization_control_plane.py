@@ -1432,6 +1432,126 @@ DOMAIN = DomainSOT(
             ),
         ),
         SOTService(
+            name="party.staff_authentication_reader",
+            module="app.services.staff_party_authentication",
+            owns=(
+                "Party-keyed staff principal resolution",
+                "staff authentication projection refusal",
+            ),
+            depends_on=(
+                "party.registry",
+                "auth.staff_provisioning",
+            ),
+            notes=(
+                "The single owner of staff principal resolution for "
+                "authentication. Four consumers delegate: login, refresh, "
+                "per-request session validation, and vendor login "
+                "eligibility. Vendor ACCESS eligibility stays owned by the "
+                "vendor module; only identity resolution moved here. "
+                "resolve_staff_principal_by_party is the canonical "
+                "primitive and the query direction is the contract: it "
+                "starts at the Party and finds the principal, never the "
+                "reverse. system_user_id is compared as the Sub-owned staff "
+                "context assertion and never used to resolve, because "
+                "resolving from it and checking Party afterwards would agree "
+                "on healthy data while leaving the legacy key authoritative. "
+                "Fails closed with typed refusals and no legacy fallback. "
+                "The assertion-first resolver is a TEMPORARY bridge for "
+                "sessions predating migration 534 (party_id IS NULL) and is "
+                "deleted in deploy 2. Rollback floor is migration 534: never "
+                "roll back below it, or new sessions mint without party_id."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name="Party-keyed staff principal resolution",
+                        role=OwnerRole.RESOLVER,
+                        input_names=(
+                            "canonical Person Party identity",
+                            "credential Party authentication projection",
+                            "canonical staff context state",
+                        ),
+                    ),
+                    ConcernContract(
+                        name="staff authentication projection refusal",
+                        role=OwnerRole.POLICY,
+                        input_names=(
+                            "credential Party authentication projection",
+                            "canonical staff context state",
+                        ),
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="canonical Person Party identity",
+                        owner="party.registry",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="parties Person identity records",
+                    ),
+                    AuthorityInput(
+                        name="credential Party authentication projection",
+                        owner="party.credential_authentication_projection",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source="user_credentials.party_id and sessions.party_id",
+                    ),
+                    AuthorityInput(
+                        name="canonical staff context state",
+                        owner="auth.staff_provisioning",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="system_users.person_party_id",
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.READ_ONLY,
+                    boundary=(
+                        "Authentication adapters supply a Session; the reader "
+                        "performs no writes or transaction completion."
+                    ),
+                    locking="No locks; resolution reads one committed projection.",
+                    idempotency="Repeated reads over one snapshot return one result.",
+                    retries="Callers may retry only with a fresh transaction snapshot.",
+                ),
+                errors=ErrorContract(
+                    domain_codes=(
+                        "staff_projection_missing",
+                        "staff_party_has_no_principal",
+                        "staff_party_owns_multiple_principals",
+                        "staff_projection_conflict",
+                    ),
+                    mapping_owner="authentication adapters",
+                    fail_closed_on=(
+                        "missing Party projection",
+                        "missing or ambiguous staff principal",
+                        "Party and legacy assertion conflict",
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.CUT_OVER,
+                    old_owner="direct credential and session system_user_id lookup",
+                    new_owner="party.staff_authentication_reader",
+                    verification=(
+                        "Focused behavior, PostgreSQL projection, direction-sensitive "
+                        "architecture, and SOT contract tests."
+                    ),
+                    cutover_gate=(
+                        "All staff authentication entry points delegate to the "
+                        "Party-keyed primitive and fail closed on projection drift."
+                    ),
+                    fallback_retirement=(
+                        "Delete the assertion-first compatibility bridge after the "
+                        "sessions.party_id backfill is complete and required."
+                    ),
+                ),
+                steward="platform security",
+                design_refs=("docs/SOT_RELATIONSHIP_MAP.md",),
+                test_refs=(
+                    "tests/test_staff_party_authentication.py",
+                    "tests/integration/test_session_party_projection.py",
+                    "tests/architecture/test_staff_party_authentication_owner.py",
+                ),
+            ),
+        ),
+        SOTService(
             name="auth.staff_provisioning",
             module="app.services.staff_provisioning",
             owns=(

@@ -875,6 +875,8 @@ Edit the owning domain shard and regenerate; do not hand-edit these rows.
 | `auth.customer_credential_enrollment` | credential enrollment capability purpose claims and lifetime | `policy` | canonical referral account context ← `referrals.account_conversion`<br>canonical customer credential state ← `auth.customer_credential_enrollment`<br>credential enrollment policy settings ← `control.settings_spec`<br>verified enrollment capability envelope ← `auth.token_signing` | `owner_managed` | `complete` | platform security | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/REFERRAL_CREDENTIAL_ENROLLMENT.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`docs/designs/SOT_CODING_STANDARDS_REFACTOR.md`<br>`tests/test_referral_credential_enrollment.py`<br>`tests/architecture/test_customer_credential_enrollment_boundary.py` |
 | `auth.customer_credential_enrollment` | single-use enrollment and account email verification consequence | `command_writer` | credential enrollment command evidence ← `auth.customer_credential_enrollment`<br>canonical customer credential state ← `auth.customer_credential_enrollment`<br>verified enrollment capability envelope ← `auth.token_signing` | `owner_managed` | `complete` | platform security | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/REFERRAL_CREDENTIAL_ENROLLMENT.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`docs/designs/SOT_CODING_STANDARDS_REFACTOR.md`<br>`tests/test_referral_credential_enrollment.py`<br>`tests/architecture/test_customer_credential_enrollment_boundary.py` |
 | `auth.customer_credential_enrollment` | credential enrollment authentication cache projection | `reconciler` | canonical customer credential state ← `auth.customer_credential_enrollment` | `owner_managed` | `complete` | platform security | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/REFERRAL_CREDENTIAL_ENROLLMENT.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`docs/designs/SOT_CODING_STANDARDS_REFACTOR.md`<br>`tests/test_referral_credential_enrollment.py`<br>`tests/architecture/test_customer_credential_enrollment_boundary.py` |
+| `party.staff_authentication_reader` | Party-keyed staff principal resolution | `resolver` | canonical Person Party identity ← `party.registry`<br>credential Party authentication projection ← `party.credential_authentication_projection`<br>canonical staff context state ← `auth.staff_provisioning` | `read_only` | `cut_over` | platform security | `docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_staff_party_authentication.py`<br>`tests/integration/test_session_party_projection.py`<br>`tests/architecture/test_staff_party_authentication_owner.py` |
+| `party.staff_authentication_reader` | staff authentication projection refusal | `policy` | credential Party authentication projection ← `party.credential_authentication_projection`<br>canonical staff context state ← `auth.staff_provisioning` | `read_only` | `cut_over` | platform security | `docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_staff_party_authentication.py`<br>`tests/integration/test_session_party_projection.py`<br>`tests/architecture/test_staff_party_authentication_owner.py` |
 | `auth.staff_provisioning` | staff account provisioning | `application_coordinator` | ERP HR staff lifecycle request ← `external:dotmac_erp`<br>authorized RBAC assignment principal ← `auth.permission_gate`<br>active role catalog ← `auth.rbac_catalog`<br>managed role grant state ← `auth.system_user_assignments`<br>canonical staff identity and credential state ← `auth.staff_provisioning`<br>canonical Person Party identity ← `party.registry` | `coordinator_managed` | `complete` | platform security | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/designs/STAFF_LOGIN_IDENTITY_RECONCILIATION.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`docs/designs/SOT_CODING_STANDARDS_REFACTOR.md`<br>`tests/test_api_staff_sync.py`<br>`tests/test_staff_provisioning_owner.py`<br>`tests/test_staff_login_identity_admin.py`<br>`tests/test_staff_login_identity_reconciliation_script.py`<br>`tests/architecture/test_staff_provisioning_boundary.py` |
 | `auth.staff_provisioning` | staff identity bootstrap | `command_writer` | ERP HR staff lifecycle request ← `external:dotmac_erp`<br>canonical staff identity and credential state ← `auth.staff_provisioning`<br>canonical Person Party identity ← `party.registry` | `coordinator_managed` | `complete` | platform security | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/designs/STAFF_LOGIN_IDENTITY_RECONCILIATION.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`docs/designs/SOT_CODING_STANDARDS_REFACTOR.md`<br>`tests/test_api_staff_sync.py`<br>`tests/test_staff_provisioning_owner.py`<br>`tests/test_staff_login_identity_admin.py`<br>`tests/test_staff_login_identity_reconciliation_script.py`<br>`tests/architecture/test_staff_provisioning_boundary.py` |
 | `auth.staff_provisioning` | staff identity maintenance | `application_coordinator` | authorized staff identity principal ← `auth.permission_gate`<br>canonical staff identity and credential state ← `auth.staff_provisioning` | `coordinator_managed` | `complete` | platform security | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/designs/STAFF_LOGIN_IDENTITY_RECONCILIATION.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`docs/designs/SOT_CODING_STANDARDS_REFACTOR.md`<br>`tests/test_api_staff_sync.py`<br>`tests/test_staff_provisioning_owner.py`<br>`tests/test_staff_login_identity_admin.py`<br>`tests/test_staff_login_identity_reconciliation_script.py`<br>`tests/architecture/test_staff_provisioning_boundary.py` |
@@ -5099,3 +5101,52 @@ observations into `/admin/network/map`. Proposal creation, review, and bounded
 execution are delegated to `network.fiber_identity_decisions` and
 `network.fiber_identity_review`; canonical passive-asset writes remain delegated
 to `network.fiber_asset_changes`.
+
+## Staff Party authentication cutover — deploy 1 predecessor
+
+`app/services/staff_party_authentication.py` is the single owner of staff
+principal resolution for authentication. Four consumers delegate to it:
+
+| consumer | entry point |
+|---|---|
+| login | `auth_flow._principal_for_credential` |
+| refresh | `auth_flow.refresh` |
+| per-request validation | `auth_flow.validate_active_session` |
+| vendor admission | `field/vendor_auth.resolve_vendor_login_eligibility` |
+
+Vendor **access eligibility** remains owned by the vendor module; only identity
+resolution moved.
+
+**The canonical primitive** is `resolve_staff_principal_by_party(db, party_id,
+asserted_system_user_id)`. Query direction is the contract: it starts at the
+Party and finds the principal. `system_user_id` is compared as the Sub-owned
+staff context assertion and is never used to resolve. Resolving from
+`system_user_id` and checking the Party afterwards would agree on healthy data
+while leaving the legacy key authoritative — that shape is forbidden, and
+`tests/architecture/test_staff_party_authentication_owner.py` plants it as a
+regression and requires the guard to reject it.
+
+**A staff session is a bound pair.** `sessions.party_id` (migration **534**) is
+the authenticated identity; `sessions.system_user_id` is the Sub-owned staff
+context and is NOT retired.
+
+**Temporary compatibility bridge.** `resolve_staff_principal_assertion` serves
+sessions predating migration 534 only, where `party_id IS NULL`. It is confined
+by guard to the owner and `auth_flow`, and is **deleted in deploy 2**.
+
+### Retirement gate and rollback floor
+
+This is deploy 1 of two. It is a predecessor, not the completed cutover.
+
+1. **Deploy 1** — migration 534, dual-write, Party-keyed branch, null-only bridge.
+2. **Approved digest-bound session backfill** from exact FK evidence only.
+   Unmappable sessions are refused and revoked through the canonical session
+   owner with reason `staff_party_projection_unresolvable` — preserved for
+   audit, never deleted, never guessed.
+3. **Deploy 2** — require `sessions.party_id`, delete the bridge, strengthen the
+   guard to reject assertion-first resolution entirely.
+
+**Rollback floor: migration 534.** Deploy 1's exact image digest is deploy 2's
+rollback target. On rollback, keep all `party_id` values and backfill evidence;
+do not reverse the data migration. **Never roll back below 534** — a pre-534
+image would mint new sessions with no `party_id`.

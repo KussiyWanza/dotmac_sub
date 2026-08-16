@@ -2092,15 +2092,31 @@ def validate_active_session(
         return None
 
     if principal_type == "system_user":
-        # Per-request validation goes through the same typed resolver as login.
-        # The session asserts a principal in the legacy shape; the Party
-        # projection is what accepts or refuses it. Returning None here is the
-        # fail-closed answer — the request is unauthenticated, and the caller
-        # learns nothing about why.
+        # Two branches, and the split is the cutover:
+        #
+        #   party_id present -> Party-KEYED through the canonical primitive,
+        #                       with system_user_id compared as the Sub-context
+        #                       assertion. This is the destination.
+        #   party_id absent  -> the named assertion-first bridge, for sessions
+        #                       predating migration 533 only. Deploy 2 deletes
+        #                       this branch and requires party_id.
+        #
+        # Returning None is the fail-closed answer — the request is
+        # unauthenticated and the caller learns nothing about why.
         try:
-            principal = staff_party_authentication.resolve_staff_principal_assertion(
-                db, active_id
-            )
+            if session.party_id is not None:
+                principal = staff_party_authentication.resolve_staff_principal_by_party(
+                    db,
+                    session.party_id,
+                    session.system_user_id,
+                    reference=str(session.id),
+                )
+            else:
+                principal = (
+                    staff_party_authentication.resolve_staff_principal_assertion(
+                        db, active_id
+                    )
+                )
         except staff_party_authentication.StaffProjectionError as exc:
             logger.error(
                 "Staff session refused: %s (system_user=%s)",
