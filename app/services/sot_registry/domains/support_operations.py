@@ -524,7 +524,8 @@ DOMAIN = DomainSOT(
                         owner="support.ticket_lifecycle",
                         kind=AuthorityKind.CONTROL_INPUT,
                         source=(
-                            "typed TicketCreate, TicketUpdate, comment, merge, link, "
+                            "typed TicketCreate, TicketUpdate, TicketMentionTarget, "
+                            "comment, merge, link, "
                             "resolution, satisfaction, attachment, and bulk command inputs "
                             "with CommandContext plus the closed silent-internal creation "
                             "consequence mode"
@@ -535,9 +536,9 @@ DOMAIN = DomainSOT(
                         owner="support.ticket_lifecycle",
                         kind=AuthorityKind.AUTHORITATIVE_RECORD,
                         source=(
-                            "Ticket, TicketAssignee, TicketComment, TicketLink, "
-                            "TicketMerge, TicketAccessToken, and transactional audit/event "
-                            "rows"
+                            "Ticket, TicketAssignee, TicketComment, "
+                            "TicketCommentMention, TicketLink, TicketMerge, "
+                            "TicketAccessToken, and transactional audit/event rows"
                         ),
                     ),
                     AuthorityInput(
@@ -634,13 +635,15 @@ DOMAIN = DomainSOT(
                     ),
                     locking=(
                         "Existing Ticket mutations lock or operate under the root command; "
-                        "status guards and merge/confirmation state are rechecked before "
-                        "writing."
+                        "comment edits lock the Ticket and TicketComment before applying an "
+                        "exact mention-set delta; status guards and merge/confirmation state "
+                        "are rechecked before writing."
                     ),
                     idempotency=(
                         "Adapter Idempotency-Key is carried in CommandContext where supplied; "
-                        "link identity, merge source state, access-token state, notification "
-                        "keys, and event/audit evidence make replay observable and bounded."
+                        "link identity, merge source state, access-token state, exact comment "
+                        "mention uniqueness, mention-occurrence notification keys, and "
+                        "event/audit evidence make replay observable and bounded."
                     ),
                     retries=(
                         "Retry the complete command after rollback with the same typed input "
@@ -668,6 +671,9 @@ DOMAIN = DomainSOT(
                         "invalid_ticket_creation_mode",
                         "internal_ticket_source_mismatch",
                         "internal_ticket_participant_requires_transaction",
+                        "ticket_comment_mentions_not_allowed",
+                        "ticket_comment_mention_invalid",
+                        "ticket_comment_mention_target_unavailable",
                         *owner_command_boundary_error_codes("support.ticket_lifecycle"),
                     ),
                     mapping_owner=(

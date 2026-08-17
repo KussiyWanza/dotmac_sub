@@ -183,6 +183,23 @@ def test_customer_reply_staff_email_stays_in_ticket_lifecycle_owner() -> None:
         assert "queue_staff_email" not in _source(adapter)
 
 
+def test_ticket_comment_mentions_are_durable_and_lifecycle_owned() -> None:
+    lifecycle = _source("app/services/support.py")
+    model = _source("app/models/support.py")
+    migration = _source("alembic/versions/540_ticket_comment_mentions.py")
+    web_adapter = _source("app/services/web_support_tickets.py")
+
+    assert "class TicketCommentMention" in model
+    assert "ck_ticket_comment_mention_exact_target" in migration
+    assert "uq_ticket_comment_mention_user" in migration
+    assert "uq_ticket_comment_mention_team" in migration
+    assert "class TicketMentionSyncOutcome" in lifecycle
+    assert "def _sync_mentions(" in lifecycle
+    assert ".with_for_update()" in lifecycle
+    assert "TicketMentionTarget" in web_adapter
+    assert "notify_ticket_comment_mentions(" not in web_adapter
+
+
 def test_admin_ticket_creation_customer_email_stays_in_lifecycle_owner() -> None:
     lifecycle = _source("app/services/support.py")
     admin_adapter = _source("app/services/web_support_tickets.py")
