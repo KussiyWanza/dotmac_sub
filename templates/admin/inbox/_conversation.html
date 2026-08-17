@@ -353,7 +353,6 @@
               hx-swap="none"
               x-show="mode === 'reply'"
               @submit="prepareSend($event)"
-              @htmx:after-request="finishSendRequest($event)"
               class="space-y-2"
               data-reply-form>
             {% include "components/forms/csrf_input.html" %}

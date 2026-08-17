@@ -203,7 +203,7 @@ def test_reply_submission_refreshes_inbox_fragments_without_page_navigation():
     assert 'workspace?.refreshConversationList?.("reply")' not in JAVASCRIPT
     assert 'this.draft = ""' in JAVASCRIPT
     assert "window.location.reload" not in JAVASCRIPT
-    assert "admin-inbox.js?v=20260817a" in INDEX
+    assert "admin-inbox.js?v=20260817b" in INDEX
 
 
 def test_reply_toast_tracks_authoritative_delivery_without_covering_send_action():
@@ -245,11 +245,30 @@ def test_reply_and_realtime_refresh_the_message_once():
 
 
 def test_reply_request_always_releases_send_busy_state():
+    assert '@htmx:after-request=' not in CONVERSATION
+    assert '"htmx:afterRequest"' in JAVASCRIPT
+    assert '"htmx:sendAbort"' in JAVASCRIPT
+    assert '"htmx:timeout"' in JAVASCRIPT
+    assert '"htmx:sendError"' in JAVASCRIPT
+    assert '"htmx:responseError"' in JAVASCRIPT
+    assert "this.$cleanup(() => this.replyLifecycleCleanup?.())" in JAVASCRIPT
+
     marker = JAVASCRIPT.index("finishSendRequest(event)")
-    body = JAVASCRIPT[marker : marker + 260]
+    body = JAVASCRIPT[marker : marker + 850]
     assert body.index("this.sending = false") < body.index(
-        "if (event.detail?.successful) return"
+        "if (this.replyOutcomeHandled) return"
     )
+    assert "this.replyOutcomeFromEvent(event)" in body
+    assert "this.completeSend(outcome)" in body
+    assert "Check the thread before retrying" in body
+
+
+def test_reply_response_fallback_reads_the_typed_htmx_outcome():
+    marker = JAVASCRIPT.index("replyOutcomeFromEvent(event)")
+    body = JAVASCRIPT[marker : marker + 500]
+    assert 'getResponseHeader?.("HX-Trigger")' in body
+    assert 'JSON.parse(raw)["inbox-reply-completed"]' in body
+    assert "replyOutcomeHandled: false" in JAVASCRIPT
 
 
 def test_delivery_status_waits_for_the_exact_message_fragment():

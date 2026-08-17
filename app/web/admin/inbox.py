@@ -81,6 +81,9 @@ router = APIRouter(prefix="/inbox", tags=["web-admin-inbox"])
 settings_router = APIRouter(prefix="/crm/inbox", tags=["web-admin-inbox"])
 templates = Jinja2Templates(directory="templates")
 logger = logging.getLogger(__name__)
+ReplyPresentationOutcome = Literal[
+    "queued", "scheduled", "sent", "retried", "failed", "replayed", "error"
+]
 
 
 class InboxPolishRequest(BaseModel):
@@ -92,8 +95,10 @@ class InboxPolishRequest(BaseModel):
 class InboxReplyPresentation(BaseModel):
     conversation_id: UUID
     status: Literal["success", "error"]
+    outcome: ReplyPresentationOutcome
     message: str
     message_id: UUID | None = None
+    error_code: str | None = None
 
 
 class InboxReadPresentation(BaseModel):
@@ -629,8 +634,11 @@ def _reply_presentation_response(
     conversation_id: UUID,
     *,
     status: Literal["success", "error"],
+    outcome: ReplyPresentationOutcome,
     message: str,
     message_id: UUID | None = None,
+    error_code: str | None = None,
+    http_status: int = 204,
     retry_after_seconds: int | None = None,
 ) -> Response:
     """Return the typed HTMX result consumed by the Inbox composer adapter."""
@@ -638,8 +646,21 @@ def _reply_presentation_response(
     payload = InboxReplyPresentation(
         conversation_id=conversation_id,
         status=status,
+        outcome=outcome,
         message=message,
         message_id=message_id,
+        error_code=error_code,
+    )
+    logger.info(
+        "team_inbox_reply_presentation_outcome",
+        extra={
+            "conversation_id": str(conversation_id),
+            "outcome_status": status,
+            "outcome_kind": outcome,
+            "message_id": str(message_id) if message_id else None,
+            "error_code": error_code,
+            "http_status": http_status,
+        },
     )
     headers = {
         "HX-Trigger": json.dumps(
@@ -653,9 +674,25 @@ def _reply_presentation_response(
     if retry_after_seconds is not None:
         headers["Retry-After"] = str(retry_after_seconds)
     return Response(
-        status_code=204,
+        status_code=http_status,
         headers=headers,
     )
+
+
+def _reply_presentation_outcome(
+    outcome: team_inbox_commands.ReplyOutcome,
+) -> ReplyPresentationOutcome:
+    if outcome.replayed:
+        return "replayed"
+    if outcome.kind == "queued":
+        return "queued"
+    if outcome.kind == "scheduled":
+        return "scheduled"
+    if outcome.kind == "retried":
+        return "retried"
+    if outcome.kind == "failed":
+        return "failed"
+    return "sent"
 
 
 def _read_presentation_response(
@@ -1468,7 +1505,10 @@ def team_inbox_reply(
             return _reply_presentation_response(
                 conversation_id,
                 status="error",
+                outcome="error",
                 message=exc.message,
+                error_code=exc.code,
+                http_status=409,
                 retry_after_seconds=1,
             )
         response = _detail_redirect(
@@ -1484,7 +1524,10 @@ def team_inbox_reply(
             return _reply_presentation_response(
                 conversation_id,
                 status="error",
+                outcome="error",
                 message="Conversation not found.",
+                error_code="communications.team_inbox_commands.conversation_not_found",
+                http_status=404,
             )
         return RedirectResponse(
             url="/admin/inbox?status=error&message=Conversation%20not%20found",
@@ -1498,7 +1541,10 @@ def team_inbox_reply(
             return _reply_presentation_response(
                 conversation_id,
                 status="error",
+                outcome="error",
                 message=str(exc),
+                error_code=exc.code,
+                http_status=422,
             )
         return _detail_redirect(
             conversation_id,
@@ -1523,6 +1569,7 @@ def team_inbox_reply(
         return _reply_presentation_response(
             conversation_id,
             status="success",
+            outcome=_reply_presentation_outcome(outcome),
             message=message,
             message_id=(UUID(outcome.message_id) if outcome.message_id else None),
         )

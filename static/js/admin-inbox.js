@@ -2049,6 +2049,8 @@
       files: [],
       uploading: false,
       sending: false,
+      replyOutcomeHandled: false,
+      replyLifecycleCleanup: null,
       idempotencyKey: "",
       replyTo: null,
       scheduled: false,
@@ -2079,7 +2081,40 @@
           else localStorage.removeItem(`${KEYS.draftPrefix}${conversationId}`);
           this.resizeTextarea();
         });
-        this.$nextTick(() => this.resizeTextarea());
+        this.$nextTick(() => {
+          this.resizeTextarea();
+          this.bindReplyLifecycle();
+        });
+        this.$cleanup(() => this.replyLifecycleCleanup?.());
+      },
+
+      bindReplyLifecycle() {
+        this.replyLifecycleCleanup?.();
+        const form = this.$root.querySelector("[data-reply-form]");
+        if (!form) return;
+        const events = [
+          "htmx:afterRequest",
+          "htmx:sendAbort",
+          "htmx:timeout",
+          "htmx:sendError",
+          "htmx:responseError",
+        ];
+        const finish = (event) => this.finishSendRequest(event);
+        events.forEach((name) => form.addEventListener(name, finish));
+        this.replyLifecycleCleanup = () => {
+          events.forEach((name) => form.removeEventListener(name, finish));
+          this.replyLifecycleCleanup = null;
+        };
+      },
+
+      replyOutcomeFromEvent(event) {
+        const raw = event.detail?.xhr?.getResponseHeader?.("HX-Trigger");
+        if (!raw) return null;
+        try {
+          return JSON.parse(raw)["inbox-reply-completed"] || null;
+        } catch (_error) {
+          return null;
+        }
       },
 
       workspace() {
@@ -2357,6 +2392,7 @@
         ) {
           return;
         }
+        this.replyOutcomeHandled = true;
         this.sending = false;
         const workspace = this.workspace();
         if (result.status !== "success") {
@@ -2402,10 +2438,18 @@
 
       finishSendRequest(event) {
         this.sending = false;
-        if (event.detail?.successful) return;
+        if (this.replyOutcomeHandled) return;
+        const outcome = this.replyOutcomeFromEvent(event);
+        if (outcome) {
+          this.completeSend(outcome);
+          return;
+        }
         const workspace = this.workspace();
         if (workspace) workspace.outboundToastMessageId = "";
-        workspace?.showToast?.("Could not send reply. Try again.");
+        this.replyOutcomeHandled = true;
+        workspace?.showToast?.(
+          "Reply status could not be confirmed. Check the thread before retrying.",
+        );
       },
 
       prepareSend(event) {
@@ -2443,6 +2487,7 @@
           '[name="reply_to_message_id"]',
         );
         if (replyInput) replyInput.value = this.replyTo?.id || "";
+        this.replyOutcomeHandled = false;
         this.sending = true;
         this.workspace()?.showToast?.("Message sending…", { persistent: true });
         this.workspace()?.publishTyping?.(this.conversationId, false);

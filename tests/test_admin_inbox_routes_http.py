@@ -315,6 +315,7 @@ def test_reply_htmx_request_returns_typed_completion_event_without_redirect():
     assert event == {
         "conversation_id": str(conversation_id),
         "status": "success",
+        "outcome": "queued",
         "message": "Reply queued from support@example.test.",
         "message_id": str(outcome.message_id),
     }
@@ -416,13 +417,15 @@ def test_reply_htmx_command_error_stays_in_workspace_with_failure_event():
             follow_redirects=False,
         )
 
-    assert response.status_code == 204
+    assert response.status_code == 422
     assert "location" not in response.headers
     event = json.loads(response.headers["HX-Trigger"])["inbox-reply-completed"]
     assert event == {
         "conversation_id": str(conversation_id),
         "status": "error",
+        "outcome": "error",
         "message": "The channel is temporarily unavailable.",
+        "error_code": "communications.team_inbox_commands.rejected",
     }
 
 
@@ -448,13 +451,15 @@ def test_reply_htmx_busy_error_is_retryable_without_http_500():
             follow_redirects=False,
         )
 
-    assert response.status_code == 204
+    assert response.status_code == 409
     assert response.headers["Retry-After"] == "1"
     event = json.loads(response.headers["HX-Trigger"])["inbox-reply-completed"]
     assert event == {
         "conversation_id": str(conversation_id),
         "status": "error",
+        "outcome": "error",
         "message": "Another conversation update is completing. Please retry.",
+        "error_code": "communications.team_inbox_commands.conversation_busy",
     }
 
 
