@@ -513,9 +513,10 @@ def _extract_profile(
                     for code in endpoint_blockers
                 )
                 continue
-            coordinates: tuple[float, float] | tuple[tuple[float, float], ...] = tuple(
-                line
-            )  # type: ignore[arg-type]
+            coordinates: tuple[float, float] | tuple[tuple[float, float], ...] = cast(
+                tuple[tuple[float, float], ...],
+                line,
+            )
         else:
             longitude = _finite_coordinate(row.get("longitude"))
             latitude = _finite_coordinate(row.get("latitude"))
