@@ -675,6 +675,12 @@ def test_team_inbox_routes_require_support_permissions():
         "POST",
         "support:ticket:update",
     )
+    assert _route_has_permission(
+        admin_inbox.router,
+        "/inbox/settings/email-routes",
+        "GET",
+        "support:ticket:read",
+    )
     assert not _route_has_permission(
         admin_inbox.router,
         "/inbox/{conversation_id}/assign-to-me",

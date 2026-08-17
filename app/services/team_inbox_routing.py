@@ -632,9 +632,12 @@ def _metadata_float(metadata: dict | None, *keys: str) -> float | None:
         return None
 
 
-def _active_team_id(
-    db: Session, *, team_id: str | None = None, department: str | None = None
-) -> str | None:
+def _active_team_id(db: Session, *, team_id: str | None = None) -> str | None:
+    """Resolve only an active canonical team identifier.
+
+    AI intake supplies a policy-selected UUID.  It must never recover a team
+    from an advisory department label.
+    """
     from app.models.service_team import ServiceTeam
 
     normalized_id = _coerce_uuid(team_id)
@@ -642,12 +645,6 @@ def _active_team_id(
         team = db.get(ServiceTeam, UUID(normalized_id))
         if team is not None and team.is_active:
             return normalized_id
-    department_key = _normalize_key(department)
-    if department_key is None:
-        return None
-    for team in db.query(ServiceTeam).filter(ServiceTeam.is_active.is_(True)).all():
-        if _normalize_key(team.name) == department_key:
-            return str(team.id)
     return None
 
 

@@ -219,6 +219,32 @@ def test_ai_classification_does_not_guess_team_by_department_name(db_session):
     assert decision.reason == "ai_intake_missing_team_id"
 
 
+def test_ai_classification_rejects_invalid_team_id_and_uses_configured_fallback(
+    db_session,
+):
+    fallback_team_id = _team(db_session, "Configured fallback")
+    _team(db_session, "Technical Support")
+
+    decision = team_inbox_routing.resolve_channel_routing_decision(
+        db_session,
+        channel_type="whatsapp",
+        provider="meta_cloud_api",
+        account_scope="phone-1",
+        fallback_service_team_id=fallback_team_id,
+        metadata={
+            "ai_intake_status": "classified",
+            "ai_intent": "technical_support",
+            "ai_department": "Technical Support",
+            "ai_department_team_id": "not-a-team-id",
+            "ai_confidence": 0.9,
+        },
+    )
+
+    assert decision.primary_service_team_id == str(fallback_team_id)
+    assert decision.ai_service_team_id is None
+    assert decision.reason == "ai_intake_invalid_team_id"
+
+
 def test_ai_classification_routes_to_explicit_active_department_team_id(db_session):
     default_team_id = _team(db_session, "Customer Experience")
     technical_team_id = _team(db_session, "Technical Support")
@@ -456,6 +482,14 @@ def test_ai_intake_admin_lifecycle_uses_canonical_separate_actions():
     assert "ai_conversation_intake.disable_policy" in ROUTES_MODULE
     assert "ai_intake.upsert_config" not in ROUTES_MODULE
     assert '"production_collection_enabled": False' in ROUTES_MODULE
+
+
+def test_ai_intake_admin_history_is_read_only_and_exposes_all_version_states():
+    assert "Policy version history" in ROUTES_TEMPLATE
+    assert "Current active" in ROUTES_TEMPLATE
+    assert "'Active' if version.status == 'activated'" in ROUTES_TEMPLATE
+    assert "ai_intake_policy_version_history" in ROUTES_TEMPLATE
+    assert "Policy version history" not in ROUTES_MODULE
 
 
 def test_ai_polish_settings_are_editable_on_inbox_settings_page():
