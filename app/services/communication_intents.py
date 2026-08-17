@@ -16,7 +16,7 @@ from app.models.notification import (
     NotificationStatus,
 )
 from app.models.subscriber import Reseller, ResellerUser, Subscriber, SubscriberContact
-from app.schemas.notification import NotificationCreate
+from app.schemas.notification import NotificationCreate, NotificationDeliveryLatency
 from app.services.communication_eligibility import suppression_reason
 from app.services.customer_notification_policy import (
     resolve_subscriber_id_for_recipient,
@@ -80,6 +80,7 @@ class CommunicationIntent:
     send_at: datetime | None = None
     requested_status: NotificationStatus = NotificationStatus.queued
     requested_last_error: str | None = None
+    delivery_latency: NotificationDeliveryLatency = NotificationDeliveryLatency.normal
 
 
 @dataclass(frozen=True)
@@ -283,6 +284,7 @@ def submit(db: Session, intent: CommunicationIntent) -> CommunicationIntentResul
             **attachment_envelope,
             "audience_type": intent.audience_type,
             "audience_id": str(intent.audience_id) if intent.audience_id else None,
+            "delivery_latency": intent.delivery_latency.value,
         },
     )
     db.add(record)
@@ -344,6 +346,7 @@ def submit(db: Session, intent: CommunicationIntent) -> CommunicationIntentResul
                     status=intent.requested_status,
                     send_at=intent.send_at,
                     last_error=intent.requested_last_error,
+                    delivery_latency=intent.delivery_latency,
                     metadata_={
                         **intent.metadata,
                         **attachment_envelope,
@@ -398,6 +401,7 @@ def submit(db: Session, intent: CommunicationIntent) -> CommunicationIntentResul
                         body=intent.body,
                         status=intent.requested_status,
                         send_at=intent.send_at,
+                        delivery_latency=intent.delivery_latency,
                         metadata_={
                             **intent.metadata,
                             **attachment_envelope,

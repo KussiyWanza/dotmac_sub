@@ -33,6 +33,7 @@ from app.schemas.notification import (
     NotificationCreate,
     NotificationDeliveryBulkUpdateRequest,
     NotificationDeliveryCreate,
+    NotificationDeliveryLatency,
     NotificationDeliveryUpdate,
     NotificationTemplateCreate,
     NotificationTemplateUpdate,
@@ -59,12 +60,50 @@ from app.services.customer_notification_policy import (
 from app.services.email_template import html_to_text
 from app.services.notification_template_conditions import validate_conditions
 from app.services.response import ListResponseMixin, list_response
+from app.services.session_hooks import run_after_commit
 
 logger = logging.getLogger(__name__)
 
 # Unrendered double-brace template tokens (e.g. "{{amount}}") that leaked into a
 # stored/sent notification body — they must never reach the in-app feed.
 _LEAKED_TOKEN_RE = re.compile(r"\{\{\s*[a-zA-Z0-9_.]+\s*\}\}")
+
+
+def _request_immediate_delivery(notification_id: UUID) -> None:
+    try:
+        from app.tasks.notifications import deliver_notification
+
+        deliver_notification.apply_async(args=[str(notification_id)], retry=False)
+    except Exception:
+        logger.warning(
+            "notification_immediate_delivery_dispatch_failed",
+            extra={"notification_id": str(notification_id)},
+            exc_info=True,
+        )
+
+
+def _delivery_is_due(notification: Notification) -> bool:
+    if notification.send_at is None:
+        return True
+    return notification.send_at <= datetime.now(UTC)
+
+
+def _schedule_latency_wakeup(
+    db: Session,
+    notification: Notification,
+    *,
+    delivery_latency: NotificationDeliveryLatency,
+) -> None:
+    if delivery_latency is not NotificationDeliveryLatency.immediate:
+        return
+    if notification.status is not NotificationStatus.queued:
+        return
+    if not _delivery_is_due(notification):
+        return
+    run_after_commit(
+        db,
+        lambda _callback_db: _request_immediate_delivery(notification.id),
+    )
 
 
 def _clean_feed_body(body: str | None) -> str | None:
@@ -406,6 +445,7 @@ class Notifications(ListResponseMixin):
             if not template:
                 raise HTTPException(status_code=404, detail="Template not found")
         data = payload.model_dump()
+        delivery_latency = NotificationDeliveryLatency(data.pop("delivery_latency"))
         subscriber_id = data.get("subscriber_id")
         if resolve_customer_identity:
             subscriber_id = subscriber_id or resolve_subscriber_id_for_recipient(
@@ -417,6 +457,9 @@ class Notifications(ListResponseMixin):
             data.get("event_type")
         )
         data["category"] = category
+        metadata = dict(data.get("metadata_") or {})
+        metadata["delivery_latency"] = delivery_latency.value
+        data["metadata_"] = metadata
         requested_status = data["status"]
         if apply_customer_policy:
             Notifications._apply_customer_queue_policy(
@@ -435,6 +478,11 @@ class Notifications(ListResponseMixin):
         notification = Notification(**data)
         db.add(notification)
         db.flush()
+        _schedule_latency_wakeup(
+            db,
+            notification,
+            delivery_latency=delivery_latency,
+        )
         return notification
 
     @staticmethod
@@ -492,6 +540,7 @@ class Notifications(ListResponseMixin):
                 send_at=payload.send_at,
                 requested_status=payload.status,
                 requested_last_error=payload.last_error,
+                delivery_latency=payload.delivery_latency,
             ),
         )
         notification = next(
@@ -536,6 +585,7 @@ class Notifications(ListResponseMixin):
                 send_at=payload.send_at,
                 requested_status=payload.status,
                 requested_last_error=payload.last_error,
+                delivery_latency=payload.delivery_latency,
             ),
         )
         return next(

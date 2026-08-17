@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.models.notification import NotificationChannel
 from app.models.subscriber import ResellerUser, Subscriber, UserType
+from app.schemas.notification import NotificationDeliveryLatency
 from app.services.communication_intents import (
     CommunicationClass,
     CommunicationIntent,
@@ -100,5 +101,6 @@ class ResellerInviteHandler:
                     "command_id": event.payload.get("command_id"),
                 },
                 dedupe_key=f"auth:reseller-invite:{event.event_id}",
+                delivery_latency=NotificationDeliveryLatency.immediate,
             ),
         )

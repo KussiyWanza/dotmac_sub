@@ -8,6 +8,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.models.notification import NotificationChannel
+from app.schemas.notification import NotificationDeliveryLatency
 from app.services import credential_recovery
 from app.services.communication_intents import (
     CommunicationClass,
@@ -88,5 +89,6 @@ class PasswordRecoveryHandler:
                     "command_id": event.payload.get("command_id"),
                 },
                 dedupe_key=f"auth:password-recovery:{event.event_id}",
+                delivery_latency=NotificationDeliveryLatency.immediate,
             ),
         )
