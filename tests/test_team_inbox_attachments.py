@@ -390,6 +390,23 @@ def test_binding_ignores_assets_from_another_conversation(db_session):
     assert db_session.get(InboxMediaAsset, foreign[0]).message_id is None
 
 
+def test_staged_asset_validation_rejects_another_conversation(db_session):
+    mine = _conversation_id(db_session)
+    theirs = _conversation_id(db_session)
+    foreign = team_inbox_commands.stage_attachments(
+        db_session,
+        conversation_id=theirs,
+        uploads=[("theirs.png", "image/png", PNG)],
+    )
+
+    with pytest.raises(team_inbox_media.MediaUploadError, match="unavailable"):
+        team_inbox_media.validate_staged_asset_ids(
+            db_session, conversation_id=mine, asset_ids=foreign
+        )
+
+    assert db_session.get(InboxMediaAsset, foreign[0]).message_id is None
+
+
 def test_an_already_sent_asset_cannot_be_reattached(db_session):
     from app.models.team_inbox import InboxMessage
 

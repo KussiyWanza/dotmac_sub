@@ -227,6 +227,14 @@ def receive_integrator_observation(
             db,
             receipt_id=receipt_id,
             error_code="integrator_observation_consequence_failed",
+            # The CLASS NAME, never `str(exc)`. An arbitrary exception's message
+            # is untrusted text of unbounded shape — it can carry a payload
+            # fragment, a connection string, or a provider's own error body —
+            # and `error_detail` is a durable column an operator reads. The
+            # branch above may persist `exc.message` only because a DomainError
+            # message is Sub-authored and operator-safe by that class's
+            # contract. `dotmac-integration` 0.1.0a4 fixed this exact defect
+            # class on the Integrator's side of the wire.
             error_detail=type(exc).__name__,
         )
         raise

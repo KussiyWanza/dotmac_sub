@@ -21,6 +21,9 @@ EMPTY_STATE = Path("templates/admin/inbox/_empty_state.html").read_text()
 AUTHORITATIVE_CONTEXT = Path(
     "templates/admin/inbox/_authoritative_context.html"
 ).read_text()
+CONVERSATION_HISTORY = Path(
+    "templates/admin/inbox/_conversation_history.html"
+).read_text()
 FLOATING_SURFACES = Path("templates/admin/inbox/_floating_surfaces.html").read_text()
 INDEX = Path("templates/admin/inbox/index.html").read_text()
 COMMENTS = Path("templates/admin/inbox/comments.html").read_text()
@@ -91,6 +94,19 @@ def test_crm_replication_surfaces_exclude_customer_placeholder_data():
         "z-index: 200",
     ):
         assert contract in REPLICA_CSS
+
+
+def test_contact_drawer_exposes_authoritative_conversation_history_tab():
+    assert 'role="tablist"' in DRAWER
+    assert "contactTab = 'conversations'" in DRAWER
+    assert "conversation_history.total_count" in DRAWER
+    assert 'role="tabpanel"' in DRAWER
+    assert "contact_context.recent_conversations" in CONVERSATION_HISTORY
+    assert 'href="{{ item.url }}"' in CONVERSATION_HISTORY
+    assert 'datetime="{{ item.last_message_at.isoformat() }}"' in CONVERSATION_HISTORY
+    assert (
+        "Showing the {{ history.items | length }} most recent" in CONVERSATION_HISTORY
+    )
 
 
 def test_social_comments_have_dedicated_workspace_and_filter_entry_point():
@@ -187,7 +203,7 @@ def test_reply_submission_refreshes_inbox_fragments_without_page_navigation():
     assert 'workspace?.refreshConversationList?.("reply")' not in JAVASCRIPT
     assert 'this.draft = ""' in JAVASCRIPT
     assert "window.location.reload" not in JAVASCRIPT
-    assert "admin-inbox.js?v=20260815b" in INDEX
+    assert "admin-inbox.js?v=20260816a" in INDEX
 
 
 def test_reply_and_realtime_refresh_the_message_once():
@@ -204,6 +220,23 @@ def test_reply_and_realtime_refresh_the_message_once():
         "this.refreshThreadForMessage(this.selectedId, data.message_id)"
         in realtime_body
     )
+
+
+def test_reply_request_always_releases_send_busy_state():
+    marker = JAVASCRIPT.index("finishSendRequest(event)")
+    body = JAVASCRIPT[marker : marker + 260]
+    assert body.index("this.sending = false") < body.index(
+        "if (event.detail?.successful) return"
+    )
+
+
+def test_delivery_status_waits_for_the_exact_message_fragment():
+    marker = JAVASCRIPT.index("      applyDeliveryStatus(data) {")
+    body = JAVASCRIPT[marker : marker + 1500]
+    assert "this.pendingDeliveryStatuses.set(messageId" in body
+    assert "this.refreshThread(this.selectedId)" not in body
+    assert "this.pendingDeliveryStatuses.delete(messageId)" in body
+    assert "this.applyPendingDeliveryStatuses()" in JAVASCRIPT
 
 
 def test_incremental_refresh_is_bounded_and_has_stable_fragment_targets():
@@ -420,6 +453,7 @@ def test_sidebar_filters_replace_stale_requests_and_expose_busy_state():
     assert "if (this.filterLoading) return" in JAVASCRIPT
     assert 'document.body.addEventListener("htmx:sendAbort", release)' in JAVASCRIPT
     assert "InboxQueueComposition.sidebar" in ROUTES
+    assert "InboxQueueComposition.queue_only" in ROUTES
     assert "manager_dashboard = None" in ROUTES
     assert 'hx-get="/admin/inbox/manager-dashboard"' in SIDEBAR
     assert "def team_inbox_manager_dashboard(" in ROUTES
@@ -460,7 +494,7 @@ def test_conversation_click_shows_loading_without_hiding_list_until_swap():
     select_end = JAVASCRIPT.index("updateSelectedHighlight()", select_start)
     select_block = JAVASCRIPT[select_start:select_end]
     assert "this.selectedId = id;" in select_block
-    assert "this.conversationOpening = true;" in select_block
+    assert 'this.beginDetailRequest(id, "navigation", true);' in select_block
     assert 'setAttribute("data-triage-mode", "detail")' not in select_block
 
     swap_start = JAVASCRIPT.index('if (target.id === "triage-detail")')
@@ -471,6 +505,72 @@ def test_conversation_click_shows_loading_without_hiding_list_until_swap():
     assert 'this.mode = "detail";' in swap_block
     assert "this.conversationOpening = false;" in swap_block
     assert 'setAttribute("data-triage-mode", "detail")' in swap_block
+
+
+def test_conversation_detail_requests_are_latest_request_wins():
+    for contract in (
+        "detailRequestSequence: 0",
+        "activeDetailRequest: null",
+        "pendingDetailRequest: null",
+        "__inboxDetailSequence",
+        "stale.xhr.abort()",
+        "detailSequence !== this.detailRequestSequence",
+        "event.detail.shouldSwap = false",
+    ):
+        assert contract in JAVASCRIPT
+    release = JAVASCRIPT.index("detailSequence === this.activeDetailRequest?.sequence")
+    release_body = JAVASCRIPT[release : release + 520]
+    assert "this.activeDetailRequest = null" in release_body
+    assert "this.conversationOpening = false" in release_body
+    assert "cancelDetailRequest()" in JAVASCRIPT
+    assert "active?.xhr.abort()" in JAVASCRIPT
+    show_list = JAVASCRIPT.index("showList() {")
+    assert "this.cancelDetailRequest()" in JAVASCRIPT[show_list : show_list + 180]
+
+
+def test_background_refresh_protects_dirty_composer_without_blocking_navigation():
+    assert ':data-composer-dirty="composerDirty().toString()"' in CONVERSATION
+    marker = JAVASCRIPT.index("composerHasTransientState()")
+    body = JAVASCRIPT[marker : marker + 1100]
+    assert 'composer?.dataset.composerDirty === "true"' in body
+    assert "this.composerFocused() || this.composerHasTransientState()" in body
+    assert "Boolean(options.blocking)" in body
+    assert 'intent = "realtime"' in JAVASCRIPT
+    assert "scheduleThreadRefresh(conversationId" in JAVASCRIPT
+    assert "window.clearTimeout(this.threadRefreshTimer)" in JAVASCRIPT
+
+
+def test_contact_detail_requests_do_not_change_selected_conversation_and_reject_stale_swaps():
+    marker = JAVASCRIPT.index("openContact(id)")
+    body = JAVASCRIPT[marker : marker + 220]
+    assert "this.beginContactRequest(id)" in body
+    assert "this.selectedId = id" not in body
+    for contract in (
+        "contactRequestSequence: 0",
+        "__inboxContactSequence",
+        "contactSequence !== this.contactRequestSequence",
+    ):
+        assert contract in JAVASCRIPT
+
+
+def test_searches_cancel_stale_responses_and_fragment_cleanup_releases_resources():
+    assert "const fetchWithTimeout = async" in JAVASCRIPT
+    assert "window.setTimeout(() => controller.abort(), timeoutMs)" in JAVASCRIPT
+    assert "this.contactSearchController?.abort()" in JAVASCRIPT
+    assert "sequence !== this.contactSearchSequence" in JAVASCRIPT
+    assert "searchController = new AbortController()" in JAVASCRIPT
+    assert "sequence !== searchSequence" in JAVASCRIPT
+    assert "htmx:beforeCleanupElement" in JAVASCRIPT
+    assert "window.clearInterval(element.__inboxReplyWindowTimer)" in JAVASCRIPT
+    assert 'document.removeEventListener("click", closeOnOutsideClick)' in JAVASCRIPT
+
+
+def test_realtime_subscriptions_are_reconciled_to_visible_topics():
+    marker = JAVASCRIPT.index("      subscribeVisibleTopics() {")
+    body = JAVASCRIPT[marker : marker + 1300]
+    assert 'type: "unsubscribe"' in body
+    assert "if (this.subscribedTopics.has(topic)) return" in body
+    assert "this.subscribedTopics = desiredTopics" in body
 
 
 def test_sidebar_resize_handle_has_exact_shape_states_and_tooltip():

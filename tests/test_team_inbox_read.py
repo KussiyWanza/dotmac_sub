@@ -398,7 +398,10 @@ def test_admin_inbox_detail_reply_queues_message(db_session):
     assert notification.recipient == "customer@example.com"
     timeline = team_inbox_read.get_conversation_timeline(db_session, conversation.id)
     assert timeline is not None
-    assert timeline.messages[-1].body == "<p>We are checking this now.</p>"
+    assert timeline.messages[-1].body == "We are checking this now."
+    assert timeline.messages[-1].metadata["body_html"] == (
+        "<p>We are checking this now.</p>"
+    )
     assert timeline.messages[-1].metadata["source_route"] == "admin_inbox_detail_reply"
 
 

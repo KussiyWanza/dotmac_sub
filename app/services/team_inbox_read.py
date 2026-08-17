@@ -1405,10 +1405,9 @@ def list_conversations(
         rank = team_rank.get(entry.service_team_id, 0) + 1
         team_rank[entry.service_team_id] = rank
         queue_by_conversation[entry.conversation_id] = (entry, rank)
-    capacity_by_team = {
-        team_id: team_inbox_assignment.team_capacity_snapshot(db, team_id)
-        for team_id in team_rank
-    }
+    capacity_by_team = team_inbox_assignment.team_capacity_snapshots(
+        db, list(team_rank)
+    )
     active_assignments = (
         {
             assignment.conversation_id: assignment

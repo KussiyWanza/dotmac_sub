@@ -26,7 +26,7 @@ def test_ci_and_agent_guidance_call_makefile_validation_owners() -> None:
     assert "make test-ci-shard" in workflow
     assert "scripts/ci/select_test_shard.py" in makefile
     assert "make test-architecture" in workflow
-    assert "run: make test-integration" in workflow
+    assert "run: make test-integration-shard" in workflow
     assert "python -m scripts.ci.migrated_test_database" in makefile
     assert "run: poetry run alembic upgrade head" not in workflow
     assert "make test-architecture" in guidance

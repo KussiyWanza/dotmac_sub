@@ -117,6 +117,14 @@ def handle_smtp_message(
                 payload=team_inbox_observations.InboundMessageObservation(
                     contact_address=payload.from_address,
                     body=payload.body or "",
+                    body_text=str(
+                        (payload.metadata or {}).get("body_text") or payload.body or ""
+                    ),
+                    html_body=(
+                        str((payload.metadata or {})["html_body"])
+                        if (payload.metadata or {}).get("html_body")
+                        else None
+                    ),
                     subject=payload.subject,
                     to_addresses=tuple(payload.to_addresses),
                     cc_addresses=tuple(payload.cc_addresses),

@@ -364,11 +364,16 @@ def validate_active_service_teams(
 def resolve_filter_query(
     db: Session,
     payload: InboxAdvancedFilterPayload,
+    *,
+    include_selector: bool = True,
 ) -> tuple[InboxAdvancedFilterQuery, tuple[tuple[UUID, str], ...]]:
     """Resolve one typed query and its active team selector in one owner read."""
 
     query = parse_filter_payload(payload)
-    return query, validate_active_service_teams(db, query)
+    if not include_selector and not query.referenced_team_ids:
+        return query, ()
+    options = validate_active_service_teams(db, query)
+    return query, options if include_selector else ()
 
 
 def normalize_saved_filter_payload(

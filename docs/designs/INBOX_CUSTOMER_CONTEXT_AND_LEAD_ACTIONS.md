@@ -20,6 +20,15 @@ are bounded to five newest records. Database reads are transaction-current;
 the drawer records its observation time and refreshes on every return to the
 originating conversation. Each section has its own availability result.
 
+The drawer exposes conversation history as a dedicated tab beside customer
+details. Its badge is the full count of previous active Inbox conversations
+for the exact Subscriber, independent of which agent handled them. The tab
+lists the five newest previous conversations with channel, status, and last
+activity date; selecting one returns to that exact conversation through the
+server-owned `/admin/inbox?c=<conversation-id>` destination. When more than
+five exist, the bounded result is stated explicitly rather than presented as
+the complete count.
+
 ## Identity and action policy
 
 `communications.inbox_lead_actions` accepts a `profile` or `lead` intent and

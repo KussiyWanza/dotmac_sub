@@ -131,3 +131,52 @@ class TestResponsivePanes:
         inbox.goto()
         inbox.expect_loaded()
         expect(admin_page.locator("#inbox-sidebar")).to_be_visible()
+
+
+class TestInboxRequestLifecycle:
+    def test_reply_http_completion_releases_send_without_secondary_event(
+        self, admin_page, settings
+    ):
+        inbox = AdminInboxPage(admin_page, settings.base_url)
+        inbox.goto()
+        conversations = admin_page.locator(
+            ".conversation-item [data-conversation-link]"
+        )
+        if conversations.count() == 0:
+            pytest.skip("no inbox conversation seeded in this environment")
+
+        conversations.first.click()
+        composer = admin_page.locator("[data-reply-composer]")
+        expect(composer).to_be_visible()
+        composer.locator("textarea[name='body_text']").fill("Lifecycle test reply")
+        admin_page.route(
+            "**/admin/inbox/*/reply",
+            lambda route: route.fulfill(status=204, body=""),
+        )
+
+        send = composer.locator("[data-reply-form] button[aria-label='Send message']")
+        send.click()
+        expect(send).to_be_enabled(timeout=3000)
+
+    def test_contact_drawer_does_not_change_selected_conversation(
+        self, admin_page, settings
+    ):
+        inbox = AdminInboxPage(admin_page, settings.base_url)
+        inbox.goto()
+        rows = admin_page.locator(".conversation-item")
+        if rows.count() < 2:
+            pytest.skip("fewer than two inbox conversations are seeded")
+
+        selected_before = rows.first.get_attribute("data-conversation-id")
+        assert selected_before
+        rows.first.locator("[data-conversation-link]").click()
+        expect(
+            admin_page.locator(f'[data-conversation-thread="{selected_before}"]')
+        ).to_be_visible()
+        rows.nth(1).locator('button[hx-target="#inbox-contact-content"]').click()
+        expect(admin_page.locator("#inbox-contact-content")).not_to_be_empty()
+        selected_after = admin_page.evaluate(
+            "window.Alpine.$data(document.querySelector('[data-inbox-workspace]')).selectedId"
+        )
+
+        assert selected_after == selected_before

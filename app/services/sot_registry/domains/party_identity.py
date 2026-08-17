@@ -294,6 +294,7 @@ DOMAIN = DomainSOT(
             depends_on=(
                 "party.registry",
                 "auth.staff_provisioning",
+                "app_sessions.auth",
                 "observability.audit_log",
             ),
             notes=(
@@ -413,6 +414,188 @@ DOMAIN = DomainSOT(
                     "tests/test_staff_party_credential_adoption.py",
                     "tests/architecture/test_credential_party_binding_boundary.py",
                 ),
+            ),
+        ),
+        SOTService(
+            name="party.staff_session_projection",
+            module="app.services.staff_session_party_adoption",
+            owns=("approved staff session Party projection",),
+            depends_on=(
+                "party.registry",
+                "auth.staff_provisioning",
+                "observability.audit_log",
+            ),
+            notes=(
+                "Projects only active, unrevoked legacy staff sessions from "
+                "an exact UUID-only, digest-bound approval plan. Identity is "
+                "the deployed SystemUser.person_party_id foreign-key binding; "
+                "names, email, usernames and token material are never inputs. "
+                "Revoked and non-active historical null rows remain preserved."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name="approved staff session Party projection",
+                        role=OwnerRole.PROJECTION_WRITER,
+                        input_names=(
+                            "approved staff session projection decision",
+                            "canonical staff principal state",
+                            "canonical Person Party identity",
+                            "legacy staff session state",
+                        ),
+                        canonical_writer="party.staff_session_projection",
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="approved staff session projection decision",
+                        owner="party.staff_session_projection",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "typed UUID-only plan item, exact plan and file "
+                            "SHA-256 digests, expiring approval, exact count "
+                            "bound and attributable user CommandContext"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical staff principal state",
+                        owner="auth.staff_provisioning",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "active SystemUser and its exact person_party_id "
+                            "foreign-key binding"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical Person Party identity",
+                        owner="party.registry",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="the exact Person Party named by the staff binding",
+                    ),
+                    AuthorityInput(
+                        name="legacy staff session state",
+                        owner="app_sessions.auth",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "the exact active, unrevoked sessions row selected "
+                            "by reviewed UUID"
+                        ),
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.OWNER_MANAGED,
+                    boundary=(
+                        "project_staff_session_party validates and commits one "
+                        "sessions.party_id projection plus its audit row before "
+                        "return; the operator adapter owns no business write."
+                    ),
+                    locking=(
+                        "Lock the reviewed Person Party, then SystemUser, then "
+                        "session; repeat exact binding, eligibility and conflict "
+                        "checks while all three locks are held."
+                    ),
+                    idempotency=(
+                        "An already-populated exact Party is a replay; a different "
+                        "Party, principal, state or incomplete binding refuses."
+                    ),
+                    retries=(
+                        "Retry only the same unexpired approved plan. The adapter "
+                        "revalidates approval before every independently committed "
+                        "item and exact owner replay resumes interrupted batches."
+                    ),
+                ),
+                errors=ErrorContract(
+                    domain_codes=(
+                        "party.staff_session_projection.invalid_command",
+                        "party.staff_session_projection.party_binding_refused",
+                        "party.staff_session_projection.staff_account_not_found",
+                        "party.staff_session_projection.session_not_found",
+                        "party.staff_session_projection.session_principal_conflict",
+                        "party.staff_session_projection.session_party_conflict",
+                        "party.staff_session_projection.session_ineligible",
+                        *owner_command_boundary_error_codes(
+                            "party.staff_session_projection"
+                        ),
+                    ),
+                    mapping_owner=(
+                        "scripts.migration.execute_staff_session_party_projection"
+                    ),
+                    fail_closed_on=(
+                        "unattributable approver",
+                        "missing or non-Person Party",
+                        "inactive, missing or differently bound SystemUser",
+                        "missing, revoked, non-active or differently owned session",
+                        "conflicting existing session Party projection",
+                        "expired, changed or count-mismatched approval evidence",
+                    ),
+                ),
+                events=EventContract(
+                    event_types=("party.staff_session_projected",),
+                    schema_version=1,
+                    delivery_owner="observability.audit_log",
+                    compatibility=(
+                        "PII-free audit evidence carries session, SystemUser, Party, "
+                        "decision, plan, item-evidence, approval and command ids or "
+                        "digests; never contact, credential or token material."
+                    ),
+                    replay=(
+                        "An exact existing session Party returns a replay and does "
+                        "not append a second audit event."
+                    ),
+                ),
+                projections=(
+                    ProjectionContract(
+                        name="staff session Party projection",
+                        input_names=(
+                            "approved staff session projection decision",
+                            "canonical staff principal state",
+                            "canonical Person Party identity",
+                            "legacy staff session state",
+                        ),
+                        writer="party.staff_session_projection",
+                        freshness=(
+                            "New staff sessions dual-write the bound pair; the "
+                            "approved campaign projects each eligible legacy row."
+                        ),
+                        stale_behavior=(
+                            "A null legacy row remains on the deploy-1 bridge; an "
+                            "unbound or conflicting active row blocks planning and "
+                            "the deploy-2 ratchet."
+                        ),
+                        drift_signal=(
+                            "StaffSessionPartyProjectionReport active-unrevoked "
+                            "remaining, unbound and disagreement counts."
+                        ),
+                        rebuild_operation=(
+                            "Generate and separately approve a fresh deterministic "
+                            "batch; there is no force-repoint or inferred mapping."
+                        ),
+                        repair_owner="party.staff_session_projection",
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.SHADOWING,
+                    old_owner="legacy active staff sessions with null party_id",
+                    new_owner="party.staff_session_projection",
+                    verification=(
+                        "Typed-contract sensitivity, exact-FK planning, PII-free "
+                        "report, approval, owner refusal, audit and replay canaries."
+                    ),
+                    cutover_gate=(
+                        "Every active, unrevoked staff session is projected with "
+                        "zero unbound principals or disagreements."
+                    ),
+                    fallback_retirement=(
+                        "The assertion-first reader bridge is deleted only after "
+                        "the aggregate report is ratchet-ready in production."
+                    ),
+                ),
+                steward="identity and authentication",
+                design_refs=(
+                    "docs/PARTY_PRINCIPAL_CONTEXT_BINDING.md",
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                ),
+                test_refs=("tests/test_staff_session_party_adoption.py",),
             ),
         ),
         SOTService(

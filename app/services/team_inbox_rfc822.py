@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+import html
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -8,9 +10,95 @@ from email import message_from_bytes, policy
 from email.header import decode_header
 from email.message import Message
 from email.utils import getaddresses, parseaddr, parsedate_to_datetime
+from html.parser import HTMLParser
 from typing import Any
 
 from app.services import team_inbox_receive
+
+_BLOCK_TAGS = {
+    "address",
+    "article",
+    "aside",
+    "blockquote",
+    "div",
+    "dl",
+    "fieldset",
+    "figcaption",
+    "figure",
+    "footer",
+    "form",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "header",
+    "hr",
+    "main",
+    "nav",
+    "ol",
+    "p",
+    "pre",
+    "section",
+    "table",
+    "tbody",
+    "td",
+    "tfoot",
+    "th",
+    "thead",
+    "tr",
+    "ul",
+}
+_IGNORED_TAGS = {"head", "script", "style", "title"}
+
+
+class _ReadableHTMLParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self.ignored_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        del attrs
+        tag = tag.lower()
+        if tag in _IGNORED_TAGS:
+            self.ignored_depth += 1
+        elif not self.ignored_depth:
+            if tag in _BLOCK_TAGS or tag == "br":
+                self.parts.append("\n")
+            if tag == "li":
+                self.parts.append("- ")
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.handle_starttag(tag, attrs)
+        if tag.lower() in _IGNORED_TAGS:
+            self.ignored_depth -= 1
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if tag in _IGNORED_TAGS:
+            self.ignored_depth = max(0, self.ignored_depth - 1)
+        elif not self.ignored_depth and (tag in _BLOCK_TAGS or tag == "li"):
+            self.parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if not self.ignored_depth:
+            self.parts.append(data)
+
+
+def html_to_readable_text(value: str | None) -> str:
+    """Convert an email HTML document to safe, readable thread text."""
+    if not value:
+        return ""
+    parser = _ReadableHTMLParser()
+    parser.feed(value)
+    parser.close()
+    text = (
+        html.unescape("".join(parser.parts)).replace("\r\n", "\n").replace("\r", "\n")
+    )
+    lines = [re.sub(r"[\t\f\v ]+", " ", line).strip() for line in text.splitlines()]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
 
 
 @dataclass(frozen=True)
@@ -170,7 +258,8 @@ def parse_rfc822_email(
     cc_addresses = parse_address_headers(message.get_all("Cc", []))
     subject = decode_header_value(message.get("Subject"))
     text_body, html_body = extract_bodies(message)
-    body = (text_body or html_body or "").strip() or subject or "(no content)"
+    body_text = (text_body or "").strip() or html_to_readable_text(html_body)
+    body = body_text or subject or "(no content)"
     received_at = _parse_received_at(message.get("Date"))
     metadata: dict[str, Any] = {
         "source": source,
@@ -189,6 +278,7 @@ def parse_rfc822_email(
         metadata["smtp_probe"] = smtp_probe
     if html_body:
         metadata["html_body"] = html_body
+    metadata["body_text"] = body
 
     return ParsedInboundEmail(
         payload=team_inbox_receive.InboundEmailPayload(

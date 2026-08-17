@@ -3,7 +3,7 @@
 {% set resolution = (timeline.metadata.get('contact_resolution') if timeline.metadata else {}) or {} %}
 {% set lead_capture = (timeline.metadata.get('lead_capture') if timeline.metadata else {}) or {} %}
 
-<div data-contact-context="{{ timeline.id }}">
+<div data-contact-context="{{ timeline.id }}" x-data="{ contactTab: 'details' }">
     {% call ctx_section("Identity") %}
         <div class="flex items-start gap-3">
             <div class="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-amber-100 to-orange-100 text-sm font-bold uppercase text-orange-700 dark:from-amber-950 dark:to-orange-950 dark:text-amber-200">
@@ -22,6 +22,46 @@
         </div>
     {% endcall %}
 
+    {% set conversation_history = contact_context.recent_conversations if contact_context else none %}
+    <div class="sticky top-0 z-10 border-y border-slate-200 bg-slate-50/95 px-4 backdrop-blur dark:border-slate-700 dark:bg-slate-900/95">
+        <div class="flex gap-4" role="tablist" aria-label="Contact details">
+            <button type="button"
+                    id="contact-details-tab-{{ timeline.id }}"
+                    role="tab"
+                    x-ref="detailsTab"
+                    @click="contactTab = 'details'"
+                    @keydown.right.prevent="contactTab = 'conversations'; $refs.conversationsTab.focus()"
+                    :aria-selected="contactTab === 'details'"
+                    :tabindex="contactTab === 'details' ? 0 : -1"
+                    aria-controls="contact-details-panel-{{ timeline.id }}"
+                    :class="contactTab === 'details' ? 'border-amber-500 text-amber-700 dark:text-amber-300' : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'"
+                    class="inline-flex min-h-11 items-center border-b-2 px-1 text-xs font-semibold transition-colors">
+                Details
+            </button>
+            <button type="button"
+                    id="contact-conversations-tab-{{ timeline.id }}"
+                    role="tab"
+                    x-ref="conversationsTab"
+                    @click="contactTab = 'conversations'"
+                    @keydown.left.prevent="contactTab = 'details'; $refs.detailsTab.focus()"
+                    :aria-selected="contactTab === 'conversations'"
+                    :tabindex="contactTab === 'conversations' ? 0 : -1"
+                    aria-controls="contact-conversations-panel-{{ timeline.id }}"
+                    :class="contactTab === 'conversations' ? 'border-amber-500 text-amber-700 dark:text-amber-300' : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'"
+                    class="inline-flex min-h-11 items-center gap-1.5 border-b-2 px-1 text-xs font-semibold transition-colors">
+                Conversations
+                {% if conversation_history and conversation_history.total_count is not none %}
+                <span class="min-w-5 rounded-full bg-slate-200 px-1.5 py-0.5 text-center text-[10px] font-bold tabular-nums text-slate-700 dark:bg-slate-700 dark:text-slate-200">{{ conversation_history.total_count }}</span>
+                {% endif %}
+            </button>
+        </div>
+    </div>
+
+    <div id="contact-details-panel-{{ timeline.id }}"
+         x-show="contactTab === 'details'"
+         role="tabpanel"
+         aria-labelledby="contact-details-tab-{{ timeline.id }}">
+    {% set conversation_history_in_tab = true %}
     {% include "admin/inbox/_authoritative_context.html" %}
 
     {% call ctx_section("Customer & subscription") %}
@@ -221,5 +261,15 @@
             <button type="submit" class="min-h-10 w-full rounded-lg border border-cyan-300 px-3 text-xs font-semibold text-cyan-800 hover:bg-cyan-50 dark:border-cyan-700 dark:text-cyan-200 dark:hover:bg-cyan-900/20">Add comment</button>
         </form>
     {% endcall %}
+
+    </div>
+
+    <div id="contact-conversations-panel-{{ timeline.id }}"
+         x-show="contactTab === 'conversations'"
+         x-cloak
+         role="tabpanel"
+         aria-labelledby="contact-conversations-tab-{{ timeline.id }}">
+        {% include "admin/inbox/_conversation_history.html" %}
+    </div>
 
 </div>

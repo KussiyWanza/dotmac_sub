@@ -63,7 +63,10 @@ authoritative documents in the same change that updates the contract.
   typed contract surface against one accepted Governance commit, and the
   `Dotmac engineering standards` CI job must execute that exact revision.
   Mutable tags/branches, copied rules, candidate mode, or a missing required
-  check are not substitutes.
+  check are not substitutes. The schema-9 external-connector ratchet is
+  Governance-owned and transitional: Sub records its measured debt in
+  `docs/external-connector-surface.md`, but never copies the detector or treats
+  the ratchet as runtime isolation.
 - Keep domain values typed internally. Serialize UUIDs, enums, decimals, dates,
   and value objects explicitly at adapter, persistence, or reporting boundaries.
 - Domain services raise domain errors. HTTP responses, redirects, task retries,

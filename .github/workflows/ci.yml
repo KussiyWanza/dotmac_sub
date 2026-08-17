@@ -38,6 +38,7 @@ jobs:
     outputs:
       docs-only: ${{ steps.classify.outputs.docs-only }}
       application: ${{ steps.classify.outputs.application }}
+      postgresql-required: ${{ steps.classify.outputs.postgresql-required }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -54,6 +55,7 @@ jobs:
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             echo "docs-only=false" >> "$GITHUB_OUTPUT"
             echo "application=true" >> "$GITHUB_OUTPUT"
+            echo "postgresql-required=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -78,6 +80,7 @@ jobs:
             echo "No base commit to diff against; classifying as application." >&2
             echo "docs-only=false" >> "$GITHUB_OUTPUT"
             echo "application=true" >> "$GITHUB_OUTPUT"
+            echo "postgresql-required=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -100,6 +103,10 @@ jobs:
             echo "docs-only=true" >> "$GITHUB_OUTPUT"
             echo "application=false" >> "$GITHUB_OUTPUT"
           fi
+
+          python -m scripts.ci.classify_postgresql_changes \
+            --paths-file "$RUNNER_TEMP/changed-paths" \
+            --github-output "$GITHUB_OUTPUT"
 
   python-environment:
     name: Prepare Python Environment
@@ -478,11 +485,16 @@ jobs:
       - name: Scan tracked files for private key material
         run: bash scripts/ci/scan_private_keys.sh
 
-  integration-run:
-    name: PostgreSQL Gate
+  integration-shards:
+    name: PostgreSQL Tests (shard ${{ matrix.shard }}/4)
     needs: [changes, python-environment]
-    if: needs.changes.outputs.docs-only != 'true'
+    if: needs.changes.outputs.postgresql-required == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     services:
       postgres:
         image: postgis/postgis:16-3.4
@@ -507,8 +519,27 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Run integration tests
-        run: make test-integration
+      - name: Run integration-test shard
+        env:
+          INTEGRATION_SHARD: ${{ matrix.shard }}
+          INTEGRATION_SHARDS: 4
+        run: make test-integration-shard
+
+  integration-run:
+    name: PostgreSQL Gate
+    needs: [changes, integration-shards]
+    if: always() && needs.changes.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: PostgreSQL validation not required
+        if: needs.changes.outputs.postgresql-required != 'true'
+        run: echo "PostgreSQL checks are not needed for this change surface."
+
+      - name: Require every PostgreSQL shard
+        if: needs.changes.outputs.postgresql-required == 'true'
+        env:
+          INTEGRATION_RESULT: ${{ needs.integration-shards.result }}
+        run: test "$INTEGRATION_RESULT" = "success"
 
   integration-test:
     name: Integration Tests (PostgreSQL)
@@ -517,11 +548,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Documentation-only change
-        if: needs.changes.outputs.docs-only == 'true'
-        run: echo "PostgreSQL checks are not needed for documentation-only changes."
+        if: needs.changes.outputs.postgresql-required != 'true'
+        run: echo "PostgreSQL checks are not needed for this change surface."
 
       - name: Require PostgreSQL gate
-        if: needs.changes.outputs.docs-only != 'true'
+        if: needs.changes.outputs.postgresql-required == 'true'
         env:
           INTEGRATION_RESULT: ${{ needs.integration-run.result }}
         run: test "$INTEGRATION_RESULT" = "success"

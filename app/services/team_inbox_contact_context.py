@@ -9,7 +9,7 @@ from enum import StrEnum
 from typing import Generic, TypeVar
 from uuid import UUID
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -263,8 +263,8 @@ def _leads(
         .order_by(Lead.is_active.desc(), Lead.updated_at.desc(), Lead.id)
     )
     rows = tuple(db.scalars(query.limit(5)).all())
-    count = len(
-        tuple(db.scalars(select(Lead.id).where(Lead.party_id == party_id)).all())
+    count = int(
+        db.scalar(select(func.count(Lead.id)).where(Lead.party_id == party_id)) or 0
     )
     if count == 0:
         return ContextSection(
@@ -340,7 +340,7 @@ def _tickets(
         Ticket.is_active.is_(True),
         Ticket.status.in_(support.active_ticket_status_values()),
     )
-    count = len(tuple(db.scalars(query.with_only_columns(Ticket.id)).all()))
+    count = int(db.scalar(select(func.count()).select_from(query.subquery())) or 0)
     if count == 0:
         return ContextSection(
             ContextAvailability.empty,
@@ -439,7 +439,7 @@ def _projects(
         Project.is_active.is_(True),
         Project.status.in_(projects.active_project_status_values()),
     )
-    count = len(tuple(db.scalars(query.with_only_columns(Project.id)).all()))
+    count = int(db.scalar(select(func.count()).select_from(query.subquery())) or 0)
     if count == 0:
         return ContextSection(
             ContextAvailability.empty,
@@ -492,7 +492,7 @@ def _project_tasks(
             ProjectTask.status.in_(projects.active_project_task_status_values()),
         )
     )
-    count = len(tuple(db.scalars(query.with_only_columns(ProjectTask.id)).all()))
+    count = int(db.scalar(select(func.count()).select_from(query.subquery())) or 0)
     if count == 0:
         return ContextSection(
             ContextAvailability.empty,

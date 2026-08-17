@@ -75,6 +75,54 @@ an observation like any other. This is Sub's half of the invariant
 
 ---
 
+## 2.4 The wire contract — this is the half the Integrator was waiting on
+
+The Integrator's ingress surface and receipt worker are built, but its
+`ProductPortClient` deliberately was **not** written there. Authoring a wire
+contract two systems must agree on, inside the transport, is what ADR-0024
+forbids: the destination application owns its own accepted port, and the
+transport learns the shape rather than inventing it. So the contract below is
+the missing half, and it is settled here, by the owning product.
+
+**Authoritative definition:** `app/schemas/integrator_observation.py`. That
+module — not this table, and not a copy in the Integrator — is the contract. It
+is `extra="forbid"` throughout, so an unrecognized field is a 422 rather than
+something silently dropped.
+
+`POST /api/v1/integration/observations/{sub_capability_binding_id}`
+Header `X-Api-Key: <key scoped integration:observations:write>`
+
+| field | type | notes |
+|---|---|---|
+| `capability_id` | string | must equal `messaging.receive.v1`; mismatch is **404**, not 403 |
+| `contract_version` | int | `1` today; anything else is **409**, never a best-effort parse |
+| `provider` | string | provider FAMILY (`meta_cloud_api`), never `integrator` — see § 2.2 |
+| `provider_account_scope` | string | account within the provider (e.g. the WhatsApp phone-number id) |
+| `provider_event_id` | string | the provider's own immutable id, **unprefixed**; Sub applies its own `message:`/`receipt:` namespacing |
+| `channel` | string | `whatsapp`, `facebook_messenger`, `instagram_dm`, `facebook_comment`, `instagram_comment`, `chat_widget`, `email` — validated against the provider family |
+| `observed_at` | RFC-3339, **tz-aware** | naive is a 400 |
+| `payload_fingerprint` | 64 hex | canonical-JSON SHA-256 (`sort_keys`, `separators=(",",":")`) over the `message` **or** `delivery_receipt` object; recomputed by Sub, mismatch is 400 |
+| `scope` | `{kind, ref}` | the Integrator's binding scope — **provenance only**, recorded on the receipt |
+| `message` \| `delivery_receipt` | object | exactly one; both or neither is a 400 |
+
+Responses: **200** `{observation_id, outcome, processing_status, replayed}` ·
+**401** bad/absent/revoked/unscoped credential · **404** unknown capability or
+binding · **409** collision or undeployed contract version · **400** malformed
+envelope · **422** the consequence owner rejected the observation.
+
+The shadow route is the same body at `.../mirror` with a
+`integration:observations:mirror` key, and returns a parity verdict instead.
+
+Two things the client author should not have to discover by experiment:
+
+* **`provider_event_id` is sent raw.** Sub prefixes it. A client that sends
+  `message:wamid.X` produces `message:message:wamid.X` and a duplicate.
+* **The fingerprint covers the observation sub-object only**, not the whole
+  envelope — otherwise it could not be computed before the envelope is
+  assembled.
+
+---
+
 ## 3. The shadow window — what to run, and what it proves
 
 1. Create an `IntegrationInstallation` on connector `dotmac.integrator.http`

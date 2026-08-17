@@ -197,6 +197,34 @@ def test_the_legacy_receivers_defects_are_still_present_and_still_owed():
     )
 
 
+def test_no_untrusted_exception_text_is_persisted_to_error_detail():
+    """`error_detail` is a durable operator-facing column, not a log line.
+
+    An arbitrary exception's message is untrusted text of unbounded shape — it
+    can carry a payload fragment, a connection string, or a provider's own
+    error body. The generic handler must persist the exception CLASS, never
+    `str(exc)`. `dotmac-integration` 0.1.0a4 fixed this exact defect class on
+    the Integrator's side of the wire; this keeps Sub's side from acquiring it.
+
+    The DomainError branch may persist `exc.message` because that class
+    contracts its message as operator-safe, so the check is specific to the
+    catch-all rather than banning the column outright.
+    """
+
+    source = _source(PORT)
+    assert "error_detail=type(exc).__name__" in source, (
+        "the catch-all failure path no longer records the exception class"
+    )
+    for leaked in (
+        "error_detail=str(exc)",
+        'error_detail=f"{exc}',
+        "error_detail=repr(exc)",
+    ):
+        assert leaked not in source, (
+            f"untrusted exception text reaches a durable column: {leaked!r}"
+        )
+
+
 def test_the_shadow_route_and_the_write_route_do_not_share_a_scope():
     from app.api.integrator_observations import (
         INTEGRATOR_MIRROR_SCOPE,

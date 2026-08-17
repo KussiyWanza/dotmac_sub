@@ -17,6 +17,8 @@ from app.services.team_inbox_assignment import (
     estimate_queue_wait_minutes,
     queue_conversation_for_team,
     sweep_queued_conversations,
+    team_capacity_snapshot,
+    team_capacity_snapshots,
 )
 
 
@@ -179,3 +181,28 @@ def test_wait_estimate_uses_fifo_position_and_capacity():
         )
         is None
     )
+
+
+def test_team_capacity_snapshots_preserve_per_team_capacity(db_session):
+    first_team = _team(db_session)
+    second_team = _team(db_session)
+    first_agent = _agent(db_session, first_team, capacity=2)
+    _agent(db_session, second_team, capacity=3)
+    occupied = _conversation(db_session)
+    db_session.add(
+        InboxConversationAssignment(
+            conversation_id=occupied.id,
+            service_team_id=first_team.id,
+            person_id=first_agent.id,
+            is_active=True,
+        )
+    )
+    db_session.flush()
+
+    snapshots = team_capacity_snapshots(db_session, (first_team.id, second_team.id))
+
+    assert snapshots[first_team.id].active_assignments == 1
+    assert snapshots[first_team.id].total_capacity == 2
+    assert snapshots[second_team.id].active_assignments == 0
+    assert snapshots[second_team.id].total_capacity == 3
+    assert team_capacity_snapshot(db_session, first_team.id) == snapshots[first_team.id]

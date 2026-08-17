@@ -99,6 +99,15 @@ test-integration: assert-full-test-host ## Run the PostgreSQL integration gate
 	poetry run python -m scripts.ci.migrated_test_database
 	poetry run pytest tests/integration/ -v --tb=short -o "addopts="
 
+INTEGRATION_SHARD ?= 1
+INTEGRATION_SHARDS ?= 1
+
+test-integration-shard: assert-full-test-host ## Run one deterministic PostgreSQL integration shard
+	poetry run python -m scripts.ci.migrated_test_database
+	@paths="$$(poetry run python -m scripts.ci.select_integration_shard --shard $(INTEGRATION_SHARD) --shards $(INTEGRATION_SHARDS))"; \
+		test -n "$$paths"; \
+		poetry run pytest $$paths -v --tb=short -o "addopts="
+
 test-architecture: assert-full-test-host ## Run architecture guards with the measured four-worker default
 	poetry run pytest tests/architecture -q -n 4 --durations=50
 

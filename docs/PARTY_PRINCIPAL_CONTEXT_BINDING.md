@@ -1,8 +1,10 @@
 # Party Principal and Organization-Context Binding
 
-Status: migrations 353 and 527 provide additive principal and credential
-projection foundations; no credential data backfill, authentication reader
-cutover, RLS, or compatibility retirement.
+Status: migrations 353, 527, and 534 provide principal, credential, and session
+projection foundations. The reviewed staff credential cohort is projected and
+the deploy-1 Party-first reader is live; active legacy session projection and
+the null-bridge retirement ratchet remain. Subscriber/reseller adoption, RLS,
+and the wider compatibility retirement remain separate programmes.
 
 ## Decision
 
@@ -153,6 +155,36 @@ does not commit, mutate ORM state, resolve a mechanism by guess, or hold a
 batch transaction. A crash between phases leaves a valid staff identity link;
 an exact retry replays that phase and resumes the credential projection. Every
 item is revalidated against the unexpired approval before each owner call.
+
+## Approved staff-session Party projection
+
+`party.staff_session_projection` is the only writer for the approved legacy
+`sessions.party_id` population. Its operator adapter is
+`scripts/migration/execute_staff_session_party_projection.py`; it provides a
+PII-free readiness report, deterministic private plan generation, and execution
+of a separately approved plan.
+
+The plan derives identity only from the deployed
+`SystemUser.person_party_id` foreign-key binding. Every item carries the exact
+session, SystemUser and Person Party UUID plus a digest of those facts and the
+expected active/unrevoked state. Names, email addresses, usernames and token
+material are not queried, emitted, or accepted by the strict contract.
+
+Each execution is limited to 1,000 items. The separate approval binds the
+normalized plan digest, exact plan-file bytes, attributable user UUID, reason
+digest, exact item count, and an expiry window no longer than 24 hours. The
+owner then locks Party, SystemUser and session in that order and repeats every
+identity, eligibility and conflict check before writing. An exact existing
+projection replays; changed state or a different Party refuses. Every applied
+row and its audit event commit in the same owner transaction, while an
+interrupted batch resumes through exact per-item replay.
+
+Only active, unrevoked staff sessions are in scope. Revoked or non-active
+historical null rows are preserved and never guessed or deleted. If the report
+finds an active/unrevoked unmappable principal or projection disagreement, plan
+generation refuses; remediation belongs to the canonical authentication/session
+owner before a new plan is reviewed, not to a second revocation path in the
+operator adapter.
 
 ## Migration 353
 
