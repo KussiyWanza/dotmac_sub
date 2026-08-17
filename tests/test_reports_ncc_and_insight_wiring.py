@@ -38,6 +38,7 @@ def _request():
         scope={"type": "http"},
         query_params={},
         url=SimpleNamespace(path="/admin/reports"),
+        state=SimpleNamespace(csrf_token="test-csrf-token"),
     )
 
 

@@ -1,80 +1,85 @@
 <!-- Admin Sidebar Navigation — Flat Stitch-style, collapsed-aware, with badge support -->
 
-{# ── Active page → parent nav item mapping for highlighting ── #} {% set
-parent_for_page = { 'dashboard': 'dashboard', 'subscribers': 'customers',
-'customers': 'customers', 'contacts': 'customers', 'provisioning': 'system',
-'provisioning-migrate': 'system', 'workflows': 'system', 'appointments':
-'system', 'support-tickets': 'support-tickets', 'support-automation':
-'support-tickets', 'support-assignment-rules': 'support-tickets', 'team-inbox':
-'team-inbox', 'agent-workqueue': 'agent-workqueue', 'service-requests':
-'service-requests', 'sales': 'sales', 'sales-dashboard': 'sales', 'sales-leads':
-'sales', 'sales-pipelines': 'sales', 'sales-quotes': 'sales', 'sales-orders':
-'sales', 'referrals': 'referrals', 'projects': 'projects', 'project-tasks':
-'projects', 'project-templates': 'projects', 'billing': 'billing', 'accounts':
-'billing', 'invoices': 'billing', 'payments': 'billing', 'credits': 'billing',
-'ar-aging': 'billing', 'dunning': 'billing', 'billing-cache': 'billing',
-'payment_arrangements': 'billing', 'payment_proofs': 'billing',
-'payment_providers': 'billing', 'payment_channels': 'system',
-'payment_channel_accounts': 'system', 'collection-accounts': 'system',
-'collection_accounts': 'system', 'tax-rates': 'billing', 'tax-accounting':
-'billing', 'ledger': 'billing', 'catalog': 'catalog', 'catalog-offers':
-'catalog', 'catalog-subscriptions': 'catalog', 'catalog-add-ons': 'catalog',
-'catalog-products': 'catalog', 'catalog-usage': 'catalog', 'catalog-calculator':
-'catalog', 'catalog-settings': 'catalog', 'resellers': 'customers', 'network':
-'network', 'network-hub': 'network', 'network-map': 'network',
-'network-devices': 'network', 'core-devices': 'network', 'olts': 'network',
-'onts': 'network', 'cpes': 'network', 'nas': 'network', 'ip-management':
-'network', 'vlans': 'network', 'radius': 'network', 'fiber-plant': 'network',
-'fiber-map': 'network', 'fiber-trace': 'network', 'fiber-connectivity-coverage':
-'network', 'fiber-identity-coverage': 'network', 'fiber-field-verification':
-'network', 'fiber-field-verification-map': 'network', 'splice-closures':
-'network', 'fiber-strands': 'network', 'fiber-change-requests': 'network',
-'ont-identity-reviews': 'network', 'fiber-as-built-activation': 'network',
-'ont-assignment-cutover-coverage': 'network',
-'ont-assignment-constraint-authorizations': 'network', 'pop-sites': 'network',
-'zones': 'network', 'monitoring': 'network', 'alarms': 'network', 'speedtests':
-'network', 'tr069': 'network', 'dns-threats': 'network', 'topology': 'network',
-'weathermap': 'network', 'explorer': 'network', 'network-backups': 'network',
-'onu-types': 'network', 'speed-profiles': 'network', 'vendor-capabilities':
-'network', 'firmware-images': 'network', 'uisp-control': 'network', 'vpn':
-'vpn', 'wireguard': 'vpn', 'wireguard-peers': 'vpn', 'reports': 'reports',
-'reports-revenue': 'reports', 'reports-customers': 'reports',
-'reports-subscribers': 'reports', 'reports-network': 'reports',
-'reports-billing': 'reports', 'dispatch-work-orders': 'dispatch-work-orders',
-'material-requests': 'material-requests', 'field-live-map': 'field-live-map',
-'field-movement-playback': 'field-live-map', 'vendors': 'vendors',
-'vendor-operations': 'vendors', 'vendor-routes': 'vendors', 'gis': 'gis',
-'integrations': 'integrations', 'notifications': 'notifications',
-'alert-policies': 'notifications', 'sla-policies': 'notifications',
-'oncall-rotations': 'notifications', 'settings-hub': 'system', 'configuration':
-'system', 'system-modules': 'system', 'billing-setup': 'system',
-'config-billing': 'system', 'config-payment-methods': 'system', 'config-tax':
-'system', 'config-reminders': 'system', 'config-billing-notif': 'system',
-'company-info': 'system', 'system-about': 'system', 'users': 'system', 'roles':
-'system', 'permissions': 'system', 'api-keys': 'system', 'audit-log': 'system',
-'system-health': 'system', 'logs': 'system', 'scheduler': 'system',
-'system-import': 'system', 'system-export': 'system', 'system-restore-tool':
-'system', 'system-db-inspector': 'system', 'legal': 'system', 'design-system':
-'system' } %} {% set active_item = parent_for_page.get(active_page, active_page
-or '') %} {# ── Module visibility ── #} {% set module_states =
-sidebar_stats.module_states if sidebar_stats is defined and sidebar_stats and
-sidebar_stats.module_states is defined else {} %} {# ── Pending customer
-pin-correction requests (GIS badge) ── #} {% set pending_location_requests =
-sidebar_stats.pending_location_requests if sidebar_stats is defined and
-sidebar_stats and sidebar_stats.pending_location_requests is defined else 0 %}
-{# ── Reusable class strings ── #} {% set cls_active = 'bg-indigo-500/10
-text-indigo-600 border-l-2 border-indigo-500 dark:text-indigo-400
-dark:bg-indigo-500/10' %} {% set cls_inactive = 'border-l-2 border-transparent
-text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300
-dark:hover:bg-slate-800 dark:hover:text-white' %} {% set cls_link = 'flex
-min-h-[40px] items-center gap-3 rounded-r-xl pl-3 pr-3 py-2 text-sm font-medium
-transition-colors' %} {# ── Macros ── #} {% macro nav_link(label, href,
-icon_svg, page_id, badge=None, active_pages=[], tour_id=None) %} {% if
-active_pages %} {% set is_active = active_page == page_id or active_page in
-active_pages %} {% else %} {% set is_active = active_page == page_id or
-active_item == page_id %} {% endif %}
-<div
-  x-data="{
+{# ── Active page → parent nav item mapping for highlighting ── #}
+{% set parent_for_page = {
+    'dashboard': 'dashboard',
+    'subscribers': 'customers', 'customers': 'customers', 'contacts': 'customers',
+    'provisioning': 'system', 'provisioning-migrate': 'system', 'workflows': 'system', 'appointments': 'system',
+    'support-tickets': 'support-tickets',
+    'support-automation': 'support-tickets', 'support-assignment-rules': 'support-tickets',
+    'team-inbox': 'team-inbox',
+    'agent-workqueue': 'agent-workqueue',
+    'service-requests': 'service-requests',
+    'sales': 'sales', 'sales-dashboard': 'sales', 'sales-leads': 'sales',
+    'sales-pipelines': 'sales',
+    'sales-quotes': 'sales', 'sales-orders': 'sales',
+    'referrals': 'referrals',
+    'projects': 'projects', 'project-tasks': 'projects', 'project-templates': 'projects',
+    'billing': 'billing', 'accounts': 'billing', 'invoices': 'billing', 'payments': 'billing',
+    'credits': 'billing', 'ar-aging': 'billing', 'dunning': 'billing', 'billing-cache': 'billing',
+    'payment_arrangements': 'billing', 'payment_proofs': 'billing', 'payment_providers': 'billing',
+    'payment_channels': 'system', 'payment_channel_accounts': 'system',
+    'collection-accounts': 'system', 'collection_accounts': 'system',
+    'tax-rates': 'billing', 'tax-accounting': 'billing', 'ledger': 'billing',
+    'catalog': 'catalog', 'catalog-offers': 'catalog', 'catalog-subscriptions': 'catalog',
+    'catalog-add-ons': 'catalog', 'catalog-products': 'catalog', 'catalog-usage': 'catalog',
+    'catalog-calculator': 'catalog', 'catalog-settings': 'catalog', 'resellers': 'customers',
+    'network': 'network', 'network-hub': 'network', 'network-map': 'network',
+    'network-devices': 'network', 'core-devices': 'network',
+    'olts': 'network', 'onts': 'network', 'cpes': 'network', 'nas': 'network',
+    'ip-management': 'network', 'vlans': 'network', 'radius': 'network',
+    'fiber-plant': 'network', 'fiber-map': 'network', 'fiber-trace': 'network', 'fiber-connectivity-coverage': 'network', 'fiber-identity-coverage': 'network', 'fiber-field-verification': 'network', 'fiber-field-verification-map': 'network', 'splice-closures': 'network',
+    'fiber-strands': 'network', 'fiber-change-requests': 'network', 'ont-identity-reviews': 'network', 'fiber-as-built-activation': 'network',
+    'ont-assignment-cutover-coverage': 'network',
+    'ont-assignment-constraint-authorizations': 'network',
+    'pop-sites': 'network', 'zones': 'network',
+    'monitoring': 'network', 'alarms': 'network',
+    'speedtests': 'network', 'tr069': 'network', 'dns-threats': 'network',
+    'topology': 'network', 'weathermap': 'network', 'explorer': 'network', 'network-backups': 'network',
+    'onu-types': 'network', 'speed-profiles': 'network',
+    'vendor-capabilities': 'network', 'firmware-images': 'network',
+    'uisp-control': 'network',
+    'vpn': 'vpn', 'wireguard': 'vpn', 'wireguard-peers': 'vpn',
+    'reports': 'reports', 'reports-revenue': 'reports', 'reports-customers': 'reports', 'reports-subscribers': 'reports',
+    'reports-network': 'reports', 'reports-billing': 'reports',
+    'dispatch-work-orders': 'dispatch-work-orders',
+    'material-requests': 'material-requests',
+    'field-live-map': 'field-live-map', 'field-movement-playback': 'field-live-map',
+    'vendors': 'vendors', 'vendor-operations': 'vendors', 'vendor-routes': 'vendors',
+    'gis': 'gis', 'integrations': 'integrations',
+    'notifications': 'notifications', 'alert-policies': 'notifications', 'sla-policies': 'notifications', 'oncall-rotations': 'notifications',
+    'settings-hub': 'system', 'configuration': 'system', 'system-modules': 'system',
+    'billing-setup': 'system',
+    'config-billing': 'system', 'config-payment-methods': 'system', 'config-tax': 'system',
+    'config-reminders': 'system', 'config-billing-notif': 'system',
+    'company-info': 'system', 'system-about': 'system',
+    'users': 'system', 'roles': 'system', 'permissions': 'system', 'api-keys': 'system',
+    'audit-log': 'system', 'system-health': 'system', 'logs': 'system', 'scheduler': 'system',
+    'system-import': 'system', 'system-export': 'system',
+    'system-restore-tool': 'system', 'system-db-inspector': 'system',
+    'legal': 'system', 'design-system': 'system'
+} %}
+{% set active_item = parent_for_page.get(active_page, active_page or '') %}
+
+{# ── Module visibility ── #}
+{% set module_states = sidebar_stats.module_states if sidebar_stats is defined and sidebar_stats and sidebar_stats.module_states is defined else {} %}
+
+{# ── Pending customer pin-correction requests (GIS badge) ── #}
+{% set pending_location_requests = sidebar_stats.pending_location_requests if sidebar_stats is defined and sidebar_stats and sidebar_stats.pending_location_requests is defined else 0 %}
+
+{# ── Reusable class strings ── #}
+{% set cls_active = 'bg-indigo-500/10 text-indigo-600 border-l-2 border-indigo-500 dark:text-indigo-400 dark:bg-indigo-500/10' %}
+{% set cls_inactive = 'border-l-2 border-transparent text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white' %}
+{% set cls_link = 'flex min-h-[40px] items-center gap-3 rounded-r-xl pl-3 pr-3 py-2 text-sm font-medium transition-colors' %}
+
+{# ── Macros ── #}
+{% macro nav_link(label, href, icon_svg, page_id, badge=None, active_pages=[], tour_id=None) %}
+{% if active_pages %}
+{% set is_active = active_page == page_id or active_page in active_pages %}
+{% else %}
+{% set is_active = active_page == page_id or active_item == page_id %}
+{% endif %}
+<div x-data="{
         showTip: false,
         tipTop: 0,
         tipLeft: 0,
@@ -89,455 +94,226 @@ active_item == page_id %} {% endif %}
             this.showTip = false;
         }
      }"
-  @mouseenter="showTooltip()"
-  @mouseleave="hideTooltip()"
-  @focusin="showTooltip()"
-  @focusout="hideTooltip()"
-  :class="sidebarCollapsed ? 'mx-auto w-fit' : ''"
-  class="relative"
->
-  <a
-    href="{{ href }}"
-    x-ref="trigger"
-    {%
-    if
-    is_active
-    %}aria-current="page"
-    {%
-    endif
-    %}
-    {%
-    if
-    tour_id
-    %}data-tour-id="{{ tour_id }}"
-    {%
-    endif
-    %}
-    :aria-label="sidebarCollapsed ? '{{ label }}' : null"
-    :class="sidebarCollapsed ? 'justify-center !pl-0 !pr-0 !border-l-0 rounded-xl' : ''"
-    class="{{ cls_link }} {{ cls_active if is_active else cls_inactive }}"
-  >
-    {{ icon_svg }}
-    <span x-show="!sidebarCollapsed" class="flex-1 truncate">{{ label }}</span>
-    {% if badge %}
-    <span
-      x-show="!sidebarCollapsed"
-      class="min-w-[20px] rounded-full bg-red-100 px-1.5 py-0.5 text-center text-[10px] font-bold leading-none tabular-nums text-red-700 dark:bg-red-900/30 dark:text-red-400"
-      >{{ badge }}</span
-    >
-    {% endif %}
-  </a>
-  <template x-teleport="body">
-    <div
-      x-show="sidebarCollapsed && showTip"
-      x-cloak
-      :style="`left:${tipLeft}px; top:${tipTop}px; transform: translateY(-50%);`"
-      class="pointer-events-none fixed z-[100] whitespace-nowrap rounded-md bg-slate-900 px-2.5 py-1.5 text-xs font-medium text-white shadow-lg dark:bg-slate-100 dark:text-slate-900"
-    >
-      {{ label }}
-    </div>
-  </template>
+     @mouseenter="showTooltip()"
+     @mouseleave="hideTooltip()"
+     @focusin="showTooltip()"
+     @focusout="hideTooltip()"
+     :class="sidebarCollapsed ? 'mx-auto w-fit' : ''"
+     class="relative">
+    <a href="{{ href }}"
+       x-ref="trigger"
+       {% if is_active %}aria-current="page"{% endif %}
+       {% if tour_id %}data-tour-id="{{ tour_id }}"{% endif %}
+       :aria-label="sidebarCollapsed ? '{{ label }}' : null"
+       :class="sidebarCollapsed ? 'justify-center !pl-0 !pr-0 !border-l-0 rounded-xl' : ''"
+       class="{{ cls_link }} {{ cls_active if is_active else cls_inactive }}">
+        {{ icon_svg }}
+        <span x-show="!sidebarCollapsed" class="flex-1 truncate">{{ label }}</span>
+        {% if badge %}
+        <span x-show="!sidebarCollapsed" class="min-w-[20px] rounded-full bg-red-100 px-1.5 py-0.5 text-center text-[10px] font-bold leading-none tabular-nums text-red-700 dark:bg-red-900/30 dark:text-red-400">{{ badge }}</span>
+        {% endif %}
+    </a>
+    <template x-teleport="body">
+        <div x-show="sidebarCollapsed && showTip"
+             x-cloak
+             :style="`left:${tipLeft}px; top:${tipTop}px; transform: translateY(-50%);`"
+             class="pointer-events-none fixed z-[100] whitespace-nowrap rounded-md bg-slate-900 px-2.5 py-1.5 text-xs font-medium text-white shadow-lg dark:bg-slate-100 dark:text-slate-900">
+            {{ label }}
+        </div>
+    </template>
 </div>
-{% endmacro %} {% macro section_label(label) %}
-<p
-  x-show="!sidebarCollapsed"
-  class="mt-6 mb-1.5 px-3 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400 dark:text-slate-500"
->
-  {{ label }}
-</p>
-<div
-  x-show="sidebarCollapsed"
-  x-cloak
-  class="mt-4 mb-1.5 mx-3 border-t border-slate-200 dark:border-slate-700/50"
-></div>
-{% endmacro %} {% macro subnav_link(label, href, page_id) %} {% set is_active =
-active_page == page_id %}
-<a
-  href="{{ href }}"
-  {%
-  if
-  is_active
-  %}aria-current="page"
-  {%
-  endif
-  %}
-  class="ml-7 flex min-h-[36px] items-center gap-2 rounded-lg border-l-2 py-1.5 pl-4 pr-3 text-sm font-medium transition-colors {{ cls_active if is_active else cls_inactive }}"
->
-  <span
-    class="h-1.5 w-1.5 flex-shrink-0 rounded-full bg-current opacity-70"
-    aria-hidden="true"
-  ></span>
-  <span class="truncate">{{ label }}</span>
-</a>
-{% endmacro %} {# ── Icons (h-5 w-5) ── #} {% set icon_dashboard %}
-<svg
-  class="h-5 w-5 flex-shrink-0"
-  fill="none"
-  stroke="currentColor"
-  viewBox="0 0 24 24"
->
-  <path
-    stroke-linecap="round"
-    stroke-linejoin="round"
-    stroke-width="2"
-    d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"
-  />
-</svg>
-{% endset %} {% set icon_customers %}
-<svg
-  class="h-5 w-5 flex-shrink-0"
-  fill="none"
-  stroke="currentColor"
-  viewBox="0 0 24 24"
->
-  <path
-    stroke-linecap="round"
-    stroke-linejoin="round"
-    stroke-width="2"
-    d="M10 6H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V8a2 2 0 00-2-2h-5m-4 0V5a2 2 0 114 0v1m-4 0a2 2 0 104 0m-5 8a2 2 0 100-4 2 2 0 000 4zm0 0c1.306 0 2.417.835 2.83 2M9 14a3.001 3.001 0 00-2.83 2M15 11h3m-3 4h2"
-  />
-</svg>
-{% endset %} {% set icon_provisioning %}
-<svg
-  class="h-5 w-5 flex-shrink-0"
-  fill="none"
-  stroke="currentColor"
-  viewBox="0 0 24 24"
->
-  <path
-    stroke-linecap="round"
-    stroke-linejoin="round"
-    stroke-width="2"
-    d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"
-  />
-</svg>
-{% endset %} {% set icon_support %}
-<svg
-  class="h-5 w-5 flex-shrink-0"
-  fill="none"
-  stroke="currentColor"
-  viewBox="0 0 24 24"
->
-  <path
-    stroke-linecap="round"
-    stroke-linejoin="round"
-    stroke-width="2"
-    d="M15 5v2m0 4v2m0 4v2M5 5a2 2 0 00-2 2v3a2 2 0 110 4v3a2 2 0 002 2h14a2 2 0 002-2v-3a2 2 0 110-4V7a2 2 0 00-2-2H5z"
-  />
-</svg>
-{% endset %} {% set icon_workqueue %}
-<svg
-  class="h-5 w-5 flex-shrink-0"
-  fill="none"
-  stroke="currentColor"
-  viewBox="0 0 24 24"
->
-  <path
-    stroke-linecap="round"
-    stroke-linejoin="round"
-    stroke-width="2"
-    d="M4 6h16M4 12h16M4 18h7"
-  />
-</svg>
-{% endset %} {% set icon_inbox %}
-<svg
-  class="h-5 w-5 flex-shrink-0"
-  fill="none"
-  stroke="currentColor"
-  viewBox="0 0 24 24"
->
-  <path
-    stroke-linecap="round"
-    stroke-linejoin="round"
-    stroke-width="2"
-    d="M3 8h18M3 8l1.5-3.5A2 2 0 016.35 3h11.3a2 2 0 011.85 1.5L21 8M3 8v10a2 2 0 002 2h14a2 2 0 002-2V8M8 12h2a2 2 0 002 2 2 2 0 002-2h2"
-  />
-</svg>
-{% endset %} {% set icon_sales %}
-<svg
-  class="h-5 w-5 flex-shrink-0"
-  fill="none"
-  stroke="currentColor"
-  viewBox="0 0 24 24"
->
-  <path
-    stroke-linecap="round"
-    stroke-linejoin="round"
-    stroke-width="2"
-    d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"
-  />
-</svg>
-{% endset %} {% set icon_referrals %}
-<svg
-  class="h-5 w-5 flex-shrink-0"
-  fill="none"
-  stroke="currentColor"
-  viewBox="0 0 24 24"
->
-  <path
-    stroke-linecap="round"
-    stroke-linejoin="round"
-    stroke-width="2"
-    d="M12 8v13m0-13V6a2 2 0 112 2h-2zm0 0V5.5A2.5 2.5 0 109.5 8H12zm-7 4h14M5 12a2 2 0 110-4h14a2 2 0 110 4M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7"
-  />
-</svg>
-{% endset %} {% set icon_projects %}
-<svg
-  class="h-5 w-5 flex-shrink-0"
-  fill="none"
-  stroke="currentColor"
-  viewBox="0 0 24 24"
->
-  <path
-    stroke-linecap="round"
-    stroke-linejoin="round"
-    stroke-width="2"
-    d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"
-  />
-</svg>
-{% endset %} {% set icon_billing %}
-<svg
-  class="h-5 w-5 flex-shrink-0"
-  fill="none"
-  stroke="currentColor"
-  viewBox="0 0 24 24"
->
-  <path
-    stroke-linecap="round"
-    stroke-linejoin="round"
-    stroke-width="2"
-    d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"
-  />
-</svg>
-{% endset %} {% set icon_catalog %}
-<svg
-  class="h-5 w-5 flex-shrink-0"
-  fill="none"
-  stroke="currentColor"
-  viewBox="0 0 24 24"
->
-  <path
-    stroke-linecap="round"
-    stroke-linejoin="round"
-    stroke-width="2"
-    d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"
-  />
-</svg>
-{% endset %} {% set icon_network %}
-<svg
-  class="h-5 w-5 flex-shrink-0"
-  fill="none"
-  stroke="currentColor"
-  viewBox="0 0 24 24"
->
-  <path
-    stroke-linecap="round"
-    stroke-linejoin="round"
-    stroke-width="2"
-    d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"
-  />
-</svg>
-{% endset %} {% set icon_vpn %}
-<svg
-  class="h-5 w-5 flex-shrink-0"
-  fill="none"
-  stroke="currentColor"
-  viewBox="0 0 24 24"
->
-  <path
-    stroke-linecap="round"
-    stroke-linejoin="round"
-    stroke-width="2"
-    d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"
-  />
-</svg>
-{% endset %} {% set icon_reports %}
-<svg
-  class="h-5 w-5 flex-shrink-0"
-  fill="none"
-  stroke="currentColor"
-  viewBox="0 0 24 24"
->
-  <path
-    stroke-linecap="round"
-    stroke-linejoin="round"
-    stroke-width="2"
-    d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-  />
-</svg>
-{% endset %} {% set icon_gis %}
-<svg
-  class="h-5 w-5 flex-shrink-0"
-  fill="none"
-  stroke="currentColor"
-  viewBox="0 0 24 24"
->
-  <path
-    stroke-linecap="round"
-    stroke-linejoin="round"
-    stroke-width="2"
-    d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"
-  />
-  <path
-    stroke-linecap="round"
-    stroke-linejoin="round"
-    stroke-width="2"
-    d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"
-  />
-</svg>
-{% endset %} {% set icon_integrations %}
-<svg
-  class="h-5 w-5 flex-shrink-0"
-  fill="none"
-  stroke="currentColor"
-  viewBox="0 0 24 24"
->
-  <path
-    stroke-linecap="round"
-    stroke-linejoin="round"
-    stroke-width="2"
-    d="M11 4a2 2 0 114 0v1a1 1 0 001 1h3a1 1 0 011 1v3a1 1 0 01-1 1h-1a2 2 0 100 4h1a1 1 0 011 1v3a1 1 0 01-1 1h-3a1 1 0 01-1-1v-1a2 2 0 10-4 0v1a1 1 0 01-1 1H7a1 1 0 01-1-1v-3a1 1 0 00-1-1H4a2 2 0 110-4h1a1 1 0 001-1V7a1 1 0 011-1h3a1 1 0 001-1V4z"
-  />
-</svg>
-{% endset %} {% set icon_notifications %}
-<svg
-  class="h-5 w-5 flex-shrink-0"
-  fill="none"
-  stroke="currentColor"
-  viewBox="0 0 24 24"
->
-  <path
-    stroke-linecap="round"
-    stroke-linejoin="round"
-    stroke-width="2"
-    d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"
-  />
-</svg>
-{% endset %} {% set icon_settings %}
-<svg
-  class="h-5 w-5 flex-shrink-0"
-  fill="none"
-  stroke="currentColor"
-  viewBox="0 0 24 24"
->
-  <path
-    stroke-linecap="round"
-    stroke-linejoin="round"
-    stroke-width="2"
-    d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
-  />
-  <path
-    stroke-linecap="round"
-    stroke-linejoin="round"
-    stroke-width="2"
-    d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
-  />
-</svg>
-{% endset %} {# ── Badge counts ── #} {% set pending_orders_count =
-sidebar_stats.pending_orders if sidebar_stats is defined and sidebar_stats and
-sidebar_stats.pending_orders is defined and sidebar_stats.pending_orders > 0
-else None %} {% set overdue_count = sidebar_stats.overdue_invoices if
-sidebar_stats is defined and sidebar_stats and sidebar_stats.overdue_invoices is
-defined and sidebar_stats.overdue_invoices > 0 else None %} {# ── Navigation ──
-#}
-<div class="space-y-0.5">
-  {{ nav_link("Dashboard", "/admin/dashboard", icon_dashboard, "dashboard") }}
-  {{ section_label("Core") }} {% if module_states.get('customer', True) %} {{
-  nav_link("Customers", "/admin/customers", icon_customers, "customers",
-  tour_id="nav-customers") }} {% endif %} {{ nav_link("Support",
-  "/admin/support/tickets", icon_support, "support-tickets") }} {{
-  nav_link("Workqueue", "/admin/workqueue", icon_workqueue, "agent-workqueue")
-  }} {{ nav_link("Inbox", "/admin/inbox", icon_inbox, "team-inbox") }} {{
-  nav_link("Surveys", "/admin/surveys", icon_reports, "surveys") }} {{
-  nav_link("Sales", "/admin/sales", icon_sales, "sales") }} {{ nav_link("Service
-  Requests", "/admin/service-requests", icon_provisioning, "service-requests")
-  }} {{ nav_link("Referrals", "/admin/referrals", icon_referrals, "referrals")
-  }} {{ section_label("Operations") }} {{ nav_link("Projects",
-  "/admin/projects", icon_projects, "projects") }} {% if
-  module_states.get('billing', True) %} {{ nav_link("Billing", "/admin/billing",
-  icon_billing, "billing", badge=overdue_count, tour_id="nav-billing") }} {%
-  endif %} {% if module_states.get('catalog', True) %} {{ nav_link("Catalog",
-  "/admin/catalog/offers", icon_catalog, "catalog") }} {% endif %} {% if
-  module_states.get('network', True) %} {{ nav_link("Network", "/admin/network",
-  icon_network, "network", tour_id="nav-network") }} {% endif %} {% if
-  module_states.get('vpn', True) %} {{ nav_link("VPN", "/admin/network/vpn",
-  icon_vpn, "vpn") }} {% endif %} {{ nav_link("Work Orders",
-  "/admin/dispatch/work-orders", icon_projects, "dispatch-work-orders") }} {{
-  nav_link("Material Requests", "/admin/operations/material-requests",
-  icon_projects, "material-requests") }} {% if can(request,
-  "operations:dispatch:read") %} {{ nav_link("Field Live Map",
-  "/admin/dispatch/live-map", icon_gis, "field-live-map",
-  active_pages=["field-live-map", "field-movement-playback"]) }} {% endif %} {%
-  set vendor_pages = ['vendors', 'vendor-operations', 'vendor-routes'] %} {% set
-  vendor_group_active = active_page in vendor_pages %}
-  <div
-    x-data="{ vendorMenuOpen: {{ vendor_group_active | tojson }} }"
-    class="relative"
-  >
-    <button
-      type="button"
-      @click="if (sidebarCollapsed) { sidebarCollapsed = false; vendorMenuOpen = true } else { vendorMenuOpen = !vendorMenuOpen }"
-      :aria-expanded="vendorMenuOpen.toString()"
-      aria-controls="admin-vendor-navigation"
-      :aria-label="sidebarCollapsed ? 'Vendors' : null"
-      :title="sidebarCollapsed ? 'Vendors' : null"
-      :class="sidebarCollapsed ? 'mx-auto justify-center !border-l-0 !px-0 rounded-xl' : ''"
-      class="{{ cls_link }} w-full {{ cls_active if vendor_group_active else cls_inactive }}"
-    >
-      {{ icon_network }}
-      <span x-show="!sidebarCollapsed" class="flex-1 truncate text-left"
-        >Vendors</span
-      >
-      <svg
-        x-show="!sidebarCollapsed"
-        :class="vendorMenuOpen ? 'rotate-180' : ''"
-        class="h-4 w-4 flex-shrink-0 transition-transform"
-        fill="none"
-        stroke="currentColor"
-        viewBox="0 0 24 24"
-        aria-hidden="true"
-      >
-        <path
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          stroke-width="2"
-          d="M19 9l-7 7-7-7"
-        />
-      </svg>
-    </button>
-    <div
-      id="admin-vendor-navigation"
-      x-show="vendorMenuOpen && !sidebarCollapsed"
-      x-cloak
-      class="mt-1 space-y-0.5"
-    >
-      {{ subnav_link("Vendor Records", "/admin/vendors", "vendors") }} {{
-      subnav_link("Vendor Review Quotes", "/admin/vendors/operations",
-      "vendor-operations") }} {{ subnav_link("Vendor Routes",
-      "/admin/vendors/routes", "vendor-routes") }}
-    </div>
-  </div>
+{% endmacro %}
 
-  {{ section_label("ADMIN") }} {% if module_states.get('reports', True) %} {{
-  nav_link("Reports", "/admin/reports", icon_reports, "reports") }} {% endif %}
-  {% if module_states.get('gis', True) %} {{ nav_link("GIS / Map", "/admin/gis",
-  icon_gis, "gis", badge=(pending_location_requests or None)) }} {% endif %} {%
-  if module_states.get('integrations', True) %} {{ nav_link("Integrations",
-  "/admin/integrations", icon_integrations, "integrations") }} {% endif %} {% if
-  module_states.get('notifications', True) %} {{ nav_link("Notifications",
-  "/admin/notifications/templates", icon_notifications, "notifications") }} {%
-  endif %} {% if module_states.get('provisioning', True) %} {{
-  nav_link("Provisioning", "/admin/provisioning", icon_provisioning,
-  "provisioning", badge=pending_orders_count) }} {% endif %} {{ nav_link("System
-  Overview", "/admin/system", icon_settings, "system", active_pages=[ "system",
-  "system-health", "system-modules", "users", "roles", "permissions",
-  "api-keys", "audit-log", "scheduler", "system-about", "system-import",
-  "system-export", "system-restore-tool", "system-db-inspector", "legal",
-  "design-system" ]) }} {{ nav_link("Settings", "/admin/settings",
-  icon_settings, "settings-hub", active_pages=[ "settings-hub", "billing-setup",
-  "config-billing", "config-payment-methods", "config-tax", "config-reminders",
-  "config-billing-notif", "company-info", "system-branding", "system-email" ])
-  }} {{ nav_link("Meta connection", "/admin/crm/meta", icon_integrations,
-  "meta-connection") }} {{ nav_link("Help center", "/admin/help", icon_support,
-  "help-center") }}
+{% macro section_label(label) %}
+<p x-show="!sidebarCollapsed" class="mt-6 mb-1.5 px-3 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400 dark:text-slate-500">{{ label }}</p>
+<div x-show="sidebarCollapsed" x-cloak class="mt-4 mb-1.5 mx-3 border-t border-slate-200 dark:border-slate-700/50"></div>
+{% endmacro %}
+
+{% macro subnav_link(label, href, page_id) %}
+{% set is_active = active_page == page_id %}
+<a href="{{ href }}"
+   {% if is_active %}aria-current="page"{% endif %}
+   class="ml-7 flex min-h-[36px] items-center gap-2 rounded-lg border-l-2 py-1.5 pl-4 pr-3 text-sm font-medium transition-colors {{ cls_active if is_active else cls_inactive }}">
+    <span class="h-1.5 w-1.5 flex-shrink-0 rounded-full bg-current opacity-70" aria-hidden="true"></span>
+    <span class="truncate">{{ label }}</span>
+</a>
+{% endmacro %}
+
+{# ── Icons (h-5 w-5) ── #}
+{% set icon_dashboard %}
+<svg class="h-5 w-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg>
+{% endset %}
+{% set icon_customers %}
+<svg class="h-5 w-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V8a2 2 0 00-2-2h-5m-4 0V5a2 2 0 114 0v1m-4 0a2 2 0 104 0m-5 8a2 2 0 100-4 2 2 0 000 4zm0 0c1.306 0 2.417.835 2.83 2M9 14a3.001 3.001 0 00-2.83 2M15 11h3m-3 4h2"/></svg>
+{% endset %}
+{% set icon_provisioning %}
+<svg class="h-5 w-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>
+{% endset %}
+{% set icon_support %}
+<svg class="h-5 w-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 5v2m0 4v2m0 4v2M5 5a2 2 0 00-2 2v3a2 2 0 110 4v3a2 2 0 002 2h14a2 2 0 002-2v-3a2 2 0 110-4V7a2 2 0 00-2-2H5z"/></svg>
+{% endset %}
+{% set icon_workqueue %}
+<svg class="h-5 w-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h7"/></svg>
+{% endset %}
+{% set icon_inbox %}
+<svg class="h-5 w-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8h18M3 8l1.5-3.5A2 2 0 016.35 3h11.3a2 2 0 011.85 1.5L21 8M3 8v10a2 2 0 002 2h14a2 2 0 002-2V8M8 12h2a2 2 0 002 2 2 2 0 002-2h2"/></svg>
+{% endset %}
+{% set icon_sales %}
+<svg class="h-5 w-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/></svg>
+{% endset %}
+{% set icon_referrals %}
+<svg class="h-5 w-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v13m0-13V6a2 2 0 112 2h-2zm0 0V5.5A2.5 2.5 0 109.5 8H12zm-7 4h14M5 12a2 2 0 110-4h14a2 2 0 110 4M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7"/></svg>
+{% endset %}
+{% set icon_projects %}
+<svg class="h-5 w-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>
+{% endset %}
+{% set icon_billing %}
+<svg class="h-5 w-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/></svg>
+{% endset %}
+{% set icon_catalog %}
+<svg class="h-5 w-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
+{% endset %}
+{% set icon_network %}
+<svg class="h-5 w-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"/></svg>
+{% endset %}
+{% set icon_vpn %}
+<svg class="h-5 w-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+{% endset %}
+{% set icon_reports %}
+<svg class="h-5 w-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+{% endset %}
+{% set icon_gis %}
+<svg class="h-5 w-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+{% endset %}
+{% set icon_integrations %}
+<svg class="h-5 w-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 4a2 2 0 114 0v1a1 1 0 001 1h3a1 1 0 011 1v3a1 1 0 01-1 1h-1a2 2 0 100 4h1a1 1 0 011 1v3a1 1 0 01-1 1h-3a1 1 0 01-1-1v-1a2 2 0 10-4 0v1a1 1 0 01-1 1H7a1 1 0 01-1-1v-3a1 1 0 00-1-1H4a2 2 0 110-4h1a1 1 0 001-1V7a1 1 0 011-1h3a1 1 0 001-1V4z"/></svg>
+{% endset %}
+{% set icon_notifications %}
+<svg class="h-5 w-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/></svg>
+{% endset %}
+{% set icon_settings %}
+<svg class="h-5 w-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+{% endset %}
+
+{# ── Badge counts ── #}
+{% set pending_orders_count = sidebar_stats.pending_orders if sidebar_stats is defined and sidebar_stats and sidebar_stats.pending_orders is defined and sidebar_stats.pending_orders > 0 else None %}
+{% set overdue_count = sidebar_stats.overdue_invoices if sidebar_stats is defined and sidebar_stats and sidebar_stats.overdue_invoices is defined and sidebar_stats.overdue_invoices > 0 else None %}
+
+{# ── Navigation ── #}
+<div class="space-y-0.5">
+
+    {{ nav_link("Dashboard", "/admin/dashboard", icon_dashboard, "dashboard") }}
+
+    {{ section_label("Core") }}
+    {% if module_states.get('customer', True) %}
+    {{ nav_link("Customers", "/admin/customers", icon_customers, "customers", tour_id="nav-customers") }}
+    {% endif %}
+    {{ nav_link("Support", "/admin/support/tickets", icon_support, "support-tickets") }}
+    {{ nav_link("Workqueue", "/admin/workqueue", icon_workqueue, "agent-workqueue") }}
+    {{ nav_link("Inbox", "/admin/inbox", icon_inbox, "team-inbox") }}
+    {{ nav_link("Surveys", "/admin/surveys", icon_reports, "surveys") }}
+    {{ nav_link("Sales", "/admin/sales", icon_sales, "sales") }}
+    {{ nav_link("Service Requests", "/admin/service-requests", icon_provisioning, "service-requests") }}
+    {{ nav_link("Referrals", "/admin/referrals", icon_referrals, "referrals") }}
+
+    {{ section_label("Operations") }}
+    {{ nav_link("Projects", "/admin/projects", icon_projects, "projects") }}
+    {% if module_states.get('billing', True) %}
+    {{ nav_link("Billing", "/admin/billing", icon_billing, "billing", badge=overdue_count, tour_id="nav-billing") }}
+    {% endif %}
+    {% if module_states.get('catalog', True) %}
+    {{ nav_link("Catalog", "/admin/catalog/offers", icon_catalog, "catalog") }}
+    {% endif %}
+    {% if module_states.get('network', True) %}
+    {{ nav_link("Network", "/admin/network", icon_network, "network", tour_id="nav-network") }}
+    {% endif %}
+    {% if module_states.get('vpn', True) %}
+    {{ nav_link("VPN", "/admin/network/vpn", icon_vpn, "vpn") }}
+    {% endif %}
+    {{ nav_link("Work Orders", "/admin/dispatch/work-orders", icon_projects, "dispatch-work-orders") }}
+    {{ nav_link("Material Requests", "/admin/operations/material-requests", icon_projects, "material-requests") }}
+    {% if can(request, "operations:dispatch:read") %}
+    {{ nav_link("Field Live Map", "/admin/dispatch/live-map", icon_gis, "field-live-map",
+        active_pages=["field-live-map", "field-movement-playback"]) }}
+    {% endif %}
+    {% set vendor_pages = ['vendors', 'vendor-operations', 'vendor-routes'] %}
+    {% set vendor_group_active = active_page in vendor_pages %}
+    <div x-data="{ vendorMenuOpen: {{ vendor_group_active | tojson }} }" class="relative">
+        <button type="button"
+                @click="if (sidebarCollapsed) { sidebarCollapsed = false; vendorMenuOpen = true } else { vendorMenuOpen = !vendorMenuOpen }"
+                :aria-expanded="vendorMenuOpen.toString()"
+                aria-controls="admin-vendor-navigation"
+                :aria-label="sidebarCollapsed ? 'Vendors' : null"
+                :title="sidebarCollapsed ? 'Vendors' : null"
+                :class="sidebarCollapsed ? 'mx-auto justify-center !border-l-0 !px-0 rounded-xl' : ''"
+                class="{{ cls_link }} w-full {{ cls_active if vendor_group_active else cls_inactive }}">
+            {{ icon_network }}
+            <span x-show="!sidebarCollapsed" class="flex-1 truncate text-left">Vendors</span>
+            <svg x-show="!sidebarCollapsed"
+                 :class="vendorMenuOpen ? 'rotate-180' : ''"
+                 class="h-4 w-4 flex-shrink-0 transition-transform"
+                 fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+            </svg>
+        </button>
+        <div id="admin-vendor-navigation"
+             x-show="vendorMenuOpen && !sidebarCollapsed"
+             x-cloak
+             class="mt-1 space-y-0.5">
+            {{ subnav_link("Vendor Records", "/admin/vendors", "vendors") }}
+            {{ subnav_link("Vendor Review Quotes", "/admin/vendors/operations", "vendor-operations") }}
+            {{ subnav_link("Vendor Routes", "/admin/vendors/routes", "vendor-routes") }}
+        </div>
+    </div>
+
+    {{ section_label("ADMIN") }}
+    {% if module_states.get('reports', True) %}
+    {{ nav_link("Reports", "/admin/reports", icon_reports, "reports") }}
+    {% endif %}
+    {% if module_states.get('gis', True) %}
+    {{ nav_link("GIS / Map", "/admin/gis", icon_gis, "gis", badge=(pending_location_requests or None)) }}
+    {% endif %}
+    {% if module_states.get('integrations', True) %}
+    {{ nav_link("Integrations", "/admin/integrations", icon_integrations, "integrations") }}
+    {% endif %}
+    {% if module_states.get('notifications', True) %}
+    {{ nav_link("Notifications", "/admin/notifications/templates", icon_notifications, "notifications") }}
+    {% endif %}
+    {% if module_states.get('provisioning', True) %}
+    {{ nav_link("Provisioning", "/admin/provisioning", icon_provisioning, "provisioning", badge=pending_orders_count) }}
+    {% endif %}
+    {{ nav_link("System Overview", "/admin/system", icon_settings, "system",
+        active_pages=[
+            "system",
+            "system-health",
+            "system-modules",
+            "users",
+            "roles",
+            "permissions",
+            "api-keys",
+            "audit-log",
+            "scheduler",
+            "system-about",
+            "system-import",
+            "system-export",
+            "system-restore-tool",
+            "system-db-inspector",
+            "legal",
+            "design-system"
+        ]) }}
+    {{ nav_link("Settings", "/admin/settings", icon_settings, "settings-hub",
+        active_pages=[
+            "settings-hub",
+            "billing-setup",
+            "config-billing",
+            "config-payment-methods",
+            "config-tax",
+            "config-reminders",
+            "config-billing-notif",
+            "company-info",
+            "system-branding",
+            "system-email"
+        ]) }}
+    {{ nav_link("Meta connection", "/admin/crm/meta", icon_integrations, "meta-connection") }}
+    {{ nav_link("Help center", "/admin/help", icon_support, "help-center") }}
 </div>

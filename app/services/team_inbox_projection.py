@@ -1150,7 +1150,10 @@ def _as_utc(value: datetime | None) -> datetime | None:
 
 
 def _timeline_message_time(message: team_inbox_read.InboxTimelineMessage) -> datetime:
-    return message.received_at or message.sent_at or message.created_at
+    occurred_at = message.received_at or message.sent_at or message.created_at
+    if occurred_at.tzinfo is None:
+        return occurred_at.replace(tzinfo=UTC)
+    return occurred_at.astimezone(UTC)
 
 
 def _conversation_timeline_entries(
