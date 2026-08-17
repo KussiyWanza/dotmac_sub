@@ -388,9 +388,10 @@ def test_crm_bounded_stage_idempotency_is_archive_aware(db_session, tmp_path):
 
     batches = db_session.query(FiberTopologySourceBatch).all()
     assert len(batches) == 2
-    assert {
-        batch.source_metadata["source_archive_sha256"] for batch in batches
-    } == {"a" * 64, "b" * 64}
+    assert {batch.source_metadata["source_archive_sha256"] for batch in batches} == {
+        "a" * 64,
+        "b" * 64,
+    }
     assert db_session.query(FiberTopologyStagedFeature).count() == 2
 
 
