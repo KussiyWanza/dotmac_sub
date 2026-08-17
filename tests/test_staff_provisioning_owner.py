@@ -12,6 +12,7 @@ import pytest
 from app.models.audit import AuditEvent
 from app.models.auth import AuthProvider, SessionStatus, UserCredential
 from app.models.auth import Session as AuthSession
+from app.models.dispatch import TechnicianProfile
 from app.models.event_store import EventStore
 from app.models.notification import CommunicationIntentRecord, Notification
 from app.models.party import Party, PartyType
@@ -372,6 +373,100 @@ def test_email_update_retires_old_active_login_identifier(db_session) -> None:
     assert old_credential is None
     assert new_credential is not None
     assert new_credential.system_user_id == result.user_id
+
+
+def test_identity_update_enables_staff_linked_field_technician_profile(
+    db_session,
+) -> None:
+    _role(db_session)
+    result = staff_provisioning.provision_staff_account(
+        db_session,
+        _staff_command("field.tech@dotmac.io", key="field-tech-enable"),
+    )
+
+    outcome = staff_provisioning.update_staff_identity(
+        db_session,
+        staff_provisioning.UpdateStaffIdentityCommand(
+            context=_context("enable-field-tech"),
+            user_id=result.user_id,
+            fields=frozenset({staff_provisioning.StaffIdentityField.phone}),
+            phone=None,
+            field_technician_access=True,
+        ),
+    )
+
+    profile = db_session.get(TechnicianProfile, outcome.technician_profile_id)
+    assert outcome.field_technician_access_changed is True
+    assert profile is not None
+    assert profile.is_active is True
+    assert profile.system_user_id == result.user_id
+    assert profile.person_id == result.user_id
+
+
+def test_identity_update_reactivates_existing_field_technician_profile(
+    db_session,
+) -> None:
+    _role(db_session)
+    result = staff_provisioning.provision_staff_account(
+        db_session,
+        _staff_command("field.tech.reactivate@dotmac.io", key="field-tech-reactivate"),
+    )
+    profile = TechnicianProfile(
+        person_id=result.user_id,
+        title="Installer",
+        is_active=False,
+    )
+    db_session.add(profile)
+    db_session.commit()
+
+    outcome = staff_provisioning.update_staff_identity(
+        db_session,
+        staff_provisioning.UpdateStaffIdentityCommand(
+            context=_context("reactivate-field-tech"),
+            user_id=result.user_id,
+            fields=frozenset({staff_provisioning.StaffIdentityField.phone}),
+            phone=None,
+            field_technician_access=True,
+        ),
+    )
+
+    db_session.refresh(profile)
+    assert outcome.field_technician_access_changed is True
+    assert outcome.technician_profile_id == profile.id
+    assert profile.is_active is True
+    assert profile.system_user_id == result.user_id
+
+
+def test_identity_update_disables_field_technician_profile(db_session) -> None:
+    _role(db_session)
+    result = staff_provisioning.provision_staff_account(
+        db_session,
+        _staff_command("field.tech.disable@dotmac.io", key="field-tech-disable"),
+    )
+    profile = TechnicianProfile(
+        person_id=result.user_id,
+        system_user_id=result.user_id,
+        title="Installer",
+        is_active=True,
+    )
+    db_session.add(profile)
+    db_session.commit()
+
+    outcome = staff_provisioning.update_staff_identity(
+        db_session,
+        staff_provisioning.UpdateStaffIdentityCommand(
+            context=_context("disable-field-tech"),
+            user_id=result.user_id,
+            fields=frozenset({staff_provisioning.StaffIdentityField.phone}),
+            phone=None,
+            field_technician_access=False,
+        ),
+    )
+
+    db_session.refresh(profile)
+    assert outcome.field_technician_access_changed is True
+    assert outcome.technician_profile_id == profile.id
+    assert profile.is_active is False
 
 
 def test_activation_reconciles_stale_disabled_credential(db_session) -> None:

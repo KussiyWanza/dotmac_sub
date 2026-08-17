@@ -4,7 +4,7 @@ from uuid import uuid4
 
 from starlette.requests import Request
 
-from app.services import staff_provisioning
+from app.services import staff_provisioning, web_system_user_edit
 from app.web.admin import system as admin_system
 
 
@@ -91,3 +91,29 @@ def test_failed_invite_delivery_is_not_reported_as_success() -> None:
         admin_system.web_system_user_mutations_service.user_invite_succeeded(note)
         is False
     )
+
+
+def test_staff_edit_form_carries_field_technician_access() -> None:
+    form = {
+        "first_name": "Field",
+        "last_name": "Tech",
+        "display_name": "Field Tech",
+        "email": "field.tech@example.com",
+        "phone": "",
+        "field_technician_access": "on",
+    }
+
+    parsed = web_system_user_edit.parse_edit_form(form)
+    command = web_system_user_edit.build_update_command(
+        user_id=uuid4(),
+        context=staff_provisioning.CommandContext.system(
+            actor="system:test",
+            scope=staff_provisioning.STAFF_ASSIGN_SCOPE,
+            reason="test field technician access form",
+        ),
+        form=parsed,
+        can_update_password=True,
+    )
+
+    assert parsed.field_technician_access is True
+    assert command.field_technician_access is True
