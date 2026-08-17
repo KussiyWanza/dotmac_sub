@@ -153,6 +153,18 @@ def test_thread_publishes_unread_state_and_composer_clears_it():
     assert "/read" in JAVASCRIPT
 
 
+def test_opened_conversation_stays_at_latest_message_after_content_loads():
+    assert "data-thread-content" in CONVERSATION
+    assert "data-thread-bottom" in CONVERSATION
+    assert "threadIsNearBottom(thread, threshold = 96)" in JAVASCRIPT
+    assert "threadResizeObserver: null" in JAVASCRIPT
+    assert "new ResizeObserver" in JAVASCRIPT
+    assert "window.requestAnimationFrame" in JAVASCRIPT
+    assert "this.scrollThread(true);" in JAVASCRIPT
+    assert "this.scrollThread(false);" in JAVASCRIPT
+    assert "this.disconnectThreadAutoScroll();" in JAVASCRIPT
+
+
 def test_mark_read_posts_with_csrf_header():
     marker = JAVASCRIPT.index("async markConversationRead")
     body = JAVASCRIPT[marker : marker + 1200]

@@ -213,7 +213,7 @@
     </div>
 
     <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-5 sm:px-6" data-thread-scroll>
-        <div class="mx-auto flex max-w-6xl flex-col gap-4">
+        <div class="mx-auto flex max-w-6xl flex-col gap-4" data-thread-content>
             <div id="inbox-message-list" class="flex flex-col gap-4" aria-live="polite">
             {% if timeline_entries %}
             {% for entry in timeline_entries %}
@@ -246,6 +246,7 @@
                 </span>
                 <span x-text="presenceText"></span>
             </div>
+            <div class="h-px w-full" data-thread-bottom aria-hidden="true"></div>
         </div>
     </div>
 
