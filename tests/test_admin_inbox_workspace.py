@@ -157,6 +157,13 @@ def test_workspace_exposes_responsive_realtime_and_accessible_controls():
     assert "Only online agents receive auto-assigned inbox conversations." in sidebar
     assert "conversation_id" in sidebar
     assert "Advanced team conditions" in sidebar
+    assert sidebar.count('name="inbox-filter-section"') == 2
+    assert '<details open class="group' not in sidebar
+    assert '<details hidden class="group' in sidebar
+    assert sidebar.count("applyAssignmentFilter('attention')") == 1
+    assert "Needs attention <span" in sidebar
+    assert "\n                        Resolved\n" in sidebar
+    assert "\n                        Done\n" not in sidebar
     assert "support:inbox:self_assign" in conversation
     assert "service_team_options | default(())" in conversation
     assert "/admin/inbox/{{ timeline.id }}/assign-to-me" in conversation
@@ -164,6 +171,7 @@ def test_workspace_exposes_responsive_realtime_and_accessible_controls():
     assert 'aria-label="Team for assignment to me"' in conversation
     assert 'name="service_team_id" required' in conversation
     assert "inboxTeamFilterBuilder" in javascript
+    assert "byAgentOpen: false" in javascript
     assert 'filters: "filters"' in javascript
     assert 'name="priority_at_most"' in sidebar
     assert "data-reply-composer" in conversation

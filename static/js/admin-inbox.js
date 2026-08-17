@@ -185,11 +185,7 @@
       ),
       resizingSidebar: false,
       filtersOpen: parseStoredBoolean(KEYS.filtersOpen, false),
-      byAgentOpen: Boolean(
-        new URLSearchParams(window.location.search).get("assigned_person_id") ||
-          new URLSearchParams(window.location.search).get("activity_from") ||
-          new URLSearchParams(window.location.search).get("activity_to"),
-      ),
+      byAgentOpen: false,
       savedViewName: "",
       selectedIds: [],
       bulkAction: "status",
