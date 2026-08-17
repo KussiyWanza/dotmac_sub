@@ -558,9 +558,10 @@ DOMAIN = DomainSOT(
                             "approved campaign projects each eligible legacy row."
                         ),
                         stale_behavior=(
-                            "A null legacy row remains on the deploy-1 bridge; an "
-                            "unbound or conflicting active row blocks planning and "
-                            "the deploy-2 ratchet."
+                            "A null active, unrevoked staff row is unusable and is "
+                            "refused by both the reader and migration-541 database "
+                            "ratchet; preserved revoked or non-active history does "
+                            "not authenticate."
                         ),
                         drift_signal=(
                             "StaffSessionPartyProjectionReport active-unrevoked "
@@ -574,20 +575,25 @@ DOMAIN = DomainSOT(
                     ),
                 ),
                 migration=MigrationContract(
-                    state=AuthorityMigrationState.SHADOWING,
+                    state=AuthorityMigrationState.COMPLETE,
                     old_owner="legacy active staff sessions with null party_id",
                     new_owner="party.staff_session_projection",
                     verification=(
                         "Typed-contract sensitivity, exact-FK planning, PII-free "
-                        "report, approval, owner refusal, audit and replay canaries."
+                        "report, approval, owner refusal, audit and replay canaries; "
+                        "the production report was ratchet-ready before the strict "
+                        "reader and database checks were admitted."
                     ),
                     cutover_gate=(
                         "Every active, unrevoked staff session is projected with "
                         "zero unbound principals or disagreements."
                     ),
                     fallback_retirement=(
-                        "The assertion-first reader bridge is deleted only after "
-                        "the aggregate report is ratchet-ready in production."
+                        "The assertion-first reader bridge is deleted. Roll back "
+                        "only to source 121e1592db795d339c1bc6279277797891d41064 "
+                        "at image digest sha256:27b5324e765add48214b3668d39bb195"
+                        "57acbfac4c8a7edd98a4fb22b6e0c19a while retaining "
+                        "projected party_id values; never below migration 534."
                     ),
                 ),
                 steward="identity and authentication",

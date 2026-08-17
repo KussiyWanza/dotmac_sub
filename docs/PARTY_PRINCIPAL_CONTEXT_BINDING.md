@@ -186,6 +186,30 @@ generation refuses; remediation belongs to the canonical authentication/session
 owner before a new plan is reviewed, not to a second revocation path in the
 operator adapter.
 
+Migration `541_staff_session_party_ratchet` is the authority ratchet. It may be
+admitted only after the production projection report returns `is_ratchet_ready`
+with zero active/unrevoked remaining rows, unbound principals, or projection
+disagreements. The migration preflight independently repeats those database
+facts and refuses before DDL if a usable staff session has no `party_id`, its
+principal is inactive/unbound, its Party is not the exact bound Person, or a
+Party projection is attached without a staff context.
+
+After the ratchet, login, refresh, per-request validation, and vendor admission
+all resolve staff identity from Party. `system_user_id` remains the Sub-owned
+staff-context assertion and is compared after Party resolution; it is never the
+resolution key. The assertion-first compatibility resolver is deleted. The
+column remains nullable for subscriber/reseller sessions and for preserved
+revoked or non-active staff history, neither of which can use that null as an
+authentication path.
+
+The rollback floor is migration 534. A reader rollback may use only source
+`121e1592db795d339c1bc6279277797891d41064` at immutable image
+`sha256:27b5324e765add48214b3668d39bb19557acbfac4c8a7edd98a4fb22b6e0c19a`,
+which understands populated `party_id` values. Projected values and their
+approval/audit evidence are retained; rolling back below 534 would mint new
+staff sessions without the identity half of the bound pair and is not an
+admissible fallback.
+
 ## Migration 353
 
 Migration `353_party_principal_context_bindings` is schema-only.

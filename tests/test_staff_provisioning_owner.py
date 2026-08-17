@@ -313,6 +313,7 @@ def test_email_update_reconciles_disabled_credential_and_revokes_sessions(
     credential.is_active = False
     active_session = AuthSession(
         system_user_id=user.id,
+        party_id=user.person_party_id,
         status=SessionStatus.active,
         token_hash="staff-identity-active-session",
         expires_at=datetime.now(UTC) + timedelta(hours=1),
@@ -773,6 +774,7 @@ def test_deactivation_remediates_a_principal_already_inactive(db_session) -> Non
     credential.is_active = True
     session = AuthSession(
         system_user_id=result.user_id,
+        party_id=user.person_party_id,
         status=SessionStatus.active,
         token_hash="drifted-identity-stale-session",
         # Expired on purpose: the seven drifted production principals carry

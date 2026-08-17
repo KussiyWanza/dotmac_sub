@@ -1,4 +1,4 @@
-"""PostgreSQL proofs for migration 534 and the session bound pair.
+"""PostgreSQL proofs for migrations 534/538 and the session bound pair.
 
 SQLite cannot prove a foreign key is enforced, an index exists, or that a
 transaction rolls back a projection write. These run on the migrated schema.
@@ -39,8 +39,8 @@ def test_migration_534_created_the_foreign_key_and_index(db_session) -> None:
     assert index == "ix_sessions_party_id"
 
 
-def test_party_id_is_nullable_so_pre_migration_sessions_survive(db_session) -> None:
-    """The column must accept NULL, or deploy 1 would strand 1,240 sessions."""
+def test_party_id_stays_nullable_for_history_and_nonstaff(db_session) -> None:
+    """Historical and non-staff rows keep a nullable column after the ratchet."""
 
     nullable = db_session.execute(
         text(
@@ -50,6 +50,102 @@ def test_party_id_is_nullable_so_pre_migration_sessions_survive(db_session) -> N
     ).scalar_one()
 
     assert nullable == "YES"
+
+
+def test_migration_538_created_the_staff_session_ratchet_checks(db_session) -> None:
+    names = set(
+        db_session.execute(
+            text(
+                "SELECT conname FROM pg_constraint "
+                "WHERE conrelid = 'sessions'::regclass AND contype = 'c'"
+            )
+        ).scalars()
+    )
+
+    assert "ck_sessions_active_staff_requires_party" in names
+    assert "ck_sessions_party_requires_staff_context" in names
+
+
+def test_active_unrevoked_staff_session_requires_party(db_session) -> None:
+    """The database, not just the reader, ratchets usable staff rows."""
+
+    user, _person = add_bound_staff_user(
+        db_session, email=f"strict-{uuid4().hex}@x.test"
+    )
+    db_session.flush()
+    db_session.add(
+        AuthSession(
+            system_user_id=user.id,
+            party_id=None,
+            status=SessionStatus.active,
+            token_hash=f"strict-canary-{uuid4().hex}",
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+
+    db_session.rollback()
+
+
+@pytest.mark.parametrize("status", [SessionStatus.revoked, SessionStatus.expired])
+def test_historical_staff_session_may_remain_unprojected(db_session, status) -> None:
+    user, _person = add_bound_staff_user(
+        db_session, email=f"history-{uuid4().hex}@x.test"
+    )
+    db_session.flush()
+    session = AuthSession(
+        system_user_id=user.id,
+        party_id=None,
+        status=status,
+        revoked_at=datetime.now(UTC) if status is SessionStatus.revoked else None,
+        token_hash=f"history-{uuid4().hex}",
+        expires_at=datetime.now(UTC) - timedelta(hours=1),
+    )
+    db_session.add(session)
+    db_session.flush()
+
+    assert session.party_id is None
+
+
+def test_subscriber_session_remains_outside_the_staff_party_ratchet(
+    db_session, subscriber
+) -> None:
+    session = AuthSession(
+        subscriber_id=subscriber.id,
+        party_id=None,
+        status=SessionStatus.active,
+        token_hash=f"subscriber-{uuid4().hex}",
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    db_session.add(session)
+    db_session.flush()
+
+    assert session.party_id is None
+
+
+def test_party_projection_cannot_be_attached_to_a_nonstaff_session(
+    db_session, subscriber
+) -> None:
+    _user, person = add_bound_staff_user(
+        db_session, email=f"nonstaff-{uuid4().hex}@x.test"
+    )
+    db_session.flush()
+    db_session.add(
+        AuthSession(
+            subscriber_id=subscriber.id,
+            party_id=person.id,
+            status=SessionStatus.active,
+            token_hash=f"nonstaff-{uuid4().hex}",
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+
+    db_session.rollback()
 
 
 def test_the_foreign_key_refuses_an_unknown_party(db_session) -> None:
@@ -125,12 +221,13 @@ def test_a_persisted_mismatched_pair_fails_closed_after_reload(db_session) -> No
 
 
 def test_a_rolled_back_projection_write_leaves_no_party_id(db_session) -> None:
-    """The projection is transactional, so a failed backfill batch leaves no trace."""
+    """A preserved historical projection write still rolls back atomically."""
 
     user, person = add_bound_staff_user(db_session, email=f"tx-{uuid4().hex}@x.test")
     session = AuthSession(
         system_user_id=user.id,
-        status=SessionStatus.active,
+        status=SessionStatus.revoked,
+        revoked_at=datetime.now(UTC),
         token_hash=f"tx-{uuid4().hex}",
         expires_at=datetime.now(UTC) + timedelta(hours=1),
     )

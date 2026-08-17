@@ -37,7 +37,7 @@ from app.services.auth_flow import (
     verify_password,
 )
 from app.services.owner_commands import CommandContext
-from tests.staff_identity_fixtures import project_staff_login
+from tests.staff_identity_fixtures import add_bound_staff_user, project_staff_login
 
 
 def _make_request(user_agent: str = "pytest"):
@@ -1327,17 +1327,13 @@ def test_reset_token_replay_rejected_even_same_second(db_session, person, monkey
 def test_session_manager_handles_system_user_principals(db_session):
     from app.services import session_manager
 
-    system_user = SystemUser(
-        first_name="Sess",
-        last_name="Admin",
+    system_user, person = add_bound_staff_user(
+        db_session,
         email="sess-admin@example.com",
-        user_type=UserType.system_user,
-        is_active=True,
     )
-    db_session.add(system_user)
-    db_session.flush()
     session = AuthSession(
         system_user_id=system_user.id,
+        party_id=person.id,
         status=SessionStatus.active,
         token_hash=hashlib.sha256(b"sess-admin-token").hexdigest(),
         expires_at=datetime.now(UTC) + timedelta(days=1),
@@ -1387,17 +1383,13 @@ def test_admin_reset_password_clears_lockout(db_session, monkeypatch):
 
 
 def test_deactivate_system_user_revokes_sessions(db_session):
-    system_user = SystemUser(
-        first_name="Gone",
-        last_name="Admin",
+    system_user, person = add_bound_staff_user(
+        db_session,
         email="gone-admin@example.com",
-        user_type=UserType.system_user,
-        is_active=True,
     )
-    db_session.add(system_user)
-    db_session.flush()
     session = AuthSession(
         system_user_id=system_user.id,
+        party_id=person.id,
         status=SessionStatus.active,
         token_hash=hashlib.sha256(b"gone-admin-token").hexdigest(),
         expires_at=datetime.now(UTC) + timedelta(days=1),

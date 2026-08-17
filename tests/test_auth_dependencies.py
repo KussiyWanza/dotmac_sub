@@ -28,7 +28,7 @@ from app.web.auth.dependencies import (
     require_web_auth,
     validate_session_token,
 )
-from tests.staff_identity_fixtures import project_staff_login
+from tests.staff_identity_fixtures import add_bound_staff_user, project_staff_login
 
 
 def _make_access_token(
@@ -393,16 +393,10 @@ def test_require_audit_auth_loads_admin_role_from_db_when_jwt_has_no_claims(
 ):
     monkeypatch.setenv("JWT_SECRET", "test-secret")
 
-    user = SystemUser(
-        first_name="Audit",
-        last_name="Admin",
-        display_name="Audit Admin",
+    user, person = add_bound_staff_user(
+        db_session,
         email="audit-admin@example.com",
-        user_type=UserType.system_user,
-        is_active=True,
     )
-    db_session.add(user)
-    db_session.flush()
 
     role = Role(name="admin", is_active=True)
     db_session.add(role)
@@ -411,6 +405,7 @@ def test_require_audit_auth_loads_admin_role_from_db_when_jwt_has_no_claims(
 
     session = AuthSession(
         system_user_id=user.id,
+        party_id=person.id,
         status=SessionStatus.active,
         token_hash="hash",
         expires_at=datetime.now(UTC) + timedelta(days=1),

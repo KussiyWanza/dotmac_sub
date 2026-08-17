@@ -340,6 +340,18 @@ class Session(Base):
             " + CASE WHEN reseller_user_id IS NOT NULL THEN 1 ELSE 0 END) = 1",
             name="ck_sessions_exactly_one_principal",
         ),
+        # These are PostgreSQL authority ratchets. Keeping them out of SQLite
+        # lets the projection-tool unit canaries construct the predecessor
+        # state; the migrated PostgreSQL gate proves both constraints bite.
+        CheckConstraint(
+            "system_user_id IS NULL OR status <> 'active' "
+            "OR revoked_at IS NOT NULL OR party_id IS NOT NULL",
+            name="ck_sessions_active_staff_requires_party",
+        ).ddl_if(dialect="postgresql"),
+        CheckConstraint(
+            "party_id IS NULL OR system_user_id IS NOT NULL",
+            name="ck_sessions_party_requires_staff_context",
+        ).ddl_if(dialect="postgresql"),
         Index("ux_sessions_token_hash", "token_hash", unique=True),
         Index(
             "ux_sessions_previous_token_hash",
@@ -362,8 +374,8 @@ class Session(Base):
     )
     #: The authenticated identity. A staff session is a bound pair: `party_id`
     #: says WHO, `system_user_id` says which Sub-owned staff context they act
-    #: in. Nullable only until the approved backfill fills the sessions that
-    #: predate migration 534; the reader ratchet that requires it lands after.
+    #: in. It remains nullable for subscriber/reseller sessions and preserved
+    #: revoked/expired staff history; an active, unrevoked staff row requires it.
     party_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("parties.id"), nullable=True, index=True
     )

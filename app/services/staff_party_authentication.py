@@ -163,63 +163,16 @@ def resolve_staff_session_principal(
     system_user_id: UUID | None,
     reference: StaffProjectionReference = None,
 ) -> SystemUser:
-    """Resolve one deploy-1 session, preferring Party whenever it is present.
+    """Resolve a staff session strictly from Party identity.
 
-    A populated session starts at ``party_id`` and treats ``system_user_id`` as
-    the Sub-context assertion. Only a session predating migration 534 may use
-    the assertion-first compatibility bridge. Deploy 2 deletes that null arm.
+    ``party_id`` is the key. ``system_user_id`` remains the Sub-owned context
+    assertion and is compared only after the Party has resolved. A missing
+    Party projection is a typed refusal; deploy 2 has no compatibility branch.
     """
 
-    if party_id is not None:
-        return resolve_staff_principal_by_party(
-            db,
-            party_id,
-            system_user_id,
-            reference=reference,
-        )
-    if system_user_id is None:
-        raise StaffProjectionError(
-            StaffProjectionRefusal.projection_missing,
-            reference,
-        )
-    return resolve_staff_principal_assertion(db, system_user_id)
-
-
-def resolve_staff_principal_assertion(db: Session, system_user_id: UUID) -> SystemUser:
-    """Validate the principal asserted by a pre-534 session.
-
-    This is the one-deploy bridge. New sessions carry ``party_id`` and must not
-    call it; readers reach it only through ``resolve_staff_session_principal``
-    when that projection is null. A session whose principal has no Party, or
-    whose Party owns more than one principal, is refused rather than resolved.
-
-    Deliberately does NOT re-derive identity from any other attribute. If the
-    projection cannot vouch for the assertion, the answer is refusal — never a
-    reconstruction from name, email, or the credential row.
-
-    Healthy sessions are unaffected: with the cohort fully projected and no
-    ambiguous Party, every live staff session validates.
-    """
-
-    reference = system_user_id
-    principal = db.get(SystemUser, system_user_id)
-    if principal is None:
-        raise StaffProjectionError(
-            StaffProjectionRefusal.party_has_no_principal, reference
-        )
-    if principal.person_party_id is None:
-        raise StaffProjectionError(StaffProjectionRefusal.projection_missing, reference)
-    siblings = (
-        db.execute(
-            select(SystemUser.id).where(
-                SystemUser.person_party_id == principal.person_party_id
-            )
-        )
-        .scalars()
-        .all()
+    return resolve_staff_principal_by_party(
+        db,
+        party_id,
+        system_user_id,
+        reference=reference,
     )
-    if len(siblings) > 1:
-        raise StaffProjectionError(
-            StaffProjectionRefusal.party_owns_multiple_principals, reference
-        )
-    return principal

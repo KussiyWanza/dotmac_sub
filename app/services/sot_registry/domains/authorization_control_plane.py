@@ -1457,10 +1457,10 @@ DOMAIN = DomainSOT(
                 "resolving from it and checking Party afterwards would agree "
                 "on healthy data while leaving the legacy key authoritative. "
                 "Fails closed with typed refusals and no legacy fallback. "
-                "The assertion-first resolver is a TEMPORARY bridge for "
-                "sessions predating migration 534 (party_id IS NULL), is "
-                "reachable only through the typed session resolver, and is "
-                "deleted in deploy 2. Refresh resolves identity before token "
+                "The deploy-1 assertion-first resolver has been deleted: a "
+                "staff session without party_id is unusable, while revoked and "
+                "non-active historical rows remain preserved. Refresh resolves "
+                "identity before token "
                 "rotation, and every new staff session is minted from an "
                 "explicit typed Party/context binding. Rollback floor is "
                 "migration 534: never roll back below it, or new sessions "
@@ -1539,12 +1539,13 @@ DOMAIN = DomainSOT(
                     ),
                 ),
                 migration=MigrationContract(
-                    state=AuthorityMigrationState.CUTOVER_READY,
+                    state=AuthorityMigrationState.CUT_OVER,
                     old_owner="direct credential and session system_user_id lookup",
                     new_owner="party.staff_authentication_reader",
                     verification=(
                         "Focused behavior, PostgreSQL projection, direction-sensitive "
-                        "architecture, and SOT contract tests."
+                        "architecture, SOT contract tests, and the production "
+                        "ratchet-readiness report."
                     ),
                     cutover_gate=(
                         "Every live staff session has an approved Party projection, "
@@ -1552,8 +1553,12 @@ DOMAIN = DomainSOT(
                         "deleted."
                     ),
                     fallback_retirement=(
-                        "Delete the assertion-first compatibility bridge after the "
-                        "sessions.party_id backfill is complete and required."
+                        "The assertion-first compatibility bridge is deleted. "
+                        "Rollback is limited to source "
+                        "121e1592db795d339c1bc6279277797891d41064 at image digest "
+                        "sha256:27b5324e765add48214b3668d39bb19557acbfac4c8a7edd"
+                        "98a4fb22b6e0c19a, retaining sessions.party_id evidence and "
+                        "never crossing migration 534."
                     ),
                 ),
                 steward="platform security",
