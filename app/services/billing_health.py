@@ -24,6 +24,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from enum import StrEnum
 
 from sqlalchemy import bindparam, func, select, text
 from sqlalchemy.orm import Session
@@ -43,6 +44,7 @@ from app.models.catalog import (
 )
 from app.models.domain_settings import SettingDomain
 from app.models.enforcement_lock import EnforcementLock, EnforcementReason
+from app.models.notification import NotificationChannel, NotificationTemplate
 from app.models.scheduler import ScheduledTask
 from app.models.subscriber import Subscriber
 from app.services import settings_spec
@@ -61,6 +63,12 @@ from app.services.job_heartbeat import (
     get_last_result,
     get_last_success,
 )
+from app.services.notification_template_renderer import (
+    PAYMENT_RECEIPT_REQUIRED_PLACEHOLDERS,
+    PAYMENT_RECEIPT_TEMPLATE_CODE,
+    template_placeholder_names,
+    validate_template_text,
+)
 from app.services.prepaid_enforcement_planner import (
     candidate_prepaid_funding_account_ids,
 )
@@ -75,7 +83,9 @@ SCAN_MIN_RATIO = 0.5  # alert if a run scanned < 50% of active subs
 PAYMENT_VOLUME_MIN_RATIO = 0.4  # alert if last-24h volume < 40% of 7d daily avg
 # Don't cry "collapse" on naturally low-traffic systems: require a real baseline.
 PAYMENT_BASELINE_MIN_DAILY = 5.0
-
+STALLED_DRAFT_MIN_AGE_HOURS = 24
+STALLED_DRAFT_MAX_AGE_HOURS = 48
+STALLED_DRAFT_ALERT_COUNT = 25
 # A runner is "stale" if it has not succeeded within interval x this multiplier.
 HEARTBEAT_STALE_MULTIPLIER = 3.0
 # Critical billing/collections runners whose silence is a revenue/enforcement
@@ -94,6 +104,25 @@ BILLING_HEALTH_OBSERVABILITY_DOMAIN = "billing_health"
 BILLING_HEALTH_SNAPSHOT_TASK = "app.tasks.billing.refresh_billing_health_snapshot"
 # Stable Postgres advisory-lock key for the single-flight snapshot producer.
 BILLING_HEALTH_SNAPSHOT_LOCK_KEY = 0x62686C74  # "bhlt"
+
+
+class PaymentReceiptTemplateStatus(StrEnum):
+    ready = "ready"
+    missing = "missing"
+    inactive = "inactive"
+    invalid = "invalid"
+    incomplete_receipt = "incomplete_receipt"
+    duplicate_active = "duplicate_active"
+
+
+@dataclass(frozen=True, slots=True)
+class PaymentReceiptTemplateReadiness:
+    status: PaymentReceiptTemplateStatus
+    active_count: int
+
+    @property
+    def ready(self) -> bool:
+        return self.status is PaymentReceiptTemplateStatus.ready
 
 
 @dataclass(frozen=True)
@@ -199,6 +228,10 @@ class BillingHealthSnapshot:
     # Drafts nobody has come back to. Reported, never acted on.
     aged_draft_count: int = 0
     aged_draft_total: Decimal = Decimal("0.00")
+    # One fixed creation cohort, not the 30-day threshold crossing. A legacy
+    # backlog can age forever without making this signal grow.
+    stalled_draft_cohort_count: int = 0
+    stalled_draft_cohort_total: Decimal = Decimal("0.00")
     # Invoices past draft with no issue date. They cannot age, cannot go
     # overdue, and drop out of anything filtering on issue date.
     paid_without_issue_count: int = 0
@@ -220,6 +253,10 @@ class BillingHealthSnapshot:
     payment_attempts_7d: int = 0
     payments_succeeded_7d: int = 0
     payment_success_ratio_7d: float | None = None
+    payment_receipt_email_template_ready: bool = True
+    payment_receipt_email_template_status: PaymentReceiptTemplateStatus = (
+        PaymentReceiptTemplateStatus.ready
+    )
     scan_min_ratio: float = SCAN_MIN_RATIO
     payment_volume_min_ratio: float = PAYMENT_VOLUME_MIN_RATIO
     payment_baseline_min_daily: float = PAYMENT_BASELINE_MIN_DAILY
@@ -233,8 +270,8 @@ class BillingHealthSnapshot:
         out: list[str] = []
         if self.paid_with_balance_count > 0:
             out.append("paid_invoices_with_balance")
-        if self.aged_draft_count > 0:
-            out.append("aged_draft_invoices")
+        if self.stalled_draft_cohort_count > STALLED_DRAFT_ALERT_COUNT:
+            out.append("stalled_draft_invoice_cohort")
         if self.paid_without_issue_count > 0:
             out.append("invoices_paid_without_issue")
         if self.scan_ratio is not None and self.scan_ratio < self.scan_min_ratio:
@@ -267,6 +304,8 @@ class BillingHealthSnapshot:
             out.append("prepaid_coverage_quarantined")
         if self.active_null_billing_anchor_count > 0:
             out.append("active_subscription_null_billing_anchor")
+        if not self.payment_receipt_email_template_ready:
+            out.append("payment_receipt_email_template_unready")
         return out
 
 
@@ -278,6 +317,21 @@ def billing_health_observations(snapshot: BillingHealthSnapshot):  # noqa: ANN20
         ("paid_invoices_with_balance", "all", snapshot.paid_with_balance_count),
         ("aged_draft_invoices", "all", snapshot.aged_draft_count),
         ("aged_draft_invoice_total", "all", snapshot.aged_draft_total),
+        (
+            "stalled_draft_invoice_cohort",
+            "all",
+            snapshot.stalled_draft_cohort_count,
+        ),
+        (
+            "stalled_draft_invoice_cohort_total",
+            "all",
+            snapshot.stalled_draft_cohort_total,
+        ),
+        (
+            "payment_receipt_email_template_ready",
+            "all",
+            1.0 if snapshot.payment_receipt_email_template_ready else 0.0,
+        ),
         ("invoices_paid_without_issue", "all", snapshot.paid_without_issue_count),
         ("invoice_last_scanned", "all", snapshot.last_scanned or 0),
         ("active_subscriptions", "all", snapshot.eligible_active_subs),
@@ -484,6 +538,88 @@ def aged_draft_invoices(
         .where(Invoice.created_at < cutoff)
     ).one()
     return int(count_ or 0), Decimal(str(total or 0))
+
+
+def stalled_draft_invoice_cohort(
+    db: Session, now: datetime | None = None
+) -> tuple[int, Decimal]:
+    """Count drafts created 24–48 hours ago that still have not left draft.
+
+    Every creation cohort crosses this window once. Historical drafts ageing
+    past a threshold cannot manufacture growth, while a newly broken invoice
+    lifecycle remains visible without waiting 30 days.
+    """
+
+    observed_at = now or datetime.now(UTC)
+    oldest = observed_at - timedelta(hours=STALLED_DRAFT_MAX_AGE_HOURS)
+    newest = observed_at - timedelta(hours=STALLED_DRAFT_MIN_AGE_HOURS)
+    count_, total = db.execute(
+        select(
+            func.count(Invoice.id),
+            func.coalesce(func.sum(Invoice.total), 0),
+        )
+        .where(Invoice.is_active.is_(True))
+        .where(Invoice.status == InvoiceStatus.draft)
+        .where(Invoice.total > 0)
+        .where(Invoice.created_at >= oldest)
+        .where(Invoice.created_at < newest)
+    ).one()
+    return int(count_ or 0), Decimal(str(total or 0))
+
+
+def payment_receipt_template_readiness(
+    db: Session,
+) -> PaymentReceiptTemplateReadiness:
+    """Validate the email receipt template the payment event can actually use."""
+
+    rows = list(
+        db.scalars(
+            select(NotificationTemplate).where(
+                NotificationTemplate.code == PAYMENT_RECEIPT_TEMPLATE_CODE,
+                NotificationTemplate.channel == NotificationChannel.email,
+            )
+        ).all()
+    )
+    if not rows:
+        return PaymentReceiptTemplateReadiness(
+            status=PaymentReceiptTemplateStatus.missing,
+            active_count=0,
+        )
+    active = [row for row in rows if row.is_active]
+    if not active:
+        return PaymentReceiptTemplateReadiness(
+            status=PaymentReceiptTemplateStatus.inactive,
+            active_count=0,
+        )
+    if len(active) != 1:
+        return PaymentReceiptTemplateReadiness(
+            status=PaymentReceiptTemplateStatus.duplicate_active,
+            active_count=len(active),
+        )
+    template = active[0]
+    try:
+        validate_template_text(
+            template.subject,
+            template.body,
+            code=PAYMENT_RECEIPT_TEMPLATE_CODE,
+        )
+    except ValueError:
+        return PaymentReceiptTemplateReadiness(
+            status=PaymentReceiptTemplateStatus.invalid,
+            active_count=1,
+        )
+    # Both fields belong in the message body. A receipt URL hidden in a subject
+    # line, or a reference present only in a subject, is not a usable receipt.
+    placeholders = template_placeholder_names(template.body)
+    if not PAYMENT_RECEIPT_REQUIRED_PLACEHOLDERS.issubset(placeholders):
+        return PaymentReceiptTemplateReadiness(
+            status=PaymentReceiptTemplateStatus.incomplete_receipt,
+            active_count=1,
+        )
+    return PaymentReceiptTemplateReadiness(
+        status=PaymentReceiptTemplateStatus.ready,
+        active_count=1,
+    )
 
 
 def paid_with_balance(db: Session) -> tuple[int, Decimal]:
@@ -1012,6 +1148,8 @@ def billing_health_snapshot(
     )
     pwb_count, pwb_total = paid_with_balance(db)
     aged_draft_count, aged_draft_total = aged_draft_invoices(db, now=now)
+    stalled_draft_count, stalled_draft_total = stalled_draft_invoice_cohort(db, now=now)
+    receipt_template = payment_receipt_template_readiness(db)
     paid_without_issue_count = invoices_past_draft_without_issue_date(db)
     last_scanned, eligible, scan_ratio = invoice_scan_coverage(db)
     c24, avg7, ratio, collapsed = payment_volume(db, now=now)
@@ -1046,6 +1184,8 @@ def billing_health_snapshot(
         paid_with_balance_count=pwb_count,
         aged_draft_count=aged_draft_count,
         aged_draft_total=aged_draft_total,
+        stalled_draft_cohort_count=stalled_draft_count,
+        stalled_draft_cohort_total=stalled_draft_total,
         paid_without_issue_count=paid_without_issue_count,
         paid_with_balance_total=pwb_total,
         last_scanned=last_scanned,
@@ -1063,6 +1203,8 @@ def billing_health_snapshot(
         payment_attempts_7d=payment_attempts_7d,
         payments_succeeded_7d=payments_succeeded_7d,
         payment_success_ratio_7d=payment_success_ratio_7d,
+        payment_receipt_email_template_ready=receipt_template.ready,
+        payment_receipt_email_template_status=receipt_template.status,
         runners=tuple(runner_heartbeats(db, now=now)),
         covered_but_locked=covered_but_locked(db),
         prepaid_coverage_unresolved_count=prepaid_coverage_unresolved(db),

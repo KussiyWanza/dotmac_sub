@@ -27,6 +27,7 @@ HANDLER = (
 CALENDAR_RECONCILER = (
     PROJECT_ROOT / "app" / "services" / "prepaid_billing_calendar_reconciliation.py"
 )
+RETIRED_BACKFILL = PROJECT_ROOT / "scripts" / "one_off" / "backfill_next_billing_at.py"
 
 
 def _tree(path: Path) -> ast.Module:
@@ -128,6 +129,16 @@ def test_canonical_writer_is_the_only_service_assignment() -> None:
         if path != CANONICAL_WRITER and _assigns_next_billing_at(path)
     }
     assert offenders == {}
+
+
+def test_legacy_anchor_backfill_cannot_guess_or_write_billing_dates() -> None:
+    source = RETIRED_BACKFILL.read_text(encoding="utf-8")
+
+    assert _assigns_next_billing_at(RETIRED_BACKFILL) == set()
+    assert "_resolve_price" not in source
+    assert "_period_end" not in source
+    assert "--forgive-before" not in source
+    assert "repair_stale_prepaid_billing_anchors.py" in source
 
 
 def test_every_active_lifecycle_transition_stages_the_required_anchor() -> None:

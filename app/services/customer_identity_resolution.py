@@ -314,8 +314,7 @@ def rebuild_identity_index_for_subscriber(
         db.add_all(rows)
     db.flush()
     logger.info(
-        "customer_identity_index_rebuilt subscriber_id=%s stale_deleted=%s rows_inserted=%s",
-        subscriber_uuid,
+        "customer_identity_index_rebuilt stale_deleted=%s rows_inserted=%s",
         deleted_count,
         len(rows),
     )
@@ -988,24 +987,22 @@ def _log_resolution(resolution: CustomerIdentityResolution) -> None:
     )
     if resolution.matched:
         logger.info(
-            "customer_identity_resolved raw_identifier=%r normalized_identifier=%r identity_type=%s inbound_channel=%s matched_via=%s matched_field=%s matched_record_id=%s subscriber_id=%s confidence=%s ambiguous=%s",
-            resolution.raw_identifier,
-            resolution.normalized_identifier,
+            "customer_identity_resolved identity_type=%s inbound_channel=%s "
+            "matched_via=%s matched_field=%s matched_record_source=%s "
+            "confidence=%s ambiguous=%s",
             resolution.identity_type,
             resolution.inbound_channel,
             resolution.matched_via,
             resolution.matched_field,
-            resolution.source_record_id,
-            resolution.subscriber_id,
+            resolution.source_table,
             resolution.match_confidence,
             resolution.ambiguous,
         )
         return
     level = logger.warning if resolution.ambiguous else logger.info
     level(
-        "customer_identity_unresolved raw_identifier=%r normalized_identifier=%r identity_type=%s inbound_channel=%s ambiguous=%s ambiguity_count=%s confidence=%s",
-        resolution.raw_identifier,
-        resolution.normalized_identifier,
+        "customer_identity_unresolved identity_type=%s inbound_channel=%s "
+        "ambiguous=%s ambiguity_count=%s confidence=%s",
         resolution.identity_type,
         resolution.inbound_channel,
         resolution.ambiguous,
@@ -1014,8 +1011,8 @@ def _log_resolution(resolution: CustomerIdentityResolution) -> None:
     )
     if resolution.ambiguous:
         logger.warning(
-            "customer_identity_ambiguous_identifier normalized_identifier=%r identity_type=%s ambiguity_count=%s inbound_channel=%s",
-            resolution.normalized_identifier,
+            "customer_identity_ambiguous_identifier identity_type=%s "
+            "ambiguity_count=%s inbound_channel=%s",
             resolution.identity_type,
             resolution.ambiguity_count,
             resolution.inbound_channel,

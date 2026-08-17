@@ -57,6 +57,8 @@ counts. The contract gate is:
 If account management later proves the 22 August date was a commercial
 decision, a reviewed owner command may supersede the unknown classification
 with the exact contract/override evidence. A bulk data edit is not that command.
+The evidence and operational adjudication gates are in
+`docs/runbooks/MONEY_PATH_OPERATIONAL_CLOSURE.md`.
 
 ## Verification
 

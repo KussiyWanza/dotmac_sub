@@ -16,7 +16,12 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from app.models.billing import Invoice, InvoiceStatus
-from app.services.billing_health import AGED_DRAFT_DAYS, aged_draft_invoices
+from app.services.billing_health import (
+    AGED_DRAFT_DAYS,
+    STALLED_DRAFT_ALERT_COUNT,
+    aged_draft_invoices,
+    stalled_draft_invoice_cohort,
+)
 
 NOW = datetime(2026, 8, 8, 12, 0, tzinfo=UTC)
 
@@ -91,3 +96,26 @@ def test_the_signal_can_reach_zero(db_session, subscriber):
     db_session.commit()
 
     assert aged_draft_invoices(db_session, now=NOW)[0] == 0
+
+
+def test_recent_stalled_cohort_uses_a_fixed_creation_window(db_session, subscriber):
+    current_cohort = _draft(db_session, subscriber, age_days=1, total="1250.00")
+    current_cohort.created_at = NOW - timedelta(hours=30)
+    db_session.commit()
+    _draft(db_session, subscriber, age_days=3, total="2500.00")
+    _draft(db_session, subscriber, age_days=AGED_DRAFT_DAYS + 10, total="9999.00")
+
+    count, total = stalled_draft_invoice_cohort(db_session, now=NOW)
+
+    assert count == 1
+    assert total == Decimal("1250.00")
+
+
+def test_historic_aged_stock_is_not_a_current_incident(db_session, subscriber):
+    for _ in range(STALLED_DRAFT_ALERT_COUNT + 1):
+        _draft(db_session, subscriber, age_days=AGED_DRAFT_DAYS + 10)
+
+    count, total = stalled_draft_invoice_cohort(db_session, now=NOW)
+
+    assert count == 0
+    assert total == Decimal("0")

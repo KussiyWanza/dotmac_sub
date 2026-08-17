@@ -20,7 +20,7 @@ from decimal import Decimal
 from typing import NoReturn
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.audit import AuditActorType
@@ -1759,15 +1759,17 @@ _STALE_BILLING_ANCHOR_REPAIR_ACTION = "repair_stale_prepaid_billing_anchor"
 
 @dataclass(frozen=True, slots=True)
 class StaleBillingAnchorCandidate:
-    """One subscription whose anchor understates its exact funded coverage."""
+    """One subscription whose anchor is absent or trails funded coverage."""
 
     subscription_id: UUID
     account_id: UUID
-    current_next_billing_at: datetime
+    current_next_billing_at: datetime | None
     coverage_end: datetime
 
     @property
-    def drift(self) -> timedelta:
+    def drift(self) -> timedelta | None:
+        if self.current_next_billing_at is None:
+            return None
         return self.coverage_end - self.current_next_billing_at
 
 
@@ -1821,8 +1823,12 @@ def _stale_billing_anchor_candidates(
         )
         .join(coverage, coverage.c.subscription_id == Subscription.id)
         .where(
-            Subscription.next_billing_at.isnot(None),
-            coverage.c.coverage_end > Subscription.next_billing_at,
+            Subscription.status == SubscriptionStatus.active,
+            Subscription.billing_mode == BillingMode.prepaid,
+            or_(
+                Subscription.next_billing_at.is_(None),
+                coverage.c.coverage_end > Subscription.next_billing_at,
+            ),
         )
         .order_by(Subscription.next_billing_at, Subscription.id)
     )
@@ -1834,7 +1840,7 @@ def _stale_billing_anchor_candidates(
         StaleBillingAnchorCandidate(
             subscription_id=row[0],
             account_id=row[1],
-            current_next_billing_at=_utc(row[2]),
+            current_next_billing_at=_utc(row[2]) if row[2] is not None else None,
             coverage_end=_utc(row[3]),
         )
         for row in rows[:limit]
@@ -1847,7 +1853,7 @@ def _stale_billing_anchor_fingerprint(
 ) -> str:
     material = "|".join(
         f"{item.subscription_id}:"
-        f"{item.current_next_billing_at.isoformat()}:"
+        f"{item.current_next_billing_at.isoformat() if item.current_next_billing_at else 'NULL'}:"
         f"{item.coverage_end.isoformat()}"
         for item in candidates
     )
@@ -1864,12 +1870,12 @@ def preview_stale_prepaid_billing_anchor_repair(
 ) -> StaleBillingAnchorRepairPreview:
     """Report subscriptions whose anchor lags their exact funded coverage.
 
-    This is the pre-existing drift cohort created while the payment-allocation
-    path committed entitlements without ever reaching this owner: an active
-    ``ServiceEntitlement`` ends after ``Subscription.next_billing_at``, so the
-    customer has paid for service the billing anchor says is already due. It is
-    a different cohort from ``scripts/one_off/backfill_next_billing_at.py``,
-    which repairs NULL or historically-past anchors with no coverage evidence.
+    This includes the pre-existing drift cohort created while the
+    payment-allocation path committed entitlements without ever reaching this
+    owner, plus active prepaid subscriptions whose anchor is NULL while an
+    active entitlement proves the exact paid-through boundary. No anchor is
+    inferred from mutable catalog cadence, subscription creation, or current
+    time; NULL rows without exact coverage evidence remain review stock.
 
     Read-only. No money is posted, moved, or forgiven.
     """
@@ -1936,7 +1942,11 @@ def apply_stale_prepaid_billing_anchor_repair(
             skipped_changed += 1
             continue
 
-        material = f"{candidate.subscription_id}:{candidate.coverage_end.isoformat()}"
+        material = (
+            f"{candidate.subscription_id}:"
+            f"{preview.as_of.isoformat()}:"
+            f"{candidate.coverage_end.isoformat()}"
+        )
         key = (
             "prepaid-billing-anchor-repair-"
             + hashlib.sha256(material.encode("utf-8")).hexdigest()
@@ -1984,9 +1994,15 @@ def apply_stale_prepaid_billing_anchor_repair(
                     "preview_fingerprint": preview.fingerprint,
                     "previous_next_billing_at": (
                         candidate.current_next_billing_at.isoformat()
+                        if candidate.current_next_billing_at
+                        else None
                     ),
                     "repaired_next_billing_at": candidate.coverage_end.isoformat(),
-                    "drift_seconds": str(int(candidate.drift.total_seconds())),
+                    "drift_seconds": (
+                        str(int(candidate.drift.total_seconds()))
+                        if candidate.drift is not None
+                        else None
+                    ),
                 },
             ),
         )

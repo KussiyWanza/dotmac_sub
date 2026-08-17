@@ -1018,6 +1018,7 @@ DOMAIN = DomainSOT(
             name="communications.notification_service",
             module="app.services.notification",
             owns=(
+                "notification template lifecycle and activation validity",
                 "notification row lifecycle",
                 "delivery state",
                 "notification delivery latency class enforcement",
@@ -1031,7 +1032,12 @@ DOMAIN = DomainSOT(
                 "declare expected delivery latency as immediate, normal, or "
                 "batch. This owner persists the class on the notification row "
                 "and centrally schedules immediate after-commit wake-ups; the "
-                "periodic queue runner remains recovery and batch drainage."
+                "periodic queue runner remains recovery and batch drainage. "
+                "Every web and API template mutation enters this owner. Inactive "
+                "drafts may remain incomplete, but activation validates the exact "
+                "renderer vocabulary and event-specific required fields. The "
+                "payment_received contract requires receipt_number and receipt_url "
+                "in the body before any channel can become active."
             ),
         ),
         SOTService(

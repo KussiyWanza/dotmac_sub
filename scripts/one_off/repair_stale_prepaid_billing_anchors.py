@@ -12,8 +12,9 @@ evidence without ever emitting a durable ``payment.received`` event, so
 advancement — was never invoked. The emission is fixed forward; this command
 repairs the accumulated backlog.
 
-This is NOT the same cohort as ``backfill_next_billing_at.py``, which repairs
-NULL or historically-past anchors with no coverage evidence at all.
+The same owner also admits an active prepaid subscription with a NULL anchor
+when an active entitlement proves its exact paid-through boundary. NULL rows
+without that evidence remain review stock.
 
 Preview-then-apply, idempotent, and evidence-producing:
   * preview is read-only and fingerprint-bound;
@@ -48,6 +49,10 @@ def main() -> None:
         help="Write the repair. Default is a read-only preview.",
     )
     parser.add_argument(
+        "--reviewed-sha256",
+        help="Exact preview fingerprint approved for this apply pass.",
+    )
+    parser.add_argument(
         "--limit",
         type=int,
         default=DEFAULT_LIMIT,
@@ -79,18 +84,32 @@ def main() -> None:
                 "reaches zero"
             )
         for candidate in preview.candidates[:20]:
+            previous = (
+                candidate.current_next_billing_at.isoformat()
+                if candidate.current_next_billing_at
+                else "NULL"
+            )
             print(
                 f"  {candidate.subscription_id}  "
-                f"{candidate.current_next_billing_at.isoformat()} -> "
+                f"{previous} -> "
                 f"{candidate.coverage_end.isoformat()}  "
-                f"(+{candidate.drift.days}d)"
+                + (
+                    f"(+{candidate.drift.days}d)"
+                    if candidate.drift is not None
+                    else "(exact entitlement evidence)"
+                )
             )
         if len(preview.candidates) > 20:
             print(f"  ... {len(preview.candidates) - 20} more")
 
         if not args.apply:
-            print("\nDRY RUN — nothing written. Re-run with --apply.")
+            print(
+                "\nDRY RUN — nothing written. Review the cohort, then re-run "
+                "with --apply --reviewed-sha256 <preview fingerprint>."
+            )
             return
+        if args.reviewed_sha256 != preview.fingerprint:
+            parser.error("--reviewed-sha256 must equal the exact preview fingerprint")
 
         result = apply_stale_prepaid_billing_anchor_repair(
             db,
