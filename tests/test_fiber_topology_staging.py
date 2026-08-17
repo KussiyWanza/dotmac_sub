@@ -321,10 +321,77 @@ def test_bounded_stage_preserves_full_source_duplicate_classification(
         feature.match_status
         for feature in db_session.query(FiberTopologyStagedFeature).all()
     } == {"candidate"}
-    assert {
+    full_manifest_hashes = {
         batch.source_metadata["full_manifest_sha256"]
         for batch in db_session.query(FiberTopologySourceBatch).all()
-    } == {preview.manifest_sha256}
+    }
+    assert len(full_manifest_hashes) == 1
+    assert full_manifest_hashes != {preview.manifest_sha256}
+
+
+def test_crm_bounded_stage_idempotency_is_archive_aware(db_session, tmp_path):
+    path = _write_kmz(
+        tmp_path,
+        "crm-cabinet.kmz",
+        [
+            _placemark(
+                name="FDH 1",
+                properties={"crm_id": "CRM-1", "name": "FDH 1"},
+                geometry_type="Point",
+                coordinates="7.1,9.0",
+            ),
+        ],
+    )
+    preview = preview_fiber_source(db_session, path, "crm_fdh_cabinets")
+    first_metadata = {
+        "importer_version": "stage_crm_network_map:v2",
+        "source_archive_sha256": "a" * 64,
+    }
+    second_metadata = {
+        "importer_version": "stage_crm_network_map:v2",
+        "source_archive_sha256": "b" * 64,
+    }
+
+    first = stage_fiber_preview_batch(
+        db_session,
+        preview,
+        start=0,
+        stop=1,
+        source_name="crm_fdh_cabinets-00001-a.kml",
+        created_by="pytest",
+        source_metadata=first_metadata,
+    )
+    same_archive = stage_fiber_preview_batch(
+        db_session,
+        preview,
+        start=0,
+        stop=1,
+        source_name="crm_fdh_cabinets-00001-a-rerun.kml",
+        created_by="pytest",
+        source_metadata=first_metadata,
+    )
+    new_archive = stage_fiber_preview_batch(
+        db_session,
+        preview,
+        start=0,
+        stop=1,
+        source_name="crm_fdh_cabinets-00001-b.kml",
+        created_by="pytest",
+        source_metadata=second_metadata,
+    )
+
+    assert first.created is True
+    assert same_archive.created is False
+    assert same_archive.batch_id == first.batch_id
+    assert new_archive.created is True
+    assert new_archive.batch_id != first.batch_id
+
+    batches = db_session.query(FiberTopologySourceBatch).all()
+    assert len(batches) == 2
+    assert {
+        batch.source_metadata["source_archive_sha256"] for batch in batches
+    } == {"a" * 64, "b" * 64}
+    assert db_session.query(FiberTopologyStagedFeature).count() == 2
 
 
 @pytest.mark.parametrize(
