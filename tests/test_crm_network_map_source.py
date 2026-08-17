@@ -5,6 +5,7 @@ import hashlib
 import pytest
 from sqlalchemy import create_engine
 
+from app.services.network import crm_network_map_source
 from app.services.network.crm_network_map_source import (
     CrmMapProfileExtraction,
     CrmMapProfileName,
@@ -15,7 +16,6 @@ from app.services.network.crm_network_map_source import (
     feature_batches,
     validate_sha256,
 )
-from app.services.network import crm_network_map_source
 from app.services.network.fiber_topology_staging import preview_fiber_source
 
 
@@ -191,14 +191,14 @@ def test_segment_endpoint_and_capacity_changes_alter_kml_hash():
         ),
     )
 
-    assert hashlib.sha256(build_kml((first,))).hexdigest() != hashlib.sha256(
-        build_kml((changed_capacity,))
-    ).hexdigest()
-    assert hashlib.sha256(
-        build_kml((first,), archive_sha256="a" * 64)
-    ).hexdigest() != hashlib.sha256(
-        build_kml((first,), archive_sha256="b" * 64)
-    ).hexdigest()
+    assert (
+        hashlib.sha256(build_kml((first,))).hexdigest()
+        != hashlib.sha256(build_kml((changed_capacity,))).hexdigest()
+    )
+    assert (
+        hashlib.sha256(build_kml((first,), archive_sha256="a" * 64)).hexdigest()
+        != hashlib.sha256(build_kml((first,), archive_sha256="b" * 64)).hexdigest()
+    )
 
 
 def test_segment_endpoint_blockers_fail_closed():
