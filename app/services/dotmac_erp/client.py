@@ -16,7 +16,7 @@ import logging
 from collections.abc import Collection
 
 import httpx
-from dotmac_integration import IntegrationHttpClient
+from dotmac_integration_client import IntegrationHttpClient
 
 from app.services.dotmac_erp.operational_contracts import (
     ErpOperationalSyncCommand,
