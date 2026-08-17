@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 TEMPLATE = Path("templates/admin/vendors/operations.html")
 
 
@@ -30,7 +29,13 @@ def test_draft_procurement_rows_expand_to_reveal_the_existing_form():
 
     assert '<details name="draft-procurement-project"' in template
     assert "group-open:rotate-180" in template
-    assert 'action="/admin/vendors/operations/projects/{{ project.id }}/procurement"' in template
-    assert 'href="/admin/projects/{{ project.project.number or project.project.id }}"' in template
+    assert (
+        'action="/admin/vendors/operations/projects/{{ project.id }}/procurement"'
+        in template
+    )
+    assert (
+        'href="/admin/projects/{{ project.project.number or project.project.id }}"'
+        in template
+    )
     assert 'onclick="event.stopPropagation()"' in template
     assert ">View project</a>" in template
