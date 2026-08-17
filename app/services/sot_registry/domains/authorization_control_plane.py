@@ -1440,6 +1440,7 @@ DOMAIN = DomainSOT(
             ),
             depends_on=(
                 "party.registry",
+                "party.staff_session_projection",
                 "auth.staff_provisioning",
             ),
             notes=(
@@ -1473,6 +1474,7 @@ DOMAIN = DomainSOT(
                         input_names=(
                             "canonical Person Party identity",
                             "credential Party authentication projection",
+                            "staff session Party projection",
                             "canonical staff context state",
                         ),
                     ),
@@ -1481,6 +1483,7 @@ DOMAIN = DomainSOT(
                         role=OwnerRole.POLICY,
                         input_names=(
                             "credential Party authentication projection",
+                            "staff session Party projection",
                             "canonical staff context state",
                         ),
                     ),
@@ -1496,7 +1499,13 @@ DOMAIN = DomainSOT(
                         name="credential Party authentication projection",
                         owner="party.credential_authentication_projection",
                         kind=AuthorityKind.DERIVED_PROJECTION,
-                        source="user_credentials.party_id and sessions.party_id",
+                        source="user_credentials.party_id",
+                    ),
+                    AuthorityInput(
+                        name="staff session Party projection",
+                        owner="party.staff_session_projection",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source="sessions.party_id",
                     ),
                     AuthorityInput(
                         name="canonical staff context state",
