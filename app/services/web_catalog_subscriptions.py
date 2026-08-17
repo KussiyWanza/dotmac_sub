@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 from starlette.datastructures import FormData
 
 from app.models.audit import AuditActorType
-from app.models.billing import InvoiceStatus, TaxRate
+from app.models.billing import InvoiceDueDateBasis, InvoiceStatus, TaxRate
 from app.models.catalog import (
     AccessCredential,
     AddOn,
@@ -3181,13 +3181,22 @@ def create_invoice_for_subscription(db: Session, created: Subscription) -> None:
         if offer.prices:
             line_amount = offer.prices[0].amount or Decimal("0.00")
 
+    from app.services.billing_settings import resolve_payment_due_days
+
+    subscriber = db.get(Subscriber, created.subscriber_id)
+    issued_at = datetime.now(UTC)
+    due_days = resolve_payment_due_days(db, subscriber=subscriber)
     billing_adapter.create_invoice_with_lines(
         db,
         InvoiceIntent(
             account_id=created.subscriber_id,
             status=InvoiceStatus.issued,
             total=line_amount,
-            issued_at=datetime.now(UTC),
+            issued_at=issued_at,
+            due_at=issued_at + timedelta(days=due_days),
+            due_date_basis=InvoiceDueDateBasis.contract_terms,
+            due_date_basis_ref=f"subscription:{created.id}",
+            due_date_policy_version="billing-payment-terms-v1",
         ),
         [
             InvoiceLineIntent(

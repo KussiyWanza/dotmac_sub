@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session
 from app.models.billing import (
     BillingRun,
     Invoice,
+    InvoiceDueDateBasis,
     InvoiceStatus,
     Payment,
     PaymentStatus,
@@ -38,6 +39,7 @@ from app.models.billing import (
 from app.models.catalog import (
     BillingMode,
     Subscription,
+    SubscriptionStatus,
 )
 from app.models.domain_settings import SettingDomain
 from app.models.enforcement_lock import EnforcementLock, EnforcementReason
@@ -66,6 +68,7 @@ from app.services.prepaid_funding_reconstruction import (
     PrepaidFundingBaselineMissingError,
     prepaid_funding_incomplete_source_account_ids,
 )
+from app.timezone import APP_TIMEZONE
 
 # Alert thresholds. Conservative defaults; tune via ops experience.
 SCAN_MIN_RATIO = 0.5  # alert if a run scanned < 50% of active subs
@@ -206,6 +209,17 @@ class BillingHealthSnapshot:
     prepaid_coverage_unresolved_count: int = 0
     prepaid_coverage_repairable_count: int = 0
     prepaid_coverage_quarantined_count: int = 0
+    # Money-path control stock and raw participation stages. These remain
+    # separate observations: the runner does not divide current mutable anchors
+    # into historical payers and call the result demand.
+    active_null_billing_anchor_count: int = 0
+    open_unknown_due_date_basis_count: int = 0
+    open_legacy_null_due_date_basis_count: int = 0
+    expected_renewal_accounts_by_day: Mapping[str, int] = field(default_factory=dict)
+    unique_payers_7d: int = 0
+    payment_attempts_7d: int = 0
+    payments_succeeded_7d: int = 0
+    payment_success_ratio_7d: float | None = None
     scan_min_ratio: float = SCAN_MIN_RATIO
     payment_volume_min_ratio: float = PAYMENT_VOLUME_MIN_RATIO
     payment_baseline_min_daily: float = PAYMENT_BASELINE_MIN_DAILY
@@ -251,6 +265,8 @@ class BillingHealthSnapshot:
             out.append("prepaid_coverage_repair_required")
         if self.prepaid_coverage_quarantined_count > 0:
             out.append("prepaid_coverage_quarantined")
+        if self.active_null_billing_anchor_count > 0:
+            out.append("active_subscription_null_billing_anchor")
         return out
 
 
@@ -340,6 +356,34 @@ def billing_health_observations(snapshot: BillingHealthSnapshot):  # noqa: ANN20
             "terminal_account",
             snapshot.active_subs_on_terminal_account,
         ),
+        (
+            "active_subscription_null_billing_anchor",
+            "all",
+            snapshot.active_null_billing_anchor_count,
+        ),
+        (
+            "open_invoice_due_date_basis",
+            "unknown_unverified",
+            snapshot.open_unknown_due_date_basis_count,
+        ),
+        (
+            "open_invoice_due_date_basis",
+            "legacy_null",
+            snapshot.open_legacy_null_due_date_basis_count,
+        ),
+        ("billing_unique_payers", "trailing_7d", snapshot.unique_payers_7d),
+        ("billing_payment_attempts", "trailing_7d", snapshot.payment_attempts_7d),
+        (
+            "billing_payments_succeeded",
+            "trailing_7d",
+            snapshot.payments_succeeded_7d,
+        ),
+        *(
+            ("billing_expected_renewal_accounts", scope, count)
+            for scope, count in sorted(
+                snapshot.expected_renewal_accounts_by_day.items()
+            )
+        ),
     ]
     # Omitted rather than zeroed when the funding baseline is missing: a false
     # "0 accounts negative" would read as healthy.
@@ -363,6 +407,14 @@ def billing_health_observations(snapshot: BillingHealthSnapshot):  # noqa: ANN20
         values.append(("invoice_scan_ratio", "all", snapshot.scan_ratio))
     if snapshot.payment_volume_ratio is not None:
         values.append(("payment_volume_ratio", "all", snapshot.payment_volume_ratio))
+    if snapshot.payment_success_ratio_7d is not None:
+        values.append(
+            (
+                "billing_payment_success_ratio",
+                "trailing_7d",
+                snapshot.payment_success_ratio_7d,
+            )
+        )
     for runner in snapshot.runners:
         if not runner.enabled:
             continue
@@ -556,6 +608,135 @@ def payment_volume(
         and ratio < payment_volume_min_ratio
     )
     return int(count_24h), daily_avg, ratio, collapsed
+
+
+def money_path_control_snapshot(
+    db: Session,
+    *,
+    now: datetime | None = None,
+) -> tuple[int, int, int, dict[str, int], int, int, int, float | None]:
+    """Return invariant stock plus raw, non-laundered participation stages.
+
+    Expected renewal accounts are a forward point-in-time schedule by Lagos
+    business day. Unique payers and payment outcomes are trailing observations.
+    They are intentionally not divided into a conversion rate: doing so would
+    combine different periods while anchors are mutable.
+    """
+
+    observed_at = now or datetime.now(UTC)
+    local_now = observed_at.astimezone(APP_TIMEZONE)
+    local_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    local_end = local_start + timedelta(days=14)
+    start_utc = local_start.astimezone(UTC)
+    end_utc = local_end.astimezone(UTC)
+
+    active_null_anchor_count = int(
+        db.scalar(
+            select(func.count(Subscription.id)).where(
+                Subscription.status == SubscriptionStatus.active,
+                Subscription.next_billing_at.is_(None),
+            )
+        )
+        or 0
+    )
+    open_statuses = (
+        InvoiceStatus.issued,
+        InvoiceStatus.partially_paid,
+        InvoiceStatus.overdue,
+    )
+    unknown_due_basis_count = int(
+        db.scalar(
+            select(func.count(Invoice.id)).where(
+                Invoice.is_active.is_(True),
+                Invoice.status.in_(open_statuses),
+                Invoice.due_date_basis == InvoiceDueDateBasis.unknown_unverified,
+            )
+        )
+        or 0
+    )
+    legacy_null_due_basis_count = int(
+        db.scalar(
+            select(func.count(Invoice.id)).where(
+                Invoice.is_active.is_(True),
+                Invoice.status.in_(open_statuses),
+                Invoice.due_date_basis.is_(None),
+            )
+        )
+        or 0
+    )
+
+    expected_accounts: dict[str, set[object]] = {
+        f"day_{offset}": set() for offset in range(14)
+    }
+    for account_id, anchor in db.execute(
+        select(Subscription.subscriber_id, Subscription.next_billing_at).where(
+            Subscription.status == SubscriptionStatus.active,
+            Subscription.next_billing_at.is_not(None),
+            Subscription.next_billing_at >= start_utc,
+            Subscription.next_billing_at < end_utc,
+        )
+    ).all():
+        normalized = anchor if anchor.tzinfo is not None else anchor.replace(tzinfo=UTC)
+        offset = (normalized.astimezone(APP_TIMEZONE).date() - local_start.date()).days
+        if 0 <= offset < 14:
+            expected_accounts[f"day_{offset}"].add(account_id)
+    expected_by_day = {
+        scope: len(account_ids) for scope, account_ids in expected_accounts.items()
+    }
+
+    trailing_start = observed_at - timedelta(days=7)
+    unique_payers = int(
+        db.scalar(
+            select(func.count(func.distinct(Payment.account_id))).where(
+                Payment.is_active.is_(True),
+                Payment.status == PaymentStatus.succeeded,
+                Payment.account_id.is_not(None),
+                Payment.paid_at.is_not(None),
+                Payment.paid_at >= trailing_start,
+                Payment.paid_at < observed_at,
+            )
+        )
+        or 0
+    )
+    attempt_statuses = (
+        PaymentStatus.pending,
+        PaymentStatus.succeeded,
+        PaymentStatus.failed,
+        PaymentStatus.canceled,
+    )
+    attempts = int(
+        db.scalar(
+            select(func.count(Payment.id)).where(
+                Payment.is_active.is_(True),
+                Payment.status.in_(attempt_statuses),
+                Payment.created_at >= trailing_start,
+                Payment.created_at < observed_at,
+            )
+        )
+        or 0
+    )
+    succeeded = int(
+        db.scalar(
+            select(func.count(Payment.id)).where(
+                Payment.is_active.is_(True),
+                Payment.status == PaymentStatus.succeeded,
+                Payment.created_at >= trailing_start,
+                Payment.created_at < observed_at,
+            )
+        )
+        or 0
+    )
+    success_ratio = float(succeeded) / float(attempts) if attempts else None
+    return (
+        active_null_anchor_count,
+        unknown_due_basis_count,
+        legacy_null_due_basis_count,
+        expected_by_day,
+        unique_payers,
+        attempts,
+        succeeded,
+        success_ratio,
+    )
 
 
 def runner_heartbeats(
@@ -834,6 +1015,16 @@ def billing_health_snapshot(
     paid_without_issue_count = invoices_past_draft_without_issue_date(db)
     last_scanned, eligible, scan_ratio = invoice_scan_coverage(db)
     c24, avg7, ratio, collapsed = payment_volume(db, now=now)
+    (
+        active_null_anchor_count,
+        unknown_due_basis_count,
+        legacy_null_due_basis_count,
+        expected_renewal_accounts_by_day,
+        unique_payers_7d,
+        payment_attempts_7d,
+        payments_succeeded_7d,
+        payment_success_ratio_7d,
+    ) = money_path_control_snapshot(db, now=now)
     no_path, terminal = billing_path_coverage(db)
     (
         negative_prepaid_count,
@@ -864,6 +1055,14 @@ def billing_health_snapshot(
         payments_7d_daily_avg=avg7,
         payment_volume_ratio=ratio,
         payment_volume_collapsed=collapsed,
+        active_null_billing_anchor_count=active_null_anchor_count,
+        open_unknown_due_date_basis_count=unknown_due_basis_count,
+        open_legacy_null_due_date_basis_count=legacy_null_due_basis_count,
+        expected_renewal_accounts_by_day=expected_renewal_accounts_by_day,
+        unique_payers_7d=unique_payers_7d,
+        payment_attempts_7d=payment_attempts_7d,
+        payments_succeeded_7d=payments_succeeded_7d,
+        payment_success_ratio_7d=payment_success_ratio_7d,
         runners=tuple(runner_heartbeats(db, now=now)),
         covered_but_locked=covered_but_locked(db),
         prepaid_coverage_unresolved_count=prepaid_coverage_unresolved(db),

@@ -68,6 +68,11 @@ from app.models.service_extension import (
 from app.models.subscriber import Address, Subscriber
 from app.schemas.audit import AuditEventCreate
 from app.schemas.billing import AccountAdjustmentPreviewRequest
+from app.services.account_lifecycle import (
+    BillingAnchorProjectionCommand,
+    BillingAnchorProjectionSource,
+    stage_subscription_billing_anchor,
+)
 from app.services.audit import AuditEvents
 from app.services.billing._common import lock_account
 from app.services.billing.adjustments import (
@@ -1133,7 +1138,17 @@ def confirm_prepaid_service_renewal(
         subscription.next_billing_at is None
         or _utc(subscription.next_billing_at) < current.ends_at
     ):
-        subscription.next_billing_at = current.ends_at
+        stage_subscription_billing_anchor(
+            db,
+            subscription,
+            BillingAnchorProjectionCommand(
+                subscription_id=subscription.id,
+                expected_previous=subscription.next_billing_at,
+                target=current.ends_at,
+                source=BillingAnchorProjectionSource.prepaid_coverage,
+                evidence_ref=evidence,
+            ),
+        )
     db.flush()
     _stage_prepaid_consumption_posting(
         db,
@@ -1631,7 +1646,17 @@ def project_prepaid_billing_anchor_for_invoice(
         retracted = previous is not None and target < previous
         changed = target != previous
         if changed:
-            subscription.next_billing_at = target
+            stage_subscription_billing_anchor(
+                db,
+                subscription,
+                BillingAnchorProjectionCommand(
+                    subscription_id=subscription.id,
+                    expected_previous=subscription.next_billing_at,
+                    target=target,
+                    source=BillingAnchorProjectionSource.prepaid_coverage,
+                    evidence_ref=evidence_ref,
+                ),
+            )
             changed_any = True
         projections.append(
             BillingAnchorProjection(
@@ -1933,8 +1958,17 @@ def apply_stale_prepaid_billing_anchor_repair(
                 ref_id=str(candidate.subscription_id),
             )
         )
-        subscription.next_billing_at = candidate.coverage_end
-        db.flush()
+        stage_subscription_billing_anchor(
+            db,
+            subscription,
+            BillingAnchorProjectionCommand(
+                subscription_id=subscription.id,
+                expected_previous=subscription.next_billing_at,
+                target=candidate.coverage_end,
+                source=BillingAnchorProjectionSource.reviewed_reconciliation,
+                evidence_ref=key,
+            ),
+        )
         AuditEvents.stage(
             db,
             AuditEventCreate(
@@ -2200,7 +2234,17 @@ def apply_due_prepaid_service_after_funding_change(
         )
         if paid_through is not None and _utc(paid_through) > period_start:
             if anchor < _utc(paid_through):
-                subscription.next_billing_at = paid_through
+                stage_subscription_billing_anchor(
+                    db,
+                    subscription,
+                    BillingAnchorProjectionCommand(
+                        subscription_id=subscription.id,
+                        expected_previous=subscription.next_billing_at,
+                        target=_utc(paid_through),
+                        source=BillingAnchorProjectionSource.prepaid_coverage,
+                        evidence_ref=evidence,
+                    ),
+                )
             already_covered += 1
             continue
         preview = preview_prepaid_service_renewal(
@@ -2424,7 +2468,20 @@ def run_due_prepaid_service_renewals(
         )
         if paid_through is not None and _utc(paid_through) > period_start:
             if not dry_run and period_start < _utc(paid_through):
-                subscription.next_billing_at = paid_through
+                stage_subscription_billing_anchor(
+                    db,
+                    subscription,
+                    BillingAnchorProjectionCommand(
+                        subscription_id=subscription.id,
+                        expected_previous=subscription.next_billing_at,
+                        target=_utc(paid_through),
+                        source=BillingAnchorProjectionSource.prepaid_coverage,
+                        evidence_ref=(
+                            f"scheduled-coverage:{subscription.id}:"
+                            f"{_utc(paid_through).isoformat()}"
+                        ),
+                    ),
+                )
             summary["prepaid_renewals_already_covered"] = (
                 int(summary["prepaid_renewals_already_covered"]) + 1
             )

@@ -76,6 +76,11 @@ from app.schemas.billing import (
     PaymentUpdate,
 )
 from app.services import settings_spec
+from app.services.account_lifecycle import (
+    BillingAnchorProjectionCommand,
+    BillingAnchorProjectionSource,
+    stage_subscription_billing_anchor,
+)
 from app.services.audit import AuditEvents
 from app.services.billing._common import (
     _assert_invoice_allocatable,
@@ -1158,13 +1163,33 @@ def _reanchor_paid_prepaid_invoice_if_lapsed(
     target_next_billing = new_period_end + extension_delta
     current_next = subscription.next_billing_at
     if current_next is None:
-        subscription.next_billing_at = target_next_billing
+        stage_subscription_billing_anchor(
+            db,
+            subscription,
+            BillingAnchorProjectionCommand(
+                subscription_id=subscription.id,
+                expected_previous=None,
+                target=target_next_billing,
+                source=BillingAnchorProjectionSource.prepaid_settlement_reanchor,
+                evidence_ref=f"invoice:{invoice.id}:lapsed-settlement",
+            ),
+        )
     else:
         current_next = (
             current_next if current_next.tzinfo else current_next.replace(tzinfo=UTC)
         )
         if current_next < target_next_billing:
-            subscription.next_billing_at = target_next_billing
+            stage_subscription_billing_anchor(
+                db,
+                subscription,
+                BillingAnchorProjectionCommand(
+                    subscription_id=subscription.id,
+                    expected_previous=subscription.next_billing_at,
+                    target=target_next_billing,
+                    source=BillingAnchorProjectionSource.prepaid_settlement_reanchor,
+                    evidence_ref=f"invoice:{invoice.id}:lapsed-settlement",
+                ),
+            )
 
     logger.info(
         "prepaid_invoice_reanchored_to_payment_date",

@@ -10,7 +10,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from app.models.billing import InvoiceStatus, PaymentStatus
+from app.models.billing import InvoiceDueDateBasis, InvoiceStatus, PaymentStatus
 from app.schemas.billing import (
     InvoiceCreate,
     InvoiceLineCreate,
@@ -31,6 +31,9 @@ class InvoiceIntent:
     status: InvoiceStatus = InvoiceStatus.draft
     issued_at: datetime | None = None
     due_at: datetime | None = None
+    due_date_basis: InvoiceDueDateBasis | None = None
+    due_date_basis_ref: str | None = None
+    due_date_policy_version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -92,6 +95,9 @@ class BillingAdapter:
             memo=intent.memo,
             issued_at=intent.issued_at,
             due_at=intent.due_at,
+            due_date_basis=intent.due_date_basis,
+            due_date_basis_ref=intent.due_date_basis_ref,
+            due_date_policy_version=intent.due_date_policy_version,
         )
         return billing_service.invoices.create(db, payload)
 
@@ -115,6 +121,9 @@ class BillingAdapter:
             memo=intent.memo,
             issued_at=intent.issued_at,
             due_at=intent.due_at,
+            due_date_basis=intent.due_date_basis,
+            due_date_basis_ref=intent.due_date_basis_ref,
+            due_date_policy_version=intent.due_date_policy_version,
         )
         line_payloads = tuple(
             InvoiceLineCreate(

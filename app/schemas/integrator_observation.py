@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 MESSAGING_RECEIVE_CAPABILITY = "messaging.receive.v1"
 #: The contract versions this deployment has actually deployed. An envelope
@@ -30,6 +30,17 @@ class IntegratorScope(BaseModel):
     ref: str = Field(min_length=1, max_length=160)
 
 
+class IntegratorLocation(BaseModel):
+    """Provider-observed coordinates, not a presentation string."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    latitude: float = Field(strict=True, ge=-90, le=90)
+    longitude: float = Field(strict=True, ge=-180, le=180)
+    name: str | None = Field(default=None, max_length=255)
+    address: str | None = Field(default=None, max_length=500)
+
+
 class IntegratorAttachment(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -41,6 +52,7 @@ class IntegratorAttachment(BaseModel):
     caption: str | None = Field(default=None, max_length=2000)
     file_size: int | None = Field(default=None, ge=0)
     download_status: str | None = Field(default=None, max_length=40)
+    location: IntegratorLocation | None = None
 
 
 class IntegratorContactProfile(BaseModel):
@@ -57,7 +69,7 @@ class IntegratorMessageObservation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     contact_address: str = Field(min_length=1, max_length=320)
-    body: str = Field(min_length=1)
+    body: str = Field(max_length=10_000)
     contact_name: str | None = Field(default=None, max_length=255)
     subject: str | None = Field(default=None, max_length=500)
     external_message_id: str = Field(min_length=1, max_length=255)
@@ -71,6 +83,12 @@ class IntegratorMessageObservation(BaseModel):
     media_url: str | None = Field(default=None, max_length=2000)
     contact_profile: IntegratorContactProfile | None = None
     attachments: tuple[IntegratorAttachment, ...] = ()
+
+    @model_validator(mode="after")
+    def require_observed_content(self) -> IntegratorMessageObservation:
+        if not self.body.strip() and not self.attachments:
+            raise ValueError("A message requires text or at least one attachment.")
+        return self
 
 
 class IntegratorDeliveryReceiptObservation(BaseModel):

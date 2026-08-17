@@ -73,6 +73,146 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class BillingAnchorProjectionSource(StrEnum):
+    """Named evidence lanes allowed to request the canonical anchor writer."""
+
+    lifecycle_activation = "lifecycle_activation"
+    lifecycle_resume = "lifecycle_resume"
+    scheduled_billing = "scheduled_billing"
+    prepaid_coverage = "prepaid_coverage"
+    prepaid_settlement_reanchor = "prepaid_settlement_reanchor"
+    subscription_billing_grant = "subscription_billing_grant"
+    service_extension = "service_extension"
+    reviewed_reconciliation = "reviewed_reconciliation"
+
+
+@dataclass(frozen=True, slots=True)
+class BillingAnchorProjectionCommand:
+    """Typed compare-and-set request for the subscription billing anchor."""
+
+    subscription_id: UUID
+    expected_previous: datetime | None
+    target: datetime
+    source: BillingAnchorProjectionSource
+    evidence_ref: str
+
+
+class BillingAnchorProjectionError(ValueError):
+    """The requested projection is stale or lacks lawful evidence."""
+
+
+_RETRACTION_SOURCES = frozenset(
+    {
+        BillingAnchorProjectionSource.prepaid_coverage,
+        BillingAnchorProjectionSource.reviewed_reconciliation,
+        BillingAnchorProjectionSource.service_extension,
+    }
+)
+
+
+def _aware_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def stage_subscription_billing_anchor(
+    db: Session,
+    subscription: Subscription,
+    command: BillingAnchorProjectionCommand,
+) -> bool:
+    """Canonical, flush-only writer for ``Subscription.next_billing_at``."""
+
+    if subscription.id != command.subscription_id:
+        raise BillingAnchorProjectionError("Billing-anchor subscription mismatch")
+    if command.target.tzinfo is None or command.target.utcoffset() is None:
+        raise BillingAnchorProjectionError(
+            "Billing-anchor target must be timezone-aware"
+        )
+    if not command.evidence_ref.strip():
+        raise BillingAnchorProjectionError("Billing-anchor evidence_ref is required")
+
+    locked = db.scalar(
+        select(Subscription)
+        .where(Subscription.id == command.subscription_id)
+        .with_for_update()
+    )
+    if locked is None:
+        raise BillingAnchorProjectionError("Subscription not found")
+    subscription = locked
+    current = _aware_utc(subscription.next_billing_at)
+    expected = _aware_utc(command.expected_previous)
+    target = _aware_utc(command.target)
+    if current != expected:
+        raise BillingAnchorProjectionError(
+            "Billing anchor changed after the projection was derived"
+        )
+    assert target is not None
+    if (
+        current is not None
+        and target < current
+        and command.source not in _RETRACTION_SOURCES
+    ):
+        raise BillingAnchorProjectionError(
+            f"{command.source.value} cannot retract the billing anchor"
+        )
+    if current == target:
+        return False
+
+    subscription.next_billing_at = target
+    logger.info(
+        "subscription_billing_anchor_projected",
+        extra={
+            "event": "subscription_billing_anchor_projected",
+            "subscription_id": str(subscription.id),
+            "source": command.source.value,
+            "evidence_ref": command.evidence_ref,
+            "previous_next_billing_at": current.isoformat() if current else None,
+            "next_billing_at": target.isoformat(),
+        },
+    )
+    db.flush()
+    return True
+
+
+def _stage_missing_activation_billing_anchor(
+    db: Session,
+    subscription: Subscription,
+    *,
+    base_at: datetime,
+    source: BillingAnchorProjectionSource,
+    evidence_ref: str,
+) -> bool:
+    """Materialize the required anchor before a row becomes active."""
+
+    if subscription.next_billing_at is not None:
+        return False
+    normalized_base = _aware_utc(base_at)
+    if normalized_base is None:
+        raise BillingAnchorProjectionError("Billing-anchor base time is required")
+    from app.services.catalog.subscriptions import (
+        _compute_next_billing_at,
+        _resolve_billing_cycle,
+    )
+
+    cycle = subscription.billing_cycle or _resolve_billing_cycle(
+        db,
+        str(subscription.offer_id),
+        str(subscription.offer_version_id) if subscription.offer_version_id else None,
+    )
+    return stage_subscription_billing_anchor(
+        db,
+        subscription,
+        BillingAnchorProjectionCommand(
+            subscription_id=subscription.id,
+            expected_previous=None,
+            target=_compute_next_billing_at(normalized_base, cycle),
+            source=source,
+            evidence_ref=evidence_ref,
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Allowed restorer triggers per enforcement reason
 # ---------------------------------------------------------------------------
@@ -817,6 +957,20 @@ def restore_subscription_detailed(
             )
 
         prev_status = subscription.status
+        restored_at = _aware_utc(evidence_effective_at) or datetime.now(UTC)
+        if subscription.start_at is None:
+            subscription.start_at = restored_at
+        _stage_missing_activation_billing_anchor(
+            db,
+            subscription,
+            base_at=restored_at,
+            source=BillingAnchorProjectionSource.lifecycle_resume,
+            evidence_ref=(
+                evidence_context.idempotency_key
+                if evidence_context is not None and evidence_context.idempotency_key
+                else f"restore:{subscription.id}:{resolved_by}:{restored_at.isoformat()}"
+            ),
+        )
         subscription.status = SubscriptionStatus.active
         db.flush()
         _record_subscription_transition(
@@ -1016,11 +1170,26 @@ def activate_subscription(
         )
 
     prev_status = subscription.status
-    subscription.status = SubscriptionStatus.active
     if start_at and not subscription.start_at:
         subscription.start_at = start_at
     elif not subscription.start_at:
         subscription.start_at = datetime.now(UTC)
+    assert subscription.start_at is not None
+    _stage_missing_activation_billing_anchor(
+        db,
+        subscription,
+        base_at=subscription.start_at,
+        source=BillingAnchorProjectionSource.lifecycle_activation,
+        evidence_ref=(
+            evidence_context.idempotency_key
+            if evidence_context is not None and evidence_context.idempotency_key
+            else f"activation:{subscription.id}"
+        ),
+    )
+    # Make active the final staged mutation. The anchor writer locks through a
+    # query, and SQLAlchemy may autoflush before that query; setting active
+    # earlier could hit the database invariant while the anchor was still NULL.
+    subscription.status = SubscriptionStatus.active
 
     db.flush()
     _record_subscription_transition(
@@ -1412,15 +1581,33 @@ def enable_subscription(
         str(subscription.offer_id),
         str(subscription.offer_version_id) if subscription.offer_version_id else None,
     )
-    subscription.status = SubscriptionStatus.active
     subscription.start_at = subscription.start_at or resumed_at
+    previous_anchor = subscription.next_billing_at
     if subscription.next_billing_at:
         next_billing_at = subscription.next_billing_at
         if next_billing_at.tzinfo is None:
             next_billing_at = next_billing_at.replace(tzinfo=UTC)
-        subscription.next_billing_at = next_billing_at + paused_for
+        target_anchor = next_billing_at + paused_for
     else:
-        subscription.next_billing_at = _compute_next_billing_at(resumed_at, cycle)
+        target_anchor = _compute_next_billing_at(resumed_at, cycle)
+    stage_subscription_billing_anchor(
+        db,
+        subscription,
+        BillingAnchorProjectionCommand(
+            subscription_id=subscription.id,
+            expected_previous=previous_anchor,
+            target=target_anchor,
+            source=BillingAnchorProjectionSource.lifecycle_resume,
+            evidence_ref=(
+                evidence_context.idempotency_key
+                if evidence_context is not None and evidence_context.idempotency_key
+                else f"resume:{subscription.id}:{resumed_at.isoformat()}"
+            ),
+        ),
+    )
+    # See activate_subscription: the row becomes active only after the
+    # required anchor has been staged.
+    subscription.status = SubscriptionStatus.active
     db.flush()
     _record_subscription_transition(
         db,
@@ -1724,6 +1911,15 @@ def unsuspend_account_override(
 
         if would_restore:
             previous = subscription.status
+            if subscription.start_at is None:
+                subscription.start_at = now
+            _stage_missing_activation_billing_anchor(
+                db,
+                subscription,
+                base_at=now,
+                source=BillingAnchorProjectionSource.lifecycle_resume,
+                evidence_ref=f"account-unsuspend:{subscriber.id}:{source}:{now.isoformat()}",
+            )
             subscription.status = SubscriptionStatus.active
             _record_subscription_transition(
                 db,

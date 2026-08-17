@@ -372,7 +372,18 @@ def engine() -> Engine:
 def db_session(engine):
     connection = engine.connect()
     transaction = connection.begin()
-    SessionLocal = sessionmaker(bind=connection, autoflush=False, autocommit=False)
+    # Application owners are allowed to commit or roll back several independent
+    # root transactions during one command (for example, one dunning account at
+    # a time).  Keep each Session transaction inside a savepoint when the unit
+    # lane has already opened its connection-level isolation transaction;
+    # otherwise an expected account-local rollback tears down every fixture row
+    # created earlier in the test.
+    SessionLocal = sessionmaker(
+        bind=connection,
+        autoflush=False,
+        autocommit=False,
+        join_transaction_mode="create_savepoint",
+    )
     session = SessionLocal()
     try:
         # The application starts only after the one-time opening-balance

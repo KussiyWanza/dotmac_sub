@@ -29,11 +29,14 @@ from app.models.enforcement_lock import EnforcementLock, EnforcementReason
 from app.models.subscriber import Subscriber
 from app.services.account_lifecycle import (
     SUSPENDED_EQUIVALENT,
+    BillingAnchorProjectionCommand,
+    BillingAnchorProjectionSource,
     compute_account_status,
     get_active_locks,
     reactivation_blocked_by_active_login,
     resolve_locks_for_trigger,
     restore_subscription,
+    stage_subscription_billing_anchor,
 )
 from app.services.billing._common import _recalculate_invoice_totals
 from app.services.billing.invoices import Invoices
@@ -879,8 +882,17 @@ def _execute_item(db: Session, item: dict[str, Any]) -> dict[str, Any]:
         target = _parse_datetime(item["target_next_billing_at"])
         if target is None:
             raise ValueError(f"bad target_next_billing_at: {item['subscription_id']}")
-        subscription.next_billing_at = target
-        db.flush()
+        stage_subscription_billing_anchor(
+            db,
+            subscription,
+            BillingAnchorProjectionCommand(
+                subscription_id=subscription.id,
+                expected_previous=subscription.next_billing_at,
+                target=target,
+                source=BillingAnchorProjectionSource.reviewed_reconciliation,
+                evidence_ref=f"billing-cleanup:{item['action']}:{subscription.id}",
+            ),
+        )
         return {"next_billing_at": _iso(subscription.next_billing_at)}
     if item["action"] == "align_account_billing_mode":
         account = db.get(Subscriber, coerce_uuid(item["subscriber_id"]))
@@ -904,8 +916,17 @@ def _execute_item(db: Session, item: dict[str, Any]) -> dict[str, Any]:
         target = _parse_datetime(item["target_next_billing_at"])
         if target is None:
             raise ValueError(f"bad target_next_billing_at: {item['subscription_id']}")
-        subscription.next_billing_at = target
-        db.flush()
+        stage_subscription_billing_anchor(
+            db,
+            subscription,
+            BillingAnchorProjectionCommand(
+                subscription_id=subscription.id,
+                expected_previous=subscription.next_billing_at,
+                target=target,
+                source=BillingAnchorProjectionSource.reviewed_reconciliation,
+                evidence_ref=f"billing-cleanup:{item['action']}:{subscription.id}",
+            ),
+        )
         return {"next_billing_at": _iso(subscription.next_billing_at)}
     if item["action"] in {
         "deactivate_disabled_service_line",
@@ -1013,7 +1034,6 @@ def _execute_item(db: Session, item: dict[str, Any]) -> dict[str, Any]:
             idempotency_key=f"billing-cleanup-overlap-void-{invoice.id}",
             commit=False,
         )
-        invoice.due_at = None
         invoice.metadata_ = _metadata_with_cleanup_marker(
             invoice.metadata_,
             "prepaid_overlap_cleanup",

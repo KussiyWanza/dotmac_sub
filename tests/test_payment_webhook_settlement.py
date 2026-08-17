@@ -18,6 +18,7 @@ from uuid import uuid4
 import pytest
 
 from app.models.billing import (
+    InvoiceDueDateBasis,
     InvoiceStatus,
     Payment,
     PaymentAllocationReconciliationException,
@@ -72,6 +73,7 @@ def _make_provider(db, provider_type=PaymentProviderType.paystack, name="Paystac
 
 
 def _make_invoice(db, account_id, *, amount: str, invoice_number: str):
+    issued_at = datetime.now(UTC)
     return billing_service.invoices.create(
         db,
         InvoiceCreate(
@@ -82,6 +84,11 @@ def _make_invoice(db, account_id, *, amount: str, invoice_number: str):
             total=Decimal(amount),
             balance_due=Decimal(amount),
             status=InvoiceStatus.issued,
+            issued_at=issued_at,
+            due_at=issued_at + timedelta(days=30),
+            due_date_basis=InvoiceDueDateBasis.contract_terms,
+            due_date_basis_ref="test:webhook-payment",
+            due_date_policy_version="test-v1",
         ),
     )
 

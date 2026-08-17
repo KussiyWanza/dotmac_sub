@@ -84,6 +84,9 @@ class InvoiceImportRow(BaseModel):
     tax_total: Decimal = Decimal("0.00")
     total: Decimal = Decimal("0.00")
     balance_due: Decimal = Decimal("0.00")
+    issued_at: datetime | None = None
+    due_at: datetime | None = None
+    paid_at: datetime | None = None
     memo: str | None = None
 
 
@@ -167,6 +170,9 @@ ENTITY_CONFIG: dict[str, dict[str, Any]] = {
             "tax_total",
             "total",
             "balance_due",
+            "issued_at",
+            "due_at",
+            "paid_at",
             "memo",
         ],
     },

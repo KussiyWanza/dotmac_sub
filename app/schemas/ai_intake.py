@@ -119,6 +119,7 @@ class AiIntakeReason(StrEnum):
     invalid_configuration = "invalid_configuration"
     context_error = "context_error"
     fallback_timeout = "fallback_timeout"
+    no_text_content = "no_text_content"
 
 
 class AiIntakeContextMessage(BaseModel):

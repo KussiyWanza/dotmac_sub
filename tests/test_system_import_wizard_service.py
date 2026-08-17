@@ -259,8 +259,9 @@ def test_execute_import_subscriptions_preserves_next_billing_date(
     catalog_offer.billing_mode = BillingMode.postpaid
     db_session.commit()
     payload = (
-        "subscriber_id,offer_id,status,billing_mode,next_billing_at\n"
-        f"{subscriber.id},{catalog_offer.id},active,postpaid,2026-08-15T00:00:00+00:00\n"
+        "subscriber_id,offer_id,status,billing_mode,start_at,next_billing_at\n"
+        f"{subscriber.id},{catalog_offer.id},active,postpaid,"
+        "2026-07-15T00:00:00+00:00,2026-08-15T00:00:00+00:00\n"
     )
 
     result = _stage_and_apply(

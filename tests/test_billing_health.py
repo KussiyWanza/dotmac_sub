@@ -146,6 +146,66 @@ def test_payment_volume_low_baseline_never_collapses(db_session):
     assert collapsed is False
 
 
+def test_money_path_controls_keep_forward_schedule_and_trailing_payments_separate(
+    db_session,
+):
+    now = datetime(2026, 8, 16, 12, 0, tzinfo=UTC)
+    offer = _offer(db_session)
+    first = _subscriber(db_session, email="renewal-first@example.com")
+    second = _subscriber(db_session, email="renewal-second@example.com")
+    first_subscription = _subscription(db_session, first, offer)
+    second_subscription = _subscription(db_session, second, offer)
+    first_subscription.next_billing_at = now + timedelta(hours=13)
+    second_subscription.next_billing_at = now + timedelta(days=2)
+    db_session.add_all(
+        [
+            Payment(
+                account_id=first.id,
+                amount=Decimal("100"),
+                status=PaymentStatus.succeeded,
+                paid_at=now - timedelta(days=1),
+                created_at=now - timedelta(days=1),
+            ),
+            Payment(
+                account_id=first.id,
+                amount=Decimal("100"),
+                status=PaymentStatus.succeeded,
+                paid_at=now - timedelta(days=2),
+                created_at=now - timedelta(days=2),
+            ),
+            Payment(
+                account_id=second.id,
+                amount=Decimal("100"),
+                status=PaymentStatus.failed,
+                created_at=now - timedelta(days=1),
+            ),
+        ]
+    )
+    db_session.commit()
+
+    (
+        active_null_anchors,
+        unknown_due_basis,
+        legacy_null_due_basis,
+        expected_by_day,
+        unique_payers,
+        attempts,
+        succeeded,
+        success_ratio,
+    ) = billing_health.money_path_control_snapshot(db_session, now=now)
+
+    assert active_null_anchors == 0
+    assert unknown_due_basis == 0
+    assert legacy_null_due_basis == 0
+    # Lagos local midnight puts +13h on the next business day.
+    assert expected_by_day["day_1"] == 1
+    assert expected_by_day["day_2"] == 1
+    assert unique_payers == 1
+    assert attempts == 3
+    assert succeeded == 2
+    assert success_ratio == 2 / 3
+
+
 # ---- scan coverage None-guards --------------------------------------------
 
 

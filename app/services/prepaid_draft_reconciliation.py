@@ -37,6 +37,7 @@ from app.models.billing import (
     AccountAdjustment,
     CreditNoteApplication,
     Invoice,
+    InvoiceDueDateBasis,
     InvoiceLine,
     InvoiceStatus,
     LedgerCategory,
@@ -95,6 +96,7 @@ from app.services.billing.customer_subledger import (
     stage_reversal,
 )
 from app.services.billing.invoices import (
+    InvoiceIssuanceInput,
     InvoiceLines,
     InvoiceOwnerError,
     Invoices,
@@ -2645,9 +2647,14 @@ def _stage_action(
             Invoices.issue_draft_for_owner(
                 db,
                 str(invoice.id),
-                issued_at=_utc(effective_at),
-                due_at=_utc(due_at or effective_at),
-                reason="reconcile_exactly_funded_prepaid_draft",
+                issuance=InvoiceIssuanceInput(
+                    issued_at=_utc(effective_at),
+                    due_at=_utc(due_at or effective_at),
+                    due_date_basis=InvoiceDueDateBasis.prepaid_service_period,
+                    due_date_basis_ref=(f"prepaid-draft-review:{preview.fingerprint}"),
+                    due_date_policy_version="prepaid-draft-reconciliation-v1",
+                    reason="reconcile_exactly_funded_prepaid_draft",
+                ),
                 apply_available_credit=False,
             )
             if selected_payment_id is not None:

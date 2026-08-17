@@ -411,6 +411,7 @@ class TestCollectionsTask:
                     "cases_created": 3,
                     "actions_created": 2,
                     "skipped": 1,
+                    "dunning_errors": 0,
                     "credit_accounts_scanned": 0,
                     "credit_accounts_settled": 0,
                     "credit_invoices_touched": 0,

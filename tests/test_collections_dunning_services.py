@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from app.models.audit import AuditEvent
 from app.models.catalog import SubscriptionStatus
 from app.models.collections import DunningAction, DunningCase, DunningCaseStatus
 from app.models.domain_settings import DomainSetting, SettingDomain
@@ -529,6 +530,95 @@ def test_dunning_run_skips_paused_case(
         .all()
     )
     assert logs == []
+
+
+def test_dunning_run_isolates_one_account_failure(db_session, subscriber, monkeypatch):
+    """One broken account rolls back without suppressing the next account."""
+    from decimal import Decimal
+
+    from app.models.billing import Invoice, InvoiceStatus
+    from app.models.subscriber import Subscriber
+    from app.schemas.collections import DunningRunRequest
+    from app.services.collections._core import DunningAccountRunResult
+
+    second = Subscriber(
+        first_name="Second",
+        last_name="Dunning",
+        email="second-dunning@example.test",
+    )
+    db_session.add(second)
+    db_session.flush()
+    due_at = datetime.now(UTC) - timedelta(days=5)
+    db_session.add_all(
+        [
+            Invoice(
+                account_id=account_id,
+                invoice_number=f"INV-ISOLATION-{index}",
+                status=InvoiceStatus.issued,
+                total=Decimal("100.00"),
+                balance_due=Decimal("100.00"),
+                due_at=due_at,
+                metadata_={},
+            )
+            for index, account_id in enumerate((subscriber.id, second.id), start=1)
+        ]
+    )
+    db_session.commit()
+
+    calls = []
+
+    def fake_account_run(_db, command):
+        calls.append(command.account_id)
+        if len(calls) == 1:
+            raise RuntimeError("account-local defect")
+        return DunningAccountRunResult(actions_created=1)
+
+    monkeypatch.setattr(
+        "app.services.collections._core._run_dunning_account", fake_account_run
+    )
+
+    result = collections_service.dunning_workflow.run(
+        db_session,
+        DunningRunRequest(run_at=datetime.now(UTC)),
+    )
+
+    assert len(calls) == 2
+    assert result.errors == 1
+    assert result.actions_created == 1
+    assert result.skipped == 1
+
+
+def test_dunning_account_revalidates_stale_cohort_invoice(
+    db_session, subscriber, subscription, catalog_offer
+):
+    """A paid invoice cannot be enforced from an earlier cohort snapshot."""
+    from app.models.billing import InvoiceStatus
+    from app.services.collections._core import (
+        DunningAccountRunCommand,
+        _run_dunning_account,
+    )
+
+    invoice = _setup_overdue_postpaid_account(
+        db_session, subscriber, subscription, catalog_offer
+    )
+    stale_invoice_id = invoice.id
+    invoice.status = InvoiceStatus.paid
+    invoice.balance_due = 0
+    db_session.commit()
+
+    result = _run_dunning_account(
+        db_session,
+        DunningAccountRunCommand(
+            account_id=subscriber.id,
+            invoice_ids=(stale_invoice_id,),
+            run_at=datetime.now(UTC),
+            dry_run=False,
+        ),
+    )
+
+    assert result.skipped == 1
+    assert result.actions_created == 0
+    assert result.has_effective_overdue is False
 
 
 def test_payment_resolves_open_but_not_paused_cases(
@@ -1360,6 +1450,13 @@ def test_billing_enforcement_restore_failure_does_not_rollback_settlement(
     # The payment-allocation owner already requested the access consequence.
     # The enforcement adapter's redundant restore failure must not reverse it.
     assert subscription.status == SubscriptionStatus.active
+    failure = (
+        db_session.query(AuditEvent)
+        .filter(AuditEvent.action == "dunning_account_failed")
+        .filter(AuditEvent.entity_id == str(subscriber.id))
+        .one()
+    )
+    assert failure.metadata_["phase"] == "credit_settlement_restoration"
 
 
 def test_billing_enforcement_health_observes_all_channels(db_session, monkeypatch):

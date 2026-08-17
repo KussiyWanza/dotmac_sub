@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.models.billing import (
     Invoice,
+    InvoiceDueDateBasis,
     InvoiceStatus,
     LedgerEntry,
     LedgerEntryType,
@@ -55,7 +56,7 @@ from app.services.account_credit_deposits import (
 )
 from app.services.billing._common import get_account_credit_balance
 from app.services.billing.account_credit import AccountCreditApplications
-from app.services.billing.invoices import Invoices
+from app.services.billing.invoices import InvoiceIssuanceInput, Invoices
 from app.services.billing_health import (
     billing_health_observations,
     billing_health_snapshot,
@@ -703,6 +704,7 @@ def test_invoice_issued_after_deposit_uses_same_applicator(db_session, subscribe
         transaction=_transaction(intent, external_id="gateway-before-invoice"),
     )
 
+    issued_at = datetime.now(UTC)
     invoice = Invoices.create(
         db_session,
         InvoiceCreate(
@@ -713,6 +715,11 @@ def test_invoice_issued_after_deposit_uses_same_applicator(db_session, subscribe
             total=Decimal("60000.00"),
             balance_due=Decimal("60000.00"),
             status=InvoiceStatus.issued,
+            issued_at=issued_at,
+            due_at=issued_at + timedelta(days=7),
+            due_date_basis=InvoiceDueDateBasis.contract_terms,
+            due_date_basis_ref="pytest:account-credit-after-deposit",
+            due_date_policy_version="pytest-v1",
         ),
     )
 
@@ -736,6 +743,7 @@ def test_voiding_invoice_releases_applied_account_credit(db_session, subscriber)
         intent_id=intent.id,
         transaction=_transaction(intent, external_id="gateway-before-void"),
     )
+    issued_at = datetime.now(UTC)
     invoice = Invoices.create(
         db_session,
         InvoiceCreate(
@@ -746,6 +754,11 @@ def test_voiding_invoice_releases_applied_account_credit(db_session, subscriber)
             total=Decimal("6000.00"),
             balance_due=Decimal("6000.00"),
             status=InvoiceStatus.issued,
+            issued_at=issued_at,
+            due_at=issued_at + timedelta(days=7),
+            due_date_basis=InvoiceDueDateBasis.contract_terms,
+            due_date_basis_ref="pytest:void-account-credit",
+            due_date_policy_version="pytest-v1",
         ),
     )
     allocation = (
@@ -798,9 +811,14 @@ def test_draft_invoice_does_not_consume_credit_until_issued(db_session, subscrib
     Invoices.issue_draft_system(
         db_session,
         str(draft.id),
-        issued_at=datetime.now(UTC),
-        due_at=datetime.now(UTC),
-        reason="test",
+        issuance=InvoiceIssuanceInput(
+            issued_at=datetime.now(UTC),
+            due_at=datetime.now(UTC),
+            due_date_basis=InvoiceDueDateBasis.contract_terms,
+            due_date_basis_ref="test:account-credit",
+            due_date_policy_version="test-v1",
+            reason="test",
+        ),
         commit=True,
     )
     db_session.refresh(draft)

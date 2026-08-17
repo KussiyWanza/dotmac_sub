@@ -12,6 +12,7 @@ from app.models.billing import (
     CreditNote,
     CreditNoteStatus,
     Invoice,
+    InvoiceDueDateBasis,
     InvoiceStatus,
     LedgerEntry,
     LedgerEntryType,
@@ -104,6 +105,7 @@ def _enable_flutterwave_route(db_session) -> None:
 def _make_invoice(
     db_session, account_id, *, amount: str, invoice_number: str
 ) -> object:
+    issued_at = datetime.now(UTC)
     return billing_service.invoices.create(
         db_session,
         InvoiceCreate(
@@ -114,6 +116,11 @@ def _make_invoice(
             total=Decimal(amount),
             balance_due=Decimal(amount),
             status=InvoiceStatus.issued,
+            issued_at=issued_at,
+            due_at=issued_at + timedelta(days=30),
+            due_date_basis=InvoiceDueDateBasis.contract_terms,
+            due_date_basis_ref="test-customer-portal-topup",
+            due_date_policy_version="test-v1",
         ),
     )
 

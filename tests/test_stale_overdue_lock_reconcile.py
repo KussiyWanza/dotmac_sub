@@ -7,7 +7,13 @@ subs held by another lock suspended; ignores accounts that owe overdue debt.
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
-from app.models.billing import InvoiceStatus, LedgerEntry, LedgerEntryType, LedgerSource
+from app.models.billing import (
+    InvoiceDueDateBasis,
+    InvoiceStatus,
+    LedgerEntry,
+    LedgerEntryType,
+    LedgerSource,
+)
 from app.models.catalog import BillingMode, Subscription, SubscriptionStatus
 from app.models.enforcement_lock import EnforcementReason
 from app.models.splynx_transaction import SplynxBillingTransaction
@@ -18,11 +24,14 @@ from app.services.stale_overdue_lock_reconcile import reconcile
 
 
 def _postpaid_active(db, subscriber, offer):
+    now = datetime.now(UTC)
     sub = Subscription(
         subscriber_id=subscriber.id,
         offer_id=offer.id,
         status=SubscriptionStatus.active,
         billing_mode=BillingMode.postpaid,
+        start_at=now - timedelta(days=30),
+        next_billing_at=now + timedelta(days=1),
     )
     db.add(sub)
     db.commit()
@@ -95,6 +104,9 @@ def test_account_with_real_overdue_debt_is_not_a_candidate(
             balance_due=Decimal("5000.00"),
             issued_at=datetime.now(UTC) - timedelta(days=30),
             due_at=datetime.now(UTC) - timedelta(days=10),
+            due_date_basis=InvoiceDueDateBasis.contract_terms,
+            due_date_basis_ref="test:stale-overdue-lock",
+            due_date_policy_version="test-v1",
         ),
     )
     db_session.commit()
@@ -125,6 +137,9 @@ def test_ledger_covered_overdue_lock_can_be_restored(
             balance_due=Decimal("5000.00"),
             issued_at=datetime.now(UTC) - timedelta(days=30),
             due_at=datetime.now(UTC) - timedelta(days=10),
+            due_date_basis=InvoiceDueDateBasis.contract_terms,
+            due_date_basis_ref="test:stale-overdue-lock",
+            due_date_policy_version="test-v1",
         ),
     )
     db_session.add(
@@ -171,6 +186,9 @@ def test_archived_splynx_credit_cannot_restore_native_overdue_debt(
             balance_due=Decimal("5000.00"),
             issued_at=datetime.now(UTC) - timedelta(days=30),
             due_at=datetime.now(UTC) - timedelta(days=10),
+            due_date_basis=InvoiceDueDateBasis.contract_terms,
+            due_date_basis_ref="test:stale-overdue-lock",
+            due_date_policy_version="test-v1",
         ),
     )
     db_session.add(

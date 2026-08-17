@@ -39,6 +39,7 @@ from app.models.billing import (
     Invoice,
     InvoiceDiscountSource,
     InvoiceDiscountType,
+    InvoiceDueDateBasis,
     InvoiceStatus,
     TopupIntent,
 )
@@ -503,6 +504,7 @@ def initiate_deposit(
         )
     )
     if invoice is None:
+        issued_at = datetime.now(UTC)
         invoice_amounts = (
             _quote_deposit_invoice_amounts(native_quote, deposit)
             if native_quote is not None
@@ -523,7 +525,11 @@ def initiate_deposit(
                 tax_total=Decimal("0.00"),
                 total=deposit,
                 balance_due=deposit,
-                issued_at=datetime.now(UTC),
+                issued_at=issued_at,
+                due_at=issued_at,
+                due_date_basis=InvoiceDueDateBasis.contract_terms,
+                due_date_basis_ref=f"quote:{quote_id}:deposit",
+                due_date_policy_version="quote-deposit-pay-before-acceptance-v1",
                 memo=f"Installation deposit · quote {quote_id}",
             ),
             commit=False,
@@ -601,6 +607,7 @@ def _initiate_deposit_native(
         db, subscriber_id=sub_uuid, quote_id=quote.id
     )
     if invoice is None:
+        issued_at = datetime.now(UTC)
         invoice_amounts = _quote_deposit_invoice_amounts(quote, deposit)
         invoice = billing_service.invoices.create(
             db,
@@ -612,7 +619,11 @@ def _initiate_deposit_native(
                 tax_total=Decimal("0.00"),
                 total=deposit,
                 balance_due=deposit,
-                issued_at=datetime.now(UTC),
+                issued_at=issued_at,
+                due_at=issued_at,
+                due_date_basis=InvoiceDueDateBasis.contract_terms,
+                due_date_basis_ref=f"quote:{quote.id}:deposit",
+                due_date_policy_version="quote-deposit-pay-before-acceptance-v1",
                 memo=f"Installation deposit · quote {quote.id}",
             ),
             commit=False,

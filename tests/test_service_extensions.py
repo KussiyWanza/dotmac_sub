@@ -218,6 +218,7 @@ def _another_subscriber(db_session):
 
 
 def _sub(db_session, subscriber, catalog_offer, *, nas_id=None, next_billing_at=None):
+    billing_anchor = next_billing_at or datetime(2026, 7, 1, tzinfo=UTC)
     return catalog_service.subscriptions.create(
         db_session,
         SubscriptionCreate(
@@ -225,7 +226,8 @@ def _sub(db_session, subscriber, catalog_offer, *, nas_id=None, next_billing_at=
             offer_id=catalog_offer.id,
             status=SubscriptionStatus.active,
             provisioning_nas_device_id=nas_id,
-            next_billing_at=next_billing_at or datetime(2026, 7, 1, tzinfo=UTC),
+            start_at=billing_anchor - timedelta(days=30),
+            next_billing_at=billing_anchor,
         ),
     )
 

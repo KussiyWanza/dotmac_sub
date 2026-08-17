@@ -339,7 +339,7 @@ def test_audit_actor_rejects_an_unidentified_principal() -> None:
 
 
 def test_billing_adapter_builds_invoice_and_payment_payloads(monkeypatch) -> None:
-    from app.models.billing import InvoiceStatus, PaymentStatus
+    from app.models.billing import InvoiceDueDateBasis, InvoiceStatus, PaymentStatus
     from app.services.billing_adapter import (
         BillingAdapter,
         InvoiceIntent,
@@ -363,6 +363,7 @@ def test_billing_adapter_builds_invoice_and_payment_payloads(monkeypatch) -> Non
 
     fake_billing = SimpleNamespace(invoices=FakeInvoices(), payments=FakePayments())
     adapter = BillingAdapter(billing_service=fake_billing)
+    issued_at = datetime.now(UTC)
     invoice = adapter.create_invoice(
         None,
         InvoiceIntent(
@@ -370,6 +371,11 @@ def test_billing_adapter_builds_invoice_and_payment_payloads(monkeypatch) -> Non
             invoice_number="INV-1",
             total=Decimal("150.00"),
             status=InvoiceStatus.issued,
+            issued_at=issued_at,
+            due_at=issued_at + timedelta(days=30),
+            due_date_basis=InvoiceDueDateBasis.contract_terms,
+            due_date_basis_ref="test-contract",
+            due_date_policy_version="test-v1",
         ),
     )
     payment = adapter.record_payment(

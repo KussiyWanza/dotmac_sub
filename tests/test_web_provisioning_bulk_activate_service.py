@@ -10,6 +10,7 @@ from app.models.catalog import (
     PriceBasis,
     ServiceType,
     Subscription,
+    SubscriptionStatus,
 )
 from app.models.network import IPAssignment, IpPool, IPVersion
 from app.models.subscriber import Reseller, Subscriber, SubscriberStatus
@@ -152,6 +153,9 @@ def test_bulk_activation_execute_creates_subscriptions_and_audit(db_session):
     assert created
     assert created[0].offer_id == offer.id
     assert created[0].mac_address == "AA:BB:CC:DD:EE:FF"
+    assert created[0].status == SubscriptionStatus.active
+    assert created[0].start_at is not None
+    assert created[0].next_billing_at is not None
 
     db_session.refresh(subscriber)
     assert subscriber.status == SubscriberStatus.active

@@ -8,6 +8,8 @@ unresolved path stays honest instead of fabricating hops.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 from playwright.sync_api import Page, expect
 
@@ -68,10 +70,13 @@ def _ensure_subscription_login(e2e_db, test_identities: dict) -> None:
             )
             e2e_db.add(offer)
             e2e_db.flush()
+        period_start = datetime.now(UTC)
         subscription = Subscription(
             subscriber_id=account_id,
             offer_id=offer.id,
             status=SubscriptionStatus.active,
+            start_at=period_start,
+            next_billing_at=period_start + timedelta(days=30),
             login="e2e-network-path",
         )
         e2e_db.add(subscription)

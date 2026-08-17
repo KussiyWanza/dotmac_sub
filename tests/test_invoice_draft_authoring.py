@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 
 from app.models.billing import (
     Invoice,
+    InvoiceDueDateBasis,
     InvoiceLine,
     InvoiceStatus,
     PaymentAllocation,
@@ -28,6 +29,7 @@ from app.services.account_credit_deposits import (
     SettleAccountCreditDepositCommand,
 )
 from app.services.billing.account_credit import eligible_invoices
+from app.services.billing.invoices import InvoiceIssuanceInput
 from app.services.db_session_adapter import db_session_adapter
 from app.services.events.handlers.notification import NotificationHandler
 from app.services.events.types import Event, EventType
@@ -169,6 +171,7 @@ def test_proforma_conversion_retry_preserves_credit_derived_paid_status(
     proforma_command = replace(
         _create_command(subscriber),
         invoice_number="PF-RETRY-PAID",
+        due_at=datetime.now(UTC) + timedelta(days=7),
         memo="[PROFORMA] Retry regression",
         is_proforma=True,
     )
@@ -392,7 +395,7 @@ def test_shared_invoice_constructor_rolls_back_header_when_lines_fail(
                 account_id=subscriber.id,
                 invoice_number="INV-ATOMIC-ROLLBACK",
                 currency="NGN",
-                status=InvoiceStatus.issued,
+                status=InvoiceStatus.draft,
             ),
             (
                 InvoiceLineCreate(
@@ -513,9 +516,14 @@ def test_issued_lines_are_immutable_and_proformas_are_not_collectible(
         billing_service.invoices.issue_draft_system(
             db_session,
             str(proforma.id),
-            issued_at=proforma.created_at,
-            due_at=None,
-            reason="proforma-guard-test",
+            issuance=InvoiceIssuanceInput(
+                issued_at=datetime.now(UTC),
+                due_at=datetime.now(UTC) + timedelta(days=7),
+                due_date_basis=InvoiceDueDateBasis.contract_terms,
+                due_date_basis_ref="test:proforma",
+                due_date_policy_version="test-v1",
+                reason="proforma-guard-test",
+            ),
         )
     assert issue_rejected.value.status_code == 409
 

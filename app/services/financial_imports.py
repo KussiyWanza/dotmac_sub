@@ -10,7 +10,13 @@ from typing import Any, cast
 
 from sqlalchemy.orm import Session
 
-from app.models.billing import Invoice, InvoiceStatus, Payment, PaymentStatus
+from app.models.billing import (
+    Invoice,
+    InvoiceDueDateBasis,
+    InvoiceStatus,
+    Payment,
+    PaymentStatus,
+)
 from app.models.catalog import BillingMode, Subscription
 from app.models.subscriber import Subscriber
 from app.schemas.billing import InvoiceCreate, PaymentAllocationApply, PaymentCreate
@@ -99,7 +105,7 @@ def _import_invoice(db: Session, row: Any, source_name: str) -> tuple[Invoice, b
         _assert_same("invoice currency", existing.currency, row.currency)
         return existing, False
 
-    invoice = Invoices.create(
+    invoice = Invoices.create_imported_observation(
         db,
         InvoiceCreate(
             account_id=row.account_id,
@@ -110,6 +116,14 @@ def _import_invoice(db: Session, row: Any, source_name: str) -> tuple[Invoice, b
             tax_total=row.tax_total,
             total=row.total,
             balance_due=row.balance_due,
+            issued_at=row.issued_at,
+            due_at=row.due_at,
+            due_date_basis=(
+                None
+                if row.status == InvoiceStatus.draft
+                else InvoiceDueDateBasis.unknown_unverified
+            ),
+            paid_at=row.paid_at,
             memo=row.memo,
         ),
     )

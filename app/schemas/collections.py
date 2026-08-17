@@ -85,6 +85,7 @@ class DunningRunResponse(BaseModel):
     cases_created: int
     actions_created: int
     skipped: int
+    errors: int = 0
 
 
 class BillingEnforcementRunRequest(BaseModel):
@@ -102,6 +103,7 @@ class BillingEnforcementRunResponse(BaseModel):
     dunning_cases_created: int
     dunning_actions_created: int
     dunning_skipped: int
+    dunning_errors: int = 0
     credit_accounts_scanned: int = 0
     credit_accounts_settled: int = 0
     credit_invoices_touched: int = 0

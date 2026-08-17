@@ -9,6 +9,7 @@ from decimal import Decimal
 
 from app.models.billing import (
     Invoice,
+    InvoiceDueDateBasis,
     InvoiceLine,
     InvoiceStatus,
     LedgerEntry,
@@ -35,8 +36,11 @@ def _n(dt):
 
 
 def _activate(db, subscription, mode):
+    now = datetime.now(UTC)
     subscription.status = SubscriptionStatus.active
     subscription.billing_mode = mode
+    subscription.start_at = subscription.start_at or now - timedelta(days=30)
+    subscription.next_billing_at = subscription.next_billing_at or now
     if mode == BillingMode.prepaid:
         ensure_test_prepaid_contract(
             db,
@@ -99,6 +103,9 @@ def test_postpaid_overdue_invoice_flags_dunning(
             balance_due=Decimal("5000.00"),
             issued_at=datetime.now(UTC) - timedelta(days=30),
             due_at=datetime.now(UTC) - timedelta(days=10),
+            due_date_basis=InvoiceDueDateBasis.contract_terms,
+            due_date_basis_ref="test:service-status",
+            due_date_policy_version="test-v1",
         ),
     )
     db_session.commit()
@@ -396,6 +403,9 @@ def test_overdue_lock_offers_exact_payment_that_restores_service(
             balance_due=Decimal("6500.00"),
             issued_at=datetime.now(UTC) - timedelta(days=30),
             due_at=datetime.now(UTC) - timedelta(days=10),
+            due_date_basis=InvoiceDueDateBasis.contract_terms,
+            due_date_basis_ref="test:service-status",
+            due_date_policy_version="test-v1",
         ),
     )
     _add_lock(
@@ -464,11 +474,14 @@ def test_multiple_holds_do_not_offer_partial_payment_as_restoration(
         db_session,
         InvoiceCreate(
             account_id=subscriber_account.id,
-            status=InvoiceStatus.overdue,
+            status=InvoiceStatus.issued,
             total=Decimal("8000.00"),
             balance_due=Decimal("8000.00"),
             issued_at=datetime.now(UTC) - timedelta(days=30),
             due_at=datetime.now(UTC) - timedelta(days=10),
+            due_date_basis=InvoiceDueDateBasis.contract_terms,
+            due_date_basis_ref="test:service-status",
+            due_date_policy_version="test-v1",
         ),
     )
     for reason in (EnforcementReason.overdue, EnforcementReason.admin):

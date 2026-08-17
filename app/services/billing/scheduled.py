@@ -175,6 +175,22 @@ def _append_billing_health_snapshot(session, result: dict) -> None:
             "payments_24h": health.payments_24h,
             "payments_7d_daily_avg": health.payments_7d_daily_avg,
             "payment_volume_ratio": health.payment_volume_ratio,
+            "active_null_billing_anchor_count": (
+                health.active_null_billing_anchor_count
+            ),
+            "open_unknown_due_date_basis_count": (
+                health.open_unknown_due_date_basis_count
+            ),
+            "open_legacy_null_due_date_basis_count": (
+                health.open_legacy_null_due_date_basis_count
+            ),
+            "expected_renewal_accounts_by_day": dict(
+                health.expected_renewal_accounts_by_day
+            ),
+            "unique_payers_7d": health.unique_payers_7d,
+            "payment_attempts_7d": health.payment_attempts_7d,
+            "payments_succeeded_7d": health.payments_succeeded_7d,
+            "payment_success_ratio_7d": health.payment_success_ratio_7d,
             "stale_runners": health.stale_runners,
             "covered_but_locked": health.covered_but_locked,
             "unbilled_no_path": health.unbilled_no_path,
@@ -232,6 +248,13 @@ def _append_billing_health_snapshot(session, result: dict) -> None:
                 "subscription(s) have no canonical recurring billing path - "
                 "revenue leak",
                 health.unbilled_no_path,
+            )
+        if "active_subscription_null_billing_anchor" in anomalies:
+            logger.error(
+                "billing_active_subscription_null_billing_anchor: %d active "
+                "subscription(s) have no next billing anchor and cannot enter "
+                "the scheduled renewal cohort - revenue leak",
+                health.active_null_billing_anchor_count,
             )
         if "negative_prepaid_balances" in anomalies:
             logger.error(

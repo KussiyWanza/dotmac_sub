@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -9,6 +9,7 @@ from app.models.audit import AuditActorType
 from app.models.billing import (
     BankReconciliationRun,
     Invoice,
+    InvoiceDueDateBasis,
     InvoiceStatus,
     Payment,
     PaymentStatus,
@@ -55,6 +56,10 @@ def test_convert_proforma_to_final_updates_status_and_clears_marker(
         tax_total=Decimal("0.00"),
         total=Decimal("100.00"),
         balance_due=Decimal("100.00"),
+        due_at=datetime.now(UTC) + timedelta(days=30),
+        due_date_basis=InvoiceDueDateBasis.contract_terms,
+        due_date_basis_ref="test:proforma-contract",
+        due_date_policy_version="test-v1",
         memo="[PROFORMA] Draft quote",
     )
     db_session.add(invoice)

@@ -3,7 +3,13 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from fastapi import HTTPException
 
-from app.models.billing import InvoiceStatus, LedgerEntry, LedgerEntryType, LedgerSource
+from app.models.billing import (
+    InvoiceDueDateBasis,
+    InvoiceStatus,
+    LedgerEntry,
+    LedgerEntryType,
+    LedgerSource,
+)
 from app.models.catalog import DunningAction
 from app.schemas.billing import InvoiceCreate
 from app.schemas.collections import (
@@ -79,6 +85,7 @@ def test_prepaid_balance_ignores_imported_deposit_after_final_reconstruction(
     db_session.commit()
     _materialize_funding(db_session, subscriber_account)
 
+    issued_at = datetime.now(UTC)
     billing_service.invoices.create(
         db_session,
         InvoiceCreate(
@@ -86,7 +93,11 @@ def test_prepaid_balance_ignores_imported_deposit_after_final_reconstruction(
             status=InvoiceStatus.issued,
             total=D("87500.00"),
             balance_due=D("87500.00"),
-            issued_at=datetime.now(UTC),
+            issued_at=issued_at,
+            due_at=issued_at,
+            due_date_basis=InvoiceDueDateBasis.prepaid_service_period,
+            due_date_basis_ref="test:prepaid-balance-period",
+            due_date_policy_version="test-v1",
         ),
     )
     db_session.commit()

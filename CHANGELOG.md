@@ -2,6 +2,14 @@
 
 All notable changes to DotMac Sub are tracked here.
 
+## 7.187.1 - 2026-08-17
+
+- Version bump.
+
+## 7.187.0 - 2026-08-17
+
+- Version bump.
+
 ## 7.186.2 - 2026-08-17
 
 - Version bump.

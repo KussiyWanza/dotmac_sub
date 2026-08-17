@@ -18,6 +18,11 @@ from app.models.subscription_billing_treatment import (
     SubscriptionBillingArrangement,
     SubscriptionBillingGrant,
 )
+from app.services.account_lifecycle import (
+    BillingAnchorProjectionCommand,
+    BillingAnchorProjectionSource,
+    stage_subscription_billing_anchor,
+)
 from app.services.common import round_money
 from app.services.domain_errors import DomainError
 from app.services.events import emit_event
@@ -227,7 +232,17 @@ def stage_subscription_billing_grant(
         )
     current_anchor = subscription.next_billing_at
     if current_anchor is None or _utc(current_anchor) < end:
-        subscription.next_billing_at = end
+        stage_subscription_billing_anchor(
+            db,
+            subscription,
+            BillingAnchorProjectionCommand(
+                subscription_id=subscription.id,
+                expected_previous=current_anchor,
+                target=end,
+                source=BillingAnchorProjectionSource.subscription_billing_grant,
+                evidence_ref=f"billing-grant:{grant.id}",
+            ),
+        )
     if not replayed:
         emit_event(
             db,

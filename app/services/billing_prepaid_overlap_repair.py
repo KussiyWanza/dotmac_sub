@@ -23,7 +23,13 @@ from app.models.catalog import BillingMode, Subscription, SubscriptionStatus
 from app.models.collections import DunningActionLog, DunningCase, DunningCaseStatus
 from app.models.enforcement_lock import EnforcementLock, EnforcementReason
 from app.models.subscriber import Subscriber
-from app.services.account_lifecycle import compute_account_status, restore_subscription
+from app.services.account_lifecycle import (
+    BillingAnchorProjectionCommand,
+    BillingAnchorProjectionSource,
+    compute_account_status,
+    restore_subscription,
+    stage_subscription_billing_anchor,
+)
 from app.services.billing.invoices import Invoices
 
 COLLECTIBLE_BAD_STATUSES = {
@@ -490,7 +496,6 @@ def repair_prepaid_overlapping_invoices(
                 commit=False,
                 reconcile_access=False,
             )
-            invoice.due_at = None
             voided += 1
         else:
             manual_review += 1
@@ -503,7 +508,17 @@ def repair_prepaid_overlapping_invoices(
                 continue
             current = _as_utc(subscription.next_billing_at)
             if current is None or current < paid_through:
-                subscription.next_billing_at = paid_through
+                stage_subscription_billing_anchor(
+                    db,
+                    subscription,
+                    BillingAnchorProjectionCommand(
+                        subscription_id=subscription.id,
+                        expected_previous=subscription.next_billing_at,
+                        target=paid_through,
+                        source=BillingAnchorProjectionSource.reviewed_reconciliation,
+                        evidence_ref=f"prepaid-overlap-repair:{subscription.id}",
+                    ),
+                )
                 corrected_anchors += 1
 
     resolved_cases, case_ids = _resolve_bad_dunning_cases(

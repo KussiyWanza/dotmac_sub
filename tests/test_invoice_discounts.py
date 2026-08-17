@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
@@ -17,6 +17,7 @@ from app.models.billing import (
     InvoiceDiscountHistoryImmutableError,
     InvoiceDiscountSource,
     InvoiceDiscountType,
+    InvoiceDueDateBasis,
     InvoiceStatus,
     TaxRate,
 )
@@ -26,6 +27,7 @@ from app.models.system_user import SystemUser
 from app.schemas.billing import InvoiceCreate, InvoiceLineCreate, InvoiceUpdate
 from app.services import billing as billing_service
 from app.services import invoice_discounts, invoice_draft_authoring, quote_deposits
+from app.services.billing.invoices import InvoiceIssuanceInput
 from app.services.db_session_adapter import db_session_adapter
 from app.services.owner_commands import CommandContext
 from app.timezone import APP_TIMEZONE
@@ -113,11 +115,20 @@ def test_percentage_discount_recalculates_tax_and_saves_history(
     assert discount_event.payload["revision"] == 1
     assert discount_event.payload["total"] == "967.50"
 
-    issued = billing_service.invoices.update(
+    issued_at = datetime.now(UTC)
+    issued = billing_service.invoices.issue_draft_system(
         db_session,
         str(invoice.id),
-        InvoiceUpdate(status=InvoiceStatus.issued),
-    )
+        issuance=InvoiceIssuanceInput(
+            issued_at=issued_at,
+            due_at=issued_at + timedelta(days=30),
+            due_date_basis=InvoiceDueDateBasis.contract_terms,
+            due_date_basis_ref="test:invoice-discount",
+            due_date_policy_version="test-v1",
+            reason="invoice-discount-test",
+        ),
+        commit=True,
+    ).invoice
     assert issued.status == InvoiceStatus.issued
     assert issued.total == Decimal("967.50")
 
@@ -188,7 +199,7 @@ def test_quote_deposit_invoice_stores_inherited_discount_without_changing_due(
         db_session,
         InvoiceCreate(
             account_id=subscriber.id,
-            status=InvoiceStatus.issued,
+            status=InvoiceStatus.draft,
             currency="NGN",
             subtotal=deposit,
             total=deposit,
@@ -203,6 +214,20 @@ def test_quote_deposit_invoice_stores_inherited_discount_without_changing_due(
         amounts=amounts,
     )
     db_session.commit()
+    issued_at = datetime.now(UTC)
+    invoice = billing_service.invoices.issue_draft_system(
+        db_session,
+        str(invoice.id),
+        issuance=InvoiceIssuanceInput(
+            issued_at=issued_at,
+            due_at=issued_at + timedelta(days=30),
+            due_date_basis=InvoiceDueDateBasis.contract_terms,
+            due_date_basis_ref=f"test:quote:{quote.id}",
+            due_date_policy_version="test-v1",
+            reason="quote-deposit-test",
+        ),
+        commit=True,
+    ).invoice
 
     assert invoice.subtotal == Decimal("500.00")
     assert invoice.discount_amount == Decimal("50.00")

@@ -69,6 +69,7 @@ def test_concurrent_apply_admits_one_transition_and_one_evidence_set(engine):
                 account_id=subscriber.id,
                 offer_id=offer.id,
                 status=SubscriptionStatus.active,
+                start_at=datetime(2026, 7, 1, tzinfo=UTC),
                 next_billing_at=datetime(2026, 8, 1, tzinfo=UTC),
             ),
         )

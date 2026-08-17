@@ -163,6 +163,7 @@ def _seed_subscription(url: URL) -> uuid.UUID:
                 status=SubscriptionStatus.active,
                 billing_mode=BillingMode.prepaid,
                 start_at=NOW,
+                next_billing_at=NOW + timedelta(days=30),
             )
             session.add(subscription)
             session.commit()

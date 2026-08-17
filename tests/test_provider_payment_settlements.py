@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from app.models.billing import (
+    InvoiceDueDateBasis,
     InvoiceStatus,
     LedgerEntry,
     LedgerEntryType,
@@ -64,6 +65,7 @@ def _provider(db_session) -> PaymentProvider:
 
 
 def _invoice(db_session, account_id, *, status: InvoiceStatus):
+    issued_at = datetime.now(UTC) if status != InvoiceStatus.draft else None
     return billing_service.invoices.create(
         db_session,
         InvoiceCreate(
@@ -74,6 +76,19 @@ def _invoice(db_session, account_id, *, status: InvoiceStatus):
             subtotal=Decimal("1000.00"),
             total=Decimal("1000.00"),
             balance_due=Decimal("1000.00"),
+            issued_at=issued_at,
+            due_at=(issued_at + timedelta(days=30) if issued_at else None),
+            due_date_basis=(
+                InvoiceDueDateBasis.contract_terms
+                if status != InvoiceStatus.draft
+                else None
+            ),
+            due_date_basis_ref=(
+                "test:provider-payment" if status != InvoiceStatus.draft else None
+            ),
+            due_date_policy_version=(
+                "test-v1" if status != InvoiceStatus.draft else None
+            ),
         ),
     )
 

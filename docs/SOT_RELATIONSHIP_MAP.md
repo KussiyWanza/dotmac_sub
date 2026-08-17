@@ -1961,15 +1961,25 @@ Payment creation, settlement, and allocation are one coherent owner contract:
   convert the stored instant back through the configured display timezone
   before extracting the business date.
 - Billing-anchor writer boundary: `Subscription.next_billing_at` is a projection
-  of exact entitlement evidence, and
+  of exact lifecycle, billing-period, entitlement, and grant evidence.
+  `access.subscription_lifecycle.stage_subscription_billing_anchor` is the only
+  physical writer. Every deciding owner submits a typed source, evidence
+  reference, expected previous value, and aware target; the writer locks the
+  subscription, rejects stale compare-and-set requests, and permits retraction
+  only for named coverage/review/service-extension authorities.
+  An active subscription must carry both `start_at` and `next_billing_at`.
+  Catalog construction materializes those values, persists a pending baseline,
+  and asks the lifecycle owner to activate in the same transaction. Revision
+  `539_active_sub_billing_anchor` adds that database check `NOT VALID`:
+  existing NULL-anchor rows remain explicit repair stock, while no new or
+  changed active row can reproduce the defect.
   `financial.prepaid_service_renewals.project_prepaid_billing_anchor_for_invoice`
-  is its single owner-side writer for invoice-funded prepaid service. Payment
-  allocation, invoice application, and draft reconciliation are participants:
-  they commit exact entitlement evidence and then either emit the durable
-  funding-change event or request that projection. The former inline
-  `project_paid_invoice_billing_anchors` call in `financial.payments` and its
-  helper in `service_entitlements` are retired, so the payment owner never
-  writes the anchor. The projection is a pure recomputation from surviving
+  remains the decision owner for invoice-funded prepaid service, while payment
+  allocation, invoice application, and draft reconciliation commit exact
+  evidence and request its projection. The former inline
+  `project_paid_invoice_billing_anchors` helper and the direct lapsed-settlement
+  write in `financial.payments` are retired. The prepaid projection is a pure
+  recomputation from surviving
   coverage, which makes it idempotent under event replay and lets a refund,
   chargeback, or reversal retract the anchor back to the start of the period
   that stopped being funded — a reversal cannot leave a stale advanced anchor.
@@ -2007,12 +2017,10 @@ Payment creation, settlement, and allocation are one coherent owner contract:
   `preview_stale_prepaid_billing_anchor_repair` /
   `apply_stale_prepaid_billing_anchor_repair` pair, driven by
   `scripts/one_off/repair_stale_prepaid_billing_anchors.py`, which posts no
-  money and stages one audit event per repaired subscription. Known remaining
-  exception: `_reanchor_paid_prepaid_invoice_if_lapsed` in `financial.payments`
-  still persists the anchor while re-anchoring a lapsed prepaid invoice's
-  documentary period, but its period decision now comes only from the typed
-  WAT resolver owned by `financial.prepaid_service_renewals`; retiring that
-  second writer is a separate, wider change.
+  money and stages one audit event per repaired subscription. The lapsed prepaid
+  settlement path may still correct the documentary period from the typed WAT
+  resolver, but its resulting anchor now goes through the canonical locked
+  writer and cannot become a parallel mutation path.
 - Walled-account self-heal boundary:
   `financial.walled_account_healing` owns the exact account-bound repair
   lifecycle. Every committed `payment_received` or
@@ -2279,6 +2287,12 @@ Nonterminal invoice lifecycle transitions are owned alongside terminal closure:
   billing-line key reused for different facts. Document staging posts no ledger
   transaction; the invoice source document remains the canonical receivable
   fact and its customer-ledger projection is derived from that exact row.
+- Due-date boundary: native issuance binds aware issue/due instants to a typed
+  `DueDateBasis`, exact source reference, and policy version. Explicit
+  `unknown_unverified` provenance is lawful review stock but cannot become
+  overdue or enter Collections. Legacy NULL provenance is a measured migration
+  state; no current owner path may create it. See
+  `docs/designs/INVOICE_DUE_DATE_BASIS.md`.
 - Derived-state boundary: payment and credit settlement still derive
   `paid`/`partially_paid`/reopened status inside the invoice owner package from
   canonical settlement facts. No adapter may assign those states. Draft,
@@ -2383,6 +2397,12 @@ evidenced owner contract:
   the decision to every exact enforcement lock, access credential, and dunning
   case it created, resolved, throttled, or restored. A `DunningActionLog` links
   to the consequence that implemented its access action.
+- Transaction boundary: the scheduled cohort read is observational, then each
+  account's dunning decision, case/action evidence, and access consequence
+  commits or rolls back independently. One account failure records bounded
+  audit evidence after rollback, increments `dunning_errors`, and cannot erase
+  successful work for another account. Clean-account restoration uses the same
+  account root; nested participant savepoints are forbidden.
 - Access-tier boundary: hard reject is the default. Captive is a requested
   exception only for an explicitly opted-in, direct-house account with an
   explicit residential classification and a valid enabled portal network

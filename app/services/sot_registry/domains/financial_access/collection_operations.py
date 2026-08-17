@@ -572,6 +572,7 @@ SERVICES: tuple[SOTService, ...] = (
             "financial suspension and restoration idempotency and audit",
             "exact enforcement-lock, throttle, and case evidence",
             "financial access restoration reconciliation",
+            "per-account dunning transaction isolation and failure evidence",
         ),
         depends_on=(
             "financial.access_resolution",
@@ -581,6 +582,14 @@ SERVICES: tuple[SOTService, ...] = (
             "financial.prepaid_enforcement_state",
             "access.subscription_lifecycle",
             "access.walled_garden_policy",
+        ),
+        notes=(
+            "The scheduled cohort read is observational. Each account then owns "
+            "one independent decision/consequence transaction; a failure rolls "
+            "back only that account, records bounded durable audit evidence in a "
+            "new transaction, increments dunning_errors, and continues. Clean-"
+            "account restoration uses the same per-account boundary and no nested "
+            "participant savepoint."
         ),
     ),
     SOTService(

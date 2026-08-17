@@ -1,4 +1,4 @@
-"""One forward owner advances the anchor; one reviewed reconciler repairs drift.
+"""One canonical writer projects every subscription billing anchor.
 
 `financial.prepaid_service_renewals` owns "prepaid subscription paid-through
 advancement". `financial.payments` commits cash, allocation and entitlement
@@ -18,6 +18,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PAYMENTS = PROJECT_ROOT / "app" / "services" / "billing" / "payments.py"
+CANONICAL_WRITER = PROJECT_ROOT / "app" / "services" / "account_lifecycle.py"
 ENTITLEMENTS = PROJECT_ROOT / "app" / "services" / "service_entitlements.py"
 OWNER = PROJECT_ROOT / "app" / "services" / "prepaid_service_renewals.py"
 HANDLER = (
@@ -62,6 +63,30 @@ def _assigns_next_billing_at(path: Path) -> set[str]:
     return offenders
 
 
+def _assigns_active_subscription_status(path: Path) -> set[str]:
+    """Return functions that directly set a subscription status active."""
+    offenders: set[str] = set()
+    for node in ast.walk(_tree(path)):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for inner in ast.walk(node):
+            if not isinstance(inner, ast.Assign):
+                continue
+            if not (
+                isinstance(inner.value, ast.Attribute)
+                and isinstance(inner.value.value, ast.Name)
+                and inner.value.value.id == "SubscriptionStatus"
+                and inner.value.attr == "active"
+            ):
+                continue
+            if any(
+                isinstance(target, ast.Attribute) and target.attr == "status"
+                for target in inner.targets
+            ):
+                offenders.add(node.name)
+    return offenders
+
+
 def test_retired_inline_anchor_projection_is_gone() -> None:
     """The helper `financial.payments` used to call inline no longer exists."""
     assert "project_paid_invoice_billing_anchors" not in _module_function_names(
@@ -86,33 +111,50 @@ def test_payments_does_not_call_the_owner_projection_inline() -> None:
     assert "retract_prepaid_billing_anchors_after_funding_reversal" not in source
 
 
-# `financial.payments` still advances the anchor in exactly one place, while
-# re-anchoring a lapsed prepaid invoice's documentary period. That is a KNOWN,
-# DELIBERATE exception, not an approved second owner: it is reached by every
-# `_finalize_invoice_payment_effects` caller, several of which emit no
-# funding-change event, so retiring it is a wider change that needs its own
-# architecture decision. It is recorded by name in docs/SOT_RELATIONSHIP_MAP.md
-# under "Billing-anchor writer boundary".
-PAYMENTS_ANCHOR_WRITER_EXCEPTIONS = {"_reanchor_paid_prepaid_invoice_if_lapsed"}
+def test_payment_reanchor_requests_the_canonical_writer() -> None:
+    source = PAYMENTS.read_text(encoding="utf-8")
+    assert _assigns_next_billing_at(PAYMENTS) == set()
+    assert "stage_subscription_billing_anchor(" in source
+    assert "BillingAnchorProjectionSource.prepaid_settlement_reanchor" in source
 
 
-def test_payments_anchor_writers_are_a_named_shrinking_exception() -> None:
-    """Pin the one remaining payment-side writer so no new one can appear.
+def test_canonical_writer_is_the_only_service_assignment() -> None:
+    assert _assigns_next_billing_at(CANONICAL_WRITER) == {
+        "stage_subscription_billing_anchor"
+    }
+    offenders = {
+        str(path.relative_to(PROJECT_ROOT)): sorted(_assigns_next_billing_at(path))
+        for path in (PROJECT_ROOT / "app" / "services").rglob("*.py")
+        if path != CANONICAL_WRITER and _assigns_next_billing_at(path)
+    }
+    assert offenders == {}
 
-    Equality, not a subset: adding another `next_billing_at` writer to
-    `financial.payments` fails here, and retiring this one requires deleting
-    its name from the exception set.
-    """
-    assert _assigns_next_billing_at(PAYMENTS) == PAYMENTS_ANCHOR_WRITER_EXCEPTIONS
 
-    documented = (PROJECT_ROOT / "docs" / "SOT_RELATIONSHIP_MAP.md").read_text(
-        encoding="utf-8"
-    )
-    for name in PAYMENTS_ANCHOR_WRITER_EXCEPTIONS:
-        assert name in documented, (
-            f"{name} writes the billing anchor but is not documented as a named "
-            "exception in the relationship map"
-        )
+def test_every_active_lifecycle_transition_stages_the_required_anchor() -> None:
+    writers = _assigns_active_subscription_status(CANONICAL_WRITER)
+    assert writers == {
+        "activate_subscription",
+        "enable_subscription",
+        "restore_subscription_detailed",
+        "unsuspend_account_override",
+    }
+    tree = _tree(CANONICAL_WRITER)
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if node.name not in writers:
+            continue
+        calls = {
+            inner.func.id
+            for inner in ast.walk(node)
+            if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name)
+        }
+        assert calls.intersection(
+            {
+                "_stage_missing_activation_billing_anchor",
+                "stage_subscription_billing_anchor",
+            }
+        ), f"{node.name} can make a service active without staging its anchor"
 
 
 def test_the_owner_defines_the_single_anchor_projection() -> None:
@@ -120,21 +162,14 @@ def test_the_owner_defines_the_single_anchor_projection() -> None:
     assert "project_prepaid_billing_anchor_for_invoice" in names
     assert "retract_prepaid_billing_anchors_after_funding_reversal" in names
     # Advancement and retraction both flow through the one projection.
-    assert _assigns_next_billing_at(OWNER) <= {
-        "project_prepaid_billing_anchor_for_invoice",
-        "apply_due_prepaid_service_after_funding_change",
-        "apply_stale_prepaid_billing_anchor_repair",
-        "confirm_prepaid_service_renewal",
-        "run_due_prepaid_service_renewals",
-    }
+    assert _assigns_next_billing_at(OWNER) == set()
+    assert "stage_subscription_billing_anchor(" in OWNER.read_text(encoding="utf-8")
 
 
 def test_reviewed_calendar_reconciler_has_one_named_anchor_repair() -> None:
-    assert _assigns_next_billing_at(CALENDAR_RECONCILER) == {
-        "operation",
-        "reconcile_prepaid_billing_calendar",
-    }
+    assert _assigns_next_billing_at(CALENDAR_RECONCILER) == set()
     source = CALENDAR_RECONCILER.read_text(encoding="utf-8")
+    assert "stage_subscription_billing_anchor(" in source
     assert "execute_owner_command(" in source
     assert "preview_fingerprint" in source
     assert "restore_subscription_detailed(" in source

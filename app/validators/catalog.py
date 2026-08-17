@@ -90,6 +90,15 @@ def validate_subscription_dates(
     next_billing_at: datetime | None,
     canceled_at: datetime | None,
 ):
+    if status == SubscriptionStatus.active and start_at is None:
+        raise HTTPException(
+            status_code=400, detail="start_at required when subscription is active"
+        )
+    if status == SubscriptionStatus.active and next_billing_at is None:
+        raise HTTPException(
+            status_code=400,
+            detail="next_billing_at required when subscription is active",
+        )
     if start_at and end_at and start_at > end_at:
         raise HTTPException(status_code=400, detail="start_at must be before end_at")
     if next_billing_at and start_at and next_billing_at < start_at:

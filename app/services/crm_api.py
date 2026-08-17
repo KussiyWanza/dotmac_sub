@@ -14,6 +14,7 @@ from sqlalchemy.sql.elements import ColumnElement
 from app.models.audit import AuditActorType
 from app.models.billing import (
     Invoice,
+    InvoiceDueDateBasis,
     InvoiceLine,
     InvoiceStatus,
     Payment,
@@ -1476,6 +1477,10 @@ def create_installation_invoice(
         if existing is not None:
             return existing
 
+    from app.services.billing_settings import resolve_payment_due_days
+
+    issued_at = datetime.now(UTC)
+    due_days = resolve_payment_due_days(db, subscriber=subscriber)
     intent = InvoiceIntent(
         account_id=subscriber.id,
         invoice_number=next_invoice_number(db),
@@ -1483,7 +1488,11 @@ def create_installation_invoice(
         total=amount,
         memo=description,
         status=InvoiceStatus.issued,
-        issued_at=datetime.now(UTC),
+        issued_at=issued_at,
+        due_at=issued_at + timedelta(days=due_days),
+        due_date_basis=InvoiceDueDateBasis.contract_terms,
+        due_date_basis_ref=f"account:{subscriber.id}:installation",
+        due_date_policy_version="billing-payment-terms-v1",
     )
     invoice = BillingAdapter().create_invoice_with_lines(
         db,

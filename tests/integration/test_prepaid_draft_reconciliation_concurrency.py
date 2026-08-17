@@ -97,6 +97,7 @@ def test_concurrent_opening_funding_confirmations_converge_on_one_consumption(
             billing_mode=BillingMode.prepaid,
             billing_cycle=BillingCycle.monthly,
             unit_price=Decimal("100.00"),
+            start_at=effective_at - timedelta(days=31),
             next_billing_at=effective_at - timedelta(days=1),
         )
         setup.add(subscription)
@@ -256,6 +257,7 @@ def test_concurrent_missing_invoice_repairs_converge_on_one_paid_invoice(
             billing_mode=BillingMode.prepaid,
             billing_cycle=BillingCycle.monthly,
             unit_price=Decimal("100.00"),
+            start_at=datetime(2026, 7, 3, tzinfo=UTC),
             next_billing_at=datetime(2026, 8, 3, tzinfo=UTC),
         )
         setup.add(subscription)

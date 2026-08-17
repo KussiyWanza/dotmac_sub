@@ -41,6 +41,7 @@ from app.services.audit_helpers import (
     format_changes,
     log_audit_event,
 )
+from app.services.billing.invoices import verified_draft_issuance
 from app.services.db_session_adapter import db_session_adapter
 from app.services.owner_commands import CommandContext
 from app.services.status_presentation import invoice_status_presentation
@@ -262,9 +263,11 @@ def maybe_issue_invoice(db: Session, *, invoice_id, issue_immediately: str | Non
     transition = billing_service.invoices.issue_draft_system(
         db,
         str(invoice_id),
-        issued_at=datetime.now(UTC),
-        due_at=invoice.due_at,
-        reason="admin_invoice_create",
+        issuance=verified_draft_issuance(
+            invoice,
+            issued_at=datetime.now(UTC),
+            reason="admin_invoice_create",
+        ),
         announce=False,
         commit=True,
     )
@@ -282,9 +285,11 @@ def issue_invoice_from_detail(db: Session, *, invoice_id: UUID) -> Invoice:
     transition = billing_service.invoices.issue_draft_system(
         db,
         invoice_id_text,
-        issued_at=datetime.now(UTC),
-        due_at=invoice.due_at,
-        reason="admin_invoice_detail_issue",
+        issuance=verified_draft_issuance(
+            invoice,
+            issued_at=datetime.now(UTC),
+            reason="admin_invoice_detail_issue",
+        ),
         announce=False,
         apply_available_credit=True,
         require_full_available_credit=True,

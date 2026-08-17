@@ -77,6 +77,7 @@ def test_two_confirmations_converge_on_one_reconciliation_run(engine) -> None:
             status=SubscriptionStatus.active,
             billing_mode=BillingMode.prepaid,
             unit_price=Decimal("35000.00"),
+            start_at=as_of - timedelta(days=1),
             next_billing_at=as_of + timedelta(days=30),
         )
         setup.add(subscription)

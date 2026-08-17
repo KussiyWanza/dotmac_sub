@@ -307,11 +307,11 @@ def _validate(command: RecordProviderObservationCommand) -> tuple[str, str, str]
             )
         if isinstance(command.payload, InboundMessageObservation) and (
             not command.payload.contact_address.strip()
-            or not command.payload.body.strip()
+            or (not command.payload.body.strip() and not command.payload.attachments)
         ):
             raise _error(
                 "invalid_observation",
-                "Inbound contact address and message body are required.",
+                "Inbound contact address and message content are required.",
             )
         if isinstance(command.payload, FiberWebsiteInquiryObservation) and (
             command.channel_type is not InboxChannelType.website_fiber

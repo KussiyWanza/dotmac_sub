@@ -120,7 +120,7 @@ class InboundChannelPayload:
     received_at: datetime | None = None
     subscriber_id: str | UUID | None = None
     fallback_service_team_id: str | UUID | None = None
-    metadata: dict | None = None
+    metadata: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -543,7 +543,12 @@ def _classify_inbound(
     payload: InboundChannelPayload,
     body: str,
     metadata: dict[str, object],
-) -> tuple[AiIntakeRequest, AiIntakeOutcome]:
+) -> tuple[AiIntakeRequest | None, AiIntakeOutcome]:
+    if not body:
+        return None, AiIntakeOutcome(
+            status=AiIntakeStatus.skipped,
+            reason=AiIntakeReason.no_text_content,
+        )
     provider = str(metadata.get("provider") or "default")[:80]
     account_scope = str(
         metadata.get("provider_account_scope")
@@ -614,8 +619,13 @@ def receive_inbound_channel(
     if channel_type not in {item.value for item in InboxChannelType}:
         raise ValueError("Unsupported inbox channel_type")
     body = _message_body(payload.body)
-    if not body:
-        raise ValueError("Inbound message body is required")
+    metadata = dict(payload.metadata or {})
+    attachments = metadata.get("attachments")
+    has_attachment = isinstance(attachments, (list, tuple)) and any(
+        isinstance(item, dict) for item in attachments
+    )
+    if not body and not has_attachment:
+        raise ValueError("Inbound message content is required")
 
     duplicate = _find_duplicate_message(
         db,
@@ -708,7 +718,6 @@ def receive_inbound_channel(
     # The shared intake owner runs after normalization/idempotency and before
     # destination-team routing. It returns metadata only: queue position and
     # individual assignment remain outside this service.
-    metadata: dict[str, object] = dict(payload.metadata or {})
     intake_request: AiIntakeRequest | None = None
     try:
         intake_request, intake_outcome = _classify_inbound(
@@ -1232,6 +1241,10 @@ def receive_inbound_channel_batch_committed(
             or "default"
         )
         contact_profile = metadata.get("contact_profile")
+        raw_attachments = metadata.get("attachments")
+        attachments = (
+            raw_attachments if isinstance(raw_attachments, (list, tuple)) else ()
+        )
         recorded = team_inbox_observations.record_provider_observation(
             db,
             team_inbox_observations.RecordProviderObservationCommand(
@@ -1341,7 +1354,7 @@ def receive_inbound_channel_batch_committed(
                     ),
                     attachments=tuple(
                         _inbound_attachment_observation(item)
-                        for item in (metadata.get("attachments") or ())
+                        for item in attachments
                         if isinstance(item, dict)
                     ),
                 ),
