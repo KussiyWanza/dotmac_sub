@@ -9,6 +9,7 @@ SCHEMA_SOURCE = Path("app/schemas/notification.py").read_text()
 RELIABILITY_SOURCE = Path("app/services/task_reliability.py").read_text()
 COMPOSE_SOURCE = Path("docker-compose.yml").read_text()
 MAKEFILE_SOURCE = Path("Makefile").read_text()
+CELERY_SOURCE = Path("app/celery_app.py").read_text()
 
 
 def test_immediate_delivery_uses_exact_typed_outbox_identity():
@@ -34,6 +35,10 @@ def test_immediate_and_recovery_delivery_share_row_locked_claim():
 
 
 def test_notification_worker_is_isolated_from_default_backlog():
+    assert "celery-worker-notifications-immediate:" in COMPOSE_SOURCE
     assert "celery-worker-notifications:" in COMPOSE_SOURCE
+    assert "- notifications_immediate" in COMPOSE_SOURCE
     assert "- notifications" in COMPOSE_SOURCE
+    assert '"app.tasks.notifications.deliver_notification": {' in CELERY_SOURCE
+    assert '"queue": "notifications_immediate"' in CELERY_SOURCE
     assert "celery-worker-notifications" in MAKEFILE_SOURCE

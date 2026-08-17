@@ -11,29 +11,73 @@
   {% if message %}<div class="rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{{ message }}</div>{% endif %}
   <form method="get" action="/admin/vendors/operations" class="rounded-md border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
     <label for="vendor-operations-search" class="block text-sm font-medium text-slate-700 dark:text-slate-300">Search vendor queue</label>
-    <div class="mt-2 flex flex-col gap-2 sm:flex-row">
-      <input id="vendor-operations-search" type="search" name="q" value="{{ queue_search }}" maxlength="120" placeholder="Project name, code, number, or vendor" class="min-h-10 flex-1 rounded-md border-slate-300 text-sm dark:border-slate-700 dark:bg-slate-900 dark:text-white">
+    <div class="mt-4 flex flex-col gap-3 sm:flex-row">
+      <input id="vendor-operations-search" type="search" name="q" value="{{ queue_search }}" maxlength="120" placeholder="Project name, code, number, or vendor" class="min-h-10 flex-1 rounded-md border border-slate-400 bg-white text-sm shadow-sm focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 dark:border-slate-600 dark:bg-slate-900 dark:text-white">
       <button type="submit" class="rounded-md bg-teal-600 px-4 py-2 text-sm font-semibold text-white">Search</button>
       {% if queue_search %}<a href="/admin/vendors/operations" class="rounded-md border border-slate-300 px-4 py-2 text-center text-sm font-semibold text-slate-700 dark:border-slate-700 dark:text-slate-200">Clear</a>{% endif %}
     </div>
     {% if queue_search %}<p class="mt-2 text-xs text-slate-500">Showing vendor assignment and quote matches for "{{ queue_search }}".</p>{% endif %}
   </form>
 
+  {% if show_field_reviews or show_advance_reviews %}
+  <div class="grid items-start gap-6 lg:grid-cols-2">
   {% if show_field_reviews %}
-  <section class="rounded-md border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+  <section class="overflow-hidden rounded-md border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
     <header class="border-b border-slate-200 px-5 py-4 dark:border-slate-800"><h2 class="font-bold">Draft projects awaiting vendor procurement</h2><p class="mt-1 text-sm text-slate-500">Assign one vendor directly or open a time-bounded bidding round. Tasks and work orders remain internal delivery scope.</p></header>
     {% for project in draft_projects %}
-    <article class="grid gap-4 border-b border-slate-100 p-5 last:border-0 dark:border-slate-800 lg:grid-cols-[1fr_1fr]">
-      <div><strong>{{ project.project.name if project.project else project.id }}</strong><p class="mt-1 text-sm text-slate-500">Installation Project · draft</p></div>
-      <form method="post" action="/admin/vendors/operations/projects/{{ project.id }}/procurement" class="grid gap-2 sm:grid-cols-2">{% include "components/forms/csrf_input.html" %}
-        <select name="mode" class="rounded-md border-slate-300 text-sm"><option value="direct">Assign vendor directly</option><option value="bidding">Open for bids</option></select>
-        <select name="vendor_id" class="rounded-md border-slate-300 text-sm"><option value="">Select vendor (direct)</option>{% for vendor in active_vendors %}<option value="{{ vendor.id }}">{{ vendor.name }}</option>{% endfor %}</select>
-        <label class="text-xs text-slate-500 sm:col-span-2">Bid close time (required only for bidding)<input type="datetime-local" name="bidding_close_at" class="mt-1 block w-full rounded-md border-slate-300 text-sm"></label>
+    <details name="draft-procurement-project" class="group border-b border-slate-100 last:border-0 dark:border-slate-800">
+      <summary class="flex min-h-16 cursor-pointer list-none items-center justify-between gap-3 px-5 py-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500">
+        <span class="min-w-0"><strong class="block truncate">{{ project.project.name if project.project else project.id }}</strong><span class="mt-1 block text-sm text-slate-500">Installation Project · draft</span></span>
+        <span class="flex shrink-0 items-center gap-3">
+          {% if project.project %}<a href="/admin/projects/{{ project.project.number or project.project.id }}" onclick="event.stopPropagation()" class="rounded-md border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:border-teal-400 hover:text-teal-700 dark:border-slate-600 dark:text-slate-200 dark:hover:border-teal-500 dark:hover:text-teal-300">View project</a>{% endif %}
+          <svg class="h-4 w-4 text-slate-400 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+        </span>
+      </summary>
+      <form method="post" action="/admin/vendors/operations/projects/{{ project.id }}/procurement" class="grid gap-4 border-t border-slate-100 bg-slate-50/70 p-5 dark:border-slate-800 dark:bg-slate-950/30 sm:grid-cols-2">{% include "components/forms/csrf_input.html" %}
+        <select name="mode" class="min-h-10 rounded-md border border-slate-400 bg-white text-sm shadow-sm focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 dark:border-slate-600 dark:bg-slate-900 dark:text-white"><option value="direct">Assign vendor directly</option><option value="bidding">Open for bids</option></select>
+        <select name="vendor_id" class="min-h-10 rounded-md border border-slate-400 bg-white text-sm shadow-sm focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 dark:border-slate-600 dark:bg-slate-900 dark:text-white"><option value="">Select vendor (direct)</option>{% for vendor in active_vendors %}<option value="{{ vendor.id }}">{{ vendor.name }}</option>{% endfor %}</select>
+        <label class="space-y-2 text-xs text-slate-500 dark:text-slate-400 sm:col-span-2">Bid close time (required only for bidding)<input type="datetime-local" name="bidding_close_at" class="block min-h-10 w-full rounded-md border border-slate-400 bg-white text-sm text-slate-900 shadow-sm focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 dark:border-slate-600 dark:bg-slate-900 dark:text-white"></label>
         <button class="rounded-md bg-teal-600 px-4 py-2 text-sm font-semibold text-white sm:col-span-2">Configure procurement</button>
       </form>
-    </article>
+    </details>
     {% else %}<p class="p-8 text-center text-sm text-slate-500">No draft installation projects awaiting vendor assignment.</p>{% endfor %}
   </section>
+  {% endif %}
+
+  {% if show_advance_reviews %}
+  <section class="overflow-hidden rounded-md border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+    <header class="border-b border-slate-200 px-5 py-4 dark:border-slate-800"><h2 class="font-bold">Vendor advances awaiting review</h2><p class="mt-1 text-sm text-slate-500">Approval authorizes the advance. Payment happens outside Sub and must be recorded here once made.</p></header>
+    {% for advance in advances %}
+    <article class="space-y-4 border-b border-slate-100 p-5 last:border-0 dark:border-slate-800">
+      <div>
+        <div class="flex flex-wrap items-center gap-2"><strong>{{ advance.project.name }}</strong>{{ status_presentation_badge(advance.status, size="sm") }}</div>
+        <p class="mt-1 text-sm text-slate-500">{{ advance.vendor.name }} · {{ advance.currency }} {{ "{:,.2f}".format(advance.amount) }} · requested {{ advance.requested_at | app_datetime('%d %b %Y %H:%M', 'time unavailable') }}</p>
+        {% if advance.reason %}<p class="mt-2 text-sm">{{ advance.reason }}</p>{% endif %}
+      </div>
+      <div class="grid gap-3 sm:grid-cols-2">
+        {% if action_permitted(request, advance.approve_action) %}
+        <form method="post" action="{{ advance.approve_action.preview_url }}" class="space-y-2">
+          {% include "components/forms/csrf_input.html" %}
+          <label class="block text-xs text-slate-500">Approval note (optional)<textarea name="review_notes" rows="2" maxlength="2000" class="mt-1 w-full rounded-md border-slate-300 text-sm"></textarea></label>
+          <button class="w-full rounded-md bg-teal-600 px-3 py-2 text-sm font-semibold text-white">{{ advance.approve_action.label }}</button>
+        </form>
+        {% endif %}
+        {% if action_permitted(request, advance.reject_action) %}
+        <form method="post" action="{{ advance.reject_action.preview_url }}" class="space-y-2">
+          {% include "components/forms/csrf_input.html" %}
+          <label class="block text-xs text-slate-500">Rejection reason<textarea name="review_notes" rows="2" maxlength="2000" required class="mt-1 w-full rounded-md border-slate-300 text-sm"></textarea></label>
+          <button class="w-full rounded-md border border-rose-500 px-3 py-2 text-sm font-semibold text-rose-700">{{ advance.reject_action.label }}</button>
+        </form>
+        {% endif %}
+      </div>
+    </article>
+    {% else %}<p class="p-8 text-center text-sm text-slate-500">No vendor advances waiting.</p>{% endfor %}
+  </section>
+  {% endif %}
+  </div>
+  {% endif %}
+
+  {% if show_field_reviews %}
   {% if show_route_reviews %}
   <section class="rounded-md border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
     <header class="border-b border-slate-200 px-5 py-4 dark:border-slate-800"><h2 class="font-bold">Proposed routes awaiting review</h2></header>
@@ -134,37 +178,6 @@
   {% endif %}
 
   {% if show_financial_reviews %}
-  {% if show_advance_reviews %}
-  <section class="rounded-md border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
-    <header class="border-b border-slate-200 px-5 py-4 dark:border-slate-800"><h2 class="font-bold">Vendor advances awaiting review</h2><p class="mt-1 text-sm text-slate-500">Approval authorizes the advance. Payment happens outside Sub and must be recorded here once made.</p></header>
-    {% for advance in advances %}
-    <article class="grid gap-4 border-b border-slate-100 p-5 last:border-0 dark:border-slate-800 lg:grid-cols-[minmax(0,1fr)_minmax(300px,420px)]">
-      <div>
-        <div class="flex flex-wrap items-center gap-2"><strong>{{ advance.project.name }}</strong>{{ status_presentation_badge(advance.status, size="sm") }}</div>
-        <p class="mt-1 text-sm text-slate-500">{{ advance.vendor.name }} · {{ advance.currency }} {{ "{:,.2f}".format(advance.amount) }} · requested {{ advance.requested_at | app_datetime('%d %b %Y %H:%M', 'time unavailable') }}</p>
-        {% if advance.reason %}<p class="mt-2 text-sm">{{ advance.reason }}</p>{% endif %}
-      </div>
-      <div class="grid gap-3 sm:grid-cols-2">
-        {% if action_permitted(request, advance.approve_action) %}
-        <form method="post" action="{{ advance.approve_action.preview_url }}" class="space-y-2">
-          {% include "components/forms/csrf_input.html" %}
-          <label class="block text-xs text-slate-500">Approval note (optional)<textarea name="review_notes" rows="2" maxlength="2000" class="mt-1 w-full rounded-md border-slate-300 text-sm"></textarea></label>
-          <button class="w-full rounded-md bg-teal-600 px-3 py-2 text-sm font-semibold text-white">{{ advance.approve_action.label }}</button>
-        </form>
-        {% endif %}
-        {% if action_permitted(request, advance.reject_action) %}
-        <form method="post" action="{{ advance.reject_action.preview_url }}" class="space-y-2">
-          {% include "components/forms/csrf_input.html" %}
-          <label class="block text-xs text-slate-500">Rejection reason<textarea name="review_notes" rows="2" maxlength="2000" required class="mt-1 w-full rounded-md border-slate-300 text-sm"></textarea></label>
-          <button class="w-full rounded-md border border-rose-500 px-3 py-2 text-sm font-semibold text-rose-700">{{ advance.reject_action.label }}</button>
-        </form>
-        {% endif %}
-      </div>
-    </article>
-    {% else %}<p class="p-8 text-center text-sm text-slate-500">No vendor advances waiting.</p>{% endfor %}
-  </section>
-  {% endif %}
-
   {% if show_advance_reviews %}
   <section class="rounded-md border border-amber-300 bg-white dark:border-amber-700 dark:bg-slate-900">
     <header class="border-b border-slate-200 px-5 py-4 dark:border-slate-800">

@@ -107,6 +107,13 @@ class _JobDetailViewState extends ConsumerState<_JobDetailView> {
       context,
       job.statusPresentation.tone,
     );
+    final projectId = detail.customerExperience.project?.id;
+    final ticketId =
+        detail.customerExperience.originTicket?.id ??
+        detail.customerExperience.projectTaskTicket?.id;
+    final linkedContext =
+        '${projectId == null ? '' : '&projectId=${Uri.encodeComponent(projectId)}'}'
+        '${ticketId == null ? '' : '&ticketId=${Uri.encodeComponent(ticketId)}'}';
 
     return Scaffold(
       appBar: AppBar(
@@ -116,7 +123,8 @@ class _JobDetailViewState extends ConsumerState<_JobDetailView> {
             tooltip: 'Request materials',
             onPressed: () => context.push(
               '/materials/new?workOrderId=${Uri.encodeComponent(job.id)}'
-              '&workOrderLabel=${Uri.encodeComponent(job.title)}',
+              '&workOrderLabel=${Uri.encodeComponent(job.title)}'
+              '$linkedContext',
             ),
             icon: const Icon(Icons.inventory_2_outlined),
           ),
@@ -124,7 +132,8 @@ class _JobDetailViewState extends ConsumerState<_JobDetailView> {
             tooltip: 'Request expense',
             onPressed: () => context.push(
               '/expenses/new?workOrderId=${Uri.encodeComponent(job.id)}'
-              '&workOrderLabel=${Uri.encodeComponent(job.title)}',
+              '&workOrderLabel=${Uri.encodeComponent(job.title)}'
+              '$linkedContext',
             ),
             icon: const Icon(Icons.receipt_long_outlined),
           ),

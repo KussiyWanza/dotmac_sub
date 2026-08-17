@@ -1769,6 +1769,8 @@ def reports_ncc_complaints(
     request: Request,
     date_from: str | None = None,
     date_to: str | None = None,
+    page: int = Query(default=1, ge=1),
+    per_page: Literal[20, 50, 100] = Query(default=20),
     db: Session = Depends(get_db),
 ):
     from app.web.admin import get_current_user, get_sidebar_stats
@@ -1779,15 +1781,33 @@ def reports_ncc_complaints(
         query=ncc_complaints_service.NccComplaintsReportQuery(start=start, end=end),
     )
     report = snapshot.as_legacy_dict()
+    requested_list_query = (
+        ncc_complaints_service.NCC_COMPLAINTS_LIST_DEFINITION.build_query(
+            search=None,
+            filters={"date_from": date_from, "date_to": date_to},
+            page=page,
+            per_page=per_page,
+        )
+    )
+    table_page = ncc_complaints_service.paginate_report(
+        snapshot,
+        list_query=requested_list_query,
+    )
     # Surface, per row, whether it is filable — the workbook's own validator
     # is the authority, so the officer sees exactly what CRM's export would.
     rows = []
-    for record in ncc_workbook.export_rows(report["records"]):
+    for record in ncc_workbook.export_rows(
+        [item.as_mapping() for item in table_page.records]
+    ):
         status = ncc_workbook.validation_status(record)
         rows.append(
             {"record": record, "validation": status, "ok": status.startswith("[OK]")}
         )
-    not_filable = sum(1 for row in rows if not row["ok"])
+    not_filable = sum(
+        1
+        for record in ncc_workbook.export_rows(report["records"])
+        if not ncc_workbook.validation_status(record).startswith("[OK]")
+    )
     weekly_configuration = ncc_weekly_delivery_service.get_configuration(db=db)
     weekly_runs = ncc_weekly_delivery_service.list_recent_runs(
         db=db,
@@ -1810,6 +1830,8 @@ def reports_ncc_complaints(
         "weekly_runs": weekly_runs,
         "ncc_weekdays": tuple(ncc_weekly_delivery_service.NccWeekday),
         "can_manage_ncc_email": can(request, "notification:write"),
+        "list_query": table_page.list_query,
+        "page_meta": table_page.page_meta,
     }
     return templates.TemplateResponse("admin/reports/ncc_complaints.html", context)
 

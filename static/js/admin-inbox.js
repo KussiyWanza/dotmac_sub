@@ -185,11 +185,7 @@
       ),
       resizingSidebar: false,
       filtersOpen: parseStoredBoolean(KEYS.filtersOpen, false),
-      byAgentOpen: Boolean(
-        new URLSearchParams(window.location.search).get("assigned_person_id") ||
-          new URLSearchParams(window.location.search).get("activity_from") ||
-          new URLSearchParams(window.location.search).get("activity_to"),
-      ),
+      byAgentOpen: false,
       savedViewName: "",
       selectedIds: [],
       bulkAction: "status",
@@ -209,6 +205,7 @@
       newMessagesAvailable: false,
       newListActivityAvailable: false,
       toastMessage: "",
+      outboundToastMessageId: "",
       replyFailure: previewIncludes("reply-failed")
         ? { detail: "The channel did not accept this message. Try again." }
         : null,
@@ -242,6 +239,10 @@
       recentlyRefreshedMessageIds: new Set(),
       pendingDeliveryStatuses: new Map(),
       threadRefreshTimer: null,
+      threadResizeObserver: null,
+      threadScrollElement: null,
+      threadScrollHandler: null,
+      threadFollowBottom: false,
       readStateInFlight: new Set(),
       locallyReadConversationIds: [],
       filterLoading: false,
@@ -306,7 +307,7 @@
         this.bindHtmx();
         this.connectRealtime();
         this.startFallbackPolling();
-        this.scrollThread();
+        this.scrollThread(true);
         this.clearDraftAfterSuccessfulSend();
         this.$nextTick(() => this.syncSelectedCheckboxes());
       },
@@ -714,7 +715,7 @@
               this.clearTypingPresence();
               this.subscribeVisibleTopics();
               this.updateSelectedHighlight();
-              this.scrollThread();
+              this.scrollThread(true);
               this.newMessagesAvailable = false;
               if (thread.dataset.conversationUnread === "true") {
                 this.markConversationRead(this.selectedId);
@@ -727,7 +728,7 @@
             target.querySelector("[data-inbox-empty-thread]")?.remove();
             this.applyPendingDeliveryStatuses();
             this.newMessagesAvailable = false;
-            this.scrollThread();
+            this.scrollThread(false);
           }
           if (
             target.id === "inbox-sidebar-content" ||
@@ -1526,18 +1527,85 @@
         );
       },
 
-      showToast(message) {
+      showToast(message, { persistent = false } = {}) {
         this.toastMessage = message;
         window.clearTimeout(this.toastTimer);
-        this.toastTimer = window.setTimeout(() => {
-          this.toastMessage = "";
-        }, 4200);
+        this.toastTimer = null;
+        if (!persistent) {
+          this.toastTimer = window.setTimeout(() => {
+            this.toastMessage = "";
+          }, 4200);
+        }
       },
 
-      scrollThread() {
+      trackOutboundSend(messageId) {
+        const id = String(messageId || "").trim();
+        if (!id) return;
+        this.outboundToastMessageId = id;
+        this.showToast("Message sending…", { persistent: true });
+      },
+
+      threadIsNearBottom(thread, threshold = 96) {
+        return (
+          thread.scrollHeight - thread.scrollTop - thread.clientHeight <=
+          threshold
+        );
+      },
+
+      disconnectThreadAutoScroll() {
+        this.threadResizeObserver?.disconnect();
+        this.threadResizeObserver = null;
+        if (this.threadScrollElement && this.threadScrollHandler) {
+          this.threadScrollElement.removeEventListener(
+            "scroll",
+            this.threadScrollHandler,
+          );
+        }
+        this.threadScrollElement = null;
+        this.threadScrollHandler = null;
+        this.threadFollowBottom = false;
+      },
+
+      bindThreadAutoScroll(thread, scrollToBottom) {
+        this.disconnectThreadAutoScroll();
+        this.threadScrollElement = thread;
+        this.threadFollowBottom = true;
+        this.threadScrollHandler = () => {
+          this.threadFollowBottom = this.threadIsNearBottom(thread);
+        };
+        thread.addEventListener("scroll", this.threadScrollHandler, {
+          passive: true,
+        });
+        if ("ResizeObserver" in window) {
+          this.threadResizeObserver = new ResizeObserver(() => {
+            if (this.threadFollowBottom) scrollToBottom();
+          });
+          this.threadResizeObserver.observe(
+            thread.querySelector("[data-thread-content]") || thread,
+          );
+        }
+      },
+
+      scrollThread(force = true) {
         this.$nextTick(() => {
           const thread = document.querySelector("[data-thread-scroll]");
-          if (thread) thread.scrollTop = thread.scrollHeight;
+          if (!thread) return;
+          const shouldFollow =
+            force ||
+            this.threadFollowBottom ||
+            this.threadIsNearBottom(thread);
+          if (!shouldFollow) return;
+
+          const scrollToBottom = () => {
+            if (!this.threadFollowBottom || !document.contains(thread)) return;
+            thread.scrollTop = thread.scrollHeight;
+          };
+          this.bindThreadAutoScroll(thread, scrollToBottom);
+          scrollToBottom();
+          window.requestAnimationFrame(() => {
+            scrollToBottom();
+            window.requestAnimationFrame(scrollToBottom);
+          });
         });
       },
 
@@ -1869,6 +1937,17 @@
         const messageId = String(data.message_id || "");
         const status = String(data.delivery_status || "").trim().toLowerCase();
         if (!messageId || !status) return;
+        if (messageId === this.outboundToastMessageId) {
+          if (status === "delivered" || status === "sent") {
+            this.outboundToastMessageId = "";
+            this.showToast("Message sent.");
+          } else if (status === "failed" || status === "cancelled") {
+            this.outboundToastMessageId = "";
+            this.showToast("Message delivery failed. Open the message status to retry.");
+          } else {
+            this.showToast("Message sending…", { persistent: true });
+          }
+        }
         const statusNode = Array.from(
           document.querySelectorAll("[data-inbox-delivery-status]"),
         ).find((node) => node.dataset.inboxDeliveryStatus === messageId);
@@ -1882,7 +1961,7 @@
           .replace(/^./, (value) => value.toUpperCase());
         statusNode.classList.toggle("text-rose-600", status === "failed");
         statusNode.classList.toggle("text-slate-400", status !== "failed");
-        if (status === "failed") {
+        if (status === "failed" && messageId !== this.outboundToastMessageId) {
           this.showToast(
             "Message delivery failed. Open the message status to retry.",
           );
@@ -1897,6 +1976,12 @@
 
       cleanupInboxElement(root) {
         if (!root) return;
+        if (
+          root.matches?.("[data-thread-scroll]") ||
+          root.querySelector?.("[data-thread-scroll]")
+        ) {
+          this.disconnectThreadAutoScroll();
+        }
         const elements = [root, ...(root.querySelectorAll?.("*") || [])];
         elements.forEach((element) => {
           if (element.__inboxReplyWindowTimer) {
@@ -2031,6 +2116,8 @@
       files: [],
       uploading: false,
       sending: false,
+      replyOutcomeHandled: false,
+      replyLifecycleCleanup: null,
       idempotencyKey: "",
       replyTo: null,
       scheduled: false,
@@ -2061,7 +2148,40 @@
           else localStorage.removeItem(`${KEYS.draftPrefix}${conversationId}`);
           this.resizeTextarea();
         });
-        this.$nextTick(() => this.resizeTextarea());
+        this.$nextTick(() => {
+          this.resizeTextarea();
+          this.bindReplyLifecycle();
+        });
+        this.$cleanup(() => this.replyLifecycleCleanup?.());
+      },
+
+      bindReplyLifecycle() {
+        this.replyLifecycleCleanup?.();
+        const form = this.$root.querySelector("[data-reply-form]");
+        if (!form) return;
+        const events = [
+          "htmx:afterRequest",
+          "htmx:sendAbort",
+          "htmx:timeout",
+          "htmx:sendError",
+          "htmx:responseError",
+        ];
+        const finish = (event) => this.finishSendRequest(event);
+        events.forEach((name) => form.addEventListener(name, finish));
+        this.replyLifecycleCleanup = () => {
+          events.forEach((name) => form.removeEventListener(name, finish));
+          this.replyLifecycleCleanup = null;
+        };
+      },
+
+      replyOutcomeFromEvent(event) {
+        const raw = event.detail?.xhr?.getResponseHeader?.("HX-Trigger");
+        if (!raw) return null;
+        try {
+          return JSON.parse(raw)["inbox-reply-completed"] || null;
+        } catch (_error) {
+          return null;
+        }
       },
 
       workspace() {
@@ -2295,6 +2415,10 @@
           .map((file) => file.id)
           .join(",");
       },
+      syncAttachmentInput(form) {
+        const attachmentInput = form?.querySelector('[name="attachment_ids"]');
+        if (attachmentInput) attachmentInput.value = this.attachmentIds();
+      },
       composerDirty() {
         return Boolean(
           this.draft.trim() ||
@@ -2339,12 +2463,31 @@
         ) {
           return;
         }
+        this.replyOutcomeHandled = true;
         this.sending = false;
-        this.workspace()?.showToast?.(
-          result.message ||
-            (result.status === "success" ? "Reply sent." : "Reply failed."),
-        );
-        if (result.status !== "success") return;
+        const workspace = this.workspace();
+        if (result.status !== "success") {
+          workspace?.showToast?.(result.message || "Reply failed.");
+          return;
+        }
+
+        const outcomeMessage = String(result.message || "");
+        if (outcomeMessage.startsWith("Reply scheduled")) {
+          workspace?.showToast?.("Message scheduled.");
+        } else if (
+          outcomeMessage.startsWith("Reply sent") ||
+          outcomeMessage.startsWith("Reply could not be delivered")
+        ) {
+          workspace?.showToast?.(
+            outcomeMessage.startsWith("Reply sent")
+              ? "Message sent."
+              : "Message delivery failed. Open the message status to retry.",
+          );
+        } else if (result.message_id) {
+          workspace?.trackOutboundSend?.(result.message_id);
+        } else {
+          workspace?.showToast?.(outcomeMessage || "Message submitted.");
+        }
 
         this.draft = "";
         this.files = [];
@@ -2357,7 +2500,6 @@
         this.polishSuggestion = null;
         localStorage.removeItem(`${KEYS.draftPrefix}${this.conversationId}`);
 
-        const workspace = this.workspace();
         workspace?.refreshThreadForMessage?.(
           this.conversationId,
           result.message_id,
@@ -2367,8 +2509,18 @@
 
       finishSendRequest(event) {
         this.sending = false;
-        if (event.detail?.successful) return;
-        this.workspace()?.showToast?.("Could not send reply. Try again.");
+        if (this.replyOutcomeHandled) return;
+        const outcome = this.replyOutcomeFromEvent(event);
+        if (outcome) {
+          this.completeSend(outcome);
+          return;
+        }
+        const workspace = this.workspace();
+        if (workspace) workspace.outboundToastMessageId = "";
+        this.replyOutcomeHandled = true;
+        workspace?.showToast?.(
+          "Reply status could not be confirmed. Check the thread before retrying.",
+        );
       },
 
       prepareSend(event) {
@@ -2388,6 +2540,12 @@
           );
           return;
         }
+        if (this.files.some((file) => !file.id)) {
+          event.preventDefault();
+          this.workspace()?.showToast?.("Attach upload did not finish. Remove it and try again.");
+          return;
+        }
+        this.syncAttachmentInput(event.currentTarget);
         // Attachments and scheduling both submit for real now: staged uploads
         // ride along as attachment_ids, and a chosen time rides as send_after.
         if (this.scheduled && !this.scheduledAt) {
@@ -2406,7 +2564,9 @@
           '[name="reply_to_message_id"]',
         );
         if (replyInput) replyInput.value = this.replyTo?.id || "";
+        this.replyOutcomeHandled = false;
         this.sending = true;
+        this.workspace()?.showToast?.("Message sending…", { persistent: true });
         this.workspace()?.publishTyping?.(this.conversationId, false);
       },
     };

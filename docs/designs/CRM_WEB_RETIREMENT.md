@@ -73,6 +73,22 @@ Evidence must name durable repository paths, tests, migration/reconciliation
 reports, dashboards or queries, and approved operator records. A statement that
 Sub has a similarly named route is not parity evidence.
 
+### Sales owner-map correction
+
+The previously missing
+[`MARKETING_SALES_SOT.md`](MARKETING_SALES_SOT.md) now reconciles the ledger's
+mixed marketing/sales references. The approved
+[`SALES_TO_SERVICE_LIFECYCLE_SOT.md`](SALES_TO_SERVICE_LIFECYCLE_SOT.md)
+verifies Sub's present owners for Leads, Pipelines, Stages and Quotes through
+acceptance. That owner decision does not prove behavior parity, migrated data,
+shadow agreement, cutover, zero traffic or deletion, so the corresponding CRM
+routes remain unretired.
+
+The same correction explicitly does **not** verify campaign, survey/audience or
+retention-case ownership. Those rows require separate audits and must not
+advance by association with sales. CRM SalesOrder paths likewise stay outside
+the sales slice and follow their separate orders authority.
+
 ### CRM reporting ownership decisions
 
 Self-Care hosts operational report projections over facts it already owns. The

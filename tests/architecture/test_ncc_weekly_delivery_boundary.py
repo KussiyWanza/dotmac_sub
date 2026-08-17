@@ -19,6 +19,19 @@ def test_ncc_weekly_delivery_and_report_queries_have_complete_contracts():
     assert reporting.contract.transaction.mode.value == "read_only"
 
 
+def test_ncc_report_scope_uses_typed_support_provenance_and_identity_projection():
+    report = _source("app/services/ncc_complaints_report.py")
+    internal_source = _source("app/services/unmatched_radio_queue.py")
+
+    assert "InternalOperationalTicketSource" in report
+    assert "NccComplaintAudience" in report
+    assert '"unmatched_radio_queue"' not in report
+    assert '"opened_by": internal_source.value' in internal_source
+    assert "source=internal_source" in internal_source
+    assert "normalize_phone_identifier" in report
+    assert "NccMsisdnProjection" in report
+
+
 def test_ncc_adapters_delegate_transaction_and_schedule_decisions():
     task = _source("app/tasks/reports.py")
     route = _source("app/web/admin/reports.py")
