@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
 import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 CI_WORKFLOW = ROOT / ".github/workflows/ci.yml"
 SHARD_SCRIPT = ROOT / "scripts/ci/select_test_shard.py"
+INTEGRATION_SHARD_SCRIPT = ROOT / "scripts/ci/select_integration_shard.py"
+POSTGRESQL_CLASSIFIER_SCRIPT = ROOT / "scripts/ci/classify_postgresql_changes.py"
 
 
 def _load_shard_module():
@@ -16,6 +19,19 @@ def _load_shard_module():
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    return module
+
+
+def _load_module(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(name, None)
     return module
 
 
@@ -36,6 +52,34 @@ def test_unit_shards_partition_all_unit_test_files_once(tmp_path: Path) -> None:
 
     assert set().union(*groups) == expected
     assert sum(len(group) for group in groups) == len(expected)
+
+
+def test_integration_shards_partition_every_file_once() -> None:
+    module = _load_module("select_integration_shard", INTEGRATION_SHARD_SCRIPT)
+    expected = set((ROOT / "tests/integration").glob("test_*.py"))
+    groups = [
+        set(module.select_integration_shard(shard=shard, shards=4))
+        for shard in range(1, 5)
+    ]
+
+    assert set().union(*groups) == expected
+    assert sum(len(group) for group in groups) == len(expected)
+
+
+def test_postgresql_classifier_is_narrow_and_fails_closed() -> None:
+    module = _load_module("classify_postgresql_changes", POSTGRESQL_CLASSIFIER_SCRIPT)
+
+    assert not module.classify_postgresql_changes(
+        ("templates/admin/inbox/index.html", "static/js/inbox.js")
+    ).required
+    assert not module.classify_postgresql_changes(("tests/test_inbox_ui.py",)).required
+    assert module.classify_postgresql_changes(
+        ("tests/integration/test_inbox.py",)
+    ).required
+    assert module.classify_postgresql_changes(
+        ("app/services/team_inbox_read.py",)
+    ).required
+    assert module.classify_postgresql_changes(()).required
 
 
 def test_unit_shards_prefer_measured_durations_over_source_size(

@@ -56,7 +56,8 @@ def test_makefile_owns_migration_and_integration_execution_order() -> None:
 def test_ci_delegates_migration_and_tests_to_makefile_owner() -> None:
     workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
 
-    assert "run: make test-integration" in workflow
+    assert "run: make test-integration-shard" in workflow
+    assert "PostgreSQL Tests (shard ${{ matrix.shard }}/4)" in workflow
     assert "run: poetry run alembic upgrade head" not in workflow
 
 

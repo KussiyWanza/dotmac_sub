@@ -12,7 +12,8 @@ Application changes retain all release gates:
 - the complete non-integration suite, split deterministically across four
   runners, plus the explicit four-worker architecture suite;
 - Alembic and integration tests against PostgreSQL before merge and again on
-  promotion branches; and
+  promotion branches whenever the change can affect backend or deployed-schema
+  behavior; and
 - one production Docker build followed by migration and health checks.
 
 Pull requests receive the Docker migration and health gate. Branch pushes do
@@ -50,8 +51,21 @@ the main lock group and includes them in `poetry install --only main`.
 A change is documentation-only only when every changed path is under `docs/`
 or is a Markdown file. Required check names still report, but application
 tests, PostgreSQL services, Docker builds, and security scans do no heavy work.
-Workflow, dependency, migration, test, and application changes always receive
-the full pipeline. Manual runs also always execute the full pipeline.
+Backend application, dependency, workflow, migration, integration-fixture, and
+integration-test changes receive the PostgreSQL pipeline. Documentation,
+template, static-asset, mobile-only, and non-integration-test-only changes keep
+the stable required PostgreSQL check names but avoid provisioning PostgreSQL.
+The classifier fails closed for empty, unknown, or mixed change sets. Manual
+runs always execute the full pipeline.
+
+## PostgreSQL integration sharding
+
+When PostgreSQL evidence is required, four isolated runners each migrate a
+disposable PostGIS database through the real Alembic chain and execute one
+deterministic file-level integration shard. The required `PostgreSQL Gate`
+reports success only when every shard succeeds. Sharding changes wall-clock
+latency, not the accepted test set or deployed-schema authority; every file
+under `tests/integration/` is selected exactly once.
 
 ## Unit-test sharding
 
