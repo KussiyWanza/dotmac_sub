@@ -232,6 +232,34 @@ def test_validation_rejects_msisdn_not_in_national_format():
     )
 
 
+def test_validation_rejects_non_numeric_msisdn():
+    status = ncc_workbook.validation_status(
+        dict(_valid_record(), MSISDN="not-a-number")
+    )
+    assert status.startswith("[FAIL]")
+    assert "MSISDN" in status
+
+
+def test_blank_names_report_only_the_required_error():
+    status = ncc_workbook.validation_status(
+        dict(_valid_record(), **{"First Name": "", "Last Name": ""})
+    )
+
+    assert "First Name is required" in status
+    assert "Last Name is required" in status
+    assert "First Name must contain letters only" not in status
+    assert "Last Name must contain letters only" not in status
+
+
+def test_nonblank_malformed_names_still_report_format_errors():
+    status = ncc_workbook.validation_status(
+        dict(_valid_record(), **{"First Name": "Ada2", "Last Name": "Obi!"})
+    )
+
+    assert "First Name must contain letters only" in status
+    assert "Last Name must contain letters only; hyphen is allowed" in status
+
+
 def test_validation_rejects_test_data_in_names():
     status = ncc_workbook.validation_status(
         dict(_valid_record(), **{"First Name": "Test"})

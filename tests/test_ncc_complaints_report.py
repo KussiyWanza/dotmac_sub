@@ -12,6 +12,8 @@ import uuid
 import zipfile
 from datetime import UTC, date, datetime, timedelta
 
+import pytest
+
 from app.models.subscriber import Gender, Subscriber
 from app.models.support import Ticket, TicketChannel
 from app.schemas.support import TicketCreate, TicketUpdate
@@ -204,6 +206,97 @@ def test_canceled_and_merged_are_excluded_as_non_complaints(db_session):
     assert records[0]["Status"] == "Pending"
 
 
+def test_explicit_internal_operational_ticket_is_excluded(db_session):
+    internal = _ticket(
+        db_session,
+        None,
+        title="Unmatched radio queue item",
+        metadata_={
+            "opened_by": support_service.InternalOperationalTicketSource.unmatched_radio_queue.value
+        },
+    )
+    customer_complaint = _ticket(
+        db_session,
+        None,
+        title="Customer complaint with incomplete identity",
+    )
+
+    start, end = _window()
+    records = report.build_records(db_session, start=start, end=end)
+
+    assert len(records) == 1
+    assert records[0]["Ticket ID"].endswith(
+        str(customer_complaint.number or customer_complaint.id)
+    )
+    assert not records[0]["Ticket ID"].endswith(str(internal.number or internal.id))
+
+
+def test_incomplete_customer_complaint_remains_visible_and_fails_validation(
+    db_session,
+):
+    ticket = _ticket(
+        db_session,
+        None,
+        title="Customer complaint with missing captured facts",
+        metadata_={"opened_by": "manual_customer_entry"},
+        ncc_category=None,
+        ncc_subcategory=None,
+    )
+
+    record = _record_for(db_session, ticket)
+
+    assert record is not None
+    assert record["MSISDN"] == ""
+    assert record["Category"] == ""
+    assert record["VALIDATION STATUS"].startswith("[FAIL]")
+
+
+@pytest.mark.parametrize(
+    ("stored_phone", "expected_msisdn"),
+    (
+        ("08031234567", "2348031234567"),
+        ("07031234567", "2347031234567"),
+        ("09031234567", "2349031234567"),
+        ("+2348031234567", "2348031234567"),
+        ("2348031234567", "2348031234567"),
+    ),
+)
+def test_report_projects_supported_phone_forms_to_ncc_msisdn(
+    db_session,
+    stored_phone,
+    expected_msisdn,
+):
+    subscriber = _subscriber(
+        db_session,
+        phone=stored_phone,
+        region="Lagos",
+        lga="Eti-Osa",
+    )
+    ticket = _ticket(db_session, subscriber)
+
+    record = _record_for(db_session, ticket)
+
+    assert record is not None
+    assert record["MSISDN"] == expected_msisdn
+    assert "MSISDN" not in record["VALIDATION STATUS"]
+
+
+def test_malformed_phone_remains_visible_as_an_ncc_validation_failure(db_session):
+    subscriber = _subscriber(
+        db_session,
+        phone="not-a-number",
+        region="Lagos",
+        lga="Eti-Osa",
+    )
+    ticket = _ticket(db_session, subscriber)
+
+    record = _record_for(db_session, ticket)
+
+    assert record is not None
+    assert record["MSISDN"]
+    assert "MSISDN" in record["VALIDATION STATUS"]
+
+
 # ── SLA: unknown is blank, not a breach ─────────────────────────────────────
 
 
@@ -342,6 +435,40 @@ def test_report_totals_agree_with_records(db_session):
     built = report.build_report(db_session, start=start, end=end)
     assert built["total_complaints"] == len(built["records"]) == 2
     assert sum(built["by_status"].values()) == 2
+
+
+def test_screen_pagination_defaults_to_twenty_without_truncating_snapshot(
+    db_session,
+):
+    subscriber = _subscriber(db_session)
+    for index in range(21):
+        _ticket(
+            db_session,
+            subscriber,
+            title=f"Pagination complaint {index:02d}",
+            created_at=datetime.now(UTC) - timedelta(days=2) + timedelta(minutes=index),
+        )
+    start, end = _window()
+    snapshot = report.query_report(
+        db_session,
+        report.NccComplaintsReportQuery(start=start, end=end),
+    )
+    first_query = report.NCC_COMPLAINTS_LIST_DEFINITION.build_query(
+        search=None,
+        filters={"date_from": None, "date_to": None},
+    )
+
+    first_page = report.paginate_report(snapshot, list_query=first_query)
+    second_page = report.paginate_report(
+        snapshot,
+        list_query=first_query.with_page(2),
+    )
+
+    assert snapshot.total_complaints == 21
+    assert first_page.list_query.per_page == 20
+    assert len(first_page.records) == 20
+    assert first_page.page_meta.total_pages == 2
+    assert len(second_page.records) == 1
 
 
 # ── LGA: captured, validated against its state, never derived ───────────────

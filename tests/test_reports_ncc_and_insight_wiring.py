@@ -11,6 +11,7 @@ from unittest.mock import patch
 from app.models.ai_insight import AIInsight
 from app.models.domain_settings import DomainSetting, SettingDomain, SettingValueType
 from app.models.ncc_reporting import NccWeeklyReportRun, NccWeeklyReportRunStatus
+from app.models.support import Ticket
 from app.services import control_registry, ncc_report_email
 from app.services.ai import engine as ai_engine
 from app.services.owner_commands import CommandContext
@@ -49,6 +50,39 @@ def test_ncc_complaints_export_streams_a_valid_xlsx(db_session):
     # The body is a zip (xlsx). Its magic bytes are PK\x03\x04.
     assert resp.body[:4] == b"PK\x03\x04"
     assert "attachment; filename=" in resp.headers["Content-Disposition"]
+
+
+def test_ncc_complaints_page_renders_twenty_rows_and_pagination(
+    db_session, monkeypatch
+):
+    _stub_admin(monkeypatch)
+    monkeypatch.setattr(reports_web, "can", lambda request, permission: False)
+    for index in range(21):
+        db_session.add(
+            Ticket(
+                title=f"Rendered complaint {index:02d}",
+                status="open",
+                priority="normal",
+                created_at=datetime(2026, 8, 1, 8, index, tzinfo=UTC),
+            )
+        )
+    db_session.commit()
+
+    response = reports_web.reports_ncc_complaints(
+        _request(),
+        date_from="2026-08-01",
+        date_to="2026-08-31",
+        page=1,
+        per_page=20,
+        db=db_session,
+    )
+    body = response.body.decode()
+
+    assert "Rendered complaint 00" in body
+    assert "Rendered complaint 19" in body
+    assert "Rendered complaint 20" not in body
+    assert "Showing 1 to 20 of 21 complaints" in body
+    assert "Page 2" in body
 
 
 def test_ncc_regulatory_pack_json_has_all_three_returns(db_session):
