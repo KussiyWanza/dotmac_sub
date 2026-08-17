@@ -253,7 +253,7 @@ def test_reply_request_always_releases_send_busy_state():
     assert '"htmx:responseError"' in JAVASCRIPT
     assert "this.$cleanup(() => this.replyLifecycleCleanup?.())" in JAVASCRIPT
 
-    marker = JAVASCRIPT.index("finishSendRequest(event)")
+    marker = JAVASCRIPT.index("      finishSendRequest(event) {")
     body = JAVASCRIPT[marker : marker + 850]
     assert body.index("this.sending = false") < body.index(
         "if (this.replyOutcomeHandled) return"

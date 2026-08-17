@@ -1538,12 +1538,17 @@ def team_inbox_reply(
         team_inbox_operations.InboxOperationError,
     ) as exc:
         if _is_htmx_request(request):
+            error_code = (
+                exc.code
+                if isinstance(exc, team_inbox_commands.InboxCommandError)
+                else None
+            )
             return _reply_presentation_response(
                 conversation_id,
                 status="error",
                 outcome="error",
                 message=str(exc),
-                error_code=exc.code,
+                error_code=error_code,
                 http_status=422,
             )
         return _detail_redirect(
