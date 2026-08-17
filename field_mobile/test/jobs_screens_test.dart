@@ -94,6 +94,51 @@ Widget _wrap(
 );
 
 void main() {
+  test('job summary accepts nullable migrated classification fields', () {
+    final job = JobSummary.fromJson({
+      'id': 'WO-1',
+      'title': 'Migrated repair',
+      'status': 'dispatched',
+      'work_type': null,
+      'priority': null,
+      'estimated_duration_minutes': '45',
+      'total_active_seconds': 90.0,
+    });
+
+    expect(job.workType, 'other');
+    expect(job.priority, 'normal');
+    expect(job.estimatedDurationMinutes, 45);
+    expect(job.totalActiveSeconds, 90);
+  });
+
+  test('today includes overdue and unscheduled open work', () {
+    final day = DateTime(2026, 8, 17);
+    JobSummary job(String id, {DateTime? scheduledStart}) => JobSummary(
+      id: id,
+      title: id,
+      status: 'dispatched',
+      workType: 'other',
+      priority: 'normal',
+      scheduledStart: scheduledStart,
+    );
+
+    expect(isActionableOnDay(job('unscheduled'), day), isTrue);
+    expect(
+      isActionableOnDay(
+        job('overdue', scheduledStart: DateTime(2026, 8, 16, 12)),
+        day,
+      ),
+      isTrue,
+    );
+    expect(
+      isActionableOnDay(
+        job('future', scheduledStart: DateTime(2026, 8, 18, 12)),
+        day,
+      ),
+      isFalse,
+    );
+  });
+
   testWidgets('job card shows status stripe, pill, and meta', (tester) async {
     await tester.pumpWidget(_wrap(JobCard(job: _job())));
 

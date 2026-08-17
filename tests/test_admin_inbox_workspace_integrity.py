@@ -153,6 +153,18 @@ def test_thread_publishes_unread_state_and_composer_clears_it():
     assert "/read" in JAVASCRIPT
 
 
+def test_opened_conversation_stays_at_latest_message_after_content_loads():
+    assert "data-thread-content" in CONVERSATION
+    assert "data-thread-bottom" in CONVERSATION
+    assert "threadIsNearBottom(thread, threshold = 96)" in JAVASCRIPT
+    assert "threadResizeObserver: null" in JAVASCRIPT
+    assert "new ResizeObserver" in JAVASCRIPT
+    assert "window.requestAnimationFrame" in JAVASCRIPT
+    assert "this.scrollThread(true);" in JAVASCRIPT
+    assert "this.scrollThread(false);" in JAVASCRIPT
+    assert "this.disconnectThreadAutoScroll();" in JAVASCRIPT
+
+
 def test_mark_read_posts_with_csrf_header():
     marker = JAVASCRIPT.index("async markConversationRead")
     body = JAVASCRIPT[marker : marker + 1200]
@@ -203,7 +215,29 @@ def test_reply_submission_refreshes_inbox_fragments_without_page_navigation():
     assert 'workspace?.refreshConversationList?.("reply")' not in JAVASCRIPT
     assert 'this.draft = ""' in JAVASCRIPT
     assert "window.location.reload" not in JAVASCRIPT
-    assert "admin-inbox.js?v=20260816a" in INDEX
+    assert "admin-inbox.js?v=20260817b" in INDEX
+
+
+def test_reply_toast_tracks_authoritative_delivery_without_covering_send_action():
+    assert "data-inbox-send-toast" in INDEX
+    assert "bottom-20 left-1/2" in INDEX
+    assert 'role="status"' in INDEX
+    assert 'aria-live="polite"' in INDEX
+
+    prepare = JAVASCRIPT.index("      prepareSend(event)")
+    prepare_body = JAVASCRIPT[prepare : prepare + 1800]
+    assert 'showToast?.("Message sending…", { persistent: true })' in prepare_body
+
+    completion = JAVASCRIPT.index("      completeSend(result)")
+    completion_body = JAVASCRIPT[completion : completion + 2100]
+    assert "workspace?.trackOutboundSend?.(result.message_id)" in completion_body
+    assert 'workspace?.showToast?.("Message scheduled.")' in completion_body
+
+    delivery = JAVASCRIPT.index("      applyDeliveryStatus(data)")
+    delivery_body = JAVASCRIPT[delivery : delivery + 2100]
+    assert "messageId === this.outboundToastMessageId" in delivery_body
+    assert 'this.showToast("Message sent.")' in delivery_body
+    assert 'this.showToast("Message sending…", { persistent: true })' in delivery_body
 
 
 def test_reply_and_realtime_refresh_the_message_once():
@@ -223,11 +257,30 @@ def test_reply_and_realtime_refresh_the_message_once():
 
 
 def test_reply_request_always_releases_send_busy_state():
-    marker = JAVASCRIPT.index("finishSendRequest(event)")
-    body = JAVASCRIPT[marker : marker + 260]
+    assert "@htmx:after-request=" not in CONVERSATION
+    assert '"htmx:afterRequest"' in JAVASCRIPT
+    assert '"htmx:sendAbort"' in JAVASCRIPT
+    assert '"htmx:timeout"' in JAVASCRIPT
+    assert '"htmx:sendError"' in JAVASCRIPT
+    assert '"htmx:responseError"' in JAVASCRIPT
+    assert "this.$cleanup(() => this.replyLifecycleCleanup?.())" in JAVASCRIPT
+
+    marker = JAVASCRIPT.index("      finishSendRequest(event) {")
+    body = JAVASCRIPT[marker : marker + 850]
     assert body.index("this.sending = false") < body.index(
-        "if (event.detail?.successful) return"
+        "if (this.replyOutcomeHandled) return"
     )
+    assert "this.replyOutcomeFromEvent(event)" in body
+    assert "this.completeSend(outcome)" in body
+    assert "Check the thread before retrying" in body
+
+
+def test_reply_response_fallback_reads_the_typed_htmx_outcome():
+    marker = JAVASCRIPT.index("replyOutcomeFromEvent(event)")
+    body = JAVASCRIPT[marker : marker + 500]
+    assert 'getResponseHeader?.("HX-Trigger")' in body
+    assert 'JSON.parse(raw)["inbox-reply-completed"]' in body
+    assert "replyOutcomeHandled: false" in JAVASCRIPT
 
 
 def test_delivery_status_waits_for_the_exact_message_fragment():

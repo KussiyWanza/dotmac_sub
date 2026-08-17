@@ -447,6 +447,9 @@ def test_the_composer_uploads_and_submits_the_ids():
     assert "demo state until the upload API" not in CONVERSATION
     assert 'name="attachment_ids"' in CONVERSATION
     assert "attachmentIds()" in JAVASCRIPT
+    assert "syncAttachmentInput(event.currentTarget)" in JAVASCRIPT
+    assert "querySelector('[name=\"attachment_ids\"]')" in JAVASCRIPT
+    assert "this.files.some((file) => !file.id)" in JAVASCRIPT
     assert "/attachments" in JAVASCRIPT
     assert '"X-CSRF-Token": csrfToken()' in JAVASCRIPT
 

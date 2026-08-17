@@ -83,6 +83,7 @@ from app.services.owner_commands import (
 )
 from app.services.sales import lifecycle as lead_lifecycle
 from app.services.staff_notifications import queue_staff_email
+from app.services.support_ticket_contracts import InternalOperationalTicketSource
 
 logger = logging.getLogger(__name__)
 
@@ -114,12 +115,6 @@ class TicketCreationConsequenceMode(str, Enum):
 
     standard = "standard"
     silent_internal = "silent_internal"
-
-
-class InternalOperationalTicketSource(str, Enum):
-    """Approved internal sources allowed to request silent Ticket creation."""
-
-    unmatched_radio_queue = "unmatched_radio_queue"
 
 
 class CustomerReplyStaffNotificationSource(str, Enum):

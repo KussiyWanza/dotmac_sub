@@ -177,6 +177,9 @@ class MaterialRequest {
     this.rejectedAt,
     this.issuedAt,
     this.fulfilledAt,
+    this.supportSystem,
+    this.supportReference,
+    this.supportStatus,
     this.items = const [],
   });
 
@@ -201,6 +204,9 @@ class MaterialRequest {
   final DateTime? rejectedAt;
   final DateTime? issuedAt;
   final DateTime? fulfilledAt;
+  final String? supportSystem;
+  final String? supportReference;
+  final String? supportStatus;
   final List<MaterialRequestItem> items;
 
   factory MaterialRequest.fromJson(
@@ -231,6 +237,9 @@ class MaterialRequest {
     rejectedAt: _date(json['rejected_at']),
     issuedAt: _date(json['issued_at']),
     fulfilledAt: _date(json['fulfilled_at']),
+    supportSystem: _string(json['support_system']),
+    supportReference: _string(json['support_reference']),
+    supportStatus: _string(json['support_status']),
     items: _mapList(json['items']).map(MaterialRequestItem.fromJson).toList(),
   );
 
