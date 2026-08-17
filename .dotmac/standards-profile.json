@@ -1,5 +1,5 @@
 {
-  "schema_version": 5,
+  "schema_version": 9,
   "profile_id": "dotmac-sub-engineering-standards",
   "repository": {
     "canonical_url": "https://github.com/michaelayoade/dotmac_sub",
@@ -8,7 +8,7 @@
   "governance_model": {
     "kind": "pinned",
     "canonical_url": "https://github.com/michaelayoade/dotmac_governance",
-    "revision": "fbd47b8965002943bd5799992f4b29b04e361582",
+    "revision": "4f6fbf98c25f7cfbb3dacc4f3d2f5fd7e473f193",
     "source": "docs/adr/0006-cross-repository-engineering-conformance.md",
     "status": "accepted"
   },
@@ -72,5 +72,107 @@
     "test_roots": ["tests"],
     "kit_source_roots": [],
     "conformance_probes": []
+  },
+  "external_connector_surface": {
+    "baselines": {
+      "outbound_transport": 43,
+      "webhook_surface": 4,
+      "provider_credential": 3,
+      "connector_task": 18,
+      "sync_checkpoint": 11,
+      "delivery_retry": 7
+    },
+    "conserved_exclusions": [
+      {
+        "path": "tests/services/topology/test_coverage_metrics.py",
+        "symbol": "<module>",
+        "category": "outbound_transport",
+        "fingerprint": "2a333a758c593d279f27877b1a36de495a66a8bd0a48f1ecebcfbfe6512a65bf"
+      },
+      {
+        "path": "tests/test_ai_gateway.py",
+        "symbol": "<module>",
+        "category": "delivery_retry",
+        "fingerprint": "8592de9de918a715812dd3b241f2f00930b30bc617bdf2674fdfc16abb797399"
+      },
+      {
+        "path": "tests/test_ai_gateway.py",
+        "symbol": "<module>",
+        "category": "outbound_transport",
+        "fingerprint": "8592de9de918a715812dd3b241f2f00930b30bc617bdf2674fdfc16abb797399"
+      },
+      {
+        "path": "tests/test_crm_client_resilience.py",
+        "symbol": "<module>",
+        "category": "outbound_transport",
+        "fingerprint": "58bc472074bb7bec95639e2575065066c05d8043983fa49bb10f3858d29320b0"
+      },
+      {
+        "path": "tests/test_crm_ticket_pull.py",
+        "symbol": "test_latest_crm_updated_at_watermark",
+        "category": "sync_checkpoint",
+        "fingerprint": "b1e64edb3787646f0464e2076086f3b8e25e0bbc0c0b1d8e40de52409109d4c3"
+      },
+      {
+        "path": "tests/test_email_services.py",
+        "symbol": "test_send_email_auth_failure_logs",
+        "category": "outbound_transport",
+        "fingerprint": "a9809141615918513c5cc6552aca7b7c25ee797ecaa488c50b021eb5bb438e64"
+      },
+      {
+        "path": "tests/test_email_services.py",
+        "symbol": "test_smtp_connection_auth_failure_logs",
+        "category": "outbound_transport",
+        "fingerprint": "a9809141615918513c5cc6552aca7b7c25ee797ecaa488c50b021eb5bb438e64"
+      },
+      {
+        "path": "tests/test_genieacs_services.py",
+        "symbol": "<module>",
+        "category": "outbound_transport",
+        "fingerprint": "cfc1341f06e824ad2bfc34a59d5adece457c40bea620b65d7badd43779956d99"
+      },
+      {
+        "path": "tests/test_integration_meta_social.py",
+        "symbol": "test_typed_facade_returns_sanitized_outcome",
+        "category": "outbound_transport",
+        "fingerprint": "da26118627024438b99b7d12c0404b12db39c72e7dd40c57515659f458cddfd2"
+      },
+      {
+        "path": "tests/test_meta_oauth.py",
+        "symbol": "test_provider_rejection_records_only_sanitized_evidence",
+        "category": "outbound_transport",
+        "fingerprint": "d081abb25b5f09a8dc4658709a0103d25b9d866728c1dc80594621e32fb3a582"
+      },
+      {
+        "path": "tests/test_nextcloud_talk_staff_notifications.py",
+        "symbol": "<module>",
+        "category": "delivery_retry",
+        "fingerprint": "2ad03d19e91abbbd467037d4672ba61b4433b2533ead11b04955f1873b6017af"
+      },
+      {
+        "path": "tests/test_router_management_connection.py",
+        "symbol": "test_execute_honors_tunable_overrides",
+        "category": "delivery_retry",
+        "fingerprint": "c887e359adc3583a9c7332c37a3fb951afdad207057a5e96fb02cd136463d31e"
+      },
+      {
+        "path": "tests/test_team_inbox_meta_social_webhook.py",
+        "symbol": "<module>",
+        "category": "provider_credential",
+        "fingerprint": "3cf2c007dd6ae16d0208ac31a351adda0ac668b93e06bac8da90739f7b91aec7"
+      },
+      {
+        "path": "tests/test_team_inbox_smtp_runtime.py",
+        "symbol": "test_readiness_uses_smtp_noop",
+        "category": "outbound_transport",
+        "fingerprint": "4e19294b80d017343f252be4e1284480dc628225f164bb616e894b80a5c9f9c4"
+      },
+      {
+        "path": "tests/test_team_inbox_whatsapp_webhook.py",
+        "symbol": "<module>",
+        "category": "provider_credential",
+        "fingerprint": "4c2d111b3d7cf8106ad94a8250c80cb921adaeea0cc82159b3670f49d3ec6991"
+      }
+    ]
   }
 }
