@@ -20,6 +20,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from app.api import integrator_observations
 from app.db import get_db
@@ -30,6 +31,7 @@ from app.models.team_inbox import (
     InboxMessage,
     InboxProviderObservation,
 )
+from app.schemas.integrator_observation import IntegratorObservationEnvelope
 from app.services.auth import hash_api_key
 from app.services.integrations.connectors.integrator_http import (
     INTEGRATOR_CONNECTOR_KEY,
@@ -349,6 +351,91 @@ def test_a_mangled_body_is_refused_by_its_own_fingerprint(client, db_session, bi
     before = _counts(db_session)
     response = _post(client, binding, _envelope(payload_fingerprint="0" * 64))
     assert response.status_code == 400
+    assert _counts(db_session) == before
+
+
+def test_a_media_only_message_keeps_empty_text_and_typed_location(
+    client, db_session, binding
+):
+    message = _message_body(
+        body="",
+        attachments=[
+            {
+                "asset_type": "location",
+                "location": {
+                    "latitude": 9.0765,
+                    "longitude": 7.3986,
+                    "name": "Customer location",
+                    "address": "Abuja, Nigeria",
+                },
+            }
+        ],
+    )
+
+    response = _post(
+        client,
+        binding,
+        _envelope(message=message, payload_fingerprint=_fingerprint(message)),
+    )
+
+    assert response.status_code == 200, response.text
+    observation = db_session.query(InboxProviderObservation).one()
+    assert observation.normalized_payload["body"] == ""
+    assert observation.normalized_payload["attachments"][0]["location"] == {
+        "latitude": 9.0765,
+        "longitude": 7.3986,
+        "name": "Customer location",
+        "address": "Abuja, Nigeria",
+    }
+    recorded_message = db_session.query(InboxMessage).one()
+    assert recorded_message.body == ""
+    assert recorded_message.metadata_["ai_intake_status"] == "skipped"
+    assert recorded_message.metadata_["ai_intake_reason"] == "no_text_content"
+    assert recorded_message.metadata_["attachments"][0]["location"]["latitude"] == (
+        9.0765
+    )
+
+
+def test_a_message_with_neither_text_nor_attachment_is_refused(
+    client, db_session, binding
+):
+    before = _counts(db_session)
+    message = _message_body(body="", attachments=[])
+
+    response = _post(
+        client,
+        binding,
+        _envelope(message=message, payload_fingerprint=_fingerprint(message)),
+    )
+
+    assert response.status_code == 422
+    assert _counts(db_session) == before
+
+    with pytest.raises(ValidationError):
+        IntegratorObservationEnvelope.model_validate(
+            _envelope(message=message, payload_fingerprint=_fingerprint(message))
+        )
+
+
+def test_an_out_of_range_location_is_refused(client, db_session, binding):
+    before = _counts(db_session)
+    message = _message_body(
+        body="",
+        attachments=[
+            {
+                "asset_type": "location",
+                "location": {"latitude": 91.0, "longitude": 7.3986},
+            }
+        ],
+    )
+
+    response = _post(
+        client,
+        binding,
+        _envelope(message=message, payload_fingerprint=_fingerprint(message)),
+    )
+
+    assert response.status_code == 422
     assert _counts(db_session) == before
 
 

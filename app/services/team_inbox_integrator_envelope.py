@@ -65,6 +65,7 @@ from app.services.owner_commands import CommandContext
 from app.services.team_inbox_observations import (
     DeliveryReceiptObservation,
     InboundAttachmentObservation,
+    InboundLocationObservation,
     InboundMessageObservation,
     InboxProvider,
     RecordProviderObservationCommand,
@@ -145,7 +146,11 @@ def _observation_body(envelope: IntegratorObservationEnvelope) -> dict[str, Any]
     payload = envelope.message or envelope.delivery_receipt
     if payload is None:  # pragma: no cover - guarded by require_capability
         raise _error("empty_observation", "The envelope carries no observation.")
-    return payload.model_dump(mode="json")
+    # The transport hashes the object it serialized.  Preserve explicitly sent
+    # nulls, but do not invent omitted optional fields from Pydantic defaults:
+    # doing so changes the canonical JSON for sparse typed attachments such as
+    # a location-only message.
+    return payload.model_dump(mode="json", exclude_unset=True)
 
 
 def require_capability(envelope: IntegratorObservationEnvelope) -> None:
@@ -233,6 +238,16 @@ def _attachments(
             caption=item.caption,
             file_size=item.file_size,
             download_status=item.download_status,
+            location=(
+                InboundLocationObservation(
+                    latitude=item.location.latitude,
+                    longitude=item.location.longitude,
+                    name=item.location.name,
+                    address=item.location.address,
+                )
+                if item.location is not None
+                else None
+            ),
         )
         for item in message.attachments
     )

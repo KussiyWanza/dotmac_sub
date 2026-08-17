@@ -105,6 +105,13 @@ Header `X-Api-Key: <key scoped integration:observations:write>`
 | `scope` | `{kind, ref}` | the Integrator's binding scope — **provenance only**, recorded on the receipt |
 | `message` \| `delivery_receipt` | object | exactly one; both or neither is a 400 |
 
+For a message, `body` may be empty only when `attachments` is non-empty. The
+producer must not invent presentation text such as `[image]` or `[location]`:
+the observation keeps empty text as empty text, and Sub renders the typed
+attachment. A location is carried as
+`attachments[].location.{latitude,longitude,name,address}` with bounded
+coordinates; it is never flattened into the message body.
+
 Responses: **200** `{observation_id, outcome, processing_status, replayed}` ·
 **401** bad/absent/revoked/unscoped credential · **404** unknown capability or
 binding · **409** collision or undeployed contract version · **400** malformed
