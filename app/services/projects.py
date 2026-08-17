@@ -118,6 +118,7 @@ from app.services.owner_commands import (
     OwnerCommandDefinition,
     execute_owner_command,
     execute_owner_savepoint,
+    owner_command_active,
 )
 from app.services.response import ListResponseMixin
 from app.services.staff_notifications import queue_staff_email, queue_staff_push
@@ -937,17 +938,18 @@ def _sync_project_sla_clock(db: Session, project: Project) -> None:
         return
 
     if not clock or clock.status == SlaClockStatus.completed.value:
-        db.add(
-            SlaClock(
-                policy_id=policy.id,
-                entity_type=WorkflowEntityType.project.value,
-                entity_id=project.id,
-                priority=project.project_type,
-                status=SlaClockStatus.running.value,
-                started_at=project.start_at or project.created_at or now,
-                due_at=project.due_at,
-            )
+        clock = SlaClock(
+            policy_id=policy.id,
+            entity_type=WorkflowEntityType.project.value,
+            entity_id=project.id,
+            priority=project.project_type,
+            status=SlaClockStatus.running.value,
+            started_at=project.start_at or project.created_at or now,
+            due_at=project.due_at,
         )
+        db.add(clock)
+        db.flush()
+        _schedule_project_sla_timers(db, clock)
         return
 
     if clock.status in {SlaClockStatus.paused.value, SlaClockStatus.breached.value}:
@@ -956,6 +958,8 @@ def _sync_project_sla_clock(db: Session, project: Project) -> None:
     clock.priority = project.project_type
     clock.completed_at = None
     clock.due_at = project.due_at
+    db.flush()
+    _schedule_project_sla_timers(db, clock)
 
 
 def _latest_task_sla_clock(db: Session, task_id: UUID) -> SlaClock | None:
@@ -984,23 +988,102 @@ def _sync_task_sla_clock(db: Session, task: ProjectTask) -> None:
         return
 
     if not clock or clock.status == SlaClockStatus.completed.value:
-        db.add(
-            SlaClock(
-                policy_id=policy.id,
-                entity_type=WorkflowEntityType.project_task.value,
-                entity_id=task.id,
-                priority=task.priority,
-                status=SlaClockStatus.running.value,
-                started_at=task.created_at or now,
-                due_at=task.due_at,
-            )
+        clock = SlaClock(
+            policy_id=policy.id,
+            entity_type=WorkflowEntityType.project_task.value,
+            entity_id=task.id,
+            priority=task.priority,
+            status=SlaClockStatus.running.value,
+            started_at=task.created_at or now,
+            due_at=task.due_at,
         )
+        db.add(clock)
+        db.flush()
+        _schedule_project_sla_timers(db, clock)
         return
 
     if clock.status in {SlaClockStatus.paused.value, SlaClockStatus.breached.value}:
         clock.status = SlaClockStatus.running.value
     clock.priority = task.priority
     clock.due_at = task.due_at
+    db.flush()
+    _schedule_project_sla_timers(db, clock)
+
+
+def _schedule_project_sla_timers(db: Session, clock: SlaClock) -> None:
+    if not owner_command_active(db):
+        return
+    due_at = clock.due_at if clock.due_at.tzinfo else clock.due_at.replace(tzinfo=UTC)
+    from app.models.operational_escalation import OperationalEntityType
+    from app.services import sla_operational_notifications
+    from app.services.runtime_durable_timers import (
+        ScheduleTimerCommand,
+        schedule_timer,
+    )
+
+    if clock.entity_type == WorkflowEntityType.project.value:
+        entity_type = OperationalEntityType.project
+        near_trigger = "project.sla_near_breach"
+        breach_event = "operations.project_sla_breach_due"
+    elif clock.entity_type == WorkflowEntityType.project_task.value:
+        entity_type = OperationalEntityType.project_task
+        near_trigger = "project_task.sla_near_breach"
+        breach_event = "operations.project_task_sla_breach_due"
+    else:
+        return
+    near_window = sla_operational_notifications.near_breach_window_seconds(
+        db,
+        entity_type=entity_type,
+        trigger=near_trigger,
+        severity=str(clock.priority or "") or None,
+    )
+    if near_window is not None:
+        near_due_at = sla_operational_notifications.near_breach_due_at(
+            due_at,
+            window_seconds=near_window,
+        )
+        if near_due_at is not None:
+            schedule_timer(
+                db,
+                ScheduleTimerCommand(
+                    owner="operations.project_lifecycle",
+                    entity_kind="sla_clock",
+                    entity_id=clock.id,
+                    purpose="sla_near_breach_due",
+                    due_at=near_due_at,
+                    output_event_type=(
+                        "operations.project_sla_near_breach_due"
+                        if entity_type == OperationalEntityType.project
+                        else "operations.project_task_sla_near_breach_due"
+                    ),
+                ),
+                context=CommandContext.system(
+                    actor="operations.project_sla_clock",
+                    scope=str(clock.id),
+                    reason="project SLA near-breach warning",
+                    idempotency_key=(
+                        f"project-sla-near:{clock.id}:{due_at.isoformat()}:"
+                        f"{near_window}"
+                    ),
+                ),
+            )
+    schedule_timer(
+        db,
+        ScheduleTimerCommand(
+            owner="operations.project_lifecycle",
+            entity_kind="sla_clock",
+            entity_id=clock.id,
+            purpose="sla_breach_due",
+            due_at=due_at,
+            output_event_type=breach_event,
+        ),
+        context=CommandContext.system(
+            actor="operations.project_sla_clock",
+            scope=str(clock.id),
+            reason="project SLA breach deadline",
+            idempotency_key=f"project-sla-breach:{clock.id}:{due_at.isoformat()}",
+        ),
+    )
 
 
 def _apply_fiber_stage_defaults(db: Session, task: ProjectTask) -> None:
@@ -1673,7 +1756,7 @@ def notify_project_task_sla_breach(db: Session, clock: SlaClock) -> None:
         project.manager_person_id,
     ]
     person_ids = [person_id for person_id in role_person_ids if person_id]
-    if not person_ids:
+    if not person_ids and not project.service_team_id:
         return
 
     from app.models.operational_escalation import OperationalEntityType
@@ -1687,6 +1770,15 @@ def notify_project_task_sla_breach(db: Session, clock: SlaClock) -> None:
     )
     if not policies:
         return
+    if project.service_team_id:
+        operational_escalation.add_watcher(
+            db,
+            entity_type=OperationalEntityType.project_task,
+            entity_id=task.id,
+            service_team_id=project.service_team_id,
+            source="project_task_sla",
+            reason="Project service team",
+        )
     for person_id in person_ids:
         operational_escalation.add_watcher(
             db,
@@ -1717,6 +1809,226 @@ def notify_project_task_sla_breach(db: Session, clock: SlaClock) -> None:
         },
         triggered_at=clock.breached_at,
         policies=policies,
+    )
+
+
+def evaluate_project_sla_near_breach(
+    db: Session, clock_id: UUID | str
+) -> SlaClock | None:
+    clock = db.get(SlaClock, coerce_uuid(str(clock_id)))
+    if clock is None or clock.entity_type != WorkflowEntityType.project.value:
+        return None
+    if clock.status != SlaClockStatus.running.value or clock.breached_at is not None:
+        return None
+    project = db.get(Project, clock.entity_id)
+    if not project or project.status in _PROJECT_TERMINAL_STATUSES:
+        return None
+    due_at = clock.due_at if clock.due_at.tzinfo else clock.due_at.replace(tzinfo=UTC)
+    if due_at <= datetime.now(UTC):
+        return None
+    from app.services import sla_operational_notifications
+
+    sla_operational_notifications.emit_project_sla_near_breach(db, project, clock)
+    return clock
+
+
+def evaluate_project_task_sla_near_breach(
+    db: Session, clock_id: UUID | str
+) -> SlaClock | None:
+    clock = db.get(SlaClock, coerce_uuid(str(clock_id)))
+    if clock is None or clock.entity_type != WorkflowEntityType.project_task.value:
+        return None
+    if clock.status != SlaClockStatus.running.value or clock.breached_at is not None:
+        return None
+    task = db.get(ProjectTask, clock.entity_id)
+    if not task or task.status in _TASK_TERMINAL_STATUSES:
+        return None
+    project = db.get(Project, task.project_id)
+    if not project or project.status in _PROJECT_TERMINAL_STATUSES:
+        return None
+    due_at = clock.due_at if clock.due_at.tzinfo else clock.due_at.replace(tzinfo=UTC)
+    if due_at <= datetime.now(UTC):
+        return None
+    from app.services import sla_operational_notifications
+
+    sla_operational_notifications.emit_project_task_sla_near_breach(
+        db,
+        task,
+        project,
+        clock,
+    )
+    return clock
+
+
+def evaluate_project_sla_breach(db: Session, clock_id: UUID | str) -> SlaClock | None:
+    clock = db.get(SlaClock, coerce_uuid(str(clock_id)))
+    if clock is None or clock.entity_type != WorkflowEntityType.project.value:
+        return None
+    if clock.status != SlaClockStatus.running.value or clock.breached_at is not None:
+        return None
+    project = db.get(Project, clock.entity_id)
+    if not project or project.status in _PROJECT_TERMINAL_STATUSES:
+        return None
+    due_at = clock.due_at if clock.due_at.tzinfo else clock.due_at.replace(tzinfo=UTC)
+    if due_at > datetime.now(UTC):
+        return None
+    clock.status = SlaClockStatus.breached.value
+    clock.breached_at = due_at
+    from app.services import sla_operational_notifications
+
+    sla_operational_notifications.emit_project_sla_breached(db, project, clock)
+    return clock
+
+
+def evaluate_project_task_sla_breach(
+    db: Session, clock_id: UUID | str
+) -> SlaClock | None:
+    clock = db.get(SlaClock, coerce_uuid(str(clock_id)))
+    if clock is None or clock.entity_type != WorkflowEntityType.project_task.value:
+        return None
+    if clock.status != SlaClockStatus.running.value or clock.breached_at is not None:
+        return None
+    task = db.get(ProjectTask, clock.entity_id)
+    if not task or task.status in _TASK_TERMINAL_STATUSES:
+        return None
+    due_at = clock.due_at if clock.due_at.tzinfo else clock.due_at.replace(tzinfo=UTC)
+    if due_at > datetime.now(UTC):
+        return None
+    clock.status = SlaClockStatus.breached.value
+    clock.breached_at = due_at
+    notify_project_task_sla_breach(db, clock)
+    return clock
+
+
+def consume_project_sla_near_breach_due(
+    db: Session,
+    *,
+    clock_id: str,
+    event_id,
+    context: CommandContext,
+) -> str:
+    from app.services.events.owner_outputs import consume_owner_output
+
+    def operation() -> str:
+        def effect() -> str:
+            clock = evaluate_project_sla_near_breach(db, clock_id)
+            return "notified" if clock is not None else "skipped_state"
+
+        result, _receipt = consume_owner_output(
+            db,
+            consumer="operations.project_lifecycle",
+            event_id=event_id,
+            event_type="operations.project_sla_near_breach_due",
+            producer_owner="runtime.durable_timers",
+            context=context,
+            operation=effect,
+        )
+        return result if result is not None else "replayed"
+
+    return execute_owner_command(
+        db,
+        definition=_PROJECT_MUTATION,
+        context=context,
+        operation=operation,
+    )
+
+
+def consume_project_task_sla_near_breach_due(
+    db: Session,
+    *,
+    clock_id: str,
+    event_id,
+    context: CommandContext,
+) -> str:
+    from app.services.events.owner_outputs import consume_owner_output
+
+    def operation() -> str:
+        def effect() -> str:
+            clock = evaluate_project_task_sla_near_breach(db, clock_id)
+            return "notified" if clock is not None else "skipped_state"
+
+        result, _receipt = consume_owner_output(
+            db,
+            consumer="operations.project_lifecycle",
+            event_id=event_id,
+            event_type="operations.project_task_sla_near_breach_due",
+            producer_owner="runtime.durable_timers",
+            context=context,
+            operation=effect,
+        )
+        return result if result is not None else "replayed"
+
+    return execute_owner_command(
+        db,
+        definition=_PROJECT_MUTATION,
+        context=context,
+        operation=operation,
+    )
+
+
+def consume_project_sla_breach_due(
+    db: Session,
+    *,
+    clock_id: str,
+    event_id,
+    context: CommandContext,
+) -> str:
+    from app.services.events.owner_outputs import consume_owner_output
+
+    def operation() -> str:
+        def effect() -> str:
+            clock = evaluate_project_sla_breach(db, clock_id)
+            return "breached" if clock is not None else "skipped_state"
+
+        result, _receipt = consume_owner_output(
+            db,
+            consumer="operations.project_lifecycle",
+            event_id=event_id,
+            event_type="operations.project_sla_breach_due",
+            producer_owner="runtime.durable_timers",
+            context=context,
+            operation=effect,
+        )
+        return result if result is not None else "replayed"
+
+    return execute_owner_command(
+        db,
+        definition=_PROJECT_MUTATION,
+        context=context,
+        operation=operation,
+    )
+
+
+def consume_project_task_sla_breach_due(
+    db: Session,
+    *,
+    clock_id: str,
+    event_id,
+    context: CommandContext,
+) -> str:
+    from app.services.events.owner_outputs import consume_owner_output
+
+    def operation() -> str:
+        def effect() -> str:
+            clock = evaluate_project_task_sla_breach(db, clock_id)
+            return "breached" if clock is not None else "skipped_state"
+
+        result, _receipt = consume_owner_output(
+            db,
+            consumer="operations.project_lifecycle",
+            event_id=event_id,
+            event_type="operations.project_task_sla_breach_due",
+            producer_owner="runtime.durable_timers",
+            context=context,
+            operation=effect,
+        )
+        return result if result is not None else "replayed"
+
+    return execute_owner_command(
+        db,
+        definition=_PROJECT_MUTATION,
+        context=context,
+        operation=operation,
     )
 
 
@@ -2792,6 +3104,9 @@ class Projects(ListResponseMixin):
                 "customer_name": customer_name,
             },
         )
+        from app.services import sla_operational_notifications
+
+        sla_operational_notifications.emit_project_created(db, project)
         _stage_project_audit(
             db,
             context=context,
@@ -3204,6 +3519,13 @@ class Projects(ListResponseMixin):
                 new_status=new_status,
                 context=context,
             )
+            from app.services import sla_operational_notifications
+
+            sla_operational_notifications.emit_project_status_changed(
+                db,
+                project,
+                previous_status=previous_status,
+            )
         elif (
             new_status == ProjectStatus.canceled.value
             and previous_status != ProjectStatus.canceled.value
@@ -3227,6 +3549,13 @@ class Projects(ListResponseMixin):
                 new_status=new_status,
                 context=context,
             )
+            from app.services import sla_operational_notifications
+
+            sla_operational_notifications.emit_project_status_changed(
+                db,
+                project,
+                previous_status=previous_status,
+            )
         elif changed_fields:
             # Emit generic update if status changed or other fields updated
             _emit_project_event(
@@ -3248,6 +3577,13 @@ class Projects(ListResponseMixin):
                     previous_status=previous_status,
                     new_status=new_status,
                     context=context,
+                )
+                from app.services import sla_operational_notifications
+
+                sla_operational_notifications.emit_project_status_changed(
+                    db,
+                    project,
+                    previous_status=previous_status,
                 )
             else:
                 _stage_customer_document_update(

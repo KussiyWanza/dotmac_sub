@@ -105,10 +105,58 @@ KNOWN_SLA_EVENT_DEFINITIONS = (
         ),
     ),
     SlaEventDefinition(
+        trigger="ticket.created",
+        entity_type=OperationalEntityType.ticket,
+        label="Ticket created",
+        description="Notifies the configured operational audience when a support ticket is created.",
+    ),
+    SlaEventDefinition(
+        trigger="ticket.status_changed",
+        entity_type=OperationalEntityType.ticket,
+        label="Ticket status changed",
+        description="Notifies the configured operational audience when a support ticket changes status.",
+    ),
+    SlaEventDefinition(
+        trigger="ticket.sla_near_breach",
+        entity_type=OperationalEntityType.ticket,
+        label="Ticket SLA approaching breach",
+        description="Notifies the configured operational audience before a ticket SLA deadline breaches.",
+    ),
+    SlaEventDefinition(
         trigger="ticket.sla_breached",
         entity_type=OperationalEntityType.ticket,
         label="Ticket SLA breached",
         description="Escalates a support ticket after its configured SLA clock breaches.",
+    ),
+    SlaEventDefinition(
+        trigger="project.created",
+        entity_type=OperationalEntityType.project,
+        label="Project created",
+        description="Notifies the configured operational audience when a project is created.",
+    ),
+    SlaEventDefinition(
+        trigger="project.status_changed",
+        entity_type=OperationalEntityType.project,
+        label="Project status changed",
+        description="Notifies the configured operational audience when a project changes status.",
+    ),
+    SlaEventDefinition(
+        trigger="project.sla_near_breach",
+        entity_type=OperationalEntityType.project,
+        label="Project SLA approaching breach",
+        description="Notifies the configured operational audience before a project SLA deadline breaches.",
+    ),
+    SlaEventDefinition(
+        trigger="project.sla_breached",
+        entity_type=OperationalEntityType.project,
+        label="Project SLA breached",
+        description="Escalates a project after its configured completion SLA breaches.",
+    ),
+    SlaEventDefinition(
+        trigger="project_task.sla_near_breach",
+        entity_type=OperationalEntityType.project_task,
+        label="Project task SLA approaching breach",
+        description="Notifies the configured operational audience before a project task SLA deadline breaches.",
     ),
     SlaEventDefinition(
         trigger="project_task.sla_breached",

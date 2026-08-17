@@ -19,6 +19,7 @@ class ItemKind(enum.StrEnum):
 
     conversation = "conversation"
     ticket = "ticket"
+    project = "project"
     work_order = "work_order"
 
 
