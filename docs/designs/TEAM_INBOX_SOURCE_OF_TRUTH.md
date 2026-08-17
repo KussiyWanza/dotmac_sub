@@ -164,9 +164,10 @@ unsent browser composer; sending remains owned by `communications.team_inbox_com
 
 For operator replies, the committed outcome exposes the exact notification
 UUID to the HTTP transport. The adapter schedules an after-response single-row
-delivery task on the dedicated `notifications` worker queue, so broker latency
-does not hold the composer response open. The periodic notification runner
-remains the recovery sweep when broker publication or a worker is unavailable.
+delivery task on the dedicated `notifications_immediate` worker queue, so broker
+latency and long notification recovery sweeps do not hold the composer response
+open. The periodic notification runner remains on `notifications` as the
+recovery sweep when broker publication or the immediate worker is unavailable.
 Immediate tasks and sweeps both lock and claim the exact
 eligible outbox row before provider delivery, so concurrent wake-ups are safe
 no-ops rather than duplicate sends. Delivery changes publish only bounded
