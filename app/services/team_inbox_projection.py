@@ -1062,7 +1062,7 @@ def _conversation_activity(
         label = (
             "Resolved"
             if status == InboxConversationStatus.resolved.value
-            else "Reopened"
+            else "Opened"
             if status == InboxConversationStatus.open.value
             else f"Status changed to {status or 'unknown'}"
         )
@@ -1125,7 +1125,7 @@ def _conversation_activity(
         events.append(
             InboxLifecycleEvent(
                 kind="read",
-                label="Opened",
+                label="Viewed",
                 actor_name=actor_name,
                 actor_email=actor_email,
                 occurred_at=read_state.last_read_at,

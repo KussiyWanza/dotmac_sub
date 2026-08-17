@@ -18,6 +18,7 @@ from app.models.team_inbox import (
     InboxConversation,
     InboxConversationAssignment,
     InboxConversationLabel,
+    InboxConversationReadState,
     InboxConversationStatus,
     InboxLabel,
     InboxMessage,
@@ -30,6 +31,7 @@ from app.services import (
     team_inbox_outbound,
     team_inbox_projection,
     team_inbox_read,
+    team_inbox_status,
 )
 from app.services.list_query import PageMeta
 from tests.staff_identity_fixtures import add_bound_staff_user
@@ -47,6 +49,57 @@ def _conversation(db_session) -> uuid.UUID:
     conversation_id = conversation.id
     db_session.commit()
     return conversation_id
+
+
+def test_activity_distinguishes_viewing_from_open_status_transition(db_session):
+    conversation_id = _conversation(db_session)
+    conversation = db_session.get(InboxConversation, conversation_id)
+    actor, _person = add_bound_staff_user(db_session)
+    viewed_at = datetime(2026, 8, 17, 11, 30, tzinfo=UTC)
+    opened_at = datetime(2026, 8, 17, 11, 35, tzinfo=UTC)
+    db_session.add(
+        InboxConversationReadState(
+            conversation_id=conversation_id,
+            person_id=actor.id,
+            last_read_at=viewed_at,
+        )
+    )
+    team_inbox_status.apply_status_transition(
+        db_session,
+        conversation=conversation,
+        status=InboxConversationStatus.pending,
+        actor_person_id=actor.id,
+        reason=team_inbox_status.InboxStatusReason.operator_change,
+        source_id="test:activity-pending",
+        occurred_at=opened_at.replace(minute=34),
+    )
+    team_inbox_status.apply_status_transition(
+        db_session,
+        conversation=conversation,
+        status=InboxConversationStatus.open,
+        actor_person_id=actor.id,
+        reason=team_inbox_status.InboxStatusReason.operator_change,
+        source_id="test:activity-opened",
+        occurred_at=opened_at,
+    )
+    db_session.flush()
+
+    activity = team_inbox_projection._conversation_activity(
+        db_session, conversation_id
+    )
+
+    viewed = next(event for event in activity if event.kind == "read")
+    opened = next(
+        event
+        for event in activity
+        if event.kind == "status" and event.label == "Opened"
+    )
+    assert (viewed.label, viewed.actor_name, viewed.occurred_at) == (
+        "Viewed",
+        "Test Staff",
+        viewed_at,
+    )
+    assert (opened.actor_name, opened.occurred_at) == ("Test Staff", opened_at)
 
 
 def test_inbox_workspace_templates_compile():
