@@ -166,9 +166,13 @@ class ExpenseRequest {
     currency: _string(json['currency']),
     notes: _string(json['notes']),
     rejectionReason: _string(json['rejection_reason']),
-    erpClaimNumber: _string(json['erp_claim_number']),
-    erpClaimStatus: _string(json['erp_claim_status']),
-    erpSyncStatus: _string(json['erp_sync_status']),
+    erpClaimNumber: _string(
+      json['expense_claim_number'] ?? json['erp_claim_number'],
+    ),
+    erpClaimStatus: _string(
+      json['expense_claim_status'] ?? json['erp_claim_status'],
+    ),
+    erpSyncStatus: _string(json['erp_sync_status'] ?? json['expense_system']),
     erpSyncError: _string(json['erp_sync_error']),
     total: _double(json['total_amount']),
     ticketId: json['ticket_id']?.toString(),
