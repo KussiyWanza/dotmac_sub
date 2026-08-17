@@ -279,6 +279,10 @@ def get_user_edit_data(
             )
         ).scalars()
     }
+    field_technician_access = staff_provisioning.get_staff_field_technician_access_view(
+        db,
+        user_id=user.id,
+    )
 
     return {
         "user": user,
@@ -287,6 +291,8 @@ def get_user_edit_data(
         "managed_role_ids": managed_role_ids,
         "all_permissions": all_permissions,
         "direct_permission_ids": direct_permission_ids,
+        "field_technician_profile_id": field_technician_access.profile_id,
+        "field_technician_access": field_technician_access.enabled,
     }
 
 

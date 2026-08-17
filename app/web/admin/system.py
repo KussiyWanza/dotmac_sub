@@ -2206,6 +2206,7 @@ def user_edit_submit(
                 parsed.display_name or "",
                 parsed.email,
                 parsed.phone or "",
+                str(parsed.field_technician_access),
                 parsed.new_password or "",
                 str(parsed.require_password_change),
             )
