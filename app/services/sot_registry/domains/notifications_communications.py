@@ -1017,10 +1017,21 @@ DOMAIN = DomainSOT(
         SOTService(
             name="communications.notification_service",
             module="app.services.notification",
-            owns=("notification row lifecycle", "delivery state"),
+            owns=(
+                "notification row lifecycle",
+                "delivery state",
+                "notification delivery latency class enforcement",
+            ),
             depends_on=(
                 "communications.channel_policy",
                 "communications.customer_policy",
+            ),
+            notes=(
+                "The typed notification and communication-intent contracts "
+                "declare expected delivery latency as immediate, normal, or "
+                "batch. This owner persists the class on the notification row "
+                "and centrally schedules immediate after-commit wake-ups; the "
+                "periodic queue runner remains recovery and batch drainage."
             ),
         ),
         SOTService(

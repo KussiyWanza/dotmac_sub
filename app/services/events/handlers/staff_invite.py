@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.models.notification import NotificationChannel
 from app.models.system_user import SystemUser
+from app.schemas.notification import NotificationDeliveryLatency
 from app.services.communication_intents import (
     CommunicationClass,
     CommunicationIntent,
@@ -80,5 +81,6 @@ class StaffInviteHandler:
                     "command_id": event.payload.get("command_id"),
                 },
                 dedupe_key=f"auth:staff-invite:{event.event_id}",
+                delivery_latency=NotificationDeliveryLatency.immediate,
             ),
         )

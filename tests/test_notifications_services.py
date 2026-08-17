@@ -8,9 +8,12 @@ from app.models.subscriber import Subscriber, SubscriberStatus
 from app.models.subscription_engine import SettingValueType
 from app.schemas.notification import (
     NotificationCreate,
+    NotificationDeliveryLatency,
     NotificationTemplateCreate,
 )
+from app.services import email as email_service
 from app.services import notification as notification_service
+from app.tasks import notifications as notification_tasks
 
 
 def test_notification_template_and_delivery(db_session):
@@ -46,6 +49,81 @@ def test_notification_template_and_delivery(db_session):
     )
     assert len(items) == 1
     assert items[0].id == notification.id
+
+
+def test_immediate_latency_schedules_targeted_delivery_after_commit(
+    db_session, monkeypatch
+):
+    delivery_wakeups: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr(
+        notification_tasks.deliver_notification,
+        "apply_async",
+        lambda *args, **kwargs: delivery_wakeups.append((args, kwargs)),
+    )
+
+    notification = notification_service.notifications.queue_internal_notification(
+        db_session,
+        NotificationCreate(
+            channel=NotificationChannel.email,
+            recipient="now@example.com",
+            subject="Action required",
+            body="Confirm now.",
+            delivery_latency=NotificationDeliveryLatency.immediate,
+        ),
+    )
+
+    assert delivery_wakeups == []
+    db_session.commit()
+
+    assert notification.metadata_["delivery_latency"] == "immediate"
+    assert delivery_wakeups == [((), {"args": [str(notification.id)], "retry": False})]
+
+
+def test_normal_latency_does_not_schedule_targeted_delivery(db_session, monkeypatch):
+    delivery_wakeups: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr(
+        notification_tasks.deliver_notification,
+        "apply_async",
+        lambda *args, **kwargs: delivery_wakeups.append((args, kwargs)),
+    )
+
+    notification = notification_service.notifications.queue_internal_notification(
+        db_session,
+        NotificationCreate(
+            channel=NotificationChannel.email,
+            recipient="later@example.com",
+            subject="General update",
+            body="This can use the normal sweep.",
+        ),
+    )
+    db_session.commit()
+
+    assert notification.metadata_["delivery_latency"] == "normal"
+    assert delivery_wakeups == []
+
+
+def test_auth_verification_email_is_immediate_latency(db_session, monkeypatch):
+    delivery_wakeups: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr(
+        notification_tasks.deliver_notification,
+        "apply_async",
+        lambda *args, **kwargs: delivery_wakeups.append((args, kwargs)),
+    )
+
+    queued = email_service.send_email(
+        db_session,
+        "verify@example.com",
+        "Verify your email address",
+        "<p>Verify now.</p>",
+        "Verify now.",
+        activity="auth_email_verification",
+    )
+
+    notification = db_session.query(Notification).one()
+    assert queued is True
+    assert notification.event_type == "auth_email_verification"
+    assert notification.metadata_["delivery_latency"] == "immediate"
+    assert delivery_wakeups == [((), {"args": [str(notification.id)], "retry": False})]
 
 
 def _subscriber(db_session, *, status=SubscriberStatus.active, suffix="manual"):

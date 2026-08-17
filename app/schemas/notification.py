@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import enum
 from datetime import datetime
 from typing import Any
 from uuid import UUID
@@ -14,6 +15,12 @@ from app.models.notification import (
     SuppressionReason,
     SuppressionScope,
 )
+
+
+class NotificationDeliveryLatency(enum.StrEnum):
+    immediate = "immediate"
+    normal = "normal"
+    batch = "batch"
 
 
 class NotificationTemplateBase(BaseModel):
@@ -75,6 +82,7 @@ class NotificationBase(BaseModel):
     last_error: str | None = None
     retry_count: int = Field(default=0, ge=0)
     is_active: bool = True
+    delivery_latency: NotificationDeliveryLatency = NotificationDeliveryLatency.normal
 
 
 class NotificationCreate(NotificationBase):

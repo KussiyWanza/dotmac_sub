@@ -22,7 +22,7 @@ from app.models.notification import (
     NotificationStatus,
 )
 from app.models.subscription_engine import SettingValueType
-from app.schemas.notification import NotificationCreate
+from app.schemas.notification import NotificationCreate, NotificationDeliveryLatency
 from app.schemas.settings import DomainSettingUpdate
 from app.services.branding_config import get_brand
 from app.services.communication_intents import MAX_EMAIL_ATTACHMENT_BYTES
@@ -1082,6 +1082,17 @@ def send_email(
                 body=tracked_body,
                 event_type=activity or "direct.email",
                 category="general",
+                delivery_latency=(
+                    NotificationDeliveryLatency.immediate
+                    if activity
+                    in {
+                        "auth_email_verification",
+                        "auth_password_reset",
+                        "staff_invite",
+                        "reseller_invite",
+                    }
+                    else NotificationDeliveryLatency.normal
+                ),
                 metadata={
                     "body_html": body_html,
                     "body_text": tracked_body,

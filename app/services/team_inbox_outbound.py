@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import html
-import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -22,6 +21,7 @@ from app.models.team_inbox import (
     InboxTeamRole,
 )
 from app.schemas.ai_intake import APPROVED_FOLLOW_UP_QUESTIONS
+from app.schemas.notification import NotificationDeliveryLatency
 from app.services import (
     team_inbox_realtime,
     team_inbox_reply_window,
@@ -39,12 +39,10 @@ from app.services.owner_commands import (
     OwnerCommandDefinition,
     execute_owner_command,
 )
-from app.services.session_hooks import run_after_commit
 
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 T = TypeVar("T")
 OWNER = "communications.team_inbox_outbound_intents"
-logger = logging.getLogger(__name__)
 _OUTBOUND_COMMAND = OwnerCommandDefinition(
     owner=OWNER,
     concern="transactional outbound communication intent",
@@ -62,28 +60,6 @@ def _commit(db: Session, action: Callable[[], T]) -> T:
             reason="create transactional Team Inbox communication intent",
         ),
         operation=action,
-    )
-
-
-def _request_immediate_notification_delivery(notification_id: UUID) -> None:
-    """Best-effort wake-up for one committed notification outbox row."""
-
-    try:
-        from app.tasks.notifications import deliver_notification
-
-        deliver_notification.apply_async(args=[str(notification_id)], retry=False)
-    except Exception:
-        logger.warning(
-            "team_inbox_immediate_delivery_dispatch_failed",
-            extra={"notification_id": str(notification_id)},
-            exc_info=True,
-        )
-
-
-def _wake_delivery_after_commit(db: Session, notification_id: UUID) -> None:
-    run_after_commit(
-        db,
-        lambda _callback_db: _request_immediate_notification_delivery(notification_id),
     )
 
 
@@ -221,6 +197,7 @@ def _queue_outbox_reply(
             recipients={channel: recipient},
             metadata=intent_metadata,
             dedupe_key=payload.dedupe_key,
+            delivery_latency=NotificationDeliveryLatency.immediate,
         ),
     )
     notification = next(
@@ -253,7 +230,6 @@ def _queue_outbox_reply(
         db.add(message)
     conversation.last_message_at = queued_at
     db.flush()
-    _wake_delivery_after_commit(db, notification.id)
     author_name = str(
         intent_metadata.get("author_name")
         or intent_metadata.get("ai_display_name")
@@ -1267,6 +1243,7 @@ def send_transcript(
                 if sent_by_person_id
                 else None,
             },
+            delivery_latency=NotificationDeliveryLatency.immediate,
         ),
     )
     notification = next(
