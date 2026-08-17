@@ -20,7 +20,7 @@ def test_notification_template_test_uses_whatsapp_and_substitution(
             code="wa_invoice",
             channel=NotificationChannel.whatsapp,
             subject=None,
-            body="Hello {subscriber_name}, amount due is {amount}",
+            body="Hello {customer_name}, account {account_number}",
         ),
     )
     captured = {}
@@ -43,7 +43,7 @@ def test_notification_template_test_uses_whatsapp_and_substitution(
         request=_request(),
         template_id=template.id,
         test_recipient="+2348000000000",
-        test_variables_json='{"subscriber_name":"Ada","amount":"12500.00"}',
+        test_variables_json='{"customer_name":"Ada","account_number":"ACC-1"}',
         db=db_session,
     )
 
@@ -63,19 +63,19 @@ def test_notification_template_preview_renders_variables(db_session):
             name="Email Invoice",
             code="email_invoice",
             channel=NotificationChannel.email,
-            subject="Invoice {invoice_number}",
-            body="Hi {subscriber_name}",
+            subject="Account {account_number}",
+            body="Hi {customer_name}",
         ),
     )
 
     response = notifications_web.notification_template_preview(
         request=_request(),
         template_id=template.id,
-        test_variables_json='{"subscriber_name":"Jane","invoice_number":"INV-9"}',
+        test_variables_json='{"customer_name":"Jane","account_number":"ACC-9"}',
         db=db_session,
     )
 
-    assert response.context["rendered_subject"] == "Invoice INV-9"
+    assert response.context["rendered_subject"] == "Account ACC-9"
     assert response.context["rendered_body"] == "Hi Jane"
 
 

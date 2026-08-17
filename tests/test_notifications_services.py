@@ -1,3 +1,5 @@
+import pytest
+
 from app.models.domain_settings import DomainSetting, SettingDomain
 from app.models.notification import (
     Notification,
@@ -8,9 +10,13 @@ from app.models.subscriber import Subscriber, SubscriberStatus
 from app.models.subscription_engine import SettingValueType
 from app.schemas.notification import (
     NotificationCreate,
+    NotificationDeliveryLatency,
     NotificationTemplateCreate,
+    NotificationTemplateUpdate,
 )
+from app.services import email as email_service
 from app.services import notification as notification_service
+from app.tasks import notifications as notification_tasks
 
 
 def test_notification_template_and_delivery(db_session):
@@ -46,6 +52,130 @@ def test_notification_template_and_delivery(db_session):
     )
     assert len(items) == 1
     assert items[0].id == notification.id
+
+
+def test_immediate_latency_schedules_targeted_delivery_after_commit(
+    db_session, monkeypatch
+):
+    delivery_wakeups: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr(
+        notification_tasks.deliver_notification,
+        "apply_async",
+        lambda *args, **kwargs: delivery_wakeups.append((args, kwargs)),
+    )
+
+    notification = notification_service.notifications.queue_internal_notification(
+        db_session,
+        NotificationCreate(
+            channel=NotificationChannel.email,
+            recipient="now@example.com",
+            subject="Action required",
+            body="Confirm now.",
+            delivery_latency=NotificationDeliveryLatency.immediate,
+        ),
+    )
+
+    assert delivery_wakeups == []
+    db_session.commit()
+
+    assert notification.metadata_["delivery_latency"] == "immediate"
+    assert delivery_wakeups == [((), {"args": [str(notification.id)], "retry": False})]
+
+
+def test_normal_latency_does_not_schedule_targeted_delivery(db_session, monkeypatch):
+    delivery_wakeups: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr(
+        notification_tasks.deliver_notification,
+        "apply_async",
+        lambda *args, **kwargs: delivery_wakeups.append((args, kwargs)),
+    )
+
+    notification = notification_service.notifications.queue_internal_notification(
+        db_session,
+        NotificationCreate(
+            channel=NotificationChannel.email,
+            recipient="later@example.com",
+            subject="General update",
+            body="This can use the normal sweep.",
+        ),
+    )
+    db_session.commit()
+
+    assert notification.metadata_["delivery_latency"] == "normal"
+    assert delivery_wakeups == []
+
+
+def test_auth_verification_email_is_immediate_latency(db_session, monkeypatch):
+    delivery_wakeups: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr(
+        notification_tasks.deliver_notification,
+        "apply_async",
+        lambda *args, **kwargs: delivery_wakeups.append((args, kwargs)),
+    )
+
+    queued = email_service.send_email(
+        db_session,
+        "verify@example.com",
+        "Verify your email address",
+        "<p>Verify now.</p>",
+        "Verify now.",
+        activity="auth_email_verification",
+    )
+
+    notification = db_session.query(Notification).one()
+    assert queued is True
+    assert notification.event_type == "auth_email_verification"
+    assert notification.metadata_["delivery_latency"] == "immediate"
+    assert delivery_wakeups == [((), {"args": [str(notification.id)], "retry": False})]
+
+
+def test_notification_owner_blocks_incomplete_active_payment_receipt(db_session):
+    with pytest.raises(ValueError, match="require these body fields"):
+        notification_service.templates.create(
+            db_session,
+            NotificationTemplateCreate(
+                name="Incomplete receipt",
+                code="payment_received",
+                channel=NotificationChannel.email,
+                subject="Payment received",
+                body="Thank you for paying {amount}.",
+            ),
+        )
+
+
+def test_notification_owner_validates_inactive_receipt_before_activation(db_session):
+    template = notification_service.templates.create(
+        db_session,
+        NotificationTemplateCreate(
+            name="Receipt draft",
+            code="payment_received",
+            channel=NotificationChannel.email,
+            subject="Payment received",
+            body="Thank you for paying {amount}.",
+            is_active=False,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="require these body fields"):
+        notification_service.templates.update(
+            db_session,
+            str(template.id),
+            NotificationTemplateUpdate(is_active=True),
+        )
+
+    db_session.refresh(template)
+    assert template.is_active is False
+
+    activated = notification_service.templates.update(
+        db_session,
+        str(template.id),
+        NotificationTemplateUpdate(
+            subject="Payment receipt {receipt_number}",
+            body="Receipt {receipt_number}: {receipt_url}",
+            is_active=True,
+        ),
+    )
+    assert activated.is_active is True
 
 
 def _subscriber(db_session, *, status=SubscriberStatus.active, suffix="manual"):

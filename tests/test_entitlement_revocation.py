@@ -27,12 +27,12 @@ from app.models.auth import Session as AuthSession
 from app.models.auth import SessionStatus
 from app.models.event_store import EventStore
 from app.models.rbac import Permission, Role, RolePermission, SystemUserRole
-from app.models.system_user import SystemUser
 from app.services import (
     entitlement_revocation,
     system_user_assignments,
 )
 from app.services.owner_commands import CommandContext
+from tests.staff_identity_fixtures import add_bound_staff_user
 
 REDUCTION_EVENT = "rbac.entitlement_reduction_revoked"
 
@@ -49,9 +49,15 @@ def _context() -> CommandContext:
     )
 
 
-def _live_session(user_id: uuid.UUID, *, token: str) -> AuthSession:
+def _live_session(
+    user_id: uuid.UUID,
+    party_id: uuid.UUID,
+    *,
+    token: str,
+) -> AuthSession:
     return AuthSession(
         system_user_id=user_id,
+        party_id=party_id,
         status=SessionStatus.active,
         token_hash=token,
         expires_at=datetime.now(UTC) + timedelta(hours=8),
@@ -81,14 +87,10 @@ def staff(db_session: Session):
 
     permission = _permission(db_session, "canary:act")
     role = _role_with(db_session, "canary_operator", permission)
-    user = SystemUser(
-        first_name="Canary",
-        last_name="Operator",
+    user, person = add_bound_staff_user(
+        db_session,
         email=f"canary-{uuid.uuid4().hex}@dotmac.io",
-        is_active=True,
     )
-    db_session.add(user)
-    db_session.flush()
     db_session.add(
         SystemUserRole(
             system_user_id=user.id,
@@ -96,7 +98,11 @@ def staff(db_session: Session):
             source=system_user_assignments.LOCAL_ROLE_SOURCE,
         )
     )
-    session = _live_session(user.id, token=f"canary-{uuid.uuid4().hex}")
+    session = _live_session(
+        user.id,
+        person.id,
+        token=f"canary-{uuid.uuid4().hex}",
+    )
     db_session.add(session)
     db_session.flush()
     # Capture ids BEFORE the commit. Reading an ORM attribute afterwards
@@ -107,6 +113,7 @@ def staff(db_session: Session):
         "role_id": role.id,
         "permission_id": permission.id,
         "session_id": session.id,
+        "party_id": person.id,
     }
     db_session.commit()
     return identifiers
@@ -284,9 +291,17 @@ def test_expired_and_already_revoked_sessions_are_left_alone(db_session, staff) 
     """Only live sessions are touched, so revoked_at stays truthful."""
 
     user_id = staff["user_id"]
-    expired = _live_session(user_id, token=f"expired-{uuid.uuid4().hex}")
+    expired = _live_session(
+        user_id,
+        staff["party_id"],
+        token=f"expired-{uuid.uuid4().hex}",
+    )
     expired.expires_at = datetime.now(UTC) - timedelta(hours=1)
-    already = _live_session(user_id, token=f"already-{uuid.uuid4().hex}")
+    already = _live_session(
+        user_id,
+        staff["party_id"],
+        token=f"already-{uuid.uuid4().hex}",
+    )
     already.status = SessionStatus.revoked
     already.revoked_at = datetime.now(UTC) - timedelta(days=2)
     db_session.add_all((expired, already))

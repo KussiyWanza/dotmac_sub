@@ -109,6 +109,7 @@ def _credential(
 def _live_session(db_session: Session, staff: SystemUser) -> AuthSession:
     session = AuthSession(
         system_user_id=staff.id,
+        party_id=staff.person_party_id,
         status=SessionStatus.active,
         token_hash=f"shadow-{uuid.uuid4().hex}",
         expires_at=datetime.now(UTC) + timedelta(hours=4),

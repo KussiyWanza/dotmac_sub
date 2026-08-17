@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import partial
@@ -14,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.models.service_team import ServiceTeam, ServiceTeamMember
 from app.models.system_user import SystemUser
+from app.schemas.support import TicketMentionTarget
 from app.services.branding_config import get_brand
 from app.services.common import coerce_uuid
 from app.services.owner_commands import execute_owner_savepoint
@@ -228,16 +230,19 @@ def resolve_mentioned_person_ids(
 def notify_ticket_comment_mentions(
     db: Session,
     *,
-    ticket_id: str,
+    ticket_id: UUID,
     ticket_number: str | None,
     ticket_title: str | None,
     comment_preview: str | None,
-    mentioned_agent_ids: list[str] | None,
+    mention_targets: Sequence[TicketMentionTarget],
     actor_person_id: str | None,
-    source_event_id: UUID | None = None,
+    source_event_id: UUID,
+    source_comment_id: UUID,
 ) -> None:
     """Queue staff notifications for explicit ticket comment mentions."""
-    recipient_ids = resolve_mentioned_person_ids(db, mentioned_agent_ids)
+    recipient_ids = resolve_mentioned_person_ids(
+        db, [target.token for target in mention_targets]
+    )
     if actor_person_id:
         recipient_ids = [pid for pid in recipient_ids if pid != str(actor_person_id)]
     if not recipient_ids:
@@ -245,7 +250,7 @@ def notify_ticket_comment_mentions(
 
     message = render_ticket_mention_message(
         TicketMentionMessageInput(
-            ticket_id=coerce_uuid(ticket_id),
+            ticket_id=ticket_id,
             ticket_number=ticket_number,
             ticket_title=ticket_title,
             comment_preview=comment_preview,
@@ -274,33 +279,30 @@ def notify_ticket_comment_mentions(
                 subject=message.subject,
                 body=message.body,
             )
-        if source_event_id is not None:
-            from app.services.nextcloud_talk_staff import (
-                StaffTalkEventType,
-                StageStaffTalkNotification,
-                stage_staff_talk_notification,
-            )
+        from app.services.nextcloud_talk_staff import (
+            StaffTalkEventType,
+            StageStaffTalkNotification,
+            stage_staff_talk_notification,
+        )
 
-            talk_command = StageStaffTalkNotification(
-                system_user_id=user.id,
-                source_event_id=source_event_id,
-                event_type=StaffTalkEventType.ticket_comment_mention,
-                subject=message.subject,
-                body=message.body,
-                target_url=(
-                    message.target_url or f"/admin/support/tickets/{ticket_id}"
-                ),
-                source_entity_type="support_ticket_comment",
-                source_entity_id=source_event_id,
+        talk_command = StageStaffTalkNotification(
+            system_user_id=user.id,
+            source_event_id=source_event_id,
+            event_type=StaffTalkEventType.ticket_comment_mention,
+            subject=message.subject,
+            body=message.body,
+            target_url=(message.target_url or f"/admin/support/tickets/{ticket_id}"),
+            source_entity_type="support_ticket_comment",
+            source_entity_id=source_comment_id,
+        )
+        try:
+            execute_owner_savepoint(
+                db,
+                partial(stage_staff_talk_notification, db, talk_command),
             )
-            try:
-                execute_owner_savepoint(
-                    db,
-                    partial(stage_staff_talk_notification, db, talk_command),
-                )
-            except Exception:  # noqa: BLE001 - comment remains authoritative
-                logger.exception(
-                    "ticket_comment_talk_staging_failed comment_id=%s user_id=%s",
-                    source_event_id,
-                    user.id,
-                )
+        except Exception:  # noqa: BLE001 - comment remains authoritative
+            logger.exception(
+                "ticket_comment_talk_staging_failed comment_id=%s user_id=%s",
+                source_comment_id,
+                user.id,
+            )

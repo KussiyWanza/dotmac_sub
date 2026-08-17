@@ -157,7 +157,6 @@ def refresh_billing_health_snapshot() -> dict:
 def _append_billing_health_snapshot(session, result: dict) -> None:
     try:
         from app.services.billing_health import (
-            AGED_DRAFT_DAYS,
             billing_health_snapshot,
             publish_billing_health_snapshot,
         )
@@ -191,6 +190,14 @@ def _append_billing_health_snapshot(session, result: dict) -> None:
             "payment_attempts_7d": health.payment_attempts_7d,
             "payments_succeeded_7d": health.payments_succeeded_7d,
             "payment_success_ratio_7d": health.payment_success_ratio_7d,
+            "stalled_draft_cohort_count": health.stalled_draft_cohort_count,
+            "stalled_draft_cohort_total": str(health.stalled_draft_cohort_total),
+            "payment_receipt_email_template_ready": (
+                health.payment_receipt_email_template_ready
+            ),
+            "payment_receipt_email_template_status": (
+                health.payment_receipt_email_template_status.value
+            ),
             "stale_runners": health.stale_runners,
             "covered_but_locked": health.covered_but_locked,
             "unbilled_no_path": health.unbilled_no_path,
@@ -256,6 +263,13 @@ def _append_billing_health_snapshot(session, result: dict) -> None:
                 "the scheduled renewal cohort - revenue leak",
                 health.active_null_billing_anchor_count,
             )
+        if "payment_receipt_email_template_unready" in anomalies:
+            logger.error(
+                "billing_payment_receipt_email_template_unready: status=%s; "
+                "payment receipts remain suppressed until the email template "
+                "is valid, receipt-aware, canary-tested, and activated",
+                health.payment_receipt_email_template_status.value,
+            )
         if "negative_prepaid_balances" in anomalies:
             logger.error(
                 "billing_negative_prepaid_balances: %d prepaid account(s) have "
@@ -301,17 +315,13 @@ def _append_billing_health_snapshot(session, result: dict) -> None:
                 "applies to the account",
                 health.billing_profile_mixed_count,
             )
-        if "aged_draft_invoices" in anomalies:
-            # Warning, not error: a draft is a legitimate holding state and
-            # this signal never acts on one. Issue, void, or keep holding are
-            # all fine; not knowing the draft exists is not.
+        if "stalled_draft_invoice_cohort" in anomalies:
             logger.warning(
-                "billing_aged_draft_invoices: %d draft invoice(s) older than "
-                "%d days totalling %s await a disposition - issue, void, or a "
-                "deliberate hold",
-                health.aged_draft_count,
-                AGED_DRAFT_DAYS,
-                health.aged_draft_total,
+                "billing_stalled_draft_invoice_cohort: %d invoice(s) created "
+                "24-48 hours ago remain draft, totalling %s; inspect the current "
+                "issuance lifecycle rather than the historical aged backlog",
+                health.stalled_draft_cohort_count,
+                health.stalled_draft_cohort_total,
             )
         if "prepaid_coverage_quarantined" in anomalies:
             # Warning: quarantined coverage evidence is a human review queue

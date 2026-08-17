@@ -6,13 +6,10 @@
 # each. Those anomalies now all reach a log line; these rules cover the ones
 # that had no alert at all.
 #
-# Threshold note, deliberate: two signals sit at a large non-zero steady state
-# (aged drafts and account-credit invariant violations). Alerting them at > 0
-# would fire permanently from the first evaluation and be tuned out, which is
-# worse than no alert. They alert on DETERIORATION instead — the backlog
-# growing rather than draining — and the absolute figure is carried by the log
-# line and the dashboard. Tighten to an absolute threshold once each backlog
-# has been worked down.
+# Threshold note: the historic aged-draft stock is review inventory, not a
+# current-incident signal. It stays visible on the dashboard. The alert uses a
+# fixed 24-48-hour creation cohort instead, so a July draft cannot manufacture
+# an August incident merely by crossing an age threshold.
 groups:
   - name: billing_health
     rules:
@@ -74,21 +71,52 @@ groups:
             will ever invoice. Expected to be firing on adoption; drive to zero
             rather than silencing.
 
-      # --- Backlogs at steady state: alert on deterioration, not on level.
-      - alert: SubAgedDraftInvoiceBacklogGrowing
-        expr: delta(observability_state{domain="billing_health",signal="aged_draft_invoices"}[24h]) > 25
+      - alert: SubPaymentReceiptEmailTemplateUnavailable
+        expr: observability_state{domain="billing_health",signal="payment_receipt_email_template_ready",scope="all"} == 0
+        for: 30m
+        labels:
+          severity: warning
+          area: billing
+          owner: customer-communications
+        annotations:
+          summary: "Payment receipt email template is unavailable"
+          description: >
+            The payment_received email template is missing, inactive, invalid,
+            or lacks the receipt reference/link fields. Payment processing is
+            unaffected, but customers receive no usable receipt. Follow the
+            email-only canary and rollback gates before activation.
+          runbook: "docs/runbooks/MONEY_PATH_OPERATIONAL_CLOSURE.md"
+
+      # --- Current creation cohort, independent of historical threshold ageing.
+      - alert: SubRecentDraftInvoiceCohortStalled
+        expr: observability_state{domain="billing_health",signal="stalled_draft_invoice_cohort",scope="all"} > 25
         for: 1h
         labels:
           severity: warning
           area: billing
           owner: financial-billing
         annotations:
-          summary: "Aged draft invoice backlog is growing"
+          summary: "A recent draft invoice cohort is stalled"
           description: >
-            Drafts older than 30 days grew by {{ $value }} in 24h, so they are
-            ageing in faster than anyone is dispositioning them. A draft is a
-            legitimate hold — issue it, void it, or hold it deliberately — but
-            the backlog should not accumulate unattended.
+            {{ $value }} invoices created 24-48 hours ago remain draft. This
+            measures the current issuance lifecycle and cannot be triggered by
+            an older cohort crossing a 30-day age threshold.
+
+      - alert: SubPrepaidFundingQuarantineGrowing
+        expr: delta(observability_state{domain="billing_health",signal="prepaid_funding_quarantined",scope="all"}[24h]) > 0
+        for: 30m
+        labels:
+          severity: warning
+          area: prepaid-enforcement
+          owner: financial-collections
+        annotations:
+          summary: "Prepaid funding quarantine gained accounts"
+          description: >
+            The fail-closed prepaid funding cohort increased by {{ $value }} in
+            24 hours. Existing legacy stock is remediation work; growth is the
+            prevention signal that another active account surfaced without an
+            attested baseline.
+          runbook: "docs/runbooks/PREPAID_FUNDING_AUDIT_RESTORE.md"
 
       # `scope` is load-bearing here. The signal carries several series: `all`
       # is the live violation total, `opening_balance` is the balance carried

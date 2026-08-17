@@ -163,6 +163,34 @@
             <span class="self-center rounded-lg bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">Draft v{{ ai_intake_draft_version.version_number }}</span>
         </div>
         {% endif %}
+        {% if ai_intake_policy_version_history %}
+        <section aria-labelledby="ai-intake-version-history" class="border-t border-slate-100 px-5 py-4 dark:border-slate-700">
+            <div class="flex flex-wrap items-baseline justify-between gap-2">
+                <div>
+                    <h3 id="ai-intake-version-history" class="text-sm font-semibold text-slate-900 dark:text-white">Policy version history</h3>
+                    <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Read-only evidence of the {{ ai_intake_policy_version_history_limit }} most recent versions. Only a current draft can be validated or activated.</p>
+                </div>
+            </div>
+            <div class="mt-3 overflow-x-auto">
+                <table class="min-w-full text-left text-xs">
+                    <thead class="border-b border-slate-200 text-slate-500 dark:border-slate-700 dark:text-slate-400">
+                        <tr><th scope="col" class="px-2 py-2 font-semibold">Version</th><th scope="col" class="px-2 py-2 font-semibold">Status</th><th scope="col" class="px-2 py-2 font-semibold">Created</th><th scope="col" class="px-2 py-2 font-semibold">Activated</th><th scope="col" class="px-2 py-2 font-semibold">Superseded</th></tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-100 dark:divide-slate-700">
+                        {% for version in ai_intake_policy_version_history %}
+                        <tr>
+                            <td class="px-2 py-2 font-mono text-slate-700 dark:text-slate-200">v{{ version.version_number }}{% if version.is_active %}<span class="ml-1 rounded bg-emerald-100 px-1.5 py-0.5 font-sans font-semibold text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200">Current active</span>{% endif %}</td>
+                            <td class="px-2 py-2"><span class="rounded px-1.5 py-0.5 font-semibold {% if version.status == 'activated' %}bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200{% elif version.status == 'superseded' %}bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200{% else %}bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200{% endif %}">{{ 'Active' if version.status == 'activated' else version.status | title }}</span></td>
+                            <td class="px-2 py-2 tabular-nums text-slate-600 dark:text-slate-300"><time datetime="{{ version.created_at.isoformat() }}">{{ version.created_at | app_datetime('%d %b %Y %H:%M') }}</time></td>
+                            <td class="px-2 py-2 tabular-nums text-slate-600 dark:text-slate-300">{% if version.activated_at %}<time datetime="{{ version.activated_at.isoformat() }}">{{ version.activated_at | app_datetime('%d %b %Y %H:%M') }}</time>{% else %}—{% endif %}</td>
+                            <td class="px-2 py-2 tabular-nums text-slate-600 dark:text-slate-300">{% if version.superseded_at %}<time datetime="{{ version.superseded_at.isoformat() }}">{{ version.superseded_at | app_datetime('%d %b %Y %H:%M') }}</time>{% else %}—{% endif %}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+        {% endif %}
         {% if ai_intake_policy %}
         <div class="flex flex-wrap items-center gap-2 border-t border-slate-100 p-5 text-xs text-slate-600 dark:border-slate-700 dark:text-slate-300">
             {% if ai_intake_active_version %}

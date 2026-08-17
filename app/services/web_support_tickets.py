@@ -14,16 +14,19 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.models.project import ProjectTask
+from app.models.service_team import ServiceTeam
 from app.models.stored_file import StoredFile
 from app.models.subscriber import Subscriber
 from app.models.support import (
     Ticket,
     TicketChannel,
+    TicketComment,
     TicketCommentAuthorType,
     TicketStatus,
     canonical_ticket_status_value,
     parse_ticket_status,
 )
+from app.models.system_user import SystemUser
 from app.schemas.status_presentation import StatusPresentation
 from app.schemas.support import (
     AttachmentMeta,
@@ -31,6 +34,8 @@ from app.schemas.support import (
     TicketCommentUpdate,
     TicketCreate,
     TicketLinkCreate,
+    TicketMentionTarget,
+    TicketMentionTargetKind,
     TicketMergeRequest,
     TicketUpdate,
 )
@@ -806,6 +811,7 @@ def build_ticket_comment_payload(
     is_internal: bool,
     actor_id: str | None,
     uploaded: list[dict],
+    mentions: tuple[TicketMentionTarget, ...] = (),
 ) -> TicketCommentCreate:
     return TicketCommentCreate(
         body=body,
@@ -813,6 +819,7 @@ def build_ticket_comment_payload(
         author_type=TicketCommentAuthorType.staff,
         author_system_user_id=parse_uuid_or_none(actor_id),
         attachments=[AttachmentMeta(**item) for item in uploaded],
+        mentions=mentions,
     )
 
 
@@ -1016,12 +1023,13 @@ def add_ticket_comment_from_form(
         entity_type="support_ticket_comment_attachment",
         actor_id=actor_id,
     )
-    mentioned_agent_ids = _parse_mentions_payload(mentions)
+    mention_targets = _parse_mentions_payload(mentions)
     payload = build_ticket_comment_payload(
         body=body,
         is_internal=is_internal,
         actor_id=actor_id,
         uploaded=uploaded,
+        mentions=mention_targets,
     )
     db_session_adapter.release_read_transaction(db)
     comment = support_service.tickets.create_comment(
@@ -1030,7 +1038,6 @@ def add_ticket_comment_from_form(
         payload,
         actor_id=actor_id,
         request=request,
-        mentioned_agent_ids=mentioned_agent_ids,
     )
     return comment
 
@@ -1043,6 +1050,7 @@ def update_ticket_comment_from_form(
     comment_id: str,
     actor_id: str | None,
     body: str,
+    mentions: str | None = None,
 ):
     comment = support_service.ticket_comments.get(db, comment_id)
     if str(comment.ticket_id) != str(ticket_id):
@@ -1051,35 +1059,65 @@ def update_ticket_comment_from_form(
             message="Ticket comment not found",
         )
     db_session_adapter.release_read_transaction(db)
+    mention_targets = (
+        _parse_mentions_payload(mentions) if mentions is not None else None
+    )
     return support_service.ticket_comments.update(
         db,
         comment=comment,
-        payload=TicketCommentUpdate(body=body),
+        payload=TicketCommentUpdate(
+            body=body,
+            mentions=mention_targets,
+        ),
         actor_id=actor_id,
         request=request,
     )
 
 
-def _parse_mentions_payload(raw: str | None) -> list[str]:
+def _parse_mentions_payload(raw: str | None) -> tuple[TicketMentionTarget, ...]:
     if not raw:
-        return []
+        return ()
     try:
         parsed = json.loads(raw)
     except (TypeError, ValueError):
-        return []
+        return ()
     if not isinstance(parsed, list):
-        return []
-    mentions: list[str] = []
+        return ()
+    mentions: list[TicketMentionTarget] = []
+    seen: set[str] = set()
     for item in parsed:
+        target: TicketMentionTarget | None = None
         if isinstance(item, str):
             token = item.strip()
         elif isinstance(item, Mapping):
-            token = str(item.get("id") or "").strip()
+            kind = str(item.get("kind") or "").strip()
+            target_id = str(item.get("target_id") or "").strip()
+            if kind and target_id:
+                try:
+                    target = TicketMentionTarget.model_validate(
+                        {"kind": kind, "target_id": target_id}
+                    )
+                except ValueError:
+                    target = None
+            token = str(item.get("id") or item.get("token") or "").strip()
         else:
             token = ""
-        if token and token not in mentions:
-            mentions.append(token)
-    return mentions
+        if target is None and token:
+            raw_kind, separator, raw_id = token.partition(":")
+            if separator and raw_kind in {
+                TicketMentionTargetKind.person.value,
+                TicketMentionTargetKind.group.value,
+            }:
+                try:
+                    target = TicketMentionTarget.model_validate(
+                        {"kind": raw_kind, "target_id": raw_id}
+                    )
+                except ValueError:
+                    target = None
+        if target is not None and target.token not in seen:
+            seen.add(target.token)
+            mentions.append(target)
+    return tuple(mentions)
 
 
 def auto_assign_ticket(
@@ -1548,6 +1586,96 @@ def render_tickets_csv(
     return buffer.getvalue()
 
 
+def _comment_mention_selections(
+    db: Session,
+    *,
+    comments: list[TicketComment],
+    available_options: list[dict[str, str]],
+) -> dict[str, list[dict[str, str]]]:
+    """Serialize persisted targets for independent comment editors.
+
+    Existing inactive targets remain visible and are preserved unless the
+    editor deliberately removes their text. They are never offered as new
+    suggestions because ``available_options`` contains active targets only.
+    """
+
+    available_by_token = {item["id"]: item for item in available_options}
+    user_ids = {
+        link.system_user_id
+        for comment in comments
+        for link in comment.mention_links
+        if link.system_user_id is not None
+    }
+    team_ids = {
+        link.service_team_id
+        for comment in comments
+        for link in comment.mention_links
+        if link.service_team_id is not None
+    }
+    users = (
+        {
+            row.id: row
+            for row in db.query(SystemUser).filter(SystemUser.id.in_(user_ids)).all()
+        }
+        if user_ids
+        else {}
+    )
+    teams = (
+        {
+            row.id: row
+            for row in db.query(ServiceTeam).filter(ServiceTeam.id.in_(team_ids)).all()
+        }
+        if team_ids
+        else {}
+    )
+
+    selections: dict[str, list[dict[str, str]]] = {}
+    for comment in comments:
+        items: list[dict[str, str]] = []
+        for link in comment.mention_links:
+            if link.system_user_id is not None:
+                token = f"person:{link.system_user_id}"
+                user = users.get(link.system_user_id)
+                fallback_label = (
+                    user.display_name
+                    if user and user.display_name
+                    else " ".join(
+                        [
+                            user.first_name if user else "",
+                            user.last_name if user else "",
+                        ]
+                    ).strip()
+                    or (user.email if user else "Unavailable staff")
+                )
+                fallback = {
+                    "id": token,
+                    "token": token,
+                    "label": fallback_label,
+                    "email": user.email if user else "",
+                    "kind": "person",
+                }
+            else:
+                token = f"group:{link.service_team_id}"
+                team = teams.get(link.service_team_id)
+                fallback = {
+                    "id": token,
+                    "token": token,
+                    "label": f"{team.name if team else 'Unavailable team'} (Group)",
+                    "email": "",
+                    "kind": "group",
+                }
+            option = available_by_token.get(token, fallback)
+            items.append(
+                {
+                    **option,
+                    "id": token,
+                    "token": token,
+                }
+            )
+        selections[str(comment.id)] = items
+    return selections
+
+
 def build_ticket_detail_context(
     db: Session,
     *,
@@ -1604,6 +1732,12 @@ def build_ticket_detail_context(
     comments = support_service.ticket_comments.list(
         db, str(ticket.id), limit=500, offset=0
     )
+    mention_agents = ticket_mentions.list_ticket_mention_users(db)
+    comment_mentions = _comment_mention_selections(
+        db,
+        comments=comments,
+        available_options=mention_agents,
+    )
     unavailable_status_presentation = _unavailable_status_presentation(
         status_options, ticket.status
     )
@@ -1657,7 +1791,8 @@ def build_ticket_detail_context(
         "all_priorities": priority_options,
         "all_channels": [item.value for item in TicketChannel],
         "people_options": subscribers,
-        "mention_agents": ticket_mentions.list_ticket_mention_users(db),
+        "mention_agents": mention_agents,
+        "comment_mentions": comment_mentions,
         "staff_options": staff,
         "staff_lookup": _label_lookup(staff),
         "subscriber_lookup": _label_lookup(subscribers),

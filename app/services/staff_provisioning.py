@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 from app.models.audit import AuditActorType
 from app.models.auth import AuthProvider, SessionStatus, UserCredential
 from app.models.auth import Session as AuthSession
+from app.models.dispatch import TechnicianProfile
 from app.models.party import PartyDataClassification, PartyType
 from app.models.subscriber import UserType
 from app.models.system_user import SystemUser
@@ -173,6 +174,7 @@ class UpdateStaffIdentityCommand:
     phone: str | None = None
     new_password: str | None = None
     require_password_change: bool = True
+    field_technician_access: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -222,6 +224,8 @@ class StaffIdentityOutcome:
     credential_reconciled: bool
     password_changed: bool
     revoked_sessions: int
+    field_technician_access_changed: bool
+    technician_profile_id: UUID | None
     command_id: UUID
     correlation_id: UUID
 
@@ -296,6 +300,12 @@ class StaffLoginIdentityView:
     credential: StaffLoginCredentialView | None
     issue: StaffLoginIdentityIssue | None
     recovery: StaffCredentialRecoveryEligibility
+
+
+@dataclass(frozen=True)
+class StaffFieldTechnicianAccessView:
+    profile_id: UUID | None
+    enabled: bool
 
 
 @dataclass(frozen=True)
@@ -555,6 +565,74 @@ def _one_local_credential(db: Session, user_id: UUID) -> UserCredential:
             credential_count=len(credentials),
         )
     return credentials[0]
+
+
+def _sync_field_technician_access(
+    db: Session,
+    *,
+    user: SystemUser,
+    enabled: bool | None,
+) -> tuple[bool, UUID | None]:
+    if enabled is None:
+        profile_id = db.execute(
+            select(TechnicianProfile.id)
+            .where(TechnicianProfile.system_user_id == user.id)
+            .limit(1)
+        ).scalar_one_or_none()
+        return False, profile_id
+
+    profile = db.execute(
+        select(TechnicianProfile)
+        .where(TechnicianProfile.system_user_id == user.id)
+        .with_for_update()
+    ).scalar_one_or_none()
+    if profile is None:
+        profile = db.execute(
+            select(TechnicianProfile)
+            .where(TechnicianProfile.person_id == user.id)
+            .with_for_update()
+        ).scalar_one_or_none()
+
+    if enabled and not user.is_active:
+        raise _error(
+            "invalid_command",
+            "Activate the staff account before enabling Field Service app access.",
+            field="field_technician_access",
+        )
+
+    changed = False
+    if profile is None:
+        if not enabled:
+            return False, None
+        profile = TechnicianProfile(
+            person_id=user.id,
+            system_user_id=user.id,
+            title="Technician",
+            metadata_={
+                "created_by": "auth.staff_provisioning",
+                "reason": "Administrative Field Service app access enablement",
+            },
+            is_active=True,
+        )
+        db.add(profile)
+        db.flush()
+        return True, profile.id
+
+    if profile.system_user_id != user.id:
+        profile.system_user_id = user.id
+        changed = True
+    if profile.person_id != user.id:
+        profile.person_id = user.id
+        changed = True
+    if enabled and not profile.title:
+        profile.title = "Technician"
+        changed = True
+    if profile.is_active != enabled:
+        profile.is_active = enabled
+        changed = True
+    if changed:
+        db.flush()
+    return changed, profile.id
 
 
 def _create_placeholder_local_credential(
@@ -1188,6 +1266,14 @@ def update_staff_identity(
             credential.failed_login_attempts = 0
             credential.locked_until = None
 
+        (
+            field_technician_access_changed,
+            technician_profile_id,
+        ) = _sync_field_technician_access(
+            db,
+            user=user,
+            enabled=command.field_technician_access,
+        )
         login_identity_changed = (
             StaffIdentityField.email in changed_fields or credential_reconciled
         )
@@ -1206,6 +1292,13 @@ def update_staff_identity(
             "password_changed": password_changed,
             "revoked_sessions": revoked_sessions,
             "email_sha256": hashlib.sha256(desired_email.encode()).hexdigest(),
+            "field_technician_access_changed": field_technician_access_changed,
+            "field_technician_access": command.field_technician_access,
+            "technician_profile_id": (
+                str(technician_profile_id)
+                if technician_profile_id is not None
+                else None
+            ),
         }
         _stage_audit(
             db,
@@ -1216,7 +1309,12 @@ def update_staff_identity(
             actor_id=actor_id,
             metadata=metadata,
         )
-        if changed_fields_tuple or credential_reconciled or password_changed:
+        if (
+            changed_fields_tuple
+            or credential_reconciled
+            or password_changed
+            or field_technician_access_changed
+        ):
             _emit_staff_event(
                 db,
                 event_type=EventType.staff_account_identity_changed,
@@ -1234,6 +1332,8 @@ def update_staff_identity(
             credential_reconciled=credential_reconciled,
             password_changed=password_changed,
             revoked_sessions=revoked_sessions,
+            field_technician_access_changed=field_technician_access_changed,
+            technician_profile_id=technician_profile_id,
             command_id=command.context.command_id,
             correlation_id=command.context.correlation_id,
         )
@@ -1543,6 +1643,28 @@ def get_staff_login_identity_view(
             allowed=blocked_by is None,
             blocked_by=blocked_by,
         ),
+    )
+
+
+def get_staff_field_technician_access_view(
+    db: Session,
+    *,
+    user_id: UUID,
+) -> StaffFieldTechnicianAccessView:
+    """Resolve the Field Service technician profile owned by staff provisioning."""
+
+    profile = (
+        db.execute(
+            select(TechnicianProfile)
+            .where(TechnicianProfile.system_user_id == user_id)
+            .limit(1)
+        )
+        .scalars()
+        .first()
+    )
+    return StaffFieldTechnicianAccessView(
+        profile_id=profile.id if profile is not None else None,
+        enabled=bool(profile and profile.is_active),
     )
 
 

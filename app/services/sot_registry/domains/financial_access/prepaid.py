@@ -2997,7 +2997,7 @@ SERVICES: tuple[SOTService, ...] = (
             "prepaid subscription paid-through advancement",
             "billing-anchor projection from entitlement evidence",
             "billing-anchor retraction after funding reversal",
-            "stale billing-anchor drift repair",
+            "missing or stale billing-anchor repair from exact funded coverage",
             "canonical prepaid renewed-through outcome",
             "post-credit-application due-service consequence",
             "bounded scheduled renewal catch-up",
@@ -3044,7 +3044,11 @@ SERVICES: tuple[SOTService, ...] = (
             "anchor policies that previously lived in "
             "_finalize_invoice_payment_effects and "
             "finalize_invoice_application_for_owner. The retired inline "
-            "project_paid_invoice_billing_anchors helper is gone. A lapsed "
+            "project_paid_invoice_billing_anchors helper is gone. The reviewed "
+            "repair also admits a NULL active-prepaid anchor only when an "
+            "active entitlement proves its exact paid-through target; the "
+            "legacy cadence/forgiveness backfill is retired and evidence-free "
+            "rows remain review stock. A lapsed "
             "settlement period first resolves the payment instant into the "
             "Africa/Lagos calendar, starts at local midnight, advances by the "
             "typed cadence, and persists the resulting boundaries as UTC "
@@ -3132,7 +3136,10 @@ SERVICES: tuple[SOTService, ...] = (
                     canonical_writer="financial.prepaid_service_renewals",
                 ),
                 ConcernContract(
-                    name="stale billing-anchor drift repair",
+                    name=(
+                        "missing or stale billing-anchor repair from exact funded "
+                        "coverage"
+                    ),
                     role=OwnerRole.RECONCILER,
                     input_names=(
                         "prepaid subscription and renewal terms",

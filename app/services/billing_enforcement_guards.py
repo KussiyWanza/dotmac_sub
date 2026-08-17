@@ -97,6 +97,9 @@ def _critical_notification_filter():
 
 def notification_delivery_health(db: Session) -> EnforcementHealth:
     """Return whether critical billing notifications are drainable."""
+    from app.services.billing_health import payment_receipt_template_readiness
+
+    receipt_template = payment_receipt_template_readiness(db)
     task_enabled = (
         db.query(ScheduledTask.enabled)
         .filter(
@@ -108,10 +111,16 @@ def notification_delivery_health(db: Session) -> EnforcementHealth:
         .scalar()
     )
     if task_enabled is False:
+        disabled_reasons = ["notification_queue_task_disabled"]
+        if not receipt_template.ready:
+            disabled_reasons.append("payment_receipt_email_template_unready")
         return EnforcementHealth(
             ok=False,
-            reasons=["notification_queue_task_disabled"],
-            details={"notification_queue_task_enabled": False},
+            reasons=disabled_reasons,
+            details={
+                "notification_queue_task_enabled": False,
+                "payment_receipt_email_template_ready": receipt_template.ready,
+            },
         )
 
     now = datetime.now(UTC)
@@ -174,6 +183,8 @@ def notification_delivery_health(db: Session) -> EnforcementHealth:
     )
 
     reasons: list[str] = []
+    if not receipt_template.ready:
+        reasons.append("payment_receipt_email_template_unready")
     if int(old_queued) > 0:
         reasons.append("critical_notifications_not_draining")
     if int(stuck_sending) > max_stuck_sending:
@@ -191,6 +202,7 @@ def notification_delivery_health(db: Session) -> EnforcementHealth:
             "max_failed": max_failed,
             "max_stuck_sending": max_stuck_sending,
             "max_oldest_queued_minutes": max_oldest_minutes,
+            "payment_receipt_email_template_ready": receipt_template.ready,
         },
     )
 

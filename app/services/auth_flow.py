@@ -2212,17 +2212,10 @@ def validate_active_session(
         return None
 
     if principal_type == "system_user":
-        # Two branches, and the split is the cutover:
-        #
-        #   party_id present -> Party-KEYED through the canonical primitive,
-        #                       with system_user_id compared as the Sub-context
-        #                       assertion. This is the destination.
-        #   party_id absent  -> the named assertion-first bridge, for sessions
-        #                       predating migration 534 only. Deploy 2 deletes
-        #                       this branch and requires party_id.
-        #
-        # Returning None is the fail-closed answer — the request is
-        # unauthenticated and the caller learns nothing about why.
+        # Party is the identity key. `system_user_id` is compared afterwards as
+        # the Sub-owned staff-context assertion; a missing projection refuses.
+        # Returning None is the fail-closed answer, so the caller learns no
+        # projection detail.
         try:
             principal = staff_party_authentication.resolve_staff_session_principal(
                 db,

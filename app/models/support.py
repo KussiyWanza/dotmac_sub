@@ -6,6 +6,7 @@ from typing import ClassVar
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     DateTime,
     Enum,
     ForeignKey,
@@ -270,6 +271,84 @@ class TicketComment(Base):
     )
 
     ticket = relationship("Ticket", back_populates="comments")
+    mention_links = relationship(
+        "TicketCommentMention",
+        back_populates="comment",
+        cascade="all, delete-orphan",
+        order_by="TicketCommentMention.created_at, TicketCommentMention.id",
+    )
+
+
+class TicketCommentMention(Base):
+    """Durable explicit staff-user or Service-Team target on a comment."""
+
+    __tablename__ = "support_ticket_comment_mentions"
+    __table_args__ = (
+        CheckConstraint(
+            "(system_user_id IS NOT NULL) <> (service_team_id IS NOT NULL)",
+            name="ck_ticket_comment_mention_exact_target",
+        ),
+        UniqueConstraint(
+            "comment_id",
+            "system_user_id",
+            name="uq_ticket_comment_mention_user",
+        ),
+        UniqueConstraint(
+            "comment_id",
+            "service_team_id",
+            name="uq_ticket_comment_mention_team",
+        ),
+        Index("ix_ticket_comment_mentions_comment", "comment_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    comment_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "support_ticket_comments.id",
+            name="fk_ticket_comment_mentions_comment",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    system_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "system_users.id",
+            name="fk_ticket_comment_mentions_system_user",
+            ondelete="RESTRICT",
+        ),
+    )
+    service_team_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "service_teams.id",
+            name="fk_ticket_comment_mentions_service_team",
+            ondelete="RESTRICT",
+        ),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+
+    comment = relationship("TicketComment", back_populates="mention_links")
+
+    @property
+    def kind(self) -> str:
+        """Return the public typed target discriminator."""
+
+        return "person" if self.system_user_id is not None else "group"
+
+    @property
+    def target_id(self) -> uuid.UUID:
+        """Return the one target guaranteed by the database check."""
+
+        target_id = self.system_user_id or self.service_team_id
+        if target_id is None:
+            raise ValueError("Ticket comment mention has no target")
+        return target_id
 
 
 class TicketSlaEvent(Base):

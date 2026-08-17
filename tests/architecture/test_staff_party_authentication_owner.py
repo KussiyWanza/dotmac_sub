@@ -1,23 +1,17 @@
-"""Staff authentication resolves through one named owner — stage 1.
+"""Staff authentication resolves through one Party-keyed owner after cutover.
 
 Four entry points authenticate a staff principal: login, refresh, per-request
 session validation, and vendor admission. Before the cutover each resolved the
 principal itself, straight from `credential.system_user_id` or
 `session.system_user_id`. That is four authorities wearing one name.
 
-This guard fixes the shape for deploy 1:
+This guard fixes the cut-over shape:
 
 - all four call `staff_party_authentication`
-- `resolve_staff_principal_assertion` — the ONE-DEPLOY compatibility bridge —
-  is referenced only by the owner that defines it; readers use the typed
-  session resolver, so the bridge cannot spread while it exists
+- the assertion-first compatibility bridge does not exist anywhere
 - nothing outside the owner resolves a staff principal by handing
   `credential.system_user_id` or `session.system_user_id` to `db.get`
 
-Deploy 2 strengthens this: once `sessions.party_id` is backfilled and required,
-`resolve_staff_principal_assertion` is deleted and
-`test_the_compatibility_bridge_is_confined` becomes a test that it does not
-exist at all. The bridge is temporary by construction, not by intention.
 """
 
 from __future__ import annotations
@@ -90,7 +84,7 @@ def test_the_owner_defines_the_party_primitive_and_transition_entry_points() -> 
     assert "def resolve_staff_principal_by_party(" in source
     assert "def resolve_staff_principal(" in source
     assert "def resolve_staff_session_principal(" in source
-    assert f"def {BRIDGE}(" in source
+    assert f"def {BRIDGE}(" not in source
 
 
 def test_every_staff_entry_point_delegates_to_the_owner() -> None:
@@ -127,19 +121,25 @@ def test_every_staff_entry_point_delegates_to_the_owner() -> None:
     )
 
 
-def test_the_compatibility_bridge_is_confined() -> None:
-    """The assertion-first bridge must not spread while it exists.
-
-    It is a one-deploy allowance for sessions that predate `sessions.party_id`.
-    Deploy 2 deletes it; until then only the owner and the reader may name it.
-    """
+def test_the_compatibility_bridge_is_retired() -> None:
+    """The legacy resolver cannot survive in an overlooked entry point."""
 
     referencing = _modules_referencing(BRIDGE)
 
-    assert referencing <= {str(OWNER_PATH)}, (
-        f"{BRIDGE} is the temporary compatibility bridge and must stay confined "
-        f"to the owner; also referenced by {referencing - {str(OWNER_PATH)}}"
+    assert referencing == set(), f"retired bridge still referenced by {referencing}"
+
+
+def test_the_bridge_retirement_detector_has_a_sensitivity_proof(
+    tmp_path: Path,
+) -> None:
+    planted = tmp_path / "app"
+    planted.mkdir()
+    (planted / "offender.py").write_text(
+        f"def authenticate():\n    return {BRIDGE}()\n",
+        encoding="utf-8",
     )
+
+    assert _modules_referencing(BRIDGE, root=planted)
 
 
 def test_no_module_resolves_a_staff_principal_from_the_legacy_key() -> None:

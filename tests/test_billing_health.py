@@ -304,6 +304,26 @@ def test_anomalies_flag_each_signal():
     assert (
         "billing_profile_mixed_modes" in _snap(billing_profile_mixed_count=1).anomalies
     )
+    assert "aged_draft_invoices" not in _snap(aged_draft_count=10_000).anomalies
+    assert (
+        "stalled_draft_invoice_cohort"
+        in _snap(
+            stalled_draft_cohort_count=billing_health.STALLED_DRAFT_ALERT_COUNT + 1
+        ).anomalies
+    )
+    assert (
+        "stalled_draft_invoice_cohort"
+        not in _snap(stalled_draft_cohort_count=1).anomalies
+    )
+    assert (
+        "payment_receipt_email_template_unready"
+        in _snap(
+            payment_receipt_email_template_ready=False,
+            payment_receipt_email_template_status=(
+                billing_health.PaymentReceiptTemplateStatus.inactive
+            ),
+        ).anomalies
+    )
     # scan_ratio just above the floor is fine
     assert "invoice_scan_count_low" not in _snap(scan_ratio=0.6).anomalies
 

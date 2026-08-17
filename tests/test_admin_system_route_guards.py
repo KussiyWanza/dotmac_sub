@@ -22,6 +22,7 @@ from app.services.auth_flow import hash_password
 from app.services.credential_crypto import decrypt_credential
 from app.services.radius_population import record_device_login_sync_status
 from app.web.admin import system as admin_system
+from tests.staff_identity_fixtures import add_bound_staff_user
 
 
 def test_require_system_user_principal_accepts_system_user():
@@ -95,17 +96,13 @@ def test_profile_state_prefers_system_user_id_for_mfa_status(db_session):
 
 
 def test_profile_state_lists_active_system_user_sessions(db_session):
-    system_user = SystemUser(
-        first_name="Session",
-        last_name="Owner",
+    system_user, person = add_bound_staff_user(
+        db_session,
         email="session-owner@example.com",
-        user_type=UserType.system_user,
-        is_active=True,
     )
-    db_session.add(system_user)
-    db_session.flush()
     current = AuthSession(
         system_user_id=system_user.id,
+        party_id=person.id,
         status=SessionStatus.active,
         token_hash=hashlib.sha256(b"current-token").hexdigest(),
         ip_address="203.0.113.10",
@@ -114,6 +111,7 @@ def test_profile_state_lists_active_system_user_sessions(db_session):
     )
     other = AuthSession(
         system_user_id=system_user.id,
+        party_id=person.id,
         status=SessionStatus.active,
         token_hash=hashlib.sha256(b"other-token").hexdigest(),
         ip_address="203.0.113.11",
@@ -375,23 +373,20 @@ def test_profile_device_login_self_rotation_rejects_non_router_user(db_session):
 
 
 def test_profile_sign_out_other_sessions_keeps_current(db_session):
-    system_user = SystemUser(
-        first_name="Session",
-        last_name="Revoker",
+    system_user, person = add_bound_staff_user(
+        db_session,
         email="session-revoker@example.com",
-        user_type=UserType.system_user,
-        is_active=True,
     )
-    db_session.add(system_user)
-    db_session.flush()
     current = AuthSession(
         system_user_id=system_user.id,
+        party_id=person.id,
         status=SessionStatus.active,
         token_hash=hashlib.sha256(b"current-revoke-token").hexdigest(),
         expires_at=datetime.now(UTC) + timedelta(days=1),
     )
     other = AuthSession(
         system_user_id=system_user.id,
+        party_id=person.id,
         status=SessionStatus.active,
         token_hash=hashlib.sha256(b"other-revoke-token").hexdigest(),
         expires_at=datetime.now(UTC) + timedelta(days=1),

@@ -295,20 +295,22 @@ def test_refresh_refuses_a_mismatched_pair_before_rotating(
     ) == before
 
 
-def test_refresh_keeps_the_null_only_pre_534_bridge(db_session, monkeypatch) -> None:
-    monkeypatch.setenv("JWT_SECRET", "test-secret")
-    user, _person, _credential = _bound_login(db_session, "refresh-bridge@example.test")
-    refresh_token = "refresh-bridge-token"
-    _staff_session(
-        db_session,
-        refresh_token=refresh_token,
-        system_user_id=user.id,
-        party_id=None,
-    )
+def test_session_resolution_refuses_a_missing_party_even_with_a_legacy_key(
+    db_session,
+) -> None:
+    """Deploy 2 has no assertion-first compatibility branch."""
 
-    result = AuthFlow.refresh(db_session, refresh_token, _request())
+    user, _person, _credential = _bound_login(db_session, "strict-session@example.test")
 
-    assert result["refresh_token"] != refresh_token
+    with pytest.raises(resolver.StaffProjectionError) as exc:
+        resolver.resolve_staff_session_principal(
+            db_session,
+            party_id=None,
+            system_user_id=user.id,
+            reference=uuid4(),
+        )
+
+    assert exc.value.refusal is resolver.StaffProjectionRefusal.projection_missing
 
 
 def test_new_staff_session_is_minted_from_a_typed_party_binding(
@@ -375,29 +377,6 @@ def test_session_mint_refuses_a_conflicting_binding_before_device_revocation(
     assert persisted is not None
     assert persisted.status is SessionStatus.active
     assert persisted.revoked_at is None
-
-
-def test_the_null_bridge_accepts_a_pre_migration_session(db_session) -> None:
-    """Sessions predating migration 534 still authenticate — deploy 1 only."""
-
-    user, _person, _credential = _bound_login(db_session, "pre534@example.test")
-
-    resolved = resolver.resolve_staff_principal_assertion(db_session, user.id)
-
-    assert resolved.id == user.id
-
-
-def test_the_null_bridge_still_fails_closed_without_a_projection(db_session) -> None:
-    """The bridge is not a fallback: no Party, no authentication."""
-
-    user, _person, _credential = _bound_login(db_session, "bridge-null@example.test")
-    _unbind_principal(user)
-    db_session.commit()
-
-    with pytest.raises(resolver.StaffProjectionError) as exc:
-        resolver.resolve_staff_principal_assertion(db_session, user.id)
-
-    assert exc.value.refusal is resolver.StaffProjectionRefusal.projection_missing
 
 
 def test_a_refused_projection_mints_no_session_and_mutates_nothing(db_session) -> None:

@@ -258,7 +258,9 @@ def test_resolve_uses_historical_participant_linkage_with_low_confidence_when_no
     assert identity_resolution_requires_manual_review(result) is True
 
 
-def test_resolve_marks_duplicate_identifier_ambiguous(db_session):
+def test_resolve_marks_duplicate_identifier_ambiguous_without_logging_pii(
+    db_session, caplog
+):
     left = _subscriber()
     right = _subscriber()
     db_session.add_all([left, right])
@@ -281,15 +283,19 @@ def test_resolve_marks_duplicate_identifier_ambiguous(db_session):
     rebuild_identity_index_for_subscriber(db_session, left.id)
     rebuild_identity_index_for_subscriber(db_session, right.id)
 
-    result = resolve_customer_identity(
-        db_session, "(0801) 234-5678", channel_hint="phone"
-    )
+    with caplog.at_level("WARNING"):
+        result = resolve_customer_identity(
+            db_session, "(0801) 234-5678", channel_hint="phone"
+        )
 
     assert result.matched is False
     assert result.ambiguous is True
     assert result.subscriber_id is None
     assert result.ambiguity_count == 2
     assert identity_resolution_requires_manual_review(result) is True
+    assert "customer_identity_ambiguous_identifier" in caplog.text
+    assert "08012345678" not in caplog.text
+    assert "+2348012345678" not in caplog.text
 
 
 def test_rebuild_identity_index_cleans_stale_contact_identities(db_session):
@@ -365,3 +371,6 @@ def test_resolve_logs_match_details_with_confidence(db_session, caplog):
     assert "customer_identity_resolved" in caplog.text
     assert "matched_via=subscriber_contact" in caplog.text
     assert "confidence=MEDIUM" in caplog.text
+    assert "linked@example.com" not in caplog.text
+    assert str(subscriber.id) not in caplog.text
+    assert str(contact.id) not in caplog.text

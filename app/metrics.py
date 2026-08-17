@@ -592,6 +592,18 @@ class _BillingHealthCollector(Collector):
             "Prepaid accounts excluded from funding enforcement for want of a "
             "reviewed opening baseline (also excluded from the exposure gauges)",
         )
+        yield _gauge_description(
+            "billing_stalled_draft_invoice_cohort",
+            "Draft invoices created 24-48 hours ago that have not left draft",
+        )
+        yield _gauge_description(
+            "billing_stalled_draft_invoice_cohort_total",
+            "Value of draft invoices created 24-48 hours ago that remain draft",
+        )
+        yield _gauge_description(
+            "billing_payment_receipt_email_template_ready",
+            "1 when the payment receipt email template is active, valid, and receipt-aware",
+        )
 
     def collect(self):  # noqa: ANN201 - prometheus collector protocol
         from datetime import UTC, datetime
@@ -710,6 +722,21 @@ class _BillingHealthCollector(Collector):
                 "Prepaid accounts excluded from funding enforcement for want of "
                 "a reviewed opening baseline (also excluded from the exposure "
                 "gauges)",
+            ),
+            (
+                "stalled_draft_invoice_cohort",
+                "billing_stalled_draft_invoice_cohort",
+                "Draft invoices created 24-48 hours ago that have not left draft",
+            ),
+            (
+                "stalled_draft_invoice_cohort_total",
+                "billing_stalled_draft_invoice_cohort_total",
+                "Value of draft invoices created 24-48 hours ago that remain draft",
+            ),
+            (
+                "payment_receipt_email_template_ready",
+                "billing_payment_receipt_email_template_ready",
+                "1 when the payment receipt email template is active, valid, and receipt-aware",
             ),
         )
         for signal, name, help_text in global_metrics:

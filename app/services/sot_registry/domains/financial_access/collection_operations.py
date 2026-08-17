@@ -948,19 +948,26 @@ SERVICES: tuple[SOTService, ...] = (
             "billing anomaly classification",
             "bounded billing health observations",
             "account-credit invariant observation publication",
+            "fixed-cohort draft-lifecycle observation",
+            "payment-receipt template readiness observation",
         ),
         depends_on=(
             "customer.financial_position",
             "financial.access_resolution",
             "financial.billing_profile",
             "financial.account_credit_applications",
+            "communications.notification_service",
         ),
         notes=(
             "Billing health is monitoring evidence, never a financial "
             "balance owner or direct suspension/restoration decision. "
             "The frequent snapshot consumes typed aggregate counts; "
             "record-level forensic inspection stays with the financial "
-            "owner and is not used merely to calculate a metric count."
+            "owner and is not used merely to calculate a metric count. "
+            "Historical aged drafts remain review stock; only a fixed recent "
+            "creation cohort classifies a current lifecycle failure. Receipt "
+            "readiness observes communications-owned template state and does "
+            "not send, activate, or settle a payment."
         ),
     ),
     SOTService(
