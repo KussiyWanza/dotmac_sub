@@ -189,11 +189,47 @@ def test_authoritative_selection_requires_complete_reconciliation_metadata(db_se
     batch.source_metadata = metadata
     db_session.commit()
 
-    with pytest.raises(CrmNetworkMapPointMigrationError, match="missing"):
+    assert select_authoritative_crm_point_batches(db_session) == ()
+    assert (
         select_authoritative_crm_point_batches(
             db_session, expected_archive_sha256=ARCHIVE
         )
-    assert select_authoritative_crm_point_batches(db_session) == ()
+        == ()
+    )
+
+
+def test_authoritative_selection_ignores_legacy_incomplete_batches_with_expected_hash(
+    db_session,
+):
+    legacy = _batch(
+        db_session,
+        archive=OLD_ARCHIVE,
+        manifest=OLD_MANIFEST,
+        snapshot="2026-08-13T10:00:00+00:00",
+        created_at=datetime.now(UTC) + timedelta(days=1),
+    )
+    legacy_metadata = dict(legacy.source_metadata)
+    legacy_metadata.pop("importer_version")
+    legacy.source_metadata = legacy_metadata
+    _feature(db_session, legacy, external_id="CRM-OLD")
+
+    selected = _batch(
+        db_session,
+        archive=ARCHIVE,
+        manifest=MANIFEST,
+        snapshot="2026-08-14T10:00:00+00:00",
+        created_at=datetime.now(UTC),
+    )
+    _feature(db_session, selected, external_id="CRM-NEW")
+    db_session.commit()
+
+    selections = select_authoritative_crm_point_batches(
+        db_session, expected_archive_sha256=ARCHIVE
+    )
+
+    assert len(selections) == 1
+    assert selections[0].batch_ids == (selected.id,)
+    assert legacy.id not in selections[0].superseded_batch_ids
 
 
 def test_stable_crm_source_identity_is_used_for_decisions_and_links(

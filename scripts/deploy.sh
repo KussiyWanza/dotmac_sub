@@ -95,11 +95,13 @@ BACKGROUND_STABILITY_SECONDS="${BACKGROUND_STABILITY_SECONDS:-15}"
 CELERY_INSPECT_TIMEOUT_SECONDS="${CELERY_INSPECT_TIMEOUT_SECONDS:-5}"
 # Every service that runs the app image and must be recreated on a new build.
 APP_SERVICES=(app celery-worker celery-worker-bandwidth celery-worker-ingestion \
-  celery-worker-monitoring celery-worker-notifications celery-worker-billing \
+  celery-worker-monitoring celery-worker-notifications-immediate \
+  celery-worker-notifications celery-worker-billing \
   celery-worker-tr069 celery-beat \
   bandwidth-poller syslog-listener)
 CELERY_WORKER_SERVICES=(celery-worker celery-worker-bandwidth \
-  celery-worker-ingestion celery-worker-monitoring celery-worker-notifications \
+  celery-worker-ingestion celery-worker-monitoring \
+  celery-worker-notifications-immediate celery-worker-notifications \
   celery-worker-billing celery-worker-tr069)
 CELERY_BEAT_SERVICE="celery-beat"
 

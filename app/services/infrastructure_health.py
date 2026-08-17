@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 _CHECK_TIMEOUT = 3  # seconds for each health check
 _DEFAULT_CELERY_QUEUES = (
     "celery",
+    "notifications_immediate",
     "notifications",
     "nin",
     "tr069",
@@ -40,6 +41,7 @@ _DEFAULT_CELERY_QUEUES = (
 )
 _DEFAULT_CELERY_QUEUE_RESTART_TARGETS = {
     "celery": "celery-worker",
+    "notifications_immediate": "celery-worker-notifications-immediate",
     "notifications": "celery-worker-notifications",
     "nin": "celery-worker",
     "crm": "celery-worker",

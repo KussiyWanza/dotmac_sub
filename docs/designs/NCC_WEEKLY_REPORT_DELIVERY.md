@@ -38,6 +38,19 @@ To/CC/BCC, SMTP sender key, subject, body template, weekday, local time,
 timezone and lookback. Every field is backed by the registered notification
 setting specification. Defaults remain disabled and Tuesday-based.
 
+The on-screen complaints table uses the canonical typed list contract and shows
+20 rows by default, with 50- and 100-row options. Pagination applies only to the
+screen: workbook exports and weekly delivery continue to use the complete
+bounded report snapshot.
+
+The complaints resolver excludes tickets carrying a source approved by the
+support owner as internal operational work. It does not use missing customer or
+classification data as an exclusion shortcut: incomplete customer complaints
+remain visible and fail workbook validation. Nigerian customer phones in local,
+`+234`, or `234` form are projected into the NCC-only `234XXXXXXXXXX` format;
+the stored customer phone is not changed, and malformed values remain visible
+as filing failures.
+
 Configuration writes use a typed owner command, emit an event, and stage an
 audit record. The CRM migration utility is dry-run by default and accepts an
 operator-exported JSON document; it does not establish a new runtime CRM

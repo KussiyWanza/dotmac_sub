@@ -56,6 +56,10 @@ def test_restart_containers_uses_default_mapping(monkeypatch):
 
     assert containers["celery-worker-billing"] == "dotmac_sub_celery_worker_billing"
     assert (
+        containers["celery-worker-notifications-immediate"]
+        == "dotmac_sub_celery_worker_notifications_immediate"
+    )
+    assert (
         containers["celery-worker-notifications"]
         == "dotmac_sub_celery_worker_notifications"
     )

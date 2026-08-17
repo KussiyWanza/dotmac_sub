@@ -261,6 +261,10 @@ bounded, auditable, and safe to repeat.
   and decrements the unread-conversation total. The unread-only cohort refreshes
   only its queue so pagination remains truthful; failure preserves unread state
   and receives one quiet retry.
+- Conversation activity presents an operator read cursor as **Viewed** with the
+  viewing operator and cursor timestamp. It presents **Opened** only from the
+  authoritative lifecycle event that changes the conversation status to
+  `open`; viewing a thread never implies that status transition.
 - Opening a conversation places a loading veil over the conversation pane only;
   the queue sidebar remains visible and usable.
 - A request already in flight for the same resource is not repeated.

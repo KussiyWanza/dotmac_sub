@@ -15,6 +15,7 @@ FULL_SERVICES = (
     "celery-worker-bandwidth",
     "celery-worker-ingestion",
     "celery-worker-monitoring",
+    "celery-worker-notifications-immediate",
     "celery-worker-notifications",
     "celery-worker-billing",
     "celery-worker-tr069",
@@ -493,6 +494,7 @@ def test_deploy_verifies_every_worker_and_beat_before_success(tmp_path: Path) ->
         "celery-worker-bandwidth",
         "celery-worker-ingestion",
         "celery-worker-monitoring",
+        "celery-worker-notifications-immediate",
         "celery-worker-notifications",
         "celery-worker-billing",
         "celery-worker-tr069",
@@ -552,7 +554,9 @@ def test_deploy_never_starts_a_service_the_host_does_not_declare(
 
 def test_deploy_refuses_missing_required_celery_worker(tmp_path: Path) -> None:
     missing_notification_worker = tuple(
-        service for service in FULL_SERVICES if service != "celery-worker-notifications"
+        service
+        for service in FULL_SERVICES
+        if service != "celery-worker-notifications-immediate"
     )
     result, _env_file, docker_log = _run_deploy(
         tmp_path,
@@ -561,7 +565,7 @@ def test_deploy_refuses_missing_required_celery_worker(tmp_path: Path) -> None:
 
     assert result.returncode != 0
     assert "DEPLOY CONFIG FAILURE" in result.stderr
-    assert "celery-worker-notifications" in result.stderr
+    assert "celery-worker-notifications-immediate" in result.stderr
     assert not any(
         " up -d " in command for command in docker_log.read_text().splitlines()
     )

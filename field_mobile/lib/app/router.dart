@@ -72,6 +72,8 @@ GoRouter buildRouter(Ref ref) {
         builder: (_, state) => NewMaterialRequestScreen(
           initialWorkOrderId: state.uri.queryParameters['workOrderId'],
           initialWorkOrderLabel: state.uri.queryParameters['workOrderLabel'],
+          initialProjectId: state.uri.queryParameters['projectId'],
+          initialTicketId: state.uri.queryParameters['ticketId'],
         ),
       ),
       GoRoute(
@@ -84,6 +86,8 @@ GoRouter buildRouter(Ref ref) {
         builder: (_, state) => NewExpenseRequestScreen(
           initialWorkOrderId: state.uri.queryParameters['workOrderId'],
           initialWorkOrderLabel: state.uri.queryParameters['workOrderLabel'],
+          initialProjectId: state.uri.queryParameters['projectId'],
+          initialTicketId: state.uri.queryParameters['ticketId'],
         ),
       ),
       GoRoute(
