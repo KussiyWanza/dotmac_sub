@@ -27,7 +27,9 @@ DOMAIN = DomainSOT(
             depends_on=("customer.accounts", "support.ticket_lifecycle"),
             notes=(
                 "Projects native support and subscriber facts into the NCC filing "
-                "vocabulary. Unknown classification, SLA, or location stays explicit."
+                "vocabulary. Approved internal operational tickets are excluded; "
+                "unknown customer identity, classification, SLA, or location stays "
+                "explicit."
             ),
             contract=ServiceContract(
                 concerns=(
@@ -36,7 +38,7 @@ DOMAIN = DomainSOT(
                         role=OwnerRole.RESOLVER,
                         input_names=(
                             "typed NCC report query",
-                            "native support ticket facts",
+                            "native support ticket facts and operational provenance",
                             "native subscriber facts",
                             "NCC filing vocabulary",
                         ),
@@ -50,12 +52,12 @@ DOMAIN = DomainSOT(
                         source="inclusive UTC complaint-created window",
                     ),
                     AuthorityInput(
-                        name="native support ticket facts",
+                        name="native support ticket facts and operational provenance",
                         owner="support.ticket_lifecycle",
                         kind=AuthorityKind.AUTHORITATIVE_RECORD,
                         source=(
                             "tickets, comments, stored NCC classification, and "
-                            "SLA timestamps"
+                            "SLA timestamps, including approved internal-source evidence"
                         ),
                     ),
                     AuthorityInput(

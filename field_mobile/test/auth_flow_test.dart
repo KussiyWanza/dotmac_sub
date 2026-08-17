@@ -42,11 +42,10 @@ void main() {
   );
 
   test('staff login stores tokens and mode', () async {
-    adapter.on(
-      'POST',
-      '/api/v1/auth/login',
-      (_) => (200, {'access_token': freshToken, 'refresh_token': 'refresh-1'}),
-    );
+    adapter.on('POST', '/api/v1/auth/login', (options) {
+      expect(options.headers[ApiClient.nativeRefreshHeader], 'true');
+      return (200, {'access_token': freshToken, 'refresh_token': 'refresh-1'});
+    });
 
     final result = await repo.login(
       username: 'tech@dotmac.io',
@@ -227,11 +226,10 @@ void main() {
       loginMode: LoginMode.staff,
     );
 
-    adapter.on(
-      'POST',
-      '/api/v1/auth/refresh',
-      (_) => (200, {'access_token': freshToken}),
-    );
+    adapter.on('POST', '/api/v1/auth/refresh', (options) {
+      expect(options.headers[ApiClient.nativeRefreshHeader], 'true');
+      return (200, {'access_token': freshToken});
+    });
     adapter.on('GET', '/api/v1/field/me', (options) {
       final auth = options.headers['Authorization'] as String?;
       return auth == 'Bearer $freshToken'
@@ -297,6 +295,30 @@ void main() {
     final client = _client(adapter, store, onExpired: () => expired = true);
     await client.ensureFreshToken();
     expect(expired, isTrue);
+  });
+
+  test('transient refresh failure preserves the session for retry', () async {
+    final expiringSoon = fakeJwt(
+      expiry: DateTime.now().toUtc().add(const Duration(seconds: 10)),
+    );
+    await store.save(
+      accessToken: expiringSoon,
+      refreshToken: 'refresh-live',
+      loginMode: LoginMode.staff,
+    );
+    adapter.on(
+      'POST',
+      '/api/v1/auth/refresh',
+      (_) => (503, {'detail': 'Temporarily unavailable'}),
+    );
+
+    var expired = false;
+    final client = _client(adapter, store, onExpired: () => expired = true);
+    expect(await client.ensureFreshToken(), isNull);
+
+    expect(expired, isFalse);
+    expect(await store.refreshToken, 'refresh-live');
+    expect(await store.accessToken, expiringSoon);
   });
 
   test('config gate blocks below min version and merges flags', () async {

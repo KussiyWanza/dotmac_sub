@@ -784,12 +784,15 @@ class TestDailyRunnerQueueRouting:
     def test_notification_delivery_has_a_dedicated_queue(self):
         from app.celery_app import celery_app
 
-        assert "notifications" in {q.name for q in celery_app.conf.task_queues}
-        for task in (
-            "app.tasks.notifications.deliver_notification",
-            "app.tasks.notifications.deliver_notification_queue",
-        ):
-            assert celery_app.conf.task_routes[task] == {"queue": "notifications"}
+        declared = {q.name for q in celery_app.conf.task_queues}
+        assert "notifications_immediate" in declared
+        assert "notifications" in declared
+        assert celery_app.conf.task_routes[
+            "app.tasks.notifications.deliver_notification"
+        ] == {"queue": "notifications_immediate"}
+        assert celery_app.conf.task_routes[
+            "app.tasks.notifications.deliver_notification_queue"
+        ] == {"queue": "notifications"}
 
     def test_whole_base_runners_get_long_time_limits(self):
         from app.services.scheduler_config import get_celery_config

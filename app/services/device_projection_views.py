@@ -21,7 +21,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.network_monitoring import DeviceProjection
-from app.services.status_presentation import device_operational_status_presentation
+from app.services.status_presentation import network_device_list_status_presentation
 
 # Fields the free-text search matches (mirrors the legacy in-memory search).
 _SEARCH_COLUMNS = (
@@ -86,7 +86,7 @@ def _row_to_dict(row: DeviceProjection) -> dict:
         "model": row.model,
         "status": row.operational_status,
         "operational_reason": row.operational_reason,
-        "status_presentation": device_operational_status_presentation(
+        "status_presentation": network_device_list_status_presentation(
             row.operational_status
         ),
         "last_seen": row.last_seen,

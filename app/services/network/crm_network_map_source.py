@@ -28,6 +28,7 @@ from app.services.domain_errors import DomainError
 SOURCE_SYSTEM = "dotmac_crm_fiber_map"
 FORMAT_VERSION = 1
 MAX_BATCH_SIZE = 100
+SEGMENT_EVIDENCE_SCHEMA_VERSION = "crm_fiber_segments:endpoint_capacity:v1"
 NIGERIA_LONGITUDE_RANGE = (2.0, 15.0)
 NIGERIA_LATITUDE_RANGE = (4.0, 14.0)
 KML_NAMESPACE = "http://www.opengis.net/kml/2.2"
@@ -264,10 +265,44 @@ def _line_coordinates(raw_geojson: object) -> tuple[tuple[float, float], ...] | 
     return tuple(coordinates) if len(coordinates) >= 2 else None
 
 
+def _line_geometry_payload(raw_geojson: object) -> tuple[str, object] | None:
+    if not raw_geojson:
+        return None
+    try:
+        payload = json.loads(str(raw_geojson))
+    except (TypeError, ValueError):
+        return None
+    geometry_type = payload.get("type")
+    if geometry_type == "LineString":
+        line = _line_coordinates(raw_geojson)
+        return (geometry_type, line) if line is not None else None
+    if geometry_type != "MultiLineString":
+        return None
+    lines: list[tuple[tuple[float, float], ...]] = []
+    for raw_line in payload.get("coordinates") or []:
+        if not isinstance(raw_line, list):
+            return None
+        line_payload = json.dumps({"type": "LineString", "coordinates": raw_line})
+        line = _line_coordinates(line_payload)
+        if line is None:
+            return None
+        lines.append(line)
+    return (geometry_type, tuple(lines)) if lines else None
+
+
 def _required_columns(spec: CrmMapProfileSpec) -> set[str]:
     required = {"id", "is_active", *spec.property_columns}
     if spec.geometry_column:
         required.add(spec.geometry_column)
+        if spec.profile is CrmMapProfileName.FIBER_SEGMENTS:
+            required.update(
+                {
+                    "created_at",
+                    "from_point_id",
+                    "to_point_id",
+                    "updated_at",
+                }
+            )
     else:
         required.update({"latitude", "longitude"})
     return required
@@ -344,7 +379,79 @@ def _properties(
     if spec.profile is CrmMapProfileName.SPLICE_CLOSURES:
         values["tray_count"] = str(related["tray_count"].get(source_id, 0))
         values["splice_count"] = str(related["splice_count"].get(source_id, 0))
+    if spec.profile is CrmMapProfileName.FIBER_SEGMENTS:
+        values["source_evidence_schema_version"] = SEGMENT_EVIDENCE_SCHEMA_VERSION
+        for key in (
+            "from_point_id",
+            "to_point_id",
+            "from_endpoint_type",
+            "to_endpoint_type",
+            "from_endpoint_ref_id",
+            "to_endpoint_ref_id",
+            "from_endpoint_name",
+            "to_endpoint_name",
+            "route_srid",
+            "created_at",
+            "updated_at",
+        ):
+            values[key] = _json_value(row.get(key))
     return tuple(sorted(values.items()))
+
+
+def _termination_lookup(
+    connection: Connection, tables: dict[str, Table]
+) -> dict[str, dict[str, object]]:
+    table = tables["fiber_termination_points"]
+    rows = connection.execute(
+        select(
+            table.c.id,
+            table.c.endpoint_type,
+            table.c.ref_id,
+            table.c.name,
+            table.c.is_active,
+        )
+    ).mappings()
+    return {str(row["id"]): dict(row) for row in rows}
+
+
+def _segment_endpoint_blockers(
+    row: dict[str, object], terminations: dict[str, dict[str, object]]
+) -> list[str]:
+    blockers: list[str] = []
+    from_point_id = _json_value(row.get("from_point_id"))
+    to_point_id = _json_value(row.get("to_point_id"))
+    if not from_point_id:
+        blockers.append("missing_from_point_id")
+    if not to_point_id:
+        blockers.append("missing_to_point_id")
+    if from_point_id and to_point_id and from_point_id == to_point_id:
+        blockers.append("same_from_to_point_id")
+    for prefix, point_id in (("from", from_point_id), ("to", to_point_id)):
+        if not point_id:
+            continue
+        termination = terminations.get(point_id)
+        if termination is None:
+            blockers.append(f"{prefix}_point_orphaned")
+            continue
+        if not bool(termination.get("is_active")):
+            blockers.append(f"{prefix}_point_inactive")
+        endpoint_type = _json_value(termination.get("endpoint_type"))
+        endpoint_ref_id = _json_value(termination.get("ref_id"))
+        if not endpoint_type:
+            blockers.append(f"{prefix}_endpoint_type_missing")
+        if not endpoint_ref_id:
+            blockers.append(f"{prefix}_endpoint_ref_id_missing")
+        row[f"{prefix}_endpoint_type"] = endpoint_type
+        row[f"{prefix}_endpoint_ref_id"] = endpoint_ref_id
+        row[f"{prefix}_endpoint_name"] = _json_value(termination.get("name"))
+    try:
+        fiber_count = int(str(row.get("fiber_count") or ""))
+    except (TypeError, ValueError):
+        blockers.append("missing_or_invalid_fiber_count")
+    else:
+        if fiber_count <= 0:
+            blockers.append("missing_or_invalid_fiber_count")
+    return blockers
 
 
 def _extract_profile(
@@ -352,6 +459,7 @@ def _extract_profile(
     tables: dict[str, Table],
     spec: CrmMapProfileSpec,
     related: dict[str, dict[str, int]],
+    terminations: dict[str, dict[str, object]],
 ) -> CrmMapProfileExtraction:
     table = tables[spec.table_name]
     selected: list[ColumnElement[Any]] = [
@@ -363,6 +471,7 @@ def _extract_profile(
                 "_geometry_geojson"
             )
         )
+        selected.append(func.ST_SRID(table.c[spec.geometry_column]).label("route_srid"))
     rows = list(connection.execute(select(*selected).order_by(table.c.id)).mappings())
     inactive_count = sum(1 for row in rows if not bool(row["is_active"]))
     features: list[CrmMapSourceFeature] = []
@@ -373,8 +482,8 @@ def _extract_profile(
             continue
         source_id = str(row["id"])
         if spec.geometry_column:
-            line = _line_coordinates(row.get("_geometry_geojson"))
-            if line is None:
+            line_payload = _line_geometry_payload(row.get("_geometry_geojson"))
+            if line_payload is None:
                 blockers.append(
                     CrmMapSourceBlocker(
                         profile=spec.profile,
@@ -383,8 +492,30 @@ def _extract_profile(
                     )
                 )
                 continue
-            coordinates: tuple[float, float] | tuple[tuple[float, float], ...] = tuple(
-                line
+            geometry_type, line = line_payload
+            if geometry_type != spec.geometry_type:
+                blockers.append(
+                    CrmMapSourceBlocker(
+                        profile=spec.profile,
+                        source_id=source_id,
+                        code="unsupported_geometry_type",
+                    )
+                )
+                continue
+            endpoint_blockers = _segment_endpoint_blockers(row, terminations)
+            if endpoint_blockers:
+                blockers.extend(
+                    CrmMapSourceBlocker(
+                        profile=spec.profile,
+                        source_id=source_id,
+                        code=code,
+                    )
+                    for code in endpoint_blockers
+                )
+                continue
+            coordinates: tuple[float, float] | tuple[tuple[float, float], ...] = cast(
+                tuple[tuple[float, float], ...],
+                line,
             )
         else:
             longitude = _finite_coordinate(row.get("longitude"))
@@ -446,8 +577,9 @@ def extract_crm_network_map(
     ) as connection:
         tables = _validated_tables(connection)
         related = _related_counts(connection, tables)
+        terminations = _termination_lookup(connection, tables)
         profiles = tuple(
-            _extract_profile(connection, tables, spec, related)
+            _extract_profile(connection, tables, spec, related, terminations)
             for spec in PROFILE_SPECS
         )
         olt_devices = tables["olt_devices"]
@@ -516,7 +648,11 @@ def _coordinate_text(feature: CrmMapSourceFeature) -> str:
     )
 
 
-def build_kml(features: tuple[CrmMapSourceFeature, ...]) -> bytes:
+def build_kml(
+    features: tuple[CrmMapSourceFeature, ...],
+    *,
+    archive_sha256: str | None = None,
+) -> bytes:
     """Serialize normalized features without changing their source meaning."""
 
     ET.register_namespace("", KML_NAMESPACE)
@@ -528,7 +664,10 @@ def build_kml(features: tuple[CrmMapSourceFeature, ...]) -> bytes:
         name.text = feature.display_name or feature.source_id
         extended = ET.SubElement(placemark, f"{{{KML_NAMESPACE}}}ExtendedData")
         schema_data = ET.SubElement(extended, f"{{{KML_NAMESPACE}}}SchemaData")
-        for key, value in feature.properties:
+        properties = dict(feature.properties)
+        if archive_sha256 and properties.get("type") == "fiber_segment":
+            properties["source_archive_sha256"] = validate_sha256(archive_sha256)
+        for key, value in sorted(properties.items()):
             element = ET.SubElement(
                 schema_data,
                 f"{{{KML_NAMESPACE}}}SimpleData",
@@ -554,6 +693,7 @@ __all__ = [
     "CrmMapSourceFeature",
     "CrmNetworkMapExtraction",
     "CrmNetworkMapSourceError",
+    "SEGMENT_EVIDENCE_SCHEMA_VERSION",
     "MAX_BATCH_SIZE",
     "SOURCE_SYSTEM",
     "build_kml",

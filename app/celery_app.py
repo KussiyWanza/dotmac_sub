@@ -56,9 +56,11 @@ celery_app.autodiscover_tasks(["app.tasks"])
 # This prevents ACS work from being starved by slow SNMP/polling/default tasks.
 celery_app.conf.task_routes = {
     # Customer-facing delivery must not wait behind unrelated default, CRM, or
-    # identity work. The periodic runner is the durable recovery sweep; exact
-    # post-commit wake-ups use the same isolated consumer.
-    "app.tasks.notifications.deliver_notification": {"queue": "notifications"},
+    # identity work. Exact post-commit wake-ups use a small immediate queue so
+    # they do not sit behind long periodic notification recovery sweeps.
+    "app.tasks.notifications.deliver_notification": {
+        "queue": "notifications_immediate"
+    },
     "app.tasks.notifications.deliver_notification_queue": {"queue": "notifications"},
     "app.tasks.tr069.sync_all_acs_devices": {"queue": "acs"},
     "app.tasks.tr069.reconcile_command_outcomes": {"queue": "acs"},
@@ -169,7 +171,8 @@ celery_app.conf.task_routes = {
 
 celery_app.conf.task_queues = (
     Queue("celery"),  # Default queue
-    Queue("notifications"),  # Immediate and recovery customer delivery
+    Queue("notifications_immediate"),  # Exact post-commit customer delivery
+    Queue("notifications"),  # Periodic recovery customer delivery
     Queue("nin"),  # Dedicated identity verification queue
     Queue("tr069"),  # Dedicated OLT/TR-069 operations queue
     Queue("acs"),  # Dedicated GenieACS/TR-069 queue

@@ -170,7 +170,7 @@
             {% if status %}<input type="hidden" name="status" value="{{ status }}">{% endif %}
             {% if reply_window_status %}<input type="hidden" name="reply_window_status" value="{{ reply_window_status }}">{% endif %}
             {% if ai_handling is not none %}<input type="hidden" name="ai_handling" value="{{ 'true' if ai_handling else 'false' }}">{% endif %}
-            <details open class="group rounded-lg border border-slate-200/70 bg-slate-50/70 dark:border-slate-700/70 dark:bg-slate-800/40">
+            <details name="inbox-filter-section" class="group rounded-lg border border-slate-200/70 bg-slate-50/70 dark:border-slate-700/70 dark:bg-slate-800/40">
                 <summary class="flex min-h-10 cursor-pointer list-none items-center justify-between px-3 text-xs font-semibold text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:text-slate-300">
                     <span>Status</span><span class="text-slate-400 transition-transform group-open:rotate-90" aria-hidden="true">&rsaquo;</span>
                 </summary>
@@ -195,6 +195,11 @@
                             class="min-h-10 min-w-16 flex-1 rounded-lg px-2 text-xs font-semibold transition-colors {% if status == 'pending' and not has_ticket %}bg-white text-amber-700 shadow-sm dark:bg-slate-700 dark:text-amber-400{% else %}text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200{% endif %}">
                         <span class="inline-flex items-center justify-center gap-1.5"><span class="h-1.5 w-1.5 rounded-full bg-amber-500" aria-hidden="true"></span>Pending</span>
                     </button>
+                    <button type="button" @click="applyAssignmentFilter('attention')"
+                            class="min-h-10 min-w-28 flex-1 rounded-lg px-2 text-xs font-semibold transition-colors"
+                            :class="assignmentFilterActive('attention') ? 'bg-white text-orange-700 shadow-sm dark:bg-slate-700 dark:text-orange-300' : 'text-slate-500 dark:text-slate-400'">
+                        Needs attention <span class="tabular-nums">{{ assignment_counts.needs_attention }}</span>
+                    </button>
                     <button type="submit" name="has_ticket" value="true"
                             class="min-h-10 min-w-24 flex-1 rounded-lg px-2 text-xs font-semibold transition-colors {% if has_ticket %}bg-white text-sky-700 shadow-sm dark:bg-slate-700 dark:text-sky-300{% else %}text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200{% endif %}">
                         Sent to ticket
@@ -203,7 +208,7 @@
                             :aria-pressed="(pendingStatusFilter === 'resolved' || (pendingStatusFilter === null && {{ 'true' if status == 'resolved' and not has_ticket else 'false' }})).toString()"
                             :class="pendingStatusFilter === 'resolved' && 'ring-2 ring-slate-500'"
                             class="min-h-10 min-w-16 flex-1 rounded-lg px-2 text-xs font-semibold transition-colors {% if status == 'resolved' and not has_ticket %}bg-white text-slate-700 shadow-sm dark:bg-slate-700 dark:text-slate-300{% else %}text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200{% endif %}">
-                        Done
+                        Resolved
                     </button>
                 </div>
                 </fieldset>
@@ -213,7 +218,7 @@
                 <button type="button" class="ml-1 underline" @click="refreshSidebar()">Retry</button>
             </p>
 
-            <details open class="group rounded-lg border border-slate-200/70 bg-slate-50/70 dark:border-slate-700/70 dark:bg-slate-800/40">
+            <details name="inbox-filter-section" class="group rounded-lg border border-slate-200/70 bg-slate-50/70 dark:border-slate-700/70 dark:bg-slate-800/40">
                 <summary class="flex min-h-10 cursor-pointer list-none items-center justify-between px-3 text-xs font-semibold text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:text-slate-300">
                     <span>Assignment</span><span class="text-slate-400 transition-transform group-open:rotate-90" aria-hidden="true">&rsaquo;</span>
                 </summary>
@@ -267,7 +272,7 @@
                 </fieldset>
             </details>
 
-            <details class="group rounded-lg border border-slate-200/70 bg-slate-50/70 dark:border-slate-700/70 dark:bg-slate-800/40" {% if unread or snoozed or muted or needs_attention or reply_window_status %}open{% endif %}>
+            <details hidden class="group rounded-lg border border-slate-200/70 bg-slate-50/70 dark:border-slate-700/70 dark:bg-slate-800/40">
                 <summary class="flex min-h-10 cursor-pointer list-none items-center justify-between px-3 text-xs font-semibold text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:text-slate-300">
                     <span>Attention</span><span class="text-slate-400 transition-transform group-open:rotate-90" aria-hidden="true">&rsaquo;</span>
                 </summary>
@@ -275,11 +280,6 @@
                 <legend class="sr-only">Attention</legend>
                 <div class="flex flex-wrap gap-1 rounded-xl bg-slate-100 p-1 dark:bg-slate-800/50">
                     <label class="inline-flex min-h-10 min-w-20 flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-lg px-2 text-xs font-semibold {% if unread %}bg-white text-amber-700 shadow-sm dark:bg-slate-700 dark:text-amber-300{% else %}text-slate-500 dark:text-slate-400{% endif %}"><input type="checkbox" name="unread" value="true" {% if unread %}checked{% endif %} @change="$el.form.requestSubmit()" class="rounded border-slate-300 text-amber-500 focus:ring-amber-500">Unread</label>
-                    <button type="button" @click="applyAssignmentFilter('attention')"
-                            class="min-h-10 min-w-28 flex-1 rounded-lg px-2 text-xs font-semibold transition-colors"
-                            :class="assignmentFilterActive('attention') ? 'bg-white text-orange-700 shadow-sm dark:bg-slate-700 dark:text-orange-300' : 'text-slate-500 dark:text-slate-400'">
-                        Needs attention <span class="tabular-nums">{{ assignment_counts.needs_attention }}</span>
-                    </button>
                     <a href="/admin/inbox?open_only=true&amp;snoozed=true" class="inline-flex min-h-10 min-w-20 flex-1 items-center justify-center gap-1 rounded-lg px-2 text-xs font-semibold {% if snoozed %}bg-white text-violet-700 shadow-sm dark:bg-slate-700 dark:text-violet-300{% else %}text-slate-500 dark:text-slate-400{% endif %}">Snoozed <strong>{{ queue_metrics.snoozed_open }}</strong></a>
                     <a href="/admin/inbox?open_only=true&amp;muted=true" class="inline-flex min-h-10 min-w-20 flex-1 items-center justify-center gap-1 rounded-lg px-2 text-xs font-semibold {% if muted %}bg-white text-slate-700 shadow-sm dark:bg-slate-700 dark:text-slate-200{% else %}text-slate-500 dark:text-slate-400{% endif %}">Muted <strong>{{ queue_metrics.muted_open }}</strong></a>
                     <button type="submit" name="reply_window_status" value=""
@@ -294,7 +294,7 @@
                 </fieldset>
             </details>
 
-            <details class="group rounded-lg border border-slate-200/70 bg-slate-50/70 dark:border-slate-700/70 dark:bg-slate-800/40" {% if channel_type or service_team_id or priority_at_most is not none %}open{% endif %}>
+            <details hidden class="group rounded-lg border border-slate-200/70 bg-slate-50/70 dark:border-slate-700/70 dark:bg-slate-800/40">
                 <summary class="flex min-h-10 cursor-pointer list-none items-center justify-between px-3 text-xs font-semibold text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:text-slate-300">
                     <span>Routing</span><span class="text-slate-400 transition-transform group-open:rotate-90" aria-hidden="true">&rsaquo;</span>
                 </summary>
@@ -327,7 +327,7 @@
             </div>
             </details>
 
-            <details class="group rounded-lg border border-slate-200/70 bg-slate-50/70 dark:border-slate-700/70 dark:bg-slate-800/40" {% if filters or assigned_person_id or activity_from or activity_to %}open{% endif %}>
+            <details hidden class="group rounded-lg border border-slate-200/70 bg-slate-50/70 dark:border-slate-700/70 dark:bg-slate-800/40">
                 <summary class="flex min-h-10 cursor-pointer list-none items-center justify-between px-3 text-xs font-semibold text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:text-slate-300">
                     <span>Advanced</span><span class="text-slate-400 transition-transform group-open:rotate-90" aria-hidden="true">&rsaquo;</span>
                 </summary>
@@ -397,7 +397,7 @@
 
             </form>
 
-        <details class="group rounded-lg border border-slate-200/70 bg-slate-50/70 dark:border-slate-700/70 dark:bg-slate-800/40">
+        <details hidden class="group rounded-lg border border-slate-200/70 bg-slate-50/70 dark:border-slate-700/70 dark:bg-slate-800/40">
         <summary class="flex min-h-10 cursor-pointer list-none items-center justify-between px-3 text-xs font-semibold text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:text-slate-300">
             <span>Saved views</span><span class="text-slate-400 transition-transform group-open:rotate-90" aria-hidden="true">&rsaquo;</span>
         </summary>

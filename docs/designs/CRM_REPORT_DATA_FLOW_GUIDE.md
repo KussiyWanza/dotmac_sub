@@ -14,7 +14,7 @@ gateway, it reads committed Self-Care records at request time. The module named
 REPORT: NCC Complaints
 Data source: Native support Tickets, TicketComments, Subscribers, addresses, assignees, and service teams.
 Backend query/service: typed `ncc_complaints_report.query_report`; compatibility adapters use `build_report`; scheduled delivery is owned by `communications.ncc_weekly_delivery`.
-Transformation/calculation: Filters the requested Ticket-created window, excludes cancelled/merged/test records, maps stored category/channel/status into NCC vocabulary, derives SLA status only when authoritative timestamps exist, canonicalizes geography, and validates filing readiness.
+Transformation/calculation: Filters the requested Ticket-created window, excludes cancelled/merged/test records and tickets with approved internal operational provenance, projects supported Nigerian phones into NCC's `234XXXXXXXXXX` format, maps stored category/channel/status into NCC vocabulary, derives SLA status only when authoritative timestamps exist, canonicalizes geography, and validates filing readiness. Incomplete customer complaints remain visible as validation failures.
 Route/API: `/admin/reports/ncc-complaints`; on-demand XLSX at `/admin/reports/ncc-complaints/export`; preserved scheduled XLSX at `/admin/reports/ncc-weekly-runs/{run_id}/download`.
 UI component/template: `templates/admin/reports/ncc_complaints.html`.
 Displayed as: Complaints, Not Yet Filable, and Unclassified cards, filing-readiness table, on-demand workbook, complete Tuesday delivery configuration, and recent run/delivery/artifact evidence.

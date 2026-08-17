@@ -1793,19 +1793,18 @@ def validation_status(record: dict[str, str]) -> str:
             add_error(column, "is required")
 
     msisdn = clean_text(record.get("MSISDN"))
-    if msisdn and not (
-        msisdn.startswith("234") or any(char.isalpha() for char in msisdn)
-    ):
+    if msisdn and not msisdn.isdigit():
+        add_error("MSISDN", "must contain digits only")
+    elif msisdn and not msisdn.startswith("234"):
         add_error("MSISDN", "must start with 234")
-    if (
-        msisdn
-        and msisdn.startswith("234")
-        and len("".join(char for char in msisdn if char.isdigit())) != 13
-    ):
+    elif msisdn and len(msisdn) != 13:
         add_error("MSISDN", "must be 13 digits including 234")
-    if not re.fullmatch(r"[A-Za-z]+", clean_text(record.get("First Name"))):
+
+    first_name = clean_basic_text(record.get("First Name"))
+    last_name = clean_basic_text(record.get("Last Name"))
+    if first_name and not re.fullmatch(r"[A-Za-z]+", first_name):
         add_error("First Name", "must contain letters only")
-    if not re.fullmatch(r"[A-Za-z-]+", clean_text(record.get("Last Name"))):
+    if last_name and not re.fullmatch(r"[A-Za-z-]+", last_name):
         add_error("Last Name", "must contain letters only; hyphen is allowed")
     if name_contains_test(record.get("First Name")):
         add_error("First Name", "must not contain test data")

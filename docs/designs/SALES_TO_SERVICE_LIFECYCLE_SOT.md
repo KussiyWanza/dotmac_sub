@@ -33,6 +33,34 @@ identifiers until ADR 0007's financial phases cut over. The Phase 1 shadow
 chain below uses `SalesOrderLine -> ServiceOrder -> Subscription` plus structural
 contract/obligation identities; it does not make the legacy joins canonical.
 
+## Approved reusable sales extraction boundary (2026-08-17)
+
+The reusable sales owner stops at an **accepted Quote**. A Starter-owned
+`dotmac-sales` module will own Leads, Pipelines, opportunity Stages, Quote
+authoring, Quote lifecycle, acceptance, and the immutable accepted commercial
+snapshot. Its committed consequence is a versioned, product-neutral
+accepted-quote owner output delivered after commit with durable retry and an
+exactly-once consumer receipt.
+
+The module will not own or construct a Subscriber, SalesOrder, Project,
+ProjectTask, InstallationProject, WorkOrder, invoice, ServiceOrder, or
+Subscription, and it will not import `dotmac-orders`. Those are downstream
+product/domain consequences of the accepted-quote output. Provider transports,
+campaigns, Inbox/conversations, WhatsApp, consent and retention case management
+are also outside the module.
+
+This amendment records the target authority boundary; it does not rewrite the
+as-built chain below. Until the module passes the Starter lineage gate, is
+adopted by Sub, backfilled, shadow-compared and reconciled, the existing Sub
+services and tables remain authoritative and `sales.quote_acceptance` retains
+its current atomic cross-domain transaction. The migration must deliberately
+split that transaction at the accepted-quote commit/output boundary; it may not
+run a second writer beside the current one.
+
+The reconciled CRM owner map and its deliberately unresolved campaign and
+retention rows are in
+[`MARKETING_SALES_SOT.md`](MARKETING_SALES_SOT.md).
+
 ## Owner-output chain
 
 Each owner's committed transition stages its versioned output event in the

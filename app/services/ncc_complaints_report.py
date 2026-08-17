@@ -25,10 +25,16 @@ we could not honestly source:
    come from what we actually hold, canonicalised against
    :mod:`app.services.ncc_location`'s reference tables; unresolvable stays
    blank.
+5. **Internal operations are not customer complaints.** Tickets carrying an
+   approved internal operational source are excluded. Other tickets remain
+   visible even when customer identity, classification, SLA, or location facts
+   are incomplete, and the workbook reports those gaps as ``[FAIL]``.
 
 Known gaps, reported blank rather than fabricated: sub has no ``Person``
 model, so **alt phone** has no source at all (subscribers carry one phone),
-and **Age/Gender** exist only for subscriber-linked complaints.
+and **Age/Gender** exist only for subscriber-linked complaints. Customer phone
+identity is not rewritten; the report alone projects supported Nigerian phone
+forms into NCC's ``234XXXXXXXXXX`` filing format.
 """
 
 from __future__ import annotations
@@ -38,6 +44,7 @@ import uuid
 from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from enum import Enum
 from typing import Any
 
 from sqlalchemy import select
@@ -46,7 +53,14 @@ from sqlalchemy.orm import Session, selectinload
 from app.models.subscriber import Subscriber
 from app.models.support import Ticket, TicketComment
 from app.services import ncc_location
+from app.services.customer_identity_normalization import normalize_phone_identifier
 from app.services.domain_errors import DomainError
+from app.services.list_query import (
+    ListDefinition,
+    ListFieldDefinition,
+    ListQuery,
+    PageMeta,
+)
 from app.services.ncc_subscriber_report import _UNKNOWN, infer_state, normalize_state
 from app.services.ncc_workbook import (
     COLUMNS,
@@ -61,12 +75,40 @@ from app.services.ncc_workbook import (
 from app.services.ncc_workbook import (
     SUBCATEGORY_BY_CODE as _SUBCATEGORY_BY_CODE,
 )
+from app.services.support_ticket_contracts import InternalOperationalTicketSource
 
 OPERATOR_PREFIX = "DOTMAC"
+
+NCC_COMPLAINTS_LIST_DEFINITION = ListDefinition(
+    key="ncc-complaints",
+    fields=(
+        ListFieldDefinition(key="created_at", label="Created", sortable=True),
+        ListFieldDefinition(key="date_from", label="From", filterable=True),
+        ListFieldDefinition(key="date_to", label="To", filterable=True),
+    ),
+    default_sort="created_at",
+    default_sort_dir="asc",
+    default_per_page=20,
+    per_page_options=(20, 50, 100),
+)
 
 
 class NccComplaintsReportError(DomainError):
     """Transport-neutral NCC report query error."""
+
+
+class NccComplaintAudience(str, Enum):
+    """Typed filing-scope decision for one authoritative Ticket."""
+
+    customer_complaint = "customer_complaint"
+    internal_operational = "internal_operational"
+
+
+@dataclass(frozen=True, slots=True)
+class NccMsisdnProjection:
+    """NCC-only phone projection without changing stored customer identity."""
+
+    value: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +165,32 @@ class NccComplaintsReportSnapshot:
             "columns": list(COLUMNS),
             "records": self.record_mappings(),
         }
+
+
+@dataclass(frozen=True, slots=True)
+class NccComplaintsTablePage:
+    """Typed on-screen page over a complete NCC report snapshot."""
+
+    list_query: ListQuery
+    page_meta: PageMeta
+    records: tuple[NccComplaintRecord, ...]
+
+
+def paginate_report(
+    snapshot: NccComplaintsReportSnapshot,
+    *,
+    list_query: ListQuery,
+) -> NccComplaintsTablePage:
+    """Page only the UI projection; filing and delivery retain every row."""
+
+    page_meta = PageMeta.from_query(list_query, snapshot.total_complaints)
+    effective_query = list_query.with_page(page_meta.page)
+    start = effective_query.offset
+    return NccComplaintsTablePage(
+        list_query=effective_query,
+        page_meta=page_meta,
+        records=snapshot.records[start : start + effective_query.per_page],
+    )
 
 
 # NCC files complaints as Resolved or Pending. Michael's call (2026-07-17):
@@ -209,9 +277,34 @@ def _status_value(ticket: Ticket) -> str:
     return "Resolved" if status in _RESOLVED_STATUSES else "Pending"
 
 
+def _complaint_audience(ticket: Ticket) -> NccComplaintAudience:
+    metadata = ticket.metadata_ if isinstance(ticket.metadata_, dict) else {}
+    opened_by = clean_text(metadata.get("opened_by"))
+    if not opened_by:
+        return NccComplaintAudience.customer_complaint
+    try:
+        InternalOperationalTicketSource(opened_by)
+    except ValueError:
+        return NccComplaintAudience.customer_complaint
+    return NccComplaintAudience.internal_operational
+
+
 def _is_excluded(ticket: Ticket) -> bool:
     status = str(getattr(ticket.status, "value", ticket.status) or "").strip().lower()
-    return status in _EXCLUDED_STATUSES
+    return (
+        status in _EXCLUDED_STATUSES
+        or _complaint_audience(ticket) is NccComplaintAudience.internal_operational
+    )
+
+
+def _project_ncc_msisdn(value: object) -> NccMsisdnProjection:
+    raw = clean_basic_text(value)
+    if not raw:
+        return NccMsisdnProjection(value="")
+
+    normalized = normalize_phone_identifier(raw)
+    projected = normalized.removeprefix("+") if normalized else raw
+    return NccMsisdnProjection(value=projected)
 
 
 def _resolved_within_sla(ticket: Ticket) -> str:
@@ -462,9 +555,10 @@ def _record_for(ticket: Ticket, subscriber: Subscriber | None) -> dict[str, str]
     subcategory_row = _SUBCATEGORY_BY_CODE.get(subcategory.partition(" - ")[0])
     state, lga, town = _ticket_location(ticket, subscriber)
     resolution_note, user_note, user_note_dt = _ticket_notes(ticket)
+    msisdn = _project_ncc_msisdn(subscriber.phone if subscriber else "")
 
     record = {
-        "MSISDN": clean_basic_text(subscriber.phone if subscriber else ""),
+        "MSISDN": msisdn.value,
         "First Name": clean_basic_text(subscriber.first_name if subscriber else ""),
         "Last Name": clean_basic_text(subscriber.last_name if subscriber else ""),
         "Email": clean_basic_text(subscriber.email if subscriber else ""),

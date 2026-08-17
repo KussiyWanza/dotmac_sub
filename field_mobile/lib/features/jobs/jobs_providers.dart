@@ -182,11 +182,9 @@ final todayJobsProvider = FutureProvider<JobList>((ref) async {
   final end = start.add(const Duration(days: 1));
   final list = await ref
       .watch(jobsRepositoryProvider)
-      .fetchJobs(status: filter, dateFrom: start, dateTo: end);
+      .fetchJobs(status: filter, dateTo: end);
   return JobList(
-    list.jobs
-        .where((job) => _isSameLocalDay(job.scheduledStart, start))
-        .toList(),
+    list.jobs.where((job) => isActionableOnDay(job, start)).toList(),
     fromCache: list.fromCache,
   );
 });
@@ -215,4 +213,24 @@ bool _isSameLocalDay(DateTime? value, DateTime day) {
   return local.year == day.year &&
       local.month == day.month &&
       local.day == day.day;
+}
+
+/// Work that belongs in the technician's actionable Today view.
+///
+/// Unscheduled and overdue open work must remain visible until completed.
+/// Terminal work is shown only on the day it completed, keeping the list
+/// aligned with the open/completed counters returned by `/field/me`.
+bool isActionableOnDay(JobSummary job, DateTime day) {
+  if (job.status == 'completed') {
+    return _isSameLocalDay(job.completedAt, day);
+  }
+  if (job.status == 'canceled') return false;
+  final scheduled = job.scheduledStart?.toLocal();
+  if (scheduled == null) return true;
+  final end = DateTime(
+    day.year,
+    day.month,
+    day.day,
+  ).add(const Duration(days: 1));
+  return scheduled.isBefore(end);
 }
