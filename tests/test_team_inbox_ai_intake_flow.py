@@ -784,6 +784,84 @@ def test_policy_version_activation_supersedes_without_mutating_active_version(
     )
 
 
+def test_admin_policy_context_exposes_bounded_read_only_version_history(db_session):
+    account_scope = f"history-phone-{uuid4().hex}"
+    _install_whatsapp_scope(db_session, account_scope=account_scope)
+    fallback = _team(db_session, f"Fallback {uuid4()}")
+    technical = _team(db_session, f"Technical {uuid4()}")
+    fallback_id = fallback.id
+    technical_id = technical.id
+    db_session.commit()
+    context = CommandContext.system(
+        actor="test", scope="ai:intake-policy-history", reason="history evidence"
+    )
+    first = ai_conversation_intake.create_draft_policy(
+        db_session,
+        ai_conversation_intake.AiDraftPolicyCommand(
+            context=context,
+            channel_type=InboxChannelType.whatsapp.value,
+            provider=WHATSAPP_PROVIDER_META,
+            account_scope=account_scope,
+            fallback_team_id=fallback_id,
+            welcome_message="First version.",
+            intent_team_mappings=(
+                {"intent": "technical_support", "service_team_id": str(technical_id)},
+            ),
+        ),
+    )
+    ai_conversation_intake.activate_policy_version(
+        db_session,
+        ai_conversation_intake.AiPolicyVersionActivateCommand(
+            context=context, version_id=first.version_id
+        ),
+    )
+    second = ai_conversation_intake.create_draft_policy(
+        db_session,
+        ai_conversation_intake.AiDraftPolicyCommand(
+            context=context,
+            channel_type=InboxChannelType.whatsapp.value,
+            provider=WHATSAPP_PROVIDER_META,
+            account_scope=account_scope,
+            fallback_team_id=fallback_id,
+            welcome_message="Second version.",
+            intent_team_mappings=(
+                {"intent": "technical_support", "service_team_id": str(technical_id)},
+            ),
+        ),
+    )
+    ai_conversation_intake.activate_policy_version(
+        db_session,
+        ai_conversation_intake.AiPolicyVersionActivateCommand(
+            context=context, version_id=second.version_id
+        ),
+    )
+    draft = ai_conversation_intake.create_draft_policy(
+        db_session,
+        ai_conversation_intake.AiDraftPolicyCommand(
+            context=context,
+            channel_type=InboxChannelType.whatsapp.value,
+            provider=WHATSAPP_PROVIDER_META,
+            account_scope=account_scope,
+            fallback_team_id=fallback_id,
+            welcome_message="Editable draft only.",
+            intent_team_mappings=(
+                {"intent": "technical_support", "service_team_id": str(technical_id)},
+            ),
+        ),
+    )
+
+    history = ai_conversation_intake.admin_policy_context(db_session)[
+        "ai_intake_policy_version_history"
+    ]
+
+    assert [row.status for row in history] == ["draft", "activated", "superseded"]
+    assert history[0].version_id == draft.version_id
+    assert history[1].is_active is True
+    assert history[1].activated_at is not None
+    assert history[2].is_active is False
+    assert history[2].superseded_at is not None
+
+
 def test_draft_policy_creation_stays_inactive_and_unactivated(db_session):
     account_scope = f"test-phone-{uuid4().hex}"
     _install_whatsapp_scope(db_session, account_scope=account_scope)

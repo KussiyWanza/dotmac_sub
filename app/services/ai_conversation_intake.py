@@ -254,6 +254,19 @@ class AiPolicyDisableOutcome:
     legacy_config_enabled: bool | None
 
 
+@dataclass(frozen=True, slots=True)
+class AiPolicyVersionHistoryRow:
+    """Bounded, non-editable evidence for the policy administration screen."""
+
+    version_id: UUID
+    version_number: int
+    status: str
+    is_active: bool
+    created_at: datetime
+    activated_at: datetime | None
+    superseded_at: datetime | None
+
+
 def is_supported_channel(channel_type: str | None) -> bool:
     return str(channel_type or "").strip() in SUPPORTED_CONVERSATIONAL_CHANNELS
 
@@ -721,6 +734,9 @@ def _policy_status(policy: AiIntakePolicy, draft: AiIntakePolicyVersion | None) 
     return "Disabled"
 
 
+_ADMIN_POLICY_VERSION_HISTORY_LIMIT = 20
+
+
 def admin_policy_context(db: Session) -> dict[str, object]:
     """Build the admin AI intake policy read model for the settings template."""
 
@@ -745,6 +761,30 @@ def admin_policy_context(db: Session) -> dict[str, object]:
     selected_policy = rows[0] if rows else None
     selected_versions = (
         versions_by_policy.get(selected_policy.id, []) if selected_policy else []
+    )
+    history_versions = (
+        db.query(AiIntakePolicyVersion)
+        .filter(AiIntakePolicyVersion.policy_id == selected_policy.id)
+        .order_by(AiIntakePolicyVersion.version_number.desc())
+        .limit(_ADMIN_POLICY_VERSION_HISTORY_LIMIT)
+        .all()
+        if selected_policy is not None
+        else []
+    )
+    version_history = tuple(
+        AiPolicyVersionHistoryRow(
+            version_id=version.id,
+            version_number=version.version_number,
+            status=version.status,
+            is_active=(
+                selected_policy is not None
+                and selected_policy.active_version_id == version.id
+            ),
+            created_at=version.created_at,
+            activated_at=version.activated_at,
+            superseded_at=version.superseded_at,
+        )
+        for version in history_versions
     )
     selected_draft = next(
         (version for version in selected_versions if version.status == "draft"),
@@ -805,6 +845,8 @@ def admin_policy_context(db: Session) -> dict[str, object]:
         "ai_intake_policy": selected_policy,
         "ai_intake_draft_version": selected_draft,
         "ai_intake_active_version": selected_active,
+        "ai_intake_policy_version_history": version_history,
+        "ai_intake_policy_version_history_limit": _ADMIN_POLICY_VERSION_HISTORY_LIMIT,
         "ai_intake_edit_version": editable_version,
         "ai_intake_policy_status": (
             _policy_status(selected_policy, selected_draft)
