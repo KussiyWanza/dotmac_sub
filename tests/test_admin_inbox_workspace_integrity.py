@@ -203,7 +203,29 @@ def test_reply_submission_refreshes_inbox_fragments_without_page_navigation():
     assert 'workspace?.refreshConversationList?.("reply")' not in JAVASCRIPT
     assert 'this.draft = ""' in JAVASCRIPT
     assert "window.location.reload" not in JAVASCRIPT
-    assert "admin-inbox.js?v=20260816a" in INDEX
+    assert "admin-inbox.js?v=20260817a" in INDEX
+
+
+def test_reply_toast_tracks_authoritative_delivery_without_covering_send_action():
+    assert 'data-inbox-send-toast' in INDEX
+    assert 'bottom-20 left-1/2' in INDEX
+    assert 'role="status"' in INDEX
+    assert 'aria-live="polite"' in INDEX
+
+    prepare = JAVASCRIPT.index("      prepareSend(event)")
+    prepare_body = JAVASCRIPT[prepare : prepare + 1800]
+    assert 'showToast?.("Message sending…", { persistent: true })' in prepare_body
+
+    completion = JAVASCRIPT.index("      completeSend(result)")
+    completion_body = JAVASCRIPT[completion : completion + 2100]
+    assert "workspace?.trackOutboundSend?.(result.message_id)" in completion_body
+    assert 'workspace?.showToast?.("Message scheduled.")' in completion_body
+
+    delivery = JAVASCRIPT.index("      applyDeliveryStatus(data)")
+    delivery_body = JAVASCRIPT[delivery : delivery + 2100]
+    assert "messageId === this.outboundToastMessageId" in delivery_body
+    assert 'this.showToast("Message sent.")' in delivery_body
+    assert 'this.showToast("Message sending…", { persistent: true })' in delivery_body
 
 
 def test_reply_and_realtime_refresh_the_message_once():
