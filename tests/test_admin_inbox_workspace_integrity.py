@@ -207,8 +207,8 @@ def test_reply_submission_refreshes_inbox_fragments_without_page_navigation():
 
 
 def test_reply_toast_tracks_authoritative_delivery_without_covering_send_action():
-    assert 'data-inbox-send-toast' in INDEX
-    assert 'bottom-20 left-1/2' in INDEX
+    assert "data-inbox-send-toast" in INDEX
+    assert "bottom-20 left-1/2" in INDEX
     assert 'role="status"' in INDEX
     assert 'aria-live="polite"' in INDEX
 
