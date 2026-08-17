@@ -162,6 +162,13 @@ def _post(client, binding, envelope, *, token=WRITE_TOKEN, path="") -> object:
     )
 
 
+def _get_descriptor(client, binding, *, token=MIRROR_TOKEN):
+    return client.get(
+        f"/api/v1/integration/observations/{binding.id}/descriptor",
+        headers={"X-Api-Key": token} if token else {},
+    )
+
+
 def _counts(db_session) -> tuple[int, int, int]:
     return (
         db_session.query(InboxProviderObservation).count(),
@@ -468,6 +475,66 @@ def test_the_identity_matches_subs_own_receiver_convention(client, db_session, b
     assert observation.provider == "meta_cloud_api"
     assert observation.provider_event_id == "message:wamid.TEST0001"
     assert observation.provider_account_scope == "1234567890"
+
+
+# Product-owned destination provenance.
+
+
+@pytest.mark.parametrize("token", [MIRROR_TOKEN, WRITE_TOKEN])
+def test_sub_publishes_its_product_port_descriptor(client, binding, token):
+    response = _get_descriptor(client, binding, token=token)
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "schema_version": "dotmac.io/product-port-descriptor/v1",
+        "application": "sub",
+        "owner_module": "communications.team_inbox_integrator_envelope",
+        "capability_id": "messaging.receive.v1",
+        "capability_summary": (
+            "Inbound provider message and delivery-state observations"
+        ),
+        "contract_version": 1,
+        "destination_binding_id": str(binding.id),
+        "delivery_path": f"/api/v1/integration/observations/{binding.id}",
+        "mirror_path": f"/api/v1/integration/observations/{binding.id}/mirror",
+        "destination_scope": {"kind": "inbox", "ref": "support"},
+        "activation_state": "enabled",
+        "source_revision": response.json()["source_revision"],
+        "descriptor_digest": response.json()["descriptor_digest"],
+    }
+    assert len(response.json()["source_revision"]) == 64
+    assert len(response.json()["descriptor_digest"]) == 64
+
+
+def test_descriptor_digest_covers_every_published_fact(client, binding):
+    from app.services.integrations.product_port_descriptor import descriptor_digest
+
+    descriptor = _get_descriptor(client, binding).json()
+    asserted = descriptor.pop("descriptor_digest")
+
+    assert descriptor_digest(descriptor) == asserted
+    descriptor["destination_scope"]["ref"] = "sales"
+    assert descriptor_digest(descriptor) != asserted
+
+
+def test_descriptor_bootstraps_before_delivery_is_enabled(client, db_session, binding):
+    binding.state = "disabled"
+    db_session.commit()
+
+    descriptor = _get_descriptor(client, binding)
+    delivery = _post(client, binding, _envelope())
+
+    assert descriptor.status_code == 200, descriptor.text
+    assert descriptor.json()["activation_state"] == "configured_disabled"
+    assert delivery.status_code == 404
+
+
+@pytest.mark.parametrize("token", [None, "not-a-real-key", "unscoped-token"])
+def test_descriptor_refuses_a_caller_without_a_product_port_scope(
+    client, binding, token
+):
+    response = _get_descriptor(client, binding, token=token)
+    assert response.status_code in (401, 403)
 
 
 def test_the_shadow_route_writes_nothing(client, db_session, binding):

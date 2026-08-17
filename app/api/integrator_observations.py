@@ -60,6 +60,7 @@ from app.schemas.integrator_observation import (
     IntegratorMirrorReport,
     IntegratorObservationEnvelope,
     IntegratorObservationReceipt,
+    ProductPortDescriptorV1,
 )
 from app.services import (
     team_inbox_integrator_envelope as envelopes,
@@ -71,9 +72,10 @@ from app.services import (
     team_inbox_observations,
     team_inbox_processing,
 )
-from app.services.auth_dependencies import require_permission
+from app.services.auth_dependencies import require_any_permission, require_permission
 from app.services.db_session_adapter import db_session_adapter
 from app.services.integrations import inbox as integration_inbox
+from app.services.integrations import product_port_descriptor as descriptors
 from app.services.integrations.connectors.integrator_http import (
     INTEGRATOR_RECEIVE_CAPABILITY,
 )
@@ -93,6 +95,10 @@ INTEGRATOR_OBSERVATION_SCOPE = "integration:observations:write"
 #: record nothing, so a credential issued for the shadow window cannot become a
 #: writer by accident — repointing traffic has to be a deliberate re-scoping.
 INTEGRATOR_MIRROR_SCOPE = "integration:observations:mirror"
+
+_require_descriptor_auth = require_any_permission(
+    INTEGRATOR_OBSERVATION_SCOPE, INTEGRATOR_MIRROR_SCOPE
+)
 
 
 def _bind(db: Session, capability_binding_id: UUID, capability_id: str):
@@ -135,6 +141,25 @@ def _refuse(exc: envelopes.IntegratorEnvelopeError) -> HTTPException:
     return HTTPException(
         status_code=400, detail={"code": exc.code, "message": exc.message}
     )
+
+
+@router.get(
+    "/{capability_binding_id}/descriptor",
+    response_model=ProductPortDescriptorV1,
+)
+def read_product_port_descriptor(
+    capability_binding_id: UUID,
+    db: Session = Depends(get_db),
+    _auth: dict = Depends(_require_descriptor_auth),
+) -> descriptors.ProductPortDescriptorV1:
+    """Publish Sub-owned routing provenance without requiring activation."""
+
+    try:
+        return descriptors.product_port_descriptor(db, capability_binding_id)
+    except descriptors.ProductPortDescriptorError as exc:
+        raise HTTPException(
+            status_code=404, detail="Integrator observation binding not found"
+        ) from exc
 
 
 @router.post("/{capability_binding_id}", response_model=IntegratorObservationReceipt)

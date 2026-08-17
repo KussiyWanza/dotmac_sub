@@ -1901,6 +1901,71 @@ DOMAIN = DomainSOT(
             ),
         ),
         SOTService(
+            name="communications.product_port_descriptor",
+            module="app.services.integrations.product_port_descriptor",
+            owns=("Sub product-port destination descriptor",),
+            depends_on=(
+                "communications.team_inbox_integrator_envelope",
+                "integration.registry",
+            ),
+            notes=(
+                "Read-only product-owned declaration of destination identity, "
+                "capability meaning, endpoint paths, activation state, and "
+                "opaque local stream scope. The Integrator reconciles an "
+                "immutable digest snapshot; it never authors these facts."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name="Sub product-port destination descriptor",
+                        role=OwnerRole.RESOLVER,
+                        input_names=("Integrator capability binding",),
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="Integrator capability binding",
+                        owner="integration.registry",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "Exact Sub-owned installation and capability-binding "
+                            "identity, lifecycle, and revision timestamps."
+                        ),
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.READ_ONLY,
+                    boundary="One exact binding lookup; no mutation or network call.",
+                    locking="No row lock; the result is a versioned digest snapshot.",
+                    idempotency=(
+                        "Identical binding facts produce an identical descriptor digest."
+                    ),
+                    retries="Safe to re-read; the service writes nothing.",
+                ),
+                errors=ErrorContract(
+                    domain_codes=("communications.product_port_descriptor.not_found",),
+                    mapping_owner="app.api.integrator_observations",
+                    fail_closed_on=(
+                        "unknown binding",
+                        "binding not owned by the Integrator receive capability",
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.NATIVE,
+                    new_owner="communications.product_port_descriptor",
+                ),
+                steward="customer experience platform",
+                design_refs=(
+                    "docs/INTEGRATOR_MESSAGING_RECEIVE_CUTOVER.md",
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                ),
+                test_refs=(
+                    "tests/test_integrator_observation_port.py",
+                    "tests/architecture/test_integrator_port_boundary.py",
+                ),
+            ),
+        ),
+        SOTService(
             name="communications.team_inbox_integrator_mirror",
             module="app.services.team_inbox_integrator_mirror",
             owns=(
