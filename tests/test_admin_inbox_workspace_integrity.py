@@ -245,7 +245,7 @@ def test_reply_and_realtime_refresh_the_message_once():
 
 
 def test_reply_request_always_releases_send_busy_state():
-    assert '@htmx:after-request=' not in CONVERSATION
+    assert "@htmx:after-request=" not in CONVERSATION
     assert '"htmx:afterRequest"' in JAVASCRIPT
     assert '"htmx:sendAbort"' in JAVASCRIPT
     assert '"htmx:timeout"' in JAVASCRIPT
