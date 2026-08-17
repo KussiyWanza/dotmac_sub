@@ -3,6 +3,8 @@ import pytest
 from app.services.notification_template_renderer import (
     default_preview_variables,
     render_template_text,
+    template_placeholder_names,
+    validate_template_activation_text,
     validate_template_text,
 )
 
@@ -70,3 +72,32 @@ def test_validate_is_context_aware_for_bulk_codes():
     with pytest.raises(ValueError):
         # {amount} is not available to the bulk-message context.
         validate_template_text("You owe {amount}", code="outage_blast_2026")
+
+
+def test_payment_receipt_contract_accepts_and_reports_receipt_fields():
+    subject = "Payment receipt {receipt_number}"
+    body = "View or download {receipt_url} after paying {amount}."
+
+    validate_template_text(subject, body, code="payment_received")
+
+    assert template_placeholder_names(subject, body) == frozenset(
+        {"amount", "receipt_number", "receipt_url"}
+    )
+    preview = default_preview_variables()
+    assert preview["receipt_number"]
+    assert preview["receipt_url"]
+
+
+def test_active_payment_receipt_requires_receipt_fields_in_the_body():
+    with pytest.raises(ValueError, match="require these body fields"):
+        validate_template_activation_text(
+            subject="Receipt {receipt_number}: {receipt_url}",
+            body="Thank you for paying {amount}.",
+            code="payment_received",
+        )
+
+    validate_template_activation_text(
+        subject="Payment receipt {receipt_number}",
+        body="Receipt {receipt_number}: {receipt_url}",
+        code="payment_received",
+    )

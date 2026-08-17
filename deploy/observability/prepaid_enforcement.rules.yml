@@ -104,21 +104,6 @@ groups:
             these accounts; enforcement stays fail-closed until then.
           runbook: "docs/adr/0007-end-to-end-billing-target-architecture.md"
 
-      - alert: PrepaidFundingQuarantineActive
-        expr: observability_state{domain="prepaid_enforcement",signal="funding_quarantined"} > 0
-        for: 6h
-        labels:
-          severity: warning
-          area: prepaid-enforcement
-          owner: financial-collections
-        annotations:
-          summary: "Prepaid accounts excluded by funding quarantine"
-          description: >
-            Accounts with missing or unverifiable prepaid funding baselines
-            are excluded from enforcement. Resolve via the subledger opening
-            posting backfill (ADR 0007 Phase 3).
-          runbook: "docs/adr/0007-end-to-end-billing-target-architecture.md"
-
       - alert: PrepaidNoContactRouteAccounts
         expr: observability_state{domain="prepaid_enforcement",signal="no_contact_route"} > 0
         for: 1h

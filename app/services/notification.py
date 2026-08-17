@@ -59,6 +59,10 @@ from app.services.customer_notification_policy import (
 )
 from app.services.email_template import html_to_text
 from app.services.notification_template_conditions import validate_conditions
+from app.services.notification_template_renderer import (
+    validate_template_activation_text,
+    validate_template_text,
+)
 from app.services.response import ListResponseMixin, list_response
 from app.services.session_hooks import run_after_commit
 
@@ -190,6 +194,18 @@ class Templates(ListResponseMixin):
     def create(db: Session, payload: NotificationTemplateCreate):
         data = payload.model_dump()
         data["conditions"] = validate_conditions(data.get("conditions"))
+        if data["is_active"]:
+            validate_template_activation_text(
+                subject=data.get("subject"),
+                body=data["body"],
+                code=data["code"],
+            )
+        else:
+            validate_template_text(
+                data.get("subject"),
+                data["body"],
+                code=data["code"],
+            )
         template = NotificationTemplate(**data)
         db.add(template)
         db.commit()
@@ -288,7 +304,24 @@ class Templates(ListResponseMixin):
         template = db.get(NotificationTemplate, template_id)
         if not template:
             raise HTTPException(status_code=404, detail="Template not found")
-        for key, value in payload.model_dump(exclude_unset=True).items():
+        changes = payload.model_dump(exclude_unset=True)
+        effective_subject = changes.get("subject", template.subject)
+        effective_body = changes.get("body", template.body)
+        effective_code = changes.get("code", template.code)
+        effective_active = changes.get("is_active", template.is_active)
+        if effective_active:
+            validate_template_activation_text(
+                subject=effective_subject,
+                body=effective_body,
+                code=effective_code,
+            )
+        else:
+            validate_template_text(
+                effective_subject,
+                effective_body,
+                code=effective_code,
+            )
+        for key, value in changes.items():
             if key == "conditions":
                 value = validate_conditions(value)
             setattr(template, key, value)

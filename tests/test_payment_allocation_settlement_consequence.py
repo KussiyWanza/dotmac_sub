@@ -710,6 +710,74 @@ def test_stale_anchor_repair_preview_then_apply_drives_the_cohort_to_zero(
     assert at(subscription.next_billing_at) == at(entitlement.ends_at)
 
 
+def test_missing_anchor_repair_requires_exact_active_entitlement(
+    db_session, subscriber, subscription
+):
+    invoice = _prepaid_invoice(db_session, subscriber, subscription)
+    payment = _settled_payment(db_session, subscriber)
+    _allocate(db_session, payment, invoice)
+    entitlement = _entitlement(db_session, invoice)
+    subscription.next_billing_at = None
+    db_session.commit()
+
+    preview = preview_stale_prepaid_billing_anchor_repair(db_session, limit=50)
+
+    assert preview.cohort_size == 1
+    candidate = preview.candidates[0]
+    assert candidate.current_next_billing_at is None
+    assert candidate.coverage_end == at(entitlement.ends_at)
+    assert candidate.drift is None
+
+    result = apply_stale_prepaid_billing_anchor_repair(
+        db_session,
+        preview,
+        actor="pytest:operator",
+        reason="restore a missing anchor from exact entitlement evidence",
+    )
+
+    assert result.repaired == 1
+    db_session.refresh(subscription)
+    assert at(subscription.next_billing_at) == at(entitlement.ends_at)
+
+    audit = (
+        db_session.query(AuditEvent)
+        .filter(AuditEvent.action == "repair_stale_prepaid_billing_anchor")
+        .one()
+    )
+    assert audit.metadata_["previous_next_billing_at"] is None
+    assert audit.metadata_["drift_seconds"] is None
+
+    # A later regression is new reviewed work, not an idempotent replay of the
+    # first repair. A fresh preview must be able to restore the same exact
+    # evidence-backed target again.
+    subscription.next_billing_at = None
+    db_session.commit()
+    second_preview = preview_stale_prepaid_billing_anchor_repair(db_session, limit=50)
+    second = apply_stale_prepaid_billing_anchor_repair(
+        db_session,
+        second_preview,
+        actor="pytest:operator",
+        reason="repair a later anchor regression",
+    )
+    assert second.repaired == 1
+    assert second.replayed == 0
+    db_session.refresh(subscription)
+    assert at(subscription.next_billing_at) == at(entitlement.ends_at)
+
+
+def test_missing_anchor_without_entitlement_remains_review_stock(
+    db_session, subscription
+):
+    subscription.billing_mode = BillingMode.prepaid
+    subscription.status = SubscriptionStatus.active
+    subscription.next_billing_at = None
+    db_session.commit()
+
+    preview = preview_stale_prepaid_billing_anchor_repair(db_session, limit=50)
+
+    assert preview.cohort_size == 0
+
+
 def test_stale_anchor_repair_writes_durable_audit_evidence(
     db_session, subscriber, subscription
 ):

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Repair bad notification_templates rows in place.
+"""Repair bad notification_templates rows through their owning service.
 
 Background
 ----------
@@ -20,6 +20,8 @@ renderer):
 * Any other row is mechanically normalized: supported ``{{x}}`` -> ``{x}``,
   UNSUPPORTED placeholders are removed (never left blank/literal), and a few
   alarming phrases are softened.
+* Orphan rows are deactivated through the notification owner, not physically
+  deleted.
 
 Safe by default: prints a dry-run diff. Pass ``--apply`` to write + commit.
 
@@ -39,6 +41,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from app.db import SessionLocal  # noqa: E402
 from app.models.notification import NotificationTemplate  # noqa: E402
+from app.schemas.notification import NotificationTemplateUpdate  # noqa: E402
+from app.services import notification as notification_service  # noqa: E402
 from app.services.notification_template_renderer import (  # noqa: E402
     KNOWN_PLACEHOLDERS,
 )
@@ -54,7 +58,7 @@ SUPPORTED = set(KNOWN_PLACEHOLDERS)
 # mapping — they are reachable only via admin bulk-send, whose context cannot
 # supply {amount}/{invoice_number}, so they can never render a correct balance.
 # They duplicate the automated invoice_overdue / suspension_warning / payment
-# flows and were the bulk-blast vector for the incident. Disposition: DELETE.
+# flows and were the bulk-blast vector for the incident. Disposition: deactivate.
 DELETE_CODES: frozenset[str] = frozenset(
     {
         "invoice_issued",
@@ -94,17 +98,23 @@ APPROVED: dict[tuple[str, str], dict[str, str | None]] = {
         ),
     },
     ("payment_received", "email"): {
-        "subject": "Payment received — thank you",
+        "subject": "Payment receipt {receipt_number}",
         "body": (
             "Dear {subscriber_name},\n\n"
-            "We've received your payment of {amount}. Thank you!\n\n"
-            "Your account balance has been updated. If you have any questions "
-            "about your billing, please contact our support team."
+            "We have received your payment of {amount}. Thank you!\n\n"
+            "Receipt: {receipt_number}\n"
+            "View or download: {receipt_url}\n\n"
+            "You can review how the payment was applied in your billing "
+            "history.\n\n"
+            "If you have questions about your billing, please contact support."
         ),
     },
     ("payment_received", "sms"): {
         "subject": None,
-        "body": "We've received your payment of {amount}. Thank you!",
+        "body": (
+            "We received your payment of {amount}. Receipt {receipt_number}: "
+            "{receipt_url}"
+        ),
     },
     ("suspension_warning", "email"): {
         "subject": "A reminder about invoice #{invoice_number}",
@@ -226,16 +236,20 @@ def main() -> None:
         rows = q.order_by(NotificationTemplate.code, NotificationTemplate.channel).all()
 
         changed = 0
-        deleted = 0
+        deactivated = 0
         for t in rows:
             chan = channel_of(t)
-            # Disposition 1: delete orphan debt templates with no event mapping.
+            # Disposition 1: deactivate orphan debt templates with no event mapping.
             if t.code in DELETE_CODES:
-                deleted += 1
-                print(f"\n=== {t.code} [{chan}] (DELETE — orphan debt template) ===")
+                if not t.is_active:
+                    continue
+                deactivated += 1
+                print(
+                    f"\n=== {t.code} [{chan}] (DEACTIVATE — orphan debt template) ==="
+                )
                 print(f"  subject: {t.subject!r}")
                 if args.apply:
-                    db.delete(t)
+                    notification_service.templates.delete(db=db, template_id=str(t.id))
                 continue
 
             new_subject, new_body = plan(t)
@@ -254,16 +268,24 @@ def main() -> None:
                 print("    --- after ----")
                 print("    " + (new_body or "").replace("\n", "\n    "))
             if args.apply:
-                t.subject = new_subject
-                t.body = new_body
+                notification_service.templates.update(
+                    db=db,
+                    template_id=str(t.id),
+                    payload=NotificationTemplateUpdate(
+                        subject=new_subject,
+                        body=new_body,
+                    ),
+                )
 
-        if args.apply and (changed or deleted):
-            db.commit()
-            print(f"\nAPPLIED: {changed} updated, {deleted} deleted, committed.")
-        elif changed or deleted:
+        if args.apply and (changed or deactivated):
             print(
-                f"\nDRY-RUN: {changed} row(s) would change, {deleted} would be "
-                "deleted. Re-run with --apply."
+                f"\nAPPLIED: {changed} updated, {deactivated} deactivated "
+                "through the notification owner."
+            )
+        elif changed or deactivated:
+            print(
+                f"\nDRY-RUN: {changed} row(s) would change, {deactivated} would "
+                "be deactivated. Re-run with --apply."
             )
         else:
             print("No rows need changes.")

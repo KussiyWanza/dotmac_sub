@@ -1,3 +1,5 @@
+import pytest
+
 from app.models.domain_settings import DomainSetting, SettingDomain
 from app.models.notification import (
     Notification,
@@ -10,6 +12,7 @@ from app.schemas.notification import (
     NotificationCreate,
     NotificationDeliveryLatency,
     NotificationTemplateCreate,
+    NotificationTemplateUpdate,
 )
 from app.services import email as email_service
 from app.services import notification as notification_service
@@ -124,6 +127,55 @@ def test_auth_verification_email_is_immediate_latency(db_session, monkeypatch):
     assert notification.event_type == "auth_email_verification"
     assert notification.metadata_["delivery_latency"] == "immediate"
     assert delivery_wakeups == [((), {"args": [str(notification.id)], "retry": False})]
+
+
+def test_notification_owner_blocks_incomplete_active_payment_receipt(db_session):
+    with pytest.raises(ValueError, match="require these body fields"):
+        notification_service.templates.create(
+            db_session,
+            NotificationTemplateCreate(
+                name="Incomplete receipt",
+                code="payment_received",
+                channel=NotificationChannel.email,
+                subject="Payment received",
+                body="Thank you for paying {amount}.",
+            ),
+        )
+
+
+def test_notification_owner_validates_inactive_receipt_before_activation(db_session):
+    template = notification_service.templates.create(
+        db_session,
+        NotificationTemplateCreate(
+            name="Receipt draft",
+            code="payment_received",
+            channel=NotificationChannel.email,
+            subject="Payment received",
+            body="Thank you for paying {amount}.",
+            is_active=False,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="require these body fields"):
+        notification_service.templates.update(
+            db_session,
+            str(template.id),
+            NotificationTemplateUpdate(is_active=True),
+        )
+
+    db_session.refresh(template)
+    assert template.is_active is False
+
+    activated = notification_service.templates.update(
+        db_session,
+        str(template.id),
+        NotificationTemplateUpdate(
+            subject="Payment receipt {receipt_number}",
+            body="Receipt {receipt_number}: {receipt_url}",
+            is_active=True,
+        ),
+    )
+    assert activated.is_active is True
 
 
 def _subscriber(db_session, *, status=SubscriberStatus.active, suffix="manual"):

@@ -50,6 +50,8 @@ _EVENT_VARIABLES: frozenset[str] = frozenset(
         "grace_hours",
         "usage_percent",
         "total_amount",
+        "receipt_number",
+        "receipt_url",
     }
 )
 _BULK_VARIABLES: frozenset[str] = frozenset(
@@ -67,6 +69,8 @@ _BULK_VARIABLES: frozenset[str] = frozenset(
     }
 )
 KNOWN_PLACEHOLDERS: frozenset[str] = _EVENT_VARIABLES | _BULK_VARIABLES
+PAYMENT_RECEIPT_TEMPLATE_CODE = "payment_received"
+PAYMENT_RECEIPT_REQUIRED_PLACEHOLDERS = frozenset({"receipt_number", "receipt_url"})
 
 # Customer-facing variables surfaced as chips in the editor, with sample values
 # used for preview/test-send. (name, sample, description)
@@ -79,6 +83,12 @@ TEMPLATE_VARIABLES: tuple[tuple[str, str, str], ...] = (
     ("portal_url", "/portal", "Customer portal base URL"),
     ("usage_percent", "85", "Data usage percentage"),
     ("service_order_id", "SO-1042", "Service order reference"),
+    ("receipt_number", "#RCP-1A2B3C4D", "Payment receipt reference"),
+    (
+        "receipt_url",
+        "/portal/billing/payments/example/receipt",
+        "Authorized receipt URL",
+    ),
 )
 
 # Sample values for every KNOWN placeholder so previews never show blanks.
@@ -99,6 +109,8 @@ _PREVIEW_SAMPLES: dict[str, str] = {
     "grace_hours": "48",
     "usage_percent": "85",
     "total_amount": "₦20,000.00",
+    "receipt_number": "#RCP-1A2B3C4D",
+    "receipt_url": "/portal/billing/payments/example/receipt",
 }
 
 
@@ -128,6 +140,14 @@ def render_template_text(
 def default_preview_variables() -> dict[str, str]:
     """Sample values for template previews/tests (single-brace contract)."""
     return dict(_PREVIEW_SAMPLES)
+
+
+def template_placeholder_names(*texts: str | None) -> frozenset[str]:
+    """Return the supported single-brace names present in template text."""
+
+    return frozenset(
+        name for text in texts if text for name in _SINGLE_NAME_RE.findall(text)
+    )
 
 
 def automated_template_codes() -> frozenset[str]:
@@ -198,3 +218,23 @@ def validate_template_text(*texts: str | None, code: str | None = None) -> None:
         + "; ".join(problems)
         + f". Allowed for {context_label} templates: {allowed_list}."
     )
+
+
+def validate_template_activation_text(
+    *,
+    subject: str | None,
+    body: str,
+    code: str,
+) -> None:
+    """Validate the complete contract required before a template is active."""
+
+    validate_template_text(subject, body, code=code)
+    if code != PAYMENT_RECEIPT_TEMPLATE_CODE:
+        return
+    body_placeholders = template_placeholder_names(body)
+    missing = PAYMENT_RECEIPT_REQUIRED_PLACEHOLDERS - body_placeholders
+    if missing:
+        formatted = ", ".join("{" + name + "}" for name in sorted(missing))
+        raise ValueError(
+            "Active payment receipt templates require these body fields: " + formatted
+        )

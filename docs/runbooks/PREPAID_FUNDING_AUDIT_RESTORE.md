@@ -146,4 +146,7 @@ canonical post-handoff Sub facts. A mismatch blocks the whole artifact.
 `billing_prepaid_funding_quarantined_accounts` is the retained compatibility
 metric for the source-incomplete count. It must reach zero at completion and
 remain zero. Any later non-zero value is a source/materialization regression,
-not a permitted steady state.
+not a permitted steady state. While legacy review stock remains, track its
+absolute level as remediation work and alert any 24-hour increase separately as
+the prevention signal. A constant legacy cohort must not create a permanent
+warning that operators learn to ignore.
