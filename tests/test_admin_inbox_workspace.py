@@ -254,6 +254,37 @@ def test_projection_supplies_live_agent_and_assignment_options(db_session):
     assert projection.assignment_counts.unassigned == 1
 
 
+def test_queue_only_projection_skips_sidebar_queries(db_session, monkeypatch):
+    _conversation(db_session)
+    db_session.commit()
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("queue-only projection queried sidebar data")
+
+    monkeypatch.setattr(team_inbox_operations, "queue_metrics", unexpected)
+    monkeypatch.setattr(team_inbox_operations, "list_labels", unexpected)
+    monkeypatch.setattr(team_inbox_operations, "list_saved_filters", unexpected)
+    monkeypatch.setattr(team_inbox_projection, "list_agent_options", unexpected)
+    monkeypatch.setattr(team_inbox_projection, "get_agent_presence", unexpected)
+    monkeypatch.setattr(
+        team_inbox_projection, "social_comment_thread_count", unexpected
+    )
+
+    projection = team_inbox_projection.build_queue_projection(
+        db_session,
+        team_inbox_projection.InboxQueueRequest(
+            composition=team_inbox_projection.InboxQueueComposition.queue_only
+        ),
+    )
+
+    assert len(projection.rows) == 1
+    assert projection.queue_metrics.total_open == 0
+    assert projection.service_team_options == ()
+    assert projection.agent_options == ()
+    assert projection.label_options == ()
+    assert projection.saved_filters == ()
+
+
 def test_projection_reads_current_agent_presence(db_session):
     user, person = add_bound_staff_user(
         db_session,

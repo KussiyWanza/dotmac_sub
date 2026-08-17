@@ -154,6 +154,7 @@ class InboxSortDirection(StrEnum):
 class InboxQueueComposition(StrEnum):
     full_workspace = "full_workspace"
     sidebar = "sidebar"
+    queue_only = "queue_only"
 
 
 INBOX_LIST_DEFINITION = ListDefinition(
@@ -2242,7 +2243,13 @@ def build_queue_projection(
     raw_page = request.page
     raw_per_page = request.per_page
     advanced_filter_query, active_team_options = (
-        team_inbox_filters.resolve_filter_query(db, request.advanced_filters)
+        team_inbox_filters.resolve_filter_query(
+            db,
+            request.advanced_filters,
+            include_selector=(
+                request.composition is not InboxQueueComposition.queue_only
+            ),
+        )
     )
     advanced_filters_json = advanced_filter_query.canonical_json()
 
@@ -2414,16 +2421,46 @@ def build_queue_projection(
         )
         else None
     )
-    queue_metrics = team_inbox_operations.queue_metrics(db)
+    include_sidebar = request.composition is not InboxQueueComposition.queue_only
+    queue_metrics = (
+        team_inbox_operations.queue_metrics(db)
+        if include_sidebar
+        else team_inbox_operations.InboxQueueMetrics(
+            total_open=0,
+            needs_response=0,
+            failed_outbound=0,
+            unassigned_open=0,
+            muted_open=0,
+            snoozed_open=0,
+        )
+    )
+    assignment_counts = (
+        _assignment_counts(
+            db,
+            actor_person_id=request.actor_person_id,
+            queue_metrics=queue_metrics,
+        )
+        if include_sidebar
+        else InboxAssignmentCounts(
+            all=0,
+            assigned_to_me=0,
+            my_team=0,
+            ai_handling=0,
+            unassigned=0,
+            my_team_ids=(),
+            unreplied=0,
+            needs_attention=0,
+        )
+    )
     return InboxQueueProjection(
         rows=tuple(result.items),
         queue_metrics=queue_metrics,
-        social_comment_count=social_comment_thread_count(db),
+        social_comment_count=social_comment_thread_count(db) if include_sidebar else 0,
         operator_unread_count=(
             team_inbox_read_state.unread_conversation_count(
                 db, person_id=request.actor_person_id
             )
-            if request.actor_person_id is not None
+            if include_sidebar and request.actor_person_id is not None
             else 0
         ),
         count=result.count,
@@ -2452,13 +2489,11 @@ def build_queue_projection(
             InboxServiceTeamOption(id=team_id, name=name)
             for team_id, name in active_team_options
         ),
-        agent_options=list_agent_options(db),
-        agent_presence=get_agent_presence(db, request.actor_person_id),
-        assignment_counts=_assignment_counts(
-            db,
-            actor_person_id=request.actor_person_id,
-            queue_metrics=queue_metrics,
+        agent_options=list_agent_options(db) if include_sidebar else (),
+        agent_presence=(
+            get_agent_presence(db, request.actor_person_id) if include_sidebar else None
         ),
+        assignment_counts=assignment_counts,
         status_options=tuple(item.value for item in InboxConversationStatus),
         channel_options=tuple(
             item.value
@@ -2466,12 +2501,16 @@ def build_queue_projection(
             if item.value not in SOCIAL_COMMENT_CHANNELS
         ),
         priority_options=INBOX_PRIORITY_OPTIONS,
-        label_options=tuple(team_inbox_operations.list_labels(db)),
+        label_options=(
+            tuple(team_inbox_operations.list_labels(db)) if include_sidebar else ()
+        ),
         saved_filters=tuple(
             team_inbox_operations.list_saved_filters(
                 db, person_id=request.actor_person_id
             )
-        ),
+        )
+        if include_sidebar
+        else (),
         selected_id=str(selected_id) if selected_id is not None else None,
         selected=selected,
         canonical_url=canonical_url,

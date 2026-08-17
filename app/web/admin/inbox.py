@@ -318,8 +318,10 @@ def team_inbox_queue(
                 ),
                 actor_person_id=actor_person_id,
                 composition=(
-                    team_inbox_projection.InboxQueueComposition.sidebar
-                    if is_list_fragment_request
+                    team_inbox_projection.InboxQueueComposition.queue_only
+                    if is_queue_request
+                    else team_inbox_projection.InboxQueueComposition.sidebar
+                    if is_sidebar_request
                     else team_inbox_projection.InboxQueueComposition.full_workspace
                 ),
                 # Numbered pagination requires exact filtered bounds from the

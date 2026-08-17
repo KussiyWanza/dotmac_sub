@@ -1055,21 +1055,28 @@ def queue_metrics(db: Session) -> InboxQueueMetrics:
     """
     from app.services import team_inbox_read
 
-    def count_open(*clauses) -> int:
-        query = (
-            db.query(func.count(InboxConversation.id))
-            .filter(InboxConversation.is_active.is_(True))
-            .filter(InboxConversation.status != "resolved")
-        )
-        for clause in clauses:
-            query = query.filter(clause)
-        return int(query.scalar() or 0)
-
     assigned_conversation_ids = select(
         InboxConversationAssignment.conversation_id
     ).where(InboxConversationAssignment.is_active.is_(True))
+    total_open, unassigned_open, muted_open, snoozed_open = (
+        db.query(
+            func.count(InboxConversation.id),
+            func.count(InboxConversation.id).filter(
+                ~InboxConversation.id.in_(assigned_conversation_ids)
+            ),
+            func.count(InboxConversation.id).filter(
+                InboxConversation.is_muted.is_(True)
+            ),
+            func.count(InboxConversation.id).filter(
+                team_inbox_read.currently_snoozed_clause()
+            ),
+        )
+        .filter(InboxConversation.is_active.is_(True))
+        .filter(InboxConversation.status != "resolved")
+        .one()
+    )
     return InboxQueueMetrics(
-        total_open=count_open(),
+        total_open=int(total_open or 0),
         needs_response=team_inbox_read.needs_response_conversation_count(db),
         failed_outbound=int(
             db.query(func.count(InboxMessage.id))
@@ -1078,14 +1085,12 @@ def queue_metrics(db: Session) -> InboxQueueMetrics:
             .scalar()
             or 0
         ),
-        unassigned_open=count_open(
-            ~InboxConversation.id.in_(assigned_conversation_ids)
-        ),
-        muted_open=count_open(InboxConversation.is_muted.is_(True)),
+        unassigned_open=int(unassigned_open or 0),
+        muted_open=int(muted_open or 0),
         # "Asleep now", matching the queue's snoozed filter. Counting every row
         # with a wake time meant the badge kept counting conversations that had
         # already woken.
-        snoozed_open=count_open(team_inbox_read.currently_snoozed_clause()),
+        snoozed_open=int(snoozed_open or 0),
     )
 
 

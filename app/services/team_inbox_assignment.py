@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -158,43 +158,93 @@ def team_capacity_snapshot(
     *,
     default_max_concurrent: int | None = None,
 ) -> InboxTeamCapacitySnapshot:
-    if default_max_concurrent is None:
-        default_max_concurrent = resolve_default_max_concurrent_conversations(db)
+    snapshots = team_capacity_snapshots(
+        db,
+        (service_team_id,),
+        default_max_concurrent=default_max_concurrent,
+    )
     team_uuid = _coerce_uuid(service_team_id)
     if team_uuid is None:
         return InboxTeamCapacitySnapshot(active_assignments=0, total_capacity=0)
+    return snapshots.get(
+        team_uuid,
+        InboxTeamCapacitySnapshot(active_assignments=0, total_capacity=0),
+    )
+
+
+def team_capacity_snapshots(
+    db: Session,
+    service_team_ids: Sequence[str | UUID],
+    *,
+    default_max_concurrent: int | None = None,
+) -> dict[UUID, InboxTeamCapacitySnapshot]:
+    """Load capacity for several teams with one bounded set of queries."""
+
+    if default_max_concurrent is None:
+        default_max_concurrent = resolve_default_max_concurrent_conversations(db)
+    team_ids = tuple(
+        dict.fromkeys(
+            team_id
+            for value in service_team_ids
+            if (team_id := _coerce_uuid(value)) is not None
+        )
+    )
+    if not team_ids:
+        return {}
     member_users = (
         db.query(ServiceTeamMember, SystemUser)
         .join(SystemUser, SystemUser.person_party_id == ServiceTeamMember.person_id)
-        .filter(ServiceTeamMember.team_id == team_uuid)
+        .filter(ServiceTeamMember.team_id.in_(team_ids))
         .filter(ServiceTeamMember.is_active.is_(True))
         .filter(SystemUser.is_active.is_(True))
         .all()
     )
-    person_ids = [user.id for _member, user in member_users]
+    person_ids = list(dict.fromkeys(user.id for _member, user in member_users))
     if not person_ids:
-        return InboxTeamCapacitySnapshot(active_assignments=0, total_capacity=0)
+        return {
+            team_id: InboxTeamCapacitySnapshot(active_assignments=0, total_capacity=0)
+            for team_id in team_ids
+        }
     presences = {
         row.person_id: row
         for row in db.query(InboxAgentPresence)
         .filter(InboxAgentPresence.person_id.in_(person_ids))
         .all()
     }
-    online_ids = [
+    online_ids = {
         person_id
         for person_id, presence in presences.items()
         if _effective_presence_status(presence) == InboxAgentPresenceStatus.online.value
-    ]
-    total_capacity = sum(
-        presences[person_id].max_concurrent_conversations or default_max_concurrent
-        for person_id in online_ids
+    }
+    online_ids_by_team: dict[UUID, set[UUID]] = {team_id: set() for team_id in team_ids}
+    for member, user in member_users:
+        if user.id in online_ids:
+            online_ids_by_team[member.team_id].add(user.id)
+    active_by_person = dict(
+        _active_assignment_count_query(db, list(online_ids))
+        .with_entities(
+            InboxConversationAssignment.person_id,
+            func.count(InboxConversationAssignment.id),
+        )
+        .group_by(InboxConversationAssignment.person_id)
+        .all()
+        if online_ids
+        else ()
     )
-    active = (
-        _active_assignment_count_query(db, online_ids).scalar() if online_ids else 0
-    )
-    return InboxTeamCapacitySnapshot(
-        active_assignments=int(active or 0), total_capacity=int(total_capacity)
-    )
+    return {
+        team_id: InboxTeamCapacitySnapshot(
+            active_assignments=sum(
+                int(active_by_person.get(person_id, 0))
+                for person_id in online_ids_by_team[team_id]
+            ),
+            total_capacity=sum(
+                presences[person_id].max_concurrent_conversations
+                or default_max_concurrent
+                for person_id in online_ids_by_team[team_id]
+            ),
+        )
+        for team_id in team_ids
+    }
 
 
 def _coerce_uuid(value: str | UUID | None) -> UUID | None:

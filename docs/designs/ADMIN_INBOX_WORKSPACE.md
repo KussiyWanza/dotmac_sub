@@ -205,6 +205,11 @@ identifier but do not rebuild its detail projection, the new-conversation
 template catalog, or the manager dashboard. A normal full-page request remains
 the deterministic rebuild path for those projections.
 
+Queue-only refreshes use a distinct typed projection composition. They compute
+only filtered rows, exact pagination, and row display facts; sidebar metrics,
+agent presence, selector options, labels, and saved views are not queried or
+rendered merely to be discarded by the HTMX queue selector.
+
 Each queue row displays only projected facts. Contact display identity resolves
 in this order: the linked canonical Party name, the linked legacy Subscriber
 name, the latest inbound provider-observed name, an operator/provider name on

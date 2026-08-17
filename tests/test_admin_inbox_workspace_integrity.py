@@ -453,6 +453,7 @@ def test_sidebar_filters_replace_stale_requests_and_expose_busy_state():
     assert "if (this.filterLoading) return" in JAVASCRIPT
     assert 'document.body.addEventListener("htmx:sendAbort", release)' in JAVASCRIPT
     assert "InboxQueueComposition.sidebar" in ROUTES
+    assert "InboxQueueComposition.queue_only" in ROUTES
     assert "manager_dashboard = None" in ROUTES
     assert 'hx-get="/admin/inbox/manager-dashboard"' in SIDEBAR
     assert "def team_inbox_manager_dashboard(" in ROUTES
