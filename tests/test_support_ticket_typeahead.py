@@ -250,3 +250,9 @@ def test_ticket_detail_mentions_track_person_and_group_tokens() -> None:
     assert "selectedMentions.push({id: person.id, token: person.id, label})" in (
         detail_template
     )
+    assert "commentEditor(initialText, initialMentions, options)" in detail_template
+    assert "comment_mentions.get(comment.id|string, [])" in detail_template
+    assert detail_template.count('name="mentions"') == 2
+    assert 'placeholder="Edit comment... Use @name or @email to mention."' in (
+        detail_template
+    )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from enum import Enum
 from uuid import UUID
 
 from pydantic import (
@@ -290,10 +291,38 @@ class TicketCommentBase(BaseModel):
     attachments: list[AttachmentMeta] = Field(default_factory=list)
 
 
+class TicketMentionTargetKind(str, Enum):
+    person = "person"
+    group = "group"
+
+
+class TicketMentionTarget(BaseModel):
+    """Exact authoritative target selected by a comment author."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: TicketMentionTargetKind
+    target_id: UUID
+
+    @property
+    def token(self) -> str:
+        return f"{self.kind.value}:{self.target_id}"
+
+
+class TicketCommentMentionRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    kind: TicketMentionTargetKind
+    target_id: UUID
+    created_at: datetime
+
+
 class TicketCommentCreate(TicketCommentBase):
     author_person_id: UUID | None = None
     author_type: TicketCommentAuthorType | str | None = None
     author_system_user_id: UUID | None = None
+    mentions: tuple[TicketMentionTarget, ...] = ()
 
 
 class TicketCommentUpdate(BaseModel):
@@ -302,6 +331,8 @@ class TicketCommentUpdate(BaseModel):
     body: str | None = Field(default=None, min_length=1)
     is_internal: bool | None = None
     attachments: list[AttachmentMeta] | None = None
+    # None preserves the current set; an explicit empty tuple clears it.
+    mentions: tuple[TicketMentionTarget, ...] | None = None
 
 
 class TicketCommentRead(BaseModel):
@@ -315,6 +346,9 @@ class TicketCommentRead(BaseModel):
     body: str
     is_internal: bool
     attachments: list[dict] | None = None
+    mentions: tuple[TicketCommentMentionRead, ...] = Field(
+        default=(), validation_alias="mention_links"
+    )
     created_at: datetime
 
 
