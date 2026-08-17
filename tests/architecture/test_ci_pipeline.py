@@ -215,6 +215,23 @@ def test_ci_test_jobs_fail_closed_instead_of_hanging_indefinitely() -> None:
     assert "pytest-timeout==2.4.0" in project["dependency-groups"]["dev"]
 
 
+def test_docs_only_changes_report_each_required_unit_shard() -> None:
+    """Expand the matrix before taking the documentation-only no-op path."""
+
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    unit_job = workflow[
+        workflow.index("  unit-shards:\n") : workflow.index("  migration-sequence:\n")
+    ]
+
+    assert "matrix:\n        shard: [1, 2, 3, 4]" in unit_job
+    assert "if: always() && needs.changes.result == 'success'" in unit_job
+    assert "needs.changes.outputs.docs-only == 'true'" in unit_job
+    assert "needs.python-environment.result == 'success'" in unit_job
+    assert "- name: Documentation-only change" in unit_job
+    assert 'run: echo "Unit-test shard ${{ matrix.shard }}' in unit_job
+    assert unit_job.count("if: needs.changes.outputs.docs-only != 'true'") == 6
+
+
 def test_ci_change_classifier_fetches_missing_comparison_base() -> None:
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
     classifier = workflow[

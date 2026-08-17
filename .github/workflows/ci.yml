@@ -248,7 +248,7 @@ jobs:
   unit-shards:
     name: Unit Tests (shard ${{ matrix.shard }}/4)
     needs: [changes, python-environment]
-    if: needs.changes.outputs.docs-only != 'true'
+    if: always() && needs.changes.result == 'success' && (needs.changes.outputs.docs-only == 'true' || needs.python-environment.result == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -256,13 +256,20 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4]
     steps:
+      - name: Documentation-only change
+        if: needs.changes.outputs.docs-only == 'true'
+        run: echo "Unit-test shard ${{ matrix.shard }} is not needed for documentation-only changes."
+
       - uses: actions/checkout@v4
+        if: needs.changes.outputs.docs-only != 'true'
 
       - uses: ./.github/actions/setup-ci-python
+        if: needs.changes.outputs.docs-only != 'true'
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Restore historical unit-test durations
+        if: needs.changes.outputs.docs-only != 'true'
         uses: actions/cache/restore@v4
         with:
           path: .ci-cache/test-durations.json
@@ -273,6 +280,7 @@ jobs:
             unit-test-durations-v1-
 
       - name: Run unit-test shard
+        if: needs.changes.outputs.docs-only != 'true'
         env:
           COVERAGE_CORE: sysmon
           COVERAGE_FILE: .coverage.${{ matrix.shard }}
@@ -282,6 +290,7 @@ jobs:
           CI_DURATIONS_OUTPUT=".ci-cache/current-${{ matrix.shard }}.json"
 
       - name: Upload coverage data
+        if: needs.changes.outputs.docs-only != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: unit-coverage-${{ matrix.shard }}
@@ -290,6 +299,7 @@ jobs:
           retention-days: 1
 
       - name: Upload unit-test duration data
+        if: needs.changes.outputs.docs-only != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: unit-durations-${{ matrix.shard }}
