@@ -741,6 +741,18 @@ def device_operational_status_presentation(
     return _presentation(value, _DEVICE_OPERATIONAL_PRESENTATIONS)
 
 
+def network_device_list_status_presentation(
+    status: object | str | None,
+) -> StatusPresentation:
+    """Present binary device operation in familiar connectivity language."""
+
+    presentation = device_operational_status_presentation(status)
+    labels = {"working": "Online", "not_working": "Offline"}
+    return presentation.model_copy(
+        update={"label": labels.get(presentation.value, presentation.label)}
+    )
+
+
 def topology_hop_status_presentation(state: str | None) -> StatusPresentation:
     """Project an access-path hop's observed state without re-deriving it.
 
