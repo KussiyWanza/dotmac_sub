@@ -16,6 +16,7 @@ class StaffEditForm:
     display_name: str | None
     email: str
     phone: str | None
+    field_technician_access: bool
     new_password: str | None
     confirm_password: str | None
     require_password_change: bool
@@ -28,6 +29,10 @@ def parse_edit_form(form_data) -> StaffEditForm:
         display_name=(str(form_data.get("display_name") or "").strip() or None),
         email=str(form_data.get("email", "")),
         phone=(str(form_data.get("phone") or "").strip() or None),
+        field_technician_access=str(
+            form_data.get("field_technician_access") or ""
+        ).lower()
+        in {"1", "true", "yes", "on"},
         new_password=(str(form_data.get("new_password") or "") or None),
         confirm_password=(str(form_data.get("confirm_password") or "") or None),
         require_password_change=str(
@@ -62,4 +67,5 @@ def build_update_command(
         phone=form.phone,
         new_password=form.new_password,
         require_password_change=form.require_password_change,
+        field_technician_access=form.field_technician_access,
     )

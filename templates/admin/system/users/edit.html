@@ -62,6 +62,22 @@
                 <input type="hidden" name="user_type" value="system_user">
             </div>
 
+            <div class="rounded-lg border border-slate-200 p-4 dark:border-slate-700">
+                <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Field Service App</h2>
+                <label class="mt-3 flex items-start gap-3">
+                    <input type="checkbox" name="field_technician_access" id="field_technician_access"
+                           {% if field_technician_access %}checked{% endif %}
+                           class="mt-0.5 h-4 w-4 rounded border-slate-300 text-primary-600 focus:ring-primary-500 dark:border-slate-600 dark:bg-slate-700">
+                    <span>
+                        <span class="block text-sm font-medium text-slate-700 dark:text-slate-300">Field technician access</span>
+                        <span class="mt-1 block text-xs text-slate-500 dark:text-slate-400">Creates or reactivates the staff-linked technician profile required by the Field Service app.</span>
+                    </span>
+                </label>
+                {% if field_technician_profile_id %}
+                <p class="mt-3 text-xs text-slate-500 dark:text-slate-400">Technician profile: <span class="font-mono">{{ field_technician_profile_id }}</span></p>
+                {% endif %}
+            </div>
+
             {% if can_update_password %}
             <div class="rounded-lg border border-slate-200 p-4 dark:border-slate-700">
                 <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Password</h2>

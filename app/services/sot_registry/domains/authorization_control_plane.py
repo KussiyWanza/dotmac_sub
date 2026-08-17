@@ -1573,6 +1573,7 @@ DOMAIN = DomainSOT(
                 "staff identity bootstrap",
                 "staff identity maintenance",
                 "staff login identity resolution",
+                "staff field technician profile binding",
             ),
             depends_on=(
                 "auth.rbac_catalog",
@@ -1629,7 +1630,18 @@ DOMAIN = DomainSOT(
                         input_names=(
                             "authorized staff identity principal",
                             "canonical staff identity and credential state",
+                            "staff-linked field technician profile",
                         ),
+                    ),
+                    ConcernContract(
+                        name="staff field technician profile binding",
+                        role=OwnerRole.COMMAND_WRITER,
+                        input_names=(
+                            "authorized staff identity principal",
+                            "canonical staff identity and credential state",
+                            "staff-linked field technician profile",
+                        ),
+                        canonical_writer="auth.staff_provisioning",
                     ),
                     ConcernContract(
                         name="staff login identity resolution",
@@ -1685,6 +1697,15 @@ DOMAIN = DomainSOT(
                         owner="auth.staff_provisioning",
                         kind=AuthorityKind.AUTHORITATIVE_RECORD,
                         source=("system_users and staff-bound local user_credentials"),
+                    ),
+                    AuthorityInput(
+                        name="staff-linked field technician profile",
+                        owner="auth.staff_provisioning",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "technician_profiles rows whose system_user_id/person_id "
+                            "bind directly to the native staff SystemUser"
+                        ),
                     ),
                     AuthorityInput(
                         name="canonical Person Party identity",
