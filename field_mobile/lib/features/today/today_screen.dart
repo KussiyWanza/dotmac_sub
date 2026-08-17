@@ -78,13 +78,13 @@ class TodayScreen extends ConsumerWidget {
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        'Today route',
+                        'Open assigned work',
                         style: Theme.of(context).textTheme.titleMedium
                             ?.copyWith(fontWeight: FontWeight.w800),
                       ),
                       const SizedBox(height: 8),
                       Text(
-                        'Field jobs, live work status, and offline-safe updates.',
+                        'Today, overdue, and unscheduled jobs ready for action.',
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
                           color: AppColors.subdued(context),
                         ),
