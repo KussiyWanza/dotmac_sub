@@ -47,7 +47,12 @@ from app.models.service_extension import (
 )
 from app.models.usage import QuotaBucket
 from app.schemas.audit import AuditEventCreate
-from app.services.account_lifecycle import restore_subscription_detailed
+from app.services.account_lifecycle import (
+    BillingAnchorProjectionCommand,
+    BillingAnchorProjectionSource,
+    restore_subscription_detailed,
+    stage_subscription_billing_anchor,
+)
 from app.services.audit import AuditEvents
 from app.services.billing._common import lock_account
 from app.services.domain_errors import DomainError
@@ -974,7 +979,17 @@ def reconcile_prepaid_billing_calendar(
             "corrected_at": now.isoformat(),
         }
         entitlement.metadata_ = entitlement_metadata
-        subscription.next_billing_at = corrected_end
+        stage_subscription_billing_anchor(
+            db,
+            subscription,
+            BillingAnchorProjectionCommand(
+                subscription_id=subscription.id,
+                expected_previous=subscription.next_billing_at,
+                target=corrected_end,
+                source=BillingAnchorProjectionSource.reviewed_reconciliation,
+                evidence_ref=f"calendar-reconciliation:{current.fingerprint}",
+            ),
+        )
         access_consequence_evaluated = False
         subscription_reactivated = False
         access_restored = False

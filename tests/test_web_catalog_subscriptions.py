@@ -1324,7 +1324,10 @@ def test_update_subscription_preserves_ipv4_when_assignment_omitted(
             offer_id=catalog_offer.id,
         ),
     )
+    now = datetime.now(UTC)
     subscription.status = SubscriptionStatus.active
+    subscription.start_at = now
+    subscription.next_billing_at = now + timedelta(days=30)
     subscription.ipv4_address = "10.82.10.5"
     address = IPv4Address(address="10.82.10.5")
     db_session.add(address)

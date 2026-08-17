@@ -32,6 +32,8 @@ DOMAIN = DomainSOT(
                 "enforcement lock lifecycle",
                 "persisted access restriction intent",
                 "subscription access-status transitions",
+                "subscription billing-anchor projection",
+                "active subscription billing-anchor invariant",
                 "subscriber access-status projection",
                 "subscriber portal/account-active projection",
                 "atomic account and child-service access projection",
@@ -46,7 +48,10 @@ DOMAIN = DomainSOT(
                 "subscription status and every child access-state projection are "
                 "derived under the lifecycle transaction. "
                 "Adapters request a lifecycle command or reconciliation; they do not "
-                "write the access-state projection."
+                "write the access-state projection. Subscription creation enters "
+                "active state through this owner, and every service-period, grant, "
+                "settlement, and reviewed-repair decision submits a typed, locked "
+                "compare-and-set billing-anchor projection to its one writer."
             ),
         ),
         SOTService(

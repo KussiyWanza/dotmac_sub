@@ -160,6 +160,40 @@ def test_overview_page_data_filters_plan_kind_and_counts(db_session, subscriber)
     assert str(ip_plan.id) not in ids
 
 
+def test_active_subscription_creation_materializes_anchor_through_lifecycle_owner(
+    db_session, subscriber, catalog_offer
+):
+    from app.models.lifecycle import SubscriptionLifecycleEvent
+
+    created = catalog_service.subscriptions.create(
+        db_session,
+        SubscriptionCreate(
+            account_id=subscriber.id,
+            offer_id=catalog_offer.id,
+            status=SubscriptionStatus.active,
+            start_at=None,
+            next_billing_at=None,
+        ),
+        create_service_order=False,
+    )
+
+    assert created.status == SubscriptionStatus.active
+    assert created.start_at is not None
+    assert created.next_billing_at is not None
+    evidence = (
+        db_session.query(SubscriptionLifecycleEvent)
+        .filter(SubscriptionLifecycleEvent.subscription_id == created.id)
+        .order_by(SubscriptionLifecycleEvent.created_at.asc())
+        .all()
+    )
+    assert [row.to_status for row in evidence] == [
+        SubscriptionStatus.pending,
+        SubscriptionStatus.active,
+    ]
+    assert evidence[-1].evidence_source == "lifecycle_command"
+    assert evidence[-1].actor == "service_intent.catalog_policy"
+
+
 def test_ensure_offer_radius_profile_creates_generated_profile_and_link(db_session):
     offer = catalog_service.offers.create(
         db_session,

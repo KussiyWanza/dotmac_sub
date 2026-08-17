@@ -269,6 +269,22 @@ Recurring obligations after activation remain linked to the billing contract
 and subscription. They do not inflate the finite funding result of the original
 SalesOrder.
 
+#### Due-date provenance
+
+An issued invoice snapshots the obligation's exact due trigger rather than only
+a mutable timestamp. The contract carries a typed `DueDateBasis`, source
+reference, and policy/version identity alongside `issued_at` and `due_at`.
+Supported bases include contract terms, prepaid service period, provider
+observation, and an approved manual override. Provenance that cannot be proved
+is represented explicitly as `unknown_unverified`; it is reportable review
+stock and is ineligible for automatic overdue or collections consequences.
+
+The current Sub-local implementation lives in `financial.invoices` until the
+obligation package passes the ADR-0017 P11 gate. The target migration copies the
+typed contract and source identity; it does not infer a basis from a plausible
+date. An issued snapshot is immutable. A correction is a reviewed owner
+transition with retained old and new evidence, never a generic invoice edit.
+
 #### Structural applications
 
 Partial settlement and document aggregation require structural association

@@ -17,6 +17,7 @@ from app.models.billing import (
     InvoiceClosureType,
     InvoiceDiscountSource,
     InvoiceDiscountType,
+    InvoiceDueDateBasis,
     InvoiceStatus,
     LedgerCategory,
     LedgerEntryType,
@@ -53,6 +54,9 @@ class InvoiceBase(BaseModel):
     billing_period_end: datetime | None = None
     issued_at: datetime | None = None
     due_at: datetime | None = None
+    due_date_basis: InvoiceDueDateBasis | None = None
+    due_date_basis_ref: str | None = Field(default=None, max_length=255)
+    due_date_policy_version: str | None = Field(default=None, max_length=64)
     paid_at: datetime | None = None
     memo: str | None = None
     is_proforma: bool = False
@@ -66,6 +70,41 @@ class InvoiceCreate(InvoiceBase):
     total: Decimal = Field(default=Decimal("0.00"), ge=0)
     balance_due: Decimal = Field(default=Decimal("0.00"), ge=0)
 
+    @model_validator(mode="after")
+    def _validate_due_date_evidence(self) -> InvoiceCreate:
+        if self.status == InvoiceStatus.draft:
+            if self.due_date_basis not in {
+                None,
+                InvoiceDueDateBasis.unknown_unverified,
+            }:
+                self._require_verified_due_date_fields(require_issued_at=False)
+            return self
+
+        if self.due_date_basis is None:
+            raise ValueError("due_date_basis is required after draft")
+        if self.due_date_basis == InvoiceDueDateBasis.unknown_unverified:
+            return self
+        self._require_verified_due_date_fields(require_issued_at=True)
+        return self
+
+    def _require_verified_due_date_fields(self, *, require_issued_at: bool) -> None:
+        if self.due_at is None:
+            raise ValueError("due_at is required for a verified due-date basis")
+        if require_issued_at and self.issued_at is None:
+            raise ValueError("issued_at is required for a verified due-date basis")
+        if self.due_at.tzinfo is None or self.due_at.utcoffset() is None:
+            raise ValueError("due_at must include a timezone for a verified basis")
+        if self.issued_at is not None and (
+            self.issued_at.tzinfo is None or self.issued_at.utcoffset() is None
+        ):
+            raise ValueError("issued_at must include a timezone for a verified basis")
+        if self.issued_at is not None and self.due_at < self.issued_at:
+            raise ValueError("due_at must not be before issued_at")
+        if not (self.due_date_basis_ref or "").strip():
+            raise ValueError("due_date_basis_ref is required for a verified basis")
+        if not (self.due_date_policy_version or "").strip():
+            raise ValueError("due_date_policy_version is required for a verified basis")
+
 
 class InvoiceUpdate(BaseModel):
     account_id: UUID | None = None
@@ -78,6 +117,9 @@ class InvoiceUpdate(BaseModel):
     balance_due: Decimal | None = Field(default=None, ge=0)
     issued_at: datetime | None = None
     due_at: datetime | None = None
+    due_date_basis: InvoiceDueDateBasis | None = None
+    due_date_basis_ref: str | None = Field(default=None, max_length=255)
+    due_date_policy_version: str | None = Field(default=None, max_length=64)
     paid_at: datetime | None = None
     memo: str | None = None
     is_proforma: bool | None = None
@@ -190,6 +232,9 @@ class InvoiceSyncRead(BaseModel):
     balance_due: Decimal
     issued_at: datetime | None = None
     due_at: datetime | None = None
+    due_date_basis: InvoiceDueDateBasis | None = None
+    due_date_basis_ref: str | None = None
+    due_date_policy_version: str | None = None
     paid_at: datetime | None = None
     memo: str | None = None
     is_proforma: bool = False

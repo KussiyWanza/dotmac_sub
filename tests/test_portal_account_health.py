@@ -164,8 +164,13 @@ def test_portal_account_health_has_an_explicit_single_service_query_budget(
     db_session.commit()
     statements = 0
 
-    def _count(*_args, **_kwargs):
+    def _count(_conn, _cursor, statement, *_args, **_kwargs):
         nonlocal statements
+        normalized = statement.lstrip().upper()
+        if normalized.startswith(
+            ("SAVEPOINT ", "RELEASE SAVEPOINT ", "ROLLBACK TO SAVEPOINT ")
+        ):
+            return
         statements += 1
 
     bind = db_session.get_bind()

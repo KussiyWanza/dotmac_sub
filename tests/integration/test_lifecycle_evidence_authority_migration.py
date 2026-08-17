@@ -6,7 +6,7 @@ import os
 import uuid
 from collections.abc import Iterator
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import psycopg
@@ -186,6 +186,7 @@ def _seed_subscription(url: URL) -> uuid.UUID:
                 status=SubscriptionStatus.active,
                 billing_mode=BillingMode.postpaid,
                 start_at=NOW,
+                next_billing_at=NOW + timedelta(days=30),
             )
             session.add(subscription)
             session.commit()

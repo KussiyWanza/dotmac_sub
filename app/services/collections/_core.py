@@ -81,6 +81,7 @@ from app.services.domain_errors import DomainError
 from app.services.events import emit_event
 from app.services.events.types import EventType
 from app.services.invoice_classification import collectible_ar_invoice_filter
+from app.services.invoice_collectibility import collection_due_date_eligible_filter
 from app.services.payment_arrangements import (
     active_arrangement_shield_reason,
     bulk_active_arrangement_shield_reasons,
@@ -198,6 +199,24 @@ class DunningStaffActionPreview:
         return self.selected_count - self.eligible_count
 
 
+@dataclass(frozen=True, slots=True)
+class DunningAccountRunCommand:
+    """One independently committable dunning decision root."""
+
+    account_id: UUID
+    invoice_ids: tuple[UUID, ...]
+    run_at: datetime
+    dry_run: bool
+
+
+@dataclass(frozen=True, slots=True)
+class DunningAccountRunResult:
+    cases_created: int = 0
+    actions_created: int = 0
+    skipped: int = 0
+    has_effective_overdue: bool = False
+
+
 def _financial_access_fingerprint(payload: dict) -> str:
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
@@ -216,6 +235,7 @@ def _overdue_receivable_snapshot(db: Session, account_id: UUID) -> list[dict]:
         .filter(Invoice.account_id == account_id)
         .filter(Invoice.is_active.is_(True))
         .filter(collectible_ar_invoice_filter())
+        .filter(collection_due_date_eligible_filter())
         .filter(
             or_(
                 Invoice.status == InvoiceStatus.overdue,
@@ -2518,306 +2538,386 @@ class DunningActionLogs(ListResponseMixin):
         db.commit()
 
 
-class DunningWorkflow(ListResponseMixin):
-    @staticmethod
-    def run(db: Session, payload: DunningRunRequest) -> DunningRunResponse:
-        run_at = payload.run_at or datetime.now(UTC)
-        invoices = (
-            db.query(Invoice)
-            .filter(Invoice.balance_due > 0)
-            .filter(Invoice.due_at.is_not(None))
-            .filter(Invoice.due_at <= run_at)
-            .filter(Invoice.is_active.is_(True))
-            .filter(collectible_ar_invoice_filter())
-            # Only collectible invoices drive dunning. draft/void/written_off
-            # rows must never create a case even if they retain a positive
-            # balance_due (a stale value elsewhere would otherwise dun a debt
-            # that isn't owed).
-            .filter(
+def _run_dunning_account(
+    db: Session,
+    command: DunningAccountRunCommand,
+) -> DunningAccountRunResult:
+    """Stage one account's complete dunning consequence without committing."""
+
+    account = db.scalar(
+        select(Subscriber).where(Subscriber.id == command.account_id).with_for_update()
+    )
+    if account is None:
+        return DunningAccountRunResult(skipped=1)
+    account_invoices = list(
+        db.scalars(
+            select(Invoice)
+            .where(
+                Invoice.id.in_(command.invoice_ids),
+                Invoice.account_id == command.account_id,
+                Invoice.balance_due > 0,
+                Invoice.due_at.is_not(None),
+                Invoice.due_at <= command.run_at,
+                collection_due_date_eligible_filter(),
+                Invoice.is_active.is_(True),
+                collectible_ar_invoice_filter(),
                 Invoice.status.in_(
                     [
                         InvoiceStatus.issued,
                         InvoiceStatus.partially_paid,
                         InvoiceStatus.overdue,
                     ]
-                )
+                ),
             )
-            .all()
+            .order_by(Invoice.due_at.asc(), Invoice.id.asc())
+            .with_for_update()
+        ).all()
+    )
+    eligible_invoices: list[Invoice] = []
+    for invoice in account_invoices:
+        overlap_hold = (
+            invoice_paid_prepaid_overlap(db, invoice) is not None
+            if command.dry_run
+            else apply_prepaid_overlap_hold(db, invoice)
         )
-        overdue_accounts: dict[UUID, list[Invoice]] = {}
-        for invoice in invoices:
-            if payload.dry_run:
-                prepaid_overlap_hold = (
-                    invoice_paid_prepaid_overlap(db, invoice) is not None
-                )
-            else:
-                prepaid_overlap_hold = apply_prepaid_overlap_hold(db, invoice)
-            if (invoice.metadata_ or {}).get(
-                "reconciliation_hold"
-            ) or prepaid_overlap_hold:
-                continue
-            account_id = coerce_uuid(str(invoice.account_id))
-            overdue_accounts.setdefault(account_id, []).append(invoice)
-            if not payload.dry_run:
-                Invoices.mark_overdue_system(
-                    db,
-                    str(invoice.id),
-                    as_of=run_at,
-                    reason="dunning_candidate_resolution",
-                )
-        # Dunning is a postpaid collections workflow. Prepaid service cuts are
-        # owned by prepaid_balance_sweep using account available balance; legacy
-        # prepaid AR rows should be cleaned/reclassified, not dunned.
-        enforce_mode_filter = Subscription.billing_mode == BillingMode.postpaid
-        postpaid_account_ids = {
-            coerce_uuid(str(row[0]))
-            for row in (
-                db.query(Subscription.subscriber_id)
-                .filter(enforce_mode_filter)
-                .filter(
-                    # ``blocked`` (recoverable non-payment) stays in scope so a
-                    # walled non-payer still gets dunning cases that can recover
-                    # them. See COLLECTIBLE_SERVICE_STATUSES.
-                    Subscription.status.in_(COLLECTIBLE_SERVICE_STATUSES)
-                )
-                .distinct()
-                .all()
+        if (invoice.metadata_ or {}).get("reconciliation_hold") or overlap_hold:
+            continue
+        eligible_invoices.append(invoice)
+        if not command.dry_run:
+            Invoices.mark_overdue_system(
+                db,
+                str(invoice.id),
+                as_of=command.run_at,
+                reason="dunning_candidate_resolution",
             )
-        }
-        account_ids = list(overdue_accounts.keys())
-        accounts = {
-            coerce_uuid(str(account.id)): account
-            for account in (
-                db.query(Subscriber).filter(Subscriber.id.in_(account_ids)).all()
-                if account_ids
-                else []
+    if not eligible_invoices:
+        return DunningAccountRunResult(skipped=1)
+
+    profile = resolve_billing_profile(db, account)
+    if not profile.automation_safe or profile.effective_mode != BillingMode.postpaid:
+        return DunningAccountRunResult(skipped=1, has_effective_overdue=True)
+    has_collectible_postpaid_service = db.scalar(
+        select(Subscription.id)
+        .where(
+            Subscription.subscriber_id == command.account_id,
+            Subscription.billing_mode == BillingMode.postpaid,
+            Subscription.status.in_(COLLECTIBLE_SERVICE_STATUSES),
+        )
+        .limit(1)
+    )
+    if has_collectible_postpaid_service is None:
+        return DunningAccountRunResult(skipped=1, has_effective_overdue=True)
+    if _dunning_shield_reason(db, command.account_id):
+        return DunningAccountRunResult(skipped=1, has_effective_overdue=True)
+
+    policy_set_id = _resolve_policy_set_for_account(db, str(command.account_id))
+    if not policy_set_id:
+        return DunningAccountRunResult(skipped=1, has_effective_overdue=True)
+    steps = _resolve_dunning_steps(db, str(policy_set_id))
+    if not steps:
+        return DunningAccountRunResult(skipped=1, has_effective_overdue=True)
+
+    max_days = max(
+        _resolve_overdue_days(
+            invoice,
+            command.run_at,
+            account,
+            db,
+            policy_set_id=policy_set_id,
+        )
+        for invoice in eligible_invoices
+    )
+    if max_days <= 0:
+        return DunningAccountRunResult(skipped=1, has_effective_overdue=True)
+
+    case = db.scalar(
+        select(DunningCase)
+        .where(
+            DunningCase.account_id == command.account_id,
+            DunningCase.status.in_([DunningCaseStatus.open, DunningCaseStatus.paused]),
+        )
+        .order_by(DunningCase.started_at.desc())
+        .limit(1)
+    )
+    cases_created = 0
+    if case is None:
+        case = DunningCase(
+            account_id=command.account_id,
+            policy_set_id=policy_set_id,
+            status=DunningCaseStatus.open,
+            started_at=command.run_at,
+        )
+        if not command.dry_run:
+            db.add(case)
+            db.flush()
+            _refresh_account_status(db, command.account_id)
+            emit_event(
+                db,
+                EventType.dunning_started,
+                {
+                    "case_id": str(case.id),
+                    "account_id": str(command.account_id),
+                    "policy_set_id": str(policy_set_id),
+                    "max_days_overdue": max_days,
+                },
+                account_id=command.account_id,
             )
-        }
-        shield_reasons = _bulk_dunning_shield_reasons(db, set(account_ids))
-        open_cases_by_account: dict[UUID, DunningCase] = {}
-        if account_ids:
-            open_cases = (
-                db.query(DunningCase)
-                .filter(DunningCase.account_id.in_(account_ids))
-                .filter(
-                    DunningCase.status.in_(
-                        [DunningCaseStatus.open, DunningCaseStatus.paused]
-                    )
-                )
-                .order_by(
-                    DunningCase.account_id.asc(),
-                    DunningCase.started_at.desc(),
-                )
-                .all()
+        cases_created = 1
+    elif not command.dry_run:
+        case.policy_set_id = policy_set_id
+
+    if case.status == DunningCaseStatus.paused:
+        logger.debug(
+            "Skipping dunning steps for paused case %s (account %s)",
+            case.id,
+            command.account_id,
+        )
+        return DunningAccountRunResult(
+            cases_created=cases_created,
+            skipped=1,
+            has_effective_overdue=True,
+        )
+
+    step = None
+    for candidate in steps:
+        if candidate.day_offset <= max_days:
+            step = candidate
+    if step is None or (
+        case.current_step is not None and step.day_offset <= case.current_step
+    ):
+        return DunningAccountRunResult(
+            cases_created=cases_created,
+            has_effective_overdue=True,
+        )
+
+    oldest_invoice = min(
+        eligible_invoices,
+        key=lambda invoice: invoice.due_at or command.run_at,
+    )
+    if command.dry_run and step.action in _ENFORCING_ACTIONS:
+        preview_financial_access_consequence(
+            db,
+            str(command.account_id),
+            action={
+                DunningAction.suspend: FinancialAccessAction.suspend,
+                DunningAction.reject: FinancialAccessAction.reject,
+                DunningAction.throttle: FinancialAccessAction.throttle,
+            }[step.action],
+            reason=EnforcementReason.overdue,
+            origin=FinancialAccessOrigin.dunning,
+            dunning_case_id=case.id,
+            overdue_days=max_days,
+        )
+    if not command.dry_run:
+        outcome, access_consequence = _execute_dunning_action_with_evidence(
+            db,
+            case,
+            step.action,
+            step.day_offset,
+            step.note,
+            overdue_days=max_days,
+            invoice_id=str(oldest_invoice.id),
+        )
+        _create_action_log(
+            db,
+            case,
+            step.action,
+            step.day_offset,
+            str(oldest_invoice.id),
+            outcome=outcome,
+            notes=step.note,
+            access_consequence=access_consequence,
+        )
+        if outcome not in _NON_ADVANCING_DUNNING_OUTCOMES:
+            case.current_step = step.day_offset
+        emit_event(
+            db,
+            EventType.dunning_action_executed,
+            {
+                "case_id": str(case.id),
+                "account_id": str(command.account_id),
+                "action": step.action.value,
+                "day_offset": step.day_offset,
+                "overdue_days": max_days,
+                "outcome": outcome,
+                "invoice_id": str(oldest_invoice.id),
+            },
+            account_id=command.account_id,
+        )
+    return DunningAccountRunResult(
+        cases_created=cases_created,
+        actions_created=1,
+        has_effective_overdue=True,
+    )
+
+
+def _record_dunning_account_failure(
+    db: Session,
+    *,
+    account_id: UUID,
+    run_at: datetime,
+    phase: str,
+    error: Exception,
+) -> None:
+    """Persist bounded failure evidence after the account transaction rolls back."""
+
+    try:
+        AuditEvents.stage(
+            db,
+            AuditEventCreate(
+                action="dunning_account_failed",
+                entity_type="subscriber",
+                entity_id=str(account_id),
+                is_success=False,
+                metadata_={
+                    "owner": "financial.dunning",
+                    "phase": phase,
+                    "run_at": run_at.isoformat(),
+                    "error_type": type(error).__name__,
+                },
+            ),
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception(
+            "dunning_account_failure_evidence_failed",
+            extra={
+                "event": "dunning_account_failure_evidence_failed",
+                "account_id": str(account_id),
+                "phase": phase,
+            },
+        )
+
+
+class DunningWorkflow(ListResponseMixin):
+    @staticmethod
+    def run(db: Session, payload: DunningRunRequest) -> DunningRunResponse:
+        run_at = payload.run_at or datetime.now(UTC)
+        rows = db.execute(
+            select(Invoice.id, Invoice.account_id)
+            .where(
+                Invoice.balance_due > 0,
+                Invoice.due_at.is_not(None),
+                Invoice.due_at <= run_at,
+                collection_due_date_eligible_filter(),
+                Invoice.is_active.is_(True),
+                collectible_ar_invoice_filter(),
+                Invoice.status.in_(
+                    [
+                        InvoiceStatus.issued,
+                        InvoiceStatus.partially_paid,
+                        InvoiceStatus.overdue,
+                    ]
+                ),
             )
-            for open_case in open_cases:
-                open_cases_by_account.setdefault(
-                    coerce_uuid(str(open_case.account_id)), open_case
-                )
-        steps_by_policy: dict[str, list[PolicyDunningStep]] = {}
+            .order_by(Invoice.account_id.asc(), Invoice.due_at.asc())
+        ).all()
+        overdue_accounts: dict[UUID, list[UUID]] = {}
+        for invoice_id, raw_account_id in rows:
+            account_id = coerce_uuid(str(raw_account_id))
+            overdue_accounts.setdefault(account_id, []).append(invoice_id)
+
+        # End the cohort read transaction before any account consequence starts.
+        # Each following iteration owns an independent commit or rollback.
+        db.rollback()
         cases_created = 0
         actions_created = 0
         skipped = 0
-        for account_id, account_invoices in overdue_accounts.items():
-            account = accounts.get(account_id)
-            if not account:
-                skipped += 1
-                continue
-            profile = resolve_billing_profile(db, account)
-            if (
-                not profile.automation_safe
-                or profile.effective_mode != BillingMode.postpaid
-            ):
-                skipped += 1
-                continue
-            if account_id not in postpaid_account_ids:
-                skipped += 1
-                continue
-            if shield_reasons.get(account_id):
-                skipped += 1
-                continue
-
-            policy_set_id = _resolve_policy_set_for_account(db, str(account_id))
-            if not policy_set_id:
-                skipped += 1
-                continue
-            policy_cache_key = str(policy_set_id)
-            steps = steps_by_policy.get(policy_cache_key)
-            if steps is None:
-                steps = _resolve_dunning_steps(db, policy_cache_key)
-                steps_by_policy[policy_cache_key] = steps
-            if not steps:
-                skipped += 1
-                continue
-
-            # Calculate max overdue days accounting for grace period
-            max_days = max(
-                _resolve_overdue_days(
-                    inv,
-                    run_at,
-                    account,
+        errors = 0
+        effective_overdue_accounts: set[UUID] = set()
+        for account_id, invoice_ids in overdue_accounts.items():
+            try:
+                result = _run_dunning_account(
                     db,
-                    policy_set_id=policy_set_id,
-                )
-                for inv in account_invoices
-            )
-
-            # If all invoices are within grace period, skip dunning
-            if max_days <= 0:
-                skipped += 1
-                continue
-
-            case = open_cases_by_account.get(account_id)
-            if not case:
-                case = DunningCase(
-                    account_id=account_id,
-                    policy_set_id=policy_set_id,
-                    status=DunningCaseStatus.open,
-                    started_at=run_at,
-                )
-                if not payload.dry_run:
-                    db.add(case)
-                    db.flush()
-                    _refresh_account_status(db, account_id)
-                    # Emit dunning.started event
-                    emit_event(
-                        db,
-                        EventType.dunning_started,
-                        {
-                            "case_id": str(case.id),
-                            "account_id": str(account_id),
-                            "policy_set_id": str(policy_set_id),
-                            "max_days_overdue": max_days,
-                        },
+                    DunningAccountRunCommand(
                         account_id=account_id,
-                    )
-                cases_created += 1
-            else:
-                if not payload.dry_run:
-                    case.policy_set_id = policy_set_id
-            if case.status == DunningCaseStatus.paused:
-                # Paused cases are on hold by an operator — never execute
-                # escalation steps until the case is resumed.
-                logger.debug(
-                    "Skipping dunning steps for paused case %s (account %s)",
-                    case.id,
-                    account_id,
+                        invoice_ids=tuple(invoice_ids),
+                        run_at=run_at,
+                        dry_run=payload.dry_run,
+                    ),
                 )
+                cases_created += result.cases_created
+                actions_created += result.actions_created
+                skipped += result.skipped
+                if result.has_effective_overdue:
+                    effective_overdue_accounts.add(account_id)
+                if payload.dry_run:
+                    db.rollback()
+                else:
+                    db.commit()
+            except Exception as exc:
+                db.rollback()
+                errors += 1
                 skipped += 1
-                continue
-            oldest_invoice = min(
-                account_invoices,
-                key=lambda inv: inv.due_at or run_at,
+                # A failed decision is unknown, never proof that debt cleared.
+                effective_overdue_accounts.add(account_id)
+                logger.exception(
+                    "dunning_account_failed",
+                    extra={
+                        "event": "dunning_account_failed",
+                        "account_id": str(account_id),
+                    },
+                )
+                if not payload.dry_run:
+                    _record_dunning_account_failure(
+                        db,
+                        account_id=account_id,
+                        run_at=run_at,
+                        phase="decision_and_consequence",
+                        error=exc,
+                    )
+
+        if not payload.dry_run:
+            clean_case_query = select(DunningCase.account_id).where(
+                DunningCase.status == DunningCaseStatus.open
             )
-            step = None
-            for candidate in steps:
-                if candidate.day_offset <= max_days:
-                    step = candidate
-            if not step:
-                continue
-            if case.current_step is None or step.day_offset > case.current_step:
-                if payload.dry_run and step.action in _ENFORCING_ACTIONS:
-                    preview_financial_access_consequence(
+            if effective_overdue_accounts:
+                clean_case_query = clean_case_query.where(
+                    DunningCase.account_id.notin_(tuple(effective_overdue_accounts))
+                )
+            clean_account_ids = sorted(
+                {
+                    coerce_uuid(str(value))
+                    for value in db.scalars(clean_case_query).all()
+                },
+                key=str,
+            )
+            db.rollback()
+            for account_id in clean_account_ids:
+                try:
+                    restore_account_services(
                         db,
                         str(account_id),
-                        action={
-                            DunningAction.suspend: FinancialAccessAction.suspend,
-                            DunningAction.reject: FinancialAccessAction.reject,
-                            DunningAction.throttle: FinancialAccessAction.throttle,
-                        }[step.action],
-                        reason=EnforcementReason.overdue,
-                        origin=FinancialAccessOrigin.dunning,
-                        dunning_case_id=case.id,
-                        overdue_days=max_days,
+                        origin=FinancialAccessOrigin.financial_reconciliation,
+                        resolved_by=f"dunning_reconcile:{account_id}",
+                        overdue_trigger="collections_resolution",
                     )
-                if not payload.dry_run:
-                    # Execute the dunning action (notify, suspend, throttle, reject)
-                    outcome, access_consequence = _execute_dunning_action_with_evidence(
-                        db,
-                        case,
-                        step.action,
-                        step.day_offset,
-                        step.note,
-                        overdue_days=max_days,
-                        invoice_id=str(oldest_invoice.id),
-                    )
-                    _create_action_log(
-                        db,
-                        case,
-                        step.action,
-                        step.day_offset,
-                        str(oldest_invoice.id),
-                        outcome=outcome,
-                        notes=step.note,
-                        access_consequence=access_consequence,
-                    )
-                    if outcome not in _NON_ADVANCING_DUNNING_OUTCOMES:
-                        case.current_step = step.day_offset
-
-                    # Emit dunning.action_executed event
-                    emit_event(
-                        db,
-                        EventType.dunning_action_executed,
-                        {
-                            "case_id": str(case.id),
+                    db.commit()
+                except Exception as exc:
+                    db.rollback()
+                    errors += 1
+                    logger.exception(
+                        "billing_enforcement_access_restore_failed",
+                        extra={
+                            "event": "billing_enforcement_access_restore_failed",
                             "account_id": str(account_id),
-                            "action": step.action.value,
-                            "day_offset": step.day_offset,
-                            "overdue_days": max_days,
-                            "outcome": outcome,
-                            "invoice_id": str(oldest_invoice.id),
                         },
+                    )
+                    _record_dunning_account_failure(
+                        db,
                         account_id=account_id,
+                        run_at=run_at,
+                        phase="clean_account_restoration",
+                        error=exc,
                     )
-                actions_created += 1
-        if not payload.dry_run:
-            if overdue_accounts:
-                open_cases = (
-                    db.query(DunningCase)
-                    # Only auto-resolve OPEN cases. A paused case is an operator
-                    # hold ("human owns this") and must not be silently resolved
-                    # by a clean run / incoming payment.
-                    .filter(DunningCase.status == DunningCaseStatus.open)
-                    .filter(
-                        DunningCase.account_id.notin_(list(overdue_accounts.keys()))
-                    )
-                    .all()
-                )
-            else:
-                open_cases = (
-                    db.query(DunningCase)
-                    .filter(DunningCase.status == DunningCaseStatus.open)
-                    .all()
-                )
-            if open_cases:
-                for account_id in sorted(
-                    {case.account_id for case in open_cases}, key=str
-                ):
-                    try:
-                        with db.begin_nested():
-                            restore_account_services(
-                                db,
-                                str(account_id),
-                                origin=(FinancialAccessOrigin.financial_reconciliation),
-                                resolved_by=f"dunning_reconcile:{account_id}",
-                                overdue_trigger="collections_resolution",
-                            )
-                    except Exception:
-                        logger.exception(
-                            "billing_enforcement_access_restore_failed",
-                            extra={
-                                "event": "billing_enforcement_access_restore_failed",
-                                "account_id": str(account_id),
-                            },
-                        )
-        if not payload.dry_run:
-            db.commit()
         return DunningRunResponse(
             run_at=run_at,
             accounts_scanned=len(overdue_accounts),
             cases_created=cases_created,
             actions_created=actions_created,
             skipped=skipped,
+            errors=errors,
         )
 
     @staticmethod
@@ -2900,6 +3000,7 @@ class BillingEnforcementReconciler:
                         ),
                     )
                 )
+                .filter(collection_due_date_eligible_filter())
                 .distinct()
                 .all()
             )
@@ -2915,6 +3016,7 @@ class BillingEnforcementReconciler:
         for account_id in account_ids:
             try:
                 result = settle_open_invoices_from_credit(db, account_id)
+                db.commit()
                 if result.changed:
                     total_applied += result.applied
                     stats["credit_accounts_settled"] = (
@@ -2923,39 +3025,6 @@ class BillingEnforcementReconciler:
                     stats["credit_invoices_touched"] = int(
                         stats["credit_invoices_touched"]
                     ) + len(result.invoices_touched)
-                    if not has_overdue_balance(db, account_id):
-                        db.flush()
-                        from app.services.account_lifecycle import (
-                            compute_account_status,
-                        )
-
-                        invoice_id = (
-                            result.invoices_settled[0]
-                            if result.invoices_settled
-                            else (
-                                result.invoices_touched[0]
-                                if result.invoices_touched
-                                else None
-                            )
-                        )
-                        try:
-                            with db.begin_nested():
-                                restore_account_services(
-                                    db, account_id, invoice_id=invoice_id
-                                )
-                                compute_account_status(db, account_id)
-                        except Exception:
-                            logger.exception(
-                                "billing_enforcement_credit_restore_failed",
-                                extra={
-                                    "event": (
-                                        "billing_enforcement_credit_restore_failed"
-                                    ),
-                                    "account_id": account_id,
-                                    "invoice_id": invoice_id,
-                                },
-                            )
-                db.commit()
             except Exception:
                 db.rollback()
                 stats["credit_settlement_errors"] = (
@@ -2967,6 +3036,47 @@ class BillingEnforcementReconciler:
                         "event": "billing_enforcement_credit_settlement_failed",
                         "account_id": account_id,
                     },
+                )
+                continue
+
+            if not result.changed:
+                continue
+            try:
+                # Payment allocation is the financial owner and has already
+                # committed. Access restoration is a separate idempotent
+                # reconciliation consequence; its failure must not undo cash
+                # allocation, and it needs no participant savepoint because it
+                # receives its own root transaction here.
+                if not has_overdue_balance(db, account_id):
+                    from app.services.account_lifecycle import compute_account_status
+
+                    invoice_id = (
+                        result.invoices_settled[0]
+                        if result.invoices_settled
+                        else (
+                            result.invoices_touched[0]
+                            if result.invoices_touched
+                            else None
+                        )
+                    )
+                    restore_account_services(db, account_id, invoice_id=invoice_id)
+                    compute_account_status(db, account_id)
+                db.commit()
+            except Exception as exc:
+                db.rollback()
+                logger.exception(
+                    "billing_enforcement_credit_restore_failed",
+                    extra={
+                        "event": "billing_enforcement_credit_restore_failed",
+                        "account_id": account_id,
+                    },
+                )
+                _record_dunning_account_failure(
+                    db,
+                    account_id=coerce_uuid(account_id),
+                    run_at=run_at,
+                    phase="credit_settlement_restoration",
+                    error=exc,
                 )
         stats["credit_applied"] = str(total_applied)
         return stats
@@ -3003,6 +3113,7 @@ class BillingEnforcementReconciler:
             dunning_cases_created=dunning.cases_created,
             dunning_actions_created=dunning.actions_created,
             dunning_skipped=dunning.skipped,
+            dunning_errors=dunning.errors,
             credit_accounts_scanned=int(credit_stats["credit_accounts_scanned"]),
             credit_accounts_settled=int(credit_stats["credit_accounts_settled"]),
             credit_invoices_touched=int(credit_stats["credit_invoices_touched"]),

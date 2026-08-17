@@ -9,7 +9,7 @@ from decimal import Decimal
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
-from app.models.billing import Invoice, InvoiceStatus
+from app.models.billing import Invoice, InvoiceDueDateBasis, InvoiceStatus
 from app.services.common import coerce_uuid
 
 OPEN_INVOICE_STATUSES = (
@@ -23,6 +23,21 @@ OVERDUE_DEBT_STATUSES = (
     InvoiceStatus.partially_paid,
     InvoiceStatus.overdue,
 )
+
+
+def collection_due_date_eligible_filter():
+    """Exclude explicit unknown provenance while legacy classification shrinks."""
+
+    return or_(
+        Invoice.due_date_basis.is_(None),
+        Invoice.due_date_basis != InvoiceDueDateBasis.unknown_unverified,
+    )
+
+
+def is_collection_due_date_eligible(invoice: Invoice) -> bool:
+    """Python equivalent of :func:`collection_due_date_eligible_filter`."""
+
+    return invoice.due_date_basis != InvoiceDueDateBasis.unknown_unverified
 
 
 def open_invoice_filters(account_id=None) -> tuple:
@@ -50,6 +65,7 @@ def due_invoice_filters(account_id=None, *, now: datetime | None = None) -> tupl
     now = _as_aware(now)
     return (
         *open_invoice_filters(account_id),
+        collection_due_date_eligible_filter(),
         or_(
             Invoice.due_at <= now,
             and_(Invoice.due_at.is_(None), Invoice.status == InvoiceStatus.overdue),
@@ -64,6 +80,7 @@ def due_invoice_filters_for_accounts(
     now = _as_aware(now)
     return (
         *open_invoice_filters_for_accounts(account_ids),
+        collection_due_date_eligible_filter(),
         or_(
             Invoice.due_at <= now,
             and_(Invoice.due_at.is_(None), Invoice.status == InvoiceStatus.overdue),
@@ -78,6 +95,7 @@ def overdue_debt_filters(account_id=None, *, now: datetime | None = None) -> tup
         Invoice.is_active.is_(True),
         Invoice.status.in_(OVERDUE_DEBT_STATUSES),
         Invoice.balance_due > Decimal("0.00"),
+        collection_due_date_eligible_filter(),
         or_(
             Invoice.status == InvoiceStatus.overdue,
             Invoice.due_at < now,
@@ -98,6 +116,7 @@ def overdue_debt_filters_for_accounts(
         Invoice.is_active.is_(True),
         Invoice.status.in_(OVERDUE_DEBT_STATUSES),
         Invoice.balance_due > Decimal("0.00"),
+        collection_due_date_eligible_filter(),
         or_(
             Invoice.status == InvoiceStatus.overdue,
             Invoice.due_at < now,
@@ -111,6 +130,7 @@ def overdue_status_filters(account_id=None) -> tuple:
         Invoice.is_active.is_(True),
         Invoice.status == InvoiceStatus.overdue,
         Invoice.balance_due > Decimal("0.00"),
+        collection_due_date_eligible_filter(),
     ]
     if account_id is not None:
         filters.insert(0, Invoice.account_id == coerce_uuid(str(account_id)))

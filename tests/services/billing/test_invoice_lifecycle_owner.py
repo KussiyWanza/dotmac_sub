@@ -4,13 +4,40 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+import pytest
+
 from app.models.audit import AuditEvent
-from app.models.billing import Invoice, InvoiceStatus, LedgerEntry
+from app.models.billing import (
+    Invoice,
+    InvoiceDueDateBasis,
+    InvoiceStatus,
+    LedgerEntry,
+)
 from app.models.catalog import BillingMode
-from app.services.billing.invoices import Invoices
+from app.services.billing.invoices import (
+    InvoiceIssuanceInput,
+    InvoiceOwnerError,
+    Invoices,
+)
+
+
+def _issuance(now: datetime, *, reason: str) -> InvoiceIssuanceInput:
+    return InvoiceIssuanceInput(
+        issued_at=now,
+        due_at=now + timedelta(days=7),
+        due_date_basis=InvoiceDueDateBasis.contract_terms,
+        due_date_basis_ref="test:invoice-lifecycle",
+        due_date_policy_version="test-v1",
+        reason=reason,
+    )
 
 
 def _invoice(db_session, subscriber, *, status: InvoiceStatus, due_at=None):
+    issued_at = (
+        (due_at - timedelta(days=1))
+        if due_at is not None and status != InvoiceStatus.draft
+        else None
+    )
     invoice = Invoice(
         account_id=subscriber.id,
         invoice_number=f"LIFECYCLE-{uuid.uuid4().hex[:8]}",
@@ -19,7 +46,17 @@ def _invoice(db_session, subscriber, *, status: InvoiceStatus, due_at=None):
         subtotal=Decimal("100.00"),
         total=Decimal("100.00"),
         balance_due=Decimal("100.00"),
+        issued_at=issued_at,
         due_at=due_at,
+        due_date_basis=(
+            InvoiceDueDateBasis.contract_terms
+            if status != InvoiceStatus.draft
+            else None
+        ),
+        due_date_basis_ref=(
+            "test:legacy-row" if status != InvoiceStatus.draft else None
+        ),
+        due_date_policy_version=("test-v1" if status != InvoiceStatus.draft else None),
     )
     db_session.add(invoice)
     db_session.commit()
@@ -35,9 +72,7 @@ def test_invoice_owner_issues_draft_with_audited_no_money_result(
     result = Invoices.issue_draft_system(
         db_session,
         str(invoice.id),
-        issued_at=now,
-        due_at=now + timedelta(days=7),
-        reason="test_system_issue",
+        issuance=_issuance(now, reason="test_system_issue"),
         commit=True,
     )
 
@@ -82,9 +117,7 @@ def test_invoice_owner_skips_underfunded_credit_when_full_credit_required(
     result = Invoices.issue_draft_system(
         db_session,
         str(invoice.id),
-        issued_at=datetime.now(UTC),
-        due_at=None,
-        reason="test_full_credit_required",
+        issuance=_issuance(datetime.now(UTC), reason="test_full_credit_required"),
         require_full_available_credit=True,
         commit=True,
     )
@@ -122,9 +155,7 @@ def test_invoice_owner_applies_credit_when_full_credit_required_and_funded(
     result = Invoices.issue_draft_system(
         db_session,
         str(invoice.id),
-        issued_at=datetime.now(UTC),
-        due_at=None,
-        reason="test_full_credit_required",
+        issuance=_issuance(datetime.now(UTC), reason="test_full_credit_required"),
         require_full_available_credit=True,
         commit=True,
     )
@@ -172,6 +203,30 @@ def test_invoice_owner_marks_overdue_once_and_keeps_access_as_observation(
     )
     assert len(audits) == 1
     assert audits[0].metadata_["service_access_consequence"] == "observation_only"
+
+
+def test_unknown_due_date_provenance_cannot_drive_overdue(db_session, subscriber):
+    now = datetime.now(UTC)
+    invoice = _invoice(
+        db_session,
+        subscriber,
+        status=InvoiceStatus.issued,
+        due_at=now - timedelta(days=2),
+    )
+    invoice.due_date_basis = InvoiceDueDateBasis.unknown_unverified
+    invoice.due_date_basis_ref = None
+    invoice.due_date_policy_version = None
+    db_session.commit()
+
+    with pytest.raises(InvoiceOwnerError) as rejected:
+        Invoices.mark_overdue_system(
+            db_session,
+            str(invoice.id),
+            as_of=now,
+            reason="test_unverified_due_date",
+        )
+
+    assert rejected.value.code == "financial.invoice.due_date_unverified"
 
 
 def test_invoice_owner_returns_only_unfunded_prepaid_receivable_to_draft(

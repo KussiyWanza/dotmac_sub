@@ -46,7 +46,7 @@ def test_initial_queue_notice_is_recorded_once_per_queue_lifecycle(db_session):
 
     assert repeated.queue_entry_id == first.queue_entry_id
     notices = db_session.query(InboxQueueNotification).all()
-    assert len(notices) == 1
+    assert len(notices) == 1, [(notice.dedupe_key, notice.status) for notice in notices]
     notice = notices[0]
     assert notice.notification_kind == "initial"
     assert notice.queue_position == 1

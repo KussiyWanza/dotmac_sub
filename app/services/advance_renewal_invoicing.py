@@ -11,7 +11,13 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.billing import Invoice, InvoiceLine, InvoiceStatus, TaxApplication
+from app.models.billing import (
+    Invoice,
+    InvoiceDueDateBasis,
+    InvoiceLine,
+    InvoiceStatus,
+    TaxApplication,
+)
 from app.models.catalog import BillingMode, Subscription, SubscriptionStatus
 from app.models.domain_settings import SettingDomain
 from app.models.durable_timer import DurableTimer, TimerStatus
@@ -395,6 +401,11 @@ def generate_advance_renewal_invoice(
                     currency=currency,
                     issued_at=evaluated_at,
                     due_at=period_start,
+                    due_date_basis=InvoiceDueDateBasis.contract_terms,
+                    due_date_basis_ref=(
+                        f"subscription:{subscription.id}:period:{period_start.isoformat()}"
+                    ),
+                    due_date_policy_version="advance-renewal-terms-v1",
                     billing_period_start=period_start,
                     billing_period_end=period_end,
                 ),

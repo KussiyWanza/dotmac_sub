@@ -777,6 +777,7 @@ SERVICES: tuple[SOTService, ...] = (
             "invoice status transitions",
             "invoice adjustment and reversal postings",
             "automation invoice creation and draft issuance",
+            "issued invoice due-date provenance and immutability",
             "automation invoice-line construction and source-fact replay",
             "usage-charge invoice and invoice-line construction",
             "overdue invoice state and observation event",
@@ -795,6 +796,15 @@ SERVICES: tuple[SOTService, ...] = (
             "financial.billing_accounts",
             "financial.subscription_billing_grants",
             "financial.subscription_billing_treatments",
+        ),
+        notes=(
+            "Native issuance accepts one typed InvoiceIssuanceInput containing "
+            "the issue instant, due instant, DueDateBasis, source reference, "
+            "and policy version. Unknown/unverified provenance is an explicit "
+            "historical observation state: it remains reportable but cannot "
+            "drive overdue or Collections. Legacy NULL provenance is a bounded "
+            "migration state measured by billing health, not a valid new "
+            "issuance outcome."
         ),
     ),
     SOTService(

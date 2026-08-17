@@ -16,6 +16,7 @@ from app.models.billing import (
     BillingRun,
     BillingRunStatus,
     Invoice,
+    InvoiceDueDateBasis,
     InvoiceLine,
     InvoiceStatus,
     TaxApplication,
@@ -40,6 +41,11 @@ from app.models.network import SubscriberAdditionalRoute
 from app.models.subscriber import Address, Subscriber, SubscriberStatus
 from app.schemas.billing import InvoiceCreate, SystemInvoiceLineCreate
 from app.services import enforcement_window, settings_spec
+from app.services.account_lifecycle import (
+    BillingAnchorProjectionCommand,
+    BillingAnchorProjectionSource,
+    stage_subscription_billing_anchor,
+)
 from app.services.billing import _recalculate_invoice_totals
 from app.services.billing._common import _calculate_tax_amount
 from app.services.billing.invoices import InvoiceLines, Invoices, next_invoice_number
@@ -58,6 +64,7 @@ from app.services.invoice_classification import (
     collectible_ar_invoice_filter,
     prepaid_non_ar_invoice_ids,
 )
+from app.services.invoice_collectibility import collection_due_date_eligible_filter
 from app.services.service_entitlements import (
     ensure_prepaid_entitlements_for_paid_invoice,
     prepaid_entitlement_coverage_end,
@@ -1642,7 +1649,20 @@ def run_invoice_cycle(
             if paid_through and paid_through > period_start:
                 current_nb = _as_utc(subscription.next_billing_at)
                 if not dry_run and (current_nb is None or current_nb < paid_through):
-                    subscription.next_billing_at = paid_through
+                    stage_subscription_billing_anchor(
+                        db,
+                        subscription,
+                        BillingAnchorProjectionCommand(
+                            subscription_id=subscription.id,
+                            expected_previous=subscription.next_billing_at,
+                            target=paid_through,
+                            source=BillingAnchorProjectionSource.prepaid_coverage,
+                            evidence_ref=(
+                                f"paid-coverage:{subscription.id}:"
+                                f"{paid_through.isoformat()}"
+                            ),
+                        ),
+                    )
                 logger.info(
                     "billing_prepaid_paid_coverage_skip",
                     extra={
@@ -1673,7 +1693,20 @@ def run_invoice_cycle(
                 period_end = _period_end(period_start, effective_cycle)
                 skipped_periods += 1
             if not dry_run:
-                subscription.next_billing_at = period_start
+                stage_subscription_billing_anchor(
+                    db,
+                    subscription,
+                    BillingAnchorProjectionCommand(
+                        subscription_id=subscription.id,
+                        expected_previous=subscription.next_billing_at,
+                        target=period_start,
+                        source=BillingAnchorProjectionSource.scheduled_billing,
+                        evidence_ref=(
+                            f"billing-fast-forward:{subscription.id}:"
+                            f"{period_start.isoformat()}"
+                        ),
+                    ),
+                )
             logger.info(
                 "billing_fast_forward",
                 extra={
@@ -1764,7 +1797,20 @@ def run_invoice_cycle(
             continue
         if line_amount <= Decimal("0.00"):
             if not dry_run:
-                subscription.next_billing_at = period_end
+                stage_subscription_billing_anchor(
+                    db,
+                    subscription,
+                    BillingAnchorProjectionCommand(
+                        subscription_id=subscription.id,
+                        expected_previous=subscription.next_billing_at,
+                        target=period_end,
+                        source=BillingAnchorProjectionSource.scheduled_billing,
+                        evidence_ref=(
+                            f"zero-rated-period:{subscription.id}:"
+                            f"{period_end.isoformat()}"
+                        ),
+                    ),
+                )
             summary["zero_amount_advanced"] += 1
             summary["skipped"] += 1
             continue
@@ -1793,6 +1839,7 @@ def run_invoice_cycle(
         )
         if existing_line_for_period:
             existing_invoice = existing_line_for_period.invoice
+            current_anchor = _as_utc(subscription.next_billing_at)
             # Prepaid drafts are not service proof. Only paid prepaid invoices
             # can advance service coverage; postpaid anchors keep the existing
             # invoice idempotency behavior.
@@ -1804,12 +1851,23 @@ def run_invoice_cycle(
             if (
                 not dry_run
                 and can_advance_anchor
-                and (
-                    subscription.next_billing_at is None
-                    or subscription.next_billing_at < period_end
-                )
+                and (current_anchor is None or current_anchor < period_end)
             ):
-                subscription.next_billing_at = period_end
+                stage_subscription_billing_anchor(
+                    db,
+                    subscription,
+                    BillingAnchorProjectionCommand(
+                        subscription_id=subscription.id,
+                        expected_previous=subscription.next_billing_at,
+                        target=period_end,
+                        source=BillingAnchorProjectionSource.scheduled_billing,
+                        evidence_ref=(
+                            "existing-invoice-period:"
+                            f"{existing_line_for_period.invoice_id}:"
+                            f"{period_end.isoformat()}"
+                        ),
+                    ),
+                )
             if (
                 not dry_run
                 and subscription.billing_mode == BillingMode.prepaid
@@ -1906,6 +1964,9 @@ def run_invoice_cycle(
                     billing_period_end=period_end,
                     issued_at=run_at,
                     due_at=run_at + timedelta(days=due_days),
+                    due_date_basis=InvoiceDueDateBasis.contract_terms,
+                    due_date_basis_ref=f"subscription:{subscription.id}",
+                    due_date_policy_version="billing-payment-terms-v1",
                 ),
                 reason="scheduled_billing_run",
             )
@@ -1986,7 +2047,17 @@ def run_invoice_cycle(
             tax_rate_id,
         )
         if subscription.billing_mode != BillingMode.prepaid:
-            subscription.next_billing_at = period_end
+            stage_subscription_billing_anchor(
+                db,
+                subscription,
+                BillingAnchorProjectionCommand(
+                    subscription_id=subscription.id,
+                    expected_previous=subscription.next_billing_at,
+                    target=period_end,
+                    source=BillingAnchorProjectionSource.scheduled_billing,
+                    evidence_ref=f"invoice:{invoice.id}:period-end",
+                ),
+            )
 
     if dry_run:
         summary["invoices_created"] = len(preview_invoice_currencies)
@@ -2284,6 +2355,9 @@ def generate_prorated_invoice(
             billing_period_end=period_end,
             issued_at=activation_date,
             due_at=activation_date + timedelta(days=due_days),
+            due_date_basis=InvoiceDueDateBasis.contract_terms,
+            due_date_basis_ref=f"subscription:{subscription.id}",
+            due_date_policy_version="billing-payment-terms-v1",
         ),
         reason="prorated_subscription_activation",
     )
@@ -2314,7 +2388,17 @@ def generate_prorated_invoice(
     )
 
     # Set next billing date to the end of this prorated period
-    subscription.next_billing_at = period_end
+    stage_subscription_billing_anchor(
+        db,
+        subscription,
+        BillingAnchorProjectionCommand(
+            subscription_id=subscription.id,
+            expected_previous=subscription.next_billing_at,
+            target=period_end,
+            source=BillingAnchorProjectionSource.scheduled_billing,
+            evidence_ref=f"invoice:{invoice.id}:proration-period-end",
+        ),
+    )
 
     _recalculate_invoice_totals(db, invoice)
     db.commit()
@@ -2444,6 +2528,7 @@ def mark_overdue_invoices(db: Session) -> dict[str, int]:
         )
         .filter(Invoice.due_at.is_not(None))
         .filter(Invoice.due_at <= now)
+        .filter(collection_due_date_eligible_filter())
         .filter(Invoice.balance_due > Decimal("0.00"))
         .all()
     )

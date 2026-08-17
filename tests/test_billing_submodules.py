@@ -21,6 +21,7 @@ from app.models.billing import (
     BillingRunStatus,
     CollectionAccountType,
     Invoice,
+    InvoiceDueDateBasis,
     InvoiceStatus,
     LedgerEntry,
     LedgerEntryType,
@@ -113,9 +114,15 @@ def _make_invoice(
     total: Decimal = Decimal("0.00"),
     balance_due: Decimal = Decimal("0.00"),
     status: InvoiceStatus = InvoiceStatus.draft,
+    due_at: datetime | None = None,
 ) -> Invoice:
     """Shortcut to create an invoice via the service."""
-    return cast(
+    issue_requested = status in {InvoiceStatus.issued, InvoiceStatus.overdue}
+    effective_due_at = due_at
+    if issue_requested and effective_due_at is None:
+        effective_due_at = datetime.now(UTC) + timedelta(days=30)
+    issued_at = effective_due_at - timedelta(days=1) if effective_due_at else None
+    invoice = cast(
         Invoice,
         billing_service.invoices.create(
             db_session,
@@ -126,10 +133,30 @@ def _make_invoice(
                 tax_total=tax_total,
                 total=total,
                 balance_due=balance_due,
-                status=status,
+                status=(
+                    InvoiceStatus.issued if status == InvoiceStatus.overdue else status
+                ),
+                issued_at=issued_at,
+                due_at=effective_due_at,
+                due_date_basis=(
+                    InvoiceDueDateBasis.contract_terms if issue_requested else None
+                ),
+                due_date_basis_ref=(
+                    "test:billing-submodules" if issue_requested else None
+                ),
+                due_date_policy_version=("test-v1" if issue_requested else None),
             ),
         ),
     )
+    if status == InvoiceStatus.overdue:
+        return billing_service.invoices.mark_overdue_system(
+            db_session,
+            str(invoice.id),
+            as_of=datetime.now(UTC),
+            reason="test_billing_submodules",
+            commit=True,
+        ).invoice
+    return invoice
 
 
 # ============================================================================
@@ -2177,6 +2204,7 @@ class TestReportingHelpers:
         assert "90_plus" in result["buckets"]
 
     def test_ar_aging_excludes_draft_invoices(self, db_session, subscriber):
+        due_at = datetime.now(UTC) - timedelta(days=45)
         draft = _make_invoice(
             db_session,
             subscriber.id,
@@ -2184,8 +2212,8 @@ class TestReportingHelpers:
             total=Decimal("100.00"),
             balance_due=Decimal("100.00"),
             status=InvoiceStatus.draft,
+            due_at=due_at,
         )
-        draft.due_at = datetime.now(UTC) - timedelta(days=45)
         issued = _make_invoice(
             db_session,
             subscriber.id,
@@ -2193,9 +2221,8 @@ class TestReportingHelpers:
             total=Decimal("50.00"),
             balance_due=Decimal("50.00"),
             status=InvoiceStatus.issued,
+            due_at=due_at,
         )
-        issued.due_at = datetime.now(UTC) - timedelta(days=45)
-        db_session.commit()
 
         result = BillingReporting.get_ar_aging_buckets(db_session)
         all_bucketed_invoices = [
@@ -2226,9 +2253,8 @@ class TestReportingHelpers:
             total=Decimal("100.00"),
             balance_due=Decimal("100.00"),
             status=InvoiceStatus.overdue,
+            due_at=datetime.now(UTC) - timedelta(days=15),
         )
-        invoice.due_at = datetime.now(UTC) - timedelta(days=15)
-        db_session.commit()
         SettingsCache.invalidate(SettingDomain.billing.value, "ar_aging_bucket_days")
 
         result = BillingReporting.get_ar_aging_buckets(db_session)

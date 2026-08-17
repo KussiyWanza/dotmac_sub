@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from app.models.billing import (
     Invoice,
+    InvoiceDueDateBasis,
     InvoicePdfExport,
     InvoicePdfExportStatus,
     InvoiceStatus,
@@ -103,7 +104,7 @@ def test_invoice_notification_delegates_once_to_canonical_event_owner(
 def test_invoice_detail_issue_delegates_to_lifecycle_owner(
     db_session, subscriber, monkeypatch
 ):
-    due_at = datetime(2026, 6, 24, tzinfo=UTC)
+    due_at = datetime.now(UTC) + timedelta(days=30)
     invoice = Invoice(
         account_id=subscriber.id,
         invoice_number="INV-DETAIL-ISSUE",
@@ -114,6 +115,9 @@ def test_invoice_detail_issue_delegates_to_lifecycle_owner(
         total=Decimal("15000.00"),
         balance_due=Decimal("15000.00"),
         due_at=due_at,
+        due_date_basis=InvoiceDueDateBasis.contract_terms,
+        due_date_basis_ref="test:invoice-detail-contract",
+        due_date_policy_version="test-v1",
     )
     db_session.add(invoice)
     db_session.commit()
@@ -129,9 +133,7 @@ def test_invoice_detail_issue_delegates_to_lifecycle_owner(
         db,
         invoice_id,
         *,
-        issued_at,
-        due_at,
-        reason,
+        issuance,
         announce,
         apply_available_credit,
         require_full_available_credit,
@@ -140,9 +142,7 @@ def test_invoice_detail_issue_delegates_to_lifecycle_owner(
         captured.append(
             {
                 "invoice_id": invoice_id,
-                "issued_at": issued_at,
-                "due_at": due_at,
-                "reason": reason,
+                "issuance": issuance,
                 "announce": announce,
                 "apply_available_credit": apply_available_credit,
                 "require_full_available_credit": require_full_available_credit,
@@ -160,8 +160,12 @@ def test_invoice_detail_issue_delegates_to_lifecycle_owner(
 
     assert issued is invoice
     assert captured[0]["invoice_id"] == str(invoice.id)
-    assert captured[0]["due_at"].date() == due_at.date()
-    assert captured[0]["reason"] == "admin_invoice_detail_issue"
+    issuance = captured[0]["issuance"]
+    assert issuance.due_at.date() == due_at.date()
+    assert issuance.due_date_basis == InvoiceDueDateBasis.contract_terms
+    assert issuance.due_date_basis_ref == "test:invoice-detail-contract"
+    assert issuance.due_date_policy_version == "test-v1"
+    assert issuance.reason == "admin_invoice_detail_issue"
     assert captured[0]["announce"] is False
     assert captured[0]["apply_available_credit"] is True
     assert captured[0]["require_full_available_credit"] is True

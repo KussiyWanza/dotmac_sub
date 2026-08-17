@@ -12,7 +12,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
 from app.models.audit import AuditEvent
-from app.models.billing import Invoice, InvoiceLine, InvoiceStatus, PaymentAllocation
+from app.models.billing import (
+    Invoice,
+    InvoiceDueDateBasis,
+    InvoiceLine,
+    InvoiceStatus,
+    PaymentAllocation,
+)
 from app.models.catalog import BillingMode
 from app.models.event_store import EventStore
 from app.models.subscriber import Reseller, Subscriber
@@ -90,6 +96,10 @@ def test_concurrent_conversion_retry_preserves_paid_status(engine) -> None:
             subtotal=Decimal("10000.00"),
             total=Decimal("10000.00"),
             balance_due=Decimal("10000.00"),
+            due_at=datetime.now(UTC) + timedelta(days=30),
+            due_date_basis=InvoiceDueDateBasis.contract_terms,
+            due_date_basis_ref="test:proforma-conversion",
+            due_date_policy_version="test-v1",
             memo="[PROFORMA] Concurrent retry",
         )
         setup.add(invoice)

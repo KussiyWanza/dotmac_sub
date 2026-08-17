@@ -47,6 +47,11 @@ from app.models.service_extension import (
 from app.models.subscriber import Subscriber
 from app.schemas.audit import AuditEventCreate
 from app.services import settings_spec
+from app.services.account_lifecycle import (
+    BillingAnchorProjectionCommand,
+    BillingAnchorProjectionSource,
+    stage_subscription_billing_anchor,
+)
 from app.services.audit import AuditEvents
 from app.services.common import coerce_uuid
 from app.services.customer_identity_resolution import resolve_customer_identity
@@ -2182,7 +2187,23 @@ def reverse_service_extension(
                 row.disposition
                 is ServiceExtensionReversalAnchorDisposition.restored_previous_anchor
             ):
-                row.subscription.next_billing_at = row.resulting_next_billing_at
+                target = row.resulting_next_billing_at
+                if target is None:
+                    _error(
+                        "reversal_evidence_incomplete",
+                        "A restored anchor disposition requires an exact target.",
+                    )
+                stage_subscription_billing_anchor(
+                    db,
+                    row.subscription,
+                    BillingAnchorProjectionCommand(
+                        subscription_id=row.subscription.id,
+                        expected_previous=row.subscription.next_billing_at,
+                        target=_as_utc(target),
+                        source=BillingAnchorProjectionSource.service_extension,
+                        evidence_ref=f"service-extension-reversal:{reversal_id}",
+                    ),
+                )
             db.add(
                 ServiceExtensionReversalEntry(
                     id=uuid.uuid5(
@@ -2340,7 +2361,17 @@ def apply_service_extension(
                 applied_at=now,
                 days=extension.days,
             )
-            subscription.next_billing_at = interval.ends_at
+            stage_subscription_billing_anchor(
+                db,
+                subscription,
+                BillingAnchorProjectionCommand(
+                    subscription_id=subscription.id,
+                    expected_previous=previous,
+                    target=interval.ends_at,
+                    source=BillingAnchorProjectionSource.service_extension,
+                    evidence_ref=f"service-extension:{extension.id}",
+                ),
+            )
             db.add(
                 ServiceExtensionEntry(
                     extension_id=extension.id,
@@ -2474,7 +2505,17 @@ def repair_service_extension_anchor_projection(
             current = subscription.next_billing_at
             if current is not None and _as_utc(current) >= _as_utc(target):
                 continue
-            subscription.next_billing_at = target
+            stage_subscription_billing_anchor(
+                db,
+                subscription,
+                BillingAnchorProjectionCommand(
+                    subscription_id=subscription.id,
+                    expected_previous=current,
+                    target=_as_utc(target),
+                    source=BillingAnchorProjectionSource.service_extension,
+                    evidence_ref=f"service-extension-entry:{entry.id}",
+                ),
+            )
             repaired += 1
         if repaired:
             now = _now_utc()

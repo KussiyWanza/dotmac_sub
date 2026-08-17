@@ -30,6 +30,7 @@ def run_billing_enforcement() -> dict[str, int | str]:
             "cases_created": int(result.cases_created),
             "actions_created": int(result.actions_created),
             "skipped": int(result.skipped),
+            "dunning_errors": int(result.dunning_errors),
             "credit_accounts_scanned": int(result.credit_accounts_scanned),
             "credit_accounts_settled": int(result.credit_accounts_settled),
             "credit_invoices_touched": int(result.credit_invoices_touched),
@@ -38,11 +39,12 @@ def run_billing_enforcement() -> dict[str, int | str]:
         }
         logger.info(
             "Billing enforcement run completed: accounts_scanned=%d cases_created=%d "
-            "actions_created=%d skipped=%d",
+            "actions_created=%d skipped=%d errors=%d",
             summary["accounts_scanned"],
             summary["cases_created"],
             summary["actions_created"],
             summary["skipped"],
+            summary["dunning_errors"],
         )
         session.commit()
         return summary

@@ -222,6 +222,8 @@ class TestRestoreSubscription:
 
         assert restored is True
         assert subscription.status == SubscriptionStatus.active
+        assert subscription.start_at is not None
+        assert subscription.next_billing_at is not None
         assert subscriber.status == SubscriberStatus.active
 
     def test_restore_skips_duplicate_login_when_active_sibling_exists(self, db_session):

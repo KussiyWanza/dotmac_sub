@@ -1,5 +1,7 @@
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+from app.models.billing import InvoiceDueDateBasis
 from app.schemas.billing import InvoiceCreate, InvoiceLineCreate, InvoiceLineUpdate
 from app.schemas.settings import DomainSettingUpdate
 from app.services import billing as billing_service
@@ -72,6 +74,7 @@ def test_invoice_defaults_use_settings(db_session, subscriber_account):
     settings_api.upsert_billing_setting(
         db_session, "default_invoice_status", DomainSettingUpdate(value_text="issued")
     )
+    issued_at = datetime.now(UTC)
     invoice = billing_service.invoices.create(
         db_session,
         InvoiceCreate(
@@ -80,6 +83,11 @@ def test_invoice_defaults_use_settings(db_session, subscriber_account):
             tax_total=Decimal("0.00"),
             total=Decimal("0.00"),
             balance_due=Decimal("0.00"),
+            issued_at=issued_at,
+            due_at=issued_at + timedelta(days=30),
+            due_date_basis=InvoiceDueDateBasis.contract_terms,
+            due_date_basis_ref="test:default-invoice-status",
+            due_date_policy_version="test-v1",
         ),
     )
     assert invoice.currency == "EUR"

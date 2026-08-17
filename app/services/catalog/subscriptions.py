@@ -11,7 +11,7 @@ from decimal import Decimal
 
 from fastapi import HTTPException
 from sqlalchemy import select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, attributes, selectinload
 
 from app.models.catalog import (
     AccessCredential,
@@ -915,16 +915,6 @@ class Subscriptions(ListResponseMixin):
                 str(payload.offer_id),
                 reference_at,
             )
-        catalog_validators.validate_subscription_dates(
-            payload.status,
-            payload.start_at,
-            payload.end_at,
-            payload.next_billing_at,
-            payload.canceled_at,
-        )
-        catalog_validators.enforce_single_active_subscription(
-            db, str(payload.subscriber_id), payload.status
-        )
         data = payload.model_dump()
         fields_set = payload.model_fields_set
         if "status" not in fields_set:
@@ -951,10 +941,8 @@ class Subscriptions(ListResponseMixin):
                 data.get("billing_mode") if "billing_mode" in fields_set else None
             ),
         )
-        if (
-            "start_at" not in fields_set
-            and data.get("status") == SubscriptionStatus.active
-        ):
+        requested_status = data.get("status")
+        if requested_status == SubscriptionStatus.active and not data.get("start_at"):
             data["start_at"] = datetime.now(UTC)
         start_at = data.get("start_at")
         # Own the effective cadence on the subscription (SOT precedence:
@@ -976,9 +964,9 @@ class Subscriptions(ListResponseMixin):
             if not data.get("billing_cycle"):
                 data["billing_cycle"] = cycle
             if (
-                "next_billing_at" not in fields_set
-                and start_at
-                and data.get("status") == SubscriptionStatus.active
+                start_at
+                and requested_status == SubscriptionStatus.active
+                and not data.get("next_billing_at")
             ):
                 data["next_billing_at"] = _compute_next_billing_at(start_at, cycle)
         if "end_at" not in fields_set and start_at and data.get("contract_term"):
@@ -998,6 +986,20 @@ class Subscriptions(ListResponseMixin):
                 offer_version_id=payload.offer_version_id,
             )
 
+        # Validate the materialized contract, not the caller's partial input.
+        # Explicit NULLs used to bypass the defaulting checks and could persist
+        # an active service that no billing run would ever select.
+        catalog_validators.validate_subscription_dates(
+            requested_status,
+            data.get("start_at"),
+            data.get("end_at"),
+            data.get("next_billing_at"),
+            data.get("canceled_at"),
+        )
+        catalog_validators.enforce_single_active_subscription(
+            db, str(payload.subscriber_id), requested_status
+        )
+
         # Auto-select NAS device from subscriber's POP site if not provided
         if "provisioning_nas_device_id" not in fields_set or not data.get(
             "provisioning_nas_device_id"
@@ -1006,6 +1008,12 @@ class Subscriptions(ListResponseMixin):
             if nas_device_id:
                 data["provisioning_nas_device_id"] = nas_device_id
 
+        activating = requested_status == SubscriptionStatus.active
+        if activating:
+            # Creation owns construction only. The lifecycle owner performs the
+            # pending -> active decision, billing-approval gate, evidence, and
+            # account-state consequence in the same transaction.
+            data["status"] = SubscriptionStatus.pending
         subscription = Subscription(**data)
         apply_offer_radius_profile(
             db,
@@ -1016,7 +1024,6 @@ class Subscriptions(ListResponseMixin):
             sync_credentials=False,
         )
         db.add(subscription)
-        activating = subscription.status == SubscriptionStatus.active
         try:
             from app.models.subscriber import Subscriber, SubscriberStatus
             from app.services.account_lifecycle import (
@@ -1066,6 +1073,23 @@ class Subscriptions(ListResponseMixin):
                 ),
             )
             if activating:
+                from app.services.account_lifecycle import activate_subscription
+
+                activate_subscription(
+                    db,
+                    str(subscription.id),
+                    start_at=subscription.start_at,
+                    emit=False,
+                    evidence_context=CommandContext.system(
+                        command_id=subscription.id,
+                        correlation_id=subscription.id,
+                        actor="service_intent.catalog_policy",
+                        scope=f"subscription:{subscription.id}",
+                        reason="Active subscription creation",
+                        idempotency_key=f"subscription-activated:{subscription.id}",
+                    ),
+                    evidence_effective_at=creation_evidence_at,
+                )
                 _auto_generate_pppoe(db, subscription)
             compute_account_status(db, str(payload.subscriber_id))
             if commit:
@@ -1130,7 +1154,13 @@ class Subscriptions(ListResponseMixin):
 
         subscription.start_at = _ensure_utc(subscription.start_at)
         subscription.end_at = _ensure_utc(subscription.end_at)
-        subscription.next_billing_at = _ensure_utc(subscription.next_billing_at)
+        # SQLite test rows lose timezone metadata on round-trip. Normalize the
+        # returned ORM value without staging a second billing-anchor write.
+        attributes.set_committed_value(
+            subscription,
+            "next_billing_at",
+            _ensure_utc(subscription.next_billing_at),
+        )
         subscription.canceled_at = _ensure_utc(subscription.canceled_at)
 
         return subscription

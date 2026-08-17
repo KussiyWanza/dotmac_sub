@@ -22,6 +22,7 @@ from app.models.billing import (
     InvoiceClosureLedgerEvidence,
     InvoiceClosureOrigin,
     InvoiceClosureType,
+    InvoiceDueDateBasis,
     InvoiceLine,
     InvoiceStatus,
     LedgerEntry,
@@ -157,6 +158,18 @@ class InvoiceLifecycleTransitionResult:
 
 
 @dataclass(frozen=True, slots=True)
+class InvoiceIssuanceInput:
+    """Complete verified evidence for one draft-to-issued transition."""
+
+    issued_at: datetime
+    due_at: datetime
+    due_date_basis: InvoiceDueDateBasis
+    due_date_basis_ref: str
+    due_date_policy_version: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class ProformaConversionInput:
     """Locked documentary values for one proforma-to-invoice transition."""
 
@@ -207,6 +220,105 @@ class DraftInvoiceParticipantError(ValueError):
     def __init__(self, reason: str, message: str) -> None:
         super().__init__(message)
         self.reason = reason
+
+
+def _evidence_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _validate_issuance_input(issuance: InvoiceIssuanceInput) -> None:
+    if issuance.issued_at.tzinfo is None or issuance.issued_at.utcoffset() is None:
+        raise InvoiceOwnerError(
+            code="financial.invoice.issued_at_naive",
+            message="Invoice issue time must include a timezone.",
+        )
+    if issuance.due_at.tzinfo is None or issuance.due_at.utcoffset() is None:
+        raise InvoiceOwnerError(
+            code="financial.invoice.due_at_naive",
+            message="Invoice due time must include a timezone.",
+        )
+    if issuance.due_at < issuance.issued_at:
+        raise InvoiceOwnerError(
+            code="financial.invoice.due_before_issue",
+            message="Invoice due time cannot precede its issue time.",
+        )
+    if issuance.due_date_basis == InvoiceDueDateBasis.unknown_unverified:
+        raise InvoiceOwnerError(
+            code="financial.invoice.unverified_due_date",
+            message="A native collectible invoice requires verified due-date evidence.",
+        )
+    if not issuance.due_date_basis_ref.strip():
+        raise InvoiceOwnerError(
+            code="financial.invoice.due_date_basis_ref_missing",
+            message="Invoice due-date evidence requires a source reference.",
+        )
+    if not issuance.due_date_policy_version.strip():
+        raise InvoiceOwnerError(
+            code="financial.invoice.due_date_policy_version_missing",
+            message="Invoice due-date evidence requires a policy version.",
+        )
+
+
+def _reject_unverified_native_invoice(payload: InvoiceCreate) -> None:
+    if (
+        payload.status != InvoiceStatus.draft
+        and payload.due_date_basis == InvoiceDueDateBasis.unknown_unverified
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Unknown due-date provenance is reserved for imported or legacy "
+                "observations and cannot issue a native collectible invoice"
+            ),
+        )
+
+
+def verified_draft_issuance(
+    invoice: Invoice,
+    *,
+    issued_at: datetime,
+    reason: str,
+) -> InvoiceIssuanceInput:
+    """Bind a draft's stored due evidence to one typed issue request."""
+
+    if (
+        invoice.due_at is None
+        or invoice.due_date_basis
+        in {
+            None,
+            InvoiceDueDateBasis.unknown_unverified,
+        }
+        or not (invoice.due_date_basis_ref or "").strip()
+        or not (invoice.due_date_policy_version or "").strip()
+    ):
+        raise InvoiceOwnerError(
+            code="financial.invoice.due_date_unverified",
+            message="Invoice due-date provenance must be verified before issuance.",
+            details={"invoice_id": str(invoice.id)},
+        )
+    normalized_due_at = (
+        invoice.due_at
+        if invoice.due_at.tzinfo is not None
+        else invoice.due_at.replace(tzinfo=UTC)
+    )
+    due_date_basis = invoice.due_date_basis
+    due_date_basis_ref = invoice.due_date_basis_ref
+    due_date_policy_version = invoice.due_date_policy_version
+    assert due_date_basis is not None
+    assert due_date_basis_ref is not None
+    assert due_date_policy_version is not None
+    return InvoiceIssuanceInput(
+        issued_at=issued_at,
+        due_at=normalized_due_at,
+        due_date_basis=due_date_basis,
+        due_date_basis_ref=due_date_basis_ref,
+        due_date_policy_version=due_date_policy_version,
+        reason=reason,
+    )
 
 
 @dataclass(frozen=True)
@@ -619,6 +731,7 @@ class Invoices(ListResponseMixin):
                 status_code=409,
                 detail="Invoice construction starts only as draft or issued",
             )
+        _reject_unverified_native_invoice(payload)
         if payload.is_proforma and payload.status != InvoiceStatus.draft:
             raise HTTPException(
                 status_code=409,
@@ -631,7 +744,9 @@ class Invoices(ListResponseMixin):
             )
         lock_account(db, str(payload.account_id))
         target_status = payload.status
-        draft_payload = payload.model_copy(update={"status": InvoiceStatus.draft})
+        draft_payload = payload.model_copy(
+            update={"status": InvoiceStatus.draft, "issued_at": None}
+        )
         try:
             invoice = Invoices.stage_admin_draft(db, draft_payload)
             InvoiceLines.replace_admin_draft_lines(
@@ -645,8 +760,32 @@ class Invoices(ListResponseMixin):
                 ),
             )
             if target_status == InvoiceStatus.issued:
-                invoice.status = InvoiceStatus.issued
-                invoice.issued_at = payload.issued_at or datetime.now(UTC)
+                if (
+                    payload.issued_at is None
+                    or payload.due_at is None
+                    or payload.due_date_basis is None
+                    or payload.due_date_basis_ref is None
+                    or payload.due_date_policy_version is None
+                ):
+                    raise InvoiceOwnerError(
+                        code="financial.invoice.issue_evidence_incomplete",
+                        message="Native invoice issuance evidence is incomplete.",
+                    )
+                Invoices.issue_draft_system(
+                    db,
+                    str(invoice.id),
+                    issuance=InvoiceIssuanceInput(
+                        issued_at=payload.issued_at,
+                        due_at=payload.due_at,
+                        due_date_basis=payload.due_date_basis,
+                        due_date_basis_ref=payload.due_date_basis_ref,
+                        due_date_policy_version=payload.due_date_policy_version,
+                        reason="create_invoice_with_lines",
+                    ),
+                    announce=False,
+                    apply_available_credit=False,
+                    commit=False,
+                )
             AuditEvents.stage(
                 db,
                 AuditEventCreate(
@@ -743,6 +882,9 @@ class Invoices(ListResponseMixin):
             "invoice_number",
             "issued_at",
             "due_at",
+            "due_date_basis",
+            "due_date_basis_ref",
+            "due_date_policy_version",
             "memo",
             "is_proforma",
         }
@@ -1513,14 +1655,46 @@ class Invoices(ListResponseMixin):
                 status_code=409,
                 detail="System invoice creation starts only as draft or issued",
             )
+        _reject_unverified_native_invoice(payload)
         _validate_account(db, str(payload.account_id))
         data = payload.model_dump()
+        target_status = payload.status
+        if target_status == InvoiceStatus.issued:
+            data["status"] = InvoiceStatus.draft
+            data["issued_at"] = None
         if not data.get("invoice_number"):
             data["invoice_number"] = next_invoice_number(db)
         _validate_invoice_totals(data)
         invoice = Invoice(**data)
         db.add(invoice)
         db.flush()
+        if target_status == InvoiceStatus.issued:
+            if (
+                payload.issued_at is None
+                or payload.due_at is None
+                or payload.due_date_basis is None
+                or payload.due_date_basis_ref is None
+                or payload.due_date_policy_version is None
+            ):
+                raise InvoiceOwnerError(
+                    code="financial.invoice.issue_evidence_incomplete",
+                    message="Native invoice issuance evidence is incomplete.",
+                )
+            Invoices.issue_draft_system(
+                db,
+                str(invoice.id),
+                issuance=InvoiceIssuanceInput(
+                    issued_at=payload.issued_at,
+                    due_at=payload.due_at,
+                    due_date_basis=payload.due_date_basis,
+                    due_date_basis_ref=payload.due_date_basis_ref,
+                    due_date_policy_version=payload.due_date_policy_version,
+                    reason=reason,
+                ),
+                announce=False,
+                apply_available_credit=False,
+                commit=False,
+            )
         AuditEvents.stage(
             db,
             AuditEventCreate(
@@ -1562,9 +1736,7 @@ class Invoices(ListResponseMixin):
         db: Session,
         invoice_id: str,
         *,
-        issued_at: datetime,
-        due_at: datetime | None,
-        reason: str,
+        issuance: InvoiceIssuanceInput,
         announce: bool = False,
         apply_available_credit: bool = True,
         require_full_available_credit: bool = False,
@@ -1579,10 +1751,23 @@ class Invoices(ListResponseMixin):
         application to exact full settlement and leaves underfunded credit
         untouched.
         """
+        _validate_issuance_input(issuance)
         invoice = lock_for_update(db, Invoice, invoice_id)
         if invoice is None:
             raise HTTPException(status_code=404, detail="Invoice not found")
         if invoice.status == InvoiceStatus.issued:
+            if (
+                _evidence_utc(invoice.issued_at) != _evidence_utc(issuance.issued_at)
+                or _evidence_utc(invoice.due_at) != _evidence_utc(issuance.due_at)
+                or invoice.due_date_basis != issuance.due_date_basis
+                or invoice.due_date_basis_ref != issuance.due_date_basis_ref
+                or invoice.due_date_policy_version != issuance.due_date_policy_version
+            ):
+                raise InvoiceOwnerError(
+                    code="financial.invoice.issue_replay_conflict",
+                    message="Invoice was already issued from different evidence.",
+                    details={"invoice_id": str(invoice.id)},
+                )
             return InvoiceLifecycleTransitionResult(invoice=invoice, changed=False)
         if invoice.status != InvoiceStatus.draft:
             raise HTTPException(
@@ -1595,8 +1780,11 @@ class Invoices(ListResponseMixin):
                 detail="Convert the proforma before issuing an invoice",
             )
         invoice.status = InvoiceStatus.issued
-        invoice.issued_at = issued_at
-        invoice.due_at = due_at
+        invoice.issued_at = issuance.issued_at
+        invoice.due_at = issuance.due_at
+        invoice.due_date_basis = issuance.due_date_basis
+        invoice.due_date_basis_ref = issuance.due_date_basis_ref
+        invoice.due_date_policy_version = issuance.due_date_policy_version
         AuditEvents.stage(
             db,
             AuditEventCreate(
@@ -1606,9 +1794,12 @@ class Invoices(ListResponseMixin):
                 metadata_={
                     "from_status": InvoiceStatus.draft.value,
                     "to_status": InvoiceStatus.issued.value,
-                    "reason": reason,
-                    "issued_at": issued_at.isoformat(),
-                    "due_at": due_at.isoformat() if due_at else None,
+                    "reason": issuance.reason,
+                    "issued_at": issuance.issued_at.isoformat(),
+                    "due_at": issuance.due_at.isoformat(),
+                    "due_date_basis": issuance.due_date_basis.value,
+                    "due_date_basis_ref": issuance.due_date_basis_ref,
+                    "due_date_policy_version": issuance.due_date_policy_version,
                     "ledger_transaction_id": None,
                     "service_access_consequence": "none",
                 },
@@ -1672,11 +1863,24 @@ class Invoices(ListResponseMixin):
                 },
             )
 
+        try:
+            issuance = verified_draft_issuance(
+                invoice,
+                issued_at=conversion.issued_at,
+                reason=conversion.reason,
+            )
+        except InvoiceOwnerError as exc:
+            raise InvoiceOwnerError(
+                code="financial.invoice.proforma_due_date_unverified",
+                message="Proforma conversion requires verified due-date evidence.",
+                details={"invoice_id": str(invoice.id)},
+            ) from exc
+        _validate_issuance_input(issuance)
         invoice.invoice_number = conversion.invoice_number
         invoice.memo = conversion.memo
         invoice.is_proforma = False
         invoice.status = InvoiceStatus.issued
-        invoice.issued_at = conversion.issued_at
+        invoice.issued_at = issuance.issued_at
         emit_event(
             db,
             EventType.invoice_sent,
@@ -1849,9 +2053,7 @@ class Invoices(ListResponseMixin):
         db: Session,
         invoice_id: str,
         *,
-        issued_at: datetime,
-        due_at: datetime | None,
-        reason: str,
+        issuance: InvoiceIssuanceInput,
         announce: bool = False,
         apply_available_credit: bool = True,
     ) -> InvoiceLifecycleTransitionResult:
@@ -1860,9 +2062,7 @@ class Invoices(ListResponseMixin):
             return Invoices.issue_draft_system(
                 db,
                 invoice_id,
-                issued_at=issued_at,
-                due_at=due_at,
-                reason=reason,
+                issuance=issuance,
                 announce=announce,
                 apply_available_credit=apply_available_credit,
                 commit=False,
@@ -1978,6 +2178,9 @@ class Invoices(ListResponseMixin):
         invoice.status = InvoiceStatus.draft
         invoice.issued_at = None
         invoice.due_at = None
+        invoice.due_date_basis = None
+        invoice.due_date_basis_ref = None
+        invoice.due_date_policy_version = None
         invoice.paid_at = None
         AuditEvents.stage(
             db,
@@ -2024,6 +2227,15 @@ class Invoices(ListResponseMixin):
         due_at = invoice.due_at
         if due_at is None:
             raise HTTPException(status_code=409, detail="Invoice has no due date")
+        if invoice.due_date_basis == InvoiceDueDateBasis.unknown_unverified:
+            raise InvoiceOwnerError(
+                code="financial.invoice.due_date_unverified",
+                message=(
+                    "Invoice due-date provenance is unverified and cannot drive "
+                    "an overdue transition."
+                ),
+                details={"invoice_id": str(invoice.id)},
+            )
         normalized_due = due_at if due_at.tzinfo else due_at.replace(tzinfo=UTC)
         normalized_as_of = as_of if as_of.tzinfo else as_of.replace(tzinfo=UTC)
         if normalized_due > normalized_as_of:
@@ -2090,7 +2302,13 @@ class Invoices(ListResponseMixin):
         )
 
     @staticmethod
-    def create(db: Session, payload: InvoiceCreate, *, commit: bool = True):
+    def create(
+        db: Session,
+        payload: InvoiceCreate,
+        *,
+        commit: bool = True,
+        _allow_unverified_due_date: bool = False,
+    ):
         _validate_account(db, str(payload.account_id))
         data = payload.model_dump()
         fields_set = payload.model_fields_set
@@ -2119,14 +2337,58 @@ class Invoices(ListResponseMixin):
                     "named financial owner workflows"
                 ),
             )
+        if not _allow_unverified_due_date:
+            _reject_unverified_native_invoice(payload)
+            if payload.status == InvoiceStatus.overdue:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Native invoices must be issued first; the invoice owner "
+                        "derives overdue state from verified due-date evidence"
+                    ),
+                )
         if not data.get("invoice_number"):
             generated = next_invoice_number(db)
             if generated:
                 data["invoice_number"] = generated
+        native_issue = (
+            not _allow_unverified_due_date
+            and data.get("status") == InvoiceStatus.issued
+        )
+        if native_issue:
+            data["status"] = InvoiceStatus.draft
+            data["issued_at"] = None
         _validate_invoice_totals(data)
         invoice = Invoice(**data)
         db.add(invoice)
         db.flush()
+        if native_issue:
+            if (
+                payload.issued_at is None
+                or payload.due_at is None
+                or payload.due_date_basis is None
+                or payload.due_date_basis_ref is None
+                or payload.due_date_policy_version is None
+            ):
+                raise InvoiceOwnerError(
+                    code="financial.invoice.issue_evidence_incomplete",
+                    message="Native invoice issuance evidence is incomplete.",
+                )
+            Invoices.issue_draft_system(
+                db,
+                str(invoice.id),
+                issuance=InvoiceIssuanceInput(
+                    issued_at=payload.issued_at,
+                    due_at=payload.due_at,
+                    due_date_basis=payload.due_date_basis,
+                    due_date_basis_ref=payload.due_date_basis_ref,
+                    due_date_policy_version=payload.due_date_policy_version,
+                    reason="native_invoice_create",
+                ),
+                announce=False,
+                apply_available_credit=False,
+                commit=False,
+            )
         emit_event(
             db,
             EventType.invoice_created,
@@ -2152,6 +2414,32 @@ class Invoices(ListResponseMixin):
             db.flush()
 
         return invoice
+
+    @staticmethod
+    def create_imported_observation(
+        db: Session,
+        payload: InvoiceCreate,
+        *,
+        commit: bool = True,
+    ) -> Invoice:
+        """Persist a legacy/provider invoice without inventing due provenance."""
+
+        if payload.status != InvoiceStatus.draft and (
+            payload.due_date_basis != InvoiceDueDateBasis.unknown_unverified
+        ):
+            raise InvoiceOwnerError(
+                code="financial.invoice.import_basis_invalid",
+                message=(
+                    "Imported open invoices without verified source evidence must "
+                    "use unknown/unverified due-date provenance."
+                ),
+            )
+        return Invoices.create(
+            db,
+            payload,
+            commit=commit,
+            _allow_unverified_due_date=True,
+        )
 
     @staticmethod
     def create_for_subscription(
@@ -2263,57 +2551,42 @@ class Invoices(ListResponseMixin):
 
         issued_at = datetime.now(UTC)
         due_days = resolve_payment_due_days(db, subscriber=subscriber)
-        invoice = Invoice(
-            account_id=subscriber_id,
-            invoice_number=invoice_number,
-            currency=currency,
-            subtotal=amount,
-            tax_total=tax_total,
-            total=total,
-            balance_due=total,
-            status=InvoiceStatus.issued,
-            issued_at=issued_at,
-            due_at=issued_at + timedelta(days=due_days),
-        )
-        db.add(invoice)
-        db.flush()
-
-        # Create line item
-        line = InvoiceLine(
-            invoice_id=invoice.id,
-            subscription_id=subscription_id,
-            description=(
-                f"{offer.name} — "
-                f"{billing_cycle_noun(subscription.billing_cycle or offer_price.billing_cycle)}"
-                " service"
-            ),
-            quantity=Decimal("1"),
-            unit_price=amount,
-            amount=amount,
-            tax_rate_id=tax_rate_id,
-            tax_application=TaxApplication.exclusive,
-            is_active=True,
-        )
-        db.add(line)
-        emit_event(
+        invoice = Invoices.create_with_lines(
             db,
-            EventType.invoice_created,
-            {
-                "invoice_id": str(invoice.id),
-                "invoice_number": invoice.invoice_number,
-                "total": str(invoice.total),
-                "currency": invoice.currency,
-                "status": invoice.status.value,
-            },
-            account_id=invoice.account_id,
-            invoice_id=invoice.id,
+            InvoiceCreate(
+                account_id=coerce_uuid(subscriber_id),
+                invoice_number=invoice_number,
+                currency=currency,
+                subtotal=amount,
+                tax_total=tax_total,
+                total=total,
+                balance_due=total,
+                status=InvoiceStatus.issued,
+                issued_at=issued_at,
+                due_at=issued_at + timedelta(days=due_days),
+                due_date_basis=InvoiceDueDateBasis.contract_terms,
+                due_date_basis_ref=f"subscription:{subscription.id}",
+                due_date_policy_version="billing-payment-terms-v1",
+            ),
+            (
+                InvoiceLineCreate(
+                    invoice_id=UUID(int=0),
+                    subscription_id=coerce_uuid(subscription_id),
+                    description=(
+                        f"{offer.name} — "
+                        f"{billing_cycle_noun(subscription.billing_cycle or offer_price.billing_cycle)}"
+                        " service"
+                    ),
+                    quantity=Decimal("1"),
+                    unit_price=amount,
+                    amount=amount,
+                    tax_rate_id=tax_rate_id,
+                    tax_application=TaxApplication.exclusive,
+                    is_active=True,
+                ),
+            ),
+            commit=commit,
         )
-        _apply_available_account_credit(db, invoice)
-        if commit:
-            db.commit()
-            db.refresh(invoice)
-        else:
-            db.flush()
 
         logger.info(
             "Created invoice %s for subscription %s: %s %s",
@@ -2459,6 +2732,8 @@ class Invoices(ListResponseMixin):
                 ),
             )
         if data.get("status") in {
+            InvoiceStatus.issued,
+            InvoiceStatus.overdue,
             InvoiceStatus.partially_paid,
             InvoiceStatus.paid,
             InvoiceStatus.void,
@@ -2467,8 +2742,8 @@ class Invoices(ListResponseMixin):
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    "Payment settlement, void, and write-off states require their "
-                    "named owner workflows"
+                    "Invoice issue, overdue, settlement, void, and write-off states "
+                    "require their named owner workflows"
                 ),
             )
         if "balance_due" in data and round_money(

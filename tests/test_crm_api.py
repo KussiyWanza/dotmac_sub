@@ -364,6 +364,11 @@ def test_locations_uses_short_cache(db_session, crm_auth):
     engine = db_session.get_bind()
 
     def count_statement(conn, cursor, statement, parameters, context, executemany):
+        normalized = statement.lstrip().upper()
+        if normalized.startswith(
+            ("SAVEPOINT ", "RELEASE SAVEPOINT ", "ROLLBACK TO SAVEPOINT ")
+        ):
+            return
         statements.append(statement)
 
     event.listen(engine, "before_cursor_execute", count_statement)

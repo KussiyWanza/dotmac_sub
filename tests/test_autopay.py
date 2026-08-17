@@ -11,7 +11,12 @@ from decimal import Decimal
 
 import pytest
 
-from app.models.billing import InvoiceStatus, Payment, PaymentStatus
+from app.models.billing import (
+    InvoiceDueDateBasis,
+    InvoiceStatus,
+    Payment,
+    PaymentStatus,
+)
 from app.models.catalog import SubscriptionStatus
 from app.schemas.billing import InvoiceCreate, PaymentMethodCreate
 from app.services import autopay
@@ -54,17 +59,36 @@ def _open_invoice(
     # does not hide the invoice from the charge engine.
     if due_at is ...:
         due_at = datetime.now(UTC) - timedelta(days=1)
-    return billing_service.invoices.create(
-        db_session,
-        InvoiceCreate(
-            account_id=account_id,
-            status=status,
-            currency="NGN",
-            subtotal=amount,
-            total=amount,
-            balance_due=amount,
-            due_at=due_at,
+    issued_at = (
+        datetime.now(UTC)
+        if due_at is None
+        else min(datetime.now(UTC), due_at - timedelta(days=1))
+    )
+    payload = InvoiceCreate(
+        account_id=account_id,
+        status=status,
+        currency="NGN",
+        subtotal=amount,
+        total=amount,
+        balance_due=amount,
+        issued_at=issued_at,
+        due_at=due_at,
+        due_date_basis=(
+            InvoiceDueDateBasis.unknown_unverified
+            if due_at is None
+            else InvoiceDueDateBasis.contract_terms
         ),
+        due_date_basis_ref=(None if due_at is None else "test:autopay-contract"),
+        due_date_policy_version=(None if due_at is None else "test-v1"),
+    )
+    creator = (
+        billing_service.invoices.create_imported_observation
+        if due_at is None
+        else billing_service.invoices.create
+    )
+    return creator(
+        db_session,
+        payload,
     )
 
 
@@ -320,7 +344,7 @@ def test_gating_skips_issued_invoice_without_due_date(
     assert calls == []
 
 
-def test_gating_charges_overdue_invoice_without_due_date(
+def test_gating_skips_unverified_overdue_invoice_without_due_date(
     db_session, subscriber, monkeypatch
 ):
     _card(db_session, subscriber.id)
@@ -332,10 +356,12 @@ def test_gating_charges_overdue_invoice_without_due_date(
         due_at=None,
     )
     autopay.enable(db_session, str(subscriber.id))
-    _mock_charge(monkeypatch, status="success")
+    calls: list[dict] = []
+    _mock_charge(monkeypatch, status="success", calls=calls)
 
     result = autopay.run_account_autopay(db_session, str(subscriber.id))
-    assert result["charged"] == 1
+    assert result["charged"] == 0
+    assert calls == []
 
 
 def test_gating_off_charges_at_issuance(db_session, subscriber, monkeypatch):

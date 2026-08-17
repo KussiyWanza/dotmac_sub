@@ -24,7 +24,7 @@ from app.services import billing as billing_service
 from app.services import billing_invoice_pdf as billing_invoice_pdf_service
 from app.services import web_billing_invoices as web_billing_invoices_service
 from app.services.audit_adapter import record_audit_event
-from app.services.billing.invoices import InvoiceClosurePreview
+from app.services.billing.invoices import InvoiceClosurePreview, verified_draft_issuance
 from app.services.bulk_actions import membership_scope_token
 from app.services.object_storage import ObjectNotFoundError
 
@@ -268,9 +268,11 @@ def bulk_issue(db, invoice_ids_csv: str) -> list[str]:
                 billing_service.invoices.issue_draft_system(
                     db,
                     invoice_id,
-                    issued_at=datetime.now(UTC),
-                    due_at=invoice.due_at,
-                    reason="admin_bulk_issue",
+                    issuance=verified_draft_issuance(
+                        invoice,
+                        issued_at=datetime.now(UTC),
+                        reason="admin_bulk_issue",
+                    ),
                     announce=True,
                     commit=True,
                 )
@@ -293,9 +295,11 @@ def bulk_issue_result(db, invoice_ids_csv: str) -> BulkInvoiceActionResult:
                 billing_service.invoices.issue_draft_system(
                     db,
                     invoice_id,
-                    issued_at=datetime.now(UTC),
-                    due_at=invoice.due_at,
-                    reason="admin_bulk_issue",
+                    issuance=verified_draft_issuance(
+                        invoice,
+                        issued_at=datetime.now(UTC),
+                        reason="admin_bulk_issue",
+                    ),
                     announce=True,
                     commit=True,
                 )

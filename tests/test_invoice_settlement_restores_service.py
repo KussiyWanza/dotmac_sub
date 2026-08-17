@@ -7,7 +7,7 @@ overdue lock.
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from app.models.billing import InvoiceStatus
+from app.models.billing import InvoiceDueDateBasis, InvoiceStatus
 from app.models.catalog import BillingMode, Subscription, SubscriptionStatus
 from app.models.enforcement_lock import EnforcementReason
 from app.schemas.billing import (
@@ -23,11 +23,14 @@ from app.services.account_lifecycle import has_active_lock, suspend_subscription
 
 def _overdue_postpaid(db, subscriber, offer):
     """A postpaid sub suspended by an overdue lock for a real past-due invoice."""
+    now = datetime.now(UTC)
     sub = Subscription(
         subscriber_id=subscriber.id,
         offer_id=offer.id,
         status=SubscriptionStatus.active,
         billing_mode=BillingMode.postpaid,
+        start_at=now - timedelta(days=60),
+        next_billing_at=now + timedelta(days=1),
     )
     db.add(sub)
     db.commit()
@@ -38,8 +41,11 @@ def _overdue_postpaid(db, subscriber, offer):
             status=InvoiceStatus.issued,
             total=Decimal("5000.00"),
             balance_due=Decimal("5000.00"),
-            issued_at=datetime.now(UTC) - timedelta(days=30),
-            due_at=datetime.now(UTC) - timedelta(days=10),
+            issued_at=now - timedelta(days=30),
+            due_at=now - timedelta(days=10),
+            due_date_basis=InvoiceDueDateBasis.contract_terms,
+            due_date_basis_ref="test:postpaid-contract",
+            due_date_policy_version="test-v1",
         ),
     )
     suspend_subscription(

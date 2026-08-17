@@ -40,6 +40,16 @@ class InvoiceStatus(enum.Enum):
     written_off = "written_off"
 
 
+class InvoiceDueDateBasis(enum.Enum):
+    """Authoritative provenance for one immutable issued due date."""
+
+    contract_terms = "contract_terms"
+    prepaid_service_period = "prepaid_service_period"
+    provider_observation = "provider_observation"
+    approved_manual_override = "approved_manual_override"
+    unknown_unverified = "unknown_unverified"
+
+
 class InvoiceDiscountType(enum.Enum):
     percentage = "percentage"
     fixed_amount = "fixed_amount"
@@ -557,6 +567,22 @@ class Invoice(Base):
             "(discount_source = 'quote' AND discount_source_quote_id IS NOT NULL)))",
             name="ck_invoices_discount_current_state",
         ),
+        CheckConstraint(
+            "due_date_basis IS NULL OR "
+            "due_date_basis = 'unknown_unverified' OR "
+            "(due_at IS NOT NULL AND "
+            "(status = 'draft' OR (issued_at IS NOT NULL AND due_at >= issued_at)) "
+            "AND due_date_basis_ref IS NOT NULL AND "
+            "length(trim(due_date_basis_ref)) > 0 AND "
+            "due_date_policy_version IS NOT NULL AND "
+            "length(trim(due_date_policy_version)) > 0)",
+            name="ck_invoices_verified_due_date_basis",
+        ),
+        Index(
+            "ix_invoices_due_date_basis_due_at",
+            "due_date_basis",
+            "due_at",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -599,6 +625,14 @@ class Invoice(Base):
     billing_period_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     issued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # NULL is a temporary pre-migration state for legacy rows. New native
+    # issuance must persist a verified basis. Explicit unknown/unverified rows
+    # are lawful historical observations but cannot drive collection actions.
+    due_date_basis: Mapped[InvoiceDueDateBasis | None] = mapped_column(
+        Enum(InvoiceDueDateBasis, name="invoice_due_date_basis")
+    )
+    due_date_basis_ref: Mapped[str | None] = mapped_column(String(255))
+    due_date_policy_version: Mapped[str | None] = mapped_column(String(64))
     paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     memo: Mapped[str | None] = mapped_column(Text)
     is_proforma: Mapped[bool] = mapped_column(Boolean, default=False)

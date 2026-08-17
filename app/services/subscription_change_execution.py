@@ -20,7 +20,13 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.audit import AuditActorType
-from app.models.billing import Invoice, InvoiceStatus, Payment, PaymentAllocation
+from app.models.billing import (
+    Invoice,
+    InvoiceDueDateBasis,
+    InvoiceStatus,
+    Payment,
+    PaymentAllocation,
+)
 from app.models.catalog import (
     AccessCredential,
     CatalogOffer,
@@ -397,6 +403,7 @@ def stage_relocation_charge(
         raise SubscriptionChangeExecutionError(
             "relocation_currency_missing", "Relocation charge currency is missing"
         )
+    issued_at = datetime.now(UTC)
     invoice = billing_service.invoices.create(
         db,
         InvoiceCreate(
@@ -406,7 +413,11 @@ def stage_relocation_charge(
             subtotal=amount,
             total=amount,
             balance_due=amount,
-            issued_at=datetime.now(UTC),
+            issued_at=issued_at,
+            due_at=issued_at,
+            due_date_basis=InvoiceDueDateBasis.contract_terms,
+            due_date_basis_ref=f"subscription-change:{request.id}:field-fee",
+            due_date_policy_version="subscription-change-pay-before-execution-v1",
             memo=f"Service relocation charge · request {request.id}",
         ),
         commit=False,

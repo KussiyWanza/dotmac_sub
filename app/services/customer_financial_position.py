@@ -22,6 +22,7 @@ from app.services.invoice_collectibility import (
     collection_blocking_balance,
     due_invoice_balance,
     invoice_balance_sum,
+    is_collection_due_date_eligible,
     list_open_invoices,
     open_invoice_balance,
     open_invoice_filters,
@@ -345,7 +346,9 @@ def _oldest_due_invoice(invoices: list[Invoice], now: datetime) -> Invoice | Non
     due = [
         invoice
         for invoice in invoices
-        if invoice.due_at is not None and _as_aware(invoice.due_at).date() < now.date()
+        if is_collection_due_date_eligible(invoice)
+        and invoice.due_at is not None
+        and _as_aware(invoice.due_at).date() < now.date()
     ]
     return due[0] if due else None
 

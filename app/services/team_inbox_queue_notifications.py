@@ -138,7 +138,10 @@ def _queue_policy_minutes(policy: dict[str, object], key: str, default: int) -> 
 
 
 def _queue_lifecycle(entry: InboxConversationQueueEntry) -> str:
-    return entry.entered_at.astimezone(UTC).isoformat()
+    entered_at = entry.entered_at
+    if entered_at.tzinfo is None or entered_at.utcoffset() is None:
+        entered_at = entered_at.replace(tzinfo=UTC)
+    return entered_at.astimezone(UTC).isoformat()
 
 
 def _logical_key(

@@ -42,6 +42,7 @@ from sqlalchemy.orm import Session
 from app.models.billing import (
     CreditNoteApplication,
     Invoice,
+    InvoiceDueDateBasis,
     InvoiceLine,
     InvoiceStatus,
     Payment,
@@ -55,6 +56,11 @@ from app.schemas.billing import (
     PaymentAllocationConfirm,
     PaymentAllocationPreviewRequest,
 )
+from app.services.account_lifecycle import (
+    BillingAnchorProjectionCommand,
+    BillingAnchorProjectionSource,
+    stage_subscription_billing_anchor,
+)
 from app.services.billing._common import (
     _recalculate_invoice_totals as recalculate_invoice_totals,
 )
@@ -62,7 +68,7 @@ from app.services.billing._common import (
     get_account_credit_balance,
     lock_account,
 )
-from app.services.billing.invoices import Invoices
+from app.services.billing.invoices import InvoiceIssuanceInput, Invoices
 from app.services.billing.payments import PaymentAllocations
 from app.services.common import coerce_uuid, round_money, to_decimal
 from app.services.notification_suppression import suppress_notifications
@@ -323,7 +329,17 @@ def _advance_prepaid_billing_from_entitlements(db: Session, invoice: Invoice) ->
             entitlement_end is not None
             and (current_next_billing is None or current_next_billing < entitlement_end)
         ):
-            subscription.next_billing_at = entitlement.ends_at
+            stage_subscription_billing_anchor(
+                db,
+                subscription,
+                BillingAnchorProjectionCommand(
+                    subscription_id=subscription.id,
+                    expected_previous=subscription.next_billing_at,
+                    target=entitlement_end,
+                    source=BillingAnchorProjectionSource.prepaid_coverage,
+                    evidence_ref=f"entitlement:{entitlement.id}",
+                ),
+            )
 
 
 def _prepaid_draft_invoices(db: Session, account_id: str) -> list[Invoice]:
@@ -366,9 +382,14 @@ def settle_prepaid_draft_invoices_from_credit(
         Invoices.issue_draft_system(
             db,
             str(invoice.id),
-            issued_at=now,
-            due_at=now,
-            reason="reconcile_prepaid_draft_from_confirmed_credit",
+            issuance=InvoiceIssuanceInput(
+                issued_at=now,
+                due_at=now,
+                due_date_basis=InvoiceDueDateBasis.prepaid_service_period,
+                due_date_basis_ref=f"invoice:{invoice.id}:confirmed-credit",
+                due_date_policy_version="prepaid-draft-settlement-v1",
+                reason="reconcile_prepaid_draft_from_confirmed_credit",
+            ),
             apply_available_credit=False,
         )
 

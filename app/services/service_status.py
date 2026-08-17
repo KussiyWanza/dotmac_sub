@@ -41,6 +41,7 @@ from app.services.access_resolution import (
 from app.services.collections import has_overdue_balance
 from app.services.collections.grace_policy import resolve_grace_decision
 from app.services.common import coerce_uuid
+from app.services.invoice_collectibility import collection_due_date_eligible_filter
 from app.services.status_presentation import subscription_status_presentation
 from app.services.walled_garden_policy import resolve_subscription_restriction
 
@@ -99,6 +100,7 @@ def _overdue_summary(
         .filter(Invoice.account_id == coerce_uuid(account_id))
         .filter(Invoice.is_active.is_(True))
         .filter(Invoice.balance_due > 0)
+        .filter(collection_due_date_eligible_filter())
         .filter(
             or_(
                 Invoice.status == InvoiceStatus.overdue,

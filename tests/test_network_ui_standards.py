@@ -94,8 +94,13 @@ def test_zone_list_has_bounded_query_count_and_pagination(db_session):
 
     statements = 0
 
-    def count_statement(*_args):
+    def count_statement(_conn, _cursor, statement, *_args):
         nonlocal statements
+        normalized = statement.lstrip().upper()
+        if normalized.startswith(
+            ("SAVEPOINT ", "RELEASE SAVEPOINT ", "ROLLBACK TO SAVEPOINT ")
+        ):
+            return
         statements += 1
 
     event.listen(db_session.bind, "before_cursor_execute", count_statement)

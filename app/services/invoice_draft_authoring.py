@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.models.billing import (
     Invoice,
+    InvoiceDueDateBasis,
     InvoiceLine,
     InvoiceStatus,
     TaxApplication,
@@ -590,6 +591,19 @@ def _create_invoice_draft(
             currency=currency,
             issued_at=command.issued_at,
             due_at=command.due_at,
+            due_date_basis=(
+                InvoiceDueDateBasis.approved_manual_override
+                if command.due_at is not None
+                else None
+            ),
+            due_date_basis_ref=(
+                f"invoice-draft-command:{context.command_id}"
+                if command.due_at is not None
+                else None
+            ),
+            due_date_policy_version=(
+                "admin-invoice-draft-v1" if command.due_at is not None else None
+            ),
             memo=command.memo,
             is_proforma=command.is_proforma,
             subtotal=Decimal("0.00"),
@@ -691,6 +705,19 @@ def _update_invoice_draft(
             invoice_number=invoice_number or invoice.invoice_number,
             issued_at=command.issued_at,
             due_at=command.due_at,
+            due_date_basis=(
+                InvoiceDueDateBasis.approved_manual_override
+                if command.due_at is not None
+                else None
+            ),
+            due_date_basis_ref=(
+                f"invoice-draft-command:{context.command_id}"
+                if command.due_at is not None
+                else None
+            ),
+            due_date_policy_version=(
+                "admin-invoice-draft-v1" if command.due_at is not None else None
+            ),
             memo=command.memo,
             is_proforma=command.is_proforma,
         ),
