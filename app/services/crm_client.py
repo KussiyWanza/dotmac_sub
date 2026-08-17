@@ -19,7 +19,7 @@ from datetime import datetime
 from typing import Any, ClassVar, cast
 
 import httpx
-from dotmac_integration import IntegrationHttpClient
+from dotmac_integration_client import IntegrationHttpClient
 from sqlalchemy.orm import Session
 
 from app.models.domain_settings import SettingDomain
