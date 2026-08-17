@@ -285,8 +285,10 @@ def _candidate_cohorts(
         try:
             key = _cohort_key(batch)
         except CrmNetworkMapPointMigrationError:
-            if expected_archive_sha256 is not None:
-                raise
+            # Legacy rehearsal batches predate the v2 authoritative metadata
+            # contract. They remain immutable evidence, but cannot participate
+            # in authority selection even when an operator supplies the expected
+            # fresh archive hash.
             continue
         grouped[batch.asset_type].setdefault(key, []).append(batch)
     return {
