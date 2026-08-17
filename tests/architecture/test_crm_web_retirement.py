@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from scripts.architecture import crm_web_retirement
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_crm_web_retirement_ledger_is_complete_and_valid() -> None:
@@ -41,6 +44,31 @@ def test_every_crm_web_module_and_route_has_migration_tracking() -> None:
     assert all("tracking" in module for module in ledger["modules"])
     assert all("tracking" in route for route in ledger["routes"])
     assert all(route["source"]["mounted"] for route in ledger["routes"])
+
+
+def test_marketing_sales_owner_map_exists_without_verifying_campaigns() -> None:
+    owner_map = PROJECT_ROOT / "docs" / "designs" / "MARKETING_SALES_SOT.md"
+    text = owner_map.read_text(encoding="utf-8")
+
+    assert "SALES_TO_SERVICE_LIFECYCLE_SOT.md" in text
+    assert "The reusable sales owner stops at an **accepted Quote**" in text
+    assert "It does not import `dotmac-orders`" in text
+    assert "Campaigns, campaign steps" in text
+    assert "**Unverified**" in text
+    assert "Retention engagement history" in text
+    assert "**Unresolved**" in text
+
+    ledger = crm_web_retirement.load_ledger()
+    defaults = ledger["tracking_defaults"]["module"]
+    campaigns = next(
+        module
+        for module in ledger["modules"]
+        if module["file"] == "app/web/admin/campaigns.py"
+    )
+    tracking = crm_web_retirement._deep_merge(defaults, campaigns["tracking"])
+
+    assert tracking["decision"]["state"] != "verified"
+    assert "not verified" in tracking["decision"]["notes"]
 
 
 def test_evidence_free_route_cannot_be_declared_retired() -> None:
