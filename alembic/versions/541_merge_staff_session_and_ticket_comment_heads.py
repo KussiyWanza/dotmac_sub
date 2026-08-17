@@ -7,9 +7,6 @@ Create Date: 2026-08-17
 This is a graph-only merge revision for independently developed migrations.
 """
 
-from __future__ import annotations
-
-
 revision = "541_merge_staff_session_and_ticket_comment_heads"
 down_revision = (
     "540_staff_session_party_ratchet",
