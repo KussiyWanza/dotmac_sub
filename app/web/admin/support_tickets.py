@@ -727,6 +727,7 @@ def ticket_edit_comment(
     ticket_id: UUID,
     comment_id: UUID,
     body: str = Form(...),
+    mentions: str | None = Form(default=None),
     db: Session = Depends(get_db),
 ):
     if body.strip():
@@ -737,6 +738,7 @@ def ticket_edit_comment(
             comment_id=str(comment_id),
             actor_id=_actor_id(request),
             body=body,
+            mentions=mentions,
         )
     return RedirectResponse(url=f"/admin/support/tickets/{ticket_id}", status_code=303)
 

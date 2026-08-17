@@ -162,6 +162,27 @@ Project Coordinator column remains readable and filterable on historical
 Tickets, but new-ticket input and assignment configuration no longer populate
 it.
 
+Explicit mention identity is stored in `support_ticket_comment_mentions`, not
+in display text. Each row names exactly one `SystemUser` or `ServiceTeam`, with
+database uniqueness per comment and target; the owner requires the target to be
+active when it is newly selected. Create and edit adapters parse browser tokens
+into typed `TicketMentionTarget` values; only the Ticket lifecycle owner
+validates and writes the final set. An edit locks the
+Ticket and comment, replaces the set by delta, notifies only newly added
+targets, and records removed targets without sending an "unmentioned"
+notification. Saving an unchanged comment therefore produces no repeat email,
+push, or Talk consequence. The first new association ID in a command is the
+stable notification occurrence identity; recipients resolved through both a
+person and a team are deduplicated within that occurrence, and the author is
+excluded.
+
+Migration 540 adds the association table without parsing historical `@label`
+text. Labels are mutable and non-unique, so such a backfill would invent
+identity. Historical text remains visible, while new or deliberately reselected
+mentions become authoritative. Re-reading the association rows is the
+idempotent rebuild path; the comment-edit delta tests and database target/unique
+constraints are the drift signal.
+
 ## Related owners
 
 `support.ticket_sla_clock` remains the Ticket SLA clock and breach owner.
@@ -252,8 +273,8 @@ leaves canonical `closed` rows untouched.
 
 Assignment changes and explicit ticket-comment mentions stage a durable
 `nextcloud_talk` staff notification inside the Ticket owner command. The
-assignment command ID or comment ID is part of the delivery dedupe identity,
-and the comment author is excluded. The Ticket owner does not resolve
+assignment command ID or durable mention-occurrence ID is part of the delivery
+dedupe identity, and the comment author is excluded. The Ticket owner does not resolve
 Nextcloud credentials, create rooms, or perform HTTP; those consequences belong
 to `communications.nextcloud_talk_staff` after commit. Staging failure is
 isolated in an owner savepoint and cannot reject the ticket mutation.

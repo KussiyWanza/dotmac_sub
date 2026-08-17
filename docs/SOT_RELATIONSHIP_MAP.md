@@ -2658,6 +2658,11 @@ confirmation, tracking, or rating eligibility from raw statuses.
    past occupied imported numbers; portal, API, automation, and admin adapters
    never allocate numbers. The retired lifecycle-owner alias is not a
    registered service.
+   Explicit comment mentions are exact `SystemUser` or `ServiceTeam` targets
+   stored in `support_ticket_comment_mentions`. Comment edits apply one locked
+   mention-set delta and notify only newly added targets; unchanged and removed
+   targets do not generate repeat deliveries. Legacy `@label` text is not
+   identity evidence and is not backfilled.
 2. `support.ticket_configuration` owns the operator-visible status subset,
    priority/type choices, routing, and SLA policy. Its typed regional routing
    projection supplies the admin new-ticket preview; the browser displays that

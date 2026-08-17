@@ -28,6 +28,7 @@ from app.models.support import (
     TicketChannel,
     TicketComment,
     TicketCommentAuthorType,
+    TicketCommentMention,
     TicketLink,
     TicketMerge,
     TicketSlaEvent,
@@ -41,6 +42,8 @@ from app.schemas.support import (
     TicketCommentCreate,
     TicketCommentUpdate,
     TicketCreate,
+    TicketMentionTarget,
+    TicketMentionTargetKind,
     TicketMergeRequest,
     TicketSlaEventCreate,
     TicketSlaEventUpdate,
@@ -133,6 +136,14 @@ class CustomerReplyStaffNotificationOutcome:
 
     recipients: tuple[str, ...]
     source: CustomerReplyStaffNotificationSource
+
+
+@dataclass(frozen=True, slots=True)
+class TicketMentionSyncOutcome:
+    """Exact mention-set delta staged with a comment mutation."""
+
+    added: tuple[TicketCommentMention, ...]
+    removed: tuple[TicketMentionTarget, ...]
 
 
 def _ticket_error(code: str, message: str, **details: object) -> SupportTicketError:
@@ -682,6 +693,7 @@ class TicketComments:
     ) -> list[TicketComment]:
         query = (
             db.query(TicketComment)
+            .options(selectinload(TicketComment.mention_links))
             .filter(TicketComment.ticket_id == ticket_id)
             .order_by(TicketComment.created_at.asc())
         )
@@ -722,6 +734,24 @@ class TicketComments:
         db.add(comment)
         db.flush()
 
+        if payload.mentions and author_type != TicketCommentAuthorType.staff.value:
+            raise _ticket_error(
+                "ticket_comment_mentions_not_allowed",
+                "Only staff-authored ticket comments may mention staff or teams",
+            )
+        mention_sync = TicketComments._sync_mentions(
+            db,
+            comment=comment,
+            desired=payload.mentions,
+        )
+        TicketComments._notify_added_mentions(
+            db,
+            ticket=ticket,
+            comment=comment,
+            added=mention_sync.added,
+            actor_id=actor_id,
+        )
+
         log_audit_event(
             db=db,
             request=request,
@@ -732,9 +762,170 @@ class TicketComments:
             metadata={
                 "comment_id": str(comment.id),
                 "is_internal": payload.is_internal,
+                "mention_targets_added": [
+                    TicketComments._row_target(row).token for row in mention_sync.added
+                ],
+                "mention_occurrence_id": (
+                    str(mention_sync.added[0].id) if mention_sync.added else None
+                ),
             },
         )
         return comment
+
+    @staticmethod
+    def _row_target(row: TicketCommentMention) -> TicketMentionTarget:
+        if row.system_user_id is not None:
+            return TicketMentionTarget(
+                kind=TicketMentionTargetKind.person,
+                target_id=row.system_user_id,
+            )
+        if row.service_team_id is not None:
+            return TicketMentionTarget(
+                kind=TicketMentionTargetKind.group,
+                target_id=row.service_team_id,
+            )
+        raise _ticket_error(
+            "ticket_comment_mention_invalid",
+            "Ticket comment mention has no target",
+            mention_id=str(row.id),
+        )
+
+    @staticmethod
+    def _validate_added_mentions(
+        db: Session,
+        targets: tuple[TicketMentionTarget, ...],
+    ) -> None:
+        if not targets:
+            return
+        from app.models.service_team import ServiceTeam
+        from app.models.system_user import SystemUser
+
+        person_ids = {
+            target.target_id
+            for target in targets
+            if target.kind == TicketMentionTargetKind.person
+        }
+        team_ids = {
+            target.target_id
+            for target in targets
+            if target.kind == TicketMentionTargetKind.group
+        }
+        active_person_ids = (
+            {
+                row[0]
+                for row in db.query(SystemUser.id)
+                .filter(SystemUser.id.in_(person_ids))
+                .filter(SystemUser.is_active.is_(True))
+                .all()
+            }
+            if person_ids
+            else set()
+        )
+        active_team_ids = (
+            {
+                row[0]
+                for row in db.query(ServiceTeam.id)
+                .filter(ServiceTeam.id.in_(team_ids))
+                .filter(ServiceTeam.is_active.is_(True))
+                .all()
+            }
+            if team_ids
+            else set()
+        )
+        invalid = tuple(
+            target.token
+            for target in targets
+            if (
+                target.kind == TicketMentionTargetKind.person
+                and target.target_id not in active_person_ids
+            )
+            or (
+                target.kind == TicketMentionTargetKind.group
+                and target.target_id not in active_team_ids
+            )
+        )
+        if invalid:
+            raise _ticket_error(
+                "ticket_comment_mention_target_unavailable",
+                "One or more mentioned staff or teams are unavailable",
+                mention_targets=invalid,
+            )
+
+    @staticmethod
+    def _sync_mentions(
+        db: Session,
+        *,
+        comment: TicketComment,
+        desired: Sequence[TicketMentionTarget],
+    ) -> TicketMentionSyncOutcome:
+        desired_by_token = {target.token: target for target in desired}
+        existing_rows = (
+            db.query(TicketCommentMention)
+            .filter(TicketCommentMention.comment_id == comment.id)
+            .with_for_update()
+            .all()
+        )
+        existing_by_token = {
+            TicketComments._row_target(row).token: row for row in existing_rows
+        }
+        added_targets = tuple(
+            target
+            for token, target in desired_by_token.items()
+            if token not in existing_by_token
+        )
+        TicketComments._validate_added_mentions(db, added_targets)
+
+        removed: list[TicketMentionTarget] = []
+        for token, row in existing_by_token.items():
+            if token in desired_by_token:
+                continue
+            removed.append(TicketComments._row_target(row))
+            db.delete(row)
+
+        added: list[TicketCommentMention] = []
+        for target in added_targets:
+            row = TicketCommentMention(
+                comment_id=comment.id,
+                system_user_id=(
+                    target.target_id
+                    if target.kind == TicketMentionTargetKind.person
+                    else None
+                ),
+                service_team_id=(
+                    target.target_id
+                    if target.kind == TicketMentionTargetKind.group
+                    else None
+                ),
+            )
+            db.add(row)
+            added.append(row)
+        db.flush()
+        return TicketMentionSyncOutcome(added=tuple(added), removed=tuple(removed))
+
+    @staticmethod
+    def _notify_added_mentions(
+        db: Session,
+        *,
+        ticket: Ticket,
+        comment: TicketComment,
+        added: tuple[TicketCommentMention, ...],
+        actor_id: str | None,
+    ) -> None:
+        if not added:
+            return
+        from app.services import ticket_mentions
+
+        ticket_mentions.notify_ticket_comment_mentions(
+            db,
+            ticket_id=ticket.id,
+            ticket_number=ticket.number,
+            ticket_title=ticket.title,
+            comment_preview=comment.body[:300],
+            mention_targets=tuple(TicketComments._row_target(row) for row in added),
+            actor_person_id=actor_id,
+            source_event_id=added[0].id,
+            source_comment_id=comment.id,
+        )
 
     @staticmethod
     def stage_system_projection(
@@ -792,7 +983,21 @@ class TicketComments:
         actor_id: str | None,
         request=None,
     ) -> TicketComment:
-        ticket = db.get(Ticket, comment.ticket_id)
+        locked_comment = (
+            db.query(TicketComment)
+            .filter(TicketComment.id == comment.id)
+            .with_for_update()
+            .one_or_none()
+        )
+        if locked_comment is None:
+            raise _ticket_error("comment_not_found", "Ticket comment not found")
+        comment = locked_comment
+        ticket = (
+            db.query(Ticket)
+            .filter(Ticket.id == comment.ticket_id)
+            .with_for_update()
+            .one_or_none()
+        )
         if not ticket:
             raise _ticket_error("ticket_not_found", "Ticket not found")
         _ensure_not_merged_source(ticket)
@@ -808,6 +1013,28 @@ class TicketComments:
             comment.is_internal = bool(data["is_internal"])
         if "attachments" in data and data["attachments"] is not None:
             comment.attachments = [item.model_dump() for item in data["attachments"]]
+        mention_sync = TicketMentionSyncOutcome(added=(), removed=())
+        if payload.mentions is not None:
+            if (
+                payload.mentions
+                and comment.author_type != TicketCommentAuthorType.staff.value
+            ):
+                raise _ticket_error(
+                    "ticket_comment_mentions_not_allowed",
+                    "Only staff-authored ticket comments may mention staff or teams",
+                )
+            mention_sync = TicketComments._sync_mentions(
+                db,
+                comment=comment,
+                desired=payload.mentions,
+            )
+            TicketComments._notify_added_mentions(
+                db,
+                ticket=ticket,
+                comment=comment,
+                added=mention_sync.added,
+                actor_id=actor_id,
+            )
 
         log_audit_event(
             db=db,
@@ -816,7 +1043,18 @@ class TicketComments:
             entity_type="support_ticket",
             entity_id=str(ticket.id),
             actor_id=actor_id,
-            metadata={"comment_id": str(comment.id)},
+            metadata={
+                "comment_id": str(comment.id),
+                "mention_targets_added": [
+                    TicketComments._row_target(row).token for row in mention_sync.added
+                ],
+                "mention_targets_removed": [
+                    target.token for target in mention_sync.removed
+                ],
+                "mention_occurrence_id": (
+                    str(mention_sync.added[0].id) if mention_sync.added else None
+                ),
+            },
         )
         db.flush()
         db.refresh(comment)
@@ -3238,28 +3476,22 @@ class Tickets:
         payload: TicketCommentCreate,
         actor_id: str | None = None,
         request=None,
-        mentioned_agent_ids: Sequence[UUID] = (),
     ) -> TicketComment:
-        ticket = Tickets.get(db, ticket_id)
+        ticket = (
+            db.query(Ticket)
+            .filter(Ticket.id == _coerce_uuid(ticket_id))
+            .with_for_update()
+            .one_or_none()
+        )
+        if ticket is None or not ticket.is_active:
+            raise _ticket_error("ticket_not_found", "Ticket not found")
+        _ensure_not_merged_source(ticket)
         comment = ticket_comments.create(
             db, ticket=ticket, payload=payload, actor_id=actor_id, request=request
         )
         Tickets._queue_mention_notifications(db, ticket, payload.body, actor_id)
         Tickets._notify_customer_of_comment(db, ticket, comment)
         Tickets._notify_staff_of_customer_comment(db, ticket, comment)
-        if mentioned_agent_ids:
-            from app.services import ticket_mentions
-
-            ticket_mentions.notify_ticket_comment_mentions(
-                db,
-                ticket_id=str(ticket.id),
-                ticket_number=ticket.number,
-                ticket_title=ticket.title,
-                comment_preview=payload.body[:300],
-                mentioned_agent_ids=[str(item) for item in mentioned_agent_ids],
-                actor_person_id=actor_id,
-                source_event_id=comment.id,
-            )
         db.flush()
         db.refresh(comment)
         return comment
