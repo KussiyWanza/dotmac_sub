@@ -84,9 +84,7 @@ def test_activity_distinguishes_viewing_from_open_status_transition(db_session):
     )
     db_session.flush()
 
-    activity = team_inbox_projection._conversation_activity(
-        db_session, conversation_id
-    )
+    activity = team_inbox_projection._conversation_activity(db_session, conversation_id)
 
     viewed = next(event for event in activity if event.kind == "read")
     opened = next(
