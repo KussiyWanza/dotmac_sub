@@ -13,7 +13,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from enum import StrEnum
 from uuid import UUID
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import exists, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.team_inbox import (
@@ -134,28 +134,29 @@ def resolve_period(
 
 def _visible_conversations_query(scope: WorkqueueScope):
     assignment = InboxConversationAssignment
-    query = (
-        select(InboxConversation)
-        .outerjoin(
-            assignment,
-            and_(
-                assignment.conversation_id == InboxConversation.id,
-                assignment.is_active.is_(True),
-            ),
-        )
-        .where(InboxConversation.is_active.is_(True))
-    )
+    query = select(InboxConversation).where(InboxConversation.is_active.is_(True))
     if not scope.is_org_wide:
         team_ids = scope.team_ids_for_query()
-        visibility = [assignment.person_id == scope.person_id]
+        person_visibility = (
+            exists()
+            .where(assignment.conversation_id == InboxConversation.id)
+            .where(assignment.is_active.is_(True))
+            .where(assignment.person_id == scope.person_id)
+        )
         if team_ids:
-            visibility.append(InboxConversation.primary_service_team_id.in_(team_ids))
-        query = query.where(or_(*visibility))
+            query = query.where(
+                or_(
+                    person_visibility,
+                    InboxConversation.primary_service_team_id.in_(team_ids),
+                )
+            )
+        else:
+            query = query.where(person_visibility)
     elif scope.service_team_filter is not None:
         query = query.where(
             InboxConversation.primary_service_team_id == scope.service_team_filter
         )
-    return query.distinct()
+    return query
 
 
 def _activity_cohort_ids(
