@@ -35,21 +35,27 @@ def _check(values: tuple[str, ...]) -> str:
     return f"phase IN ({', '.join(repr(value) for value in values)})"
 
 
+def _drop_check_constraint_if_exists(table_name: str, constraint_name: str) -> None:
+    existing = {
+        constraint["name"]
+        for constraint in sa.inspect(op.get_bind()).get_check_constraints(table_name)
+    }
+    if constraint_name in existing:
+        op.drop_constraint(constraint_name, table_name, type_="check")
+
+
 def upgrade() -> None:
-    op.drop_constraint(
-        "ck_ont_service_config_head_phase",
-        "ont_service_configuration_heads",
-        type_="check",
+    _drop_check_constraint_if_exists(
+        "ont_service_configuration_heads", "ck_ont_service_config_head_phase"
     )
     op.create_check_constraint(
         "ck_ont_service_config_head_phase",
         "ont_service_configuration_heads",
         _check(_NEW_PHASES),
     )
-    op.drop_constraint(
-        "ck_ont_service_config_revision_phase",
+    _drop_check_constraint_if_exists(
         "ont_service_configuration_revisions",
-        type_="check",
+        "ck_ont_service_config_revision_phase",
     )
     op.create_check_constraint(
         "ck_ont_service_config_revision_phase",
@@ -73,20 +79,17 @@ def downgrade() -> None:
                 "Cannot downgrade while delivered_unverified ONT configuration "
                 "rows exist"
             )
-    op.drop_constraint(
-        "ck_ont_service_config_head_phase",
-        "ont_service_configuration_heads",
-        type_="check",
+    _drop_check_constraint_if_exists(
+        "ont_service_configuration_heads", "ck_ont_service_config_head_phase"
     )
     op.create_check_constraint(
         "ck_ont_service_config_head_phase",
         "ont_service_configuration_heads",
         _check(_OLD_PHASES),
     )
-    op.drop_constraint(
-        "ck_ont_service_config_revision_phase",
+    _drop_check_constraint_if_exists(
         "ont_service_configuration_revisions",
-        type_="check",
+        "ck_ont_service_config_revision_phase",
     )
     op.create_check_constraint(
         "ck_ont_service_config_revision_phase",

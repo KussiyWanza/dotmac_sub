@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 RULES = ROOT / "deploy" / "observability" / "field_location_retention.rules.yml"
 RUNBOOK = ROOT / "docs" / "runbooks" / "FIELD_LOCATION_RETENTION.md"

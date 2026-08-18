@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Sequence
+from typing import Any
 from uuid import UUID
 
 from fastapi import HTTPException
@@ -195,9 +196,7 @@ class FieldLocationTracking:
             latitude=float(command.latitude),
             longitude=float(command.longitude),
             accuracy_m=(
-                float(command.accuracy_m)
-                if command.accuracy_m is not None
-                else None
+                float(command.accuracy_m) if command.accuracy_m is not None else None
             ),
             captured_at=captured,
             received_at=now,
@@ -215,9 +214,7 @@ class FieldLocationTracking:
             presence.last_latitude = float(command.latitude)
             presence.last_longitude = float(command.longitude)
             presence.last_location_accuracy_m = (
-                float(command.accuracy_m)
-                if command.accuracy_m is not None
-                else None
+                float(command.accuracy_m) if command.accuracy_m is not None else None
             )
             presence.last_location_at = captured
 
@@ -252,9 +249,7 @@ class FieldLocationTracking:
                 accepted += 1
             except LocationPingRejected as exc:
                 errors.append(
-                    LocationIngestIssue(
-                        index=index, code=exc.code, detail=exc.detail
-                    )
+                    LocationIngestIssue(index=index, code=exc.code, detail=exc.detail)
                 )
             except HTTPException as exc:
                 errors.append(

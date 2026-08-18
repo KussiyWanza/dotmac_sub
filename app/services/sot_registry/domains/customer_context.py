@@ -1883,7 +1883,7 @@ DOMAIN = DomainSOT(
                 "reads fail closed when sharing is disabled, no job-scoped fix "
                 "exists, or that fix is older than the two-minute freshness "
                 "window; a new accepted job-scoped field location ping is the "
-                "idempotent rebuild path.",
+                "idempotent rebuild path."
             ),
         ),
         SOTService(

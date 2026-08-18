@@ -158,9 +158,7 @@ def test_stale_ping_does_not_roll_presence_backwards(db_session):
     field_location_tracking.record_ping(
         db_session,
         auth,
-        command=LocationPingCommand(
-            latitude=9.071, longitude=7.451, captured_at=now
-        ),
+        command=LocationPingCommand(latitude=9.071, longitude=7.451, captured_at=now),
     )
     field_location_tracking.record_ping(
         db_session,
@@ -186,9 +184,7 @@ def test_location_batch_collects_per_ping_errors(db_session):
         _auth(user),
         [
             LocationPingCommand(latitude=9.071, longitude=7.451),
-            LocationPingCommand(
-                latitude=9.072, longitude=7.452, status="teleporting"
-            ),
+            LocationPingCommand(latitude=9.072, longitude=7.452, status="teleporting"),
         ],
     )
 

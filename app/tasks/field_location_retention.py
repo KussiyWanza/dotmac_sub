@@ -15,12 +15,12 @@ from app.services.field.location_retention import (
     PruneFieldLocationHistoryCommand,
     prune_field_location_history,
 )
-from app.services.owner_commands import CommandContext
 from app.services.observability import (
     StateObservation,
     publish_state_snapshot,
     record_task_run,
 )
+from app.services.owner_commands import CommandContext
 
 logger = logging.getLogger(__name__)
 

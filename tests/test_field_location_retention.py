@@ -16,8 +16,8 @@ from app.services.field.location_retention import (
     PruneFieldLocationHistoryCommand,
     prune_field_location_history,
 )
-from app.services.owner_commands import CommandContext
 from app.services.observability import StateObservation
+from app.services.owner_commands import CommandContext
 
 task_module = import_module("app.tasks.field_location_retention")
 
@@ -122,15 +122,9 @@ def test_prune_is_bounded_and_converges_on_replay(db_session):
     )
     db_session.commit()
 
-    first = prune_field_location_history(
-        db_session, _command(as_of, batch_size=2)
-    )
-    second = prune_field_location_history(
-        db_session, _command(as_of, batch_size=2)
-    )
-    third = prune_field_location_history(
-        db_session, _command(as_of, batch_size=2)
-    )
+    first = prune_field_location_history(db_session, _command(as_of, batch_size=2))
+    second = prune_field_location_history(db_session, _command(as_of, batch_size=2))
+    third = prune_field_location_history(db_session, _command(as_of, batch_size=2))
 
     assert first.deleted_count == 2
     assert first.batch_limit_reached is True
