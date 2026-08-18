@@ -139,6 +139,27 @@ void main() {
     );
   });
 
+  test('today recognizes only same-day completed work for the Done view', () {
+    final day = DateTime(2026, 8, 17);
+    JobSummary completed(DateTime completedAt) => JobSummary(
+      id: 'done',
+      title: 'Completed install',
+      status: 'completed',
+      workType: 'install',
+      priority: 'normal',
+      completedAt: completedAt,
+    );
+
+    expect(
+      isActionableOnDay(completed(DateTime(2026, 8, 17, 12)), day),
+      isTrue,
+    );
+    expect(
+      isActionableOnDay(completed(DateTime(2026, 8, 16, 12)), day),
+      isFalse,
+    );
+  });
+
   testWidgets('job card shows status stripe, pill, and meta', (tester) async {
     await tester.pumpWidget(_wrap(JobCard(job: _job())));
 

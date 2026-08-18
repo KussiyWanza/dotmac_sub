@@ -13,7 +13,7 @@ import '../location/location_tracking_controller.dart';
 import '../profile/profile_screen.dart';
 
 const _filters = <(String?, String)>[
-  (null, 'All'),
+  (null, 'Open'),
   ('dispatched', 'Assigned'),
   ('in_progress', 'Active'),
   ('completed', 'Done'),
@@ -78,13 +78,17 @@ class TodayScreen extends ConsumerWidget {
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        'Open assigned work',
+                        filter == 'completed'
+                            ? 'Completed work'
+                            : 'Open assigned work',
                         style: Theme.of(context).textTheme.titleMedium
                             ?.copyWith(fontWeight: FontWeight.w800),
                       ),
                       const SizedBox(height: 8),
                       Text(
-                        'Today, overdue, and unscheduled jobs ready for action.',
+                        filter == 'completed'
+                            ? 'Jobs completed today.'
+                            : 'Today, overdue, and unscheduled jobs ready for action.',
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
                           color: AppColors.subdued(context),
                         ),
@@ -102,21 +106,22 @@ class TodayScreen extends ConsumerWidget {
                     : SliverPadding(
                         padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
                         sliver: SliverList.separated(
-                          itemCount: list.jobs.length + 1,
+                          itemCount: list.jobs.length,
                           separatorBuilder: (_, _) =>
                               const SizedBox(height: 12),
                           itemBuilder: (context, index) {
-                            if (index == 0) {
-                              final job = _preferredJob(list.jobs);
+                            final preferred = _preferredJob(list.jobs);
+                            if (preferred != null && index == 0) {
                               return _LiveJobPanel(
-                                job: job,
-                                onOpen: () => context.push('/jobs/${job.id}'),
+                                job: preferred,
+                                onOpen: () =>
+                                    context.push('/jobs/${preferred.id}'),
                                 onMap: () => context.go(
-                                  '/map?jobId=${Uri.encodeQueryComponent(job.id)}',
+                                  '/map?jobId=${Uri.encodeQueryComponent(preferred.id)}',
                                 ),
                               );
                             }
-                            final job = list.jobs[index - 1];
+                            final job = list.jobs[index];
                             return JobCard(
                               job: job,
                               onTap: () => context.push('/jobs/${job.id}'),
@@ -155,11 +160,11 @@ String _firstName(String name) {
   return trimmed.split(RegExp(r'\s+')).first;
 }
 
-JobSummary _preferredJob(List<JobSummary> jobs) {
-  return jobs.firstWhere(
-    (job) => job.status != 'completed' && job.status != 'canceled',
-    orElse: () => jobs.first,
-  );
+JobSummary? _preferredJob(List<JobSummary> jobs) {
+  for (final job in jobs) {
+    if (job.status != 'completed' && job.status != 'canceled') return job;
+  }
+  return null;
 }
 
 class _TodayHeader extends StatelessWidget {
@@ -549,7 +554,7 @@ class _LiveJobPanel extends StatelessWidget {
           ),
           _RoutePreview(surfaceColor: AppColors.surface(context)),
           Padding(
-            padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
+            padding: const EdgeInsets.fromLTRB(18, 4, 18, 18),
             child: Row(
               children: [
                 Expanded(
@@ -597,7 +602,7 @@ class _RoutePreview extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      height: 156,
+      height: 64,
       width: double.infinity,
       child: CustomPaint(painter: _RoutePreviewPainter(surfaceColor)),
     );

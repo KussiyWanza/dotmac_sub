@@ -492,7 +492,14 @@ class _JobDetailViewState extends ConsumerState<_JobDetailView> {
   Future<void> _runWorkAction(String jobId, String action) async {
     String? travelEventId;
     if (action == 'complete') {
-      await context.push<bool>('/jobs/$jobId/complete');
+      final completed = await context.push<bool>('/jobs/$jobId/complete');
+      if (completed != true || !mounted) return;
+      ref
+        ..invalidate(jobDetailProvider(jobId))
+        ..invalidate(todayJobsProvider)
+        ..invalidate(jobsListProvider)
+        ..invalidate(meProvider);
+      return;
     } else if (action == 'en_route') {
       final destination = await _pickDestination(jobId);
       if (destination == null) return;
