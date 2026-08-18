@@ -96,3 +96,11 @@ Disabled and canceled subscribers never receive customer communication. Their ac
 - CRM-reported status is retained as source metadata and cannot overwrite Sub lifecycle truth.
 - Campaign and inbox services cannot call email, SMS, push, or WhatsApp providers directly.
 - A customer notification without an intent is wrapped into one by the notification owner before an outbox row is created.
+- Delivery timing has one precedence rule: an explicit `send_at` is preserved;
+  otherwise `immediate` delivery is due now and bypasses automatic quiet-hours
+  deferral, while `normal` and `batch` customer delivery continue to respect
+  quiet hours. The resolved timing source is persisted in notification metadata
+  for operator diagnosis.
+- The notification queue UI and health signals distinguish future-scheduled
+  rows from due queued rows. Only due rows older than the configured stale
+  threshold produce backlog findings.

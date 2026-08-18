@@ -423,6 +423,46 @@ def test_deliver_notification_queue_applies_per_channel_rate_limit(
     assert second.status == NotificationStatus.queued
 
 
+def test_queue_health_separates_stale_due_from_future_scheduled(
+    db_session, monkeypatch
+):
+    from datetime import UTC, datetime, timedelta
+
+    _set_notification_setting(db_session, "notification_per_channel_rate_limit", "1")
+    _set_notification_setting(db_session, "notification_stale_due_minutes", "1")
+    first = _queued_notification(
+        channel=NotificationChannel.sms,
+        recipient="+2348000000011",
+        body="First due message",
+    )
+    second = _queued_notification(
+        channel=NotificationChannel.sms,
+        recipient="+2348000000012",
+        body="Second due message",
+    )
+    scheduled = _queued_notification(
+        channel=NotificationChannel.sms,
+        recipient="+2348000000013",
+        body="Scheduled message",
+    )
+    old = datetime.now(UTC) - timedelta(minutes=10)
+    first.created_at = old
+    second.created_at = old
+    scheduled.created_at = old
+    scheduled.send_at = datetime.now(UTC) + timedelta(hours=1)
+    db_session.add_all([first, second, scheduled])
+    db_session.commit()
+
+    monkeypatch.setattr(
+        "app.tasks.notifications.sms_service.send_sms", lambda **_: True
+    )
+
+    stats = _deliver_notification_queue_stats(db_session, batch_size=10)
+
+    assert stats["stale_due"] == 1
+    assert stats["scheduled_queued"] == 1
+
+
 def test_deliver_notification_queue_schedules_failed_retry_with_backoff(
     db_session, monkeypatch
 ):

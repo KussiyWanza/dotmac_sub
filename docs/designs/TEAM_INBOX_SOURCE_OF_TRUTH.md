@@ -170,7 +170,10 @@ open. The periodic notification runner remains on `notifications` as the
 recovery sweep when broker publication or the immediate worker is unavailable.
 Immediate tasks and sweeps both lock and claim the exact
 eligible outbox row before provider delivery, so concurrent wake-ups are safe
-no-ops rather than duplicate sends. Delivery changes publish only bounded
+no-ops rather than duplicate sends. Immediate replies with no operator-supplied
+schedule bypass automatic customer quiet hours. An explicit `send_after`
+remains authoritative and is displayed as scheduled rather than as an
+unexplained queued reply. Delivery changes publish only bounded
 message/conversation/status invalidations after commit; the Inbox refetches the
 authoritative projection and never treats realtime as delivery evidence.
 

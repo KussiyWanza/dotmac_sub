@@ -201,6 +201,8 @@ def test_send_inbox_reply_sends_whatsapp_text(db_session, monkeypatch):
     assert notification.recipient == "+2348035550114"
     assert notification.body == "We are checking this."
     assert notification.metadata_["delivery_latency"] == "immediate"
+    assert notification.metadata_["delivery_timing_source"] == "immediate"
+    assert notification.send_at is None
     assert intent.subscriber_id is None
     assert intent.metadata_["delivery_latency"] == "immediate"
     assert message.channel_type == "whatsapp"

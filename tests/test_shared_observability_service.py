@@ -254,3 +254,28 @@ def test_record_notification_queue_result_no_alert_on_clean_batch(
     db_session.commit()
 
     assert db_session.query(AdminAlert).count() == 0
+
+
+def test_record_notification_queue_result_alerts_on_stale_due_rows(
+    db_session, monkeypatch
+):
+    monkeypatch.setattr(
+        "app.services.observability.job_heartbeat.record_success", lambda *_, **__: True
+    )
+    monkeypatch.setattr(
+        "app.services.observability.task_heartbeat.record_success",
+        lambda *_, **__: None,
+    )
+    monkeypatch.setattr(
+        "app.services.observability.job_heartbeat.record_result", lambda *_, **__: True
+    )
+
+    observability.record_notification_queue_result(
+        db_session,
+        task_name="app.tasks.notifications.deliver_notification_queue",
+        result={"delivered": 0, "failed": 0, "stuck_dropped": 0, "stale_due": 3},
+    )
+    db_session.commit()
+
+    alert = db_session.query(AdminAlert).one()
+    assert alert.details["stale_due"] == 3

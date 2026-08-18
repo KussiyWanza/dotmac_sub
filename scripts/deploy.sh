@@ -200,6 +200,8 @@ background_runtime_ready() {
   local hostname
   local probe_container=""
   local -a expected_nodes=()
+  local -a queue_requirements=()
+  local required_queue=""
 
   # Beat is profile-gated off on staging (it must never originate production
   # work there), so assert it only where it is actually declared.
@@ -219,13 +221,28 @@ background_runtime_ready() {
       probe_container="${container}"
     fi
     expected_nodes+=("celery@${hostname}")
+    case "${service}" in
+      celery-worker-notifications-immediate)
+        required_queue="notifications_immediate"
+        ;;
+      celery-worker-notifications)
+        required_queue="notifications"
+        ;;
+      *)
+        required_queue=""
+        ;;
+    esac
+    if [[ -n "${required_queue}" ]]; then
+      queue_requirements+=(--require-queue "celery@${hostname}=${required_queue}")
+    fi
   done
 
   if ! docker exec "${probe_container}" \
     python -m scripts.verify_celery_workers \
     --timeout "${CELERY_INSPECT_TIMEOUT_SECONDS}" \
+    "${queue_requirements[@]}" \
     "${expected_nodes[@]}" >/dev/null 2>&1; then
-    echo "BACKGROUND RUNTIME FAILURE: not every declared Celery worker answered ping." >&2
+    echo "BACKGROUND RUNTIME FAILURE: a Celery worker did not answer ping or consume its required queue." >&2
     return 1
   fi
 }

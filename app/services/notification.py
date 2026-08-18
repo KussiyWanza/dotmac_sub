@@ -2,7 +2,9 @@ import logging
 import os
 import re
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from uuid import UUID
 
 from fastapi import HTTPException
@@ -71,6 +73,58 @@ logger = logging.getLogger(__name__)
 # Unrendered double-brace template tokens (e.g. "{{amount}}") that leaked into a
 # stored/sent notification body — they must never reach the in-app feed.
 _LEAKED_TOKEN_RE = re.compile(r"\{\{\s*[a-zA-Z0-9_.]+\s*\}\}")
+
+
+class NotificationTimingSource(StrEnum):
+    explicit_schedule = "explicit_schedule"
+    immediate = "immediate"
+    quiet_hours = "quiet_hours"
+    due_now = "due_now"
+
+
+@dataclass(frozen=True, slots=True)
+class NotificationTimingDecision:
+    send_at: datetime | None
+    source: NotificationTimingSource
+
+
+def resolve_notification_timing(
+    db: Session,
+    *,
+    delivery_latency: NotificationDeliveryLatency,
+    requested_send_at: datetime | None,
+    quiet_hours_applicable: bool = True,
+) -> NotificationTimingDecision:
+    """Resolve timing without allowing an implicit policy to replace intent."""
+    if requested_send_at is not None:
+        normalized_send_at = (
+            requested_send_at.replace(tzinfo=UTC)
+            if requested_send_at.tzinfo is None
+            else requested_send_at.astimezone(UTC)
+        )
+        return NotificationTimingDecision(
+            send_at=normalized_send_at,
+            source=NotificationTimingSource.explicit_schedule,
+        )
+    if delivery_latency is NotificationDeliveryLatency.immediate:
+        return NotificationTimingDecision(
+            send_at=None,
+            source=NotificationTimingSource.immediate,
+        )
+    if not quiet_hours_applicable:
+        return NotificationTimingDecision(
+            send_at=None,
+            source=NotificationTimingSource.due_now,
+        )
+    quiet_send_at = quiet_hours_send_at(db)
+    return NotificationTimingDecision(
+        send_at=quiet_send_at,
+        source=(
+            NotificationTimingSource.quiet_hours
+            if quiet_send_at is not None
+            else NotificationTimingSource.due_now
+        ),
+    )
 
 
 def _request_immediate_delivery(notification_id: UUID) -> None:
@@ -460,9 +514,6 @@ class Notifications(ListResponseMixin):
             data["last_error"] = "Suppressed duplicate customer notification"
             return
 
-        if requested_status == NotificationStatus.queued and not data.get("send_at"):
-            data["send_at"] = quiet_hours_send_at(db)
-
     @staticmethod
     def _queue_internal(
         db: Session,
@@ -490,10 +541,21 @@ class Notifications(ListResponseMixin):
             data.get("event_type")
         )
         data["category"] = category
+        requested_status = data["status"]
         metadata = dict(data.get("metadata_") or {})
         metadata["delivery_latency"] = delivery_latency.value
+        if requested_status == NotificationStatus.queued:
+            timing = resolve_notification_timing(
+                db,
+                delivery_latency=delivery_latency,
+                requested_send_at=data.get("send_at"),
+                quiet_hours_applicable=(
+                    apply_customer_policy and subscriber_id is not None
+                ),
+            )
+            data["send_at"] = timing.send_at
+            metadata["delivery_timing_source"] = timing.source.value
         data["metadata_"] = metadata
-        requested_status = data["status"]
         if apply_customer_policy:
             Notifications._apply_customer_queue_policy(
                 db,

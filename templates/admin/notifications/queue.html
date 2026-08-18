@@ -66,8 +66,8 @@
                         <p class="text-xs text-slate-500 dark:text-slate-400 truncate max-w-xs">{{ notification.body[:100] }}{% if notification.body|length > 100 %}...{% endif %}</p>
                     </td>
                     <td class="px-6 py-4 whitespace-nowrap">
-                        {% set notif_status_map = {'queued': 'warning', 'sending': 'info', 'delivered': 'active', 'failed': 'error', 'canceled': 'neutral'} %}
-                        {{ status_badge(notification.status.value|capitalize, notif_status_map.get(notification.status.value, 'neutral'), size="sm") }}
+                        {% set presentation = notification_presentations.get(notification.id|string) %}
+                        {{ status_badge(presentation.label, presentation.tone, size="sm") }}
                     </td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-600 dark:text-slate-300">
                         {{ notification.send_at | app_datetime('%b %d, %H:%M', 'Immediate') }}

@@ -50,11 +50,7 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from app.models.audit import AuditActorType
 from app.models.domain_settings import SettingDomain
-from app.models.notification import (
-    Notification,
-    NotificationChannel,
-    NotificationStatus,
-)
+from app.models.notification import NotificationChannel
 from app.models.project import (
     Project,
     ProjectComment,
@@ -107,6 +103,13 @@ from app.services.common import (
     coerce_uuid,
     ensure_exists,
     validate_enum,
+)
+from app.services.communication_intents import (
+    CommunicationClass,
+    CommunicationIntent,
+)
+from app.services.communication_intents import (
+    submit as submit_communication_intent,
 )
 from app.services.db_session_adapter import db_session_adapter
 from app.services.domain_errors import DomainError
@@ -1383,26 +1386,23 @@ def _notify_finance_project_completed(db: Session, project: Project) -> int:
     queued = 0
     for recipient in recipients:
         dedupe_key = f"project-completed-finance:{project.id}:{recipient}"
-        existing = (
-            db.query(Notification.id)
-            .filter(Notification.channel == NotificationChannel.email)
-            .filter(Notification.dedupe_key == dedupe_key)
-            .first()
-        )
-        if existing is not None:
-            continue
-        db.add(
-            Notification(
-                channel=NotificationChannel.email,
+        result = submit_communication_intent(
+            db,
+            CommunicationIntent(
+                subscriber_id=None,
                 event_type="project_completed_finance",
                 category="project",
-                recipient=recipient,
+                communication_class=CommunicationClass.operational,
                 subject=subject,
                 body=body,
-                status=NotificationStatus.queued,
+                channels=(NotificationChannel.email,),
+                include_reseller=False,
+                recipients={NotificationChannel.email: recipient},
+                audience_type="operational",
+                audience_id=project.id,
+                resolve_subscriber_identity=False,
                 dedupe_key=dedupe_key,
-                audience_type="finance",
-                metadata_={
+                metadata={
                     "project_id": str(project.id),
                     "project_ref": project_ref,
                     "project_name": project.name,
@@ -1410,10 +1410,10 @@ def _notify_finance_project_completed(db: Session, project: Project) -> int:
                     if project.subscriber_id
                     else None,
                 },
-            )
+            ),
         )
-        queued += 1
-    db.flush()
+        if not result.replayed and result.queued:
+            queued += 1
     return queued
 
 

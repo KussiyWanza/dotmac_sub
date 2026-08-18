@@ -164,6 +164,9 @@ def test_project_completion_finance_notification_is_configured_not_hardcoded() -
     assert "finance@test.local" not in service
     assert "finance@dotmac" not in service
     assert 'key="project_completion_finance_email_recipients"' in settings
+    assert "submit_communication_intent(" in service
+    assert "CommunicationIntent(" in service
+    assert "db.add(\n            Notification(" not in service
 
 
 def test_project_ui_does_not_write_or_join_work_order_bindings() -> None:

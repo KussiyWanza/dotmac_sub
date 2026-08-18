@@ -443,7 +443,9 @@ def test_project_completion_queues_configured_finance_email_once(
 
     assert len(emails) == 1
     assert emails[0].recipient == "finance@example.com"
-    assert emails[0].dedupe_key == (
+    intent = emails[0].communication_intent
+    assert intent is not None
+    assert intent.dedupe_key == (
         f"project-completed-finance:{project.id}:finance@example.com"
     )
 

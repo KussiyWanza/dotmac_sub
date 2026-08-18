@@ -3374,7 +3374,11 @@ in forms, or rotate key material directly.
    orchestration. Calling domains still own capability purpose, claims,
    lifetime, and consequences. The worker must not persist or log rendered
    bearer content or exception text that may contain it.
-7. Notification service owns notification rows and delivery lifecycle.
+7. Notification service owns notification rows, delivery lifecycle, and the
+   typed timing decision. Explicit `send_at` is authoritative; otherwise
+   immediate delivery bypasses quiet hours and normal/batch customer delivery
+   respects them. Queue health treats future-scheduled rows separately from
+   stale due rows.
 8. `operations.sla_escalation` owns operational SLA policy lifecycle,
    event-scoped escalation planning, and escalation acknowledgement/cancellation.
    Every operational domain emits named facts into this owner. Operators configure

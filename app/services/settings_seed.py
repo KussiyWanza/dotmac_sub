@@ -511,6 +511,18 @@ def seed_notification_settings(db: Session) -> None:
         value_type=SettingValueType.integer,
         value_text=os.getenv("NOTIFICATION_QUEUE_INTERVAL_SECONDS", "60"),
     )
+    notification_settings.ensure_by_key(
+        db,
+        key="notification_queue_batch_size",
+        value_type=SettingValueType.integer,
+        value_text=os.getenv("NOTIFICATION_QUEUE_BATCH_SIZE", "50"),
+    )
+    notification_settings.ensure_by_key(
+        db,
+        key="notification_stale_due_minutes",
+        value_type=SettingValueType.integer,
+        value_text=os.getenv("NOTIFICATION_STALE_DUE_MINUTES", "5"),
+    )
     escalation_delivery_enabled_raw = os.getenv(
         "OPERATIONAL_ESCALATION_DELIVERY_ENABLED", "true"
     )

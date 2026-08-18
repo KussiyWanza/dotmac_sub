@@ -9,7 +9,7 @@ from typing import Any
 from uuid import UUID
 
 import httpx
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Query, Session
 
 from app.celery_app import celery_app
@@ -500,6 +500,8 @@ def _empty_delivery_stats(*, expired: int = 0) -> dict[str, int]:
         "stuck_dropped": 0,
         "rate_limited": 0,
         "materialization_rejected": 0,
+        "stale_due": 0,
+        "scheduled_queued": 0,
     }
 
 
@@ -1193,6 +1195,32 @@ def _deliver_notification_queue_stats(
         record_delivery_outcome(db, notification)
         db.commit()
 
+    stale_due = 0
+    scheduled_queued = 0
+    if notification_id is None:
+        stale_due_minutes = max(
+            _notification_setting_int(db, "notification_stale_due_minutes", 5),
+            1,
+        )
+        stale_due = (
+            db.query(func.count(Notification.id))
+            .filter(Notification.is_active.is_(True))
+            .filter(Notification.status == NotificationStatus.queued)
+            .filter((Notification.send_at.is_(None)) | (Notification.send_at <= now))
+            .filter(
+                Notification.created_at < now - timedelta(minutes=stale_due_minutes)
+            )
+            .scalar()
+            or 0
+        )
+        scheduled_queued = (
+            db.query(func.count(Notification.id))
+            .filter(Notification.is_active.is_(True))
+            .filter(Notification.status == NotificationStatus.queued)
+            .filter(Notification.send_at > now)
+            .scalar()
+            or 0
+        )
     return {
         "delivered": delivered,
         "retried": retried,
@@ -1203,6 +1231,8 @@ def _deliver_notification_queue_stats(
         "stuck_dropped": stuck_dropped,
         "rate_limited": rate_limited,
         "materialization_rejected": materialization_rejected,
+        "stale_due": int(stale_due),
+        "scheduled_queued": int(scheduled_queued),
     }
 
 
@@ -1265,7 +1295,18 @@ def deliver_notification_queue() -> dict[str, int]:
     """Process queued notifications and retry failed ones."""
     started = time.monotonic()
     with db_session_adapter.session() as session:
-        result = _deliver_notification_queue_stats(session)
+        batch_size = min(
+            max(
+                _notification_setting_int(
+                    session,
+                    "notification_queue_batch_size",
+                    50,
+                ),
+                1,
+            ),
+            500,
+        )
+        result = _deliver_notification_queue_stats(session, batch_size=batch_size)
         talk_result = deliver_due_staff_talk_notifications(session)
         result.update(
             {
