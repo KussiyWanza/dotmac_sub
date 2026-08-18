@@ -15477,6 +15477,18 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "GET /api/v1/me/subscriptions/{subscription_id}/device/wifi": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:subscription_id!"
+   ],
+   "request": null,
+   "responses": {
+    "200": "8bd97beb0d9c",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "POST /api/v1/me/subscriptions/{subscription_id}/device/wifi": {
    "params": [
     "header:authorization",
@@ -15485,7 +15497,7 @@
    ],
    "request": "1650f389f60c",
    "responses": {
-    "200": "8bd97beb0d9c",
+    "202": "8bd97beb0d9c",
     "422": "a11c9d9b2af8"
    }
   },
@@ -19054,7 +19066,7 @@
   "CustomerDefaultsResponse": "c0892eba5f8c",
   "CustomerDeviceCommandKind": "cb81f2ec8d71",
   "CustomerDeviceCommandOutcomeRead": "010e7587a7ae",
-  "CustomerDeviceCommandStatus": "ad00fbf13724",
+  "CustomerDeviceCommandStatus": "e7911f4fdc39",
   "CustomerExperienceAcceptRequest": "0e8608e2743a",
   "CustomerExperienceAttentionRequest": "870e7a93b7e7",
   "CustomerExperienceHandoffRead": "ad4250a7fc1d",
@@ -19076,7 +19088,7 @@
   "CustomerSearchItem": "4c18d2fd0e9a",
   "CustomerSelfCareAction": "e02758717c77",
   "CustomerTicketReference": "81fc82df5eef",
-  "CustomerWifiUpdateRequest": "151cb7d26303",
+  "CustomerWifiUpdateRequest": "8fa603b0384d",
   "CustomerWorkOrderReference": "84bade5f8a00",
   "DailyUsageHistoryResponse": "12516e963930",
   "DailyUsagePoint": "9235b923a598",

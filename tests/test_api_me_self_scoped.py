@@ -6,6 +6,7 @@ the scope passed to the underlying list services.
 """
 
 import uuid
+from contextlib import contextmanager
 from decimal import Decimal
 
 import pytest
@@ -67,6 +68,66 @@ def test_reboot_device_forces_principal_scope(monkeypatch):
     assert outcome.message == "Restart completed"
     assert captured["subscriber_id"] == uuid.UUID(principal["subscriber_id"])
     assert captured["subscription_id"] == subscription_id
+
+
+def test_wifi_update_forces_principal_scope_and_queues_with_idempotency(monkeypatch):
+    from app.schemas.customer_device_commands import CustomerWifiUpdateRequest
+    from app.services import customer_device_commands
+
+    principal = _subscriber_principal()
+    subscription_id = uuid.uuid4()
+    captured = {}
+
+    @contextmanager
+    def fake_owner_session(db):
+        yield db
+
+    def fake(
+        db,
+        *,
+        subscriber_id,
+        subscription_id,
+        context,
+        ssid,
+        password,
+    ):
+        captured.update(
+            subscriber_id=subscriber_id,
+            subscription_id=subscription_id,
+            context=context,
+            ssid=ssid,
+            password=password,
+        )
+        return customer_device_commands.CustomerDeviceCommandOutcome(
+            command=customer_device_commands.CustomerDeviceCommandKind.wifi_update,
+            status=customer_device_commands.CustomerDeviceCommandStatus.queued,
+            subscription_id=subscription_id,
+            device_id=uuid.uuid4(),
+            operation_id=uuid.uuid4(),
+            message="WiFi update queued.",
+        )
+
+    monkeypatch.setattr(me_api, "owner_session", fake_owner_session)
+    monkeypatch.setattr(customer_device_commands, "update_subscription_wifi", fake)
+    outcome = me_api.update_my_subscription_wifi(
+        subscription_id,
+        CustomerWifiUpdateRequest(
+            ssid="Home Network",
+            password="password123",
+            idempotency_key="mobile-request-1",
+        ),
+        db=object(),
+        principal=principal,
+    )
+
+    assert (
+        outcome.status
+        is customer_device_commands.CustomerDeviceCommandStatus.queued
+    )
+    assert captured["subscriber_id"] == uuid.UUID(principal["subscriber_id"])
+    assert captured["subscription_id"] == subscription_id
+    assert captured["context"].scope == "customer:device:wifi"
+    assert captured["context"].idempotency_key == "mobile-request-1"
 
 
 def test_subscriber_id_helper_rejects_non_subscriber():

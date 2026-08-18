@@ -25,6 +25,8 @@ from app.services.credential_crypto import (
     encrypt_credential_with_key,
 )
 from app.services.network.reconcile import (
+    AppliedAction,
+    Drift,
     OntDesiredState,
     OntWanProposedChange,
     OntWifiDeliveryScope,
@@ -67,6 +69,40 @@ def test_reconcile_timeout_setup_error_is_not_silently_swallowed():
         reconcile_core._widen_idle_in_transaction_timeout(  # type: ignore[arg-type]
             session, 60
         )
+
+
+def test_wifi_batch_readback_drift_is_classified_from_action_evidence():
+    drifts = (
+        Drift(
+            field="wifi_ssid",
+            surface="acs",
+            desired="New network",
+            observed="Old network",
+            repairable=True,
+        ),
+        Drift(
+            field="wifi_channel",
+            surface="acs",
+            desired="6",
+            observed="1",
+            repairable=True,
+        ),
+    )
+    actions = (
+        AppliedAction(
+            field="acs_wifi_config",
+            surface="acs",
+            old_value=None,
+            new_value="[batched]",
+            duration_ms=10,
+            evidence={"changed_fields": ["wifi_ssid", "wifi_channel"]},
+        ),
+    )
+
+    cache_lag, genuine = reconcile_core._classify_verify_drifts(drifts, actions)
+
+    assert cache_lag == list(drifts)
+    assert genuine == []
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -573,10 +609,27 @@ def test_wifi_password_change_on_synced_ont_pushes_once(
 
 
 def test_persisted_wifi_password_scope_pushes_without_proposed_value(
-    db_session, ont, stub_desired, stub_ont_status
+    db_session, ont, stub_desired, stub_ont_status, monkeypatch
 ):
-    """The lifecycle worker carries field intent, never the stored secret value."""
-    olt = _StubOltAdapter(present=True)
+    """WiFi delivery skips unrelated OLT reads and PPP authorization."""
+    monkeypatch.setattr(
+        "app.services.network.reconcile.core._resolve_olt_adapter",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("WiFi delivery must not resolve an OLT adapter")
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.network.reconcile.core.authorize_ppp_delivery",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("WiFi delivery must not evaluate PPP authorization")
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.network.reconcile.core.is_pingable",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("WiFi delivery must not perform an ICMP probe")
+        ),
+    )
     acs = _StubAcsClient(device=_synced_acs_device(ont))
 
     result = reconcile_ont(
@@ -586,7 +639,6 @@ def test_persisted_wifi_password_scope_pushes_without_proposed_value(
             changed_fields=frozenset({"wifi_password_ref"})
         ),
         mode="sync",
-        olt_adapter=olt,
         acs_client=acs,
     )
 

@@ -426,8 +426,10 @@ SERVICES: tuple[SOTService, ...] = (
         module="app.services.network.ont_service_configuration",
         owns=(
             "assigned ONT service configuration admission and revision head",
+            "customer-scoped WiFi configuration admission",
             "atomic ONT service configuration coordination",
             "current-lifecycle ONT Configure UI projection",
+            "section-scoped ONT configuration delivery projection",
             "reviewed ONT configuration lifecycle drift repair",
         ),
         depends_on=(
@@ -443,15 +445,22 @@ SERVICES: tuple[SOTService, ...] = (
         ),
         notes=(
             "Coordinates one exact assignment and monotonically ordered "
-            "configuration revision. Desired state, WAN intent, the derived "
-            "CPE dialer projection, tracked operation and durable dispatch "
-            "are admitted atomically. Device delivery and sync_status remain "
+            "configuration revision. Operator routed configuration admits "
+            "desired state, WAN intent, the derived CPE dialer projection, "
+            "tracked operation and durable dispatch atomically. Device "
+            "delivery and sync_status remain "
             "owned by the ONT reconciler; saved or queued state is never "
             "presented as verified. Historical events stay append-only and "
             "are excluded from the current UI projection unless their head "
             "and revision exactly match the active lifecycle. WiFi delivery "
             "uses a typed, field-only scope recovered from redacted revision "
-            "evidence; credential values remain in encrypted desired state."
+            "evidence; credential values remain in encrypted desired state. "
+            "Customer self-service WiFi requests prove subscriber and "
+            "subscription scope inside this owner, commit desired state and "
+            "durable dispatch without device I/O, and use the same revision "
+            "and readback lifecycle as operator configuration. The customer "
+            "status query reads the newest WiFi revision for the active "
+            "assignment, even after a later section supersedes it."
         ),
         contract=ServiceContract(
             concerns=(
@@ -471,6 +480,14 @@ SERVICES: tuple[SOTService, ...] = (
                         "declared ONT WAN service intent",
                         "authoritative subscriber access credential",
                         "PPP delivery authorization",
+                    ),
+                ),
+                ConcernContract(
+                    name="customer-scoped WiFi configuration admission",
+                    role=OwnerRole.APPLICATION_COORDINATOR,
+                    input_names=(
+                        "exact active ONT assignment",
+                        "typed customer WiFi configuration change",
                     ),
                 ),
                 ConcernContract(
@@ -502,6 +519,20 @@ SERVICES: tuple[SOTService, ...] = (
                     owner="network.ont_service_configuration",
                     kind=AuthorityKind.CONTROL_INPUT,
                     source="ConfigureOntServiceCommand parsed by the HTTP adapter",
+                ),
+                AuthorityInput(
+                    name="typed customer WiFi configuration change",
+                    owner="network.ont_service_configuration",
+                    kind=AuthorityKind.CONTROL_INPUT,
+                    source=(
+                        "ConfigureCustomerWifiCommand carrying authenticated "
+                        "subscriber, subscription and idempotency evidence"
+                    ),
+                ),
+                ConcernContract(
+                    name="section-scoped ONT configuration delivery projection",
+                    role=OwnerRole.RESOLVER,
+                    input_names=("configuration lifecycle evidence",),
                 ),
                 AuthorityInput(
                     name="effective ONT configuration pack",
@@ -551,7 +582,8 @@ SERVICES: tuple[SOTService, ...] = (
                 boundary=(
                     "Each public write enters execute_owner_command once on a "
                     "transaction-free session. Participating owners are flush-only; "
-                    "desired state, intent, revision, operation and dispatch commit together."
+                    "desired state, revision, operation and dispatch commit together; "
+                    "routed operator changes also include WAN intent."
                 ),
                 locking=(
                     "Locks ONT, active assignment, assignment configuration head, "
@@ -579,6 +611,9 @@ SERVICES: tuple[SOTService, ...] = (
                     "network.ont_service_configuration.invalid_change",
                     "network.ont_service_configuration.section_mismatch",
                     "network.ont_service_configuration.permission_denied",
+                    "network.ont_service_configuration.customer_scope_denied",
+                    "network.ont_service_configuration.customer_subscription_not_found",
+                    "network.ont_service_configuration.customer_device_unsupported",
                     "network.ont_service_configuration.ont_not_found",
                     "network.ont_service_configuration.active_assignment_required",
                     "network.ont_service_configuration.ambiguous_assignment",
@@ -605,10 +640,13 @@ SERVICES: tuple[SOTService, ...] = (
                     "network.ont_service_configuration.exact_ont_ids_required",
                     "network.ont_service_configuration.reviewed_evidence_required",
                 ),
-                mapping_owner="app.web.admin.network_onts",
+                mapping_owner=(
+                    "app.web.admin.network_onts, app.web.customer.routes and app.api.me"
+                ),
                 fail_closed_on=(
                     "missing or ambiguous assignment, subscription, PON or commissioning identity",
-                    "missing authoritative PPP credential or delivery authorization",
+                    "missing authoritative PPP credential or delivery authorization "
+                    "for routed operator configuration",
                     "stale assignment, head, revision or operation identity",
                     "unreviewed repair or changed material input under an existing key",
                 ),
@@ -651,6 +689,27 @@ SERVICES: tuple[SOTService, ...] = (
                     ),
                     rebuild_operation=(
                         "Run the dry-run drift report, then the exact-ID reviewed repair command."
+                    ),
+                    repair_owner="network.ont_service_configuration",
+                ),
+                ProjectionContract(
+                    name="section-scoped ONT configuration delivery projection",
+                    input_names=("configuration lifecycle evidence",),
+                    writer="network.ont_service_configuration",
+                    freshness=(
+                        "Newest revision of the requested section on the exact "
+                        "active assignment head."
+                    ),
+                    stale_behavior=(
+                        "A superseded section remains historical delivery evidence "
+                        "and is never presented as the current whole-device revision."
+                    ),
+                    drift_signal=(
+                        "No exact active assignment head or no revision for the "
+                        "requested section."
+                    ),
+                    rebuild_operation=(
+                        "Submit a new typed section command through this owner."
                     ),
                     repair_owner="network.ont_service_configuration",
                 ),

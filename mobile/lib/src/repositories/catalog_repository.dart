@@ -50,20 +50,32 @@ class CatalogRepository {
     return DeviceCommandOutcome.fromJson((data as Map).cast<String, dynamic>());
   }
 
-  /// Apply and verify Wi-Fi settings on the exact assigned device.
+  /// Save and queue Wi-Fi settings for the exact assigned device.
   Future<DeviceCommandOutcome> updateWifi(
     String subscriptionId, {
     required String ssid,
     String? password,
   }) async {
+    final key =
+        'wifi-${DateTime.now().microsecondsSinceEpoch}-'
+        '${Random().nextInt(1 << 32)}';
     final data = await guard(
       () => dio.post(
         '/me/subscriptions/$subscriptionId/device/wifi',
         data: {
           'ssid': ssid,
           if (password != null && password.isNotEmpty) 'password': password,
+          'idempotency_key': key,
         },
       ),
+    );
+    return DeviceCommandOutcome.fromJson((data as Map).cast<String, dynamic>());
+  }
+
+  /// Read the latest background Wi-Fi delivery status.
+  Future<DeviceCommandOutcome> wifiUpdateStatus(String subscriptionId) async {
+    final data = await guard(
+      () => dio.get('/me/subscriptions/$subscriptionId/device/wifi'),
     );
     return DeviceCommandOutcome.fromJson((data as Map).cast<String, dynamic>());
   }

@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 from fastapi import Request
@@ -16,10 +17,12 @@ from app.models.network import OntAssignment, OntUnit
 from app.models.subscriber import Subscriber
 from app.services.customer_device_commands import (
     CustomerDeviceCommandError,
+    get_subscription_wifi_status,
     reboot_subscription_device,
     update_subscription_wifi,
 )
 from app.services.customer_portal_flow_services import get_service_detail
+from app.services.owner_commands import CommandContext
 from app.web.customer.branding import get_customer_templates
 
 
@@ -187,34 +190,65 @@ def test_customer_reboot_delegates_to_tracked_ont_action(db_session, monkeypatch
     assert calls == [str(ont.id)]
 
 
-def test_customer_wifi_update_delegates_to_reconciled_wifi_action(
+def _wifi_context(key: str = "customer-wifi-test") -> CommandContext:
+    command_id = uuid4()
+    return CommandContext(
+        command_id=command_id,
+        correlation_id=command_id,
+        actor="customer:test",
+        scope="customer:device:wifi",
+        reason="test customer WiFi update",
+        idempotency_key=key,
+    )
+
+
+def test_customer_wifi_update_queues_durable_configuration(
     db_session, monkeypatch
 ):
-    from app.services.network.ont_features import OntFeatureService
+    from app.models.ont_service_configuration import OntServiceConfigurationPhase
+    from app.services.network.ont_service_configuration import (
+        ConfigureOntServiceOutcome,
+    )
 
     subscriber, subscription, ont = _active_subscription_with_ont(db_session)
     calls = []
 
-    def fake_set_wifi_config(db, ont_id, *, ssid=None, password=None, **_):
-        calls.append((ont_id, ssid, password))
-        return SimpleNamespace(success=True, message="WiFi updated")
+    def fake_configure_customer_wifi(db, command):
+        calls.append(command)
+        return ConfigureOntServiceOutcome(
+            ont_unit_id=ont.id,
+            assignment_id=uuid4(),
+            configuration_head_id=uuid4(),
+            revision=1,
+            operation_id=uuid4(),
+            phase=OntServiceConfigurationPhase.queued,
+            replayed=False,
+            message="Configuration queued.",
+        )
 
     monkeypatch.setattr(
-        OntFeatureService, "set_wifi_config", staticmethod(fake_set_wifi_config)
+        "app.services.customer_device_commands.configure_customer_wifi",
+        fake_configure_customer_wifi,
     )
 
     outcome = update_subscription_wifi(
         db_session,
         subscriber_id=subscriber.id,
         subscription_id=subscription.id,
-        actor_id="customer-user-1",
+        context=_wifi_context(),
         ssid="NewSSID",
         password="Secret123",
     )
 
     assert outcome.success is True
-    assert outcome.message == "WiFi updated"
-    assert calls == [(str(ont.id), "NewSSID", "Secret123")]
+    assert outcome.status.value == "queued"
+    assert outcome.operation_id is not None
+    assert outcome.message == "WiFi update queued. We will apply it in the background."
+    assert len(calls) == 1
+    assert calls[0].subscriber_id == subscriber.id
+    assert calls[0].subscription_id == subscription.id
+    assert calls[0].change.ssid == "NewSSID"
+    assert calls[0].change.password == "Secret123"
 
 
 def test_customer_wifi_update_rejects_invalid_password(db_session):
@@ -225,11 +259,50 @@ def test_customer_wifi_update_rejects_invalid_password(db_session):
             db_session,
             subscriber_id=subscriber.id,
             subscription_id=subscription.id,
-            actor_id="customer-user-1",
+            context=_wifi_context(),
             ssid="NewSSID",
             password="short",
         )
     assert exc.value.code == "invalid_wifi_password"
+
+
+def test_customer_wifi_status_projects_the_background_lifecycle(
+    db_session, monkeypatch
+):
+    from app.models.ont_service_configuration import OntServiceConfigurationPhase
+    from app.services.network.ont_service_configuration import (
+        OntConfigurationSection,
+        OntConfigurationSectionDeliveryProjection,
+    )
+
+    subscriber, subscription, _ont = _active_subscription_with_ont(db_session)
+    operation_id = uuid4()
+    monkeypatch.setattr(
+        (
+            "app.services.customer_device_commands."
+            "get_latest_ont_configuration_section_delivery"
+        ),
+        lambda *_args, **_kwargs: OntConfigurationSectionDeliveryProjection(
+            ont_unit_id=_ont.id,
+            assignment_id=uuid4(),
+            section=OntConfigurationSection.wifi,
+            revision=1,
+            operation_id=operation_id,
+            phase=OntServiceConfigurationPhase.readback_pending,
+            failure_code=None,
+            failure_message=None,
+        ),
+    )
+
+    outcome = get_subscription_wifi_status(
+        db_session,
+        subscriber_id=subscriber.id,
+        subscription_id=subscription.id,
+    )
+
+    assert outcome.status.value == "waiting"
+    assert outcome.operation_id == operation_id
+    assert "waiting for the device" in outcome.message
 
 
 def test_customer_reboot_blocked_during_cooldown(db_session, monkeypatch):

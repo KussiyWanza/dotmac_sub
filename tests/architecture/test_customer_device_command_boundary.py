@@ -15,6 +15,10 @@ def test_web_and_api_delegate_customer_device_scope_to_owner() -> None:
     assert "update_subscription_wifi(" in web
     assert "reboot_subscription_device(" in api
     assert "update_subscription_wifi(" in api
+    assert "configure_customer_wifi(" in owner
+    assert "OntFeatureService.set_wifi_config(" not in owner
+    assert "customer:device:wifi" in web
+    assert "customer:device:wifi" in api
 
 
 def test_mobile_consumes_canonical_device_command_outcome() -> None:
