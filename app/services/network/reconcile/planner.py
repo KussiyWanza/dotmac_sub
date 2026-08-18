@@ -933,7 +933,17 @@ def _plan_acs_side(
         return identity
 
     # DHCP server — push the whole block when any field differs.
-    if _dhcp_differs(desired, observed):
+    force_dhcp_write = force_proposed_writes and bool(
+        proposed_fields
+        & {
+            "dhcp_enabled",
+            "dhcp_pool_min",
+            "dhcp_pool_max",
+            "dhcp_subnet_mask",
+            "lan_gateway_ip",
+        }
+    )
+    if force_dhcp_write or _dhcp_differs(desired, observed):
         actions.append(
             AcsSetDhcpServer(
                 device_id=device_id,
@@ -941,6 +951,7 @@ def _plan_acs_side(
                 pool_min=desired.dhcp_pool_min,
                 pool_max=desired.dhcp_pool_max,
                 subnet_mask=desired.dhcp_subnet_mask,
+                gateway_ip=desired.lan_gateway_ip,
             )
         )
         drifts.append(

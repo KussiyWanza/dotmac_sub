@@ -487,6 +487,24 @@ def test_fresh_authorize_emits_authorize_servicep_ipconfig_tr069_acs():
     assert AcsSetNatEnabled not in action_types
 
 
+def test_admitted_mask_only_lan_change_forces_write_only_dhcp_block():
+    desired = _desired()
+    observed = _observed(acs=_informed_acs_observed())
+
+    ordinary = compute_plan(desired, observed, "sync")
+    forced = compute_plan(
+        desired,
+        observed,
+        "sync",
+        proposed_fields=frozenset({"dhcp_subnet_mask"}),
+        force_proposed_writes=True,
+    )
+
+    assert AcsSetDhcpServer not in _types(ordinary)
+    action = next(item for item in forced.actions if isinstance(item, AcsSetDhcpServer))
+    assert action.subnet_mask == desired.dhcp_subnet_mask
+
+
 def test_fresh_authorize_absent_from_acs_plans_olt_only_and_waits_for_inform():
     """A brand-new ONT is not in the ACS yet.
 

@@ -182,6 +182,7 @@ def desired_from_ont_unit(db: Session, ont: OntUnit) -> OntDesiredState:
         dhcp_pool_min=values.get("lan_dhcp_start") or "192.168.100.2",
         dhcp_pool_max=values.get("lan_dhcp_end") or "192.168.100.254",
         dhcp_subnet_mask=_subnet_mask_from_lan_subnet(values.get("lan_subnet")),
+        lan_gateway_ip=values.get("lan_ip"),
         wifi_ssid=values.get("wifi_ssid") or "",
         wifi_password_ref=values.get("wifi_password") or "",
         # DEFAULT: push tracking lands when the applier records WiFi pushes.

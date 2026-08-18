@@ -44,6 +44,11 @@ from app.models.ont_service_configuration import (
     OntServiceConfigurationRevision,
 )
 from app.services.audit_adapter import stage_audit_event
+from app.services.catalog.ip_block_choices import (
+    IpBlockPrefix,
+    active_catalog_ip_block_choices,
+    subscriber_ip_block_entitlements,
+)
 from app.services.credential_crypto import encrypt_credential, get_encryption_key
 from app.services.domain_errors import DomainError
 from app.services.events import emit_event
@@ -152,7 +157,7 @@ class WanConfigurationChange:
 @dataclass(frozen=True, slots=True)
 class LanConfigurationChange:
     gateway_ip: str | None
-    subnet_mask: str | None
+    block_prefix: IpBlockPrefix | None
     dhcp_enabled: bool
     dhcp_start: str | None
     dhcp_end: str | None
@@ -372,6 +377,7 @@ def _ip(value: str | None, field: str) -> str | None:
 def _change_updates(
     db: Session,
     ont: OntUnit,
+    subscriber_id: uuid.UUID | None,
     section: OntConfigurationSection,
     change: OntConfigurationChange,
 ) -> tuple[dict[str, object], dict[str, object]]:
@@ -408,12 +414,88 @@ def _change_updates(
     elif section is OntConfigurationSection.lan and isinstance(
         change, LanConfigurationChange
     ):
+        active_prefixes = {
+            choice.prefix for choice in active_catalog_ip_block_choices(db)
+        }
+        if change.block_prefix is None or change.block_prefix not in active_prefixes:
+            raise _error(
+                "catalog_ip_block_unavailable",
+                "The selected IP block is not available in the active Catalog.",
+                block_prefix=(
+                    change.block_prefix.value if change.block_prefix else None
+                ),
+            )
+        entitled_prefixes = (
+            {
+                entitlement.prefix
+                for entitlement in subscriber_ip_block_entitlements(db, subscriber_id)
+            }
+            if subscriber_id is not None
+            else set()
+        )
+        if change.block_prefix not in entitled_prefixes:
+            raise _error(
+                "ip_block_entitlement_required",
+                "The subscriber must have an active Catalog subscription for the "
+                "selected IP block before it can be applied.",
+                block_prefix=change.block_prefix.value,
+            )
+        if change.block_prefix is IpBlockPrefix.p32 and (
+            change.dhcp_enabled or change.dhcp_start or change.dhcp_end
+        ):
+            raise _error(
+                "dhcp_not_available_for_single_address",
+                "A /32 contains one static address and cannot provide DHCP.",
+            )
+        gateway = _ip(change.gateway_ip, "lan_gateway_ip")
+        dhcp_start = _ip(change.dhcp_start, "lan_dhcp_start")
+        dhcp_end = _ip(change.dhcp_end, "lan_dhcp_end")
+        if gateway is None:
+            raise _error(
+                "lan_address_required",
+                "The ONT LAN address is required for the selected IP block.",
+            )
+        if change.dhcp_enabled:
+            if dhcp_start is None or dhcp_end is None:
+                raise _error(
+                    "invalid_dhcp_pool",
+                    "Gateway, DHCP start, and DHCP end are required when DHCP "
+                    "is enabled.",
+                )
+            network = ipaddress.IPv4Network(
+                f"{gateway}/{change.block_prefix.prefix_length}", strict=False
+            )
+            start_address = ipaddress.IPv4Address(dhcp_start)
+            end_address = ipaddress.IPv4Address(dhcp_end)
+            gateway_address = ipaddress.IPv4Address(gateway)
+            unavailable = {
+                network.network_address,
+                network.broadcast_address,
+                gateway_address,
+            }
+            if (
+                start_address not in network
+                or end_address not in network
+                or start_address in unavailable
+                or end_address in unavailable
+                or int(start_address) > int(end_address)
+                or any(
+                    int(start_address) <= int(item) <= int(end_address)
+                    for item in unavailable
+                )
+            ):
+                raise _error(
+                    "invalid_dhcp_pool",
+                    "The DHCP range must fit inside the selected block and exclude "
+                    "network, broadcast, and gateway addresses.",
+                )
         updates = {
-            "lan.ip": _ip(change.gateway_ip, "lan_gateway_ip"),
-            "lan.subnet": _text(change.subnet_mask),
+            "lan.ip": gateway,
+            "lan.subnet": change.block_prefix.subnet_mask,
+            "lan.block_prefix": change.block_prefix.value,
             "lan.dhcp_enabled": bool(change.dhcp_enabled),
-            "lan.dhcp_start": _ip(change.dhcp_start, "lan_dhcp_start"),
-            "lan.dhcp_end": _ip(change.dhcp_end, "lan_dhcp_end"),
+            "lan.dhcp_start": dhcp_start,
+            "lan.dhcp_end": dhcp_end,
         }
         evidence = dict(updates)
     elif section is OntConfigurationSection.wifi and isinstance(
@@ -651,7 +733,9 @@ def _admit(
             revision=head.current_revision,
         )
 
-    updates, evidence = _change_updates(db, ont, command.section, command.change)
+    updates, evidence = _change_updates(
+        db, ont, assignment.subscriber_id, command.section, command.change
+    )
     set_desired_config_values(ont, updates)
     resolved_effective = resolve_effective_ont_config(db, ont, olt=_olt)
     effective = resolved_effective if isinstance(resolved_effective, dict) else {}
@@ -912,6 +996,21 @@ def _wifi_delivery_scope(
     return OntWifiDeliveryScope(changed_fields=changed_fields)
 
 
+def _force_lan_delivery(revision: OntServiceConfigurationRevision) -> bool:
+    """Whether this exact admitted revision requires the write-only LAN block."""
+
+    return revision.section == OntConfigurationSection.lan.value and bool(
+        set(revision.desired_change_evidence or {})
+        & {
+            "lan.ip",
+            "lan.subnet",
+            "lan.dhcp_enabled",
+            "lan.dhcp_start",
+            "lan.dhcp_end",
+        }
+    )
+
+
 def _execution_locked(
     db: Session, command: ExecuteOntServiceConfigurationCommand
 ) -> ExecuteOntServiceConfigurationOutcome:
@@ -988,6 +1087,7 @@ def _execution_locked(
         ont.id,
         mode="sweep" if command.explicit_repair else "sync",
         wifi_delivery_scope=_wifi_delivery_scope(revision),
+        force_lan_config=_force_lan_delivery(revision),
         lifecycle_binding=ReconcileLifecycleBinding(
             ont_unit_id=ont.id,
             assignment_id=assignment.id,
@@ -998,7 +1098,45 @@ def _execution_locked(
         readback_only=command.verification_attempt > 0,
         timeout_sec=120,
     )
-    if result.success and result.sync_status == "synced" and not result.drift_after:
+    delivered_without_readback = (
+        result.success
+        and result.sync_status == "synced"
+        and not result.drift_after
+        and _force_lan_delivery(revision)
+    )
+    if delivered_without_readback:
+        head.phase = OntServiceConfigurationPhase.delivered_unverified
+        revision.phase = OntServiceConfigurationPhase.delivered_unverified
+        head.waiting_reason = None
+        head.failure_code = "exact_lan_readback_unavailable"
+        head.failure_message = (
+            "The LAN configuration was delivered, but this ONT firmware does not "
+            "expose the subnet and DHCP range for exact readback."
+        )
+        network_operations.mark_succeeded(
+            db,
+            str(operation.id),
+            output_payload={
+                "configuration_head_id": str(head.id),
+                "configuration_revision": revision.revision,
+                "phase": OntServiceConfigurationPhase.delivered_unverified.value,
+                "verification": "unavailable",
+            },
+        )
+        _record_execution_event(
+            db,
+            ont=ont,
+            assignment=assignment,
+            head=head,
+            revision=revision,
+            operation_id=operation.id,
+            phase=OntServiceConfigurationPhase.delivered_unverified,
+            message=head.failure_message,
+            success=True,
+        )
+        phase = OntServiceConfigurationPhase.delivered_unverified
+        message = "Configuration delivered; exact LAN readback is unavailable."
+    elif result.success and result.sync_status == "synced" and not result.drift_after:
         now = datetime.now(UTC)
         head.phase = OntServiceConfigurationPhase.verified
         revision.phase = OntServiceConfigurationPhase.verified
