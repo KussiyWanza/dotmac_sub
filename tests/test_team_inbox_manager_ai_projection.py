@@ -70,8 +70,8 @@ def _message(db_session, conversation, at, body="help"):
 def test_period_projection_excludes_out_of_scope_conversations_and_keeps_current_state_separate(
     db_session,
 ):
-    allowed_team = ServiceTeam(name="Allowed", slug=f"allowed-{uuid4().hex[:8]}")
-    denied_team = ServiceTeam(name="Denied", slug=f"denied-{uuid4().hex[:8]}")
+    allowed_team = ServiceTeam(name=f"Allowed-{uuid4().hex[:8]}")
+    denied_team = ServiceTeam(name=f"Denied-{uuid4().hex[:8]}")
     db_session.add_all([allowed_team, denied_team])
     db_session.flush()
     activity_at = datetime(2026, 8, 5, 12, tzinfo=UTC)
@@ -106,7 +106,7 @@ def test_period_projection_excludes_out_of_scope_conversations_and_keeps_current
 
 
 def test_period_projection_bounds_evidence_and_records_period_events(db_session):
-    team = ServiceTeam(name="Inbox", slug=f"inbox-{uuid4().hex[:8]}")
+    team = ServiceTeam(name=f"Inbox-{uuid4().hex[:8]}")
     db_session.add(team)
     db_session.flush()
     activity_at = datetime(2026, 8, 5, 12, tzinfo=UTC)
@@ -177,7 +177,7 @@ def test_period_projection_bounds_evidence_and_records_period_events(db_session)
 def test_period_cohort_uses_each_canonical_activity_source_once_and_is_half_open(
     db_session,
 ):
-    team = ServiceTeam(name="Boundary", slug=f"boundary-{uuid4().hex[:8]}")
+    team = ServiceTeam(name=f"Boundary-{uuid4().hex[:8]}")
     db_session.add(team)
     db_session.flush()
     lower = datetime(2026, 8, 5, tzinfo=UTC)
@@ -242,7 +242,7 @@ def test_period_cohort_uses_each_canonical_activity_source_once_and_is_half_open
 
 
 def test_period_projection_returns_an_empty_safe_cohort(db_session):
-    team = ServiceTeam(name="Empty", slug=f"empty-{uuid4().hex[:8]}")
+    team = ServiceTeam(name=f"Empty-{uuid4().hex[:8]}")
     db_session.add(team)
     db_session.commit()
 

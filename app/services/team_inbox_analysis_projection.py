@@ -252,20 +252,25 @@ def _evidence_rows(
     routing_rows = db.execute(routing_query).scalars().all()
     reasons: dict[UUID, set[str]] = defaultdict(set)
     latest: dict[UUID, datetime] = {}
-    for row in status_rows:
-        latest[row.conversation_id] = max(
-            latest.get(row.conversation_id, row.occurred_at), row.occurred_at
+    for status_event in status_rows:
+        latest[status_event.conversation_id] = max(
+            latest.get(status_event.conversation_id, status_event.occurred_at),
+            status_event.occurred_at,
         )
-        if row.previous_status == "resolved" and row.status != "resolved":
-            reasons[row.conversation_id].add("reopened")
-        if row.status == "resolved":
-            reasons[row.conversation_id].add("resolved_in_period")
-    for row in routing_rows:
-        latest[row.conversation_id] = max(
-            latest.get(row.conversation_id, row.occurred_at), row.occurred_at
+        if (
+            status_event.previous_status == "resolved"
+            and status_event.status != "resolved"
+        ):
+            reasons[status_event.conversation_id].add("reopened")
+        if status_event.status == "resolved":
+            reasons[status_event.conversation_id].add("resolved_in_period")
+    for routing_event in routing_rows:
+        latest[routing_event.conversation_id] = max(
+            latest.get(routing_event.conversation_id, routing_event.occurred_at),
+            routing_event.occurred_at,
         )
-        if row.event_type.value == "escalated":
-            reasons[row.conversation_id].add("escalated")
+        if routing_event.event_type.value == "escalated":
+            reasons[routing_event.conversation_id].add("escalated")
     conversations = {
         row.id: row
         for row in db.execute(
