@@ -187,3 +187,68 @@ def test_sla_clock_breach_fires_through_durable_timer(db_session):
         .one()
     )
     assert receipt.outcome.value == "succeeded"
+
+
+def test_ticket_sla_near_breach_fires_through_durable_timer(db_session):
+    from app.models.operational_escalation import (
+        OperationalEscalationEvent,
+        OperationalEscalationPolicy,
+        OperationalNotificationChannel,
+    )
+    from app.models.ticket_workflow import SlaClock, SlaPolicy, WorkflowEntityType
+    from app.schemas.support import TicketCreate
+
+    db_session.add(
+        SlaPolicy(
+            name="Ticket Resolution SLA",
+            entity_type=WorkflowEntityType.ticket.value,
+            description="Default ticket SLA policy",
+            is_active=True,
+        )
+    )
+    db_session.add(
+        OperationalEscalationPolicy(
+            name="Ticket near breach",
+            entity_type="ticket",
+            trigger="ticket.sla_near_breach",
+            level=1,
+            channels=[OperationalNotificationChannel.web],
+            metadata_={"near_breach_seconds": 3600},
+            is_active=True,
+        )
+    )
+    db_session.commit()
+
+    subscriber = _subscriber(db_session)
+    ticket = Tickets.create(
+        db_session,
+        TicketCreate(
+            subscriber_id=subscriber.id,
+            title="Approaching breach",
+            priority="urgent",
+            due_at=datetime.now(UTC) + timedelta(minutes=30),
+        ),
+    )
+    db_session.commit()
+    clock = db_session.query(SlaClock).filter(SlaClock.entity_id == ticket.id).one()
+
+    timer = db_session.execute(
+        select(DurableTimer).where(DurableTimer.purpose == "sla_near_breach_due")
+    ).scalar_one()
+    assert str(timer.entity_id) == str(clock.id)
+
+    fired = _fire(db_session, datetime.now(UTC))
+    assert len(fired) == 1
+
+    event = db_session.query(OperationalEscalationEvent).one()
+    assert event.trigger == "ticket.sla_near_breach"
+    assert event.metadata_["ticket_id"] == str(ticket.id)
+    receipt = (
+        db_session.query(OwnerOutputReceipt)
+        .filter(
+            OwnerOutputReceipt.consumer == "support.ticket_lifecycle",
+            OwnerOutputReceipt.event_type == "support.ticket_sla_near_breach_due",
+        )
+        .one()
+    )
+    assert receipt.outcome.value == "succeeded"

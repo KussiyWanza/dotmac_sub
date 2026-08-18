@@ -10,9 +10,17 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy import select
 
 from app.models.audit import AuditActorType, AuditEvent
+from app.models.durable_timer import DurableTimer
 from app.models.notification import Notification, NotificationChannel
+from app.models.operational_escalation import (
+    OperationalEscalationEvent,
+    OperationalEscalationPolicy,
+    OperationalNotificationChannel,
+)
+from app.models.owner_output import OwnerOutputReceipt
 from app.models.project import (
     Project,
     ProjectTask,
@@ -49,7 +57,24 @@ from app.services.projects import (
     projects,
     reconcile_project_projection,
 )
+from app.services.runtime_durable_timers import fire_due_timers
 from tests.staff_identity_fixtures import add_bound_staff_user
+
+
+def _fire_due_timers(db_session, now):
+    db_session.commit()
+    fired = fire_due_timers(
+        db_session,
+        now=now,
+        context=CommandContext.system(
+            actor="pytest",
+            scope="runtime.durable_timers:project-dispatch",
+            reason="test project SLA timer",
+            idempotency_key=f"test-project-fire:{uuid.uuid4()}",
+        ),
+    )
+    db_session.commit()
+    return fired
 
 
 def _create_fiber_project(db_session, subscriber, **overrides):
@@ -199,6 +224,100 @@ def test_project_creation_queues_customer_email(db_session, subscriber):
     assert len(emails) == 1
     assert emails[0].subject == "Project created: Office fiber build"
     assert str(project.number or project.id) in (emails[0].body or "")
+
+
+def test_project_sla_near_breach_fires_through_durable_timer(db_session, subscriber):
+    db_session.add(
+        OperationalEscalationPolicy(
+            name="Project near breach",
+            entity_type="project",
+            trigger="project.sla_near_breach",
+            level=1,
+            channels=[OperationalNotificationChannel.web],
+            metadata_={"near_breach_seconds": 3600},
+            is_active=True,
+        )
+    )
+    db_session.commit()
+
+    project = _create_fiber_project(
+        db_session,
+        subscriber,
+        due_at=datetime.now(UTC) + timedelta(minutes=30),
+    )
+    db_session.commit()
+    clock = (
+        db_session.query(SlaClock)
+        .filter(SlaClock.entity_type == WorkflowEntityType.project.value)
+        .filter(SlaClock.entity_id == project.id)
+        .one()
+    )
+
+    timer = db_session.execute(
+        select(DurableTimer).where(
+            DurableTimer.output_event_type == "operations.project_sla_near_breach_due"
+        )
+    ).scalar_one()
+    assert str(timer.entity_id) == str(clock.id)
+
+    fired = _fire_due_timers(db_session, datetime.now(UTC))
+    assert len(fired) == 1
+
+    event = db_session.query(OperationalEscalationEvent).one()
+    assert event.trigger == "project.sla_near_breach"
+    assert event.metadata_["project_id"] == str(project.id)
+    receipt = (
+        db_session.query(OwnerOutputReceipt)
+        .filter(
+            OwnerOutputReceipt.consumer == "operations.project_lifecycle",
+            OwnerOutputReceipt.event_type == "operations.project_sla_near_breach_due",
+        )
+        .one()
+    )
+    assert receipt.outcome.value == "succeeded"
+
+
+def test_project_sla_breach_fires_through_durable_timer(db_session, subscriber):
+    db_session.add(
+        OperationalEscalationPolicy(
+            name="Project breach",
+            entity_type="project",
+            trigger="project.sla_breached",
+            level=1,
+            channels=[OperationalNotificationChannel.web],
+            is_active=True,
+        )
+    )
+    db_session.commit()
+
+    project = _create_fiber_project(
+        db_session,
+        subscriber,
+        due_at=datetime.now(UTC) - timedelta(minutes=5),
+    )
+    db_session.commit()
+    clock = (
+        db_session.query(SlaClock)
+        .filter(SlaClock.entity_type == WorkflowEntityType.project.value)
+        .filter(SlaClock.entity_id == project.id)
+        .one()
+    )
+
+    timer = db_session.execute(
+        select(DurableTimer).where(
+            DurableTimer.output_event_type == "operations.project_sla_breach_due"
+        )
+    ).scalar_one()
+    assert str(timer.entity_id) == str(clock.id)
+
+    fired = _fire_due_timers(db_session, datetime.now(UTC))
+    assert len(fired) == 1
+
+    db_session.refresh(clock)
+    assert clock.status == SlaClockStatus.breached.value
+    event = db_session.query(OperationalEscalationEvent).one()
+    assert event.trigger == "project.sla_breached"
+    assert event.metadata_["project_id"] == str(project.id)
 
 
 def test_project_status_change_queues_one_customer_email(db_session, subscriber):

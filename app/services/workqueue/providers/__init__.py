@@ -36,6 +36,7 @@ def load_builtin_providers() -> tuple[WorkqueueProvider, ...]:
     """Import the built-in providers so their registration side effect runs."""
     from app.services.workqueue.providers import (  # noqa: F401
         conversations,
+        projects,
         tickets,
         work_orders,
     )

@@ -2284,6 +2284,9 @@ class Tickets:
             creation_acknowledgement_mode=acknowledgement_mode,
             creation_consequence_mode=consequence_mode,
         )
+        from app.services import sla_operational_notifications
+
+        sla_operational_notifications.emit_ticket_created(db, ticket)
         if acknowledgement_mode is TicketCreationAcknowledgementMode.customer_email:
             Tickets._stage_admin_creation_customer_email(
                 db,
@@ -2941,6 +2944,34 @@ class Tickets:
         return result if result is not None else "replayed"
 
     @staticmethod
+    @ticket_owner_command("consume_sla_near_breach_due")
+    def consume_sla_near_breach_due(
+        db: Session,
+        *,
+        clock_id: str,
+        event_id,
+        context,
+    ) -> str:
+        """Receipt one fired SLA warning timer into near-breach notification."""
+        from app.services.events.owner_outputs import consume_owner_output
+        from app.services.sla_assignment import check_sla_near_breach
+
+        def _effect() -> str:
+            clock = check_sla_near_breach(db, clock_id)
+            return "notified" if clock is not None else "skipped_state"
+
+        result, _receipt = consume_owner_output(
+            db,
+            consumer="support.ticket_lifecycle",
+            event_id=event_id,
+            event_type="support.ticket_sla_near_breach_due",
+            producer_owner="runtime.durable_timers",
+            context=context,
+            operation=_effect,
+        )
+        return result if result is not None else "replayed"
+
+    @staticmethod
     @ticket_owner_command("add_attachments")
     def add_attachments(
         db: Session, ticket_id: str, attachments: list[dict] | None
@@ -3330,6 +3361,13 @@ class Tickets:
 
             Tickets._apply_automation_rules(
                 db, ticket, AutomationTrigger.status_changed
+            )
+            from app.services import sla_operational_notifications
+
+            sla_operational_notifications.emit_ticket_status_changed(
+                db,
+                ticket,
+                previous_status=before["status"],
             )
         if before["priority"] != after["priority"]:
             log_audit_event(
