@@ -232,6 +232,22 @@ def test_docs_only_changes_report_each_required_unit_shard() -> None:
     assert unit_job.count("if: needs.changes.outputs.docs-only != 'true'") == 6
 
 
+def test_tests_is_the_stable_aggregate_for_unit_and_architecture_results() -> None:
+    """Matrix children remain internal evidence behind one stable check name."""
+
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    aggregate = workflow[workflow.index("  test:\n") : workflow.index("  coverage:\n")]
+
+    assert "    name: Tests\n" in aggregate
+    assert (
+        "needs: [changes, python-environment, unit-shards, architecture]" in aggregate
+    )
+    assert "UNIT_RESULT: ${{ needs.unit-shards.result }}" in aggregate
+    assert "ARCHITECTURE_RESULT: ${{ needs.architecture.result }}" in aggregate
+    assert 'test "$UNIT_RESULT" = "success"' in aggregate
+    assert 'test "$ARCHITECTURE_RESULT" = "success"' in aggregate
+
+
 def test_ci_change_classifier_fetches_missing_comparison_base() -> None:
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
     classifier = workflow[
@@ -313,10 +329,10 @@ def test_ci_retains_pre_merge_and_promotion_postgresql_gate() -> None:
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
 
     assert "pull_request:" in workflow
-    # Both events must still cover main and dev. `integration/**` was added so a
-    # pull request INTO a long-lived adoption branch runs these same gates
-    # instead of meeting them for the first time at the integration -> dev merge.
-    assert workflow.count("branches: [main, dev, 'integration/**']") == 2
+    # Both events must still cover main and dev. Batch branches run these same
+    # gates instead of meeting them for the first time at the batch -> dev merge.
+    protected_branches = "branches: [main, dev, 'integration/**', 'consolidate/**']"
+    assert workflow.count(protected_branches) == 2
     assert "make test-integration" in workflow
     assert "poetry run alembic upgrade head" not in workflow
     makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
