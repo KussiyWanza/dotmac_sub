@@ -1327,6 +1327,48 @@ def handle_subscription_update_form(
     return {"form_context": context}
 
 
+def handle_subscription_additional_ip_form(
+    db: Session,
+    *,
+    subscription_id: str,
+    form: FormData,
+    request: object,
+    actor_id: str | None,
+) -> str | None:
+    """Update only the public-IP add-on and routed ranges for a subscription."""
+    try:
+        catalog_service.subscriptions.get(db, subscription_id)
+        route_cidrs, route_metrics = _selected_additional_route_values_from_form(form)
+        core.normalize_additional_routes(route_cidrs, route_metrics)
+        core.validate_additional_route_billing(
+            db, cidrs=route_cidrs, metrics=route_metrics
+        )
+        add_on_id = str(form.get("ip_addon_id") or "")
+        quantity = str(form.get("ip_addon_quantity") or "1")
+        core.validate_public_ip_addon_selection(
+            db, add_on_id=add_on_id, quantity=quantity
+        )
+        core.update_subscription_with_audit(
+            db,
+            subscription_id,
+            {},
+            None,
+            [],
+            [],
+            request,
+            actor_id,
+            additional_route_cidrs=route_cidrs,
+            additional_route_metrics=route_metrics,
+            ip_addon_id=add_on_id,
+            ip_addon_quantity=quantity,
+            ipv4_assignment_submitted=False,
+        )
+        return None
+    except Exception as exc:
+        db.rollback()
+        return core.error_message(exc)
+
+
 def handle_subscription_ipv4_replacement(
     db: Session,
     *,

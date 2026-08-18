@@ -4792,6 +4792,13 @@ Authorization:
    global or explicitly scoped to one region/reseller, while direct permissions
    must reference active UI-assignable catalog entries.
 3. `auth.permission_gate`: owns request/route permission dependencies.
+   Additional routed-IP allocation is authorized independently from catalog
+   administration by the UI-assignable
+   `subscription:additional_ip:write` permission. Its lookup and focused write
+   routes accept only the additional-IP action; generic subscription and IPAM
+   inventory changes retain their own permissions. Migration 542 grants the
+   permission to the existing canonical `NOC` role when present; later role
+   assignments remain operator-managed through the permission UI.
 4. `auth.system_user_assignments`: is the only application writer for
    `system_user_roles` and `system_user_permissions`. Local and ERP HR role
    sources converge independently, managed grants are read-only in local
