@@ -120,10 +120,7 @@ def test_wifi_update_forces_principal_scope_and_queues_with_idempotency(monkeypa
         principal=principal,
     )
 
-    assert (
-        outcome.status
-        is customer_device_commands.CustomerDeviceCommandStatus.queued
-    )
+    assert outcome.status is customer_device_commands.CustomerDeviceCommandStatus.queued
     assert captured["subscriber_id"] == uuid.UUID(principal["subscriber_id"])
     assert captured["subscription_id"] == subscription_id
     assert captured["context"].scope == "customer:device:wifi"

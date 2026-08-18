@@ -56,8 +56,7 @@ class CatalogRepository {
     required String ssid,
     String? password,
   }) async {
-    final key =
-        'wifi-${DateTime.now().microsecondsSinceEpoch}-'
+    final key = 'wifi-${DateTime.now().microsecondsSinceEpoch}-'
         '${Random().nextInt(1 << 32)}';
     final data = await guard(
       () => dio.post(

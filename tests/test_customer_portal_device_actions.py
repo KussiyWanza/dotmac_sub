@@ -202,9 +202,7 @@ def _wifi_context(key: str = "customer-wifi-test") -> CommandContext:
     )
 
 
-def test_customer_wifi_update_queues_durable_configuration(
-    db_session, monkeypatch
-):
+def test_customer_wifi_update_queues_durable_configuration(db_session, monkeypatch):
     from app.models.ont_service_configuration import OntServiceConfigurationPhase
     from app.services.network.ont_service_configuration import (
         ConfigureOntServiceOutcome,

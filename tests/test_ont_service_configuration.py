@@ -217,6 +217,9 @@ def test_customer_wifi_admission_saves_secret_and_queues_without_device_io(
         subscription=subscription,
         subscriber=subscriber,
     )
+    subscriber_id = subscriber.id
+    subscription_id = subscription.id
+    db_session.commit()
     monkeypatch.setattr(
         "app.services.network.ont_service_configuration.resolve_effective_ont_config",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
@@ -250,8 +253,8 @@ def test_customer_wifi_admission_saves_secret_and_queues_without_device_io(
                 reason="Customer requested a WiFi credential update",
                 idempotency_key="customer-wifi-admission",
             ),
-            subscriber_id=subscriber.id,
-            subscription_id=subscription.id,
+            subscriber_id=subscriber_id,
+            subscription_id=subscription_id,
             change=CustomerWifiConfigurationChange(
                 ssid="CustomerSSID",
                 password="CustomerSecret123",

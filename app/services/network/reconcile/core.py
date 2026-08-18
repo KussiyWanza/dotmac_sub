@@ -339,8 +339,7 @@ def reconcile_ont(
             # was down at last reconcile" without needing to re-ping later.
             if wifi_only_delivery:
                 mgmt_ip_pingable = bool(
-                    cached_wifi_observation
-                    and cached_wifi_observation.mgmt_ip_pingable
+                    cached_wifi_observation and cached_wifi_observation.mgmt_ip_pingable
                 )
             else:
                 mgmt_ip_pingable = is_pingable(
@@ -583,9 +582,13 @@ def reconcile_ont(
                 last_reconcile_duration_ms=int(
                     (time.monotonic() - started_monotonic) * 1000
                 ),
-                mgmt_ip_pingable=is_pingable(
-                    target.mgmt_ip,
-                    ping_function=ping_function,
+                mgmt_ip_pingable=(
+                    mgmt_ip_pingable
+                    if wifi_only_delivery
+                    else is_pingable(
+                        target.mgmt_ip,
+                        ping_function=ping_function,
+                    )
                 ),
                 consecutive_sweep_unreachable=0,
                 olt=verify_olt_result.observed or _absent_olt(),

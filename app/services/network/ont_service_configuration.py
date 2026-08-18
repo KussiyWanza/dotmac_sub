@@ -864,17 +864,9 @@ def _admit(
         ont, assignment, _subscription, _olt, _pon = (
             _load_customer_wifi_admission_scope(db, command)
         )
-        updates, evidence = _customer_wifi_change_updates(command.change)
     else:
         section = command.section
         ont, assignment, _subscription, _olt, _pon = _load_admission_scope(db, command)
-        updates, evidence = _change_updates(
-            db,
-            ont,
-            assignment.subscriber_id,
-            section,
-            command.change,
-        )
     head = _head_for_assignment(db, ont, assignment)
     replay = db.scalar(
         select(OntServiceConfigurationRevision).where(
@@ -897,6 +889,16 @@ def _admit(
             phase=replay.phase,
             replayed=True,
             message="Configuration request replayed.",
+        )
+    if isinstance(command, ConfigureCustomerWifiCommand):
+        updates, evidence = _customer_wifi_change_updates(command.change)
+    else:
+        updates, evidence = _change_updates(
+            db,
+            ont,
+            assignment.subscriber_id,
+            section,
+            command.change,
         )
     current_revision = db.scalar(
         select(OntServiceConfigurationRevision).where(
@@ -942,9 +944,7 @@ def _admit(
         existing_intent = active_primary_internet_intent(
             db, ont_id=ont.id, subscription_id=subscription_id, for_update=True
         )
-        intent_vlan = (
-            existing_intent.s_vlan if existing_intent is not None else None
-        )
+        intent_vlan = existing_intent.s_vlan if existing_intent is not None else None
         pack_vlan = values.get("wan_vlan")
         try:
             effective_vlan = int(str(intent_vlan or pack_vlan or 0))

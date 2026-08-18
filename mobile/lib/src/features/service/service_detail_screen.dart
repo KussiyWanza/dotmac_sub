@@ -96,14 +96,11 @@ class _ServiceDetailScreenState extends ConsumerState<ServiceDetailScreen> {
     if (submitted != true || !mounted) return;
     setState(() => _commandPending = true);
     try {
-      final outcome = await ref
-          .read(catalogRepositoryProvider)
-          .updateWifi(
+      final outcome = await ref.read(catalogRepositoryProvider).updateWifi(
             widget.service.id,
             ssid: ssid.text.trim(),
-            password: password.text.trim().isEmpty
-                ? null
-                : password.text.trim(),
+            password:
+                password.text.trim().isEmpty ? null : password.text.trim(),
           );
       if (mounted) _showOutcome(outcome.message, outcome.accepted);
     } catch (error) {

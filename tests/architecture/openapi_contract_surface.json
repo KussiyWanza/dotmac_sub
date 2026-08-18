@@ -5845,6 +5845,18 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "GET /api/v1/me/subscriptions/{subscription_id}/device/wifi": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:subscription_id!"
+   ],
+   "request": null,
+   "responses": {
+    "200": "8bd97beb0d9c",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "GET /api/v1/me/subscriptions/{subscription_id}/service-change": {
    "params": [
     "header:authorization",
@@ -15466,18 +15478,6 @@
    }
   },
   "POST /api/v1/me/subscriptions/{subscription_id}/device/reboot": {
-   "params": [
-    "header:authorization",
-    "header:x-api-key",
-    "path:subscription_id!"
-   ],
-   "request": null,
-   "responses": {
-    "200": "8bd97beb0d9c",
-    "422": "a11c9d9b2af8"
-   }
-  },
-  "GET /api/v1/me/subscriptions/{subscription_id}/device/wifi": {
    "params": [
     "header:authorization",
     "header:x-api-key",
