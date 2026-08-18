@@ -334,7 +334,6 @@ def _conversation(
         db.query(InboxConversation)
         .filter(InboxConversation.channel_type == InboxChannelType.chat_widget.value)
         .filter(InboxConversation.external_thread_id == external_thread_id)
-        .filter(InboxConversation.status != InboxConversationStatus.resolved.value)
         .filter(InboxConversation.is_active.is_(True))
         .order_by(InboxConversation.last_message_at.desc().nullslast())
         .first()

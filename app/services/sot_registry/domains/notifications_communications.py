@@ -2176,6 +2176,17 @@ DOMAIN = DomainSOT(
                 transaction_mode=TransactionMode.OWNER_MANAGED,
                 event_types=("team_inbox.contact_link_changed.v1",),
                 projections=("InboxContactLink canonical contact-point projection",),
+                design_refs=(
+                    "docs/designs/TEAM_INBOX_SOURCE_OF_TRUTH.md",
+                    "docs/runbooks/TEAM_INBOX_SUBSCRIBER_LINK_REPAIR.md",
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                    "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                ),
+                test_refs=(
+                    "tests/test_team_inbox_contact_links.py",
+                    "tests/test_repair_team_inbox_subscriber_links.py",
+                    "tests/architecture/test_team_inbox_sot_contracts.py",
+                ),
             ),
         ),
         SOTService(

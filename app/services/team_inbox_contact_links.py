@@ -61,6 +61,7 @@ class ContactLinkResult:
     subscriber_id: UUID | None
     reseller_id: UUID | None
     previous_link_ids_deactivated: list[UUID]
+    repaired_conversation_ids: tuple[UUID, ...]
 
 
 T = TypeVar("T")
@@ -448,6 +449,50 @@ def link_conversation_contact(
     }
     conversation.metadata_ = metadata
 
+    repaired_conversation_ids: list[UUID] = []
+    if subscriber is not None:
+        historical_rows = (
+            db.query(InboxConversation)
+            .filter(InboxConversation.id != conversation.id)
+            .filter(InboxConversation.channel_type == conversation.channel_type)
+            .filter(InboxConversation.subscriber_id.is_(None))
+            .filter(InboxConversation.contact_address.isnot(None))
+            .filter(InboxConversation.is_active.is_(True))
+            .order_by(InboxConversation.created_at.asc(), InboxConversation.id.asc())
+            .with_for_update()
+            .all()
+        )
+        for historical in historical_rows:
+            historical_normalized = _normalize_contact(
+                db,
+                historical.channel_type,
+                historical.contact_address or "",
+            )
+            if historical_normalized != normalized_contact:
+                continue
+            historical.subscriber_id = subscriber.id
+            historical_metadata = dict(historical.metadata_ or {})
+            historical_resolution = dict(
+                historical_metadata.get("contact_resolution") or {}
+            )
+            historical_resolution.update(
+                {
+                    "status": "linked_subscriber",
+                    "normalized_contact": normalized_contact,
+                    "subscriber_id": str(subscriber.id),
+                    "reseller_id": str(linked_reseller_id)
+                    if linked_reseller_id
+                    else None,
+                    "manual_contact_link_id": str(contact_link.id),
+                    "repair_source_conversation_id": str(conversation.id),
+                }
+            )
+            historical_metadata["contact_resolution"] = historical_resolution
+            historical_metadata["subscriber_link_repaired_at"] = now.isoformat()
+            historical.metadata_ = historical_metadata
+            repaired_conversation_ids.append(historical.id)
+        db.flush()
+
     return ContactLinkResult(
         contact_link_id=contact_link.id,
         channel_type=contact_link.channel_type,
@@ -455,6 +500,7 @@ def link_conversation_contact(
         subscriber_id=contact_link.subscriber_id,
         reseller_id=contact_link.reseller_id,
         previous_link_ids_deactivated=deactivated,
+        repaired_conversation_ids=tuple(repaired_conversation_ids),
     )
 
 

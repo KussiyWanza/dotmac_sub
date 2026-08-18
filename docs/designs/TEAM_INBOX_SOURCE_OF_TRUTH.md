@@ -75,6 +75,14 @@ view.
 4. A processed observation is a no-op on retry. Existing message and thread
    constraints provide a second idempotency boundary.
 
+An operator-selected Subscriber is carried into the conversation command as an
+explicit identity decision. A reviewed manual contact link also repairs every
+other active, unlinked conversation with the same normalized channel address;
+it never overwrites a different Subscriber relationship. This makes the
+customer conversation-history projection converge without matching names or
+shared addresses in the browser. Historical rows without reviewed or uniquely
+resolved contact evidence remain unlinked for explicit reconciliation.
+
 The fiber website uses the same boundary through the signed
 `communications.fiber_inquiry.receive.v1` Integration Platform capability.
 The verified delivery receipt is recorded before the normalized
@@ -263,7 +271,7 @@ queue interval, or assignment ending timestamp. See
 
 | Projection | Inputs | Canonical writer | Repair |
 | --- | --- | --- | --- |
-| Contact link | Conversation route plus reviewed Party/customer facts | contact-resolution owner | Revalidate/reapply the reviewed link; ambiguity remains explicit |
+| Contact link | Conversation route plus reviewed Party/customer facts | contact-resolution owner | Revalidate/reapply a reviewed link, which repairs active unlinked threads on that exact normalized route; use the digest-bound `repair_team_inbox_subscriber_links` operator workflow for existing uniquely resolved routes; ambiguity remains explicit |
 | Operator unread | Message chronology plus per-person read cursor | operator-state owner | Set-based grouped queries recompute the projection; `rebuild_operator_read_state` removes impossible cross-conversation cursors |
 | Queue metrics and response cohorts | Conversation lifecycle, ordered message chronology, agent reply provenance/delivery, ticket handoff, assignment, and read state | projection query owner | Recompute on every query; no independent flag or counter is authoritative |
 | Manager AI period analysis | Authorized Workqueue scope, Inbox message chronology, immutable status transitions, and immutable routing events | analysis-projection owner | Recompute on each request; the cohort is conversations with a message, status transition, or routing event in the selected half-open UTC period; evidence is bounded and never becomes Inbox truth |

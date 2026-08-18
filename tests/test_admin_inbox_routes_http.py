@@ -53,6 +53,37 @@ def _client(db_session) -> TestClient:
     return TestClient(app, raise_server_exceptions=False)
 
 
+def test_start_conversation_passes_selected_subscriber_to_owner(db_session):
+    selected_subscriber_id = uuid.uuid4()
+    outcome = team_inbox_commands.StartConversationOutcome(
+        conversation_id=str(uuid.uuid4()),
+        kind="queued",
+        sender="team@example.com",
+        contact_status="explicit_subscriber",
+    )
+    with (
+        patch(
+            "app.web.admin.inbox.team_inbox_commands.start_conversation",
+            return_value=outcome,
+        ) as start,
+        patch("app.web.admin.inbox._prepare_mutation"),
+        patch("app.web.admin.inbox._actor_id_from_request", return_value=None),
+    ):
+        response = _client(db_session).post(
+            "/inbox/conversations",
+            data={
+                "channel_type": "email",
+                "contact_address": "ada@example.com",
+                "body_text": "Following up",
+                "subscriber_id": str(selected_subscriber_id),
+            },
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    assert start.call_args.kwargs["subscriber_id"] == str(selected_subscriber_id)
+
+
 @pytest.fixture
 def captured_request(db_session):
     """Drive the queue route and capture the `InboxQueueRequest` it builds."""
