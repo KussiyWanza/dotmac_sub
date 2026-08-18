@@ -3484,6 +3484,7 @@ async def team_inbox_start_conversation(
             body_text=body_text,
             subject=_query_text(subject),
             service_team_id=_query_text(service_team_id),
+            subscriber_id=_query_text(subscriber_id),
             actor_person_id=_actor_id_from_request(request),
             contact_name=_query_text(contact_name),
             contact_party_id=_query_text(contact_id),

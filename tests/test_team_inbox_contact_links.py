@@ -50,6 +50,8 @@ def _conversation(db_session, *, contact: str = "123456789012345"):
 def test_link_conversation_contact_to_subscriber(db_session):
     subscriber = _subscriber(db_session)
     conversation = _conversation(db_session)
+    historical = _conversation(db_session)
+    historical.external_thread_id = "facebook_messenger:historical"
 
     result = team_inbox_contact_links.link_conversation_contact(
         db_session,
@@ -69,6 +71,27 @@ def test_link_conversation_contact_to_subscriber(db_session):
     assert conversation.metadata_["contact_resolution"][
         "manual_contact_link_id"
     ] == str(link.id)
+    assert result.repaired_conversation_ids == (historical.id,)
+    assert historical.subscriber_id == subscriber.id
+    assert historical.metadata_["contact_resolution"][
+        "repair_source_conversation_id"
+    ] == str(conversation.id)
+
+
+def test_reviewed_contact_link_does_not_repair_a_different_contact(db_session):
+    subscriber = _subscriber(db_session)
+    conversation = _conversation(db_session)
+    unrelated = _conversation(db_session, contact="999999999999999")
+
+    result = team_inbox_contact_links.link_conversation_contact(
+        db_session,
+        conversation=conversation,
+        subscriber_id=subscriber.id,
+        note="Confirmed by support",
+    )
+
+    assert result.repaired_conversation_ids == ()
+    assert unrelated.subscriber_id is None
 
 
 def test_link_conversation_contact_to_reseller(db_session):
