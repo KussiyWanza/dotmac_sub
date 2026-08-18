@@ -9,7 +9,7 @@ from starlette.exceptions import HTTPException
 
 from app.api.webhook_observation import webhook_observation
 from app.models.service_team import ServiceTeam, ServiceTeamType
-from app.models.team_inbox import InboxChannelType, InboxMessage
+from app.models.team_inbox import InboxChannelType, InboxConversation, InboxMessage
 from app.services import (
     channel_health,
     channel_health_contracts,
@@ -243,6 +243,64 @@ def test_invalid_contract_registry_publishes_error_snapshot(db_session, monkeypa
 
     assert ("channel_ingestion", "error", 0) in published
     assert summary["contract_status"] == "error"
+
+
+def test_ingestion_snapshot_excludes_internal_channels(db_session, monkeypatch):
+    now = datetime(2026, 7, 20, 8, 0, tzinfo=UTC)
+    conversation = InboxConversation(channel_type=InboxChannelType.email.value)
+    db_session.add(conversation)
+    db_session.flush()
+    for channel in InboxChannelType:
+        db_session.add(
+            InboxMessage(
+                conversation_id=conversation.id,
+                channel_type=channel.value,
+                direction="inbound",
+                body="health cardinality test",
+                received_at=now,
+            )
+        )
+    db_session.commit()
+    monkeypatch.setattr(
+        channel_health_contracts,
+        "load_channel_health_contracts",
+        lambda _db: channel_health_contracts.parse_channel_health_contracts(
+            channel_health_contracts.DEFAULT_CHANNEL_HEALTH_CONTRACTS
+        ),
+    )
+
+    observations = channel_health.collect_channel_ingestion_observations(
+        db_session, now=now
+    )
+    scopes = {observation.scope for observation in observations}
+
+    assert InboxChannelType.note.value not in scopes
+    assert InboxChannelType.field_job.value not in scopes
+    assert len({(item.signal, item.scope) for item in observations}) == 96
+
+
+def test_snapshot_publish_failure_does_not_abort_other_domain(db_session, monkeypatch):
+    published: list[str] = []
+
+    def _capture(domain, observations, *, status="ok", now=None):
+        published.append(domain)
+        if domain == "channel_ingestion":
+            raise ValueError("snapshot exceeds registered cardinality")
+        return True
+
+    monkeypatch.setattr(channel_health, "publish_state_snapshot", _capture)
+    monkeypatch.setattr(
+        channel_health,
+        "collect_channel_ingestion_observations",
+        lambda _db, now=None: [],
+    )
+    monkeypatch.setattr(channel_health, "collect_celery_queue_observations", lambda: [])
+
+    summary = channel_health.publish_channel_health(db_session)
+
+    assert published == ["channel_ingestion", "celery_queues"]
+    assert summary["contract_status"] == "error"
+    assert summary["queue_status"] == "ok"
 
 
 def test_webhook_observation_records_each_outcome():

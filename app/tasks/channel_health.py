@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 @celery_app.task(name="app.tasks.channel_health.observe_channel_health")
-def observe_channel_health() -> dict:
+def observe_channel_health() -> dict[str, int | str]:
     from app.services import channel_health
 
     with db_session_adapter.session() as session:
@@ -20,4 +20,4 @@ def observe_channel_health() -> dict:
             "channel health observation complete",
             extra={"event": "channel_health_observation", **summary},
         )
-        return summary
+        return dict(summary)

@@ -158,6 +158,11 @@ through the team-inbox owner, keeping the observer clear of the
 consent/transport-ownership boundary
 (`tests/architecture/test_communication_eligibility_ownership.py`).
 
+Ingestion observations are bounded to the external channels owned by the
+contract registry. Internal `note` and `field_job` inbox traffic is deliberately
+excluded. A publication failure in either snapshot is logged and marks that
+domain's run as `error` without preventing the other domain from publishing.
+
 ## SMTP runtime and deployment gate
 
 `app.team_inbox_smtp` is the dedicated process supervisor for email intake. It
