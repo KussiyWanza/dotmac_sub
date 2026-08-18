@@ -784,7 +784,7 @@ def build_ticket_create_payload(**kwargs) -> TicketCreate:
         status=kwargs["status"],
         due_at=parse_dt_or_none(kwargs.get("due_at")),
         tags=[item.strip() for item in (tags or "").split(",") if item.strip()],
-        metadata=(
+        metadata_=(
             {"base_station_details": base_station_details}
             if base_station_details
             else None

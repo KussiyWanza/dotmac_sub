@@ -250,6 +250,7 @@ def get_spendable_account_credit_balance(
 
     try:
         from app.models.catalog import BillingMode
+        from app.models.customer_subledger import CustomerSubledgerOpeningPosition
         from app.models.subscriber import Subscriber
         from app.services.billing_profile import resolve_billing_profile
         from app.services.customer_financial_position import prepaid_available_balance
@@ -259,6 +260,18 @@ def get_spendable_account_credit_balance(
             return Decimal("0.00")
         profile = resolve_billing_profile(db, account)
         if profile.effective_mode != BillingMode.prepaid:
+            return credit_balance
+        opening_query = db.query(CustomerSubledgerOpeningPosition.id).filter(
+            CustomerSubledgerOpeningPosition.account_id == account.id
+        )
+        if currency is not None:
+            opening_query = opening_query.filter(
+                CustomerSubledgerOpeningPosition.currency == currency.upper()
+            )
+        # The verified prepaid position becomes authoritative only after the
+        # cutover opening has been approved. Legacy accounts without an opening
+        # must retain the existing account-credit settlement behaviour.
+        if opening_query.first() is None:
             return credit_balance
         prepaid_balance = prepaid_available_balance(
             db,

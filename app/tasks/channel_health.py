@@ -20,4 +20,9 @@ def observe_channel_health() -> dict[str, int | str]:
             "channel health observation complete",
             extra={"event": "channel_health_observation", **summary},
         )
-        return dict(summary)
+        return {
+            "channels": summary["channels"],
+            "contract_status": summary["contract_status"],
+            "queues": summary["queues"],
+            "queue_status": summary["queue_status"],
+        }

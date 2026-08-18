@@ -38,6 +38,10 @@ DECLARED_ENV_INPUT_OWNERS = {
 # and the read-only admin projection are the only raw model consumers. Business
 # callers use settings_spec/domain services instead.
 DECLARED_RAW_SETTING_OWNERS = {
+    # Typed channel-health policy owner. It reconciles newly introduced,
+    # disabled-by-default channels across persisted scoped registries before
+    # normal callers resolve the policy through settings_spec.
+    "app/services/channel_health_contracts.py",
     "app/services/control_registry.py",
     "app/services/domain_settings.py",
     "app/services/settings_secret_cleanup.py",

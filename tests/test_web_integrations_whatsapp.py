@@ -278,7 +278,7 @@ def test_legacy_manifest_requires_explicit_adoption_before_phone_number_id(
 
     with pytest.raises(
         installations.InstallationError,
-        match="config_property_unknown:phone_number_id",
+        match="config_unknown:phone_number_id",
     ):
         installations.create_config_revision(
             db_session,

@@ -1339,6 +1339,7 @@ def handle_subscription_additional_ip_form(
     try:
         catalog_service.subscriptions.get(db, subscription_id)
         route_cidrs, route_metrics = _selected_additional_route_values_from_form(form)
+        route_cidrs = [cidr for cidr in route_cidrs if cidr]
         core.normalize_additional_routes(route_cidrs, route_metrics)
         core.validate_additional_route_billing(
             db, cidrs=route_cidrs, metrics=route_metrics

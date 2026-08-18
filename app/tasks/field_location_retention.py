@@ -13,6 +13,7 @@ from app.celery_app import celery_app
 from app.services.db_session_adapter import db_session_adapter
 from app.services.field.location_retention import (
     PruneFieldLocationHistoryCommand,
+    PruneFieldLocationHistoryOutcome,  # noqa: F401 - task test seam
     prune_field_location_history,
 )
 from app.services.observability import (

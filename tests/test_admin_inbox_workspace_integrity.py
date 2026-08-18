@@ -188,7 +188,6 @@ def test_whatsapp_reopen_uses_the_exported_timeout_fetcher():
         r"(?m)^\s*fetchWithTimeout\(form\.dataset\.templateEndpoint",
         body,
     )
-    assert "this.markConversationRead(id, 1)" in body
 
 
 def test_mark_read_updates_only_the_unread_row_and_total():

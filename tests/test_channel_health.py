@@ -276,7 +276,7 @@ def test_ingestion_snapshot_excludes_internal_channels(db_session, monkeypatch):
 
     assert InboxChannelType.note.value not in scopes
     assert InboxChannelType.field_job.value not in scopes
-    assert len({(item.signal, item.scope) for item in observations}) == 96
+    assert len({(item.signal, item.scope) for item in observations}) == 104
 
 
 def test_snapshot_publish_failure_does_not_abort_other_domain(db_session, monkeypatch):

@@ -44,11 +44,6 @@ from app.models.ont_service_configuration import (
     OntServiceConfigurationRevision,
 )
 from app.services.audit_adapter import stage_audit_event
-from app.services.catalog.ip_block_choices import (
-    IpBlockPrefix,
-    active_catalog_ip_block_choices,
-    subscriber_ip_block_entitlements,
-)
 from app.services.credential_crypto import encrypt_credential, get_encryption_key
 from app.services.domain_errors import DomainError
 from app.services.events import emit_event
@@ -70,6 +65,11 @@ from app.services.network.provisioning_events import (
     record_ont_provisioning_event,
 )
 from app.services.network.subscriber_wan_ipam import ensure_wan_static_ip_available
+from app.services.network_catalog_ip_block_bridge import (
+    IpBlockPrefix,
+    active_catalog_ip_block_choices,
+    subscriber_ip_block_entitlements,
+)
 from app.services.network_operation_dispatch import (
     NetworkOperationCommand,
     stage_dispatch,

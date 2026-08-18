@@ -11,6 +11,7 @@ from app.models.dispatch import TechnicianProfile
 from app.models.field_location import FieldTechLocationPing, FieldTechPresence
 from app.models.subscriber import UserType
 from app.models.system_user import SystemUser
+from app.services.db_session_adapter import db_session_adapter
 from app.services.field.location_retention import (
     LOCATION_HISTORY_RETENTION_DAYS,
     PruneFieldLocationHistoryCommand,
@@ -95,6 +96,7 @@ def test_prune_deletes_only_pings_older_than_30_days(db_session):
     old_id = old.id
     retained_id = retained.id
 
+    db_session_adapter.release_read_transaction(db_session)
     outcome = prune_field_location_history(db_session, _command(as_of))
 
     assert outcome.deleted_count == 1

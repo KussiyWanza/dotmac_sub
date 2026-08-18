@@ -33,6 +33,7 @@ from app.models.ont_service_configuration import (
     OntServiceConfigurationRevision,
 )
 from app.services.catalog.ip_block_choices import IpBlockPrefix
+from app.services.db_session_adapter import db_session_adapter
 from app.services.domain_errors import DomainError
 from app.services.network.ont_service_configuration import (
     ConfigureOntServiceCommand,
@@ -336,6 +337,14 @@ def test_failed_revision_blocks_same_material_but_not_deliberate_next_revision(
         )
     assert exc_info.value.code.endswith(".repair_required")
 
+    monkeypatch.setattr(
+        "app.services.network.ont_service_configuration.active_catalog_ip_block_choices",
+        lambda _db: (SimpleNamespace(prefix=IpBlockPrefix.p24),),
+    )
+    monkeypatch.setattr(
+        "app.services.network.ont_service_configuration.subscriber_ip_block_entitlements",
+        lambda _db, _subscriber_id: (SimpleNamespace(prefix=IpBlockPrefix.p24),),
+    )
     second = configure_ont_service(
         db_session,
         _configure_command(
@@ -669,6 +678,11 @@ def test_lan_worker_forces_write_and_reports_exact_readback_unavailable(
 
     monkeypatch.setattr("app.services.network.reconcile.core.reconcile_ont", reconciled)
     command_id = uuid.uuid4()
+    ont_id = ont.id
+    operation_id = operation.id
+    head_id = head.id
+    revision_number = revision.revision
+    db_session_adapter.release_read_transaction(db_session)
     outcome = execute_ont_service_configuration(
         db_session,
         ExecuteOntServiceConfigurationCommand(
@@ -677,13 +691,13 @@ def test_lan_worker_forces_write_and_reports_exact_readback_unavailable(
                 scope="network:ont:execute",
                 reason="test forced LAN delivery",
                 command_id=command_id,
-                correlation_id=operation.id,
+                correlation_id=operation_id,
                 idempotency_key="lan-delivery-scope",
             ),
-            ont_unit_id=ont.id,
-            operation_id=operation.id,
-            configuration_head_id=head.id,
-            revision=revision.revision,
+            ont_unit_id=ont_id,
+            operation_id=operation_id,
+            configuration_head_id=head_id,
+            revision=revision_number,
         ),
     )
 
