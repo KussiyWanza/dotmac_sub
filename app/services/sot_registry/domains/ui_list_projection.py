@@ -906,9 +906,11 @@ DOMAIN = DomainSOT(
                 "admin support-ticket stable sort semantics",
                 "admin support-ticket page and status-summary projection",
                 "admin support-ticket export scope",
+                "admin support-ticket detail customer-account navigation",
             ),
             depends_on=(
                 "ui.list_contracts",
+                "customer.accounts",
                 "support.ticket_lifecycle",
                 "support.ticket_configuration",
                 "operations.service_team_lifecycle",
@@ -925,7 +927,9 @@ DOMAIN = DomainSOT(
                 "user after successful full-page or HTMX reads; a bare list visit "
                 "restores that URL, explicit query parameters take precedence, and "
                 "the cache never becomes authoritative for Ticket facts. "
-                "Exports consume the same complete scope without a silent row cap."
+                "Exports consume the same complete scope without a silent row cap. "
+                "The detail projection supplies the canonical person or business "
+                "customer-account URL; the template does not infer account type."
             ),
             contract=ServiceContract(
                 concerns=tuple(
@@ -947,6 +951,15 @@ DOMAIN = DomainSOT(
                         "admin support-ticket page and status-summary projection",
                         "admin support-ticket export scope",
                     )
+                )
+                + (
+                    ConcernContract(
+                        name=(
+                            "admin support-ticket detail customer-account navigation"
+                        ),
+                        role=OwnerRole.RESOLVER,
+                        input_names=("canonical customer account identity",),
+                    ),
                 ),
                 authoritative_inputs=(
                     AuthorityInput(
@@ -956,6 +969,15 @@ DOMAIN = DomainSOT(
                         source=(
                             "SUPPORT_TICKET_LIST_DEFINITION-normalized ListQuery with declared "
                             "search/filter/sort/pagination capabilities"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical customer account identity",
+                        owner="customer.accounts",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "the exact native Subscriber identifier and category "
+                            "bound to the support Ticket"
                         ),
                     ),
                     AuthorityInput(
@@ -1011,7 +1033,9 @@ DOMAIN = DomainSOT(
                     "docs/SOT_RELATIONSHIP_MAP.md",
                 ),
                 test_refs=(
+                    "tests/test_customer_detail_navigation.py",
                     "tests/test_support_ticket_list_ui_contract.py",
+                    "tests/test_web_support_ticket_customer_context.py",
                     "tests/playwright/e2e/test_support_tickets.py",
                 ),
             ),
@@ -1414,9 +1438,11 @@ DOMAIN = DomainSOT(
                 "admin project-task list field-work action projection",
                 "admin project and task detail field-work composition",
                 "admin project-task work-order creation action projection",
+                "admin project detail customer-account navigation",
             ),
             depends_on=(
                 "ui.list_contracts",
+                "customer.accounts",
                 "operations.project_lifecycle",
                 "operations.work_order_commands",
                 "operations.work_orders",
@@ -1435,7 +1461,9 @@ DOMAIN = DomainSOT(
                 "subscriber/project/task scope. Gated by project:read or "
                 "project:task:read; work-order details require "
                 "operations:dispatch:read and creation separately requires "
-                "operations:dispatch:write."
+                "operations:dispatch:write. The project detail projection "
+                "supplies the canonical person or business customer-account URL; "
+                "the template does not infer account type."
             ),
             contract=ServiceContract(
                 concerns=(
@@ -1485,6 +1513,11 @@ DOMAIN = DomainSOT(
                             "work-order creation protocol",
                         ),
                     ),
+                    ConcernContract(
+                        name="admin project detail customer-account navigation",
+                        role=OwnerRole.RESOLVER,
+                        input_names=("canonical customer account identity",),
+                    ),
                 ),
                 authoritative_inputs=(
                     AuthorityInput(
@@ -1506,6 +1539,15 @@ DOMAIN = DomainSOT(
                         source=(
                             "native active Project and ProjectTask identity, "
                             "relationship, lifecycle, and subscriber scope"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="canonical customer account identity",
+                        owner="customer.accounts",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "the exact native Subscriber identifier and category "
+                            "bound to the project"
                         ),
                     ),
                     AuthorityInput(
@@ -1570,6 +1612,7 @@ DOMAIN = DomainSOT(
                     "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
                 ),
                 test_refs=(
+                    "tests/test_customer_detail_navigation.py",
                     "tests/test_web_projects_service.py",
                     "tests/test_web_admin_projects_render.py",
                     "tests/test_web_dispatch_work_orders.py",

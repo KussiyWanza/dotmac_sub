@@ -324,7 +324,7 @@
 
             {% call support_card(title='Customer / Subscriber', subtitle='Linked account context.') %}
             <dl class="space-y-2 text-xs">
-                <div class="flex justify-between gap-4"><dt class="text-slate-500 dark:text-slate-400">Customer</dt><dd class="break-all text-right">{{ customer_details.name if customer_details else (subscriber_lookup.get(ticket.customer_person_id|string, ticket.customer_person_id or '-') if subscriber_lookup is defined else (ticket.customer_person_id or '-')) }}</dd></div>
+                <div class="flex justify-between gap-4"><dt class="text-slate-500 dark:text-slate-400">Customer</dt><dd class="break-all text-right">{% if customer_details %}<a href="{{ customer_details.detail_url }}" class="text-emerald-700 hover:underline dark:text-emerald-400">{{ customer_details.name }}</a>{% else %}{{ subscriber_lookup.get(ticket.customer_person_id|string, ticket.customer_person_id or '-') if subscriber_lookup is defined else (ticket.customer_person_id or '-') }}{% endif %}</dd></div>
                 <div class="flex justify-between gap-4"><dt class="text-slate-500 dark:text-slate-400">Phone</dt><dd class="break-all text-right">{{ (customer_details.phone or '-') if customer_details else '-' }}</dd></div>
                 <div class="flex justify-between gap-4"><dt class="text-slate-500 dark:text-slate-400">Email</dt><dd class="break-all text-right">{{ (customer_details.email or '-') if customer_details else '-' }}</dd></div>
                 <div class="flex justify-between gap-4"><dt class="text-slate-500 dark:text-slate-400">Service address</dt><dd class="text-right">{{ (customer_details.service_address or '-') if customer_details else '-' }}</dd></div>

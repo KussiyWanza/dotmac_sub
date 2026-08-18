@@ -76,6 +76,7 @@ class TicketCustomerContext:
     phone: str | None
     service_address: str | None
     subscriber_id: UUID
+    detail_url: str
 
 
 def get_ticket_attachment_file(
@@ -149,6 +150,19 @@ def _ticket_customer_context(
             service_address.service_address(db, subscriber.id)
         ),
         subscriber_id=subscriber.id,
+        detail_url=(
+            f"/admin/customers/business/{subscriber.id}"
+            if subscriber.is_business
+            else f"/admin/customers/person/{subscriber.id}"
+        ),
+    )
+
+
+def _ticket_customer_id(ticket: Ticket) -> UUID | None:
+    """Return the first canonical Subscriber link recorded on the ticket."""
+
+    return (
+        ticket.subscriber_id or ticket.customer_account_id or ticket.customer_person_id
     )
 
 
@@ -1796,7 +1810,7 @@ def build_ticket_detail_context(
         "staff_options": staff,
         "staff_lookup": _label_lookup(staff),
         "subscriber_lookup": _label_lookup(subscribers),
-        "customer_details": _ticket_customer_context(db, ticket.subscriber_id),
+        "customer_details": _ticket_customer_context(db, _ticket_customer_id(ticket)),
         "service_team_options": service_team_options(db),
         "service_team_lookup": _service_team_lookup(db),
         "sla_state": _ticket_sla_state(
