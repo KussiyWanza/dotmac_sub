@@ -4,8 +4,9 @@ import pytest
 
 from app.schemas.support import TicketCreate
 from app.services import support as support_service
-from app.services import ticket_validation
+from app.services import ticket_validation, web_support_tickets
 from app.services.domain_errors import DomainError
+from app.web.admin import support_tickets as admin_support_tickets
 
 
 def _payload(**overrides) -> TicketCreate:
@@ -62,6 +63,29 @@ def test_base_station_required_ticket_type_accepts_metadata_details(db_session):
             metadata={"base_station_details": "Jabi mast sector 2"},
         ),
     )
+
+
+def test_admin_form_payload_maps_base_station_details_to_ticket_metadata():
+    payload = web_support_tickets.build_ticket_create_payload(
+        title="Access point offline",
+        description="Customers cannot connect",
+        ticket_type="Access Point Outage",
+        base_station_details="  Garki AP sector 2  ",
+        priority="normal",
+        channel="web",
+        status="open",
+    )
+
+    assert payload.metadata_ == {"base_station_details": "Garki AP sector 2"}
+
+
+def test_admin_form_exposes_ticket_validation_message():
+    error = ticket_validation.TicketValidationError(
+        code="ticket_base_station_required",
+        message="Base station details are required for the selected ticket type.",
+    )
+
+    assert admin_support_tickets._ticket_form_error(error) == error.message
 
 
 def test_duplicate_open_ticket_context_allows_by_default(db_session, subscriber):

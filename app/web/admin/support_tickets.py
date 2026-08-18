@@ -34,6 +34,7 @@ from app.services import (
 )
 from app.services import web_support_tickets as support_web_service
 from app.services.auth_dependencies import can, require_permission
+from app.services.domain_errors import DomainError
 from app.services.file_storage import build_content_disposition, file_uploads
 from app.services.list_query import ListQuery
 from app.services.object_storage import ObjectNotFoundError
@@ -67,6 +68,8 @@ def _ticket_form_error(exc: Exception) -> str:
             label = field.replace("_", " ").strip().capitalize() or "Value"
             return f"{label}: {errors[0].get('msg', 'is invalid')}"
         return "Invalid input."
+    if isinstance(exc, DomainError):
+        return exc.message
     return str(exc)
 
 
@@ -344,6 +347,7 @@ def ticket_create(
     ticket_manager_person_id: str | None = Form(default=None),
     service_team_id: str | None = Form(default=None),
     ticket_type: str | None = Form(default=None),
+    base_station_details: str | None = Form(default=None),
     priority: str = Form("normal"),
     channel: str = Form("web"),
     status: str = Form("open"),
@@ -381,6 +385,7 @@ def ticket_create(
             site_coordinator_person_id=None,
             service_team_id=service_team_id,
             ticket_type=ticket_type,
+            base_station_details=base_station_details,
             priority=priority,
             channel=channel,
             status=status,
@@ -410,6 +415,7 @@ def ticket_create(
                     "ticket_manager_person_id": ticket_manager_person_id or "",
                     "service_team_id": service_team_id or "",
                     "ticket_type": ticket_type or "",
+                    "base_station_details": base_station_details or "",
                     "priority": priority,
                     "channel": channel,
                     "status": status,
@@ -436,7 +442,7 @@ def ticket_create(
     except (
         ValidationError,
         ValueError,
-        support_web_service.WebSupportTicketInputError,
+        DomainError,
     ) as exc:
         # Re-render the form with a clean message instead of a 500 (e.g. a
         # blank/whitespace-only title that fails schema validation).
@@ -457,6 +463,7 @@ def ticket_create(
                     "ticket_manager_person_id": ticket_manager_person_id or "",
                     "service_team_id": service_team_id or "",
                     "ticket_type": ticket_type or "",
+                    "base_station_details": base_station_details or "",
                     "priority": priority,
                     "channel": channel,
                     "status": status,

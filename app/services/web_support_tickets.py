@@ -645,6 +645,11 @@ def build_ticket_form_context(
         "ticket_type": ticket.ticket_type
         if ticket
         else str(params.get("ticket_type", "") or ""),
+        "base_station_details": (
+            str((ticket.metadata_ or {}).get("base_station_details") or "")
+            if ticket
+            else str(params.get("base_station_details", "") or "")
+        ),
         "priority": ticket.priority
         if ticket
         else str(
@@ -719,6 +724,9 @@ def build_ticket_form_context(
         "all_channels": [item.value for item in TicketChannel],
         "region_options": support_service.regions(db),
         "ticket_type_options": ticket_type_options,
+        "base_station_required_ticket_types": (
+            ticket_validation.base_station_required_ticket_types()
+        ),
         "service_team_options": service_team_options(db),
         "region_manager_routing": manager_routing_preview,
         "staff_options": staff,
@@ -754,6 +762,7 @@ def build_ticket_edit_page_context(
 def build_ticket_create_payload(**kwargs) -> TicketCreate:
     tags = kwargs.pop("tags", None)
     assignee_person_ids = kwargs.pop("assignee_person_ids", [])
+    base_station_details = str(kwargs.pop("base_station_details", "") or "").strip()
     return TicketCreate(
         title=kwargs["title"],
         description=kwargs["description"] or None,
@@ -775,6 +784,11 @@ def build_ticket_create_payload(**kwargs) -> TicketCreate:
         status=kwargs["status"],
         due_at=parse_dt_or_none(kwargs.get("due_at")),
         tags=[item.strip() for item in (tags or "").split(",") if item.strip()],
+        metadata=(
+            {"base_station_details": base_station_details}
+            if base_station_details
+            else None
+        ),
         assignee_person_ids=[
             uid
             for uid in (parse_uuid_or_none(item) for item in assignee_person_ids)
