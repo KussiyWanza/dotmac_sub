@@ -493,7 +493,7 @@ class _JobDetailViewState extends ConsumerState<_JobDetailView> {
   Future<void> _runWorkAction(String jobId, String action) async {
     String? travelEventId;
     if (action == 'complete') {
-      await Navigator.of(context).push(
+      final completed = await Navigator.of(context).push<bool>(
         MaterialPageRoute(
           builder: (_) => CompletionWizard(
             jobId: jobId,
@@ -503,6 +503,13 @@ class _JobDetailViewState extends ConsumerState<_JobDetailView> {
           ),
         ),
       );
+      if (completed != true || !mounted) return;
+      ref
+        ..invalidate(jobDetailProvider(jobId))
+        ..invalidate(todayJobsProvider)
+        ..invalidate(jobsListProvider)
+        ..invalidate(meProvider);
+      return;
     } else if (action == 'en_route') {
       final destination = await _pickDestination(jobId);
       if (destination == null) return;
