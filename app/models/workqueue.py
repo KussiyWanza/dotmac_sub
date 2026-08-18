@@ -14,6 +14,7 @@ from app.db import Base
 class WorkqueueItemKind(enum.StrEnum):
     conversation = "conversation"
     ticket = "ticket"
+    project = "project"
     lead = "lead"
     quote = "quote"
     task = "task"

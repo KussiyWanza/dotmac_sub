@@ -152,7 +152,6 @@
                         <div class="space-y-1">
                             {% if customer.ipv4 %}
                             <p class="text-xs font-medium font-mono text-slate-700 dark:text-slate-300">{{ customer.ipv4 }}</p>
-                            <p class="text-xs text-emerald-600 dark:text-emerald-400">{{ customer.ipv4_label or 'Service IPv4' }}</p>
                             {% elif customer.pppoe_login %}
                             <p class="text-xs font-medium text-slate-700 dark:text-slate-300">Configured</p>
                             <p class="text-xs text-slate-500 dark:text-slate-400">PPPoE access</p>

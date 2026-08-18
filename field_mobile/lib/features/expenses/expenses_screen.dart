@@ -22,6 +22,7 @@ class ExpensesScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final requests = ref.watch(expenseRequestsProvider);
+    final drafts = ref.watch(expenseRequestDraftsProvider);
 
     return Scaffold(
       appBar: AppBar(
@@ -58,6 +59,29 @@ class ExpensesScreen extends ConsumerWidget {
               ],
             ),
             const SizedBox(height: 8),
+            drafts.when(
+              data: (items) => Column(
+                children: [
+                  for (final draft in items)
+                    Card(
+                      child: ListTile(
+                        leading: const Icon(Icons.edit_note_outlined),
+                        title: Text(
+                          draft.payload['purpose']?.toString().isNotEmpty ==
+                                  true
+                              ? draft.payload['purpose'].toString()
+                              : 'Saved expense draft',
+                        ),
+                        subtitle: const Text('Tap to continue editing'),
+                        trailing: const Icon(Icons.chevron_right),
+                        onTap: () => context.push('/expenses/new'),
+                      ),
+                    ),
+                ],
+              ),
+              loading: () => const SizedBox.shrink(),
+              error: (_, _) => const SizedBox.shrink(),
+            ),
             requests.when(
               data: (items) {
                 if (items.isEmpty) {
@@ -133,6 +157,8 @@ class _ExpenseRequestTile extends StatelessWidget {
                       crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
                         _ExpenseStatusChip(status: request.status),
+                        if (request.erpClaimStatus != null)
+                          Text('ERP ${request.erpClaimStatus}'),
                         Text(request.displayNumber),
                         if (date != null) Text(date),
                       ],
@@ -535,10 +561,14 @@ class NewExpenseRequestScreen extends ConsumerStatefulWidget {
     super.key,
     this.initialWorkOrderId,
     this.initialWorkOrderLabel,
+    this.initialProjectId,
+    this.initialTicketId,
   });
 
   final String? initialWorkOrderId;
   final String? initialWorkOrderLabel;
+  final String? initialProjectId;
+  final String? initialTicketId;
 
   @override
   ConsumerState<NewExpenseRequestScreen> createState() =>
@@ -550,6 +580,8 @@ class _NewExpenseRequestScreenState
   final _purpose = TextEditingController();
   final _notes = TextEditingController();
   final _workOrderId = TextEditingController();
+  final _projectId = TextEditingController();
+  final _ticketId = TextEditingController();
   final _categoryCode = TextEditingController();
   final _description = TextEditingController();
   final _amount = TextEditingController();
@@ -568,6 +600,8 @@ class _NewExpenseRequestScreenState
   void initState() {
     super.initState();
     _workOrderId.text = widget.initialWorkOrderId ?? '';
+    _projectId.text = widget.initialProjectId ?? '';
+    _ticketId.text = widget.initialTicketId ?? '';
     Future.microtask(_loadDraft);
   }
 
@@ -576,6 +610,8 @@ class _NewExpenseRequestScreenState
     _purpose.dispose();
     _notes.dispose();
     _workOrderId.dispose();
+    _projectId.dispose();
+    _ticketId.dispose();
     _categoryCode.dispose();
     _description.dispose();
     _amount.dispose();
@@ -664,6 +700,10 @@ class _NewExpenseRequestScreenState
       _notes.text = draft['notes'] as String? ?? '';
       _workOrderId.text =
           widget.initialWorkOrderId ?? draft['work_order_id'] as String? ?? '';
+      _projectId.text =
+          widget.initialProjectId ?? draft['project_id'] as String? ?? '';
+      _ticketId.text =
+          widget.initialTicketId ?? draft['ticket_id'] as String? ?? '';
       final date = draft['expense_date'];
       if (date is String) {
         _expenseDate = DateTime.tryParse(date) ?? _expenseDate;
@@ -685,9 +725,12 @@ class _NewExpenseRequestScreenState
             'expense_date': DateFormat('yyyy-MM-dd').format(_expenseDate),
             'notes': _notes.text,
             'work_order_id': _workOrderId.text,
+            'project_id': _projectId.text,
+            'ticket_id': _ticketId.text,
             'items': _items.map(_expenseDraftItemJson).toList(),
           },
         );
+    ref.invalidate(expenseRequestDraftsProvider);
     if (!mounted) return;
     ScaffoldMessenger.of(
       context,
@@ -780,6 +823,8 @@ class _NewExpenseRequestScreenState
       expenseDate: DateFormat('yyyy-MM-dd').format(_expenseDate),
       notes: _notes.text,
       workOrderId: _workOrderId.text,
+      projectId: _projectId.text,
+      ticketId: _ticketId.text,
       items: _items,
     );
     setState(() => _saving = true);
@@ -792,6 +837,8 @@ class _NewExpenseRequestScreenState
             expenseDate: DateFormat('yyyy-MM-dd').format(_expenseDate),
             notes: _notes.text,
             workOrderId: _workOrderId.text,
+            projectId: _projectId.text,
+            ticketId: _ticketId.text,
             items: _items,
           );
       ref.invalidate(expenseRequestsProvider);
@@ -801,6 +848,7 @@ class _NewExpenseRequestScreenState
         // The request was created; the list can still be refreshed manually.
       }
       await ref.read(draftStoreProvider).delete(expenseRequestDraftId);
+      ref.invalidate(expenseRequestDraftsProvider);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('${request.displayNumber} submitted')),
@@ -818,6 +866,7 @@ class _NewExpenseRequestScreenState
               payload: payload,
             );
         await ref.read(draftStoreProvider).delete(expenseRequestDraftId);
+        ref.invalidate(expenseRequestDraftsProvider);
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Expense request queued for sync')),
@@ -889,6 +938,20 @@ class _NewExpenseRequestScreenState
             ),
           ],
           const SizedBox(height: 12),
+          if (widget.initialProjectId != null)
+            TextFormField(
+              initialValue: widget.initialProjectId,
+              readOnly: true,
+              decoration: const InputDecoration(labelText: 'Linked project'),
+            ),
+          if (widget.initialProjectId != null) const SizedBox(height: 12),
+          if (widget.initialTicketId != null)
+            TextFormField(
+              initialValue: widget.initialTicketId,
+              readOnly: true,
+              decoration: const InputDecoration(labelText: 'Linked ticket'),
+            ),
+          if (widget.initialTicketId != null) const SizedBox(height: 12),
           TextField(
             controller: _notes,
             decoration: const InputDecoration(labelText: 'Notes'),

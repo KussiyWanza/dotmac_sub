@@ -2633,9 +2633,9 @@ DOMAIN = DomainSOT(
             notes=(
                 "A committed operator reply returns the exact Notification outbox UUID "
                 "to the web transport, which schedules an after-response task on the "
-                "dedicated notifications queue. The periodic delivery runner remains "
-                "the durable recovery sweep; each worker locks and claims the exact "
-                "eligible row before provider delivery."
+                "dedicated notifications_immediate queue. The periodic delivery runner "
+                "stays on notifications as the durable recovery sweep; each worker locks "
+                "and claims the exact eligible row before provider delivery."
             ),
         ),
         SOTService(

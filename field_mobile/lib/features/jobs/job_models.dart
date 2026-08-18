@@ -40,26 +40,33 @@ class JobSummary {
   final int? totalActiveSeconds;
 
   factory JobSummary.fromJson(Map<String, dynamic> json) => JobSummary(
-    id: json['id'] as String,
-    title: json['title'] as String,
-    status: json['status'] as String,
+    id: json['id']?.toString() ?? '',
+    title: json['title']?.toString() ?? 'Work order',
+    status: json['status']?.toString() ?? 'scheduled',
     statusPresentation: StatusPresentation.fromJsonOrFallback(
       json['status_presentation'],
-      json['status'] as String,
+      json['status']?.toString() ?? 'scheduled',
     ),
-    workType: json['work_type'] as String,
-    priority: json['priority'] as String,
+    workType: json['work_type']?.toString() ?? 'other',
+    priority: json['priority']?.toString() ?? 'normal',
     description: json['description'] as String?,
     scheduledStart: _date(json['scheduled_start']),
     scheduledEnd: _date(json['scheduled_end']),
-    estimatedDurationMinutes: json['estimated_duration_minutes'] as int?,
+    estimatedDurationMinutes: _int(json['estimated_duration_minutes']),
     startedAt: _date(json['started_at']),
     pausedAt: _date(json['paused_at']),
     resumedAt: _date(json['resumed_at']),
     completedAt: _date(json['completed_at']),
-    totalActiveSeconds: json['total_active_seconds'] as int?,
+    totalActiveSeconds: _int(json['total_active_seconds']),
   );
 }
+
+int? _int(Object? value) => switch (value) {
+  int() => value,
+  num() => value.toInt(),
+  String() => int.tryParse(value),
+  _ => null,
+};
 
 class JobCustomer {
   const JobCustomer({

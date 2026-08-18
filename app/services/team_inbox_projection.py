@@ -1062,7 +1062,7 @@ def _conversation_activity(
         label = (
             "Resolved"
             if status == InboxConversationStatus.resolved.value
-            else "Reopened"
+            else "Opened"
             if status == InboxConversationStatus.open.value
             else f"Status changed to {status or 'unknown'}"
         )
@@ -1072,7 +1072,7 @@ def _conversation_activity(
                 label=label,
                 actor_name=actor_name,
                 actor_email=actor_email,
-                occurred_at=event.occurred_at,
+                occurred_at=_as_utc(event.occurred_at),
                 detail=event.reason_code,
             )
         )
@@ -1104,7 +1104,7 @@ def _conversation_activity(
                 label=label,
                 actor_name=actor_name,
                 actor_email=actor_email,
-                occurred_at=event.occurred_at,
+                occurred_at=_as_utc(event.occurred_at),
                 detail=event.reason_code,
             )
         )
@@ -1125,10 +1125,10 @@ def _conversation_activity(
         events.append(
             InboxLifecycleEvent(
                 kind="read",
-                label="Opened",
+                label="Viewed",
                 actor_name=actor_name,
                 actor_email=actor_email,
-                occurred_at=read_state.last_read_at,
+                occurred_at=_as_utc(read_state.last_read_at),
             )
         )
 
@@ -1139,8 +1139,21 @@ def _conversation_activity(
     return tuple(events[:limit])
 
 
+def _as_utc(value: datetime | None) -> datetime | None:
+    """Normalize database timestamps for the UTC-aware Inbox projection."""
+
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
 def _timeline_message_time(message: team_inbox_read.InboxTimelineMessage) -> datetime:
-    return message.received_at or message.sent_at or message.created_at
+    occurred_at = message.received_at or message.sent_at or message.created_at
+    if occurred_at.tzinfo is None:
+        return occurred_at.replace(tzinfo=UTC)
+    return occurred_at.astimezone(UTC)
 
 
 def _conversation_timeline_entries(

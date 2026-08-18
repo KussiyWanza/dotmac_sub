@@ -155,11 +155,14 @@ def open_item(
         )
         return observed, False
 
+    internal_source = (
+        support_service.InternalOperationalTicketSource.unmatched_radio_queue
+    )
     metadata = {
         "radio_mac": mac_compact,
         "reason": reason,
         "occurrences": 1,
-        "opened_by": "unmatched_radio_queue",
+        "opened_by": internal_source.value,
         **(details or {}),
     }
     ticket_payload = TicketCreate.model_validate(
@@ -178,7 +181,7 @@ def open_item(
     ticket = support_service.tickets.stage_internal_creation_participant(
         db,
         ticket_payload,
-        source=support_service.InternalOperationalTicketSource.unmatched_radio_queue,
+        source=internal_source,
     )
     logger.info(
         "unmatched_radio_item_opened mac=%s reason=%s ticket=%s",

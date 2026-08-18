@@ -78,6 +78,11 @@ class WorkqueueScoringConfig:
             imminent_seconds=15 * 60, soon_seconds=2 * 3600
         )
     )
+    project_sla: SlaBands = field(
+        default_factory=lambda: SlaBands(
+            imminent_seconds=60 * 60, soon_seconds=24 * 3600
+        )
+    )
     conversation_sla: SlaBands = field(
         default_factory=lambda: SlaBands(imminent_seconds=5 * 60, soon_seconds=30 * 60)
     )
@@ -116,6 +121,7 @@ class WorkqueueScoringConfig:
     kind_order: tuple[ItemKind, ...] = (
         ItemKind.conversation,
         ItemKind.ticket,
+        ItemKind.project,
         ItemKind.work_order,
     )
 
@@ -168,6 +174,7 @@ def load_scoring_config() -> WorkqueueScoringConfig:
     return replace(
         base,
         ticket_sla=_bands_from_env("WORKQUEUE_TICKET_SLA", base.ticket_sla),
+        project_sla=_bands_from_env("WORKQUEUE_PROJECT_SLA", base.project_sla),
         conversation_sla=_bands_from_env(
             "WORKQUEUE_CONVERSATION_SLA", base.conversation_sla
         ),

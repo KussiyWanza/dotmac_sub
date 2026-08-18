@@ -40,6 +40,8 @@ Map<String, dynamic>? _jwtClaims(String token) {
 /// Dio wrapper that injects the bearer token, proactively refreshes it
 /// shortly before expiry, and retries once on 401 after a refresh.
 class ApiClient {
+  static const nativeRefreshHeader = 'X-Auth-Refresh-In-Body';
+
   ApiClient({
     required this.baseUrl,
     required this.tokenStore,
@@ -53,6 +55,8 @@ class ApiClient {
     this.dio.options.baseUrl = baseUrl;
     this.dio.options.connectTimeout = const Duration(seconds: 10);
     this.dio.options.receiveTimeout = const Duration(seconds: 20);
+    this.dio.options.headers[nativeRefreshHeader] = 'true';
+    _refreshDio.options.headers[nativeRefreshHeader] = 'true';
     this.dio.interceptors.add(_AuthInterceptor(this));
   }
 
@@ -113,8 +117,14 @@ class ApiClient {
         refreshToken: data['refresh_token'] as String?,
       );
       return access;
-    } on DioException {
-      onSessionExpired?.call();
+    } on DioException catch (error) {
+      // Only an authoritative authentication refusal ends the local session.
+      // Timeouts, offline periods, and server failures must leave the rotating
+      // refresh token intact so a later request can retry after recovery.
+      final status = error.response?.statusCode;
+      if (status == 401 || status == 403) {
+        onSessionExpired?.call();
+      }
       return null;
     }
   }

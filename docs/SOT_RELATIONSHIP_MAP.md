@@ -860,7 +860,7 @@ Edit the owning domain shard and regenerate; do not hand-edit these rows.
 | `operations.vendor_as_built_review_confirmation` | short-lived signed staff as-built review proposal | `policy` | authenticated staff as-built review context ← `auth.permission_gate`<br>canonical staff as-built review preview ← `operations.vendor_project_workspace`<br>capability signing envelope ← `auth.token_signing`<br>staff as-built review confirmation protocol ← `operations.vendor_as_built_review_confirmation` | `coordinator_managed` | `complete` | vendor operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`tests/test_vendor_as_built_review.py`<br>`tests/architecture/test_vendor_project_workspace_boundary.py` |
 | `operations.vendor_as_built_review_confirmation` | staff as-built review stale-preview verification | `policy` | authenticated staff as-built review context ← `auth.permission_gate`<br>canonical staff as-built review preview ← `operations.vendor_project_workspace`<br>capability signing envelope ← `auth.token_signing` | `coordinator_managed` | `complete` | vendor operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`tests/test_vendor_as_built_review.py`<br>`tests/architecture/test_vendor_project_workspace_boundary.py` |
 | `operations.vendor_as_built_review_confirmation` | staff as-built review idempotency and replay result | `application_coordinator` | authenticated staff as-built review context ← `auth.permission_gate`<br>canonical staff as-built review preview ← `operations.vendor_project_workspace`<br>capability signing envelope ← `auth.token_signing`<br>canonical staff as-built review replay record ← `operations.vendor_as_built_review_confirmation` | `coordinator_managed` | `complete` | vendor operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`tests/test_vendor_as_built_review.py`<br>`tests/architecture/test_vendor_project_workspace_boundary.py` |
-| `compliance.ncc_complaints_reporting` | NCC complaints report projection | `resolver` | typed NCC report query ← `compliance.ncc_complaints_reporting`<br>native support ticket facts ← `support.ticket_lifecycle`<br>native subscriber facts ← `customer.accounts`<br>NCC filing vocabulary ← `external:ncc` | `read_only` | `cut_over` | regulatory compliance | `docs/designs/NCC_WEEKLY_REPORT_DELIVERY.md`<br>`docs/designs/CRM_REPORT_DATA_FLOW_GUIDE.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_ncc_complaints_report.py`<br>`tests/test_ncc_workbook.py` |
+| `compliance.ncc_complaints_reporting` | NCC complaints report projection | `resolver` | typed NCC report query ← `compliance.ncc_complaints_reporting`<br>native support ticket facts and operational provenance ← `support.ticket_lifecycle`<br>native subscriber facts ← `customer.accounts`<br>NCC filing vocabulary ← `external:ncc` | `read_only` | `cut_over` | regulatory compliance | `docs/designs/NCC_WEEKLY_REPORT_DELIVERY.md`<br>`docs/designs/CRM_REPORT_DATA_FLOW_GUIDE.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_ncc_complaints_report.py`<br>`tests/test_ncc_workbook.py` |
 | `auth.subscriber_assignments` | subscriber role and direct-permission assignments | `command_writer` | authorized subscriber assignment principal ← `auth.permission_gate`<br>active role and permission catalog ← `auth.rbac_catalog`<br>canonical subscriber assignment state ← `auth.subscriber_assignments` | `owner_managed` | `complete` | platform security | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`docs/designs/SOT_CODING_STANDARDS_REFACTOR.md`<br>`tests/test_subscriber_assignments.py`<br>`tests/architecture/test_subscriber_assignment_boundary.py` |
 | `auth.rbac_catalog` | role catalog and role-permission policy | `command_writer` | authorized RBAC catalog principal ← `auth.permission_gate`<br>canonical role and role-permission catalog ← `auth.rbac_catalog`<br>system-user role grant references ← `auth.system_user_assignments`<br>subscriber role grant references ← `auth.subscriber_assignments` | `owner_managed` | `shadowing` | platform security | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/PLATFORM_ADOPTION_LEDGER.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`docs/designs/SOT_CODING_STANDARDS_REFACTOR.md`<br>`tests/test_rbac_catalog_owner.py`<br>`tests/test_roles_r1_kernel_identity.py`<br>`tests/test_roles_r1_migration.py`<br>`tests/integration/test_roles_r1_migration.py`<br>`tests/architecture/test_rbac_catalog_boundary.py` |
 | `auth.rbac_catalog` | permission catalog | `command_writer` | authorized RBAC catalog principal ← `auth.permission_gate`<br>canonical permission catalog ← `auth.rbac_catalog`<br>system-user permission grant references ← `auth.system_user_assignments`<br>subscriber permission grant references ← `auth.subscriber_assignments` | `owner_managed` | `shadowing` | platform security | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/PLATFORM_ADOPTION_LEDGER.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`docs/designs/SOT_CODING_STANDARDS_REFACTOR.md`<br>`tests/test_rbac_catalog_owner.py`<br>`tests/test_roles_r1_kernel_identity.py`<br>`tests/test_roles_r1_migration.py`<br>`tests/integration/test_roles_r1_migration.py`<br>`tests/architecture/test_rbac_catalog_boundary.py` |
@@ -5139,7 +5139,7 @@ execution are delegated to `network.fiber_identity_decisions` and
 `network.fiber_identity_review`; canonical passive-asset writes remain delegated
 to `network.fiber_asset_changes`.
 
-## Staff Party authentication cutover — deploy 1 live, ratchet pending
+## Staff Party authentication cutover — cut over in production
 
 `app/services/staff_party_authentication.py` is the single owner of staff
 principal resolution for authentication. Four consumers delegate to it:
@@ -5167,18 +5167,17 @@ regression and requires the guard to reject it.
 the authenticated identity; `sessions.system_user_id` is the Sub-owned staff
 context and is NOT retired.
 
-**Temporary compatibility bridge.** `resolve_staff_principal_assertion` serves
-sessions predating migration 534 only, where `party_id IS NULL`. It is confined
-by guard to the owner and is reached only through the typed session resolver;
-it is **deleted in deploy 2**. Populated sessions—including refresh—resolve from
-`party_id` before any token rotation. New sessions are minted from an explicit
-typed Party/context binding, never by asking the bridge to rediscover identity
-from `system_user_id`.
+**Compatibility path retired.** Migration 541 and its reader ratchet deleted
+`resolve_staff_principal_assertion`. Every usable staff session now requires a
+`party_id`, and login, refresh, validation, and vendor admission resolve from
+that Party before comparing `system_user_id` as the Sub-owned context assertion.
+Revoked or expired historical rows may remain unprojected, but they cannot use
+that null as an authentication path. New sessions continue to be minted from an
+explicit typed Party/context binding.
 
-### Retirement gate and rollback floor
+### Cutover evidence and rollback floor
 
-This is deploy 1 of two. It is live in production, but remains a predecessor
-until the approved legacy-session population and strict reader ratchet finish.
+The two-deploy cutover completed in production on 2026-08-17:
 
 1. **Deploy 1** — migration 534, dual-write, Party-keyed branch, null-only
    bridge. Production deployed source `3d11db6e3` as immutable digest
@@ -5191,14 +5190,18 @@ until the approved legacy-session population and strict reader ratchet finish.
    null rows remain preserved; an active blocker is remediated through the
    canonical authentication/session owner before planning, never guessed or
    silently revoked by this adapter.
-3. **Deploy 2** — require `sessions.party_id`, delete the bridge, strengthen the
-   guard to reject assertion-first resolution entirely.
+3. **Deploy 2** — migration 541 requires `sessions.party_id` on every usable
+   staff session, deletes the bridge, and strengthens the guard to reject
+   assertion-first resolution entirely. Production runs source
+   `a7de94d4fa1cfd76ae37f55e07ded323dc11defc` at immutable digest
+   `sha256:252d304fb0c359ea4429ac4615f2ede6f90f3e60936c77be609ce6dddbdb4582`.
 
-The dated post-deploy measurement on 2026-08-16 observed 6,625 staff sessions:
-2,204 active/unrevoked and exactly FK-mappable, 1,225 live and mappable, zero
-active/live unmappable rows, and 242 already-revoked or non-active historical
-null rows across 15 unbound principals. These are evidence for planning, not
-hard-coded migration counts; every batch recomputes the live cohort and digest.
+The post-ratchet production report observed 6,831 staff sessions: 2,267
+active/unrevoked, all 2,267 projected, zero remaining, zero unbound, and zero
+projection disagreements. Seven usable sessions created after the approved
+legacy cohort were also projected, proving the deploy-1 writer continued to
+maintain the bound pair before the ratchet. Historical revoked or expired null
+rows remain preserved and non-authenticating by design.
 
 **Rollback floor: migration 534.** Deploy 1's exact image digest is deploy 2's
 rollback target. On rollback, keep all `party_id` values and backfill evidence;

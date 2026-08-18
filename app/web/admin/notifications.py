@@ -957,6 +957,7 @@ def sla_policy_create(
     channels: list[str] = Form(default=[]),
     min_severity: str | None = Form(None),
     min_affected_customers: int | None = Form(None),
+    near_breach_minutes: int | None = Form(None),
     notes: str | None = Form(None),
     is_active: str | None = Form(None),
     db: Session = Depends(get_db),
@@ -979,6 +980,7 @@ def sla_policy_create(
             channels=channels,
             min_severity=min_severity,
             min_affected_customers=min_affected_customers,
+            near_breach_minutes=near_breach_minutes,
             notes=notes,
             is_active=is_active is not None,
         )
@@ -1050,6 +1052,7 @@ def sla_policy_update(
     channels: list[str] = Form(default=[]),
     min_severity: str | None = Form(None),
     min_affected_customers: int | None = Form(None),
+    near_breach_minutes: int | None = Form(None),
     notes: str | None = Form(None),
     is_active: str | None = Form(None),
     db: Session = Depends(get_db),
@@ -1073,6 +1076,7 @@ def sla_policy_update(
             channels=channels,
             min_severity=min_severity,
             min_affected_customers=min_affected_customers,
+            near_breach_minutes=near_breach_minutes,
             notes=notes,
             is_active=is_active is not None,
         )

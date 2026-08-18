@@ -20,6 +20,7 @@ from app.services.network.fiber_topology_identity import (  # noqa: E402
     execute_identity_decision,
     finalize_identity_decision,
     propose_identity_decision,
+    supersede_approved_identity_decision,
 )
 from app.services.network.fiber_topology_review import (  # noqa: E402
     FiberTopologyProposalBatchBlocked,
@@ -121,6 +122,17 @@ def parse_args() -> argparse.Namespace:
     decline.add_argument("--decision-id", required=True)
     decline.add_argument("--actor", required=True)
     decline.add_argument("--notes", required=True)
+
+    supersede = commands.add_parser(
+        "supersede-approved",
+        help=(
+            "Supersede an approved, unexecuted identity decision after newer "
+            "authoritative source evidence is staged."
+        ),
+    )
+    supersede.add_argument("--decision-id", required=True)
+    supersede.add_argument("--actor", required=True)
+    supersede.add_argument("--reason", required=True)
 
     execute = commands.add_parser(
         "execute", help="Execute an approved link/rejection or emit a change request."
@@ -237,6 +249,14 @@ def main() -> int:
                     decision_id=args.decision_id,
                     reviewed_by=args.actor,
                     review_notes=args.notes,
+                )
+                output = decision_to_dict(decision)
+            elif args.command == "supersede-approved":
+                decision = supersede_approved_identity_decision(
+                    db,
+                    decision_id=args.decision_id,
+                    superseded_by=args.actor,
+                    reason=args.reason,
                 )
                 output = decision_to_dict(decision)
             elif args.command == "execute":

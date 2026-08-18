@@ -116,6 +116,14 @@ def form_data(
     policy = db.get(OperationalEscalationPolicy, policy_id) if policy_id else None
     if policy_id and policy is None:
         return None
+    metadata = policy.metadata_ if policy and isinstance(policy.metadata_, dict) else {}
+    near_breach_seconds = metadata.get("near_breach_seconds")
+    near_breach_minutes = ""
+    if near_breach_seconds is not None:
+        try:
+            near_breach_minutes = str(max(1, int(near_breach_seconds) // 60))
+        except (TypeError, ValueError):
+            near_breach_minutes = ""
     return {
         "policy": policy,
         "event_definitions": operational_escalation.KNOWN_SLA_EVENT_DEFINITIONS,
@@ -126,7 +134,8 @@ def form_data(
         "delay_minutes": (
             int((policy.unresolved_after_seconds or 0) / 60) if policy else 0
         ),
-        "notes": str((policy.metadata_ or {}).get("notes") or "") if policy else "",
+        "notes": str(metadata.get("notes") or "") if policy else "",
+        "near_breach_minutes": near_breach_minutes,
     }
 
 
@@ -143,6 +152,7 @@ def create_policy(
     min_severity: str | None,
     min_affected_customers: int | None,
     notes: str | None,
+    near_breach_minutes: int | None = None,
     is_active: bool,
 ) -> OperationalEscalationPolicy:
     def operation() -> OperationalEscalationPolicy:
@@ -163,7 +173,10 @@ def create_policy(
             db,
             **values,
             cooldown_seconds=0,
-            metadata={"notes": notes.strip()} if notes and notes.strip() else {},
+            metadata=_metadata(
+                notes=notes,
+                near_breach_minutes=near_breach_minutes,
+            ),
         )
         policy.is_active = is_active
         return policy
@@ -190,6 +203,7 @@ def update_policy(
     min_severity: str | None,
     min_affected_customers: int | None,
     notes: str | None,
+    near_breach_minutes: int | None = None,
     is_active: bool,
 ) -> OperationalEscalationPolicy:
     def operation() -> OperationalEscalationPolicy:
@@ -213,7 +227,10 @@ def update_policy(
             db,
             policy,
             **values,
-            metadata={"notes": notes.strip()} if notes and notes.strip() else {},
+            metadata=_metadata(
+                notes=notes,
+                near_breach_minutes=near_breach_minutes,
+            ),
             is_active=is_active,
         )
 
@@ -327,3 +344,21 @@ def _validated_values(
         "min_affected_customers": min_affected_customers,
         "unresolved_after_seconds": delay_minutes * 60,
     }
+
+
+def _metadata(
+    *,
+    notes: str | None,
+    near_breach_minutes: int | None,
+) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    if notes and notes.strip():
+        metadata["notes"] = notes.strip()
+    if near_breach_minutes is not None:
+        if near_breach_minutes < 1 or near_breach_minutes > 525_600:
+            raise _error(
+                "invalid_policy",
+                "Near-breach window must be between 1 and 525600 minutes",
+            )
+        metadata["near_breach_seconds"] = near_breach_minutes * 60
+    return metadata

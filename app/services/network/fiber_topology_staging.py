@@ -663,21 +663,38 @@ def _stage_result(batch: FiberTopologySourceBatch, *, created: bool):
     )
 
 
-def _manifest_sha256(plans: tuple[FiberFeatureMatchPlan, ...]) -> str:
+def _manifest_sha256(
+    plans: tuple[FiberFeatureMatchPlan, ...],
+    *,
+    source_metadata: dict | None = None,
+) -> str:
+    manifest_rows = sorted(
+        [
+            {
+                "external_id": plan.feature.external_id,
+                "content_sha256": plan.feature.content_sha256,
+            }
+            for plan in plans
+        ],
+        key=lambda row: (
+            _normalized_key(row["external_id"]),
+            row["content_sha256"],
+        ),
+    )
+    if not source_metadata or not source_metadata.get("source_archive_sha256"):
+        return _sha256_json(manifest_rows)
+    idempotency = {
+        "importer_version": str(source_metadata.get("importer_version", "")),
+        "source_archive_sha256": str(source_metadata["source_archive_sha256"]),
+    }
+    full_manifest_sha256 = source_metadata.get("full_manifest_sha256")
+    if full_manifest_sha256:
+        idempotency["full_manifest_sha256"] = str(full_manifest_sha256)
     return _sha256_json(
-        sorted(
-            [
-                {
-                    "external_id": plan.feature.external_id,
-                    "content_sha256": plan.feature.content_sha256,
-                }
-                for plan in plans
-            ],
-            key=lambda row: (
-                _normalized_key(row["external_id"]),
-                row["content_sha256"],
-            ),
-        )
+        {
+            "features": manifest_rows,
+            "idempotency": idempotency,
+        }
     )
 
 
@@ -690,7 +707,7 @@ def _persist_preview(
     created_by: str,
     source_metadata: dict | None = None,
 ) -> FiberSourceStageResult:
-    manifest_sha256 = _manifest_sha256(plans)
+    manifest_sha256 = _manifest_sha256(plans, source_metadata=source_metadata)
     existing = db.scalar(
         select(FiberTopologySourceBatch).where(
             FiberTopologySourceBatch.source_system == preview.source_system,
@@ -790,18 +807,22 @@ def stage_fiber_preview_batch(
         raise ValueError("created_by is required for staged topology evidence")
     if start < 0 or stop <= start or stop > preview.feature_count:
         raise ValueError("preview batch bounds are invalid")
+    metadata = {
+        "batch_start": start + 1,
+        "batch_stop": stop,
+        **(source_metadata or {}),
+    }
+    metadata["full_manifest_sha256"] = _manifest_sha256(
+        preview.features,
+        source_metadata=metadata,
+    )
     return _persist_preview(
         db,
         preview,
         plans=preview.features[start:stop],
         source_name=source_name,
         created_by=actor,
-        source_metadata={
-            "full_manifest_sha256": preview.manifest_sha256,
-            "batch_start": start + 1,
-            "batch_stop": stop,
-            **(source_metadata or {}),
-        },
+        source_metadata=metadata,
     )
 
 

@@ -126,6 +126,14 @@ def test_query_filters_sorts_and_paginates(db_session):
 
     # each row carries a projected status presentation (tone from the owner)
     assert rows[0]["status_presentation"].value == "working"
+    assert rows[0]["status_presentation"].label == "Online"
+
+    rows, total = device_projection_views.query_device_projections(
+        db_session, status="not_working"
+    )
+    assert total == 1
+    assert rows[0]["status_presentation"].value == "not_working"
+    assert rows[0]["status_presentation"].label == "Offline"
 
 
 def test_archived_rows_are_hidden_by_default_and_queryable_explicitly(db_session):

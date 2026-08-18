@@ -125,7 +125,12 @@ def _preview_profiles(
     with SessionLocal() as db:
         for profile in extraction.profiles:
             path = temporary_directory / f"{profile.profile.value}.kml"
-            path.write_bytes(build_kml(profile.features))
+            path.write_bytes(
+                build_kml(
+                    profile.features,
+                    archive_sha256=extraction.archive_sha256,
+                )
+            )
             preview = preview_fiber_source(db, path, profile.profile.value)
             results.append((profile, path, preview))
     return tuple(results)

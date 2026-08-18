@@ -19,6 +19,7 @@ class MaterialsScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final requests = ref.watch(materialRequestsProvider);
+    final drafts = ref.watch(materialRequestDraftsProvider);
     final inventory = ref.watch(inventorySearchProvider);
 
     return Scaffold(
@@ -59,6 +60,31 @@ class MaterialsScreen extends ConsumerWidget {
               ],
             ),
             const SizedBox(height: 8),
+            drafts.when(
+              data: (items) => Column(
+                children: [
+                  for (final draft in items)
+                    Card(
+                      child: ListTile(
+                        leading: const Icon(Icons.edit_note_outlined),
+                        title: const Text('Saved material draft'),
+                        subtitle: Text(
+                          draft.payload['work_order_id']
+                                      ?.toString()
+                                      .isNotEmpty ==
+                                  true
+                              ? 'Work order ${draft.payload['work_order_id']}'
+                              : 'Tap to continue editing',
+                        ),
+                        trailing: const Icon(Icons.chevron_right),
+                        onTap: () => context.push('/materials/new'),
+                      ),
+                    ),
+                ],
+              ),
+              loading: () => const SizedBox.shrink(),
+              error: (_, _) => const SizedBox.shrink(),
+            ),
             requests.when(
               data: (items) {
                 if (items.isEmpty) {
@@ -174,6 +200,8 @@ class _MaterialRequestTile extends StatelessWidget {
           crossAxisAlignment: WrapCrossAlignment.center,
           children: [
             _MaterialStatusChip(status: request.status),
+            if (request.supportStatus != null)
+              Text('ERP ${request.supportStatus}'),
             if (request.priority != null) Text(request.priority!),
             if (date != null) Text(date),
           ],
@@ -433,10 +461,14 @@ class NewMaterialRequestScreen extends ConsumerStatefulWidget {
     super.key,
     this.initialWorkOrderId,
     this.initialWorkOrderLabel,
+    this.initialProjectId,
+    this.initialTicketId,
   });
 
   final String? initialWorkOrderId;
   final String? initialWorkOrderLabel;
+  final String? initialProjectId;
+  final String? initialTicketId;
 
   @override
   ConsumerState<NewMaterialRequestScreen> createState() =>
@@ -464,6 +496,8 @@ class _NewMaterialRequestScreenState
   void initState() {
     super.initState();
     _workOrderId.text = widget.initialWorkOrderId ?? '';
+    _projectId.text = widget.initialProjectId ?? '';
+    _ticketId.text = widget.initialTicketId ?? '';
     Future.microtask(_loadDraft);
   }
 
@@ -511,8 +545,10 @@ class _NewMaterialRequestScreenState
       _destinationLocationId = draft['destination_location_id'] as String?;
       _workOrderId.text =
           widget.initialWorkOrderId ?? draft['work_order_id'] as String? ?? '';
-      _projectId.text = draft['project_id'] as String? ?? '';
-      _ticketId.text = draft['ticket_id'] as String? ?? '';
+      _projectId.text =
+          widget.initialProjectId ?? draft['project_id'] as String? ?? '';
+      _ticketId.text =
+          widget.initialTicketId ?? draft['ticket_id'] as String? ?? '';
       _notes.text = draft['notes'] as String? ?? '';
       _items
         ..clear()
@@ -539,6 +575,7 @@ class _NewMaterialRequestScreenState
             'items': _items.map(_materialDraftItemJson).toList(),
           },
         );
+    ref.invalidate(materialRequestDraftsProvider);
     if (!mounted) return;
     ScaffoldMessenger.of(
       context,
@@ -600,6 +637,7 @@ class _NewMaterialRequestScreenState
         // The request was created; the list can still be refreshed manually.
       }
       await ref.read(draftStoreProvider).delete(materialRequestDraftId);
+      ref.invalidate(materialRequestDraftsProvider);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('${request.displayNumber} submitted')),
@@ -617,6 +655,7 @@ class _NewMaterialRequestScreenState
               payload: payload,
             );
         await ref.read(draftStoreProvider).delete(materialRequestDraftId);
+        ref.invalidate(materialRequestDraftsProvider);
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Material request queued for sync')),
