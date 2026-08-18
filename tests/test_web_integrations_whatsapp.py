@@ -294,11 +294,12 @@ def test_legacy_manifest_requires_explicit_adoption_before_phone_number_id(
 
     current_definition = connector_definition("whatsapp")
     assert current_definition is not None
+    installation_id = installation.id
     db_session_adapter.release_read_transaction(db_session)
     installations.adopt_installation_manifest(
         db_session,
         installations.AdoptManifestCommand(
-            installation_id=installation.id,
+            installation_id=installation_id,
             expected_installed_pin=installations.ManifestPin(
                 connector_version=legacy_definition.version,
                 manifest_digest=legacy_definition.digest,
@@ -317,7 +318,7 @@ def test_legacy_manifest_requires_explicit_adoption_before_phone_number_id(
     )
     revision = installations.create_config_revision(
         db_session,
-        installation_id=installation.id,
+        installation_id=installation_id,
         config={
             "provider": "meta_cloud_api",
             "phone_number": "+2348012345678",
