@@ -1,14 +1,17 @@
 import builtins
 import logging
+from collections import defaultdict
 from datetime import UTC, datetime
+from decimal import Decimal
 from ipaddress import IPv4Address as ParsedIPv4Address
 from uuid import UUID
 
 from fastapi import HTTPException
 from sqlalchemy import and_, case, func, not_, or_
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, attributes, selectinload
 
 from app.models.billing import TaxRate
+from app.models.catalog import BillingCycle, Subscription, SubscriptionStatus
 from app.models.domain_settings import SettingDomain
 from app.models.subscriber import (
     Address,
@@ -54,6 +57,30 @@ from app.services.sync_feeds import apply_sync_page, sync_page_response
 
 logger = logging.getLogger(__name__)
 _UNSPECIFIED_IPV4 = ParsedIPv4Address(0)
+_BILLABLE_SUBSCRIPTION_STATUSES = {
+    SubscriptionStatus.active,
+    SubscriptionStatus.blocked,
+    SubscriptionStatus.suspended,
+}
+
+
+def _monthly_amount(amount: Decimal | None, cycle: BillingCycle | None) -> Decimal:
+    if amount is None:
+        return Decimal("0")
+    normalized_cycle = cycle or BillingCycle.monthly
+    if normalized_cycle == BillingCycle.daily:
+        return amount * Decimal("30")
+    if normalized_cycle == BillingCycle.weekly:
+        return amount * Decimal("52") / Decimal("12")
+    if normalized_cycle == BillingCycle.quarterly:
+        return amount / Decimal("3")
+    if normalized_cycle == BillingCycle.annual:
+        return amount / Decimal("12")
+    return amount
+
+
+def _enum_value(value) -> str | None:
+    return getattr(value, "value", value) if value is not None else None
 
 
 def _release_subscriber_network_records(db: Session, subscriber_id) -> None:
@@ -912,18 +939,93 @@ class Subscribers(ListResponseMixin):
                 query = query.filter(_is_business_clause())
             else:
                 raise HTTPException(status_code=400, detail="Invalid subscriber_type")
-        return apply_sync_page(
-            query,
-            Subscriber,
-            updated_since=updated_since,
-            limit=limit,
-            offset=offset,
-        ).all()
+        latest_subscription_updated_at = func.max(Subscription.updated_at)
+        sync_updated_at = case(
+            (
+                latest_subscription_updated_at > Subscriber.updated_at,
+                latest_subscription_updated_at,
+            ),
+            else_=Subscriber.updated_at,
+        ).label("sync_updated_at")
+        query = (
+            query.outerjoin(Subscription, Subscription.subscriber_id == Subscriber.id)
+            .add_columns(sync_updated_at)
+            .group_by(Subscriber.id)
+        )
+        if updated_since is not None:
+            query = query.having(sync_updated_at >= updated_since)
+        rows = (
+            query.order_by(sync_updated_at.asc(), Subscriber.id.asc())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+        items = []
+        for subscriber, row_updated_at in rows:
+            attributes.set_committed_value(
+                subscriber, "updated_at", row_updated_at or subscriber.updated_at
+            )
+            items.append(subscriber)
+        cls._attach_commercial_sync_metrics(db, items)
+        return items
 
     @classmethod
     def sync_list_response(cls, db: Session, **kwargs):
         items = cls.list_for_sync(db, **kwargs)
         return sync_page_response(items, limit=kwargs["limit"], offset=kwargs["offset"])
+
+    @staticmethod
+    def _attach_commercial_sync_metrics(
+        db: Session, subscribers: builtins.list[Subscriber]
+    ) -> None:
+        subscriber_ids = [subscriber.id for subscriber in subscribers]
+        if not subscriber_ids:
+            return
+
+        subscriptions = (
+            db.query(Subscription)
+            .filter(Subscription.subscriber_id.in_(subscriber_ids))
+            .filter(Subscription.status.in_(_BILLABLE_SUBSCRIPTION_STATUSES))
+            .all()
+        )
+        grouped: dict[UUID, builtins.list[Subscription]] = defaultdict(list)
+        for subscription in subscriptions:
+            grouped[subscription.subscriber_id].append(subscription)
+
+        for subscriber in subscribers:
+            active_subscriptions = grouped.get(subscriber.id, [])
+            monthly_total = Decimal("0")
+            next_renewal_at = None
+            billing_cycle = None
+            service_status = None
+            for subscription in active_subscriptions:
+                quantity = subscription.quantity or 1
+                monthly_total += _monthly_amount(
+                    subscription.unit_price, subscription.billing_cycle
+                ) * Decimal(quantity)
+                if subscription.next_billing_at and (
+                    next_renewal_at is None
+                    or subscription.next_billing_at < next_renewal_at
+                ):
+                    next_renewal_at = subscription.next_billing_at
+                if billing_cycle is None:
+                    billing_cycle = _enum_value(subscription.billing_cycle)
+                if service_status is None:
+                    service_status = (
+                        subscription.service_status_raw
+                        or _enum_value(subscription.status)
+                    )
+
+            subscriber.service_status = service_status
+            subscriber.recurring_subscription_count = len(active_subscriptions)
+            subscriber.next_renewal_at = next_renewal_at
+            subscriber.billing_cycle = billing_cycle
+            subscriber.recurring_amount_monthly = monthly_total.quantize(
+                Decimal("0.01")
+            )
+            subscriber.annualized_recurring_revenue = (
+                monthly_total * Decimal("12")
+            ).quantize(Decimal("0.01"))
 
     @staticmethod
     def list_active_by_ids(
