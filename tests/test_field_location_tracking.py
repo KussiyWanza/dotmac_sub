@@ -48,11 +48,16 @@ def _auth(user: SystemUser) -> dict:
     }
 
 
-def _profile(db_session, user: SystemUser) -> TechnicianProfile:
+def _profile(
+    db_session,
+    user: SystemUser,
+    *,
+    crm_person_id: str = "crm-live-tech",
+) -> TechnicianProfile:
     profile = TechnicianProfile(
         person_id=user.id,
         system_user_id=user.id,
-        crm_person_id="crm-live-tech",
+        crm_person_id=crm_person_id,
     )
     db_session.add(profile)
     db_session.flush()
@@ -278,7 +283,7 @@ def test_location_ping_rejects_technician_after_reassignment(db_session):
     old_user = _user(db_session)
     old_profile = _profile(db_session, old_user)
     new_user = _user(db_session)
-    new_profile = _profile(db_session, new_user)
+    new_profile = _profile(db_session, new_user, crm_person_id="crm-new-tech")
     subscriber = _subscriber(db_session)
     row = _work_order(db_session, subscriber, crm_work_order_id="wo-reassigned")
     db_session.add(

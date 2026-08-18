@@ -7,6 +7,7 @@ import pytest
 from app.models.integration_platform import IntegrationInstallation
 from app.models.notification import NotificationChannel, NotificationTemplate
 from app.services import web_notifications
+from app.services.db_session_adapter import db_session_adapter
 from app.services.integrations import installations, whatsapp_capability
 from app.services.integrations.connectors import whatsapp_runtime
 from app.services.integrations.registry import (
@@ -293,6 +294,7 @@ def test_legacy_manifest_requires_explicit_adoption_before_phone_number_id(
 
     current_definition = connector_definition("whatsapp")
     assert current_definition is not None
+    db_session_adapter.release_read_transaction(db_session)
     installations.adopt_installation_manifest(
         db_session,
         installations.AdoptManifestCommand(

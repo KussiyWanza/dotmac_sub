@@ -57,7 +57,9 @@ class TicketBase(BaseModel):
     channel: TicketChannel = TicketChannel.web
     tags: list[str] = Field(default_factory=list)
     metadata_: dict | None = Field(
-        default=None, validation_alias="metadata", serialization_alias="metadata"
+        default=None,
+        validation_alias=AliasChoices("metadata_", "metadata"),
+        serialization_alias="metadata",
     )
     inbound_sender: str | None = None
     inbound_sender_type: str | None = None

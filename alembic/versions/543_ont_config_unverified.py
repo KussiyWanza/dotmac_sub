@@ -1,6 +1,6 @@
 """Represent delivered ONT configuration whose exact readback is unavailable.
 
-Revision ID: 543_ont_config_delivered_unverified
+Revision ID: 543_ont_config_unverified
 Revises: 542_subscription_additional_ip_permission
 Create Date: 2026-08-18
 """
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "543_ont_config_delivered_unverified"
+revision: str = "543_ont_config_unverified"
 down_revision: str | None = "542_subscription_additional_ip_permission"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
