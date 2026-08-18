@@ -10,6 +10,7 @@ See docs/designs/TEAM_INBOX_ADMIN_UI_PORT.md §5.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from app.services import team_inbox_projection
@@ -173,6 +174,20 @@ def test_mark_read_posts_with_csrf_header():
     assert 'Accept: "application/json"' in body
     assert "this.applyConversationRead(id)" in body
     assert 'this.refreshSidebar("read_state")' not in body
+
+
+def test_whatsapp_reopen_uses_the_exported_timeout_fetcher():
+    """The reopen loader lives outside the closure that defines the helper."""
+    assert "window.inboxFetchWithTimeout = fetchWithTimeout;" in JAVASCRIPT
+
+    marker = JAVASCRIPT.index("function initWhatsAppTemplateReopen")
+    next_initializer = JAVASCRIPT.index("function initWhatsAppTemplateReopenForms")
+    body = JAVASCRIPT[marker:next_initializer]
+    assert "window.inboxFetchWithTimeout(form.dataset.templateEndpoint" in body
+    assert not re.search(
+        r"(?m)^\s*fetchWithTimeout\(form\.dataset\.templateEndpoint",
+        body,
+    )
     assert "this.markConversationRead(id, 1)" in body
 
 
