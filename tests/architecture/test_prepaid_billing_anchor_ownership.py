@@ -141,6 +141,15 @@ def test_legacy_anchor_backfill_cannot_guess_or_write_billing_dates() -> None:
     assert "repair_stale_prepaid_billing_anchors.py" in source
 
 
+def test_anchor_repair_prints_every_fingerprint_bound_candidate() -> None:
+    source = (
+        PROJECT_ROOT / "scripts/one_off/repair_stale_prepaid_billing_anchors.py"
+    ).read_text(encoding="utf-8")
+
+    assert "for candidate in preview.candidates:" in source
+    assert "preview.candidates[:20]" not in source
+
+
 def test_every_active_lifecycle_transition_stages_the_required_anchor() -> None:
     writers = _assigns_active_subscription_status(CANONICAL_WRITER)
     assert writers == {

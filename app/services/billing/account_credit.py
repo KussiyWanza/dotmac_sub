@@ -117,6 +117,7 @@ class AccountCreditInvoiceFundingPreview:
     currency: str
     invoice_remaining: Decimal
     account_credit: Decimal
+    total_payment_backed_credit: Decimal
     payment_backed_credit: Decimal
     spendable_credit: Decimal
     shortfall: Decimal
@@ -518,17 +519,18 @@ class AccountCreditApplications:
             )
             if (payment.currency or "NGN").upper() == currency
         )
-        payment_backed = round_money(
+        total_payment_backed = round_money(
             sum((room for _payment, room in sources), Decimal("0.00"))
         )
-        spendable = min(account_credit, payment_backed)
+        payment_backed = min(invoice_remaining, total_payment_backed)
+        spendable = min(invoice_remaining, account_credit, total_payment_backed)
         shortfall = max(
             Decimal("0.00"),
             round_money(invoice_remaining - spendable),
         )
         unbacked = max(
             Decimal("0.00"),
-            round_money(account_credit - payment_backed),
+            round_money(account_credit - total_payment_backed),
         )
         source_payment_ids = tuple(payment.id for payment, _room in sources)
         payload: dict[str, object] = {
@@ -538,6 +540,7 @@ class AccountCreditApplications:
             "currency": currency,
             "invoice_remaining": invoice_remaining,
             "account_credit": account_credit,
+            "total_payment_backed_credit": total_payment_backed,
             "payment_backed_credit": payment_backed,
             "spendable_credit": spendable,
             "shortfall": shortfall,
@@ -553,6 +556,7 @@ class AccountCreditApplications:
             currency=currency,
             invoice_remaining=invoice_remaining,
             account_credit=account_credit,
+            total_payment_backed_credit=total_payment_backed,
             payment_backed_credit=payment_backed,
             spendable_credit=spendable,
             shortfall=shortfall,

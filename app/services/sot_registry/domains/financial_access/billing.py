@@ -22,7 +22,10 @@ SERVICES: tuple[SOTService, ...] = (
     SOTService(
         name="billing.opening_balance_history",
         module="app.services.billing.opening_balance_history",
-        owns=("complete opening-balance customer target",),
+        owns=(
+            "carried-source identity classification",
+            "complete opening-balance customer target",
+        ),
         depends_on=(
             "customer.accounts",
             "financial.credit_notes",
@@ -34,11 +37,18 @@ SERVICES: tuple[SOTService, ...] = (
             "Cutover-only resolver over the frozen isolated opening-balance audit "
             "restore. A complete empty transaction set is zero; missing, "
             "duplicate, malformed, or unreconciled source evidence fails the "
-            "whole cohort. It contacts no external system, writes money, assigns an "
-            "unknown balance, or remains a runtime authority after completion."
+            "whole cohort. A carried customer with no retained source identity has "
+            "an explicit unresolved classification that blocks all materialization. "
+            "It contacts no external system, writes money, assigns an unknown "
+            "balance, or remains a runtime authority after completion."
         ),
         contract=ServiceContract(
             concerns=(
+                ConcernContract(
+                    name="carried-source identity classification",
+                    role=OwnerRole.RESOLVER,
+                    input_names=("canonical migrated customer identity",),
+                ),
                 ConcernContract(
                     name="complete opening-balance customer target",
                     role=OwnerRole.RESOLVER,
@@ -125,9 +135,10 @@ SERVICES: tuple[SOTService, ...] = (
                 ),
                 new_owner="billing.opening_balance_history",
                 verification=(
-                    "Complete/empty history, source mismatch, missing cohort, "
-                    "native advancement, signed manifest, incremental opening, "
-                    "and full-cohort parity regressions."
+                    "Complete/empty history, source mismatch, explicit unresolved "
+                    "carried identity, missing cohort, native advancement, signed "
+                    "manifest, incremental opening, and full-cohort parity "
+                    "regressions."
                 ),
                 cutover_gate=(
                     "Every funding candidate has a signed history-derived target, "

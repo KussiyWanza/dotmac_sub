@@ -22,6 +22,9 @@ from app.services.billing.opening_balance_history import (
     OpeningBalanceHistoryError,
     OpeningBalanceHistoryOrigin,
     OpeningBalanceHistoryQuery,
+    OpeningBalanceSourceIdentityDisposition,
+    OpeningBalanceSourceIdentityQuery,
+    classify_opening_balance_source_identities,
     resolve_opening_balance_history_targets,
 )
 
@@ -178,10 +181,27 @@ def test_migrated_account_without_splynx_identity_fails_the_complete_snapshot(
     subscriber.created_at = datetime(2026, 6, 1, tzinfo=UTC)
     db_session.flush()
 
+    identity = classify_opening_balance_source_identities(
+        db_session,
+        OpeningBalanceSourceIdentityQuery(
+            account_ids=(subscriber.id,),
+            native_after=HANDOFF,
+            position_at=SNAPSHOT,
+        ),
+    )
+
+    assert identity.unresolved_account_ids == (subscriber.id,)
+    assert (
+        identity.rows[0].disposition
+        is OpeningBalanceSourceIdentityDisposition.unresolved_carried_identity
+    )
+    assert len(identity.rows[0].evidence_fingerprint) == 64
+
     with pytest.raises(OpeningBalanceHistoryError) as exc:
         resolve_opening_balance_history_targets(db_session, _query(subscriber.id))
 
     assert exc.value.code.endswith("source_cohort_incomplete")
+    assert exc.value.details["reason"] == "missing_carried_source_identity"
 
 
 def test_missing_source_customer_fails_the_complete_snapshot(
