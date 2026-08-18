@@ -153,6 +153,7 @@ def test_materializer_owner_requires_a_config_trusted_clean_replay_seal() -> Non
     assert "reconstruction_source_cohort_incomplete" in owner
     assert "expected_candidate_hash = candidate_cohort_sha256" in owner
     assert "resolve_opening_balance_history_targets" in exporter
+    assert "classify_opening_balance_source_identities" in exporter
     assert "--allow-quarantined-subset" not in exporter
     assert "source_cohort_incomplete" in _read(
         "app/services/billing/opening_balance_history.py"
@@ -177,6 +178,15 @@ def test_materializer_owner_requires_a_config_trusted_clean_replay_seal() -> Non
         "app/services/kernel_secret_source.py"
     )
     assert "prepaid_reconstruction_attestation_public_key_ref" not in settings
+
+
+def test_source_identity_blocker_is_written_before_the_blocked_exit() -> None:
+    exporter = _read("scripts/one_off/export_prepaid_funding_snapshot.py")
+
+    blocker_write = exporter.index("_write_json(args.blockers_out")
+    blocked_exit = exporter.index("if not export.ready:", blocker_write)
+    assert blocker_write < blocked_exit
+    assert "missing_carried_source_identity" in exporter
 
 
 def test_complete_history_reader_and_retired_quarantine_name_have_one_app_home() -> (
@@ -232,6 +242,12 @@ def test_audit_restore_is_isolated_and_cannot_reach_the_live_database() -> None:
     for reserved in ("dotmac_pg_local", "dotmac_sub_db", "postgres-local"):
         assert reserved in script, f"{reserved} must be in the refused-name list"
     assert "must not be the live database container" in script
+    assert "postgres_initialization_complete" in script
+    assert "PostgreSQL init process complete" in script
+    assert "final PostgreSQL server" in script
+    assert "/app/scripts/run_repo_module.sh" in script
+    assert "scripts.one_off.export_prepaid_funding_snapshot" in script
+    assert "python scripts/one_off/export_prepaid_funding_snapshot.py" not in script
 
     # The restored copy is unreachable: internal network, no published ports.
     # Trust auth is only defensible alongside both, so they are asserted

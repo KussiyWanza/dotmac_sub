@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -33,6 +35,48 @@ from app.services.whatsapp_notification_templates import (
     provider_template_from_template,
     sync_whatsapp_registry_templates,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class NotificationQueuePresentation:
+    label: str
+    tone: str
+    timing: str
+
+
+def notification_queue_presentation(
+    notification: object,
+    *,
+    now: datetime | None = None,
+) -> NotificationQueuePresentation:
+    timestamp = now or datetime.now(UTC)
+    status = getattr(notification, "status", NotificationStatus.queued)
+    send_at = getattr(notification, "send_at", None)
+    if send_at is not None and send_at.tzinfo is None:
+        send_at = send_at.replace(tzinfo=UTC)
+    if (
+        status is NotificationStatus.queued
+        and send_at is not None
+        and send_at > timestamp
+    ):
+        return NotificationQueuePresentation(
+            label="Scheduled",
+            tone="neutral",
+            timing="scheduled",
+        )
+    presentations = {
+        NotificationStatus.queued: ("Queued and due", "warning"),
+        NotificationStatus.sending: ("Sending", "info"),
+        NotificationStatus.delivered: ("Delivered", "active"),
+        NotificationStatus.failed: ("Retrying" if send_at else "Failed", "error"),
+        NotificationStatus.canceled: ("Canceled", "neutral"),
+    }
+    label, tone = presentations[status]
+    return NotificationQueuePresentation(
+        label=label,
+        tone=tone,
+        timing="retry" if status is NotificationStatus.failed and send_at else "due",
+    )
 
 
 def channels() -> list[str]:
@@ -577,8 +621,13 @@ def queue_context(db: Session, query: ListQuery) -> dict[str, object]:
         status=notification_status,
     )
     total_pages = (total + per_page - 1) // per_page if total else 1
+    presentations = {
+        str(notification.id): notification_queue_presentation(notification)
+        for notification in notifications_list
+    }
     return {
         "notifications": notifications_list,
+        "notification_presentations": presentations,
         "page": page,
         "per_page": per_page,
         "total": total,

@@ -1,9 +1,30 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
-from app.models.notification import NotificationChannel
+from app.models.notification import NotificationChannel, NotificationStatus
 from app.services import web_notifications as web_notifications_service
+
+
+def test_queue_presentation_distinguishes_due_from_scheduled() -> None:
+    now = datetime(2026, 8, 18, 9, 0, tzinfo=UTC)
+    due = web_notifications_service.notification_queue_presentation(
+        SimpleNamespace(status=NotificationStatus.queued, send_at=None),
+        now=now,
+    )
+    scheduled = web_notifications_service.notification_queue_presentation(
+        SimpleNamespace(
+            status=NotificationStatus.queued,
+            send_at=now + timedelta(hours=1),
+        ),
+        now=now,
+    )
+
+    assert due.label == "Queued and due"
+    assert due.timing == "due"
+    assert scheduled.label == "Scheduled"
+    assert scheduled.timing == "scheduled"
 
 
 def test_bulk_notification_setup_context_reports_channel_readiness(monkeypatch):

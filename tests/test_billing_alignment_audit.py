@@ -656,6 +656,36 @@ def test_funding_export_fails_complete_batch_without_source_history(
         metadata.drop_all(db_session.get_bind())
 
 
+def test_funding_export_writes_fail_closed_missing_source_identity_diagnostics(
+    db_session, subscriber
+):
+    subscription = _source_mapped_subscription(db_session, subscriber)
+    metadata = _replay_tables(db_session, subscriber.id, subscription.id)
+    subscriber.splynx_customer_id = None
+    subscriber.created_at = datetime(2026, 6, 1, tzinfo=UTC)
+    db_session.commit()
+    try:
+        export = build_prepaid_funding_snapshot(
+            db_session,
+            snapshot_at=datetime(2026, 7, 12, tzinfo=UTC),
+            source="splynx-final-plus-native-events:test",
+        )
+    finally:
+        metadata.drop_all(db_session.get_bind())
+
+    account_id = str(subscriber.id)
+    assert export.ready is False
+    assert export.positions == {}
+    assert export.enforceable_ids == ()
+    assert export.incomplete == {account_id: ("missing_carried_source_identity",)}
+    diagnostics = export.diagnostics_payload()
+    assert diagnostics["reconstructed_accounts"] == 0
+    assert diagnostics["enforceable_accounts"] == 0
+    assert diagnostics["incomplete_reason_counts"] == {
+        "missing_carried_source_identity": 1
+    }
+
+
 def test_replay_separates_absent_service_history_from_noncanonical_period_evidence(
     db_session, subscriber
 ):

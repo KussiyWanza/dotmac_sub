@@ -505,6 +505,15 @@ def test_deploy_verifies_every_worker_and_beat_before_success(tmp_path: Path) ->
             assert all(
                 f"celery@container-{service}" in command for command in ping_commands
             )
+    assert all(
+        "celery@container-celery-worker-notifications-immediate=notifications_immediate"
+        in command
+        for command in ping_commands
+    )
+    assert all(
+        "celery@container-celery-worker-notifications=notifications" in command
+        for command in ping_commands
+    )
 
 
 def test_deploy_rolls_back_when_a_celery_worker_is_unavailable(

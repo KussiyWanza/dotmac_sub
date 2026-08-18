@@ -50,6 +50,10 @@ _STATE_SNAPSHOT_SPECS = {
     "celery_queues": {"max_observations": 64, "ttl_seconds": 86_400},
     "credentials": {"max_observations": 500, "ttl_seconds": 7 * 86_400},
     "database_pressure": {"max_observations": 16, "ttl_seconds": 86_400},
+    "field_location_retention": {
+        "max_observations": 8,
+        "ttl_seconds": 7 * 86_400,
+    },
     "nas_lifecycle": {"max_observations": 32, "ttl_seconds": 7 * 86_400},
     "network_operations": {"max_observations": 32, "ttl_seconds": 86_400},
     # Prepaid enforcement + transitional coverage-repair counts published by
@@ -430,10 +434,23 @@ def record_notification_queue_result(
 
     failed = counters.get("failed", 0) + counters.get("talk_failed", 0)
     stuck_dropped = counters.get("stuck_dropped", 0)
-    if failed <= 0 and stuck_dropped <= 0:
+    stale_due = counters.get("stale_due", 0)
+    if failed <= 0 and stuck_dropped <= 0 and stale_due <= 0:
+        try:
+            resolve_findings(
+                db,
+                managed_prefix="observability:notification:queue-failures",
+                active_fingerprints=set(),
+            )
+        except Exception:
+            logger.exception("notification_queue_finding_resolution_failed")
         return
 
-    severity = AlertSeverity.critical if failed >= 10 else AlertSeverity.warning
+    severity = (
+        AlertSeverity.critical
+        if failed >= 10 or stale_due >= 100
+        else AlertSeverity.warning
+    )
     try:
         record_finding(
             db,
@@ -442,10 +459,11 @@ def record_notification_queue_result(
                 domain="notification",
                 source="notification_queue",
                 severity=severity,
-                title="Notification queue delivery failures",
+                title="Notification queue requires attention",
                 summary=(
                     f"{failed} notification(s) failed; "
-                    f"{stuck_dropped} stuck send(s) dropped in the latest batch."
+                    f"{stuck_dropped} stuck send(s) dropped; "
+                    f"{stale_due} due notification(s) remain stale."
                 ),
                 details=counters,
                 target_url="/admin/notifications",

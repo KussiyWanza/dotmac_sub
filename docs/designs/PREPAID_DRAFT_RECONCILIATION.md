@@ -235,6 +235,11 @@ the draft-invoice reconciliation queue.
 the disposition, recommended action, authoritative funding, exact
 payment-backed credit, reviewed opening funding available/required, unbacked
 credit, shortfall, evidence identifiers, and a SHA-256 evidence fingerprint.
+Payment-backed credit in this preview is invoice-scoped: it cannot exceed the
+current receivable. The funding owner retains the full account payment-backed
+total in its typed evidence and leaves any excess as reusable account credit;
+the reconciler neither allocates nor reports that residual as fundable against
+this invoice.
 Invoke it from the repository root as a module:
 
 ```bash

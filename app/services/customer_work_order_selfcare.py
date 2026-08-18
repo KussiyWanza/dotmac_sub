@@ -7,7 +7,7 @@ every operation to the subscriber before returning data.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -17,7 +17,7 @@ from app.models.dispatch import (
     TechnicianProfile,
     WorkOrderAssignmentQueue,
 )
-from app.models.field_location import FieldTechPresence
+from app.models.field_location import FieldTechLocationPing, FieldTechPresence
 from app.models.work_order import WorkOrder
 from app.schemas.portal import TechnicianLocation, TechnicianRatingResponse
 from app.services.audit_helpers import log_audit_event
@@ -25,6 +25,7 @@ from app.services.common import coerce_uuid
 
 _TRACKABLE_STATUSES = frozenset({"in_progress"})
 _RATABLE_STATUSES = frozenset({"completed"})
+TECHNICIAN_LOCATION_FRESHNESS = timedelta(minutes=2)
 
 
 def _owned_work_order(
@@ -88,19 +89,40 @@ def technician_location(
             reason="sharing_off",
             work_order_id=row.public_id,
         )
-    if presence.last_latitude is None or presence.last_longitude is None:
+    ping = db.scalar(
+        select(FieldTechLocationPing)
+        .where(
+            FieldTechLocationPing.technician_id == profile.id,
+            FieldTechLocationPing.crm_work_order_id == row.public_id,
+        )
+        .order_by(
+            FieldTechLocationPing.captured_at.desc(),
+            FieldTechLocationPing.received_at.desc(),
+        )
+        .limit(1)
+    )
+    if ping is None:
         return TechnicianLocation(
             available=False,
             reason="no_fix",
             work_order_id=row.public_id,
         )
+    last_location_at = ping.captured_at
+    if last_location_at.tzinfo is None:
+        last_location_at = last_location_at.replace(tzinfo=UTC)
+    if datetime.now(UTC) - last_location_at > TECHNICIAN_LOCATION_FRESHNESS:
+        return TechnicianLocation(
+            available=False,
+            reason="stale",
+            work_order_id=row.public_id,
+        )
     return TechnicianLocation(
         available=True,
         work_order_id=row.public_id,
-        latitude=presence.last_latitude,
-        longitude=presence.last_longitude,
-        accuracy_m=presence.last_location_accuracy_m,
-        updated_at=presence.last_location_at,
+        latitude=ping.latitude,
+        longitude=ping.longitude,
+        accuracy_m=ping.accuracy_m,
+        updated_at=last_location_at,
         estimated_arrival_at=row.estimated_arrival_at,
     )
 

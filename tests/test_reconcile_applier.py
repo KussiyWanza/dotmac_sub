@@ -829,7 +829,7 @@ def test_acs_set_nat_enabled_pushes_single_param():
     }
 
 
-def test_acs_set_dhcp_server_pushes_four_params():
+def test_acs_set_dhcp_server_pushes_lan_address_and_dhcp_block():
     acs = _StubAcsClient()
     ctx = _ctx(acs_client=acs)
     plan = _plan(
@@ -839,15 +839,17 @@ def test_acs_set_dhcp_server_pushes_four_params():
             pool_min="192.168.100.2",
             pool_max="192.168.100.254",
             subnet_mask="255.255.255.0",
+            gateway_ip="192.168.100.1",
         )
     )
     apply_plan(plan, ctx)
     params = acs.calls[0][1][1]
-    assert len(params) == 4
+    assert len(params) == 5
     lan_root = "InternetGatewayDevice.LANDevice.1.LANHostConfigManagement."
     assert params[lan_root + "DHCPServerEnable"] is True
     assert params[lan_root + "MinAddress"] == "192.168.100.2"
     assert params[lan_root + "SubnetMask"] == "255.255.255.0"
+    assert params[lan_root + "IPInterface.1.IPInterfaceIPAddress"] == "192.168.100.1"
 
 
 def test_acs_set_management_server_pushes_cr_creds_and_inform_interval():

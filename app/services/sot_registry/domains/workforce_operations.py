@@ -24,6 +24,105 @@ DOMAIN = DomainSOT(
     domain="workforce_operations",
     services=(
         SOTService(
+            name="operations.field_location_retention",
+            module="app.services.field.location_retention",
+            owns=("detailed field-location history retention",),
+            depends_on=("events.store", "observability.audit_log"),
+            notes=(
+                "This owner deletes only detailed FieldTechLocationPing rows "
+                "whose server received_at is older than 30 days. It operates "
+                "in locked batches of at most 10,000 and never deletes current "
+                "FieldTechPresence snapshots or work-order lifecycle evidence."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name="detailed field-location history retention",
+                        role=OwnerRole.COMMAND_WRITER,
+                        input_names=(
+                            "server-recorded field-location receipt time",
+                            "approved field-location retention policy",
+                        ),
+                        canonical_writer="operations.field_location_retention",
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="server-recorded field-location receipt time",
+                        owner="operations.field_location_retention",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="FieldTechLocationPing.received_at in UTC.",
+                    ),
+                    AuthorityInput(
+                        name="approved field-location retention policy",
+                        owner="operations.field_location_retention",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "Checked-in 30-day detailed GPS history policy and "
+                            "10,000-row transaction bound."
+                        ),
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.OWNER_MANAGED,
+                    boundary=(
+                        "The scheduled adapter opens a transaction-free session; "
+                        "the owner command locks, deletes, audits, emits, and "
+                        "commits one bounded batch atomically."
+                    ),
+                    locking=(
+                        "Oldest eligible ping IDs are ordered and selected with "
+                        "FOR UPDATE SKIP LOCKED before deletion."
+                    ),
+                    idempotency=(
+                        "Re-execution selects only still-existing rows older than "
+                        "the fixed cutoff and therefore converges without double deletion."
+                    ),
+                    retries=(
+                        "The task retries transient database failures only after "
+                        "the owner boundary rolls back the complete batch."
+                    ),
+                ),
+                errors=ErrorContract(
+                    domain_codes=(
+                        "operations.field_location_retention.invalid_batch_size",
+                        *owner_command_boundary_error_codes(
+                            "operations.field_location_retention"
+                        ),
+                    ),
+                    mapping_owner="field-location retention task adapter",
+                    retryable_codes=(),
+                    fail_closed_on=("invalid or oversized deletion batch",),
+                ),
+                events=EventContract(
+                    event_types=("field_location.history_pruned",),
+                    schema_version=1,
+                    delivery_owner="events.store",
+                    compatibility=(
+                        "Version 1 contains only cutoff, policy duration, and "
+                        "aggregate deletion count; it contains no coordinates."
+                    ),
+                    replay=(
+                        "Remaining receipt timestamps and the audit/event count "
+                        "prove convergence; deleted private coordinates are not rebuilt."
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.NATIVE,
+                    new_owner="operations.field_location_retention",
+                ),
+                steward="field operations and privacy",
+                design_refs=(
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                    "docs/runbooks/FIELD_LOCATION_RETENTION.md",
+                ),
+                test_refs=(
+                    "tests/test_field_location_retention.py",
+                    "tests/architecture/test_field_location_retention_alerts.py",
+                ),
+            ),
+        ),
+        SOTService(
             name="operations.service_team_source_retirement",
             module="app.services.service_team_source_retirement",
             owns=(

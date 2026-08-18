@@ -72,7 +72,9 @@ scripts/one_off/prepaid_funding_audit_restore.sh provision
 Uses the newest dump unless given `--dump PATH`. The restore takes a while;
 it is verified by counting `subscribers` rows, not by trusting `psql`'s exit
 status (a plain-format prod dump reliably emits benign errors for extensions
-and roles absent from a bare image).
+and roles absent from a bare image). Provisioning waits for the official image's
+initialization-complete marker and then for its final PostgreSQL server; an
+early `pg_isready` from the temporary bootstrap server is not accepted.
 
 ### 2. Export
 
@@ -82,10 +84,14 @@ scripts/one_off/prepaid_funding_audit_restore.sh export \
   --source funding-gap-survey-2026-07-26
 ```
 
-The export succeeds only when the complete candidate cohort has exact source
-coverage. Missing, duplicate, malformed, mismatched, or unreconciled history
-aborts the whole artifact. A complete empty transaction set is zero. The
-diagnostics file is written before a blocked exit:
+The export runs as a repository module through `scripts/run_repo_module.sh`, so
+the selected image checkout is the import root. It succeeds only when the
+complete candidate cohort has exact source coverage. A carried account with no
+retained source identity is represented as `missing_carried_source_identity` in
+the diagnostics and blocks the whole cohort. Other missing, duplicate,
+malformed, mismatched, or unreconciled history aborts the whole artifact. A
+complete empty transaction set is zero. The diagnostics file is written before
+a classified blocked exit:
 
 ```
 /var/backups/dotmac_sub/funding_audit/blockers_<stamp>.json

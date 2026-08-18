@@ -70,6 +70,11 @@ container_running() {
   [[ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" == "true" ]]
 }
 
+postgres_initialization_complete() {
+  docker logs "$1" 2>&1 |
+    grep -Eq 'PostgreSQL init process complete|Skipping initialization'
+}
+
 latest_dump() {
   # Newest deploy-time backup. These are plain SQL + gzip, --no-owner
   # --no-privileges (see scripts/db_backup.sh), which restores cleanly as any
@@ -130,11 +135,22 @@ cmd_provision() {
     --label dotmac.ephemeral=funding-audit \
     "${AUDIT_IMAGE}" >/dev/null
 
-  log "Waiting for PostgreSQL to accept connections"
+  # The official image starts a temporary PostgreSQL server while it runs its
+  # initialization scripts. pg_isready succeeds against that temporary server,
+  # then the image stops it and starts the final server. Do not begin a restore
+  # in that shutdown gap.
+  log "Waiting for PostgreSQL initialization to complete"
   local attempt=0
+  until postgres_initialization_complete "${AUDIT_CONTAINER}"; do
+    attempt=$((attempt + 1))
+    [[ "${attempt}" -lt 60 ]] || die "audit database initialization did not complete"
+    sleep 2
+  done
+  log "Waiting for the final PostgreSQL server to accept connections"
+  attempt=0
   until docker exec "${AUDIT_CONTAINER}" pg_isready -U postgres -q 2>/dev/null; do
     attempt=$((attempt + 1))
-    [[ "${attempt}" -lt 60 ]] || die "audit database did not become ready"
+    [[ "${attempt}" -lt 60 ]] || die "final audit database did not become ready"
     sleep 2
   done
 
@@ -199,11 +215,14 @@ cmd_export() {
     --network "${AUDIT_NETWORK}" \
     --env-file "${ENV_FILE}" \
     --env BILLING_AUDIT_EPHEMERAL=1 \
+    --env REPO_DIR=/app \
+    --env PYTHON_BIN=python \
     --env "DATABASE_URL=postgresql+psycopg://postgres@${AUDIT_CONTAINER}:5432/${AUDIT_DB}" \
     --volume "${OUT_DIR}:/out" \
     --workdir /app \
     "${image}" \
-    python scripts/one_off/export_prepaid_funding_snapshot.py \
+    bash /app/scripts/run_repo_module.sh \
+      scripts.one_off.export_prepaid_funding_snapshot \
       --snapshot-at "${snapshot_at}" \
       --source "${source_label}" \
       --out "/out/manifest_${stamp}.json" \

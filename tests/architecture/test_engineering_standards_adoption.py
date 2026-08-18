@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PROFILE = ROOT / ".dotmac" / "standards-profile.json"
 WORKFLOW = ROOT / ".github" / "workflows" / "engineering-standards.yml"
 EVIDENCE = ROOT / "docs" / "external-connector-surface.md"
-ACCEPTED_GOVERNANCE_SHA = "4f6fbf98c25f7cfbb3dacc4f3d2f5fd7e473f193"
+ACCEPTED_GOVERNANCE_SHA = "a19259b10568d29dc0a9617347498fea7f1e7a97"
 CATEGORIES = {
     "outbound_transport",
     "webhook_surface",

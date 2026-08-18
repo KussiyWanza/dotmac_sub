@@ -1,3 +1,5 @@
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
 from app.models.domain_settings import DomainSetting, SettingDomain
@@ -79,7 +81,50 @@ def test_immediate_latency_schedules_targeted_delivery_after_commit(
     db_session.commit()
 
     assert notification.metadata_["delivery_latency"] == "immediate"
+    assert notification.metadata_["delivery_timing_source"] == "immediate"
     assert delivery_wakeups == [((), {"args": [str(notification.id)], "retry": False})]
+
+
+def test_immediate_latency_bypasses_implicit_quiet_hours(db_session, monkeypatch):
+    quiet_send_at = datetime.now(UTC) + timedelta(hours=8)
+    monkeypatch.setattr(
+        notification_service,
+        "quiet_hours_send_at",
+        lambda _db: quiet_send_at,
+    )
+
+    notification = notification_service.notifications.queue_customer_notification(
+        db_session,
+        NotificationCreate(
+            channel=NotificationChannel.email,
+            recipient="urgent@example.com",
+            subject="Urgent reply",
+            body="This reply is due now.",
+            delivery_latency=NotificationDeliveryLatency.immediate,
+        ),
+    )
+
+    assert notification.send_at is None
+    assert notification.metadata_["delivery_timing_source"] == "immediate"
+
+
+def test_explicit_schedule_overrides_immediate_latency(db_session):
+    requested_send_at = datetime.now(UTC) + timedelta(hours=2)
+
+    notification = notification_service.notifications.queue_customer_notification(
+        db_session,
+        NotificationCreate(
+            channel=NotificationChannel.email,
+            recipient="scheduled@example.com",
+            subject="Scheduled reply",
+            body="This reply is intentionally scheduled.",
+            send_at=requested_send_at,
+            delivery_latency=NotificationDeliveryLatency.immediate,
+        ),
+    )
+
+    assert notification.send_at == requested_send_at
+    assert notification.metadata_["delivery_timing_source"] == "explicit_schedule"
 
 
 def test_normal_latency_does_not_schedule_targeted_delivery(db_session, monkeypatch):
@@ -102,6 +147,7 @@ def test_normal_latency_does_not_schedule_targeted_delivery(db_session, monkeypa
     db_session.commit()
 
     assert notification.metadata_["delivery_latency"] == "normal"
+    assert notification.metadata_["delivery_timing_source"] == "due_now"
     assert delivery_wakeups == []
 
 

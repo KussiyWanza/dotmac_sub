@@ -185,6 +185,10 @@ def test_ticket_form_context_includes_authoritative_region_manager_preview(
     assert f'"test-region": "{manager.id}"' in html
     assert 'x-model="selectedManager"' in html
     assert 'x-model="selectedRegion"' in html
+    assert 'name="base_station_details"' in html
+    assert 'x-model="selectedTicketType"' in html
+    assert '"access point outage"' in html
+    assert ':required="requiresBaseStation"' in html
 
 
 def test_list_assignment_people_keeps_legacy_subscriber_assignments_visible(

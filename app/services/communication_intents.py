@@ -89,6 +89,7 @@ class CommunicationIntentResult:
     deliveries: tuple[Notification, ...]
     queued: tuple[Notification, ...]
     suppressed: tuple[str, ...]
+    replayed: bool = False
 
 
 def list_intents(
@@ -262,6 +263,7 @@ def submit(db: Session, intent: CommunicationIntent) -> CommunicationIntentResul
                     if item.status == NotificationStatus.queued
                 ),
                 suppressed=tuple(existing.suppression_reasons or []),
+                replayed=True,
             )
 
     record = CommunicationIntentRecord(

@@ -259,6 +259,9 @@ The lifecycle panel distinguishes these states:
   exact assignment and revision.
 - **Readback pending**: delivery ran, but fresh device evidence has not yet
   proved the revision.
+- **Delivered, verification unavailable**: ACS accepted the LAN/DHCP block,
+  but this ONT firmware does not expose its subnet mask and pool for exact
+  readback. Do not describe this state as verified.
 - **Verified**: readback for the exact current assignment, revision, and
   operation agrees with desired state. This is the only configured-success
   state.
@@ -271,6 +274,14 @@ intent). PPPoE credentials are derived from the subscriber access credential:
 the page may show a masked username and provenance, but never accepts or
 reveals the password. Prior assignment attempts remain in the separate history
 section and do not determine the current lifecycle status.
+
+The LAN IP-block dropdown is generated from active Catalog offers classified
+as **IP Address**; duplicate block sizes appear once. `/32` is one static
+address, so selecting it disables DHCP and clears the pool fields. Changing
+away from `/32` makes DHCP available again, but the operator must supply a
+gateway and pool that fit the selected block before applying it.
+Catalog sizes the subscriber does not currently own are labelled **subscription
+required** and cannot be applied until the corresponding subscription is active.
 
 Returning an ONT to inventory retires the current configuration lifecycle only
 after external cleanup succeeds. A failed return preserves the current fault.

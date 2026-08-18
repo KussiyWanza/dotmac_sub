@@ -4,8 +4,13 @@ from scripts import verify_celery_workers
 
 
 class _FakeControl:
-    def __init__(self, replies: list[dict[str, dict[str, str]]]) -> None:
+    def __init__(
+        self,
+        replies: list[dict[str, dict[str, str]]],
+        active_queues: dict[str, list[dict[str, str]]] | None = None,
+    ) -> None:
         self._replies = replies
+        self._active_queues = active_queues or {}
         self.destination: list[str] | None = None
         self.timeout: float | None = None
 
@@ -18,6 +23,15 @@ class _FakeControl:
         self.destination = destination
         self.timeout = timeout
         return self._replies
+
+    def inspect(self, *, destination: list[str], timeout: float):
+        control = self
+
+        class _Inspector:
+            def active_queues(self):
+                return control._active_queues
+
+        return _Inspector()
 
 
 class _FakeCelery:
@@ -77,4 +91,28 @@ def test_verify_worker_nodes_fails_closed_without_broker(monkeypatch) -> None:
     assert not verify_celery_workers.verify_worker_nodes(
         ["celery@worker-a"],
         timeout=3.0,
+    )
+
+
+def test_verify_worker_nodes_requires_expected_queue_binding(monkeypatch) -> None:
+    control = _FakeControl(
+        [{"celery@worker-a": {"ok": "pong"}}],
+        active_queues={"celery@worker-a": [{"name": "notifications"}]},
+    )
+    monkeypatch.setenv("CELERY_BROKER_URL", "redis://broker")
+    monkeypatch.setattr(
+        verify_celery_workers,
+        "Celery",
+        lambda name, *, broker: _FakeCelery(name, broker=broker, control=control),
+    )
+
+    assert verify_celery_workers.verify_worker_nodes(
+        ["celery@worker-a"],
+        timeout=3.0,
+        required_queues={"celery@worker-a": ["notifications"]},
+    )
+    assert not verify_celery_workers.verify_worker_nodes(
+        ["celery@worker-a"],
+        timeout=3.0,
+        required_queues={"celery@worker-a": ["notifications_immediate"]},
     )

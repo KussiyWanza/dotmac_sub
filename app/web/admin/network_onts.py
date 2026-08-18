@@ -26,6 +26,7 @@ from app.services import web_network_operations as web_network_operations_servic
 from app.services import web_network_service_ports as web_network_service_ports_service
 from app.services.audit_helpers import build_audit_activities
 from app.services.auth_dependencies import has_permission, require_permission
+from app.services.catalog.ip_block_choices import IpBlockPrefix
 from app.services.domain_errors import DomainError
 from app.services.network import ont_web_forms as ont_web_forms_service
 from app.services.network.action_logging import log_network_action_result
@@ -688,7 +689,7 @@ def ont_configure_submit(
     mgmt_ip_address: str = Form(default=""),
     mgmt_remote_access: bool = Form(default=False),
     lan_gateway_ip: str = Form(default=""),
-    lan_subnet_mask: str = Form(default=""),
+    lan_block_prefix: str = Form(default=""),
     lan_dhcp_enabled: bool = Form(default=False),
     lan_dhcp_start: str = Form(default=""),
     lan_dhcp_end: str = Form(default=""),
@@ -783,9 +784,15 @@ def ont_configure_submit(
         )
     elif push_lan:
         section = OntConfigurationSection.lan
+        try:
+            block_prefix = IpBlockPrefix(lan_block_prefix) if lan_block_prefix else None
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail="Invalid Catalog IP block size."
+            ) from exc
         change = LanConfigurationChange(
             gateway_ip=lan_gateway_ip or None,
-            subnet_mask=lan_subnet_mask or None,
+            block_prefix=block_prefix,
             dhcp_enabled=lan_dhcp_enabled,
             dhcp_start=lan_dhcp_start or None,
             dhcp_end=lan_dhcp_end or None,

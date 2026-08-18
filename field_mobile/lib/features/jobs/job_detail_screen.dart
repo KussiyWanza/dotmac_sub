@@ -6,7 +6,6 @@ import 'package:go_router/go_router.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../app/theme.dart';
-import '../execution/completion_wizard.dart';
 import '../execution/execution_controller.dart';
 import 'job_models.dart';
 import 'jobs_providers.dart';
@@ -493,16 +492,14 @@ class _JobDetailViewState extends ConsumerState<_JobDetailView> {
   Future<void> _runWorkAction(String jobId, String action) async {
     String? travelEventId;
     if (action == 'complete') {
-      await Navigator.of(context).push(
-        MaterialPageRoute(
-          builder: (_) => CompletionWizard(
-            jobId: jobId,
-            requirements: widget.detail.completionRequirements,
-            existingPhotoCount: widget.detail.completionPhotoCount,
-            hasExistingSignature: widget.detail.hasCompletionSignature,
-          ),
-        ),
-      );
+      final completed = await context.push<bool>('/jobs/$jobId/complete');
+      if (completed != true || !mounted) return;
+      ref
+        ..invalidate(jobDetailProvider(jobId))
+        ..invalidate(todayJobsProvider)
+        ..invalidate(jobsListProvider)
+        ..invalidate(meProvider);
+      return;
     } else if (action == 'en_route') {
       final destination = await _pickDestination(jobId);
       if (destination == null) return;
