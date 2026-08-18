@@ -76,6 +76,8 @@ from app.services.file_storage import (
 )
 from app.services.owner_commands import CommandContext
 from app.services.sales import lead_intake
+from app.services.workqueue import principal_from_auth
+from app.services.workqueue.scope import WorkqueuePermissionError, get_workqueue_scope
 
 router = APIRouter(prefix="/inbox", tags=["web-admin-inbox"])
 settings_router = APIRouter(prefix="/crm/inbox", tags=["web-admin-inbox"])
@@ -232,6 +234,20 @@ def _ctx(request: Request, db: Session) -> dict:
         "current_user": get_current_user(request),
         "sidebar_stats": get_sidebar_stats(db),
     }
+
+
+def _manager_ai_scope(request: Request, db: Session):
+    """Resolve the existing Inbox/workqueue visibility boundary for AI reads."""
+
+    if not can(request, "support:ticket:read"):
+        raise HTTPException(status_code=403, detail="Inbox read access is required.")
+    auth = getattr(request.state, "auth", None) or {}
+    try:
+        return get_workqueue_scope(db, principal_from_auth(db, auth))
+    except WorkqueuePermissionError as exc:
+        raise HTTPException(
+            status_code=403, detail="Inbox scope is unavailable."
+        ) from exc
 
 
 @router.get(
@@ -758,13 +774,28 @@ def team_inbox_media_content(
 def team_inbox_manager_ai_page(
     request: Request,
     conversation_id: str | None = Query(default=None),
+    mode: str = Query(default="recent_queue"),
+    period: str = Query(default="last_7_days"),
+    custom_start: str | None = Query(default=None),
+    custom_end: str | None = Query(default=None),
+    channel_type: str | None = Query(default=None),
+    status: str | None = Query(default=None),
     db: Session = Depends(get_db),
 ):
+    scope = _manager_ai_scope(request, db)
     context = _ctx(request, db)
     context.update(
         {
             "state": team_inbox_manager_ai_chat.build_page_state(
-                db, conversation_id=conversation_id
+                db,
+                scope=scope,
+                conversation_id=conversation_id,
+                mode=mode,
+                period=period,
+                custom_start=custom_start,
+                custom_end=custom_end,
+                channel_type=channel_type,
+                status=status,
             )
         }
     )
@@ -779,14 +810,30 @@ def team_inbox_manager_ai_page(
 def team_inbox_manager_ai_ask(
     request: Request,
     conversation_id: str | None = Form(default=None),
+    mode: str = Form(default="recent_queue"),
+    period: str = Form(default="last_7_days"),
+    custom_start: str | None = Form(default=None),
+    custom_end: str | None = Form(default=None),
+    channel_type: str | None = Form(default=None),
+    status: str | None = Form(default=None),
     question: str = Form(...),
     db: Session = Depends(get_db),
 ):
     answer = None
     error = None
     try:
+        scope = _manager_ai_scope(request, db)
         answer = team_inbox_manager_ai_chat.answer_manager_question(
-            db, question=question, conversation_id=conversation_id
+            db,
+            scope=scope,
+            question=question,
+            conversation_id=conversation_id,
+            mode=mode,
+            period=period,
+            custom_start=custom_start,
+            custom_end=custom_end,
+            channel_type=channel_type,
+            status=status,
         )
     except (ValueError, AIClientError) as exc:
         error = str(exc)
@@ -795,10 +842,17 @@ def team_inbox_manager_ai_ask(
         {
             "state": team_inbox_manager_ai_chat.build_page_state(
                 db,
+                scope=scope,
                 conversation_id=conversation_id,
                 question=question,
                 answer=answer,
                 error=error,
+                mode=mode,
+                period=period,
+                custom_start=custom_start,
+                custom_end=custom_end,
+                channel_type=channel_type,
+                status=status,
             )
         }
     )
