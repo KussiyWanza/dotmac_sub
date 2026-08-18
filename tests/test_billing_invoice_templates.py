@@ -61,6 +61,17 @@ def test_invoice_edit_form_locks_currency_while_submitting_existing_value():
     assert '{% if invoice %}disabled aria-disabled="true"{% endif %}' in template
 
 
+def test_invoice_form_places_line_total_with_line_summary():
+    template = Path("templates/admin/billing/invoice_form.html").read_text()
+    line_fields, line_summary = template.split("<!-- Line Item Actions -->", maxsplit=1)
+    line_summary = line_summary.split("<!-- Empty State -->", maxsplit=1)[0]
+
+    assert "getLineItemGross(item)" not in line_fields
+    assert line_summary.index("Subtotal:") < line_summary.index("+ Tax:")
+    assert line_summary.index("+ Tax:") < line_summary.index("Total:")
+    assert 'x-text="formatCurrency(getLineItemGross(item))"' in line_summary
+
+
 def test_invoice_batch_uses_server_review_and_shared_confirmation():
     template = Path("templates/admin/billing/invoice_batch.html").read_text()
 
