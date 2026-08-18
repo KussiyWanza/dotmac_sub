@@ -29,6 +29,7 @@ from app.services.network.fiber_topology_identity import (
     execute_identity_decision,
     finalize_identity_decision,
     propose_identity_decision,
+    supersede_approved_identity_decision,
 )
 from app.services.network.fiber_topology_review import (
     FiberTopologyProposalBatchBlocked,
@@ -264,6 +265,111 @@ def test_declined_proposal_preserves_history_and_allows_correction(db_session):
     )
     assert corrected.id != first.id
     assert corrected.status == "proposed"
+
+
+def test_approved_unexecuted_decision_can_be_superseded_by_newer_source(
+    db_session,
+):
+    feature = _stage_feature(
+        db_session,
+        asset_type="splice_closure",
+        external_id="CLOSURE-PYTEST-1",
+        display_name="Closure Pytest 1",
+        geometry={"type": "Point", "coordinates": [7.4, 9.1]},
+    )
+    decision = propose_identity_decision(
+        db_session,
+        feature.id,
+        "create",
+        proposed_by="planner@example.com",
+        reason="Initial source evidence",
+    )
+    approve_identity_decision(
+        db_session,
+        decision.id,
+        reviewed_by="reviewer@example.com",
+        review_notes="Initial evidence approved",
+    )
+    fresh_feature = _stage_feature(
+        db_session,
+        asset_type="splice_closure",
+        external_id="CLOSURE-PYTEST-1",
+        display_name="Closure Pytest 1 refreshed",
+        geometry={"type": "Point", "coordinates": [7.41, 9.11]},
+    )
+
+    superseded = supersede_approved_identity_decision(
+        db_session,
+        decision.id,
+        superseded_by="migration-operator@example.com",
+        reason="Fresh authoritative CRM snapshot supersedes the unexecuted decision",
+    )
+
+    assert superseded.status == "declined"
+    assert superseded.closed_reason == "authoritative_source_superseded"
+    assert superseded.reviewed_by == "reviewer@example.com"
+    assert "Superseded by migration-operator@example.com" in superseded.review_notes
+
+    corrected = propose_identity_decision(
+        db_session,
+        fresh_feature.id,
+        "create",
+        proposed_by="planner@example.com",
+        reason="Fresh authoritative source evidence",
+    )
+    assert corrected.id != decision.id
+    assert corrected.status == "proposed"
+
+
+def test_supersede_refuses_decisions_without_newer_evidence_or_change_requests(
+    db_session,
+):
+    feature = _stage_feature(
+        db_session,
+        asset_type="splice_closure",
+        external_id="CLOSURE-PYTEST-2",
+        geometry={"type": "Point", "coordinates": [7.4, 9.1]},
+    )
+    decision = propose_identity_decision(
+        db_session,
+        feature.id,
+        "create",
+        proposed_by="planner@example.com",
+        reason="Initial source evidence",
+    )
+    approve_identity_decision(
+        db_session,
+        decision.id,
+        reviewed_by="reviewer@example.com",
+        review_notes="Initial evidence approved",
+    )
+
+    with pytest.raises(FiberTopologyIdentityError, match="no newer staged"):
+        supersede_approved_identity_decision(
+            db_session,
+            decision.id,
+            superseded_by="migration-operator@example.com",
+            reason="No newer source evidence exists",
+        )
+
+    executed = execute_identity_decision(
+        db_session, decision.id, executed_by="executor@example.com"
+    )
+
+    assert executed.status == "change_requested"
+    _stage_feature(
+        db_session,
+        asset_type="splice_closure",
+        external_id="CLOSURE-PYTEST-2",
+        geometry={"type": "Point", "coordinates": [7.41, 9.11]},
+    )
+    with pytest.raises(FiberTopologyIdentityError, match="approved, unexecuted"):
+        supersede_approved_identity_decision(
+            db_session,
+            decision.id,
+            superseded_by="migration-operator@example.com",
+            reason="A pending owner request must keep its lifecycle",
+        )
 
 
 def test_proposer_cannot_review_and_changed_content_invalidates_decision(db_session):

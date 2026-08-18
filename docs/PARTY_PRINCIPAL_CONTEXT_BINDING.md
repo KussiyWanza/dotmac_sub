@@ -1,10 +1,10 @@
 # Party Principal and Organization-Context Binding
 
-Status: migrations 353, 527, and 534 provide principal, credential, and session
-projection foundations. The reviewed staff credential cohort is projected and
-the deploy-1 Party-first reader is live; active legacy session projection and
-the null-bridge retirement ratchet remain. Subscriber/reseller adoption, RLS,
-and the wider compatibility retirement remain separate programmes.
+Status: the staff authentication slice is cut over in production through
+migration 541. The reviewed credential and usable-session cohorts are projected,
+all staff authentication readers resolve from Party, and the assertion-first
+compatibility bridge is deleted. Subscriber/reseller adoption, RLS, and the
+wider compatibility retirement remain separate programmes.
 
 ## Decision
 
@@ -193,6 +193,12 @@ disagreements. The migration preflight independently repeats those database
 facts and refuses before DDL if a usable staff session has no `party_id`, its
 principal is inactive/unbound, its Party is not the exact bound Person, or a
 Party projection is attached without a staff context.
+
+The ratchet was admitted in production on 2026-08-17 at source
+`a7de94d4fa1cfd76ae37f55e07ded323dc11defc`, immutable image
+`sha256:252d304fb0c359ea4429ac4615f2ede6f90f3e60936c77be609ce6dddbdb4582`.
+The post-deploy report observed 2,267 active/unrevoked staff sessions, all 2,267
+projected, with zero remaining, zero unbound, and zero projection disagreements.
 
 After the ratchet, login, refresh, per-request validation, and vendor admission
 all resolve staff identity from Party. `system_user_id` remains the Sub-owned

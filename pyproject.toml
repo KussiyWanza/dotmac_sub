@@ -53,6 +53,7 @@ dependencies = [
 
 [tool.poetry]
 package-mode = false
+requires-poetry = "2.4.1"
 
 # Source enrichment for the PEP-621 dependencies above: the shared integration
 # transport engine (retry/jitter/circuit/request-id) consumed by the sub->crm
@@ -61,7 +62,7 @@ package-mode = false
 # docs/PLATFORM_ADOPTION_LEDGER.md — an upgrade is a reviewed ledger change,
 # enforced by tests/architecture/test_kernel_compatibility.py).
 [tool.poetry.dependencies]
-dotmac-integration-client = { git = "https://github.com/michaelayoade/dotmac-integration-client.git", tag = "v0.1.1" }
+dotmac-integration-client = { git = "https://github.com/michaelayoade/dotmac-integration-client.git", tag = "v0.2.0" }
 dotmac-kernel = { version = "0.1.0a50", source = "forgejo" }
 
 # The shared presentation contract. Pinned exactly for the same reason as the
