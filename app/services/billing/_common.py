@@ -37,7 +37,7 @@ from app.models.billing import (
 )
 from app.models.prepaid_funding import PrepaidOpeningFundingConsumption
 from app.models.subscriber import Subscriber
-from app.services.common import get_by_id, round_money, to_decimal
+from app.services.common import coerce_uuid, get_by_id, round_money, to_decimal
 from app.services.locking import lock_for_update
 
 logger = logging.getLogger(__name__)
@@ -221,6 +221,58 @@ def get_account_credit_balance(
     debit_total = debit_query.scalar() or Decimal("0.00")
 
     return round_money(to_decimal(credit_total) - to_decimal(debit_total))
+
+
+def get_spendable_account_credit_balance(
+    db: Session,
+    account_id: str,
+    *,
+    currency: str | None = "NGN",
+    after: datetime | None = None,
+) -> Decimal:
+    """Return account credit that can be offered to receivables now.
+
+    Prepaid service funding has first claim on a prepaid account's native
+    funding position. A later invoice must not consume payment-backed credit
+    that would leave the verified prepaid service balance negative.
+    """
+
+    credit_balance = get_account_credit_balance(
+        db,
+        account_id,
+        currency=currency,
+        after=after,
+    )
+    if credit_balance <= Decimal("0.00"):
+        return Decimal("0.00")
+    if after is not None:
+        return credit_balance
+
+    try:
+        from app.models.catalog import BillingMode
+        from app.models.subscriber import Subscriber
+        from app.services.billing_profile import resolve_billing_profile
+        from app.services.customer_financial_position import prepaid_available_balance
+
+        account = db.get(Subscriber, coerce_uuid(account_id))
+        if account is None:
+            return Decimal("0.00")
+        profile = resolve_billing_profile(db, account)
+        if profile.effective_mode != BillingMode.prepaid:
+            return credit_balance
+        prepaid_balance = prepaid_available_balance(
+            db,
+            account_id,
+            currency=currency,
+        )
+    except Exception:
+        logger.exception(
+            "spendable_account_credit_unavailable",
+            extra={"account_id": str(account_id), "currency": currency},
+        )
+        return Decimal("0.00")
+
+    return min(credit_balance, max(Decimal("0.00"), round_money(prepaid_balance)))
 
 
 def lock_account(db: Session, account_id: str) -> None:
