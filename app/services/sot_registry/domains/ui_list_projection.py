@@ -512,6 +512,7 @@ DOMAIN = DomainSOT(
                 "admin customer filter semantics",
                 "admin customer stable sort semantics",
                 "admin customer row and page projection",
+                "admin customer row name display truncation",
                 "admin customer complete CSV scope and analytical projection",
                 "legacy customer offset API compatibility mapping",
             ),
@@ -528,7 +529,9 @@ DOMAIN = DomainSOT(
                 "The admin list and CSV export share one normalized scope and "
                 "stable ordering contract. CSV rows project committed customer, "
                 "subscription, catalog, access identity, IP assignment, NAS, and "
-                "POP facts without mutating or re-owning them."
+                "POP facts without mutating or re-owning them. Customer rows "
+                "retain the full account name while the list presentation limits "
+                "visible names to four words and exposes the full text when cut."
             ),
             contract=ServiceContract(
                 concerns=tuple(
@@ -549,6 +552,7 @@ DOMAIN = DomainSOT(
                         "admin customer filter semantics",
                         "admin customer stable sort semantics",
                         "admin customer row and page projection",
+                        "admin customer row name display truncation",
                         "admin customer complete CSV scope and analytical projection",
                         "legacy customer offset API compatibility mapping",
                     )
