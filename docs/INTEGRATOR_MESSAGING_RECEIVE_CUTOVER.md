@@ -62,15 +62,16 @@ provider in the domain identity, which is the coupling ADR-0024 removes.
 
 Which transport carried an event is provenance, and provenance lives on the
 `integration_inbox` receipt, which already names the binding and therefore the
-installation. No new enum member was added. **This needs Michael's ruling to be
-final** — see § 8.
+installation. No new enum member is added. This is the final overlap-safe
+ruling: a transport is never represented as a provider.
 
 ### 2.3 Envelope `scope` is provenance and can never select a destination
 
-The Integrator's binding carries a `LocalScope` (`inbox:support`). Sub records
-it on the transport receipt headers and its routing owner never reads it. Sub is
-authoritative for its own structure; a transport's opinion about a Sub team is
-an observation like any other. This is Sub's half of the invariant
+Sub publishes an opaque destination-stream scope (`inbox:support`) in its
+authenticated product-port descriptor. The Integrator carries it unchanged and
+Sub records it on the transport receipt; the routing owner never reads it. Sub
+is authoritative for its own structure, so the transport may neither invent
+nor reinterpret this value. This is Sub's half of the invariant
 `dotmac_integration.destination_binding` enforces on the other side.
 
 ---
@@ -102,7 +103,7 @@ Header `X-Api-Key: <key scoped integration:observations:write>`
 | `channel` | string | `whatsapp`, `facebook_messenger`, `instagram_dm`, `facebook_comment`, `instagram_comment`, `chat_widget`, `email` — validated against the provider family |
 | `observed_at` | RFC-3339, **tz-aware** | naive is a 400 |
 | `payload_fingerprint` | 64 hex | canonical-JSON SHA-256 (`sort_keys`, `separators=(",",":")`) over the `message` **or** `delivery_receipt` object; recomputed by Sub, mismatch is 400 |
-| `scope` | `{kind, ref}` | the Integrator's binding scope — **provenance only**, recorded on the receipt |
+| `scope` | `{kind, ref}` | Sub's descriptor-owned stream name — carried opaquely and recorded on the receipt |
 | `message` \| `delivery_receipt` | object | exactly one; both or neither is a 400 |
 
 For a message, `body` may be empty only when `attachments` is non-empty. The
@@ -116,6 +117,12 @@ Responses: **200** `{observation_id, outcome, processing_status, replayed}` ·
 **401** bad/absent/revoked/unscoped credential · **404** unknown capability or
 binding · **409** collision or undeployed contract version · **400** malformed
 envelope · **422** the consequence owner rejected the observation.
+
+The authenticated descriptor is `GET .../{sub_capability_binding_id}/descriptor`
+with either port scope. It remains readable while configured-but-disabled so
+descriptor import cannot depend on the activation it enables. Its canonical
+digest covers the product-owned binding id, endpoint paths, capability, scope,
+contract version, source revision, and activation state.
 
 The shadow route is the same body at `.../mirror` with a
 `integration:observations:mirror` key, and returns a parity verdict instead.
@@ -281,24 +288,16 @@ survive in a path nothing exercises, invisible and unfixed.
 
 ---
 
-## 8. Open — needs a ruling
+## 8. Provenance decisions closed; one retirement remains
 
-1. **The `InboxProvider` deviation (§ 2.2).** The specification's § 5.3 proposed
-   a new Integrator-sourced enum member. This slice deliberately does not add
-   one, because it would double-record every in-flight message at cutover. The
-   reasoning is above; the decision is Michael's. If the ruling goes the other
-   way, the cutover needs a drain-and-freeze instead of an overlap, and § 5–6
-   must be rewritten.
-2. **Whose binding id is in the URL.** Sub's port is keyed on **Sub's**
-   `IntegrationCapabilityBinding.id`, which is a different UUID from the
-   Integrator's own `DestinationBinding.capability_binding_id` in a different
-   database. Sub's binding id must be configured into the Integrator's
-   destination profile. The mechanism for getting it there is not decided.
-3. **How Sub publishes its capability declaration to the Integrator's
-   assembly** — a checked-in manifest, a build-time artifact, or a
-   `ModuleManifest` field. Left open by `provider-capability-sources.md` § 7.2;
-   nothing here presumes an answer.
-4. **The seven integration-platform tables Sub still owns**, which
+1. **Provider identity.** `provider` remains `meta_cloud_api`; transport
+   provenance stays on the integration receipt. This preserves one identity
+   through the producer-overlap window.
+2. **Binding, capability, paths, and scope.** Sub publishes them together as
+   `ProductPortDescriptorV1`. The Integrator's named reconciler imports an
+   immutable digest snapshot and repairs drift by rereading it; operators no
+   longer transcribe parallel binding and capability maps.
+3. **The seven integration-platform tables Sub still owns**, which
    `dotmac-integration` was extracted from. Until Sub retires them, both sides
    hold a control plane for the same concept. Known duplication, not a
    contradiction — the port is built against Sub's existing services precisely

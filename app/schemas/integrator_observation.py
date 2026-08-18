@@ -3,15 +3,17 @@
 This is the wire contract only. It carries no destination: a field naming a
 conversation, a team, a queue or a subscriber is deliberately absent, because
 `dotmac_integration.destination_binding` establishes where an observation lands
-from a trusted binding, never from the message. `scope` is the Integrator's
-record of which of ITS bindings produced the delivery and is provenance on this
-side of the wire — see the module docstring of
+from a trusted binding, never from the message. `scope` is Sub's opaque name for
+that destination stream. The Integrator carries it without interpreting it —
+see the module docstring of
 `app.services.team_inbox_integrator_envelope`.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -22,7 +24,7 @@ SUPPORTED_CONTRACT_VERSIONS: frozenset[int] = frozenset({1})
 
 
 class IntegratorScope(BaseModel):
-    """The Integrator's own binding scope. Provenance, never a routing input."""
+    """The destination product's stream name, carried opaquely by Integrator."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -144,3 +146,25 @@ class IntegratorMirrorReport(BaseModel):
     blocking_reasons: tuple[str, ...]
     disagreements: tuple[IntegratorMirrorFieldDisagreement, ...]
     agrees: bool
+
+
+class ProductPortDescriptorV1(BaseModel):
+    """Sub's authenticated declaration of its product-port destination."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["dotmac.io/product-port-descriptor/v1"]
+    application: Literal["sub"]
+    owner_module: str = Field(min_length=1, max_length=160)
+    capability_id: Literal["messaging.receive.v1"]
+    capability_summary: str = Field(min_length=1, max_length=500)
+    contract_version: Literal[1]
+    destination_binding_id: UUID
+    delivery_path: str = Field(pattern=r"^/")
+    mirror_path: str = Field(pattern=r"^/")
+    destination_scope: IntegratorScope
+    activation_state: Literal[
+        "configured_disabled", "enabled", "quarantined", "retired"
+    ]
+    source_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    descriptor_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
