@@ -1109,7 +1109,7 @@ wmi = ["wmi (>=1.5.1) ; platform_system == \"Windows\""]
 
 [[package]]
 name = "dotmac-integration-client"
-version = "0.1.1"
+version = "0.2.0"
 description = "Canonical HTTP transport for Dotmac inter-service integration edges: policy-driven retry with jitter, Retry-After, reachability circuit, idempotency keys, request-id propagation, and metrics hooks."
 optional = false
 python-versions = "^3.11"
@@ -1123,8 +1123,8 @@ httpx = ">=0.24"
 [package.source]
 type = "git"
 url = "https://github.com/michaelayoade/dotmac-integration-client.git"
-reference = "v0.1.1"
-resolved_reference = "4714d9411e7512cc00944fd44583bc38812e9839"
+reference = "v0.2.0"
+resolved_reference = "a4fe55f4ed704c556c4d1e3cc728ec4ef0dd8042"
 
 [[package]]
 name = "dotmac-kernel"
@@ -5319,4 +5319,4 @@ test = ["pytest"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.13"
-content-hash = "61f51f56cfbf3c8c1081f64acd1f9158f2d4bae91db5e38627a13ffa1281183f"
+content-hash = "50d23584906fe26b1f4b4c30cf897dff4519dd8427b3ce5dbd859f82395f3ace"
