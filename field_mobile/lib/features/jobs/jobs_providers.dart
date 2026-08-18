@@ -187,7 +187,8 @@ final todayJobsProvider = FutureProvider<JobList>((ref) async {
     list.jobs
         .where((job) => isActionableOnDay(job, start))
         .where(
-          (job) => filter != null ||
+          (job) =>
+              filter != null ||
               (job.status != 'completed' && job.status != 'canceled'),
         )
         .toList(),
