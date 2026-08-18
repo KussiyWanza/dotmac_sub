@@ -47,6 +47,14 @@ class OpeningBalanceHistoryOrigin(StrEnum):
     native_after_handoff = "native_after_handoff"
 
 
+class OpeningBalanceSourceIdentityDisposition(StrEnum):
+    """Whether one customer has lawful carried-source identity provenance."""
+
+    migrated_identity_present = "migrated_identity_present"
+    native_after_handoff = "native_after_handoff"
+    unresolved_carried_identity = "unresolved_carried_identity"
+
+
 def _error(suffix: str, message: str, **details: object) -> OpeningBalanceHistoryError:
     return OpeningBalanceHistoryError(
         code=f"{OWNER}.{suffix}", message=message, details=dict(details)
@@ -85,6 +93,45 @@ class OpeningBalanceHistoryQuery:
 
 
 @dataclass(frozen=True, slots=True)
+class OpeningBalanceSourceIdentityQuery:
+    """Exact customer cohort whose carried-source identity must be classified."""
+
+    account_ids: tuple[UUID, ...]
+    native_after: datetime
+    position_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class OpeningBalanceSourceIdentityRow:
+    """One explicit, evidence-derived source-identity disposition."""
+
+    account_id: UUID
+    disposition: OpeningBalanceSourceIdentityDisposition
+    splynx_customer_id: int | None
+    customer_created_at: datetime
+    evidence_fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
+class OpeningBalanceSourceIdentitySnapshot:
+    """Complete source-identity classification for the requested cohort."""
+
+    native_after: datetime
+    position_at: datetime
+    rows: tuple[OpeningBalanceSourceIdentityRow, ...]
+    source_fingerprint: str
+
+    @property
+    def unresolved_account_ids(self) -> tuple[UUID, ...]:
+        return tuple(
+            row.account_id
+            for row in self.rows
+            if row.disposition
+            is OpeningBalanceSourceIdentityDisposition.unresolved_carried_identity
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class OpeningBalanceHistoryRow:
     """One history-derived target with typed provenance."""
 
@@ -108,6 +155,106 @@ class OpeningBalanceHistorySnapshot:
     currency: str
     rows: tuple[OpeningBalanceHistoryRow, ...]
     source_fingerprint: str
+
+
+def classify_opening_balance_source_identities(
+    db: Session,
+    query: OpeningBalanceSourceIdentityQuery,
+) -> OpeningBalanceSourceIdentitySnapshot:
+    """Classify every requested customer without inventing a source identity."""
+
+    ids = tuple(sorted({coerce_uuid(value) for value in query.account_ids}, key=str))
+    if not ids:
+        raise _error("invalid_query", "Source-identity cohort cannot be empty.")
+    native_after = _utc(query.native_after)
+    position_at = _utc(query.position_at)
+    if position_at <= native_after:
+        raise _error(
+            "invalid_query",
+            "Source-identity position must follow the handoff.",
+        )
+    accounts = {
+        account.id: account
+        for account in db.scalars(
+            select(Subscriber).where(Subscriber.id.in_(ids))
+        ).all()
+    }
+    missing_accounts = sorted(set(ids) - set(accounts), key=str)
+    if missing_accounts:
+        raise _error(
+            "source_cohort_incomplete",
+            "The requested Sub customer cohort is incomplete.",
+            account_ids=[str(value) for value in missing_accounts],
+        )
+    future_accounts = sorted(
+        (
+            account_id
+            for account_id, account in accounts.items()
+            if _stored_utc(account.created_at) > position_at
+        ),
+        key=str,
+    )
+    if future_accounts:
+        raise _error(
+            "source_cohort_incomplete",
+            "A customer created after the reviewed instant is outside the cohort.",
+            account_ids=[str(value) for value in future_accounts],
+        )
+    source_ids = [
+        int(account.splynx_customer_id)
+        for account in accounts.values()
+        if account.splynx_customer_id is not None
+    ]
+    if len(set(source_ids)) != len(source_ids):
+        raise _error(
+            "source_identity_duplicate",
+            "A carried-in customer identity maps to more than one Sub customer.",
+        )
+
+    canonical_rows: list[dict[str, object]] = []
+    rows: list[OpeningBalanceSourceIdentityRow] = []
+    for account_id in ids:
+        account = accounts[account_id]
+        created_at = _stored_utc(account.created_at)
+        source_id = (
+            int(account.splynx_customer_id)
+            if account.splynx_customer_id is not None
+            else None
+        )
+        if source_id is not None:
+            disposition = (
+                OpeningBalanceSourceIdentityDisposition.migrated_identity_present
+            )
+        elif created_at > native_after:
+            disposition = OpeningBalanceSourceIdentityDisposition.native_after_handoff
+        else:
+            disposition = (
+                OpeningBalanceSourceIdentityDisposition.unresolved_carried_identity
+            )
+        canonical: dict[str, object] = {
+            "account_id": str(account_id),
+            "customer_created_at": created_at.isoformat(),
+            "disposition": disposition.value,
+            "native_after": native_after.isoformat(),
+            "position_at": position_at.isoformat(),
+            "splynx_customer_id": source_id,
+        }
+        canonical_rows.append(canonical)
+        rows.append(
+            OpeningBalanceSourceIdentityRow(
+                account_id=account_id,
+                disposition=disposition,
+                splynx_customer_id=source_id,
+                customer_created_at=created_at,
+                evidence_fingerprint=_digest(canonical),
+            )
+        )
+    return OpeningBalanceSourceIdentitySnapshot(
+        native_after=native_after,
+        position_at=position_at,
+        rows=tuple(rows),
+        source_fingerprint=_digest(canonical_rows),
+    )
 
 
 def resolve_opening_balance_history_targets(
@@ -140,58 +287,28 @@ def resolve_opening_balance_history_targets(
             "The frozen opening-balance evidence table is unavailable.",
         )
 
+    identity = classify_opening_balance_source_identities(
+        db,
+        OpeningBalanceSourceIdentityQuery(
+            account_ids=ids,
+            native_after=native_after,
+            position_at=position_at,
+        ),
+    )
+    if identity.unresolved_account_ids:
+        raise _error(
+            "source_cohort_incomplete",
+            "Every customer carried in at the handoff must retain its source identity.",
+            account_ids=[str(value) for value in identity.unresolved_account_ids],
+            reason="missing_carried_source_identity",
+        )
+
     accounts = {
         account.id: account
         for account in db.scalars(
             select(Subscriber).where(Subscriber.id.in_(ids))
         ).all()
     }
-    missing_accounts = sorted(set(ids) - set(accounts), key=str)
-    if missing_accounts:
-        raise _error(
-            "source_cohort_incomplete",
-            "The requested Sub customer cohort is incomplete.",
-            account_ids=[str(value) for value in missing_accounts],
-        )
-    future_accounts = sorted(
-        (
-            account_id
-            for account_id, account in accounts.items()
-            if _stored_utc(account.created_at) > position_at
-        ),
-        key=str,
-    )
-    if future_accounts:
-        raise _error(
-            "source_cohort_incomplete",
-            "A customer created after the reviewed instant is outside the cohort.",
-            account_ids=[str(value) for value in future_accounts],
-        )
-    missing_source_ids = sorted(
-        (
-            account_id
-            for account_id, account in accounts.items()
-            if account.splynx_customer_id is None
-            and _stored_utc(account.created_at) <= native_after
-        ),
-        key=str,
-    )
-    if missing_source_ids:
-        raise _error(
-            "source_cohort_incomplete",
-            "Every customer carried in at the handoff must retain its source identity.",
-            account_ids=[str(value) for value in missing_source_ids],
-        )
-    source_ids = [
-        int(account.splynx_customer_id)
-        for account in accounts.values()
-        if account.splynx_customer_id is not None
-    ]
-    if len(set(source_ids)) != len(source_ids):
-        raise _error(
-            "source_identity_duplicate",
-            "A carried-in customer identity maps to more than one Sub customer.",
-        )
 
     source = table(
         SOURCE_TABLE,
@@ -339,5 +456,10 @@ __all__ = [
     "OpeningBalanceHistoryQuery",
     "OpeningBalanceHistoryRow",
     "OpeningBalanceHistorySnapshot",
+    "OpeningBalanceSourceIdentityDisposition",
+    "OpeningBalanceSourceIdentityQuery",
+    "OpeningBalanceSourceIdentityRow",
+    "OpeningBalanceSourceIdentitySnapshot",
+    "classify_opening_balance_source_identities",
     "resolve_opening_balance_history_targets",
 ]

@@ -108,8 +108,10 @@ poetry run python scripts/one_off/repair_stale_prepaid_billing_anchors.py --limi
 
 The preview includes active prepaid subscriptions whose anchor is NULL or
 behind an active entitlement. It proposes only the entitlement's exact coverage
-end. Review the whole page and its fingerprint, then—on the separately approved,
-explicitly named host—apply that exact fingerprint:
+end and prints every candidate included in the page fingerprint; it does not
+silently truncate the review list. Review the whole page and its fingerprint,
+then—on the separately approved, explicitly named host—apply that exact
+fingerprint:
 
 ```bash
 poetry run python scripts/one_off/repair_stale_prepaid_billing_anchors.py \

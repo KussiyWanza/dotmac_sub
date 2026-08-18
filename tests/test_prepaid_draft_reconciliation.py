@@ -1412,6 +1412,48 @@ def test_reviewed_exact_funding_command_is_atomic_and_replay_safe(
     assert db_session.query(PaymentAllocation).count() == 1
 
 
+def test_payment_credit_above_receivable_settles_only_the_invoice_balance(
+    db_session,
+    subscriber,
+    subscription,
+):
+    invoice = _draft(
+        db_session,
+        subscriber,
+        subscription,
+        total=Decimal("75250.00"),
+    )
+    _payment(db_session, subscriber, amount=Decimal("60000.00"))
+    _payment(db_session, subscriber, amount=Decimal("53375.00"))
+    invoice_id = invoice.id
+
+    preview = preview_prepaid_draft_reconciliation(db_session, invoice_id)
+
+    assert preview.disposition is PrepaidDraftDisposition.exact_payment_fundable
+    assert preview.payment_backed_credit == Decimal("75250.00")
+    db_session.commit()
+
+    result = reconcile_prepaid_draft_invoice(
+        db_session,
+        _command(
+            invoice_id,
+            preview.fingerprint,
+            key=f"pytest-prepaid-draft-overfunded-{invoice_id}",
+        ),
+    )
+
+    db_session.refresh(invoice)
+    allocations = db_session.query(PaymentAllocation).all()
+    assert result.applied_amount == Decimal("75250.00")
+    assert sum((row.amount for row in allocations), Decimal("0.00")) == Decimal(
+        "75250.00"
+    )
+    assert len(allocations) == 2
+    assert invoice.status is InvoiceStatus.paid
+    assert invoice.balance_due == Decimal("0.00")
+    assert prepaid_available_balance(db_session, subscriber.id) == Decimal("38125.00")
+
+
 def test_reviewed_command_rejects_insufficient_funding_without_mutation(
     db_session,
     subscriber,

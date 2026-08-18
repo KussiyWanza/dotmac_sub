@@ -665,7 +665,7 @@ def _reviewed_opening_funding_preview(
     )
     authoritative_nonpayment = max(
         Decimal("0.00"),
-        round_money(authoritative - payment_funding.payment_backed_credit),
+        round_money(authoritative - payment_funding.total_payment_backed_credit),
     )
     # Untyped ledger credit is not opening-funding provenance. Keep it
     # quarantined rather than allowing it to revive an already spent baseline.
@@ -990,7 +990,7 @@ def preview_funded_prepaid_proforma_adoption(
     )
     if (
         not funding.fully_funded
-        or funding.payment_backed_credit != invoice_total
+        or funding.total_payment_backed_credit != invoice_total
         or funding.spendable_credit != invoice_total
         or funding.unbacked_credit != Decimal("0.00")
         or len(funding.source_payment_ids) != 1

@@ -12,13 +12,15 @@ consequence follows:
 * enforcement services apply profile, activation, shield, health, and lifecycle
   policy from config-owned inputs.
 
-The export is complete-or-error. Every migrated candidate must have one frozen
+The export is complete-or-blocked. Every migrated candidate must have one frozen
 source row whose active transaction net reconciles to the final opening-balance
 position; a complete empty transaction set is zero. A native account created
 after the fixed handoff has an explicit zero history component plus canonical
-native facts. Missing, duplicated, malformed, or unreconciled source evidence
-aborts the whole artifact; there is no customer-level unknown or quarantine
-result.
+native facts. A carried account with no retained source identity has an explicit
+typed unresolved disposition and produces a blocker artifact before the command
+exits. No unresolved cohort can produce a partial or signed funding manifest;
+other missing, duplicated, malformed, or unreconciled source evidence aborts the
+whole artifact.
 
 Safety: this command has no apply mode, sets its PostgreSQL transaction read
 only, requires an explicitly approved primary override for an ephemeral restore,
@@ -44,7 +46,10 @@ from sqlalchemy.orm import Session
 from app.db import SessionLocal
 from app.services import display_format
 from app.services.billing.opening_balance_history import (
+    OpeningBalanceHistoryError,
     OpeningBalanceHistoryQuery,
+    OpeningBalanceSourceIdentityQuery,
+    classify_opening_balance_source_identities,
     resolve_opening_balance_history_targets,
 )
 from app.services.prepaid_enforcement_planner import (
@@ -126,6 +131,8 @@ class FundingSnapshotExport:
 
     @property
     def enforceable_ids(self) -> tuple[str, ...]:
+        if not self.ready:
+            return ()
         quarantined = set(self.quarantined_ids)
         return tuple(
             account_id
@@ -242,8 +249,9 @@ def build_prepaid_funding_snapshot(
 
     The frozen carried-in transaction net is the source opening at the
     handoff. Canonical Sub-native facts advance it to ``snapshot_at``. Any
-    source-integrity defect raises and prevents an artifact; no customer is
-    classified as unknown or silently assigned a fallback.
+    source-integrity defect prevents a signed artifact; a missing carried-source
+    identity is classified explicitly so the adapter can write a bounded blocker
+    artifact without assigning a fallback or making the remaining cohort usable.
     """
     captured_at = _as_utc(snapshot_at)
     source_label = source.strip()
@@ -256,15 +264,55 @@ def build_prepaid_funding_snapshot(
             key=str,
         )
     )
-    snapshot = resolve_opening_balance_history_targets(
-        db,
-        OpeningBalanceHistoryQuery(
-            account_ids=tuple(UUID(value) for value in candidate_ids),
-            currency=display_format.default_currency(db),
-            native_after=LEGACY_FINANCIAL_REPLAY_AT,
-            position_at=captured_at,
-        ),
-    )
+    account_ids = tuple(UUID(value) for value in candidate_ids)
+    currency = display_format.default_currency(db)
+    try:
+        snapshot = resolve_opening_balance_history_targets(
+            db,
+            OpeningBalanceHistoryQuery(
+                account_ids=account_ids,
+                currency=currency,
+                native_after=LEGACY_FINANCIAL_REPLAY_AT,
+                position_at=captured_at,
+            ),
+        )
+    except OpeningBalanceHistoryError as exc:
+        if not (
+            exc.code == "billing.opening_balance_history.source_cohort_incomplete"
+            and exc.details.get("reason") == "missing_carried_source_identity"
+        ):
+            raise
+        identity = classify_opening_balance_source_identities(
+            db,
+            OpeningBalanceSourceIdentityQuery(
+                account_ids=account_ids,
+                native_after=LEGACY_FINANCIAL_REPLAY_AT,
+                position_at=captured_at,
+            ),
+        )
+        unresolved = tuple(str(value) for value in identity.unresolved_account_ids)
+        if not unresolved:
+            raise
+        effective_source = (
+            f"{source_label};source-identity-sha256={identity.source_fingerprint}"
+        )
+        if len(effective_source) > 240:
+            raise ValueError(
+                "source-identity reconstruction source exceeds 240 characters"
+            )
+        return FundingSnapshotExport(
+            captured_at=captured_at,
+            source=effective_source,
+            currency=currency,
+            candidate_ids=candidate_ids,
+            positions={},
+            incomplete=dict.fromkeys(
+                unresolved,
+                ("missing_carried_source_identity",),
+            ),
+            missing_baseline=(),
+            service_cycle_gaps=(),
+        )
     positions = {str(row.account_id): row.target_position for row in snapshot.rows}
     effective_source = (
         f"{source_label};splynx-history-sha256={snapshot.source_fingerprint}"

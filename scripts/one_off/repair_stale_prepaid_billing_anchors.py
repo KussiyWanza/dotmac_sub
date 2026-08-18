@@ -83,7 +83,7 @@ def main() -> None:
                 "more candidates remain beyond --limit; re-run until the cohort "
                 "reaches zero"
             )
-        for candidate in preview.candidates[:20]:
+        for candidate in preview.candidates:
             previous = (
                 candidate.current_next_billing_at.isoformat()
                 if candidate.current_next_billing_at
@@ -99,9 +99,6 @@ def main() -> None:
                     else "(exact entitlement evidence)"
                 )
             )
-        if len(preview.candidates) > 20:
-            print(f"  ... {len(preview.candidates) - 20} more")
-
         if not args.apply:
             print(
                 "\nDRY RUN — nothing written. Review the cohort, then re-run "
