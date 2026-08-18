@@ -35,7 +35,12 @@ HANDLED_EVENT_TYPES = frozenset(
 # EventType.custom with the trigger in the payload).
 _RESOLUTION_GRACE_TRIGGER = "support.resolution_confirmation_due"
 _SNOOZE_WAKE_TRIGGER = "team_inbox.snooze_wake"
+_SLA_NEAR_BREACH_TRIGGER = "support.ticket_sla_near_breach_due"
 _SLA_BREACH_TRIGGER = "support.ticket_sla_breach_due"
+_PROJECT_SLA_NEAR_BREACH_TRIGGER = "operations.project_sla_near_breach_due"
+_PROJECT_TASK_SLA_NEAR_BREACH_TRIGGER = "operations.project_task_sla_near_breach_due"
+_PROJECT_SLA_BREACH_TRIGGER = "operations.project_sla_breach_due"
+_PROJECT_TASK_SLA_BREACH_TRIGGER = "operations.project_task_sla_breach_due"
 
 
 class SupportLifecycleProjectionHandler:
@@ -51,8 +56,18 @@ class SupportLifecycleProjectionHandler:
                 self._auto_confirm_resolution(db, event)
             elif trigger == _SNOOZE_WAKE_TRIGGER:
                 self._wake_snoozed_conversation(db, event)
+            elif trigger == _SLA_NEAR_BREACH_TRIGGER:
+                self._evaluate_sla_near_breach(db, event)
             elif trigger == _SLA_BREACH_TRIGGER:
                 self._evaluate_sla_breach(db, event)
+            elif trigger == _PROJECT_SLA_NEAR_BREACH_TRIGGER:
+                self._evaluate_project_sla_near_breach(db, event)
+            elif trigger == _PROJECT_TASK_SLA_NEAR_BREACH_TRIGGER:
+                self._evaluate_project_task_sla_near_breach(db, event)
+            elif trigger == _PROJECT_SLA_BREACH_TRIGGER:
+                self._evaluate_project_sla_breach(db, event)
+            elif trigger == _PROJECT_TASK_SLA_BREACH_TRIGGER:
+                self._evaluate_project_task_sla_breach(db, event)
             # Any other custom payload belongs to other adapters.
 
     @staticmethod
@@ -170,3 +185,79 @@ class SupportLifecycleProjectionHandler:
                 event_id=event.event_id,
                 context=self._context(event, str(clock_id)),
             )
+
+    def _evaluate_sla_near_breach(self, db: Session, event: Event) -> None:
+        clock_id = require_output_text(
+            event.payload,
+            "entity_id",
+            consumer="support.ticket_sla_clock",
+            event_id=event.event_id,
+            event_type=_SLA_NEAR_BREACH_TRIGGER,
+        )
+        from app.services.support import Tickets
+
+        with _owner_session(db) as owner_db:
+            Tickets.consume_sla_near_breach_due(
+                owner_db,
+                clock_id=str(clock_id),
+                event_id=event.event_id,
+                context=self._context(event, str(clock_id)),
+            )
+
+    def _evaluate_project_sla_near_breach(self, db: Session, event: Event) -> None:
+        clock_id = self._project_clock_id(event, _PROJECT_SLA_NEAR_BREACH_TRIGGER)
+        from app.services import projects
+
+        with _owner_session(db) as owner_db:
+            projects.consume_project_sla_near_breach_due(
+                owner_db,
+                clock_id=str(clock_id),
+                event_id=event.event_id,
+                context=self._context(event, str(clock_id)),
+            )
+
+    def _evaluate_project_task_sla_near_breach(self, db: Session, event: Event) -> None:
+        clock_id = self._project_clock_id(event, _PROJECT_TASK_SLA_NEAR_BREACH_TRIGGER)
+        from app.services import projects
+
+        with _owner_session(db) as owner_db:
+            projects.consume_project_task_sla_near_breach_due(
+                owner_db,
+                clock_id=str(clock_id),
+                event_id=event.event_id,
+                context=self._context(event, str(clock_id)),
+            )
+
+    def _evaluate_project_sla_breach(self, db: Session, event: Event) -> None:
+        clock_id = self._project_clock_id(event, _PROJECT_SLA_BREACH_TRIGGER)
+        from app.services import projects
+
+        with _owner_session(db) as owner_db:
+            projects.consume_project_sla_breach_due(
+                owner_db,
+                clock_id=str(clock_id),
+                event_id=event.event_id,
+                context=self._context(event, str(clock_id)),
+            )
+
+    def _evaluate_project_task_sla_breach(self, db: Session, event: Event) -> None:
+        clock_id = self._project_clock_id(event, _PROJECT_TASK_SLA_BREACH_TRIGGER)
+        from app.services import projects
+
+        with _owner_session(db) as owner_db:
+            projects.consume_project_task_sla_breach_due(
+                owner_db,
+                clock_id=str(clock_id),
+                event_id=event.event_id,
+                context=self._context(event, str(clock_id)),
+            )
+
+    @staticmethod
+    def _project_clock_id(event: Event, event_type: str) -> str:
+        return require_output_text(
+            event.payload,
+            "entity_id",
+            consumer="operations.project_lifecycle",
+            event_id=event.event_id,
+            event_type=event_type,
+        )

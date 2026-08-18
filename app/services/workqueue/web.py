@@ -29,6 +29,7 @@ from app.services.workqueue.types import (
 _KIND_LABELS = {
     ItemKind.conversation: "Inbox",
     ItemKind.ticket: "Tickets",
+    ItemKind.project: "Projects",
     ItemKind.work_order: "Work orders",
 }
 _URGENCY_LABELS = {
@@ -45,6 +46,8 @@ _URGENCY_TONES = {
 }
 _REASON_LABELS = {
     "sla_breach": "SLA breached",
+    "sla_imminent": "SLA deadline imminent",
+    "sla_soon": "SLA deadline approaching",
     "sla_critical": "SLA deadline imminent",
     "sla_high": "SLA deadline approaching",
     "sla_warning": "SLA needs attention",

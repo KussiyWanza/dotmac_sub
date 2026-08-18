@@ -14,9 +14,12 @@ def _read(path: str) -> str:
 def test_dev_pull_requests_run_required_ci_gates() -> None:
     for path in (".github/workflows/ci.yml", ".github/workflows/mobile.yml"):
         workflow = _read(path)
-        # main and dev stay covered; `integration/**` joins them so adoption
-        # branches run the required gates too.
-        assert "pull_request:\n    branches: [main, dev, 'integration/**']" in workflow
+        # main and dev stay covered; both batch prefixes join them so adoption
+        # and consolidation branches run the required gates too.
+        assert (
+            "pull_request:\n"
+            "    branches: [main, dev, 'integration/**', 'consolidate/**']" in workflow
+        )
 
     version_impact = _read(".github/workflows/version-impact.yml")
     assert "pull_request:" in version_impact

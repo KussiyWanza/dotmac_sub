@@ -8,6 +8,7 @@ stops holding, the test fails rather than quietly passing over an empty set.
 from __future__ import annotations
 
 import ast
+import inspect
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PORT = PROJECT_ROOT / "app/api/integrator_observations.py"
 ENVELOPE = PROJECT_ROOT / "app/services/team_inbox_integrator_envelope.py"
 MIRROR = PROJECT_ROOT / "app/services/team_inbox_integrator_mirror.py"
+DESCRIPTOR = PROJECT_ROOT / "app/services/integrations/product_port_descriptor.py"
 LEGACY_WHATSAPP = PROJECT_ROOT / "app/api/inbox_webhooks.py"
 
 
@@ -76,6 +78,20 @@ def test_the_normalizer_touches_no_session_and_no_network():
     source = _source(ENVELOPE)
     for pattern in ("Session", "requests", "httpx", "urllib", "db."):
         assert pattern not in source, f"the normalizer reached for {pattern!r}"
+
+
+def test_product_port_descriptor_is_read_only_and_cannot_accept_provider_routing():
+    from app.services.integrations.product_port_descriptor import (
+        product_port_descriptor,
+    )
+
+    assert list(inspect.signature(product_port_descriptor).parameters) == [
+        "db",
+        "destination_binding_id",
+    ]
+    source = _source(DESCRIPTOR)
+    for pattern in ("db.add(", "db.delete(", "db.execute(", "db.commit("):
+        assert pattern not in source
 
 
 def test_the_mirror_writes_nothing():

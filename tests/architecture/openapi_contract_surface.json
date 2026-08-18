@@ -5085,6 +5085,18 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "GET /api/v1/integration/observations/{capability_binding_id}/descriptor": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:capability_binding_id!"
+   ],
+   "request": null,
+   "responses": {
+    "200": "a6c70c734df6",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "GET /api/v1/integrations/deliveries": {
    "params": [
     "header:authorization",
@@ -19339,7 +19351,7 @@
   "IntegratorMirrorReport": "55ef993dbdb9",
   "IntegratorObservationEnvelope": "6bb093cec679",
   "IntegratorObservationReceipt": "2eab03972b4b",
-  "IntegratorScope": "83009a38b35b",
+  "IntegratorScope": "de05e50ec63b",
   "InterfaceStatus": "20c251764046",
   "InvoiceBulkActionResponse": "4f4b4d0b09e5",
   "InvoiceBulkVoidRequest": "20ea34f498f7",
@@ -19843,6 +19855,7 @@
   "PriceBasis": "f0f72bcdeeae",
   "PriceType": "991176fa607a",
   "PriceUnit": "8587e7348110",
+  "ProductPortDescriptorV1": "7fa027fa20f0",
   "ProjectCostSummary": "f953c7ceefa5",
   "ProjectCreate": "306ae5d9f212",
   "ProjectGanttUpdate": "38b022ae411d",

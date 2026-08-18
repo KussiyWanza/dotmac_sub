@@ -195,6 +195,40 @@ def create_sla_clock_for_ticket(db: Session, ticket: Ticket) -> SlaClock | None:
         # without the owning ticket command; the timer is staged only where
         # the transition owner can commit it atomically.
         return clock
+    from app.models.operational_escalation import OperationalEntityType
+    from app.services import sla_operational_notifications
+
+    near_window = sla_operational_notifications.near_breach_window_seconds(
+        db,
+        entity_type=OperationalEntityType.ticket,
+        trigger="ticket.sla_near_breach",
+        severity=str(ticket.priority or "") or None,
+    )
+    if near_window is not None:
+        near_due_at = sla_operational_notifications.near_breach_due_at(
+            due_at,
+            window_seconds=near_window,
+        )
+        if near_due_at is not None:
+            schedule_timer(
+                db,
+                ScheduleTimerCommand(
+                    owner="support.ticket_lifecycle",
+                    entity_kind="sla_clock",
+                    entity_id=clock.id,
+                    purpose="sla_near_breach_due",
+                    due_at=near_due_at,
+                    output_event_type="support.ticket_sla_near_breach_due",
+                ),
+                context=CommandContext.system(
+                    actor="support.ticket_sla_clock",
+                    scope=str(clock.id),
+                    reason="ticket SLA near-breach warning",
+                    idempotency_key=(
+                        f"sla-near:{clock.id}:{due_at.isoformat()}:{near_window}"
+                    ),
+                ),
+            )
     schedule_timer(
         db,
         ScheduleTimerCommand(
@@ -411,3 +445,30 @@ def check_sla_breaches(db: Session, ticket_id) -> list[SlaClock]:
         breached.append(clock)
 
     return breached
+
+
+def check_sla_near_breach(db: Session, clock_id) -> SlaClock | None:
+    """Emit a configured near-breach event for one still-running ticket clock."""
+
+    normalized_clock_id = coerce_uuid(str(clock_id))
+    if normalized_clock_id is None:
+        raise _error(
+            "invalid_clock_id",
+            "A valid SLA clock identifier is required for near-breach evaluation.",
+            clock_id=str(clock_id),
+        )
+    clock = db.get(SlaClock, normalized_clock_id)
+    if clock is None or clock.entity_type != WorkflowEntityType.ticket.value:
+        return None
+    if clock.status != SlaClockStatus.running.value or clock.breached_at is not None:
+        return None
+    ticket = db.get(Ticket, clock.entity_id)
+    if not ticket or str(ticket.status or "") not in SLA_APPLICABLE_STATUSES:
+        return None
+    due_at = _as_aware_utc(clock.due_at)
+    if due_at is None or due_at <= datetime.now(UTC):
+        return None
+    from app.services import sla_operational_notifications
+
+    sla_operational_notifications.emit_ticket_sla_near_breach(db, ticket, clock)
+    return clock

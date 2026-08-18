@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from app.models.dispatch import TechnicianProfile, WorkOrderAssignmentQueue
+from app.models.project import Project, ProjectPriority, ProjectStatus
 from app.models.service_team import (
     ServiceTeam,
     ServiceTeamMember,
@@ -46,6 +47,7 @@ from app.services.workqueue import (
 from app.services.workqueue.permissions import AUDIENCE_TEAM_SCOPE
 from app.services.workqueue.providers import all_providers, register
 from app.services.workqueue.providers.conversations import conversation_provider
+from app.services.workqueue.providers.projects import ProjectProvider
 from app.services.workqueue.providers.tickets import ticket_provider
 from app.services.workqueue.providers.work_orders import work_order_provider
 from tests.staff_identity_fixtures import add_bound_staff_user
@@ -126,6 +128,30 @@ def _ticket(
     db.add(ticket)
     db.flush()
     return ticket
+
+
+def _project(
+    db,
+    *,
+    title: str = "Fiber delivery",
+    team: ServiceTeam | None = None,
+    manager: UUID | None = None,
+    due_at: datetime | None = None,
+    priority: str = ProjectPriority.normal.value,
+    status: str = ProjectStatus.active.value,
+) -> Project:
+    project = Project(
+        name=title,
+        status=status,
+        priority=priority,
+        due_at=due_at,
+        service_team_id=team.id if team else None,
+        project_manager_person_id=manager,
+        updated_at=NOW - timedelta(minutes=6),
+    )
+    db.add(project)
+    db.flush()
+    return project
 
 
 def _conversation(
@@ -224,6 +250,31 @@ def _sla_clock(
     return clock
 
 
+def _project_sla_clock(
+    db, project: Project, *, due_at: datetime, breached: bool = False
+) -> SlaClock:
+    policy = SlaPolicy(
+        name=f"project-policy-{uuid4().hex[:6]}",
+        entity_type=WorkflowEntityType.project.value,
+    )
+    db.add(policy)
+    db.flush()
+    clock = SlaClock(
+        policy_id=policy.id,
+        entity_type=WorkflowEntityType.project.value,
+        entity_id=project.id,
+        status=(
+            SlaClockStatus.breached.value if breached else SlaClockStatus.running.value
+        ),
+        started_at=NOW - timedelta(days=1),
+        due_at=due_at,
+        breached_at=due_at if breached else None,
+    )
+    db.add(clock)
+    db.flush()
+    return clock
+
+
 def _scope(db, principal, **kwargs):
     return get_workqueue_scope(db, principal, **kwargs)
 
@@ -253,6 +304,7 @@ def test_each_provider_only_emits_its_own_kind(db_session, subscriber):
     _member(db_session, team, person)
     db_session.add(TechnicianProfile(person_id=person, crm_person_id="crm-me"))
     _ticket(db_session, team=team)
+    _project(db_session, team=team, manager=person)
     _conversation(db_session, team=team)
     _work_order(db_session, subscriber, assigned_to_crm_person_id="crm-me")
 
@@ -365,6 +417,31 @@ def test_ticket_sla_clock_beats_the_tickets_own_due_at(db_session):
     [item] = _fetch(ticket_provider, db_session, scope)
     assert item.reason == "sla_breach"
     assert item.score == CONFIG.ticket_sla.breach_score
+
+
+def test_project_sla_clock_is_visible_in_workqueue(db_session):
+    person = uuid4()
+    team = _team(db_session)
+    _member(db_session, team, person)
+    project = _project(
+        db_session,
+        team=team,
+        manager=person,
+        due_at=NOW + timedelta(days=5),
+    )
+    _project_sla_clock(
+        db_session,
+        project,
+        due_at=NOW + timedelta(minutes=30),
+        breached=False,
+    )
+
+    scope = _scope(db_session, _principal(person))
+    [item] = _fetch(ProjectProvider(), db_session, scope)
+    assert item.item_kind is ItemKind.project
+    assert item.item_id == project.id
+    assert item.reason == "sla_imminent"
+    assert item.url == f"/admin/projects/{project.id}"
 
 
 def test_urgent_priority_outranks_a_quiet_queue_item(db_session):

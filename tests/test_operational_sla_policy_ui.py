@@ -41,6 +41,7 @@ def test_ui_can_configure_a_non_billing_operational_event(db_session) -> None:
         channels=["push", "email"],
         min_severity="high",
         min_affected_customers=None,
+        near_breach_minutes=45,
         notes="Escalate to the operational audience if ownership is still missing.",
         is_active=True,
     )
@@ -51,6 +52,13 @@ def test_ui_can_configure_a_non_billing_operational_event(db_session) -> None:
     assert policy.channels == ["push", "email"]
     assert policy.cooldown_seconds == 0
     assert policy.metadata_["notes"].startswith("Escalate")
+    assert policy.metadata_["near_breach_seconds"] == 45 * 60
+    assert (
+        web_sla_policies.form_data(db_session, policy_id=policy.id)[
+            "near_breach_minutes"
+        ]
+        == "45"
+    )
 
 
 def test_ui_rejects_duplicate_active_level_for_the_same_event(db_session) -> None:
