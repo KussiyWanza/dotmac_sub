@@ -222,6 +222,28 @@ def _assert_source_feature_current(
     return feature
 
 
+def _latest_source_feature(
+    db: Session, feature: FiberTopologyStagedFeature
+) -> FiberTopologyStagedFeature:
+    if not feature.external_id:
+        return feature
+    latest = db.scalar(
+        select(FiberTopologyStagedFeature)
+        .join(FiberTopologyStagedFeature.batch)
+        .where(
+            FiberTopologySourceBatch.source_system == feature.batch.source_system,
+            FiberTopologyStagedFeature.asset_type == feature.asset_type,
+            FiberTopologyStagedFeature.external_id == feature.external_id,
+        )
+        .order_by(
+            FiberTopologySourceBatch.created_at.desc(),
+            FiberTopologyStagedFeature.created_at.desc(),
+            FiberTopologyStagedFeature.id.desc(),
+        )
+    )
+    return latest or feature
+
+
 def _assert_decision_source_current(
     db: Session, decision: FiberTopologyIdentityDecision
 ) -> FiberTopologyStagedFeature:
@@ -550,6 +572,53 @@ def decline_identity_decision(
     decision.review_notes = notes
     decision.reviewed_at = datetime.now(UTC)
     decision.closed_reason = "identity_decision_declined"
+    if commit:
+        db.commit()
+        db.refresh(decision)
+    else:
+        db.flush()
+    return decision
+
+
+def supersede_approved_identity_decision(
+    db: Session,
+    decision_id: str | uuid.UUID,
+    superseded_by: str,
+    reason: str,
+    *,
+    commit: bool = True,
+) -> FiberTopologyIdentityDecision:
+    """Close an approved, unexecuted decision when newer source evidence wins."""
+
+    actor = _required_text(superseded_by, "superseded_by", limit=160)
+    normalized_reason = _required_text(reason, "reason", limit=4000)
+    decision = _load_decision(db, decision_id, for_update=True)
+    if decision.status == "declined" and (
+        decision.closed_reason == "authoritative_source_superseded"
+    ):
+        return decision
+    if decision.status != "approved":
+        raise FiberTopologyIdentityError(
+            "only approved, unexecuted identity decisions can be superseded"
+        )
+    if decision.change_request_id is not None:
+        raise FiberTopologyIdentityError(
+            "identity decisions with change requests must be finalized or rejected"
+        )
+    if _existing_source_link(db, decision.staged_feature):
+        raise FiberTopologyIdentityError(
+            "linked source identities cannot be superseded"
+        )
+    latest = _latest_source_feature(db, decision.staged_feature)
+    if latest.id == decision.staged_feature_id:
+        raise FiberTopologyIdentityError(
+            "no newer staged source evidence supersedes this identity decision"
+        )
+    decision.status = "declined"
+    decision.closed_reason = "authoritative_source_superseded"
+    decision.review_notes = (
+        f"{decision.review_notes}\n\nSuperseded by {actor}: {normalized_reason}"
+    )
     if commit:
         db.commit()
         db.refresh(decision)
@@ -897,4 +966,5 @@ __all__ = [
     "propose_identity_decision",
     "representative_point",
     "stable_source_external_id",
+    "supersede_approved_identity_decision",
 ]
