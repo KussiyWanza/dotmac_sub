@@ -444,12 +444,13 @@ DOMAIN = DomainSOT(
                 "ai.gateway",
                 "ai.generation",
                 "communications.team_inbox_projection",
+                "communications.team_inbox_analysis_projection",
                 "communications.team_inbox_threads",
                 "auth.permission_gate",
             ),
             notes=(
                 "Read-only manager assistant behind support:inbox_ai:read. It "
-                "may summarize bounded Inbox context but cannot assign, reply, "
+                "may summarize an authorized bounded Inbox context and period facts but cannot assign, reply, "
                 "close, refund, profile-update, or mutate any domain row. It "
                 "uses the default-off ai.generation control and the configured "
                 "provider gate."
@@ -460,7 +461,7 @@ DOMAIN = DomainSOT(
                         name="manager-only Team Inbox conversation insight answers",
                         role=OwnerRole.RESOLVER,
                         input_names=(
-                            "bounded Inbox conversation and queue projection",
+                            "authorized bounded Inbox conversation, queue, and period projection",
                             "operator authorization",
                             "generation control",
                             "observed provider response",
@@ -470,19 +471,19 @@ DOMAIN = DomainSOT(
                         name="bounded read-only conversation and queue AI projection",
                         role=OwnerRole.RESOLVER,
                         input_names=(
-                            "bounded Inbox conversation and queue projection",
+                            "authorized bounded Inbox conversation, queue, and period projection",
                             "operator authorization",
                         ),
                     ),
                 ),
                 authoritative_inputs=(
                     AuthorityInput(
-                        name="bounded Inbox conversation and queue projection",
-                        owner="communications.team_inbox_projection",
+                        name="authorized bounded Inbox conversation, queue, and period projection",
+                        owner="communications.team_inbox_analysis_projection",
                         kind=AuthorityKind.DERIVED_PROJECTION,
                         source=(
-                            "Recent active Inbox conversations and at most "
-                            "forty messages for the selected conversation."
+                            "Scope-filtered selected conversation, recent queue, or a period cohort "
+                            "with deterministic facts and at most twenty-five evidence conversations."
                         ),
                     ),
                     AuthorityInput(

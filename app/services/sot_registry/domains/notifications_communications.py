@@ -2997,6 +2997,72 @@ DOMAIN = DomainSOT(
             ),
         ),
         SOTService(
+            name="communications.team_inbox_analysis_projection",
+            module="app.services.team_inbox_analysis_projection",
+            owns=("authorized bounded Manager AI conversation analysis projection",),
+            depends_on=(
+                "communications.team_inbox_threads",
+                "communications.team_inbox_routing",
+                "communications.team_inbox_status",
+                "operations.service_team_lifecycle",
+                "auth.permission_gate",
+            ),
+            contract=_team_inbox_contract(
+                service_name="communications.team_inbox_analysis_projection",
+                concerns=(
+                    (
+                        "authorized bounded Manager AI conversation analysis projection",
+                        OwnerRole.RESOLVER,
+                    ),
+                ),
+                inputs=(
+                    AuthorityInput(
+                        name="canonical Inbox chronology",
+                        owner="communications.team_inbox_threads",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="Messages and conversation identity with occurrence timestamps.",
+                    ),
+                    AuthorityInput(
+                        name="canonical Inbox lifecycle evidence",
+                        owner="communications.team_inbox_status",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="Immutable status-transition evidence.",
+                    ),
+                    AuthorityInput(
+                        name="canonical Inbox routing evidence",
+                        owner="communications.team_inbox_routing",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="Immutable routing and escalation evidence.",
+                    ),
+                    AuthorityInput(
+                        name="authorized staff Inbox scope",
+                        owner="operations.service_team_lifecycle",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source="Existing Workqueue scope resolved from staff membership, responsibility, and RBAC audience.",
+                    ),
+                    AuthorityInput(
+                        name="operator authorization",
+                        owner="auth.permission_gate",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source="support:ticket:read is required alongside Manager AI permission.",
+                    ),
+                ),
+                transaction_mode=TransactionMode.READ_ONLY,
+                projections=(
+                    "bounded period conversation facts and authorized evidence for Manager AI",
+                ),
+                design_refs=(
+                    "docs/designs/TEAM_INBOX_SOURCE_OF_TRUTH.md",
+                    "docs/designs/AI_SOT.md",
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                ),
+                test_refs=(
+                    "tests/test_team_inbox_manager_ai_projection.py",
+                    "tests/test_team_inbox_readiness_gate.py",
+                ),
+            ),
+        ),
+        SOTService(
             name="communications.team_inbox_projection",
             module="app.services.team_inbox_projection",
             owns=(

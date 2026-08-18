@@ -198,8 +198,11 @@ default-off controls and never send automatically.
   domain row and inserts returned text only into an unsent browser composer.
 - **Manager Inbox AI.** `app.services.team_inbox_manager_ai_chat` is a
   read-only advisory view behind `support:inbox_ai:read` and the
-  `ai.generation` control. It may answer manager questions from a bounded
-  Team Inbox conversation or recent-queue projection, but it cannot assign,
+  `ai.generation` control. It consumes the owned
+  `communications.team_inbox_analysis_projection` for a bounded Team Inbox
+  conversation, recent queue, or period review. Period facts cover the full
+  authorized cohort; qualitative AI review is limited to the explicitly
+  reported evidence sample. It cannot assign,
   reply, close, refund, profile-update, or otherwise mutate a domain row.
 - **Conversational AI intake.** WhatsApp, Facebook Messenger and Instagram DM
   may enter `pending` UI state with an active `ai_intake_sessions` row. The AI
