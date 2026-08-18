@@ -7,7 +7,10 @@ from sqlalchemy.orm import Session
 from app.models.domain_settings import SettingDomain
 from app.models.subscription_engine import SettingValueType
 from app.schemas.settings import DomainSettingCreate
-from app.services.channel_health_contracts import DEFAULT_CHANNEL_HEALTH_CONTRACTS
+from app.services.channel_health_contracts import (
+    DEFAULT_CHANNEL_HEALTH_CONTRACTS,
+    reconcile_persisted_channel_health_contracts,
+)
 from app.services.domain_settings import (
     DomainSettings,
     audit_settings,
@@ -2388,6 +2391,7 @@ def seed_network_monitoring_settings(db: Session) -> None:
         value_type=SettingValueType.json,
         value_json=json.loads(json.dumps(DEFAULT_CHANNEL_HEALTH_CONTRACTS)),
     )
+    reconcile_persisted_channel_health_contracts(db)
     network_monitoring_settings.ensure_by_key(
         db,
         key="server_health_disk_warn_pct",

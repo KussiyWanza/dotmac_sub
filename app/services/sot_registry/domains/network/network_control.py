@@ -434,6 +434,7 @@ SERVICES: tuple[SOTService, ...] = (
         ),
         depends_on=(
             "auth.permission_gate",
+            "service_intent.ip_block_catalog",
             "network.ont_assignment_identity",
             "network.ont_wan_service_intent",
             "network.cpe_dialer_credential",
@@ -471,6 +472,7 @@ SERVICES: tuple[SOTService, ...] = (
                         "exact active ONT assignment",
                         "typed operator configuration change",
                         "effective ONT configuration pack",
+                        "active catalog IPv4 block-size choices",
                     ),
                 ),
                 ConcernContract(
@@ -497,6 +499,11 @@ SERVICES: tuple[SOTService, ...] = (
                         "configuration lifecycle evidence",
                         "lifecycle-bound ONT reconcile projection",
                     ),
+                ),
+                ConcernContract(
+                    name="section-scoped ONT configuration delivery projection",
+                    role=OwnerRole.RESOLVER,
+                    input_names=("configuration lifecycle evidence",),
                 ),
                 ConcernContract(
                     name="reviewed ONT configuration lifecycle drift repair",
@@ -529,10 +536,11 @@ SERVICES: tuple[SOTService, ...] = (
                         "subscriber, subscription and idempotency evidence"
                     ),
                 ),
-                ConcernContract(
-                    name="section-scoped ONT configuration delivery projection",
-                    role=OwnerRole.RESOLVER,
-                    input_names=("configuration lifecycle evidence",),
+                AuthorityInput(
+                    name="active catalog IPv4 block-size choices",
+                    owner="service_intent.ip_block_catalog",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source="de-duplicated active Catalog IP-address offer prefixes",
                 ),
                 AuthorityInput(
                     name="effective ONT configuration pack",
@@ -609,6 +617,11 @@ SERVICES: tuple[SOTService, ...] = (
                     "network.ont_service_configuration.invalid_idempotency_key",
                     "network.ont_service_configuration.fingerprint_key_unavailable",
                     "network.ont_service_configuration.invalid_change",
+                    "network.ont_service_configuration.catalog_ip_block_unavailable",
+                    "network.ont_service_configuration.ip_block_entitlement_required",
+                    "network.ont_service_configuration.dhcp_not_available_for_single_address",
+                    "network.ont_service_configuration.invalid_dhcp_pool",
+                    "network.ont_service_configuration.lan_address_required",
                     "network.ont_service_configuration.section_mismatch",
                     "network.ont_service_configuration.permission_denied",
                     "network.ont_service_configuration.customer_scope_denied",

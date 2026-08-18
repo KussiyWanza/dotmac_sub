@@ -1,0 +1,73 @@
+# Detailed field-location retention alerts.
+groups:
+  - name: field_location_retention
+    rules:
+      - alert: FieldLocationRetentionRunnerMissing
+        expr: >
+          absent(observability_snapshot_age_seconds{
+            domain="field_location_retention"
+          }) == 1
+        for: 2h
+        labels:
+          severity: critical
+          area: field-location-privacy
+          owner: field-operations-privacy
+        annotations:
+          summary: "Field-location retention has never reported success"
+          description: >
+            The hourly 30-day detailed GPS retention task has no successful-run
+            heartbeat. Check Celery beat, worker task registration, and task logs.
+          runbook: "docs/runbooks/FIELD_LOCATION_RETENTION.md"
+
+      - alert: FieldLocationRetentionRunnerStale
+        expr: >
+          observability_snapshot_age_seconds{
+            domain="field_location_retention"
+          } > 10800
+        for: 15m
+        labels:
+          severity: critical
+          area: field-location-privacy
+          owner: field-operations-privacy
+        annotations:
+          summary: "Field-location retention has not succeeded for three hours"
+          description: >
+            The hourly retention task is stale. Detailed GPS history may be
+            exceeding the approved 30-day policy.
+          runbook: "docs/runbooks/FIELD_LOCATION_RETENTION.md"
+
+      - alert: FieldLocationRetentionFailures
+        expr: >
+          observability_snapshot_status{
+            domain="field_location_retention", status="error"
+          } == 1
+        for: 5m
+        labels:
+          severity: warning
+          area: field-location-privacy
+          owner: field-operations-privacy
+        annotations:
+          summary: "Field-location retention is failing"
+          description: >
+            At least one retention attempt failed in the last hour. Inspect the
+            structured failure log and database health before manually retrying.
+          runbook: "docs/runbooks/FIELD_LOCATION_RETENTION.md"
+
+      - alert: FieldLocationRetentionBacklog
+        expr: >
+          observability_state{
+            domain="field_location_retention",
+            signal="batch_limit_reached",
+            scope="global"
+          } == 1
+        for: 3h
+        labels:
+          severity: warning
+          area: field-location-privacy
+          owner: field-operations-privacy
+        annotations:
+          summary: "Field-location retention backlog is not draining"
+          description: >
+            Three consecutive hourly runs reached the 10,000-row transaction
+            limit. Confirm that the backlog is shrinking before changing limits.
+          runbook: "docs/runbooks/FIELD_LOCATION_RETENTION.md"

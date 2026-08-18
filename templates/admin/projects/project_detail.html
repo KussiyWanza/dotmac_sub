@@ -435,8 +435,9 @@
             {% call project_card(title='Customer', subtitle='Linked subscriber context.') %}
             <dl class="space-y-2 text-xs">
                 <div class="flex justify-between gap-4"><dt class="text-slate-500 dark:text-slate-400">Subscriber</dt><dd class="break-all text-right text-slate-800 dark:text-slate-100">
-                    {% if project.subscriber_id %}
-                    <a href="/admin/customers/{{ project.subscriber_id }}" class="text-emerald-700 hover:underline dark:text-emerald-400">{{ subscriber_label or project.subscriber_id }}</a>
+                    {% if project_customer %}
+                    <a href="{{ project_customer.detail_url }}" class="text-emerald-700 hover:underline dark:text-emerald-400">{{ project_customer.name }}</a>
+                    {% elif project.subscriber_id %}{{ subscriber_label or project.subscriber_id }}
                     {% else %}-{% endif %}
                 </dd></div>
                 <div class="flex justify-between gap-4"><dt class="text-slate-500 dark:text-slate-400">Lead</dt><dd class="break-all text-right text-slate-800 dark:text-slate-100">{{ project.lead_id or '-' }}</dd></div>

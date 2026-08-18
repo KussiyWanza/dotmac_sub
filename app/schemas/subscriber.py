@@ -413,6 +413,12 @@ class SubscriberSyncRead(BaseModel):
     region: str | None = None
     postal_code: str | None = None
     country_code: str | None = None
+    service_status: str | None = None
+    recurring_subscription_count: int = 0
+    next_renewal_at: datetime | None = None
+    billing_cycle: str | None = None
+    recurring_amount_monthly: Decimal | None = None
+    annualized_recurring_revenue: Decimal | None = None
     created_at: datetime
     updated_at: datetime
 

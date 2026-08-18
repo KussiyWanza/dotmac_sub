@@ -76,6 +76,22 @@ def test_a_known_address_resolves_to_its_customer(db_session, customer):
     assert conversation.subscriber_id == subscriber_id
 
 
+def test_an_explicit_staff_customer_selection_is_persisted(db_session, customer):
+    subscriber_id, _email = customer
+
+    outcome = team_inbox_commands.start_conversation(
+        db_session,
+        channel_type="email",
+        contact_address="alternate-contact@example.com",
+        subscriber_id=subscriber_id,
+        body_text="Following up on the selected customer account.",
+    )
+
+    conversation = db_session.get(InboxConversation, outcome.conversation_id)
+    assert conversation.subscriber_id == subscriber_id
+    assert outcome.contact_status == "explicit_subscriber"
+
+
 def test_an_unknown_address_still_opens_a_thread(db_session):
     """The operator may be reaching someone the system does not know yet."""
     outcome = team_inbox_commands.start_conversation(

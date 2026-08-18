@@ -53,6 +53,37 @@ def _client(db_session) -> TestClient:
     return TestClient(app, raise_server_exceptions=False)
 
 
+def test_start_conversation_passes_selected_subscriber_to_owner(db_session):
+    selected_subscriber_id = uuid.uuid4()
+    outcome = team_inbox_commands.StartConversationOutcome(
+        conversation_id=str(uuid.uuid4()),
+        kind="queued",
+        sender="team@example.com",
+        contact_status="explicit_subscriber",
+    )
+    with (
+        patch(
+            "app.web.admin.inbox.team_inbox_commands.start_conversation",
+            return_value=outcome,
+        ) as start,
+        patch("app.web.admin.inbox._prepare_mutation"),
+        patch("app.web.admin.inbox._actor_id_from_request", return_value=None),
+    ):
+        response = _client(db_session).post(
+            "/inbox/conversations",
+            data={
+                "channel_type": "email",
+                "contact_address": "ada@example.com",
+                "body_text": "Following up",
+                "subscriber_id": str(selected_subscriber_id),
+            },
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    assert start.call_args.kwargs["subscriber_id"] == str(selected_subscriber_id)
+
+
 @pytest.fixture
 def captured_request(db_session):
     """Drive the queue route and capture the `InboxQueueRequest` it builds."""
@@ -88,6 +119,23 @@ def test_ai_handling_checkbox_reaches_the_read_model_as_a_boolean(captured_reque
 def test_ai_handling_false_is_distinct_from_absent(captured_request):
     assert captured_request("?ai_handling=false").ai_handling is False
     assert captured_request("").ai_handling is None
+
+
+def test_expired_reply_window_filter_renders_as_a_status_choice(db_session):
+    client = _client(db_session)
+    with (
+        patch("app.web.admin.get_current_user", return_value=None),
+        patch("app.web.admin.get_sidebar_stats", return_value={}),
+        patch("app.services.web_admin.get_actor_id", return_value=None),
+    ):
+        response = client.get("/inbox?reply_window_status=expired")
+
+    assert response.status_code == 200
+    status_group = response.text.split('<legend class="sr-only">Status</legend>', 1)[
+        1
+    ].split("</fieldset>", 1)[0]
+    assert 'name="reply_window_status" value="expired"' in status_group
+    assert "hover:text-white" in status_group
 
 
 def test_has_ticket_checkbox_reaches_the_read_model_as_a_boolean(captured_request):

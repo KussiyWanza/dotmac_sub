@@ -60,6 +60,12 @@ def test_customer_table_consumes_contract_urls_and_accessibility_state():
     assert "cust_status" not in template
     assert "customer.ipv4" in template
     assert "customer.ipv4_label" not in template
+    assert "customer.name_presentation.display_text" in template
+    assert "customer.name_presentation.full_text" in template
+    assert "customer.name_presentation.is_truncated" in template
+    assert "max-w-[188px]" in template
+    assert 'aria-label="{{ customer.name }}"' in template
+    assert 'aria-label="Select {{ customer.name }}"' in template
     assert (
         "{% if can_activate_subscriptions and "
         "customer.suspended_subscription_count %}" in template

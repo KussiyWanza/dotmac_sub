@@ -13,8 +13,15 @@ extension ShiftStateApi on ShiftState {
   /// The presence status string the backend expects (matches FieldPresenceStatus).
   String get apiValue => switch (this) {
     ShiftState.offShift => 'off_shift',
-    ShiftState.onBreak => 'on_break',
+    ShiftState.onBreak => 'break',
     ShiftState.onShift => 'on_shift',
+  };
+
+  static ShiftState? fromApiValue(String value) => switch (value) {
+    'off_shift' => ShiftState.offShift,
+    'break' => ShiftState.onBreak,
+    'on_shift' || 'busy' => ShiftState.onShift,
+    _ => null,
   };
 }
 

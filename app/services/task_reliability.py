@@ -91,6 +91,13 @@ REDRIVE = FailureVisibility.ADMIN_REDRIVE
 
 
 TASK_RELIABILITY_CONTRACTS: dict[str, TaskReliabilityContract] = {
+    "app.tasks.field_location_retention.prune_field_location_history": _c(
+        "field_operations",
+        AUTORETRY,
+        IDEMP,
+        HEALTH,
+        "Bounded retention sweep; locked batches converge safely on replay.",
+    ),
     "app.tasks.admin_alerts.evaluate_infrastructure_alerts": _c(
         "monitoring", SWEEP, IDEMP, HEALTH
     ),

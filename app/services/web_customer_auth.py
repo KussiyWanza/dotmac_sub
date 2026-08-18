@@ -28,6 +28,7 @@ from app.services import (
 )
 from app.services import module_manager as module_manager_service
 from app.services.auth_flow import verify_password
+from app.services.db_session_adapter import db_session_adapter
 from app.services.domain_errors import DomainError
 from app.services.owner_commands import CommandContext
 from app.services.rate_limiter_adapter import allow_operation
@@ -313,6 +314,7 @@ def customer_credential_enrollment_submit(
             status_code=400,
         )
     try:
+        db_session_adapter.release_read_transaction(db)
         customer_credential_enrollment.complete_referral_enrollment(
             db,
             customer_credential_enrollment.CompleteReferralEnrollmentCommand(

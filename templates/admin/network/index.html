@@ -33,6 +33,21 @@
         ]
     },
     {
+        "title": "Maps & Fibre Assets",
+        "description": "Live map views, fibre inventory records, planning tools, and governed change work.",
+        "items": [
+            {"label": "Live Network Map", "href": "/admin/network/map", "desc": "Permanent production map with FDHs, access points, closures, cable paths, OLTs, devices, and customers.", "color": "sky", "icon": '<svg class="h-4 w-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/></svg>'},
+            {"label": "Map Workbench", "href": "/admin/network/map-v2", "desc": "Preview proposals, inspect topology overlays, search assets, and measure distances.", "color": "indigo", "icon": '<svg class="h-4 w-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h7m-7 6h16"/></svg>'},
+            {"label": "Fibre Planning Map", "href": "/admin/network/fiber-map", "desc": "Measure routes, find nearest cabinet, estimate cost, and plan a drop path.", "color": "emerald", "icon": '<svg class="h-4 w-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 6l6-3 6 3 6-3v15l-6 3-6-3-6 3V6zM9 3v15m6-12v15"/></svg>'},
+            {"label": "FDH Cabinets", "href": "/admin/network/fdh-cabinets", "desc": "List, add, edit, and inspect FDH cabinets and splitter context.", "color": "orange", "icon": '<svg class="h-4 w-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7h16M6 7v12h12V7M9 11h6m-6 4h6"/></svg>'},
+            {"label": "Splice Closures", "href": "/admin/network/splice-closures", "desc": "List, add, edit, and inspect splice closures, trays, and splice records.", "color": "teal", "icon": '<svg class="h-4 w-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 8h12M8 5h8a2 2 0 012 2v10a2 2 0 01-2 2H8a2 2 0 01-2-2V7a2 2 0 012-2zm2 7h4m-4 4h4"/></svg>'},
+            {"label": "Fibre Change Requests", "href": "/admin/network/fiber-change-requests", "desc": "Review, approve, reject, and audit governed fibre asset changes.", "color": "amber", "icon": '<svg class="h-4 w-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4M7 4h10a2 2 0 012 2v14l-4-2-3 2-3-2-4 2V6a2 2 0 012-2z"/></svg>'},
+            {"label": "Fibre Plant", "href": "/admin/network/fiber-plant", "desc": "Outside plant hub for cabinets, closures, strands, connectivity, and operational ledgers.", "color": "rose", "icon": '<svg class="h-4 w-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>'},
+            {"label": "Connectivity Coverage", "href": "/admin/network/fiber-connectivity-coverage", "desc": "Read-only staged-path coverage, blockers, and exact connectivity evidence.", "color": "blue", "icon": '<svg class="h-4 w-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 12h4m4 0h4M8 8l8 8m0-8l-8 8"/></svg>'},
+            {"label": "Identity Coverage", "href": "/admin/network/fiber-identity-coverage", "desc": "Read-only source identity coverage for migrated and reviewed fibre assets.", "color": "violet", "icon": '<svg class="h-4 w-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 11c1.657 0 3-1.343 3-3S13.657 5 12 5 9 6.343 9 8s1.343 3 3 3zm0 2c-3.314 0-6 1.79-6 4v1h12v-1c0-2.21-2.686-4-6-4z"/></svg>'}
+        ]
+    },
+    {
         "title": "Infrastructure",
         "description": "Physical plant, configuration baselines, and supporting network catalogs.",
         "items": [
@@ -69,12 +84,15 @@
 ] %}
 
 {% set quick_links = [
+    {"label": "Maps", "href": "/admin/network/map"},
+    {"label": "Fibre Map", "href": "/admin/network/fiber-map"},
+    {"label": "FDHs", "href": "/admin/network/fdh-cabinets"},
+    {"label": "Closures", "href": "/admin/network/splice-closures"},
     {"label": "Devices", "href": "/admin/network/devices"},
     {"label": "OLTs", "href": "/admin/network/olts"},
     {"label": "ONTs", "href": "/admin/network/onts"},
     {"label": "NAS", "href": "/admin/network/nas"},
-    {"label": "Monitoring", "href": "/admin/network/monitoring"},
-    {"label": "Map", "href": "/admin/network/map"}
+    {"label": "Monitoring", "href": "/admin/network/monitoring"}
 ] %}
 
 <div class="relative space-y-5">

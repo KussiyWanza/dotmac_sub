@@ -277,6 +277,9 @@ def get_subscription_wifi_status(
         OntServiceConfigurationPhase.readback_pending: (
             CustomerDeviceCommandStatus.waiting
         ),
+        OntServiceConfigurationPhase.delivered_unverified: (
+            CustomerDeviceCommandStatus.succeeded
+        ),
         OntServiceConfigurationPhase.verified: CustomerDeviceCommandStatus.succeeded,
         OntServiceConfigurationPhase.failed: CustomerDeviceCommandStatus.failed,
         OntServiceConfigurationPhase.superseded: CustomerDeviceCommandStatus.failed,
@@ -288,6 +291,9 @@ def get_subscription_wifi_status(
         OntServiceConfigurationPhase.applying: "WiFi update is being applied.",
         OntServiceConfigurationPhase.readback_pending: (
             "WiFi update applied; waiting for the device to confirm it."
+        ),
+        OntServiceConfigurationPhase.delivered_unverified: (
+            "WiFi update delivered; exact device readback is unavailable."
         ),
         OntServiceConfigurationPhase.verified: "WiFi update completed.",
         OntServiceConfigurationPhase.failed: (

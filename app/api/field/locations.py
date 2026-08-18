@@ -10,7 +10,10 @@ from app.schemas.field import (
     LocationSharingUpdate,
 )
 from app.services.auth_dependencies import require_user_auth
-from app.services.field.location_tracking import field_location_tracking
+from app.services.field.location_tracking import (
+    LocationPingCommand,
+    field_location_tracking,
+)
 from app.services.field.routing import field_routing
 
 router = APIRouter(prefix="/locations", tags=["field-locations"])
@@ -22,12 +25,31 @@ def ingest_locations(
     auth: dict = Depends(require_user_auth),
     db: Session = Depends(get_db),
 ):
-    result = field_location_tracking.record_batch(
+    outcome = field_location_tracking.record_batch(
         db,
         auth,
-        [ping.model_dump() for ping in payload.pings],
+        [LocationPingCommand(**ping.model_dump()) for ping in payload.pings],
     )
-    return result
+    return {
+        "accepted": outcome.accepted,
+        "errors": [
+            {
+                "index": issue.index,
+                "code": issue.code,
+                "detail": issue.detail,
+            }
+            for issue in outcome.errors
+        ],
+        "presence": outcome.presence,
+        "transitions": [
+            {
+                "crm_work_order_id": transition.crm_work_order_id,
+                "event": transition.event,
+                "distance_m": transition.distance_m,
+            }
+            for transition in outcome.transitions
+        ],
+    }
 
 
 @router.put("/sharing", response_model=FieldPresenceRead)

@@ -14,6 +14,7 @@ from app.models.project import (
     ProjectTemplateTaskDependency,
     ProjectType,
 )
+from app.models.subscriber import SubscriberCategory
 from app.schemas.project import ProjectCreate, ProjectTaskCreate
 from app.services import web_dispatch_work_orders, web_projects
 from app.services.project_filters import (
@@ -75,6 +76,28 @@ def _create_project(db_session, subscriber, **overrides):
         **overrides,
     )
     return projects.create(db_session, payload)
+
+
+@pytest.mark.parametrize(
+    ("category", "customer_type"),
+    (
+        (SubscriberCategory.residential, "person"),
+        (SubscriberCategory.business, "business"),
+    ),
+)
+def test_project_detail_context_owns_customer_detail_route(
+    db_session, subscriber, category, customer_type
+):
+    subscriber.category = category
+    db_session.commit()
+    project = _create_project(db_session, subscriber)
+
+    context = web_projects.build_project_detail_context(db_session, project=project)
+
+    customer = context["project_customer"]
+    assert customer is not None
+    assert customer.subscriber_id == subscriber.id
+    assert customer.detail_url == f"/admin/customers/{customer_type}/{subscriber.id}"
 
 
 def test_project_list_query_normalizes_sort_filters_and_page_size():

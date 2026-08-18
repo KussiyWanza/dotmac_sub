@@ -12,6 +12,7 @@ from fastapi.responses import HTMLResponse
 from starlette.requests import Request
 
 from app.models.ont_service_configuration import OntServiceConfigurationPhase
+from app.services.catalog.ip_block_choices import CatalogIpBlockChoice, IpBlockPrefix
 from app.services.network.ont_service_configuration import (
     ConfigureOntServiceOutcome,
     LanConfigurationChange,
@@ -97,6 +98,41 @@ def test_configure_form_exposes_only_section_scoped_routed_actions() -> None:
     assert "Not ready" in html
 
 
+def test_configure_form_renders_catalog_ip_blocks_and_disables_dhcp_for_32() -> None:
+    html = templates.env.get_template("admin/network/onts/_configure_form.html").render(
+        request=_request(),
+        ont_id="ont-1",
+        lan_block_prefix="/32",
+        lan_dhcp_enabled=False,
+        ip_block_choices=(
+            CatalogIpBlockChoice(
+                prefix=IpBlockPrefix.p32,
+                subnet_mask="255.255.255.255",
+                address_count=1,
+                offer_ids=(uuid.uuid4(),),
+                offer_names=("One public address",),
+            ),
+            CatalogIpBlockChoice(
+                prefix=IpBlockPrefix.p29,
+                subnet_mask="255.255.255.248",
+                address_count=8,
+                offer_ids=(uuid.uuid4(),),
+                offer_names=("Public /29",),
+            ),
+        ),
+        entitled_ip_block_prefixes=("/32", "/29"),
+        ip_block_entitlements=(),
+        has_tr069=False,
+    )
+
+    assert 'value="/32"' in html
+    assert "/32 — 1 address" in html
+    assert 'value="/29"' in html
+    assert "/29 — 8 addresses" in html
+    assert ":disabled=\"lanBlockPrefix === '/32'\"" in html
+    assert "A /32 is one static address; DHCP is unavailable." in html
+
+
 def test_configure_form_reports_queued_operation_without_claiming_delivery() -> None:
     operation_id = uuid.uuid4()
     html = templates.env.get_template("admin/network/onts/_configure_form.html").render(
@@ -126,7 +162,7 @@ def _submit_values(push_scope: str) -> dict[str, object]:
         "mgmt_ip_address": "",
         "mgmt_remote_access": False,
         "lan_gateway_ip": "",
-        "lan_subnet_mask": "",
+        "lan_block_prefix": "/29",
         "lan_dhcp_enabled": False,
         "lan_dhcp_start": "",
         "lan_dhcp_end": "",
@@ -212,6 +248,7 @@ def test_configure_submit_queues_typed_section_and_returns_operation_toast(
     command = captured["command"]
     assert command.section is OntConfigurationSection.lan
     assert isinstance(command.change, LanConfigurationChange)
+    assert command.change.block_prefix is IpBlockPrefix.p29
     assert toast == {"message": "Configuration queued.", "type": "success"}
 
 

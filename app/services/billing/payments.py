@@ -94,6 +94,7 @@ from app.services.billing._common import (
     _validate_payment_linkages,
     _validate_payment_provider,
     get_account_credit_balance,
+    get_spendable_account_credit_balance,
     lock_account,
 )
 from app.services.billing.ledger import LedgerEntries
@@ -4184,7 +4185,7 @@ def _build_payment_allocation_preview(
             status_code=409,
             detail="Allocation exceeds this payment's unallocated credit",
         )
-    account_credit_before = get_account_credit_balance(
+    account_credit_before = get_spendable_account_credit_balance(
         db, str(payment.account_id), currency=payment.currency
     )
     if amount > account_credit_before:
@@ -4255,7 +4256,7 @@ class PaymentAllocations(ListResponseMixin):
         ):
             return Decimal("0.00")
         payment_available = _payment_unallocated_credit_remaining(db, payment)
-        account_available = get_account_credit_balance(
+        account_available = get_spendable_account_credit_balance(
             db, str(payment.account_id), currency=payment.currency
         )
         return max(
