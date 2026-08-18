@@ -90,6 +90,23 @@ def test_ai_handling_false_is_distinct_from_absent(captured_request):
     assert captured_request("").ai_handling is None
 
 
+def test_expired_reply_window_filter_renders_as_a_status_choice(db_session):
+    client = _client(db_session)
+    with (
+        patch("app.web.admin.get_current_user", return_value=None),
+        patch("app.web.admin.get_sidebar_stats", return_value={}),
+        patch("app.services.web_admin.get_actor_id", return_value=None),
+    ):
+        response = client.get("/inbox?reply_window_status=expired")
+
+    assert response.status_code == 200
+    status_group = response.text.split('<legend class="sr-only">Status</legend>', 1)[
+        1
+    ].split("</fieldset>", 1)[0]
+    assert 'name="reply_window_status" value="expired"' in status_group
+    assert "hover:text-white" in status_group
+
+
 def test_has_ticket_checkbox_reaches_the_read_model_as_a_boolean(captured_request):
     assert captured_request("?has_ticket=true").has_ticket is True
 

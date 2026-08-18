@@ -956,13 +956,7 @@ def _assignment_counts(
                 .scalar()
                 or 0
             )
-    ai_handling = int(
-        db.query(func.count(InboxConversation.id))
-        .filter(InboxConversation.is_active.is_(True))
-        .filter(InboxConversation.metadata_["ai_handling"].as_boolean().is_(True))
-        .scalar()
-        or 0
-    )
+    ai_handling = team_inbox_read.ai_handling_conversation_count(db)
     return InboxAssignmentCounts(
         all=all_count,
         assigned_to_me=assigned_to_me,

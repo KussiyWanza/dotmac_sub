@@ -971,10 +971,25 @@ def test_status_and_assignment_filters_use_flexible_wrapping_groups():
     assert SIDEBAR.count(group_classes) == 3
     assert 'name="status" value="open"' in SIDEBAR
     assert 'name="status" value="pending"' in SIDEBAR
+    assert 'name="reply_window_status" value="expired"' in SIDEBAR
     assert 'name="has_ticket" value="true"' in SIDEBAR
     assert 'name="status" value="resolved"' in SIDEBAR
     assert "bg-emerald-500" in SIDEBAR
     assert "bg-amber-500" in SIDEBAR
+
+
+def test_expired_is_visible_in_status_and_attention_hover_text_is_white():
+    status_group = SIDEBAR.split('<legend class="sr-only">Status</legend>', 1)[1]
+    status_group = status_group.split("</fieldset>", 1)[0]
+    attention_group = SIDEBAR.split('<legend class="sr-only">Attention</legend>', 1)[1]
+    attention_group = attention_group.split("</fieldset>", 1)[0]
+
+    assert 'name="reply_window_status" value="expired"' in status_group
+    assert 'name="reply_window_status" value="expired"' not in attention_group
+    assert "Needs attention" in status_group
+    assert status_group.count("hover:text-white") >= 2
+    assert "applyStatusFilter('expired')" in status_group
+    assert '"reply_window_status"' in JAVASCRIPT
 
 
 def test_blank_priority_is_omitted_from_inbox_htmx_filter_requests():
