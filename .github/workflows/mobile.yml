@@ -6,14 +6,14 @@ name: Mobile CI
 # expensive Flutter and iOS jobs stay scoped to mobile changes via the `changes`
 # filter below, so backend-only PRs still don't pay for a Flutter/iOS run.
 on:
-  # `integration/**` carries multi-PR adoption programmes (kernel migration).
-  # Without it a PR INTO an integration branch runs no tests at all, and the
-  # whole section meets CI for the first time at the integration -> dev merge —
-  # which is exactly the batch this branching model exists to avoid.
+  # `integration/**` and `consolidate/**` carry multi-PR batches. Without these
+  # targets, a PR INTO a batch branch runs no tests at all, and the whole batch
+  # meets CI for the first time at its merge to dev — exactly the risk these
+  # branch families exist to contain.
   push:
-    branches: [main, dev, 'integration/**']
+    branches: [main, dev, 'integration/**', 'consolidate/**']
   pull_request:
-    branches: [main, dev, 'integration/**']
+    branches: [main, dev, 'integration/**', 'consolidate/**']
   merge_group:
   workflow_dispatch:
 
