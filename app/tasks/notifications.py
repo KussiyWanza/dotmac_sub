@@ -1221,7 +1221,7 @@ def _deliver_notification_queue_stats(
             .scalar()
             or 0
         )
-    return {
+    delivery_stats: dict[str, int] = {
         "delivered": delivered,
         "retried": retried,
         "failed": failed,
@@ -1234,6 +1234,11 @@ def _deliver_notification_queue_stats(
         "stale_due": int(stale_due),
         "scheduled_queued": int(scheduled_queued),
     }
+    # The health counts above open an implicit read transaction. This helper is
+    # also used inline before registered owner commands, so return the adapter's
+    # session transaction-free instead of leaking that infrastructure read.
+    db_session_adapter.release_read_transaction(db)
+    return delivery_stats
 
 
 def _deliver_notification_queue(db, batch_size: int = 50) -> int:
