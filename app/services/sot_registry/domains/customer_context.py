@@ -1876,6 +1876,15 @@ DOMAIN = DomainSOT(
                 "operations.work_orders",
                 "observability.audit_log",
             ),
+            notes=(
+                "Live technician location derives from the latest native field "
+                "location ping tagged to the requested work order and recorded "
+                "by its currently assigned technician. Customer and reseller "
+                "reads fail closed when sharing is disabled, no job-scoped fix "
+                "exists, or that fix is older than the two-minute freshness "
+                "window; a new accepted job-scoped field location ping is the "
+                "idempotent rebuild path.",
+            ),
         ),
         SOTService(
             name="customer.field_job_chat",

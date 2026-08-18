@@ -464,6 +464,28 @@ void main() {
     expect(finish.onPressed, isNotNull);
   });
 
+  testWidgets('completion photo previews use bounded image decoding', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _wrap(
+        const CompletionPhotoThumbnail(
+          localPath: 'missing-test-photo.jpg',
+          clientRef: 'photo-1',
+        ),
+      ),
+    );
+
+    final image = tester.widget<Image>(
+      find.byKey(const Key('completion-photo-photo-1')),
+    );
+    expect(image.width, completionPhotoPreviewSize);
+    expect(image.height, completionPhotoPreviewSize);
+    final provider = image.image as ResizeImage;
+    expect(provider.width, completionPhotoDecodeSize);
+    expect(provider.height, completionPhotoDecodeSize);
+  });
+
   testWidgets('signature can be cleared and redrawn', (tester) async {
     const requirements = JobCompletionRequirements(
       evidenceRequired: false,

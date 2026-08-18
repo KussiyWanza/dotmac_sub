@@ -13,6 +13,22 @@ void main() {
       LocationDecision.proceed,
     );
     expect(
+      decideForPermission(
+        LocationPermission.whileInUse,
+        serviceEnabled: true,
+        requireBackground: true,
+      ),
+      LocationDecision.request,
+    );
+    expect(
+      decideForPermission(
+        LocationPermission.always,
+        serviceEnabled: true,
+        requireBackground: true,
+      ),
+      LocationDecision.proceed,
+    );
+    expect(
       decideForPermission(LocationPermission.denied, serviceEnabled: true),
       LocationDecision.request,
     );

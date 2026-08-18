@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from app.api.field import router
 from app.db import get_db
-from app.models.dispatch import TechnicianProfile
+from app.models.dispatch import TechnicianProfile, WorkOrderAssignmentQueue
 from app.models.domain_settings import DomainSetting, SettingDomain
 from app.models.field_job_event import FieldJobEvent
 from app.models.field_location import FieldTechLocationPing
@@ -18,7 +18,10 @@ from app.models.subscription_engine import SettingValueType
 from app.models.system_user import SystemUser
 from app.models.work_order import WorkOrder
 from app.services.auth_dependencies import require_user_auth
-from app.services.field.location_tracking import field_location_tracking
+from app.services.field.location_tracking import (
+    LocationPingCommand,
+    field_location_tracking,
+)
 
 
 def _user(db_session) -> SystemUser:
@@ -102,33 +105,42 @@ def _field_setting(db_session, key: str, value: str) -> None:
 
 def test_record_batch_persists_pings_and_updates_presence(db_session):
     user = _user(db_session)
-    _profile(db_session, user)
+    profile = _profile(db_session, user)
+    subscriber = _subscriber(db_session)
+    row = _work_order(db_session, subscriber, crm_work_order_id="wo-live")
+    db_session.add(
+        WorkOrderAssignmentQueue(
+            work_order_mirror_id=row.id,
+            status="assigned",
+            assigned_technician_id=profile.id,
+        )
+    )
     now = datetime.now(UTC)
 
     result = field_location_tracking.record_batch(
         db_session,
         _auth(user),
         [
-            {
-                "latitude": 9.071,
-                "longitude": 7.451,
-                "accuracy_m": 10,
-                "captured_at": now,
-                "crm_work_order_id": "wo-live",
-                "status": "on_shift",
-            },
-            {
-                "latitude": 9.072,
-                "longitude": 7.452,
-                "captured_at": now + timedelta(minutes=1),
-            },
+            LocationPingCommand(
+                latitude=9.071,
+                longitude=7.451,
+                accuracy_m=10,
+                captured_at=now,
+                crm_work_order_id="wo-live",
+                status="on_shift",
+            ),
+            LocationPingCommand(
+                latitude=9.072,
+                longitude=7.452,
+                captured_at=now + timedelta(minutes=1),
+            ),
         ],
     )
 
-    assert result["accepted"] == 2
-    assert result["errors"] == []
-    assert result["presence"].status == "on_shift"
-    assert result["presence"].last_latitude == 9.072
+    assert result.accepted == 2
+    assert result.errors == ()
+    assert result.presence.status == "on_shift"
+    assert result.presence.last_latitude == 9.072
     assert (
         db_session.query(FieldTechLocationPing)
         .filter(FieldTechLocationPing.crm_work_order_id == "wo-live")
@@ -146,16 +158,18 @@ def test_stale_ping_does_not_roll_presence_backwards(db_session):
     field_location_tracking.record_ping(
         db_session,
         auth,
-        latitude=9.071,
-        longitude=7.451,
-        captured_at=now,
+        command=LocationPingCommand(
+            latitude=9.071, longitude=7.451, captured_at=now
+        ),
     )
     field_location_tracking.record_ping(
         db_session,
         auth,
-        latitude=1.0,
-        longitude=1.0,
-        captured_at=now - timedelta(minutes=5),
+        command=LocationPingCommand(
+            latitude=1.0,
+            longitude=1.0,
+            captured_at=now - timedelta(minutes=5),
+        ),
     )
 
     presence = field_location_tracking.get_or_create_presence(db_session, auth)
@@ -171,13 +185,140 @@ def test_location_batch_collects_per_ping_errors(db_session):
         db_session,
         _auth(user),
         [
-            {"latitude": 9.071, "longitude": 7.451},
-            {"latitude": 9.072, "longitude": 7.452, "status": "teleporting"},
+            LocationPingCommand(latitude=9.071, longitude=7.451),
+            LocationPingCommand(
+                latitude=9.072, longitude=7.452, status="teleporting"
+            ),
         ],
     )
 
-    assert result["accepted"] == 1
-    assert result["errors"][0]["index"] == 1
+    assert result.accepted == 1
+    assert result.errors[0].index == 1
+    assert db_session.query(FieldTechLocationPing).count() == 1
+
+
+def test_location_ping_rejects_unassigned_work_order_tag(db_session):
+    user = _user(db_session)
+    _profile(db_session, user)
+    subscriber = _subscriber(db_session)
+    row = _work_order(db_session, subscriber, crm_work_order_id="wo-unassigned")
+    db_session.commit()
+
+    result = field_location_tracking.record_batch(
+        db_session,
+        _auth(user),
+        [
+            LocationPingCommand(
+                latitude=9.071,
+                longitude=7.451,
+                crm_work_order_id=row.public_id,
+            )
+        ],
+    )
+
+    assert result.accepted == 0
+    assert result.errors[0].code == "technician_not_assigned"
+    assert db_session.query(FieldTechLocationPing).count() == 0
+
+
+def test_location_ping_rejects_terminal_work_order_tag(db_session):
+    user = _user(db_session)
+    profile = _profile(db_session, user)
+    subscriber = _subscriber(db_session)
+    row = _work_order(
+        db_session,
+        subscriber,
+        crm_work_order_id="wo-completed",
+        status="completed",
+    )
+    db_session.add(
+        WorkOrderAssignmentQueue(
+            work_order_mirror_id=row.id,
+            status="assigned",
+            assigned_technician_id=profile.id,
+        )
+    )
+    db_session.commit()
+
+    result = field_location_tracking.record_batch(
+        db_session,
+        _auth(user),
+        [
+            LocationPingCommand(
+                latitude=9.071,
+                longitude=7.451,
+                crm_work_order_id=row.public_id,
+            )
+        ],
+    )
+
+    assert result.accepted == 0
+    assert result.errors[0].code == "work_order_not_trackable"
+    assert db_session.query(FieldTechLocationPing).count() == 0
+
+
+def test_location_ping_rejects_timestamp_beyond_clock_skew(db_session):
+    user = _user(db_session)
+    _profile(db_session, user)
+
+    result = field_location_tracking.record_batch(
+        db_session,
+        _auth(user),
+        [
+            LocationPingCommand(
+                latitude=9.071,
+                longitude=7.451,
+                captured_at=datetime.now(UTC) + timedelta(minutes=6),
+            )
+        ],
+    )
+
+    assert result.accepted == 0
+    assert result.errors[0].code == "captured_at_in_future"
+    assert db_session.query(FieldTechLocationPing).count() == 0
+
+
+def test_location_ping_rejects_technician_after_reassignment(db_session):
+    old_user = _user(db_session)
+    old_profile = _profile(db_session, old_user)
+    new_user = _user(db_session)
+    new_profile = _profile(db_session, new_user)
+    subscriber = _subscriber(db_session)
+    row = _work_order(db_session, subscriber, crm_work_order_id="wo-reassigned")
+    db_session.add(
+        WorkOrderAssignmentQueue(
+            work_order_mirror_id=row.id,
+            status="assigned",
+            assigned_technician_id=old_profile.id,
+            updated_at=datetime.now(UTC) - timedelta(minutes=1),
+        )
+    )
+    db_session.flush()
+    db_session.add(
+        WorkOrderAssignmentQueue(
+            work_order_mirror_id=row.id,
+            status="assigned",
+            assigned_technician_id=new_profile.id,
+            updated_at=datetime.now(UTC),
+        )
+    )
+    db_session.commit()
+
+    result = field_location_tracking.record_batch(
+        db_session,
+        _auth(old_user),
+        [
+            LocationPingCommand(
+                latitude=9.071,
+                longitude=7.451,
+                crm_work_order_id=row.public_id,
+            )
+        ],
+    )
+
+    assert result.accepted == 0
+    assert result.errors[0].code == "technician_not_assigned"
+    assert db_session.query(FieldTechLocationPing).count() == 0
 
 
 def test_geofence_is_disabled_by_default(db_session):
@@ -190,11 +331,11 @@ def test_geofence_is_disabled_by_default(db_session):
     result = field_location_tracking.record_batch(
         db_session,
         _auth(user),
-        [{"latitude": 9.071, "longitude": 7.451}],
+        [LocationPingCommand(latitude=9.071, longitude=7.451)],
     )
 
     db_session.refresh(row)
-    assert result["transitions"] == []
+    assert result.transitions == ()
     assert row.status == "dispatched"
     assert db_session.query(FieldJobEvent).count() == 0
 
@@ -210,14 +351,14 @@ def test_geofence_auto_starts_arrived_job_once(db_session):
     result = field_location_tracking.record_batch(
         db_session,
         _auth(user),
-        [{"latitude": 9.0711, "longitude": 7.4511}],
+        [LocationPingCommand(latitude=9.0711, longitude=7.4511)],
     )
 
     db_session.refresh(row)
-    assert len(result["transitions"]) == 1
-    assert result["transitions"][0]["crm_work_order_id"] == "wo-geofence-on"
-    assert result["transitions"][0]["event"] == "start"
-    assert result["transitions"][0]["distance_m"] < 25
+    assert len(result.transitions) == 1
+    assert result.transitions[0].crm_work_order_id == "wo-geofence-on"
+    assert result.transitions[0].event == "start"
+    assert result.transitions[0].distance_m < 25
     assert row.status == "in_progress"
     event = db_session.query(FieldJobEvent).one()
     assert event.event == "start"
@@ -228,9 +369,9 @@ def test_geofence_auto_starts_arrived_job_once(db_session):
     replay = field_location_tracking.record_batch(
         db_session,
         _auth(user),
-        [{"latitude": 9.0711, "longitude": 7.4511}],
+        [LocationPingCommand(latitude=9.0711, longitude=7.4511)],
     )
-    assert replay["transitions"] == []
+    assert replay.transitions == ()
     assert db_session.query(FieldJobEvent).count() == 1
 
 
@@ -295,3 +436,36 @@ def test_location_api_routes(db_session):
     presence = client.get("/api/v1/field/locations/me")
     assert presence.status_code == 200
     assert presence.json()["last_latitude"] == 9.071
+
+
+def test_location_api_returns_typed_job_tag_rejection(db_session):
+    user = _user(db_session)
+    _profile(db_session, user)
+    app = FastAPI()
+    app.include_router(router, prefix="/api/v1")
+    app.dependency_overrides[get_db] = lambda: db_session
+    app.dependency_overrides[require_user_auth] = lambda: _auth(user)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/field/locations",
+        json={
+            "pings": [
+                {
+                    "latitude": 9.071,
+                    "longitude": 7.451,
+                    "crm_work_order_id": "missing-job",
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["accepted"] == 0
+    assert response.json()["errors"] == [
+        {
+            "index": 0,
+            "code": "work_order_not_found",
+            "detail": "Tagged work order was not found",
+        }
+    ]

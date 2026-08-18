@@ -712,6 +712,7 @@ Edit the owning domain shard and regenerate; do not hand-edit these rows.
 | `observability.database_diagnostics` | redacted idle-transaction failure correlation | `resolver` | database driver failure observation ← `runtime.db_sessions`<br>request correlation context ← `observability.recording` | `not_applicable` | `native` | platform operations | `docs/designs/OPERATIONAL_EVIDENCE_AND_RETRY.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_operational_evidence_followup.py` |
 | `observability.database_transaction_spans` | root database transaction duration observations | `resolver` | root transaction lifecycle observation ← `runtime.db_sessions` | `not_applicable` | `native` | platform operations | `docs/runbooks/DATABASE_TRANSACTION_PRESSURE.md`<br>`docs/designs/OPERATIONS_MEASUREMENT_STRATEGY.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_database_pressure_metrics.py`<br>`tests/test_team_inbox_sot_completion.py`<br>`tests/test_customer_network_path.py`<br>`tests/architecture/test_customer_detail_panel_budget.py`<br>`tests/architecture/test_database_transaction_alerts.py` |
 | `observability.database_transaction_spans` | slow database transaction alert thresholds | `policy` | root transaction duration observation ← `observability.database_transaction_spans`<br>fixed slow transaction thresholds ← `observability.database_transaction_spans` | `not_applicable` | `native` | platform operations | `docs/runbooks/DATABASE_TRANSACTION_PRESSURE.md`<br>`docs/designs/OPERATIONS_MEASUREMENT_STRATEGY.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_database_pressure_metrics.py`<br>`tests/test_team_inbox_sot_completion.py`<br>`tests/test_customer_network_path.py`<br>`tests/architecture/test_customer_detail_panel_budget.py`<br>`tests/architecture/test_database_transaction_alerts.py` |
+| `operations.field_location_retention` | detailed field-location history retention | `command_writer` | server-recorded field-location receipt time ← `operations.field_location_retention`<br>approved field-location retention policy ← `operations.field_location_retention` | `owner_managed` | `native` | field operations and privacy | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/runbooks/FIELD_LOCATION_RETENTION.md`<br>`tests/test_field_location_retention.py`<br>`tests/architecture/test_field_location_retention_alerts.py` |
 | `operations.service_team_source_retirement` | legacy service-team source retirement | `command_writer` | native service-team identity pointers ← `operations.service_team_lifecycle`<br>legacy workflow service-team sources ← `operations.service_team_source_retirement` | `owner_managed` | `cutover_ready` | operations administration | `docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md`<br>`docs/runbooks/SERVICE_TEAM_PARTY_CUTOVER.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_service_team_source_retirement.py`<br>`tests/architecture/test_service_team_lifecycle_boundary.py` |
 | `operations.service_team_source_retirement` | legacy service-team source-retirement readiness | `resolver` | native service-team identity pointers ← `operations.service_team_lifecycle`<br>legacy workflow service-team sources ← `operations.service_team_source_retirement` | `owner_managed` | `cutover_ready` | operations administration | `docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md`<br>`docs/runbooks/SERVICE_TEAM_PARTY_CUTOVER.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_service_team_source_retirement.py`<br>`tests/architecture/test_service_team_lifecycle_boundary.py` |
 | `operations.service_team_lifecycle` | service-team lifecycle | `authoritative_record` | typed service-team command ← `operations.service_team_lifecycle`<br>active staff authentication principal ← `auth.staff_provisioning`<br>canonical Person Party identity ← `party.registry`<br>current native service-team state ← `operations.service_team_lifecycle` | `owner_managed` | `cutover_ready` | operations administration | `docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`tests/test_service_team_lifecycle.py`<br>`tests/test_service_team_web.py`<br>`tests/architecture/test_service_team_lifecycle_boundary.py` |
@@ -2622,8 +2623,27 @@ network summary composition.
 11. `customer.work_order_selfcare`
     (`app/services/customer_work_order_selfcare.py`) owns subscriber-scoped live
     technician-location reads and the canonical, audited customer technician
-    rating. It reads native dispatch assignment and field-presence facts and
-    writes no work-order lifecycle state.
+    rating. It reads native dispatch assignment, sharing state, and the latest
+    location ping tagged to the requested work order and recorded by its
+    currently assigned technician. It writes no work-order lifecycle state.
+    Live location fails closed when sharing is disabled, no job-scoped fix
+    exists, or that fix is more than two minutes old; the `stale` reason hides
+    coordinates until a fresh job-scoped ping rebuilds the projection.
+    The field location-ingest boundary admits a supplied work-order tag only
+    when the native work order is active and open and its latest dispatch
+    assignment names the authenticated technician. Missing, terminal,
+    unassigned, and superseded-assignment tags are rejected per ping with a
+    typed reason and are never persisted.
+    Device capture times more than five minutes ahead of server time are also
+    rejected and cannot advance presence freshness. The field mobile client
+    clears a submitted queue batch only when the response accounts for every
+    item as accepted or explicitly rejected with a stable code.
+    Detailed `FieldTechLocationPing` history is retained for 30 days from the
+    server-owned `received_at` timestamp. The scheduled
+    `operations.field_location_retention` owner removes older rows in locked
+    batches of at most 10,000, with payload-free audit and event evidence.
+    Current `FieldTechPresence` snapshots and work-order lifecycle evidence are
+    outside this deletion policy.
 12. `subscriber.growth_reports` (`app/services/subscriber_growth.py`) owns the
    admin subscriber growth and churn report reads: monthly growth/churn series,
    month-over-month new counts, churn/at-risk summaries, status counts, and

@@ -206,4 +206,22 @@ void main() {
     expect(calls.single.enabled, isTrue);
     expect(calls.single.shift, ShiftState.onShift);
   });
+
+  testWidgets('restores server location sharing when the app starts', (
+    tester,
+  ) async {
+    final locationService = LocationPingService(
+      location: FakeLocation(null),
+      poster: (_) async => true,
+      sharingReader: () async => const LocationSharingSnapshot(
+        enabled: true,
+        shift: ShiftState.onBreak,
+      ),
+    );
+
+    await tester.pumpWidget(_app(locationPingService: locationService));
+    await tester.pumpAndSettle();
+
+    expect(locationService.shift, ShiftState.onBreak);
+  });
 }
