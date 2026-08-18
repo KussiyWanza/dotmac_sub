@@ -50,6 +50,10 @@ _STATE_SNAPSHOT_SPECS = {
     "celery_queues": {"max_observations": 64, "ttl_seconds": 86_400},
     "credentials": {"max_observations": 500, "ttl_seconds": 7 * 86_400},
     "database_pressure": {"max_observations": 16, "ttl_seconds": 86_400},
+    "field_location_retention": {
+        "max_observations": 8,
+        "ttl_seconds": 7 * 86_400,
+    },
     "nas_lifecycle": {"max_observations": 32, "ttl_seconds": 7 * 86_400},
     "network_operations": {"max_observations": 32, "ttl_seconds": 86_400},
     # Prepaid enforcement + transitional coverage-repair counts published by

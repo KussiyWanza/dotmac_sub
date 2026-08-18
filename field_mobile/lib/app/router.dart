@@ -7,8 +7,10 @@ import '../features/auth/auth_state.dart';
 import '../features/auth/login_screen.dart';
 import '../features/auth/mfa_screen.dart';
 import '../features/expenses/expenses_screen.dart';
+import '../features/execution/completion_wizard.dart';
 import '../features/jobs/job_chat_screen.dart';
 import '../features/jobs/job_detail_screen.dart';
+import '../features/jobs/jobs_providers.dart';
 import '../features/jobs/work_order_evidence_map_screen.dart';
 import '../features/location/location_tracking_controller.dart';
 import '../features/manager/manager_providers.dart';
@@ -26,6 +28,7 @@ GoRouter buildRouter(Ref ref) {
   ref.listen(authControllerProvider, (_, _) => listenable.value++);
 
   return GoRouter(
+    restorationScopeId: 'dotmac-field-router',
     initialLocation: '/today',
     refreshListenable: listenable,
     redirect: (context, state) {
@@ -55,6 +58,11 @@ GoRouter buildRouter(Ref ref) {
         path: '/jobs/:id',
         builder: (_, state) =>
             JobDetailScreen(jobId: state.pathParameters['id']!),
+      ),
+      GoRoute(
+        path: '/jobs/:id/complete',
+        builder: (_, state) =>
+            _CompletionRoute(jobId: state.pathParameters['id']!),
       ),
       GoRoute(
         path: '/jobs/:id/chat',
@@ -151,6 +159,32 @@ GoRouter buildRouter(Ref ref) {
 }
 
 final routerProvider = Provider<GoRouter>(buildRouter);
+
+class _CompletionRoute extends ConsumerWidget {
+  const _CompletionRoute({required this.jobId});
+
+  final String jobId;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return ref
+        .watch(jobDetailProvider(jobId))
+        .when(
+          data: (detail) => CompletionWizard(
+            jobId: jobId,
+            requirements: detail.completionRequirements,
+            existingPhotoCount: detail.completionPhotoCount,
+            hasExistingSignature: detail.hasCompletionSignature,
+          ),
+          loading: () =>
+              const Scaffold(body: Center(child: CircularProgressIndicator())),
+          error: (_, _) => Scaffold(
+            appBar: AppBar(),
+            body: const Center(child: Text('Could not restore this job')),
+          ),
+        );
+  }
+}
 
 class _RestoreScreen extends StatelessWidget {
   const _RestoreScreen();

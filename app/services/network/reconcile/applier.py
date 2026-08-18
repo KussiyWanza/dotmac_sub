@@ -839,6 +839,11 @@ def _execute(action: Action, ctx: ApplyContext) -> AppliedAction:
                 "InternetGatewayDevice.LANDevice.1.LANHostConfigManagement.MaxAddress": action.pool_max,
                 "InternetGatewayDevice.LANDevice.1.LANHostConfigManagement.SubnetMask": action.subnet_mask,
             }
+            if action.gateway_ip is not None:
+                params[
+                    "InternetGatewayDevice.LANDevice.1.LANHostConfigManagement."
+                    "IPInterface.1.IPInterfaceIPAddress"
+                ] = action.gateway_ip
             _acs_set(action, ctx, params)
             return _ok(action, "acs_dhcp_server", None, action.enabled, started)
 

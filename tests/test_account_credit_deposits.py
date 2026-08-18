@@ -68,6 +68,7 @@ from app.services.topup_intents import (
     TopupIntentChannel,
     TopupIntentStatus,
 )
+from tests.prepaid_funding_helpers import materialize_test_prepaid_opening_balance
 
 
 def _provider(db_session) -> PaymentProvider:
@@ -733,6 +734,94 @@ def test_invoice_issued_after_deposit_uses_same_applicator(db_session, subscribe
     assert allocation.amount == Decimal("40000.00")
     assert allocation.ledger_entry_id is not None
     assert allocation.consumption_ledger_entry_id is not None
+
+
+def test_prepaid_deficit_blocks_later_invoice_account_credit_application(
+    db_session, subscriber
+):
+    subscriber.billing_mode = BillingMode.prepaid
+    db_session.commit()
+    materialize_test_prepaid_opening_balance(
+        db_session,
+        subscriber.id,
+        Decimal("0.00"),
+        position_at=datetime(2026, 6, 30, tzinfo=UTC),
+    )
+    payment = Payment(
+        account_id=subscriber.id,
+        amount=Decimal("110.00"),
+        currency="NGN",
+        status=PaymentStatus.succeeded,
+        paid_at=datetime(2026, 8, 1, tzinfo=UTC),
+        is_active=True,
+    )
+    db_session.add(payment)
+    db_session.flush()
+    db_session.add(
+        PaymentSettlement(
+            payment_id=payment.id,
+            amount=payment.amount,
+            unallocated_amount=payment.amount,
+            prepaid_amount=Decimal("0.00"),
+            currency=payment.currency,
+            origin=PaymentSettlementOrigin.system,
+            idempotency_key=f"pytest:prepaid-settlement:{payment.id}",
+        )
+    )
+    db_session.add(
+        LedgerEntry(
+            account_id=subscriber.id,
+            invoice_id=None,
+            payment_id=payment.id,
+            entry_type=LedgerEntryType.credit,
+            source=LedgerSource.payment,
+            amount=payment.amount,
+            currency=payment.currency,
+            memo=f"Payment {payment.id}",
+        )
+    )
+    db_session.add(
+        LedgerEntry(
+            account_id=subscriber.id,
+            invoice_id=None,
+            payment_id=None,
+            entry_type=LedgerEntryType.debit,
+            source=LedgerSource.adjustment,
+            amount=Decimal("100.00"),
+            currency="NGN",
+            memo="Prepaid service renewal 2026-08-01 - 2026-09-01",
+        )
+    )
+    db_session.commit()
+
+    issued_at = datetime(2026, 8, 17, tzinfo=UTC)
+    invoice = Invoices.create(
+        db_session,
+        InvoiceCreate(
+            account_id=subscriber.id,
+            invoice_number="INV-PREPAID-DEFICIT",
+            currency="NGN",
+            subtotal=Decimal("20.00"),
+            total=Decimal("20.00"),
+            balance_due=Decimal("20.00"),
+            status=InvoiceStatus.issued,
+            issued_at=issued_at,
+            due_at=issued_at + timedelta(days=7),
+            due_date_basis=InvoiceDueDateBasis.contract_terms,
+            due_date_basis_ref="pytest:prepaid-deficit",
+            due_date_policy_version="pytest-v1",
+        ),
+    )
+
+    assert invoice.status == InvoiceStatus.issued
+    assert invoice.balance_due == Decimal("20.00")
+    assert get_account_credit_balance(db_session, str(subscriber.id)) == Decimal(
+        "10.00"
+    )
+    assert (
+        db_session.query(PaymentAllocation).filter_by(invoice_id=invoice.id).count()
+        == 0
+    )
 
 
 def test_voiding_invoice_releases_applied_account_credit(db_session, subscriber):

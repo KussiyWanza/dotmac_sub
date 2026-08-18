@@ -1442,6 +1442,38 @@ def test_generic_update_form_rejects_router_change_before_technical_write(
     assert subscription.provisioning_nas_device_id == source_nas.id
 
 
+def test_additional_ip_form_ignores_unrelated_subscription_fields(
+    db_session,
+    subscription,
+):
+    form = FormData(
+        [
+            ("ip_addon_id", ""),
+            ("ip_addon_quantity", "1"),
+            ("additional_route_cidrs", ""),
+            ("additional_route_metrics", "1"),
+            ("offer_id", str(uuid4())),
+            ("status", "canceled"),
+        ]
+    )
+    with patch.object(
+        web_catalog_subscriptions_service, "update_subscription_with_audit"
+    ) as update:
+        error = web_catalog_subscription_workflows_service.handle_subscription_additional_ip_form(
+            db_session,
+            subscription_id=str(subscription.id),
+            form=form,
+            request=object(),
+            actor_id="noc-user",
+        )
+
+    assert error is None
+    assert update.call_args.args[2] == {}
+    assert update.call_args.kwargs["additional_route_cidrs"] == []
+    assert "offer_id" not in update.call_args.kwargs
+    assert "status" not in update.call_args.kwargs
+
+
 def test_edit_form_data_includes_only_current_primary_ipv4_assignment(
     db_session,
     subscriber,

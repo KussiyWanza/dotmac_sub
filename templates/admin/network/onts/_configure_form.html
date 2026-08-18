@@ -49,7 +49,7 @@
     <p class="mt-2 rounded bg-amber-50 px-2 py-1.5 text-xs text-amber-800 dark:bg-amber-900/20 dark:text-amber-300">Waiting: {{ lifecycle.waiting_reason | replace('_', ' ') }}</p>
     {% endif %}
     {% if lifecycle.failure_message %}
-    <p class="mt-2 rounded bg-rose-50 px-2 py-1.5 text-xs text-rose-800 dark:bg-rose-900/20 dark:text-rose-300">{{ lifecycle.failure_message }}{% if lifecycle.failure_code %} <span class="font-mono">({{ lifecycle.failure_code }})</span>{% endif %}</p>
+    <p class="mt-2 rounded px-2 py-1.5 text-xs {% if phase == 'delivered_unverified' %}bg-amber-50 text-amber-800 dark:bg-amber-900/20 dark:text-amber-300{% else %}bg-rose-50 text-rose-800 dark:bg-rose-900/20 dark:text-rose-300{% endif %}">{{ lifecycle.failure_message }}{% if lifecycle.failure_code %} <span class="font-mono">({{ lifecycle.failure_code }})</span>{% endif %}</p>
     {% endif %}
     {% if phase in ['saved', 'queued', 'applying', 'readback_pending'] %}
     <p class="mt-2 text-xs font-medium text-amber-700 dark:text-amber-300">This revision is not configured until current-revision device readback verifies it.</p>
@@ -182,19 +182,27 @@
           wanMode: '{{ 'setup_via_onu' if bridge_mode_val else wan_mode_val }}',
           mgmtIpMode: '{{ mgmt_ip_mode_val }}',
           lanPreset: '',
+          lanBlockPrefix: '{{ lan_block_prefix or '' }}',
+          lanDhcpEnabled: {{ 'true' if lan_dhcp_enabled_val else 'false' }},
           showWifiPassword: false,
           activeConfigScope: null,
+          applyBlockPrefix() {
+              if (this.lanBlockPrefix === '/32') {
+                  this.lanDhcpEnabled = false;
+                  $refs.dhcpStart.value = '';
+                  $refs.dhcpEnd.value = '';
+              }
+          },
           applyLanPreset() {
               const presets = {
-                  '192.168.1': { gw: '192.168.1.1', mask: '255.255.255.0', start: '192.168.1.100', end: '192.168.1.254' },
-                  '192.168.0': { gw: '192.168.0.1', mask: '255.255.255.0', start: '192.168.0.100', end: '192.168.0.254' },
-                  '10.0.0': { gw: '10.0.0.1', mask: '255.255.255.0', start: '10.0.0.100', end: '10.0.0.254' },
-                  '172.16.0': { gw: '172.16.0.1', mask: '255.255.255.0', start: '172.16.0.100', end: '172.16.0.254' }
+                  '192.168.1': { gw: '192.168.1.1', start: '192.168.1.100', end: '192.168.1.254' },
+                  '192.168.0': { gw: '192.168.0.1', start: '192.168.0.100', end: '192.168.0.254' },
+                  '10.0.0': { gw: '10.0.0.1', start: '10.0.0.100', end: '10.0.0.254' },
+                  '172.16.0': { gw: '172.16.0.1', start: '172.16.0.100', end: '172.16.0.254' }
               };
               if (this.lanPreset && presets[this.lanPreset]) {
                   const p = presets[this.lanPreset];
                   $refs.lanGateway.value = p.gw;
-                  $refs.lanMask.value = p.mask;
                   $refs.dhcpStart.value = p.start;
                   $refs.dhcpEnd.value = p.end;
               }
@@ -385,31 +393,38 @@
                            class="w-full rounded border border-slate-300 bg-white px-2 py-1.5 text-sm font-mono dark:border-slate-600 dark:bg-slate-700 dark:text-white">
                 </div>
                 <div class="w-36">
-                    <label for="lan_subnet_mask" class="mb-1 block text-xs text-slate-600 dark:text-slate-400">Subnet</label>
-                    <select id="lan_subnet_mask" name="lan_subnet_mask" x-ref="lanMask"
+                    <label for="lan_block_prefix" class="mb-1 block text-xs text-slate-600 dark:text-slate-400">Catalog IP block</label>
+                    <select id="lan_block_prefix" name="lan_block_prefix"
+                            x-model="lanBlockPrefix" @change="applyBlockPrefix()"
                             class="w-full rounded border border-slate-300 bg-white px-2 py-1.5 text-sm font-mono dark:border-slate-600 dark:bg-slate-700 dark:text-white">
-                        <option value="">Default</option>
-                        <option value="255.255.255.0" {% if lan_subnet_mask == '255.255.255.0' %}selected{% endif %}>/24 (255.255.255.0)</option>
-                        <option value="255.255.255.128" {% if lan_subnet_mask == '255.255.255.128' %}selected{% endif %}>/25 (255.255.255.128)</option>
-                        <option value="255.255.255.192" {% if lan_subnet_mask == '255.255.255.192' %}selected{% endif %}>/26 (255.255.255.192)</option>
-                        <option value="255.255.254.0" {% if lan_subnet_mask == '255.255.254.0' %}selected{% endif %}>/23 (255.255.254.0)</option>
+                        <option value="">Select catalog block...</option>
+                        {% for choice in ip_block_choices or [] %}
+                        {% set entitled = choice.prefix.value in (entitled_ip_block_prefixes or []) %}
+                        <option value="{{ choice.prefix.value }}" {% if lan_block_prefix == choice.prefix.value %}selected{% endif %} {% if not entitled %}disabled{% endif %}>{{ choice.prefix.value }} — {{ choice.address_count }} {{ 'address' if choice.address_count == 1 else 'addresses' }}{% if not entitled %} — subscription required{% endif %}</option>
+                        {% endfor %}
                     </select>
+                    {% if not ip_block_choices %}<p class="mt-1 text-xs text-amber-700 dark:text-amber-300">No active IP Address offers are configured in Catalog.</p>{% endif %}
+                    {% if ip_block_entitlements %}<p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Subscriber entitlement: {{ ip_block_entitlements | map(attribute='offer_name') | join(', ') }}</p>{% endif %}
+                    <p x-show="lanBlockPrefix === '/32'" x-cloak class="mt-1 text-xs text-amber-700 dark:text-amber-300">A /32 is one static address; DHCP is unavailable.</p>
                 </div>
             </div>
             <div class="flex flex-wrap items-end gap-3">
                 <label class="inline-flex items-center gap-1.5 rounded border border-slate-200 bg-slate-50 px-2 py-1.5 text-sm dark:border-slate-600 dark:bg-slate-700">
-                    <input type="checkbox" name="lan_dhcp_enabled" value="true" {% if lan_dhcp_enabled_val %}checked{% endif %}
+                    <input type="checkbox" name="lan_dhcp_enabled" value="true" x-model="lanDhcpEnabled"
+                           :disabled="lanBlockPrefix === '/32'" {% if lan_block_prefix == '/32' %}disabled{% endif %} {% if lan_dhcp_enabled_val %}checked{% endif %}
                            class="h-3.5 w-3.5 rounded border-slate-300 text-cyan-600 focus:ring-cyan-500 dark:border-slate-500 dark:bg-slate-600">
                     <span class="text-slate-700 dark:text-slate-300">DHCP</span>
                 </label>
                 <div class="w-36">
                     <label for="lan_dhcp_start" class="mb-1 block text-xs text-slate-600 dark:text-slate-400">DHCP Start</label>
                     <input type="text" id="lan_dhcp_start" name="lan_dhcp_start" value="{{ lan_dhcp_start or '' }}" x-ref="dhcpStart" placeholder=".100"
+                           :disabled="lanBlockPrefix === '/32'" {% if lan_block_prefix == '/32' %}disabled{% endif %}
                            class="w-full rounded border border-slate-300 bg-white px-2 py-1.5 text-sm font-mono dark:border-slate-600 dark:bg-slate-700 dark:text-white">
                 </div>
                 <div class="w-36">
                     <label for="lan_dhcp_end" class="mb-1 block text-xs text-slate-600 dark:text-slate-400">DHCP End</label>
                     <input type="text" id="lan_dhcp_end" name="lan_dhcp_end" value="{{ lan_dhcp_end or '' }}" x-ref="dhcpEnd" placeholder=".254"
+                           :disabled="lanBlockPrefix === '/32'" {% if lan_block_prefix == '/32' %}disabled{% endif %}
                            class="w-full rounded border border-slate-300 bg-white px-2 py-1.5 text-sm font-mono dark:border-slate-600 dark:bg-slate-700 dark:text-white">
                 </div>
                 <div class="ml-auto">

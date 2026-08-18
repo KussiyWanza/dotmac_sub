@@ -13,6 +13,7 @@ import logging
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
+from functools import lru_cache
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -36,6 +37,13 @@ SUPPORTED_EXTERNAL_CHANNELS = (
 )
 MONITORING_MODES = frozenset({"natural", "synthetic", "hybrid"})
 ALERT_SEVERITIES = frozenset({"warning", "critical"})
+
+
+@dataclass(frozen=True, slots=True)
+class ChannelHealthContractReconciliation:
+    rows_updated: int
+    channels_added: tuple[str, ...]
+
 
 DEFAULT_CHANNEL_HEALTH_CONTRACTS: dict[str, Any] = {
     "version": 1,
@@ -328,6 +336,35 @@ def parse_channel_health_contracts(raw: object) -> tuple[ChannelHealthContract, 
     return tuple(sorted(contracts, key=lambda contract: contract.channel))
 
 
+def _backfilled_registry(raw: object) -> tuple[object, tuple[str, ...]]:
+    if not isinstance(raw, dict) or not isinstance(raw.get("channels"), list):
+        return raw, ()
+    items = raw["channels"]
+    present = {item.get("channel") for item in items if isinstance(item, dict)}
+    missing = tuple(
+        channel for channel in SUPPORTED_EXTERNAL_CHANNELS if channel not in present
+    )
+    if not missing:
+        return raw, ()
+    defaults = {
+        item["channel"]: item for item in DEFAULT_CHANNEL_HEALTH_CONTRACTS["channels"]
+    }
+    return (
+        {
+            **raw,
+            "channels": [*items, *(deepcopy(defaults[channel]) for channel in missing)],
+        },
+        missing,
+    )
+
+
+@lru_cache(maxsize=16)
+def _warn_backfilled_defaults_once(missing: tuple[str, ...]) -> None:
+    logger.warning(
+        "channel_health_contracts_backfilled_defaults: %s", ", ".join(missing)
+    )
+
+
 def backfill_missing_supported_channels(raw: object) -> object:
     """Fill in channels added to the supported set after a registry was stored.
 
@@ -338,25 +375,76 @@ def backfill_missing_supported_channels(raw: object) -> object:
     the operator can enable it deliberately. Anything structurally malformed
     passes through untouched so parsing still rejects it.
     """
-    if not isinstance(raw, dict) or not isinstance(raw.get("channels"), list):
-        return raw
-    items = raw["channels"]
-    present = {item.get("channel") for item in items if isinstance(item, dict)}
-    missing = [
-        channel for channel in SUPPORTED_EXTERNAL_CHANNELS if channel not in present
-    ]
-    if not missing:
-        return raw
-    defaults = {
-        item["channel"]: item for item in DEFAULT_CHANNEL_HEALTH_CONTRACTS["channels"]
-    }
-    logger.warning(
-        "channel_health_contracts_backfilled_defaults: %s", ", ".join(missing)
+    backfilled, missing = _backfilled_registry(raw)
+    if missing:
+        _warn_backfilled_defaults_once(missing)
+    return backfilled
+
+
+def reconcile_persisted_channel_health_contracts(
+    db: Session,
+) -> ChannelHealthContractReconciliation:
+    """Persist disabled defaults missing from otherwise valid stored registries."""
+    from app.models.domain_settings import DomainSetting
+    from app.services.setting_history import (
+        SettingChangeContext,
+        reset_change_context,
+        set_change_context,
     )
-    return {
-        **raw,
-        "channels": [*items, *(deepcopy(defaults[channel]) for channel in missing)],
-    }
+
+    rows = (
+        db.query(DomainSetting)
+        .filter(
+            DomainSetting.domain == SettingDomain.network_monitoring,
+            DomainSetting.key == CHANNEL_HEALTH_CONTRACTS_SETTING,
+            DomainSetting.is_active.is_(True),
+        )
+        .all()
+    )
+    rows_updated = 0
+    channels_added: set[str] = set()
+    for row in rows:
+        backfilled, missing = _backfilled_registry(row.value_json)
+        if not missing:
+            continue
+        if not isinstance(backfilled, dict):
+            raise ChannelHealthContractError(
+                "Backfilled channel health registry must be an object"
+            )
+        try:
+            parse_channel_health_contracts(backfilled)
+        except ChannelHealthContractError:
+            # Malformed operator input must continue to fail closed rather than
+            # being silently rewritten by startup reconciliation.
+            logger.warning(
+                "channel_health_contract_reconciliation_skipped_invalid",
+                extra={"setting_id": str(row.id)},
+            )
+            continue
+        row.value_json = backfilled
+        rows_updated += 1
+        channels_added.update(missing)
+    if rows_updated:
+        token = set_change_context(
+            SettingChangeContext(
+                reason="Append disabled defaults for newly supported inbox channels"
+            )
+        )
+        try:
+            db.commit()
+        finally:
+            reset_change_context(token)
+        logger.info(
+            "channel_health_contracts_reconciled",
+            extra={
+                "rows_updated": rows_updated,
+                "channels_added": sorted(channels_added),
+            },
+        )
+    return ChannelHealthContractReconciliation(
+        rows_updated=rows_updated,
+        channels_added=tuple(sorted(channels_added)),
+    )
 
 
 def load_channel_health_contracts(db: Session) -> tuple[ChannelHealthContract, ...]:

@@ -654,6 +654,13 @@ class _NewMaterialRequestScreenState
               clientRef: clientRef,
               payload: payload,
             );
+        ref.invalidate(materialRequestsProvider);
+        try {
+          await ref.read(materialRequestsProvider.future);
+        } catch (_) {
+          // The queued request remains authoritative local history even if
+          // the remote list cannot be refreshed while offline.
+        }
         await ref.read(draftStoreProvider).delete(materialRequestDraftId);
         ref.invalidate(materialRequestDraftsProvider);
         if (!mounted) return;

@@ -13,6 +13,11 @@ from app.config import settings
 from app.models.network import OntAssignment
 from app.models.tr069 import Tr069CpeDevice
 from app.services import network as network_service
+from app.services.catalog.ip_block_choices import (
+    IpBlockPrefix,
+    active_catalog_ip_block_choices,
+    subscriber_ip_block_entitlements,
+)
 from app.services.network._util import first_present as _first_present
 from app.services.network.effective_ont_config import (
     internet_wcd_index_from_effective_values,
@@ -387,6 +392,21 @@ def _configure_form_context_from_state(
         config_pack_olt_id = getattr(config_pack, "olt_id", None)
 
     mgmt_ip_pool_ctx = management_ip_choices_for_ont(db, ont)
+    active_assignment = db.scalar(
+        select(OntAssignment).where(
+            OntAssignment.ont_unit_id == ont.id,
+            OntAssignment.active.is_(True),
+        )
+    )
+    ip_block_choices = active_catalog_ip_block_choices(db)
+    ip_block_entitlements = (
+        subscriber_ip_block_entitlements(db, active_assignment.subscriber_id)
+        if active_assignment is not None and active_assignment.subscriber_id is not None
+        else ()
+    )
+    current_block_prefix = IpBlockPrefix.from_mask(str(lan_subnet or ""))
+    if current_block_prefix is None and len(ip_block_entitlements) == 1:
+        current_block_prefix = ip_block_entitlements[0].prefix
     return {
         "ont": ont,
         "ont_id": ont_id,
@@ -404,6 +424,12 @@ def _configure_form_context_from_state(
         "mgmt_vlan": values.get("mgmt_vlan"),
         "lan_gateway_ip": str(lan_gateway or ""),
         "lan_subnet_mask": str(lan_subnet or ""),
+        "lan_block_prefix": current_block_prefix.value if current_block_prefix else "",
+        "ip_block_choices": ip_block_choices,
+        "ip_block_entitlements": ip_block_entitlements,
+        "entitled_ip_block_prefixes": tuple(
+            entitlement.prefix.value for entitlement in ip_block_entitlements
+        ),
         "lan_dhcp_enabled": lan_dhcp_enabled,
         "lan_dhcp_start": str(lan_dhcp_start or ""),
         "lan_dhcp_end": str(lan_dhcp_end or ""),

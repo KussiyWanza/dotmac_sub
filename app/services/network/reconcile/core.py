@@ -140,6 +140,7 @@ def reconcile_ont(
     *,
     proposed_change: OntWanProposedChange | dict[str, Any] | None = None,
     wifi_delivery_scope: OntWifiDeliveryScope | None = None,
+    force_lan_config: bool = False,
     timeout_sec: int = 60,
     mode: ReconcileMode = "sync",
     olt_adapter: Any = None,
@@ -166,6 +167,8 @@ def reconcile_ont(
         wifi_delivery_scope: Explicit WiFi fields already admitted and stored
             by the configuration lifecycle owner. Values are read from current
             desired state; this scope carries no credential material.
+        force_lan_config: Force the admitted LAN/DHCP block to the ACS because
+            deployed firmware commonly exposes these fields as write-only.
         timeout_sec: Outer deadline for the whole reconcile (read + plan +
             apply + persist). Default 60s.
         mode: ``sync`` (operator-initiated; refuses ``out_of_sync``),
@@ -255,6 +258,16 @@ def reconcile_ont(
                 if wifi_delivery_scope is not None
                 else frozenset()
             )
+            if force_lan_config:
+                proposed_fields = proposed_fields | frozenset(
+                    {
+                        "dhcp_enabled",
+                        "dhcp_pool_min",
+                        "dhcp_pool_max",
+                        "dhcp_subnet_mask",
+                        "lan_gateway_ip",
+                    }
+                )
             if proposed_values:
                 # Filter the proposed_change to OntDesiredState fields only —
                 # callers may have copy-pasted extras.

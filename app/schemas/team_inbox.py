@@ -60,6 +60,7 @@ class InboxConversationContactLinkRead(BaseModel):
     subscriber_id: UUID | None = None
     reseller_id: UUID | None = None
     previous_link_ids_deactivated: list[UUID] = Field(default_factory=list)
+    repaired_conversation_ids: tuple[UUID, ...] = ()
 
 
 class InboxTimelineTeamRead(BaseModel):

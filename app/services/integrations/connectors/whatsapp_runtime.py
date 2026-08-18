@@ -155,7 +155,7 @@ def normalize_inbound_webhook(
 def _endpoint(config: Mapping[str, Any]) -> str:
     provider = _provider(config)
     if provider == WHATSAPP_PROVIDER_META:
-        phone_number = str(config.get("phone_number") or "").strip()
+        phone_number = str(config.get("phone_number_id") or "").strip()
         return (
             f"https://graph.facebook.com/{_graph_version(config)}/"
             f"{phone_number}/messages"
@@ -166,7 +166,7 @@ def _endpoint(config: Mapping[str, Any]) -> str:
 def _media_endpoint(config: Mapping[str, Any]) -> str:
     provider = _provider(config)
     if provider == WHATSAPP_PROVIDER_META:
-        phone_number = str(config.get("phone_number") or "").strip()
+        phone_number = str(config.get("phone_number_id") or "").strip()
         return (
             f"https://graph.facebook.com/{_graph_version(config)}/{phone_number}/media"
         )
@@ -240,6 +240,8 @@ class WhatsAppRuntimeRunner:
             errors.append("provider_unsupported")
         if not str(config.get("phone_number") or "").strip():
             errors.append("phone_number_required")
+        if not str(config.get("phone_number_id") or "").strip():
+            errors.append("phone_number_id_required")
         if not str(secret_material.get("service_credentials") or "").strip():
             errors.append("service_credentials_required")
         return ValidationResult(valid=not errors, error_codes=tuple(errors))

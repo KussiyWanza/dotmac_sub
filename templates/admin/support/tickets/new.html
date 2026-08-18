@@ -184,13 +184,25 @@
 
             <div>
                 <label class="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-200">Ticket Type</label>
-                <select name="ticket_type" class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+                <select name="ticket_type" x-model="selectedTicketType" class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
                     <option value="">Select type</option>
                     {% for t in ticket_type_options %}
                     <option value="{{ t }}" {% if prefill.ticket_type == t %}selected{% endif %}>{{ t }}</option>
                     {% endfor %}
                 </select>
             </div>
+
+            {% if form_mode != 'edit' %}
+            <div x-show="requiresBaseStation" x-cloak class="lg:col-span-2">
+                <label class="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-200">Base Station Details *</label>
+                <input name="base_station_details"
+                       :required="requiresBaseStation"
+                       value="{{ prefill.base_station_details }}"
+                       placeholder="Base station, access point, site, or sector"
+                       class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+                <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Required for site, infrastructure, and access-point outage ticket types.</p>
+            </div>
+            {% endif %}
 
             <div class="lg:col-span-2 rounded-2xl border border-slate-200 p-4 dark:border-slate-600">
                 <label class="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">Technicians / User Group</label>
@@ -302,6 +314,8 @@ function ticketFormPage() {
         },
         selectedAssignees: {{ prefill.assignee_person_ids|tojson }},
         selectedTeam: {{ (prefill.service_team_id or '')|tojson }},
+        selectedTicketType: {{ (prefill.ticket_type or '')|tojson }},
+        baseStationRequiredTicketTypes: {{ base_station_required_ticket_types|tojson }},
         selectedRegion: {{ (prefill.region or '')|tojson }},
         selectedManager: {{ (prefill.ticket_manager_person_id or '')|tojson }},
         autoFilledManager: '',
@@ -323,6 +337,11 @@ function ticketFormPage() {
         },
         get shouldShowAssigneeResults() {
             return this.assigneeSearch.trim().length >= 2;
+        },
+        get requiresBaseStation() {
+            return this.baseStationRequiredTicketTypes.includes(
+                (this.selectedTicketType || '').trim().toLowerCase(),
+            );
         },
         get filteredStaff() {
             const search = this.assigneeSearch.trim().toLowerCase();

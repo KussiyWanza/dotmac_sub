@@ -12,6 +12,10 @@ import '../offline/database.dart';
 /// camera; tests inject canned bytes.
 abstract class ImageSourceAdapter {
   Future<Uint8List?> pick();
+
+  /// Recovers a camera result when Android recreated the activity/process
+  /// while the external camera application was in the foreground.
+  Future<Uint8List?> recoverLost();
 }
 
 class CameraImageSource implements ImageSourceAdapter {
@@ -22,22 +26,46 @@ class CameraImageSource implements ImageSourceAdapter {
     final file = await _picker.pickImage(
       source: ImageSource.camera,
       imageQuality: 90,
+      maxWidth: cameraCaptureMaxWidth,
+      maxHeight: cameraCaptureMaxHeight,
     );
     return file?.readAsBytes();
+  }
+
+  @override
+  Future<Uint8List?> recoverLost() async {
+    final response = await _picker.retrieveLostData();
+    if (response.isEmpty || response.files == null || response.files!.isEmpty) {
+      return null;
+    }
+    return response.files!.first.readAsBytes();
   }
 }
 
 class FakeImageSource implements ImageSourceAdapter {
-  FakeImageSource(this.bytes);
+  FakeImageSource(this.bytes, {this.lostBytes});
 
   Uint8List? bytes;
+  Uint8List? lostBytes;
 
   @override
   Future<Uint8List?> pick() async => bytes;
+
+  @override
+  Future<Uint8List?> recoverLost() async {
+    final recovered = lostBytes;
+    lostBytes = null;
+    return recovered;
+  }
 }
 
 const maxPhotoDimension = 1600;
 const jpegQuality = 85;
+
+/// Native capture bounds keep the camera result small enough to cross the
+/// Android activity boundary without forcing the field app out of memory.
+const cameraCaptureMaxWidth = 1600.0;
+const cameraCaptureMaxHeight = 1600.0;
 
 /// Downscale to [maxPhotoDimension] on the long edge and re-encode as JPEG.
 /// Undecodable bytes pass through unchanged (the server validates MIME).
@@ -71,23 +99,65 @@ class PhotoQueue {
 
   static const _uuid = Uuid();
 
+  File get _pendingCompletionCapture =>
+      File('${storageDir.path}/.pending_completion_capture');
+
   Future<bool> captureForJob({
     String? workOrderId,
     String? installationProjectId,
     String kind = 'photo',
   }) async {
-    final raw = await source.pick();
-    if (raw == null) return false;
-    final position = await location.current();
-    await enqueueImageBytes(
-      raw,
-      kind: kind,
-      workOrderId: workOrderId,
-      installationProjectId: installationProjectId,
-      latitude: position?.latitude,
-      longitude: position?.longitude,
-    );
-    return true;
+    if (workOrderId != null && kind == 'photo') {
+      await _pendingCompletionCapture.writeAsString(workOrderId, flush: true);
+    }
+    try {
+      final raw = await source.pick();
+      if (raw == null) return false;
+      final position = await location.current();
+      await enqueueImageBytes(
+        raw,
+        kind: kind,
+        workOrderId: workOrderId,
+        installationProjectId: installationProjectId,
+        latitude: position?.latitude,
+        longitude: position?.longitude,
+      );
+      return true;
+    } finally {
+      await _deletePendingCompletionCapture();
+    }
+  }
+
+  Future<bool> recoverForJob({required String workOrderId}) async {
+    if (!await _pendingCompletionCapture.exists() ||
+        await _pendingCompletionCapture.readAsString() != workOrderId) {
+      return false;
+    }
+    try {
+      final raw = await source.recoverLost();
+      if (raw == null) return false;
+      final position = await location.current();
+      await enqueueImageBytes(
+        raw,
+        kind: 'photo',
+        workOrderId: workOrderId,
+        latitude: position?.latitude,
+        longitude: position?.longitude,
+      );
+      return true;
+    } finally {
+      await _deletePendingCompletionCapture();
+    }
+  }
+
+  Future<void> _deletePendingCompletionCapture() async {
+    try {
+      if (await _pendingCompletionCapture.exists()) {
+        await _pendingCompletionCapture.delete();
+      }
+    } on FileSystemException {
+      // Best effort: a stale marker cannot recover without image-picker data.
+    }
   }
 
   /// Queue already-captured image bytes (e.g. a rendered signature) for upload.

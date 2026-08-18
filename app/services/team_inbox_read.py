@@ -372,6 +372,24 @@ def needs_attention_conversation_count(db: Session) -> int:
     return len(needs_attention_conversation_ids(db))
 
 
+def _ai_handling_clause(*, active: bool) -> ColumnElement[bool]:
+    flag = InboxConversation.metadata_["ai_handling"].as_boolean()
+    return flag.is_(True) if active else flag.isnot(True)
+
+
+def ai_handling_conversation_count(db: Session) -> int:
+    """Count the unresolved queue cohort selected by ``ai_handling=true``."""
+
+    return int(
+        _base_queue_query(db)
+        .filter(InboxConversation.status != InboxConversationStatus.resolved.value)
+        .filter(_ai_handling_clause(active=True))
+        .with_entities(func.count(InboxConversation.id))
+        .scalar()
+        or 0
+    )
+
+
 def _timestamp(value: datetime) -> float:
     normalized = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
     return normalized.timestamp()
@@ -1221,8 +1239,7 @@ def list_conversations(
     # Conversations an AI agent is handling, so a human can either stay out of
     # the way or take over deliberately.
     if ai_handling is not None:
-        flag = InboxConversation.metadata_["ai_handling"].as_boolean()
-        query = query.filter(flag.is_(True) if ai_handling else flag.isnot(True))
+        query = query.filter(_ai_handling_clause(active=ai_handling))
 
     # Whether a ticket was ever issued from the thread. The provenance link is
     # owned by communications.conversation_ticket_handoff.

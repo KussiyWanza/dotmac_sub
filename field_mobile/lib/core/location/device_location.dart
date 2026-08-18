@@ -11,11 +11,13 @@ enum LocationDecision { proceed, request, unavailable }
 LocationDecision decideForPermission(
   LocationPermission permission, {
   required bool serviceEnabled,
+  bool requireBackground = false,
 }) {
   if (!serviceEnabled) return LocationDecision.unavailable;
   return switch (permission) {
-    LocationPermission.always ||
-    LocationPermission.whileInUse => LocationDecision.proceed,
+    LocationPermission.always => LocationDecision.proceed,
+    LocationPermission.whileInUse =>
+      requireBackground ? LocationDecision.request : LocationDecision.proceed,
     LocationPermission.denied => LocationDecision.request,
     // Re-prompting after deniedForever just irritates: the OS won't show
     // the dialog again. The app keeps working without GPS.
@@ -79,12 +81,14 @@ class GeolocatorLocationSource implements LocationSource {
     var decision = decideForPermission(
       permission,
       serviceEnabled: serviceEnabled,
+      requireBackground: true,
     );
     if (decision == LocationDecision.request) {
       permission = await Geolocator.requestPermission();
       decision = decideForPermission(
         permission,
         serviceEnabled: serviceEnabled,
+        requireBackground: true,
       );
     }
     if (decision != LocationDecision.proceed) {

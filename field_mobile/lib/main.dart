@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:sentry_flutter/sentry_flutter.dart';
 
 import 'app/app.dart';
+import 'core/location/location_ping_store.dart';
 import 'core/offline/connectivity.dart';
 import 'core/offline/database.dart';
 import 'core/offline/draft_store.dart';
@@ -20,6 +21,21 @@ import 'features/auth/auth_repository.dart' show appVersion;
 import 'features/auth/auth_state.dart';
 import 'features/execution/completion_wizard.dart';
 import 'features/execution/execution_controller.dart';
+import 'features/location/location_ping_service.dart';
+
+class _QueuedCompletionPhotoGateway implements CompletionPhotoGateway {
+  const _QueuedCompletionPhotoGateway(this.queue);
+
+  final PhotoQueue queue;
+
+  @override
+  Future<bool> capture({required String workOrderId}) =>
+      queue.captureForJob(workOrderId: workOrderId);
+
+  @override
+  Future<bool> recoverLost({required String workOrderId}) =>
+      queue.recoverForJob(workOrderId: workOrderId);
+}
 
 /// Crash/error telemetry DSN, injected via `--dart-define=SENTRY_DSN=...`.
 /// Empty (the default) disables telemetry entirely — local/dev builds run
@@ -43,6 +59,11 @@ Future<Widget> buildFieldAppRoot() async {
   return ProviderScope(
     overrides: [
       draftStoreProvider.overrideWithValue(DraftStore(db)),
+      locationPingStoreProvider.overrideWithValue(
+        FileLocationPingStore(
+          File(p.join(documents.path, 'pending_location_pings.json')),
+        ),
+      ),
       if (fcm != null) pushSourceProvider.overrideWithValue(fcm),
       syncServiceProvider.overrideWith((ref) {
         final sync = SyncService(
@@ -62,12 +83,7 @@ Future<Widget> buildFieldAppRoot() async {
           location: ref.watch(locationSourceProvider),
           storageDir: photoDir,
         );
-        return ({String? workOrderId, String? installationProjectId}) {
-          return queue.captureForJob(
-            workOrderId: workOrderId,
-            installationProjectId: installationProjectId,
-          );
-        };
+        return _QueuedCompletionPhotoGateway(queue);
       }),
       signatureSinkProvider.overrideWith((ref) {
         final queue = PhotoQueue(

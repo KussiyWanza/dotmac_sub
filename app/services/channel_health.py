@@ -11,8 +11,9 @@ freshness snapshot, and neither snapshot may ever raise into the beat task.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
-from typing import cast
+from typing import Literal, TypedDict, cast
 
 from sqlalchemy import and_, case, func
 from sqlalchemy.orm import Session
@@ -22,6 +23,16 @@ from app.services.observability import StateObservation, publish_state_snapshot
 from app.services.team_inbox_health import SMTP_PROBE_VERIFIED_KEY
 
 logger = logging.getLogger(__name__)
+
+ChannelHealthStatus = Literal["ok", "degraded", "error"]
+
+
+class ChannelHealthPublishSummary(TypedDict):
+    channels: int
+    contract_status: ChannelHealthStatus
+    queues: int
+    queue_status: ChannelHealthStatus
+
 
 CHANNEL_INGESTION_DOMAIN = "channel_ingestion"
 CELERY_QUEUES_DOMAIN = "celery_queues"
@@ -67,7 +78,12 @@ def collect_channel_ingestion_observations(
             recent,
             latest_probe,
         )
-        .filter(InboxMessage.direction == InboxMessageDirection.inbound.value)
+        .filter(
+            InboxMessage.direction == InboxMessageDirection.inbound.value,
+            InboxMessage.channel_type.in_(
+                channel_health_contracts.SUPPORTED_EXTERNAL_CHANNELS
+            ),
+        )
         .group_by(InboxMessage.channel_type)
         .all()
     )
@@ -205,7 +221,27 @@ def collect_celery_queue_observations() -> list[StateObservation]:
             pass
 
 
-def publish_channel_health(db: Session, *, now: datetime | None = None) -> dict:
+def _publish_snapshot_fail_soft(
+    domain: str,
+    observations: Sequence[StateObservation],
+    *,
+    status: ChannelHealthStatus,
+    now: datetime,
+) -> ChannelHealthStatus:
+    try:
+        publish_state_snapshot(domain, observations, status=status, now=now)
+        return status
+    except Exception:
+        logger.exception(
+            "channel_health_snapshot_publish_failed",
+            extra={"domain": domain},
+        )
+        return "error"
+
+
+def publish_channel_health(
+    db: Session, *, now: datetime | None = None
+) -> ChannelHealthPublishSummary:
     """Compute and publish both snapshots; returns a small summary for logging.
 
     The queue read can fail independently of the DB read, so the two snapshots
@@ -215,28 +251,28 @@ def publish_channel_health(db: Session, *, now: datetime | None = None) -> dict:
     """
     moment = now or datetime.now(UTC)
 
-    ingestion_status = "ok"
+    ingestion_status: ChannelHealthStatus = "ok"
     try:
         ingestion = collect_channel_ingestion_observations(db, now=moment)
     except channel_health_contracts.ChannelHealthContractError:
         logger.exception("channel_health_contract_registry_invalid")
         ingestion = []
         ingestion_status = "error"
-    publish_state_snapshot(
+    ingestion_status = _publish_snapshot_fail_soft(
         CHANNEL_INGESTION_DOMAIN,
         ingestion,
         status=ingestion_status,
         now=moment,
     )
 
-    queue_status = "ok"
+    queue_status: ChannelHealthStatus = "ok"
     try:
         queues = collect_celery_queue_observations()
     except Exception:
         logger.warning("channel_health_queue_read_failed", exc_info=True)
         queues = []
         queue_status = "degraded"
-    publish_state_snapshot(
+    queue_status = _publish_snapshot_fail_soft(
         CELERY_QUEUES_DOMAIN, queues, status=queue_status, now=moment
     )
 

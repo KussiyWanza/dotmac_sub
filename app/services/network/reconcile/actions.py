@@ -460,7 +460,7 @@ class AcsSetWanIp:
 
 @dataclass(frozen=True)
 class AcsSetDhcpServer:
-    """``setParameterValues`` for ``LANHostConfigManagement.{DHCPServerEnable, MinAddress, MaxAddress, SubnetMask}``.
+    """Set the LAN interface address plus its DHCP server parameter block.
 
     Defensive push on every routed-mode reconcile.
     """
@@ -473,6 +473,7 @@ class AcsSetDhcpServer:
     pool_min: str
     pool_max: str
     subnet_mask: str
+    gateway_ip: str | None = None
 
 
 @dataclass(frozen=True)

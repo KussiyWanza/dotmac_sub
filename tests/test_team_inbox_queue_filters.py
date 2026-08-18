@@ -23,12 +23,19 @@ from app.services import conversation_ticket_handoff, team_inbox_read
 SIDEBAR = Path("templates/admin/inbox/_sidebar.html").read_text()
 
 
-def _conversation(db_session, *, subject, ai=False, last_message_at=None):
+def _conversation(
+    db_session,
+    *,
+    subject,
+    ai=False,
+    last_message_at=None,
+    status=InboxConversationStatus.open.value,
+):
     conversation = InboxConversation(
         channel_type="email",
         subject=subject,
         contact_address="customer@example.com",
-        status=InboxConversationStatus.open.value,
+        status=status,
         last_message_at=last_message_at,
         metadata_={"ai_handling": True} if ai else None,
     )
@@ -66,6 +73,28 @@ def test_omitting_ai_handling_returns_both(db_session):
     _conversation(db_session, subject="Human")
 
     assert team_inbox_read.list_conversations(db_session).count == 2
+
+
+def test_ai_handling_count_matches_the_active_filtered_cohort(db_session):
+    _conversation(db_session, subject="AI open", ai=True)
+    _conversation(
+        db_session,
+        subject="AI resolved",
+        ai=True,
+        status=InboxConversationStatus.resolved.value,
+    )
+    _conversation(db_session, subject="Human")
+
+    result = team_inbox_read.list_conversations(
+        db_session,
+        ai_handling=True,
+        open_only=True,
+    )
+
+    assert (
+        team_inbox_read.ai_handling_conversation_count(db_session) == result.count == 1
+    )
+    assert [row.subject for row in result.items] == ["AI open"]
 
 
 # --- sent to ticket -----------------------------------------------------

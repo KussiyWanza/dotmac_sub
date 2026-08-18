@@ -139,6 +139,27 @@ void main() {
     );
   });
 
+  test('today recognizes only same-day completed work for the Done view', () {
+    final day = DateTime(2026, 8, 17);
+    JobSummary completed(DateTime completedAt) => JobSummary(
+      id: 'done',
+      title: 'Completed install',
+      status: 'completed',
+      workType: 'install',
+      priority: 'normal',
+      completedAt: completedAt,
+    );
+
+    expect(
+      isActionableOnDay(completed(DateTime(2026, 8, 17, 12)), day),
+      isTrue,
+    );
+    expect(
+      isActionableOnDay(completed(DateTime(2026, 8, 16, 12)), day),
+      isFalse,
+    );
+  });
+
   testWidgets('job card shows status stripe, pill, and meta', (tester) async {
     await tester.pumpWidget(_wrap(JobCard(job: _job())));
 
@@ -462,6 +483,28 @@ void main() {
       find.byKey(const Key('wizard-finish')),
     );
     expect(finish.onPressed, isNotNull);
+  });
+
+  testWidgets('completion photo previews use bounded image decoding', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _wrap(
+        const CompletionPhotoThumbnail(
+          localPath: 'missing-test-photo.jpg',
+          clientRef: 'photo-1',
+        ),
+      ),
+    );
+
+    final image = tester.widget<Image>(
+      find.byKey(const Key('completion-photo-photo-1')),
+    );
+    expect(image.width, completionPhotoPreviewSize);
+    expect(image.height, completionPhotoPreviewSize);
+    final provider = image.image as ResizeImage;
+    expect(provider.width, completionPhotoDecodeSize);
+    expect(provider.height, completionPhotoDecodeSize);
   });
 
   testWidgets('signature can be cleared and redrawn', (tester) async {

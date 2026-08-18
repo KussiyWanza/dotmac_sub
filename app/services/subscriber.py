@@ -1,14 +1,17 @@
 import builtins
 import logging
 from datetime import UTC, datetime
+from decimal import Decimal
 from ipaddress import IPv4Address as ParsedIPv4Address
+from typing import cast as typing_cast
 from uuid import UUID
 
 from fastapi import HTTPException
-from sqlalchemy import and_, case, func, not_, or_
+from sqlalchemy import String, and_, case, cast, func, not_, or_
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.billing import TaxRate
+from app.models.catalog import BillingCycle, Subscription, SubscriptionStatus
 from app.models.domain_settings import SettingDomain
 from app.models.subscriber import (
     Address,
@@ -30,6 +33,7 @@ from app.schemas.subscriber import (
     SubscriberCreate,
     SubscriberCustomFieldCreate,
     SubscriberCustomFieldUpdate,
+    SubscriberSyncRead,
     SubscriberUpdate,
 )
 from app.services import geocoding as geocoding_service
@@ -54,6 +58,11 @@ from app.services.sync_feeds import apply_sync_page, sync_page_response
 
 logger = logging.getLogger(__name__)
 _UNSPECIFIED_IPV4 = ParsedIPv4Address(0)
+_BILLABLE_SUBSCRIPTION_STATUSES = (
+    SubscriptionStatus.active,
+    SubscriptionStatus.blocked,
+    SubscriptionStatus.suspended,
+)
 
 
 def _release_subscriber_network_records(db: Session, subscriber_id) -> None:
@@ -899,7 +908,7 @@ class Subscribers(ListResponseMixin):
         updated_since: datetime | None,
         limit: int,
         offset: int,
-    ) -> builtins.list[Subscriber]:
+    ) -> builtins.list[SubscriberSyncRead]:
         query = db.query(Subscriber).filter(
             Subscriber.user_type != UserType.system_user,
             not_(splynx_deleted_import_clause()),
@@ -912,13 +921,142 @@ class Subscribers(ListResponseMixin):
                 query = query.filter(_is_business_clause())
             else:
                 raise HTTPException(status_code=400, detail="Invalid subscriber_type")
-        return apply_sync_page(
-            query,
-            Subscriber,
-            updated_since=updated_since,
-            limit=limit,
-            offset=offset,
-        ).all()
+
+        billable_subscription = Subscription.status.in_(_BILLABLE_SUBSCRIPTION_STATUSES)
+        billable_subscription_id = case(
+            (billable_subscription, Subscription.id), else_=None
+        )
+        billable_count = func.count(billable_subscription_id)
+        normalized_billing_cycle = func.coalesce(
+            cast(Subscription.billing_cycle, String), BillingCycle.monthly.value
+        )
+        billable_billing_cycle = case(
+            (billable_subscription, normalized_billing_cycle), else_=None
+        )
+        billing_cycle = case(
+            (billable_count == 0, None),
+            (
+                func.count(func.distinct(billable_billing_cycle)) == 1,
+                func.min(billable_billing_cycle),
+            ),
+            else_="mixed",
+        ).label("billing_cycle")
+        normalized_service_status = func.coalesce(
+            Subscription.service_status_raw,
+            cast(Subscription.status, String),
+        )
+        billable_service_status = case(
+            (billable_subscription, normalized_service_status), else_=None
+        )
+        service_status = case(
+            (billable_count == 0, None),
+            (
+                func.count(func.distinct(billable_service_status)) == 1,
+                func.min(billable_service_status),
+            ),
+            else_="mixed",
+        ).label("service_status")
+        next_renewal_at = func.min(
+            case((billable_subscription, Subscription.next_billing_at), else_=None)
+        ).label("next_renewal_at")
+        cycle_multiplier = case(
+            (Subscription.billing_cycle == BillingCycle.daily, Decimal("30")),
+            (
+                Subscription.billing_cycle == BillingCycle.weekly,
+                Decimal("52") / Decimal("12"),
+            ),
+            (
+                Subscription.billing_cycle == BillingCycle.quarterly,
+                Decimal("1") / Decimal("3"),
+            ),
+            (
+                Subscription.billing_cycle == BillingCycle.annual,
+                Decimal("1") / Decimal("12"),
+            ),
+            else_=Decimal("1"),
+        )
+        recurring_amount_monthly = func.coalesce(
+            func.sum(
+                case(
+                    (
+                        billable_subscription,
+                        func.coalesce(Subscription.unit_price, Decimal("0"))
+                        * func.coalesce(Subscription.quantity, 1)
+                        * cycle_multiplier,
+                    ),
+                    else_=Decimal("0"),
+                )
+            ),
+            Decimal("0"),
+        ).label("recurring_amount_monthly")
+        latest_subscription_updated_at = func.max(Subscription.updated_at)
+        sync_updated_at = case(
+            (
+                latest_subscription_updated_at > Subscriber.updated_at,
+                latest_subscription_updated_at,
+            ),
+            else_=Subscriber.updated_at,
+        ).label("sync_updated_at")
+        query = (
+            query.outerjoin(Subscription, Subscription.subscriber_id == Subscriber.id)
+            .add_columns(
+                sync_updated_at,
+                service_status,
+                billable_count.label("recurring_subscription_count"),
+                next_renewal_at,
+                billing_cycle,
+                recurring_amount_monthly,
+            )
+            .group_by(Subscriber.id)
+        )
+        if updated_since is not None:
+            query = query.having(sync_updated_at >= updated_since)
+        rows = typing_cast(
+            builtins.list[
+                tuple[
+                    Subscriber,
+                    datetime,
+                    str | None,
+                    int,
+                    datetime | None,
+                    str | None,
+                    Decimal,
+                ]
+            ],
+            (
+                query.order_by(sync_updated_at.asc(), Subscriber.id.asc())
+                .offset(offset)
+                .limit(limit)
+                .all()
+            ),
+        )
+        items: builtins.list[SubscriberSyncRead] = []
+        for (
+            subscriber,
+            row_updated_at,
+            row_service_status,
+            recurring_subscription_count,
+            row_next_renewal_at,
+            row_billing_cycle,
+            row_recurring_amount_monthly,
+        ) in rows:
+            monthly_amount = row_recurring_amount_monthly.quantize(Decimal("0.01"))
+            items.append(
+                SubscriberSyncRead.model_validate(subscriber).model_copy(
+                    update={
+                        "updated_at": row_updated_at or subscriber.updated_at,
+                        "service_status": row_service_status,
+                        "recurring_subscription_count": recurring_subscription_count,
+                        "next_renewal_at": row_next_renewal_at,
+                        "billing_cycle": row_billing_cycle,
+                        "recurring_amount_monthly": monthly_amount,
+                        "annualized_recurring_revenue": (
+                            monthly_amount * Decimal("12")
+                        ).quantize(Decimal("0.01")),
+                    }
+                )
+            )
+        return items
 
     @classmethod
     def sync_list_response(cls, db: Session, **kwargs):

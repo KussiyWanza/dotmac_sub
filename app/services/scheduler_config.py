@@ -2057,6 +2057,16 @@ def build_beat_schedule() -> dict:
             interval_seconds=event_old_cleanup_interval,
         )
 
+        _sync_scheduled_task(
+            session,
+            name="field_location_history_retention",
+            task_name=(
+                "app.tasks.field_location_retention.prune_field_location_history"
+            ),
+            enabled=True,
+            interval_seconds=3600,
+        )
+
         # RADIUS sync - syncs NAS devices and users to FreeRADIUS
         radius_sync_enabled = _scheduler_setting_enabled(
             session,

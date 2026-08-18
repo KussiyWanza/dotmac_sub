@@ -47,6 +47,16 @@ class _LocationTrackingHostState extends ConsumerState<LocationTrackingHost>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    Future.microtask(_restoreShift);
+  }
+
+  Future<void> _restoreShift() async {
+    final service = ref.read(locationPingServiceProvider);
+    await service.restoreBufferedPings();
+    await service.flush();
+    final restored = await service.restoreShift();
+    if (!mounted || restored == null) return;
+    ref.read(fieldShiftProvider.notifier).state = restored;
   }
 
   @override
