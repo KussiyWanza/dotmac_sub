@@ -962,10 +962,33 @@ def create_ont_from_tr069_device(
         raise ValueError("TR-069 device has no usable serial number")
 
     normalized_serial = normalize_tr069_serial(display_serial)
-    existing = (
+    candidates = (
         db.query(OntUnit)
         .filter(_normalized_serial_expr(OntUnit.serial_number) == normalized_serial)
-        .first()
+        .all()
+    )
+    assignment_ids = {
+        str(row[0])
+        for row in db.query(OntAssignment.ont_unit_id)
+        .filter(OntAssignment.active.is_(True))
+        .filter(
+            OntAssignment.ont_unit_id.in_([candidate.id for candidate in candidates])
+        )
+        .all()
+    }
+    existing = next(
+        iter(
+            sorted(
+                candidates,
+                key=lambda candidate: (
+                    str(candidate.id) not in assignment_ids,
+                    candidate.olt_device_id is None,
+                    not candidate.is_active,
+                    candidate.created_at,
+                ),
+            )
+        ),
+        None,
     )
     if existing:
         if not getattr(existing, "olt_device_id", None) and not getattr(
