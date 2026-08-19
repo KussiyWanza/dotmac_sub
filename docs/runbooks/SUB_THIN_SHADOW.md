@@ -32,6 +32,14 @@ and is unroutable past this host, while inbound DNAT still works. The bridge is
 also pinned to `127.0.0.1`, so a `ports:` entry that forgot its bind address
 still cannot land on a public interface.
 
+External **name resolution** is disabled too, on the services running the Sub
+image: the embedded resolver's forwarder points at the container's own
+loopback, where nothing listens. Denying TCP egress alone is not enough — the
+first deployment refused every outbound connection and still resolved
+`github.com`, which is a usable channel for anything willing to encode data in
+a query. Service names still resolve, because Docker's embedded resolver
+answers those itself.
+
 No Celery workers, no Beat, no provider credentials, no OpenBao token, no access
 to production Sub / Vendor CP / ERP / Integrator databases, no Docker socket, no
 WireGuard, no host PID namespace, no privileged mode, no added capabilities.

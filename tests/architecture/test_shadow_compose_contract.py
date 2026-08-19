@@ -19,6 +19,7 @@ import pytest
 
 from app.shadow.compose_contract import (
     EDGE_DRIVER_OPTS,
+    SHADOW_DNS,
     PINNED_IMAGES,
     SHADOW_BIND_HOST,
     SHADOW_BIND_PORT,
@@ -477,3 +478,49 @@ def test_an_unmodelled_compose_key_fails_to_parse() -> None:
     )
     with pytest.raises(ValidationError):
         parse_compose(text)
+
+
+# ── External name resolution ────────────────────────────────────────────────
+
+
+def test_the_sub_image_services_cannot_resolve_a_name_off_host(
+    compose: ShadowComposeFile,
+) -> None:
+    """TCP egress denial is not enough on its own.
+
+    The deployed stack refused every TCP connection out and still resolved
+    `github.com`, because Docker's embedded resolver forwards unknown names to
+    the host's resolvers regardless of masquerade. A query that leaves is a
+    channel for anything willing to encode data in it, so the forwarder is
+    pointed at the container's own loopback where nothing listens.
+    """
+    for name in ("app", "migrate"):
+        assert compose.services[name].dns == SHADOW_DNS, name
+
+
+def test_a_service_that_can_reach_the_edge_may_not_use_a_real_resolver(
+    compose: ShadowComposeFile,
+) -> None:
+    assert "external name resolution must fail" in _violations_for(
+        compose, "app", dns=("1.1.1.1",)
+    )
+
+
+def test_dropping_the_dns_pin_entirely_is_refused(
+    compose: ShadowComposeFile,
+) -> None:
+    assert "external name resolution must fail" in _violations_for(
+        compose, "app", dns=()
+    )
+
+
+def test_the_state_services_are_not_forced_to_pin_dns(
+    compose: ShadowComposeFile,
+) -> None:
+    """Sensitivity: the rule is scoped to the services running the Sub image.
+
+    postgres and redis never reach the edge network, so their resolver cannot
+    leave the host anyway; requiring the pin there would be cargo-culting.
+    """
+    assert compose.services["postgres"].dns == ()
+    assert contract_violations(compose) == ()

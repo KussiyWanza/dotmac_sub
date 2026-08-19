@@ -53,6 +53,11 @@ SHADOW_BIND_PORT: Final[int] = 18001
 SHADOW_INTERNAL_NETWORK: Final[str] = "shadow_internal"
 SHADOW_EDGE_NETWORK: Final[str] = "shadow_edge"
 
+#: The only DNS forwarder a service reaching the edge may use: the container's
+#: own loopback, where nothing listens. Docker's embedded resolver still answers
+#: service names; only names it must forward externally fail.
+SHADOW_DNS: Final[tuple[str, ...]] = ("127.0.0.1",)
+
 #: Driver options the edge bridge must set, and the only values accepted.
 EDGE_DRIVER_OPTS: Final[dict[str, str]] = {
     "com.docker.network.bridge.enable_ip_masquerade": "false",
@@ -154,6 +159,7 @@ class ShadowService(BaseModel):
     mem_reservation: str | None = None
     cpus: float | None = None
     pids_limit: int | None = None
+    dns: tuple[str, ...] = ()
 
     # Modelled so a file that uses them parses and is then rejected by name.
     privileged: bool | None = None
@@ -390,7 +396,18 @@ def _service_violations(
     # publishes it. Nothing errors, `docker ps` shows the mapping as empty, and
     # the bind looks configured right up until something tries to connect. A
     # declaration-only check cannot see that, so the check is on membership.
+    # A service that can reach the edge must not be able to resolve a name
+    # off-host: TCP egress is already denied, but a DNS query that still leaves
+    # is an exfiltration channel for anything willing to encode data in it.
     on_edge = SHADOW_EDGE_NETWORK in service.networks
+    if service.image.startswith("ghcr.io/michaelayoade/dotmac_sub@") and (
+        service.dns != SHADOW_DNS
+    ):
+        problems.append(
+            f"service {name!r} sets dns={list(service.dns)}, expected "
+            f"{list(SHADOW_DNS)}: external name resolution must fail, or egress "
+            "denial has a hole a query can walk through"
+        )
     if service.ports and not on_edge:
         problems.append(
             f"service {name!r} publishes {list(service.ports)} but joins only "
@@ -466,6 +483,7 @@ __all__ = [
     "EDGE_DRIVER_OPTS",
     "SHADOW_BIND_HOST",
     "SHADOW_BIND_PORT",
+    "SHADOW_DNS",
     "SHADOW_EDGE_NETWORK",
     "SHADOW_INTERNAL_NETWORK",
     "SHADOW_PROJECT",

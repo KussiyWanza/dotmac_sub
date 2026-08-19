@@ -92,6 +92,15 @@ services:
       SERVER_NAME: dotmac-sub-thin-shadow
       DATABASE_URL: postgresql+psycopg://${SHADOW_DB_USER:-shadow_app}:${SHADOW_DB_PASSWORD}@postgres:5432/${SHADOW_DB_NAME:-dotmac_sub_shadow}
       REDIS_URL: redis://:${SHADOW_REDIS_PASSWORD}@redis:6379/0
+    # No external name resolution. Docker's embedded resolver (127.0.0.11)
+    # answers container/service names itself and only FORWARDS names it does
+    # not know; pointing that forwarder at the container's own loopback, where
+    # nothing listens, makes external lookups fail while `postgres` and `redis`
+    # still resolve. Without this, TCP egress is denied but a name lookup still
+    # leaves the host, which is a working exfiltration channel for anything
+    # willing to encode data in a query.
+    dns:
+      - 127.0.0.1
     command: ["alembic", "upgrade", "head"]
     depends_on:
       postgres:
@@ -129,6 +138,15 @@ services:
       LOKI_URL: ""
       APP_URL: "http://127.0.0.1:18001"
       SHADOW_SINK_DIR: /app/shadow-sink
+    # No external name resolution. Docker's embedded resolver (127.0.0.11)
+    # answers container/service names itself and only FORWARDS names it does
+    # not know; pointing that forwarder at the container's own loopback, where
+    # nothing listens, makes external lookups fail while `postgres` and `redis`
+    # still resolve. Without this, TCP egress is denied but a name lookup still
+    # leaves the host, which is a working exfiltration channel for anything
+    # willing to encode data in a query.
+    dns:
+      - 127.0.0.1
     volumes:
       - shadow_uploads:/app/uploads
       - shadow_sink:/app/shadow-sink
