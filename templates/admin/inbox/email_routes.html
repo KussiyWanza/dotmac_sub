@@ -47,11 +47,13 @@
             <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 lg:col-span-2">Provider
                 <select name="provider" required class="mt-1 h-11 w-full rounded-lg border-slate-300 text-sm dark:border-slate-700 dark:bg-slate-950">
                     <option value="meta_cloud_api" {% if ai_intake_policy and ai_intake_policy.provider == 'meta_cloud_api' %}selected{% endif %}>WhatsApp Cloud API</option>
-                    <option value="meta_social" {% if ai_intake_policy and ai_intake_policy.provider == 'meta_social' %}selected{% endif %}>Meta social</option>
+                    <option value="meta.social" {% if ai_intake_policy and ai_intake_policy.provider == 'meta.social' %}selected{% endif %}>Meta social</option>
                 </select>
+                <p class="mt-1 text-xs font-normal text-slate-500 dark:text-slate-400">Selects the provider used to receive and send messages for this policy.</p>
             </label>
             <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 lg:col-span-2">Exact account scope
                 <input name="account_scope" value="{{ ai_intake_policy.account_scope if ai_intake_policy else '' }}" required maxlength="160" placeholder="phone_number_id, page id or Instagram account id" class="mt-1 h-11 w-full rounded-lg border-slate-300 px-3 text-sm dark:border-slate-700 dark:bg-slate-950">
+                <p class="mt-1 text-xs font-normal text-slate-500 dark:text-slate-400">The exact provider account identifier this policy applies to.</p>
             </label>
             <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 lg:col-span-2">Channel
                 <select name="channel_type" required class="mt-1 h-11 w-full rounded-lg border-slate-300 text-sm dark:border-slate-700 dark:bg-slate-950">
@@ -59,23 +61,29 @@
                     <option value="{{ channel.value }}" {% if ai_intake_policy and ai_intake_policy.channel_type == channel.value %}selected{% endif %}>{{ channel.label }}</option>
                     {% endfor %}
                 </select>
+                <p class="mt-1 text-xs font-normal text-slate-500 dark:text-slate-400">Limits this policy to one supported customer messaging channel.</p>
             </label>
             <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300">Confidence
                 <input name="confidence_threshold" type="number" min="0" max="1" step="0.01" value="{{ ai_intake_escalation_rules.get('confidence_threshold', 0.75) }}" class="mt-1 h-11 w-full rounded-lg border-slate-300 px-3 text-sm dark:border-slate-700 dark:bg-slate-950">
+                <p class="mt-1 text-xs font-normal text-slate-500 dark:text-slate-400">Below this confidence, the AI asks the generic clarification question.</p>
             </label>
             <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300">Clarifications
                 <input name="max_clarification_turns" type="number" min="0" max="5" value="{{ ai_intake_escalation_rules.get('max_clarification_turns', 1) }}" class="mt-1 h-11 w-full rounded-lg border-slate-300 px-3 text-sm dark:border-slate-700 dark:bg-slate-950">
+                <p class="mt-1 text-xs font-normal text-slate-500 dark:text-slate-400">Maximum clarification replies allowed before fallback handling.</p>
             </label>
             <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300">Escalate after
                 <input name="escalate_after_minutes" type="number" min="1" max="1440" value="{{ ai_intake_escalation_rules.get('escalate_after_minutes', 5) }}" class="mt-1 h-11 w-full rounded-lg border-slate-300 px-3 text-sm dark:border-slate-700 dark:bg-slate-950">
+                <p class="mt-1 text-xs font-normal text-slate-500 dark:text-slate-400">How long an unanswered clarification may remain open before escalation.</p>
             </label>
             <label class="flex items-center gap-2 text-sm font-semibold text-slate-700 dark:text-slate-200 lg:col-span-2">
                 <input type="checkbox" name="allow_followup_questions" value="true" {% if ai_intake_escalation_rules.get('allow_followup_questions', true) %}checked{% endif %} class="rounded border-slate-300 text-amber-500 focus:ring-amber-500">
                 Ask one approved clarification question
+                <span class="block text-xs font-normal text-slate-500 dark:text-slate-400">Allows the AI to send one of the two questions below when classification needs more information.</span>
             </label>
             <label class="flex items-center gap-2 text-sm font-semibold text-slate-700 dark:text-slate-200 lg:col-span-2">
                 <input type="checkbox" name="exclude_campaign_attribution" value="true" {% if ai_intake_escalation_rules.get('exclude_campaign_attribution', true) %}checked{% endif %} class="rounded border-slate-300 text-amber-500 focus:ring-amber-500">
                 Skip campaign-attributed conversations
+                <span class="block text-xs font-normal text-slate-500 dark:text-slate-400">Prevents campaign-attributed conversations from entering AI intake.</span>
             </label>
             <input type="hidden" name="replace_existing_draft" value="true">
             <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 lg:col-span-3">Fallback team
@@ -83,64 +91,90 @@
                     <option value="">Choose an active fallback team before activation</option>
                     {% for team in service_team_options %}<option value="{{ team.id }}" {% if ai_intake_policy and ai_intake_policy.fallback_team_id == team.id %}selected{% endif %}>{{ team.name }}</option>{% endfor %}
                 </select>
+                <p class="mt-1 text-xs font-normal text-slate-500 dark:text-slate-400">Receives conversations when the AI cannot classify or complete intake.</p>
             </label>
             <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 lg:col-span-3">Profile-completion support team
                 <select name="data_cleaning_support_team_id" class="mt-1 h-11 w-full rounded-lg border-slate-300 text-sm dark:border-slate-700 dark:bg-slate-950">
                     <option value="">Disabled</option>
                     {% for team in service_team_options %}<option value="{{ team.id }}" {% if ai_intake_data_cleanup_policy.get('support_team_id') == team.id|string %}selected{% endif %}>{{ team.name }}</option>{% endfor %}
                 </select>
+                <p class="mt-1 text-xs font-normal text-slate-500 dark:text-slate-400">Optional team for the separate profile-completion workflow.</p>
             </label>
             <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 lg:col-span-3">AI display name
                 <input name="display_name" maxlength="120" value="{{ ai_intake_edit_version.display_name if ai_intake_edit_version else 'Dotmac Virtual Assistant' }}" class="mt-1 h-11 w-full rounded-lg border-slate-300 px-3 text-sm dark:border-slate-700 dark:bg-slate-950">
+                <p class="mt-1 text-xs font-normal text-slate-500 dark:text-slate-400">The assistant name shown in customer-facing AI messages.</p>
             </label>
             <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 lg:col-span-3">Welcome message
                 <textarea name="welcome_message" maxlength="800" rows="3" class="mt-1 w-full rounded-lg border-slate-300 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950">{{ ai_intake_edit_version.welcome_message if ai_intake_edit_version else "Hello, I am Dotmac Virtual Assistant. I can help understand your request and connect you to the right team." }}</textarea>
+                <p class="mt-1 text-xs font-normal text-slate-500 dark:text-slate-400">Sent first when a new eligible conversation starts AI intake, before any clarification question.</p>
+            </label>
+            <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 lg:col-span-3">Generic clarification question
+                <textarea name="generic_clarification_question" maxlength="300" required rows="3" class="mt-1 w-full rounded-lg border-slate-300 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950">{{ ai_intake_clarification_questions[0] }}</textarea>
+                <p class="mt-1 text-xs font-normal text-slate-500 dark:text-slate-400">Sent when the AI cannot confidently identify what the customer needs.</p>
+            </label>
+            <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 lg:col-span-3">Customer type clarification question
+                <textarea name="customer_type_clarification_question" maxlength="300" required rows="3" class="mt-1 w-full rounded-lg border-slate-300 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950">{{ ai_intake_clarification_questions[1] }}</textarea>
+                <p class="mt-1 text-xs font-normal text-slate-500 dark:text-slate-400">Sent for a confident new-connection request when the customer type is unclear.</p>
             </label>
             <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 lg:col-span-3">Business tone
                 <textarea name="business_tone" maxlength="1000" rows="4" class="mt-1 w-full rounded-lg border-slate-300 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950">{{ ai_intake_edit_version.business_tone if ai_intake_edit_version and ai_intake_edit_version.business_tone else "Business casual, empathetic, smart and concise for a Nigerian internet service provider." }}</textarea>
+                <p class="mt-1 text-xs font-normal text-slate-500 dark:text-slate-400">Guides the style of generated AI responses.</p>
             </label>
             <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 lg:col-span-3">Approved ISP information
                 <textarea name="approved_isp_information" maxlength="4000" rows="4" class="mt-1 w-full rounded-lg border-slate-300 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950">{{ ai_intake_edit_version.approved_isp_information if ai_intake_edit_version and ai_intake_edit_version.approved_isp_information else "" }}</textarea>
+                <p class="mt-1 text-xs font-normal text-slate-500 dark:text-slate-400">Approved service facts the AI may use when answering customers.</p>
             </label>
             {% set queue_templates = ai_intake_queue_templates %}
             <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 lg:col-span-3">Queue update minutes
                 <input name="queue_position_update_minutes" type="number" min="1" max="120" value="{{ queue_templates.get('position_update_minutes', 5) }}" class="mt-1 h-11 w-full rounded-lg border-slate-300 px-3 text-sm dark:border-slate-700 dark:bg-slate-950">
+                <p class="mt-1 text-xs font-normal text-slate-500 dark:text-slate-400">Minutes between queue-position updates while a customer waits.</p>
             </label>
             <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 lg:col-span-3">Queue heartbeat minutes
                 <input name="queue_heartbeat_minutes" type="number" min="5" max="240" value="{{ queue_templates.get('heartbeat_minutes', 15) }}" class="mt-1 h-11 w-full rounded-lg border-slate-300 px-3 text-sm dark:border-slate-700 dark:bg-slate-950">
+                <p class="mt-1 text-xs font-normal text-slate-500 dark:text-slate-400">Minutes between reassurance messages while waiting in the queue.</p>
             </label>
             <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 lg:col-span-3">Initial queue template
                 <textarea name="queue_initial_template" maxlength="800" rows="3" class="mt-1 w-full rounded-lg border-slate-300 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950">{{ queue_templates.get('initial', '') }}</textarea>
+                <p class="mt-1 text-xs font-normal text-slate-500 dark:text-slate-400">Sent when the conversation first enters a human-agent queue.</p>
             </label>
             <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 lg:col-span-3">Position update template
                 <textarea name="queue_position_update_template" maxlength="800" rows="3" class="mt-1 w-full rounded-lg border-slate-300 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950">{{ queue_templates.get('position_update', '') }}</textarea>
+                <p class="mt-1 text-xs font-normal text-slate-500 dark:text-slate-400">Sent when the customer's queue position changes.</p>
             </label>
             <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 lg:col-span-3">Heartbeat template
                 <textarea name="queue_heartbeat_template" maxlength="800" rows="3" class="mt-1 w-full rounded-lg border-slate-300 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950">{{ queue_templates.get('heartbeat', '') }}</textarea>
+                <p class="mt-1 text-xs font-normal text-slate-500 dark:text-slate-400">Sent periodically while the customer remains queued.</p>
             </label>
             <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 lg:col-span-3">Handoff template
                 <textarea name="queue_handoff_template" maxlength="800" rows="3" class="mt-1 w-full rounded-lg border-slate-300 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950">{{ queue_templates.get('handoff', '') }}</textarea>
+                <p class="mt-1 text-xs font-normal text-slate-500 dark:text-slate-400">Sent when a queued conversation is promoted to a human agent.</p>
             </label>
             <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 lg:col-span-6">Editable business instructions
                 <textarea name="instructions" maxlength="2000" rows="5" class="mt-1 w-full rounded-lg border-slate-300 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950">{{ ai_intake_edit_version.business_instructions if ai_intake_edit_version and ai_intake_edit_version.business_instructions else "" }}</textarea>
+                <p class="mt-1 text-xs font-normal text-slate-500 dark:text-slate-400">Business-specific guidance supplied to the AI within protected policy limits.</p>
             </label>
             <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 lg:col-span-6">Intent mappings JSON
                 <textarea name="department_mappings_json" rows="7" class="mt-1 w-full rounded-lg border-slate-300 px-3 py-2 font-mono text-xs dark:border-slate-700 dark:bg-slate-950">{{ ai_intake_mapping_json }}</textarea>
+                <p class="mt-1 text-xs font-normal text-slate-500 dark:text-slate-400">Maps approved intents to service teams for routing after classification.</p>
             </label>
             <label class="flex items-center gap-2 text-sm font-semibold text-slate-700 dark:text-slate-200 lg:col-span-3">
                 <input type="checkbox" name="data_cleanup_enabled" value="true" disabled class="rounded border-slate-300 text-slate-400">
                 NCC cleanup disabled pending compliance approval
+                <span class="block text-xs font-normal text-slate-500 dark:text-slate-400">This compliance-controlled collection capability is currently unavailable.</span>
             </label>
             {% set data_cleanup_policy = ai_intake_data_cleanup_policy %}
             <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 lg:col-span-3">Data-cleanup prompt
                 <textarea name="data_cleanup_prompt" maxlength="1000" rows="3" class="mt-1 w-full rounded-lg border-slate-300 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950">{{ data_cleanup_policy.get('prompt', '') }}</textarea>
+                <p class="mt-1 text-xs font-normal text-slate-500 dark:text-slate-400">Reserved prompt for a future approved profile-completion flow.</p>
             </label>
             <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 lg:col-span-3">Gender choices JSON
                 <textarea name="data_cleanup_gender_choices_json" maxlength="1000" rows="4" class="mt-1 w-full rounded-lg border-slate-300 px-3 py-2 font-mono text-xs dark:border-slate-700 dark:bg-slate-950">{{ data_cleanup_policy.get('gender_choices', {}) | tojson }}</textarea>
+                <p class="mt-1 text-xs font-normal text-slate-500 dark:text-slate-400">Reserved normalized choices for the future profile-completion flow.</p>
             </label>
             <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 lg:col-span-3">DOB formats
                 <textarea name="data_cleanup_dob_formats" maxlength="300" rows="4" class="mt-1 w-full rounded-lg border-slate-300 px-3 py-2 font-mono text-xs dark:border-slate-700 dark:bg-slate-950">{% for fmt in data_cleanup_policy.get('dob_formats', []) %}{{ fmt }}
 {% endfor %}</textarea>
+                <p class="mt-1 text-xs font-normal text-slate-500 dark:text-slate-400">Reserved accepted date formats for the future profile-completion flow.</p>
             </label>
             <div class="rounded-lg border border-dashed border-slate-300 p-3 text-xs text-slate-500 dark:border-slate-700 dark:text-slate-400 lg:col-span-6">
                 Saving creates or updates a draft only. Activation validates the provider scope, fallback team and mapped teams, then writes the runtime compatibility projection. Activated versions are immutable.
