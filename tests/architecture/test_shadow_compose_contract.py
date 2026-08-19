@@ -19,10 +19,10 @@ import pytest
 
 from app.shadow.compose_contract import (
     EDGE_DRIVER_OPTS,
-    SHADOW_DNS,
     PINNED_IMAGES,
     SHADOW_BIND_HOST,
     SHADOW_BIND_PORT,
+    SHADOW_DNS,
     SHADOW_PROJECT,
     ShadowComposeFile,
     ShadowNetwork,
