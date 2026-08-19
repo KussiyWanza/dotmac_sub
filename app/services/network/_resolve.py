@@ -497,6 +497,51 @@ def resolve_genieacs(db: Session, ont: OntUnit) -> tuple[GenieACSClient, str] | 
     return resolved
 
 
+def resolve_linked_genieacs_with_reason(
+    db: Session, ont: OntUnit
+) -> tuple[tuple[GenieACSClient, str] | None, str]:
+    """Resolve the exact persisted GenieACS identity for device writes.
+
+    Provisioning writes must target the TR-069 Inform-owned GenieACS ``_id``.
+    Serial-number search remains useful for discovery and repair, but it is
+    unsafe as a write fallback because duplicate inventory rows can represent
+    the same Huawei serial in different formats.
+    """
+    linked = db.scalars(
+        select(Tr069CpeDevice)
+        .where(Tr069CpeDevice.ont_unit_id == ont.id)
+        .where(Tr069CpeDevice.is_active.is_(True))
+        .where(Tr069CpeDevice.genieacs_device_id.is_not(None))
+        .order_by(Tr069CpeDevice.last_inform_at.desc().nullslast())
+        .limit(1)
+    ).first()
+    if linked is None or not linked.genieacs_device_id:
+        return (
+            None,
+            "ONT has no linked GenieACS device ID. Wait for an Inform or repair "
+            "the ACS-to-ONT binding before provisioning.",
+        )
+
+    server = _resolve_server_by_id(db, str(linked.acs_server_id))
+    if server is None:
+        return None, "The linked GenieACS device has no active ACS server."
+
+    client = create_genieacs_client(server.base_url)
+    device_id = str(linked.genieacs_device_id).strip()
+    try:
+        live_device_id = _verified_genieacs_device_id(client, device_id)
+    except GenieACSError as exc:
+        if _is_genieacs_device_not_found(exc, device_id):
+            return None, (
+                f"Linked GenieACS device {device_id} is no longer present; "
+                "wait for the next Inform before provisioning."
+            )
+        return None, f"Unable to verify linked GenieACS device {device_id}."
+    if not live_device_id:
+        return None, f"Linked GenieACS device {device_id} could not be verified."
+    return (client, live_device_id), "resolved_via_linked_genieacs_id"
+
+
 def resolve_genieacs_with_reason(
     db: Session, ont: OntUnit
 ) -> tuple[tuple[GenieACSClient, str] | None, str]:

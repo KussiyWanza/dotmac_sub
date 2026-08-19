@@ -14,6 +14,7 @@ from app.services.network._resolve import (
     clear_stale_genieacs_device_id,
     resolve_genieacs_for_cpe_with_reason,
     resolve_genieacs_with_reason,
+    resolve_linked_genieacs_with_reason,
 )
 
 logger = logging.getLogger(__name__)
@@ -478,7 +479,7 @@ def resolve_client_or_error(
     ont: OntUnit,
 ) -> tuple[tuple[Any, str] | None, ActionResult | None]:
     """Resolve the GenieACS client/device pair for an ONT."""
-    resolved, reason = resolve_genieacs_with_reason(db, ont)
+    resolved, reason = resolve_linked_genieacs_with_reason(db, ont)
     if not resolved:
         return None, ActionResult(
             success=False,

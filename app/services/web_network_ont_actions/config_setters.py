@@ -1390,17 +1390,21 @@ def bind_internet_wan(
         f"WANConnectionDevice.{wcd_index}.WANPPPConnection.{ppp_index}."
         "X_HW_LANBIND"
     )
+    # Huawei HG8546M exposes X_HW_LANBIND as unsigned-int flags. Write the
+    # complete object so stale bindings are cleared as part of the same task.
     requested_binds = {
         "Lan1Enable": lan1,
         "Lan2Enable": lan2,
         "Lan3Enable": lan3,
         "Lan4Enable": lan4,
         "SSID1Enable": ssid1,
+        "SSID2Enable": False,
+        "SSID3Enable": False,
+        "SSID4Enable": False,
     }
     params = {
-        f"{base_path}.{field}": 1
+        f"{base_path}.{field}": int(enabled)
         for field, enabled in requested_binds.items()
-        if enabled
     }
     if not params:
         return ActionResult(
