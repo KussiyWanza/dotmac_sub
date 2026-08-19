@@ -491,4 +491,10 @@ router.include_router(
         Depends(module_manager_service.require_module_enabled("provisioning"))
     ],
 )
-__all__ = ["router"]
+
+
+def build_router() -> APIRouter:
+    return router
+
+
+__all__ = ["build_router", "router"]

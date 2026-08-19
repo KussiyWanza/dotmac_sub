@@ -26,6 +26,7 @@ from app.models.sales import (
     SalesOrder,
     SalesOrderStatus,
 )
+from app.models.system_user import SystemUser
 from app.services.display_format import currency_code
 
 OPEN_LEAD_STATUSES = (
@@ -634,6 +635,23 @@ def recent_opportunities(
         )
         for lead in leads
     )
+
+
+def sales_agent_names(db: Session, agent_ids: set[UUID]) -> dict[UUID, str]:
+    """Resolve sales-agent display names for report adapters."""
+
+    if not agent_ids:
+        return {}
+    users = db.query(SystemUser).filter(SystemUser.id.in_(agent_ids)).all()
+    return {
+        user.id: (
+            user.display_name
+            or " ".join(part for part in (user.first_name, user.last_name) if part)
+            or user.email
+            or "Unavailable sales agent"
+        )
+        for user in users
+    }
 
 
 def dashboard_report(

@@ -662,9 +662,10 @@ def set_pppoe_credentials(
     params: dict[str, str] = {}
 
     if root == "InternetGatewayDevice":
-        instance_index = _resolve_igd_wcd_index(
-            client.get_device(device_id), instance_index
-        )
+        if hasattr(client, "get_device"):
+            instance_index = _resolve_igd_wcd_index(
+                client.get_device(device_id), instance_index
+            )
         ppp_child_index, ensure_error = _ensure_igd_ppp_wan_service(
             ont=ont,
             client=client,

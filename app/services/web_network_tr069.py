@@ -9,7 +9,7 @@ from ipaddress import IPv4Address
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 from starlette.requests import Request
 
@@ -32,6 +32,7 @@ from app.services.genieacs_client import (
 )
 from app.services.network import cpe as cpe_service
 from app.services.network._common import decode_huawei_hex_serial
+from app.services.network.tr069_inventory_links import onts_by_normalized_serial
 from app.services.network.tr069_job_commands import (
     Tr069AdmissionOutcome,
     Tr069CommandKind,
@@ -781,24 +782,7 @@ def tr069_dashboard_data(
         for item in devices
         if item.serial_number
     }
-    ont_by_normalized_serial: dict[str, OntUnit] = {}
-    if normalized_serials:
-        onts = list(
-            db.scalars(
-                select(OntUnit).options(
-                    joinedload(OntUnit.olt_device),
-                    joinedload(OntUnit.assignments).joinedload(OntAssignment.pon_port),
-                )
-            )
-            .unique()
-            .all()
-        )
-        ont_by_normalized_serial = {
-            serial: ont
-            for ont in onts
-            for serial in [normalize_tr069_serial(ont.serial_number or "")]
-            if serial in normalized_serials
-        }
+    ont_by_normalized_serial = onts_by_normalized_serial(db, normalized_serials)
 
     for device in devices:
         device.is_registered_in_acs = _device_registered_in_acs(device)

@@ -40,6 +40,9 @@ from app.schemas.ai_intake import (
     DataCleaningState,
     normalize_clarification_questions,
 )
+from app.schemas.ai_intake import (
+    GENERIC_FOLLOW_UP_QUESTION as GENERIC_FOLLOW_UP_QUESTION,
+)
 from app.schemas.ai_operations import AiIntakeConfigUpsert
 from app.services.ai.client import AIClientError
 from app.services.ai.output_parsers import parse_json_object

@@ -19,7 +19,6 @@ from app.db import get_db
 from app.models.billing import InvoiceDiscountSource, InvoiceStatus
 from app.models.catalog import SubscriptionStatus
 from app.models.sales import QuoteStatus
-from app.models.system_user import SystemUser
 from app.models.team_inbox import InboxConversation, InboxConversationStatus
 from app.services import crm_reporting as crm_reporting_service
 from app.services import (
@@ -514,18 +513,7 @@ def _sales_report_window(
 
 
 def _sales_agent_names(db: Session, agent_ids: set[UUID]) -> dict[UUID, str]:
-    if not agent_ids:
-        return {}
-    users = db.query(SystemUser).filter(SystemUser.id.in_(agent_ids)).all()
-    return {
-        user.id: (
-            user.display_name
-            or " ".join(part for part in (user.first_name, user.last_name) if part)
-            or user.email
-            or "Unavailable sales agent"
-        )
-        for user in users
-    }
+    return sales_reports_service.sales_agent_names(db, agent_ids)
 
 
 def _sales_lead_report_context(
