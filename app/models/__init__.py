@@ -115,6 +115,11 @@ from app.models.billing_shadow_verification import (  # noqa: F401
 # contract's proration enum is imported from app.models.billing_contract
 # directly to avoid shadowing it here.
 from app.models.branding import BrandProfile  # noqa: F401
+from app.models.carried_source_identity import (  # noqa: F401
+    CarriedSourceIdentityAdjudication,
+    CarriedSourceIdentityAdjudicationImmutableError,
+    CarriedSourceIdentityDisposition,
+)
 from app.models.catalog import (  # noqa: F401
     AccessCredential,
     AccessType,

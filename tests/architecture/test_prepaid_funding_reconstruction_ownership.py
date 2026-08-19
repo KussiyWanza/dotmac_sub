@@ -189,6 +189,39 @@ def test_source_identity_blocker_is_written_before_the_blocked_exit() -> None:
     assert "missing_carried_source_identity" in exporter
 
 
+def test_carried_source_adjudication_is_a_typed_non_financial_owner() -> None:
+    from app.services.sot_manifest import (
+        OwnerRole,
+        TransactionMode,
+        contract_validation_errors,
+    )
+    from app.services.sot_registry.registry import all_services, service_relationship
+
+    owner_name = "billing.carried_source_identity_adjudication"
+    owner = service_relationship(owner_name)
+    service_names = {service.name for service in all_services()}
+    assert owner.contract is not None
+    assert owner.contract.concerns[0].role is OwnerRole.COMMAND_WRITER
+    assert owner.contract.transaction.mode is TransactionMode.OWNER_MANAGED
+    assert contract_validation_errors(owner, service_names=service_names) == ()
+
+    implementation = _read("app/services/carried_source_identity_adjudication.py")
+    adapter = _read("scripts/one_off/review_carried_source_identity.py")
+    opening = _read("app/services/billing/opening_balance_history.py")
+    assert "CarriedSourceIdentityAdjudication(" in implementation
+    assert "confirm_carried_source_identity_adjudication" in adapter
+    assert "CarriedSourceIdentityAdjudication(" not in adapter
+    assert ".splynx_customer_id =" not in implementation
+    assert ".splynx_customer_id =" not in adapter
+    assert "Payment(" not in implementation
+    assert "LedgerEntry(" not in implementation
+    assert "customer_financial_balances_by_currency" in opening
+    assert "native_before_handoff" in opening
+    assert "--apply" in adapter
+    assert "RECORD_REVIEWED_NATIVE_BEFORE_HANDOFF" in adapter
+    _read_migration("carried_source_adjudication")
+
+
 def test_complete_history_reader_and_retired_quarantine_name_have_one_app_home() -> (
     None
 ):
