@@ -43,8 +43,8 @@ DOMAIN = DomainSOT(
             ),
             notes=(
                 "Interprets the existing typed plan markers on active CatalogOffer "
-                "records and de-duplicates them by prefix. ONT adapters consume this "
-                "resolver instead of maintaining a second hardcoded block-size list."
+                "records and de-duplicates them by prefix. Manual ONT LAN block "
+                "configuration is network-owned and does not consume this resolver."
             ),
             contract=ServiceContract(
                 concerns=(
@@ -94,17 +94,14 @@ DOMAIN = DomainSOT(
                 ),
                 migration=MigrationContract(
                     state=AuthorityMigrationState.COMPLETE,
-                    old_owner="hardcoded ONT LAN subnet dropdown",
+                    old_owner="catalog plan-marker readers without a typed resolver",
                     new_owner="service_intent.ip_block_catalog",
-                    verification=(
-                        "Catalog choice, ONT context, form rendering, and configuration "
-                        "admission tests"
-                    ),
+                    verification=("Catalog choice and entitlement resolver tests"),
                     cutover_gate=(
-                        "ONT Configuration renders only active Catalog IP block choices"
+                        "Catalog IP block size readers call this typed resolver"
                     ),
                     fallback_retirement=(
-                        "The ONT template contains no copied prefix or mask options."
+                        "Catalog IP block readers contain no copied prefix parsing."
                     ),
                 ),
                 steward="commercial and network operations",

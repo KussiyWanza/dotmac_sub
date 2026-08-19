@@ -12,7 +12,8 @@ from fastapi.responses import HTMLResponse
 from starlette.requests import Request
 
 from app.models.ont_service_configuration import OntServiceConfigurationPhase
-from app.services.catalog.ip_block_choices import CatalogIpBlockChoice, IpBlockPrefix
+from app.services.catalog.ip_block_choices import IpBlockPrefix
+from app.services.network.ont_lan_block_choices import operator_lan_block_prefix_choices
 from app.services.network.ont_service_configuration import (
     ConfigureOntServiceOutcome,
     LanConfigurationChange,
@@ -98,39 +99,23 @@ def test_configure_form_exposes_only_section_scoped_routed_actions() -> None:
     assert "Not ready" in html
 
 
-def test_configure_form_renders_catalog_ip_blocks_and_disables_dhcp_for_32() -> None:
+def test_configure_form_renders_operator_lan_block_sizes() -> None:
     html = templates.env.get_template("admin/network/onts/_configure_form.html").render(
         request=_request(),
         ont_id="ont-1",
-        lan_block_prefix="/32",
-        lan_dhcp_enabled=False,
-        ip_block_choices=(
-            CatalogIpBlockChoice(
-                prefix=IpBlockPrefix.p32,
-                subnet_mask="255.255.255.255",
-                address_count=1,
-                offer_ids=(uuid.uuid4(),),
-                offer_names=("One public address",),
-            ),
-            CatalogIpBlockChoice(
-                prefix=IpBlockPrefix.p29,
-                subnet_mask="255.255.255.248",
-                address_count=8,
-                offer_ids=(uuid.uuid4(),),
-                offer_names=("Public /29",),
-            ),
-        ),
-        entitled_ip_block_prefixes=("/32", "/29"),
-        ip_block_entitlements=(),
+        lan_block_prefix="/30",
+        lan_dhcp_enabled=True,
+        lan_block_prefix_choices=operator_lan_block_prefix_choices(),
         has_tr069=False,
     )
 
-    assert 'value="/32"' in html
-    assert "/32 — 1 address" in html
-    assert 'value="/29"' in html
-    assert "/29 — 8 addresses" in html
-    assert ":disabled=\"lanBlockPrefix === '/32'\"" in html
-    assert "A /32 is one static address; DHCP is unavailable." in html
+    assert "Catalog IP block" not in html
+    assert "subscription required" not in html
+    assert 'value="/32"' not in html
+    assert 'value="/30" selected' in html
+    assert "/30" in html
+    assert "255.255.255.252" in html
+    assert 'value="/24"' in html
 
 
 def test_configure_form_reports_queued_operation_without_claiming_delivery() -> None:
