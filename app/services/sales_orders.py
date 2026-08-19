@@ -321,6 +321,8 @@ def _resolve_project_for_sales_order(db: Session, sales_order_id: object):
     """
     if not sales_order_id:
         return None
+    sales_order = db.get(SalesOrder, coerce_uuid(str(sales_order_id)))
+    quote_id = sales_order.quote_id if sales_order else None
     existing = (
         db.query(Project)
         .filter(Project.sales_order_id == coerce_uuid(str(sales_order_id)))
@@ -353,6 +355,17 @@ def _resolve_project_for_sales_order(db: Session, sales_order_id: object):
             metadata = row.metadata_ if isinstance(row.metadata_, dict) else {}
             if str(metadata.get("sales_order_id")) == str(sales_order_id):
                 return row
+    if not quote_id:
+        return None
+    related = (
+        db.query(Project)
+        .filter(Project.quote_id == quote_id)
+        .filter(Project.is_active.is_(True))
+        .order_by(Project.created_at.desc())
+        .first()
+    )
+    if related:
+        return related
     return None
 
 

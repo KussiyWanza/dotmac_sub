@@ -193,7 +193,7 @@ def _queue_outbox_reply(
             body=body,
             channels=(channel,),
             include_reseller=False,
-            persist_policy_suppressions=False,
+            persist_policy_suppressions=True,
             recipients={channel: recipient},
             audience_type="operational",
             audience_id=conversation.id,
@@ -1237,7 +1237,7 @@ def send_transcript(
             body=body_html,
             channels=(NotificationChannel.email,),
             include_reseller=False,
-            persist_policy_suppressions=False,
+            persist_policy_suppressions=True,
             recipients={NotificationChannel.email: recipient},
             metadata={
                 "source": "team_inbox_transcript",
