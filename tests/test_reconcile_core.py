@@ -647,7 +647,9 @@ def test_persisted_wifi_password_scope_pushes_without_proposed_value(
     assert result.failure.reason is ReconcileFailureReason.VERIFICATION_MISMATCH
     assert result.failure.evidence.get("readback_pending") is True
     psk_writes = [
-        call for call in acs.spv_calls if "PreSharedKey" in next(iter(call[1]))
+        call
+        for call in acs.spv_calls
+        if any("PreSharedKey" in parameter for parameter in call[1])
     ]
     assert len(psk_writes) == 1
 
