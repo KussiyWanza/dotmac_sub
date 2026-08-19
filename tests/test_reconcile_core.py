@@ -611,7 +611,7 @@ def test_wifi_password_change_on_synced_ont_pushes_once(
 def test_persisted_wifi_password_scope_pushes_without_proposed_value(
     db_session, ont, stub_desired, stub_ont_status, monkeypatch
 ):
-    """WiFi delivery skips unrelated OLT reads and PPP authorization."""
+    """WiFi delivery skips unrelated work and awaits fresh ACS readback."""
     monkeypatch.setattr(
         "app.services.network.reconcile.core._resolve_olt_adapter",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
@@ -642,7 +642,10 @@ def test_persisted_wifi_password_scope_pushes_without_proposed_value(
         acs_client=acs,
     )
 
-    assert result.success is True
+    assert result.success is False
+    assert result.failure is not None
+    assert result.failure.reason is ReconcileFailureReason.VERIFICATION_MISMATCH
+    assert result.failure.evidence.get("readback_pending") is True
     psk_writes = [
         call for call in acs.spv_calls if "PreSharedKey" in next(iter(call[1]))
     ]
