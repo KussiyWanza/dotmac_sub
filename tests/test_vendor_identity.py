@@ -20,7 +20,6 @@ from app.models.field_vendor import FieldVendor, FieldVendorUser
 from app.models.subscriber import UserType
 from app.models.system_user import SystemUser
 from app.services import vendor_user_provisioning as provisioning
-from app.services.operator_tenant import provision_operator_tenant
 from app.services.db_session_adapter import db_session_adapter
 from app.services.field import vendor_capabilities as caps
 from app.services.field.vendor_auth import (
@@ -28,6 +27,7 @@ from app.services.field.vendor_auth import (
     VendorLoginEligibilityStatus,
     resolve_vendor_login_eligibility,
 )
+from app.services.operator_tenant import provision_operator_tenant
 
 
 def _vendor(db_session, *, is_active: bool = True) -> FieldVendor:
