@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from statistics import mean
 from uuid import UUID
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.models.service_team import ServiceTeam, ServiceTeamMember
@@ -512,6 +513,7 @@ def agent_performance_report(
     *,
     service_team_id: str | UUID | None = None,
     include_inactive_members: bool = False,
+    search: str | None = None,
 ) -> list[InboxAgentPerformanceReportRow]:
     query = (
         db.query(ServiceTeamMember, ServiceTeam, SystemUser)
@@ -528,18 +530,116 @@ def agent_performance_report(
         query = query.filter(ServiceTeam.id == UUID(str(service_team_id)))
     if not include_inactive_members:
         query = query.filter(ServiceTeamMember.is_active.is_(True))
+    normalized_search = (search or "").strip()
+    if normalized_search:
+        search_term = f"%{normalized_search}%"
+        query = query.filter(
+            or_(
+                SystemUser.display_name.ilike(search_term),
+                SystemUser.first_name.ilike(search_term),
+                SystemUser.last_name.ilike(search_term),
+                SystemUser.email.ilike(search_term),
+            )
+        )
 
     members = query.all()
+    if not members:
+        return []
+
+    team_ids = tuple({team.id for _member, team, _user in members})
+    assignments = (
+        db.query(InboxConversationAssignment)
+        .filter(InboxConversationAssignment.service_team_id.in_(team_ids))
+        .all()
+    )
+    assignments_by_agent: dict[
+        tuple[UUID, UUID], list[InboxConversationAssignment]
+    ] = {}
+    for assignment in assignments:
+        assignments_by_agent.setdefault(
+            (assignment.service_team_id, assignment.person_id), []
+        ).append(assignment)
+
+    assignment_conversation_ids = {
+        assignment.conversation_id for assignment in assignments
+    }
+    conversations = {
+        conversation.id: conversation
+        for conversation in (
+            db.query(InboxConversation)
+            .filter(InboxConversation.id.in_(assignment_conversation_ids))
+            .all()
+            if assignment_conversation_ids
+            else []
+        )
+    }
+    team_links = (
+        db.query(InboxConversationTeam)
+        .filter(InboxConversationTeam.service_team_id.in_(team_ids))
+        .filter(InboxConversationTeam.is_active.is_(True))
+        .all()
+    )
+    team_conversation_ids: dict[UUID, set[UUID]] = {}
+    for link in team_links:
+        team_conversation_ids.setdefault(link.service_team_id, set()).add(
+            link.conversation_id
+        )
+    message_ids = {
+        conversation_id
+        for conversation_ids in team_conversation_ids.values()
+        for conversation_id in conversation_ids
+    }
+    messages_by_conversation = _messages_by_conversation(db, list(message_ids))
+    response_seconds_by_agent: dict[tuple[UUID, UUID], list[float]] = {}
+    for team_id, conversation_ids in team_conversation_ids.items():
+        for conversation_id in conversation_ids:
+            response = _first_human_response(
+                messages_by_conversation.get(conversation_id, [])
+            )
+            if response is None:
+                continue
+            first_inbound, first_outbound = response
+            person_id = _sent_by_person_id(first_outbound)
+            response_seconds = _seconds_between(
+                _message_time(first_inbound), _message_time(first_outbound)
+            )
+            if person_id is not None and response_seconds is not None:
+                response_seconds_by_agent.setdefault((team_id, person_id), []).append(
+                    response_seconds
+                )
+
     capabilities_by_team = service_team_composition.capabilities_by_team(
         db,
-        tuple(team.id for _member, team, _user in members),
+        team_ids,
     )
     rows: list[InboxAgentPerformanceReportRow] = []
     for member, team, user in members:
-        metrics = agent_performance_metrics(
-            db,
-            service_team_id=team.id,
-            person_id=user.id,
+        agent_assignments = assignments_by_agent.get((team.id, user.id), [])
+        queue_wait_values = [
+            queue_wait
+            for assignment in agent_assignments
+            if (conversation := conversations.get(assignment.conversation_id))
+            is not None
+            and (
+                queue_wait := _seconds_between(
+                    conversation.first_message_at, assignment.assigned_at
+                )
+            )
+            is not None
+        ]
+        metrics = InboxAgentPerformanceMetrics(
+            person_id=str(user.id),
+            service_team_id=str(team.id),
+            active_assignment_count=sum(
+                1 for assignment in agent_assignments if assignment.is_active
+            ),
+            handled_conversation_count=len(
+                {assignment.conversation_id for assignment in agent_assignments}
+            ),
+            average_first_response_seconds=_avg(
+                response_seconds_by_agent.get((team.id, user.id), [])
+            ),
+            average_queue_wait_seconds=_avg(queue_wait_values),
         )
         rows.append(
             InboxAgentPerformanceReportRow(

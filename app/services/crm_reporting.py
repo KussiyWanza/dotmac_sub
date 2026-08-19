@@ -88,6 +88,7 @@ class CrmReportQuery:
     page: int = 1
     per_page: int | None = 50
     person_id: UUID | None = None
+    search: str | None = None
 
     @property
     def start_at(self) -> datetime | None:
@@ -812,7 +813,10 @@ def _crm_performance(db: Session, query: CrmReportQuery) -> CrmReportPage:
 def _agent_performance(
     db: Session, query: CrmReportQuery, *, personal: bool = False
 ) -> CrmReportPage:
-    report = team_inbox_metrics.agent_performance_report(db)
+    report = team_inbox_metrics.agent_performance_report(
+        db,
+        search=query.search,
+    )
     if personal:
         report = [
             item

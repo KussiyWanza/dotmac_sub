@@ -399,6 +399,7 @@ def _operational_report_query(
     page: int,
     per_page: int | None,
     personal: bool,
+    search: str | None = None,
 ) -> crm_reporting_service.CrmReportQuery:
     person_id = None
     if personal:
@@ -414,6 +415,7 @@ def _operational_report_query(
         page=page,
         per_page=per_page,
         person_id=person_id,
+        search=search.strip() if search else None,
     )
 
 
@@ -2118,6 +2120,7 @@ def reports_operational_export(
     report_slug: str,
     date_from: str | None = None,
     date_to: str | None = None,
+    search: str | None = Query(default=None, max_length=120),
     db: Session = Depends(get_db),
 ):
     definition = _operational_definition(request, report_slug)
@@ -2130,6 +2133,9 @@ def reports_operational_export(
         page=1,
         per_page=None,
         personal=definition.slug == crm_reporting_service.CrmReportSlug.MY_PERFORMANCE,
+        search=search
+        if definition.slug == crm_reporting_service.CrmReportSlug.AGENT_PERFORMANCE
+        else None,
     )
     report = crm_reporting_service.get_report(db, slug=definition.slug, query=query)
     return Response(
@@ -2149,6 +2155,7 @@ def reports_operational_page(
     report_slug: str,
     date_from: str | None = None,
     date_to: str | None = None,
+    search: str | None = Query(default=None, max_length=120),
     page: int = Query(default=1, ge=1),
     per_page: int = Query(default=50, ge=10, le=200),
     db: Session = Depends(get_db),
@@ -2163,6 +2170,9 @@ def reports_operational_page(
         page=page,
         per_page=per_page,
         personal=definition.slug == crm_reporting_service.CrmReportSlug.MY_PERFORMANCE,
+        search=search
+        if definition.slug == crm_reporting_service.CrmReportSlug.AGENT_PERFORMANCE
+        else None,
     )
     report = crm_reporting_service.get_report(db, slug=definition.slug, query=query)
     context = _base_context(
@@ -2177,6 +2187,7 @@ def reports_operational_page(
             "report": report,
             "date_from": date_from or "",
             "date_to": date_to or "",
+            "search": search or "",
         }
     )
     return templates.TemplateResponse("admin/reports/operational.html", context)

@@ -342,6 +342,18 @@ def test_agent_performance_report_lists_active_team_members(db_session):
     assert rows[0].metrics.active_assignment_count == 1
     assert rows[0].metrics.average_queue_wait_seconds == 180
 
+    filtered_rows = team_inbox_metrics.agent_performance_report(
+        db_session,
+        service_team_id=team.id,
+        search="Test Staff",
+    )
+    assert len(filtered_rows) == 1
+    assert team_inbox_metrics.agent_performance_report(
+        db_session,
+        service_team_id=team.id,
+        search="does-not-exist",
+    ) == []
+
 
 def test_analytics_api_returns_inbox_team_performance(db_session):
     team = _team(db_session)
