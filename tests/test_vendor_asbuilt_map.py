@@ -11,12 +11,19 @@ import inspect
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+from fastapi import HTTPException
+
 from app.services.vendor_portal_operations import _serialize_project
 from app.web import vendor_portal
 
-TEMPLATE = (
-    Path(__file__).resolve().parents[1] / "templates/vendor/project_detail.html"
-).read_text(encoding="utf-8")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+TEMPLATE = (PROJECT_ROOT / "templates/vendor/project_detail.html").read_text(
+    encoding="utf-8"
+)
+ASBUILT_JS = (PROJECT_ROOT / "static/js/vendor-asbuilt-map.js").read_text(
+    encoding="utf-8"
+)
 
 
 def test_asbuilt_uses_an_interactive_map_not_a_geojson_textarea():
@@ -26,21 +33,40 @@ def test_asbuilt_uses_an_interactive_map_not_a_geojson_textarea():
     # Replaced by a leaflet map + a hidden geojson field the JS populates.
     assert 'id="asbuilt-map"' in TEMPLATE
     assert 'id="ab-geojson"' in TEMPLATE
+    assert 'id="ab-error"' in TEMPLATE
     assert "/static/vendor/leaflet/leaflet.js" in TEMPLATE
     assert "/static/vendor/leaflet/leaflet.css" in TEMPLATE
+    assert "/static/js/vendor-asbuilt-map.js" in TEMPLATE
+    assert "VendorAsBuiltMap.mount" in TEMPLATE
 
 
 def test_asbuilt_offers_gps_capture_and_serializes_a_linestring():
     # GPS "add my location" for on-site capture.
     assert 'id="ab-locate"' in TEMPLATE
-    assert "navigator.geolocation" in TEMPLATE
+    assert "navigator.geolocation" in ASBUILT_JS
     # Drawn vertices [lat, lng] are emitted as GeoJSON LineString [lng, lat].
-    assert "type: 'LineString'" in TEMPLATE
+    assert 'type: "LineString"' in ASBUILT_JS
     # Submit stays gated until a real line exists.
-    assert "points.length < 2" in TEMPLATE
-    assert "map.on('click'" in TEMPLATE
+    assert "points.length >= 2" in ASBUILT_JS
+    assert 'map.on("click"' in ASBUILT_JS
     assert 'role="region" aria-label="As-built route map"' in TEMPLATE
     assert 'role="status" aria-live="polite"' in TEMPLATE
+    assert 'role="alert"' in TEMPLATE
+    assert "window.alert" not in TEMPLATE
+    assert "window.alert" not in ASBUILT_JS
+
+
+def test_web_payload_maps_invalid_asbuilt_geometry_to_safe_validation_error():
+    with pytest.raises(HTTPException) as exc:
+        vendor_portal._as_built_payload(
+            "00000000-0000-0000-0000-000000000001",
+            '{"type":"LineString","coordinates":[[7.4,9.0]]}',
+            None,
+            None,
+        )
+
+    assert exc.value.status_code == 422
+    assert "as-built route" in str(exc.value.detail)
 
 
 def test_asbuilt_action_is_owned_and_only_allows_the_assigned_vendor():
@@ -89,6 +115,7 @@ def test_closure_pin_is_not_coupled_to_asbuilt_submission_eligibility():
     assert "vendor_capabilities.AS_BUILT_WRITE" in source
     assert "project.as_built_action) and vendor_work_orders" not in TEMPLATE
     assert "or can_propose_closure" in TEMPLATE
-    assert "var canProposeClosure" in TEMPLATE
-    assert "if (!canCapture && !canProposeClosure) return;" in TEMPLATE
-    assert "if (canCapture) {" in TEMPLATE
+    assert "canProposeClosure: {{ can_propose_closure | tojson }}" in TEMPLATE
+    assert "var canProposeClosure" in ASBUILT_JS
+    assert "canProposeClosure" in ASBUILT_JS
+    assert "if (canCapture) {" in ASBUILT_JS

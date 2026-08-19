@@ -434,14 +434,6 @@ def test_failed_revision_blocks_same_material_but_not_deliberate_next_revision(
         )
     assert exc_info.value.code.endswith(".repair_required")
 
-    monkeypatch.setattr(
-        "app.services.network.ont_service_configuration.active_catalog_ip_block_choices",
-        lambda _db: (SimpleNamespace(prefix=IpBlockPrefix.p24),),
-    )
-    monkeypatch.setattr(
-        "app.services.network.ont_service_configuration.subscriber_ip_block_entitlements",
-        lambda _db, _subscriber_id: (SimpleNamespace(prefix=IpBlockPrefix.p24),),
-    )
     second = configure_ont_service(
         db_session,
         _configure_command(
@@ -463,7 +455,7 @@ def test_failed_revision_blocks_same_material_but_not_deliberate_next_revision(
     assert revision_one.phase is OntServiceConfigurationPhase.superseded
 
 
-def test_lan_32_rejects_dhcp_before_desired_state_mutation(
+def test_lan_32_is_not_an_operator_lan_block_choice(
     db_session, monkeypatch, olt_device, subscription, subscriber
 ):
     ont_id, _assignment_id = _admission_scope(
@@ -473,21 +465,12 @@ def test_lan_32_rejects_dhcp_before_desired_state_mutation(
         subscription=subscription,
         subscriber=subscriber,
     )
-    monkeypatch.setattr(
-        "app.services.network.ont_service_configuration.active_catalog_ip_block_choices",
-        lambda _db: (SimpleNamespace(prefix=IpBlockPrefix.p32),),
-    )
-    monkeypatch.setattr(
-        "app.services.network.ont_service_configuration.subscriber_ip_block_entitlements",
-        lambda _db, _subscriber_id: (SimpleNamespace(prefix=IpBlockPrefix.p32),),
-    )
-
     with pytest.raises(DomainError) as exc_info:
         configure_ont_service(
             db_session,
             _configure_command(
                 ont_id,
-                idempotency_key="lan-32-dhcp-refused",
+                idempotency_key="lan-32-refused",
                 section=OntConfigurationSection.lan,
                 change=LanConfigurationChange(
                     gateway_ip="198.51.100.10",
@@ -499,11 +482,11 @@ def test_lan_32_rejects_dhcp_before_desired_state_mutation(
             ),
         )
 
-    assert exc_info.value.code.endswith(".dhcp_not_available_for_single_address")
+    assert exc_info.value.code.endswith(".invalid_lan_block_prefix")
     assert db_session.get(OntUnit, ont_id).desired_config in (None, {})
 
 
-def test_lan_catalog_prefix_is_converted_to_mask_and_queued(
+def test_lan_operator_prefix_is_converted_to_mask_and_queued(
     db_session, monkeypatch, olt_device, subscription, subscriber
 ):
     ont_id, _assignment_id = _admission_scope(
@@ -513,15 +496,6 @@ def test_lan_catalog_prefix_is_converted_to_mask_and_queued(
         subscription=subscription,
         subscriber=subscriber,
     )
-    monkeypatch.setattr(
-        "app.services.network.ont_service_configuration.active_catalog_ip_block_choices",
-        lambda _db: (SimpleNamespace(prefix=IpBlockPrefix.p29),),
-    )
-    monkeypatch.setattr(
-        "app.services.network.ont_service_configuration.subscriber_ip_block_entitlements",
-        lambda _db, _subscriber_id: (SimpleNamespace(prefix=IpBlockPrefix.p29),),
-    )
-
     outcome = configure_ont_service(
         db_session,
         _configure_command(
@@ -544,7 +518,7 @@ def test_lan_catalog_prefix_is_converted_to_mask_and_queued(
     assert outcome.phase is OntServiceConfigurationPhase.queued
 
 
-def test_lan_catalog_prefix_requires_subscriber_entitlement(
+def test_lan_operator_prefix_does_not_require_catalog_entitlement(
     db_session, monkeypatch, olt_device, subscription, subscriber
 ):
     ont_id, _assignment_id = _admission_scope(
@@ -554,33 +528,26 @@ def test_lan_catalog_prefix_requires_subscriber_entitlement(
         subscription=subscription,
         subscriber=subscriber,
     )
-    monkeypatch.setattr(
-        "app.services.network.ont_service_configuration.active_catalog_ip_block_choices",
-        lambda _db: (SimpleNamespace(prefix=IpBlockPrefix.p29),),
-    )
-    monkeypatch.setattr(
-        "app.services.network.ont_service_configuration.subscriber_ip_block_entitlements",
-        lambda _db, _subscriber_id: (),
-    )
-
-    with pytest.raises(DomainError) as exc_info:
-        configure_ont_service(
-            db_session,
-            _configure_command(
-                ont_id,
-                idempotency_key="lan-entitlement-required",
-                section=OntConfigurationSection.lan,
-                change=LanConfigurationChange(
-                    gateway_ip="198.51.100.1",
-                    block_prefix=IpBlockPrefix.p29,
-                    dhcp_enabled=True,
-                    dhcp_start="198.51.100.2",
-                    dhcp_end="198.51.100.6",
-                ),
+    outcome = configure_ont_service(
+        db_session,
+        _configure_command(
+            ont_id,
+            idempotency_key="lan-entitlement-not-required",
+            section=OntConfigurationSection.lan,
+            change=LanConfigurationChange(
+                gateway_ip="198.51.100.1",
+                block_prefix=IpBlockPrefix.p30,
+                dhcp_enabled=False,
+                dhcp_start=None,
+                dhcp_end=None,
             ),
-        )
+        ),
+    )
 
-    assert exc_info.value.code.endswith(".ip_block_entitlement_required")
+    desired_lan = db_session.get(OntUnit, ont_id).desired_config["lan"]
+    assert desired_lan["block_prefix"] == "/30"
+    assert desired_lan["subnet"] == "255.255.255.252"
+    assert outcome.phase is OntServiceConfigurationPhase.queued
 
 
 def _lifecycle(

@@ -11,12 +11,22 @@ from calendar import monthrange
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from typing import TypedDict
 from uuid import UUID
 
-from sqlalchemy import case, func
+from sqlalchemy import case, func, or_
 from sqlalchemy.orm import Session, joinedload
 
-from app.models.sales import Lead, LeadStatus, PipelineStage
+from app.models.catalog import Subscription, SubscriptionStatus
+from app.models.lifecycle import LifecycleEventType, SubscriptionLifecycleEvent
+from app.models.sales import (
+    Lead,
+    LeadStatus,
+    PipelineStage,
+    SalesOrder,
+    SalesOrderStatus,
+)
+from app.models.system_user import SystemUser
 from app.services.display_format import currency_code
 
 OPEN_LEAD_STATUSES = (
@@ -66,6 +76,37 @@ class AgentPerformance:
     total_deals: int
     won_values: dict[str, Decimal]
     win_rate: Decimal | None
+
+
+@dataclass(frozen=True)
+class LeadKpiRow:
+    agent_id: UUID
+    leads_won: int
+    leads_contacted: int
+    blocked_customers_contacted: int
+    customers_brought_back: int
+
+
+@dataclass(frozen=True)
+class SalesOrderKpiRow:
+    agent_id: UUID
+    orders_created: int
+    orders_confirmed: int
+    orders_paid: int
+    orders_fulfilled: int
+    orders_cancelled: int
+    order_values: dict[str, Decimal]
+    collected_values: dict[str, Decimal]
+
+
+class SalesOrderKpiAccumulator(TypedDict):
+    orders_created: int
+    orders_confirmed: int
+    orders_paid: int
+    orders_fulfilled: int
+    orders_cancelled: int
+    order_values: dict[str, Decimal]
+    collected_values: dict[str, Decimal]
 
 
 @dataclass(frozen=True)
@@ -371,6 +412,183 @@ def agent_sales_performance(
     return tuple(results)
 
 
+def lead_kpi_report(
+    db: Session,
+    *,
+    start_at: datetime,
+    end_at: datetime,
+    pipeline_id: UUID | None = None,
+) -> tuple[LeadKpiRow, ...]:
+    """Build period-scoped lead outcomes and native recovery evidence.
+
+    Lead progression is the only native contact signal currently available.
+    Recovery counts require a recorded lifecycle restoration from a blocked or
+    suspended subscription; CRM engagement history is intentionally excluded.
+    """
+
+    query = db.query(Lead).filter(
+        Lead.is_active.is_(True),
+        Lead.owner_agent_id.is_not(None),
+        or_(
+            Lead.created_at.between(start_at, end_at),
+            Lead.closed_at.between(start_at, end_at),
+        ),
+    )
+    if pipeline_id is not None:
+        query = query.filter(Lead.pipeline_id == pipeline_id)
+    leads = query.all()
+
+    grouped: dict[UUID, dict[str, int]] = {}
+    for lead in leads:
+        assert lead.owner_agent_id is not None
+        state = grouped.setdefault(
+            lead.owner_agent_id,
+            {
+                "leads_won": 0,
+                "leads_contacted": 0,
+                "blocked_customers_contacted": 0,
+                "customers_brought_back": 0,
+            },
+        )
+        if (
+            lead.status == LeadStatus.won.value
+            and lead.closed_at is not None
+            and start_at <= lead.closed_at <= end_at
+        ):
+            state["leads_won"] += 1
+        if (
+            lead.status != LeadStatus.new.value
+            and lead.created_at is not None
+            and start_at <= lead.created_at <= end_at
+        ):
+            state["leads_contacted"] += 1
+            if lead.subscriber is not None and lead.subscriber.status in {
+                SubscriptionStatus.blocked,
+                SubscriptionStatus.suspended,
+            }:
+                state["blocked_customers_contacted"] += 1
+
+    subscriber_ids = {
+        lead.subscriber_id for lead in leads if lead.subscriber_id is not None
+    }
+    if subscriber_ids:
+        restored_rows = (
+            db.query(Lead.owner_agent_id, Subscription.subscriber_id)
+            .join(
+                Subscription,
+                Subscription.subscriber_id == Lead.subscriber_id,
+            )
+            .join(
+                SubscriptionLifecycleEvent,
+                SubscriptionLifecycleEvent.subscription_id == Subscription.id,
+            )
+            .filter(
+                Lead.is_active.is_(True),
+                Lead.owner_agent_id.is_not(None),
+                Lead.subscriber_id.in_(subscriber_ids),
+                SubscriptionLifecycleEvent.event_type.in_(
+                    (LifecycleEventType.activate, LifecycleEventType.resume)
+                ),
+                SubscriptionLifecycleEvent.from_status.in_(
+                    (SubscriptionStatus.blocked, SubscriptionStatus.suspended)
+                ),
+                SubscriptionLifecycleEvent.effective_at.between(start_at, end_at),
+            )
+            .distinct()
+            .all()
+        )
+        restored_by_agent: dict[UUID, set[UUID]] = {}
+        for agent_id, subscriber_id in restored_rows:
+            if agent_id is not None and subscriber_id is not None:
+                restored_by_agent.setdefault(agent_id, set()).add(subscriber_id)
+        for agent_id, restored_subscribers in restored_by_agent.items():
+            grouped.setdefault(
+                agent_id,
+                {
+                    "leads_won": 0,
+                    "leads_contacted": 0,
+                    "blocked_customers_contacted": 0,
+                    "customers_brought_back": 0,
+                },
+            )["customers_brought_back"] = len(restored_subscribers)
+
+    return tuple(
+        LeadKpiRow(agent_id=agent_id, **values)
+        for agent_id, values in sorted(
+            grouped.items(), key=lambda item: (-item[1]["leads_won"], str(item[0]))
+        )
+    )
+
+
+def sales_order_kpi_report(
+    db: Session,
+    *,
+    start_at: datetime,
+    end_at: datetime,
+) -> tuple[SalesOrderKpiRow, ...]:
+    """Build order KPIs for orders created in the requested period."""
+
+    orders = (
+        db.query(SalesOrder)
+        .filter(
+            SalesOrder.is_active.is_(True),
+            SalesOrder.owner_agent_id.is_not(None),
+            SalesOrder.created_at.between(start_at, end_at),
+        )
+        .all()
+    )
+    grouped: dict[UUID, SalesOrderKpiAccumulator] = {}
+    for order in orders:
+        assert order.owner_agent_id is not None
+        state = grouped.setdefault(
+            order.owner_agent_id,
+            {
+                "orders_created": 0,
+                "orders_confirmed": 0,
+                "orders_paid": 0,
+                "orders_fulfilled": 0,
+                "orders_cancelled": 0,
+                "order_values": {},
+                "collected_values": {},
+            },
+        )
+        state["orders_created"] = int(state["orders_created"]) + 1
+        if order.status == SalesOrderStatus.confirmed.value:
+            state["orders_confirmed"] += 1
+        elif order.status == SalesOrderStatus.paid.value:
+            state["orders_paid"] += 1
+        elif order.status == SalesOrderStatus.fulfilled.value:
+            state["orders_fulfilled"] += 1
+        elif order.status == SalesOrderStatus.cancelled.value:
+            state["orders_cancelled"] += 1
+        currency = currency_code(order.currency)
+        order_values = state["order_values"]
+        collected_values = state["collected_values"]
+        order_values[currency] = order_values.get(currency, Decimal("0.00")) + Decimal(
+            order.total or 0
+        )
+        collected_values[currency] = collected_values.get(
+            currency, Decimal("0.00")
+        ) + Decimal(order.amount_paid or 0)
+
+    return tuple(
+        SalesOrderKpiRow(
+            agent_id=agent_id,
+            orders_created=values["orders_created"],
+            orders_confirmed=values["orders_confirmed"],
+            orders_paid=values["orders_paid"],
+            orders_fulfilled=values["orders_fulfilled"],
+            orders_cancelled=values["orders_cancelled"],
+            order_values=values["order_values"],
+            collected_values=values["collected_values"],
+        )
+        for agent_id, values in sorted(
+            grouped.items(),
+            key=lambda item: (-item[1]["orders_created"], str(item[0])),
+        )
+    )
+
+
 def recent_opportunities(
     db: Session,
     *,
@@ -417,6 +635,23 @@ def recent_opportunities(
         )
         for lead in leads
     )
+
+
+def sales_agent_names(db: Session, agent_ids: set[UUID]) -> dict[UUID, str]:
+    """Resolve sales-agent display names for report adapters."""
+
+    if not agent_ids:
+        return {}
+    users = db.query(SystemUser).filter(SystemUser.id.in_(agent_ids)).all()
+    return {
+        user.id: (
+            user.display_name
+            or " ".join(part for part in (user.first_name, user.last_name) if part)
+            or user.email
+            or "Unavailable sales agent"
+        )
+        for user in users
+    }
 
 
 def dashboard_report(

@@ -9,6 +9,7 @@ from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
+from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 
 from app.models.project import Project
@@ -21,7 +22,18 @@ from app.models.vendor_routes import (
 )
 from app.schemas.vendor_portal import VendorRouteRevisionCreate
 from app.services import vendor_routes_api
-from app.services.vendor_portal_operations import _serialize_quote
+from app.services.field.map_assets import (
+    SUPPORTED_FIELD_MAP_ASSET_TYPES,
+    VENDOR_ROUTE_AUTHORING_POI_FILTERS,
+    VENDOR_ROUTE_AUTHORING_POI_TYPES,
+)
+from app.services.ui_contracts import Action
+from app.services.vendor_portal_operations import (
+    VENDOR_ROUTE_AUTHORING_LAYER_FILTERS,
+    VENDOR_ROUTE_AUTHORING_RADIUS_OPTIONS,
+    VENDOR_ROUTE_AUTHORING_STATUS_FILTERS,
+    _serialize_quote,
+)
 from app.web import vendor_portal
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -29,6 +41,9 @@ TEMPLATE = (PROJECT_ROOT / "templates/vendor/project_detail.html").read_text(
     encoding="utf-8"
 )
 AUTHORING_JS = (PROJECT_ROOT / "static/js/vendor-route-authoring.js").read_text(
+    encoding="utf-8"
+)
+ASBUILT_JS = (PROJECT_ROOT / "static/js/vendor-asbuilt-map.js").read_text(
     encoding="utf-8"
 )
 
@@ -163,6 +178,23 @@ def test_quote_projection_owns_route_status_and_actions() -> None:
     assert projection.revisions[1].submit_action.allowed is True
 
 
+def test_vendor_route_authoring_filter_contracts_are_explicit() -> None:
+    assert all(
+        option.selected_by_default for option in VENDOR_ROUTE_AUTHORING_LAYER_FILTERS
+    )
+    assert all(
+        option.selected_by_default for option in VENDOR_ROUTE_AUTHORING_STATUS_FILTERS
+    )
+    assert tuple(
+        option.value_meters
+        for option in VENDOR_ROUTE_AUTHORING_RADIUS_OPTIONS
+        if option.selected_by_default
+    ) == (1000,)
+    assert all(option.label for option in VENDOR_ROUTE_AUTHORING_LAYER_FILTERS)
+    assert all(option.label for option in VENDOR_ROUTE_AUTHORING_STATUS_FILTERS)
+    assert all(option.label for option in VENDOR_ROUTE_AUTHORING_RADIUS_OPTIONS)
+
+
 def test_authoring_ui_draws_saves_and_submits_owned_revisions() -> None:
     assert 'id="route-author-map"' in TEMPLATE
     assert 'id="route-author-geojson"' in TEMPLATE
@@ -177,14 +209,191 @@ def test_authoring_ui_draws_saves_and_submits_owned_revisions() -> None:
     assert "Submitting locks that revision for review" in TEMPLATE
     assert 'id="closure-pin-toggle"' in TEMPLATE
     assert 'id="closure-proposal-form"' in TEMPLATE
-    assert "pending staff review" in TEMPLATE
+    assert "pending staff review" in ASBUILT_JS
+    assert 'id="route-author-filters"' in TEMPLATE
+    assert "{% for layer_filter in vendor_route_authoring_layer_filters %}" in TEMPLATE
+    assert 'data-route-layer-filter value="{{ layer_filter.value }}"' in TEMPLATE
+    assert "{{ layer_filter.label }}" in TEMPLATE
+    assert (
+        "{% for status_filter in vendor_route_authoring_status_filters %}" in TEMPLATE
+    )
+    assert 'data-route-status-filter value="{{ status_filter.value }}"' in TEMPLATE
+    assert "{{ status_filter.label }}" in TEMPLATE
+    assert "{% for poi_filter in vendor_route_authoring_poi_filters %}" in TEMPLATE
+    assert 'data-route-poi-filter value="{{ poi_filter.value }}"' in TEMPLATE
+    assert "{{ poi_filter.label }}" in TEMPLATE
+    assert (
+        "{% for radius_option in vendor_route_authoring_radius_options %}" in TEMPLATE
+    )
+    assert 'value="{{ radius_option.value_meters }}"' in TEMPLATE
+    assert "{{ radius_option.label }}" in TEMPLATE
+    assert 'data-route-filter-action="all"' in TEMPLATE
+    assert 'data-route-filter-action="none"' in TEMPLATE
+    assert 'data-route-filter-target="layer"' in TEMPLATE
+    assert 'data-route-filter-target="status"' in TEMPLATE
+    assert 'data-route-filter-target="poi"' in TEMPLATE
+    assert tuple(option.value for option in VENDOR_ROUTE_AUTHORING_LAYER_FILTERS) == (
+        "proposed",
+        "as_built",
+        "closure_proposal",
+    )
+    assert tuple(option.value for option in VENDOR_ROUTE_AUTHORING_STATUS_FILTERS) == (
+        "draft",
+        "submitted",
+        "accepted",
+        "rejected",
+        "pending",
+        "applied",
+    )
+    filter_values = tuple(
+        filter_option.value for filter_option in VENDOR_ROUTE_AUTHORING_POI_FILTERS
+    )
+    assert filter_values == VENDOR_ROUTE_AUTHORING_POI_TYPES
+    assert set(VENDOR_ROUTE_AUTHORING_POI_TYPES).issubset(
+        SUPPORTED_FIELD_MAP_ASSET_TYPES
+    )
+    assert tuple(
+        option.value_meters for option in VENDOR_ROUTE_AUTHORING_RADIUS_OPTIONS
+    ) == (500, 1000, 5000, 10000)
+    assert 'id="route-author-poi-radius"' in TEMPLATE
+    assert 'id="route-author-poi-nearby"' in TEMPLATE
+    assert 'aria-busy="false"' in TEMPLATE
+    assert 'id="route-author-poi-clear"' in TEMPLATE
+    assert 'id="route-author-filter-summary"' in TEMPLATE
+    assert 'id="route-author-search-hint"' in TEMPLATE
+    assert 'role="status" aria-live="polite"' in TEMPLATE
+    assert 'aria-label="Map legend"' in TEMPLATE
+    assert "Proposed route" in TEMPLATE
+    assert "Reference plant" in TEMPLATE
+    assert "Reference plant helps planning" in TEMPLATE
+    assert "syncContextLayerVisibility" in AUTHORING_JS
+    assert "updateFilterSummary" in AUTHORING_JS
+    assert "setDisabled" in AUTHORING_JS
+    assert "setNearbyLoading" in AUTHORING_JS
+    assert 'setAttribute("aria-busy"' in AUTHORING_JS
+    assert "abortNearbyRequest" in AUTHORING_JS
+    assert "abortSearchRequest" in AUTHORING_JS
+    assert "clearNearbyPoints" in AUTHORING_JS
+    assert "filterActionButtons" in AUTHORING_JS
+    assert "applyFilterAction" in AUTHORING_JS
+    assert "filtersForTarget" in AUTHORING_JS
+    assert "Loading points" in AUTHORING_JS
+    assert "Searching selected reference plant types" in AUTHORING_JS
+    assert "Reference only, not project-assigned" in AUTHORING_JS
+    assert (
+        "Nearby points cleared. Use Show near me to load the new radius."
+        in AUTHORING_JS
+    )
+    assert "selectedPoiTypes().join" in AUTHORING_JS
+    assert "/api/v1/field/vendor/map-assets/nearby" in AUTHORING_JS
+    assert "renderNearbyPoints" in AUTHORING_JS
+    assert "types=fdh_cabinet,splice_closure&limit=20" not in AUTHORING_JS
 
     create_source = inspect.getsource(vendor_portal.vendor_create_route_revision)
     submit_source = inspect.getsource(vendor_portal.vendor_submit_route_revision)
+    detail_source = inspect.getsource(vendor_portal.vendor_project_detail)
     assert "CreateVendorRouteRevisionCommand(" in create_source
     assert "SubmitVendorRouteRevisionCommand(" in submit_source
+    assert '"vendor_route_authoring_layer_filters"' in detail_source
+    assert '"vendor_route_authoring_poi_filters"' in detail_source
+    assert '"vendor_route_authoring_radius_options"' in detail_source
+    assert '"vendor_route_authoring_status_filters"' in detail_source
+    assert "VENDOR_ROUTE_AUTHORING_LAYER_FILTERS" in detail_source
+    assert "VENDOR_ROUTE_AUTHORING_POI_FILTERS" in detail_source
+    assert "VENDOR_ROUTE_AUTHORING_RADIUS_OPTIONS" in detail_source
+    assert "VENDOR_ROUTE_AUTHORING_STATUS_FILTERS" in detail_source
     assert "release_read_transaction(db)" in create_source
     assert "release_read_transaction(db)" in submit_source
+
+
+def test_authoring_filter_contracts_render_in_project_template() -> None:
+    templates = Jinja2Templates(directory=str(PROJECT_ROOT / "templates"))
+    rendered = templates.env.get_template("vendor/project_detail.html").render(
+        request=SimpleNamespace(
+            state=SimpleNamespace(
+                csrf_token="test-token",
+                auth={"permission_keys": ["*"]},
+            )
+        ),
+        vendor=SimpleNamespace(name="Install Co"),
+        project=SimpleNamespace(
+            id=uuid4(),
+            project_id=uuid4(),
+            project_code="PRJ-1",
+            project_name="Vendor map project",
+            status="assigned",
+            lifecycle_action=None,
+            lifecycle_events=[],
+            as_built_action=Action(
+                key="submit_as_built",
+                label="Submit as-built",
+                allowed=True,
+            ),
+            as_built_submissions=[],
+        ),
+        quote=SimpleNamespace(
+            id=uuid4(),
+            status="draft",
+            currency="NGN",
+            total="0.00",
+            line_items=[],
+            edit_action=Action(key="edit_quote", label="Edit quote", allowed=True),
+            route_authoring=SimpleNamespace(
+                create_action=Action(
+                    key="create_route_revision",
+                    label="Save route draft",
+                    allowed=True,
+                ),
+                revisions=[],
+            ),
+        ),
+        invoice=None,
+        route_geojson={"type": "FeatureCollection", "features": []},
+        supply=SimpleNamespace(
+            material_request_action=Action(
+                key="request_material",
+                label="Request material",
+                allowed=False,
+                reason="Not available in this test.",
+            ),
+            material_releases=[],
+            advance_quote_total=None,
+            advance_currency="NGN",
+            advance_request_action=Action(
+                key="request_advance",
+                label="Request advance",
+                allowed=False,
+                reason="Not available in this test.",
+            ),
+            advances=[],
+        ),
+        vendor_work_orders=[],
+        can_propose_closure=False,
+        vendor_route_authoring_layer_filters=VENDOR_ROUTE_AUTHORING_LAYER_FILTERS,
+        vendor_route_authoring_poi_filters=VENDOR_ROUTE_AUTHORING_POI_FILTERS,
+        vendor_route_authoring_radius_options=VENDOR_ROUTE_AUTHORING_RADIUS_OPTIONS,
+        vendor_route_authoring_status_filters=VENDOR_ROUTE_AUTHORING_STATUS_FILTERS,
+        message=None,
+    )
+
+    for option in VENDOR_ROUTE_AUTHORING_LAYER_FILTERS:
+        assert f'data-route-layer-filter value="{option.value}"' in rendered
+        assert option.label in rendered
+    for option in VENDOR_ROUTE_AUTHORING_STATUS_FILTERS:
+        assert f'data-route-status-filter value="{option.value}"' in rendered
+        assert option.label in rendered
+    for option in VENDOR_ROUTE_AUTHORING_POI_FILTERS:
+        assert f'data-route-poi-filter value="{option.value}"' in rendered
+        assert option.label in rendered
+    for option in VENDOR_ROUTE_AUTHORING_RADIUS_OPTIONS:
+        assert f'value="{option.value_meters}"' in rendered
+        assert option.label in rendered
+    assert 'id="route-author-search-hint"' in rendered
+    assert 'id="route-author-poi-nearby"' in rendered
+    assert 'data-route-filter-action="all"' in rendered
+    assert 'data-route-filter-target="poi"' in rendered
+    assert 'aria-busy="false"' in rendered
+    assert "Reference plant helps planning" in rendered
 
 
 def test_vendor_route_context_does_not_include_competing_vendor_routes(

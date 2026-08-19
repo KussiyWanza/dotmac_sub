@@ -788,7 +788,7 @@ def ont_configure_submit(
             block_prefix = IpBlockPrefix(lan_block_prefix) if lan_block_prefix else None
         except ValueError as exc:
             raise HTTPException(
-                status_code=400, detail="Invalid Catalog IP block size."
+                status_code=400, detail="Invalid LAN block size."
             ) from exc
         change = LanConfigurationChange(
             gateway_ip=lan_gateway_ip or None,

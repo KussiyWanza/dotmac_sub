@@ -1510,10 +1510,12 @@ OLT listing uses the core device listing context — devices filtered to OLT typ
 - Results distinguish applied, pending delivery, and failed states with text
   as well as color. A saved change waiting for an ACS inform is not presented
   as applied.
-- The LAN block selector consumes typed, de-duplicated choices from active
-  Catalog `ip_address` offers. It does not maintain a template-local mask list.
-  `/32` disables DHCP and its range inputs. `/30` through `/24` permit DHCP
-  only after the command owner validates the gateway and usable range.
+- The LAN block selector consumes typed choices from the network-owned operator
+  LAN block-size list. It is not gated by Catalog offers or subscriber
+  entitlements, and it does not maintain a template-local mask list.
+  `/30` through `/24` are presented as the common operator-selectable LAN block
+  sizes. DHCP is accepted only after the command owner validates the gateway and
+  usable range.
 - A mask-only change is an explicit delivery request even when DHCP enablement
   is unchanged. Firmware that cannot return the exact LAN mask/pool is shown as
   `delivered_unverified`, never `verified`.
@@ -1522,10 +1524,8 @@ The configuration context additionally supplies:
 
 ```python
 {
-    "ip_block_choices": tuple[CatalogIpBlockChoice, ...],
-    "ip_block_entitlements": tuple[SubscriberIpBlockEntitlement, ...],
-    "lan_block_prefix": str,                  # selected Catalog prefix
-    "entitled_ip_block_prefixes": tuple[str, ...],
+    "lan_block_prefix_choices": tuple[OntLanBlockPrefixChoice, ...],
+    "lan_block_prefix": str,                  # selected operator LAN prefix
 }
 ```
 

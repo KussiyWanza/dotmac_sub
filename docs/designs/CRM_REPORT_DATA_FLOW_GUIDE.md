@@ -171,7 +171,7 @@ Backend query/service: `team_inbox_metrics.agent_performance_report`, mapped by 
 Transformation/calculation: Counts active assignments and distinct handled conversations and calculates assignment wait and first human response per active team member.
 Route/API: `/admin/reports/operational/agent-performance`; CSV under `/export`.
 UI component/template: Shared operational template.
-Displayed as: Agents and Handled cards plus per-agent/team timing rows.
+Displayed as: Agents and Handled cards plus searchable, paginated per-agent/team timing rows.
 Permission: `reports:support:read`.
 Ownership: Self-Care-owned team-inbox projection.
 Data freshness/synchronization: Live current-history query.
@@ -328,3 +328,25 @@ report. Personal performance also requires a matching authenticated person ID.
   owner exists.
 - Project actual-effort accuracy remains unavailable until an authoritative
   actual-effort observation exists.
+
+## Sales agent lead performance
+
+REPORT: Lead Performance
+Data source: `Lead`, `Subscriber`, and native `SubscriptionLifecycleEvent` restoration evidence.
+Backend query/service: `sales.reports.lead_kpi_report`.
+Transformation/calculation: Groups won leads and recorded non-new lead progression by `owner_agent_id`; blocked-contact counts require a linked blocked/suspended subscriber, while brought-back counts require a blocked/suspended-to-active lifecycle event in the selected period.
+Route/API: `/admin/reports/sales/leads`; CSV under `/admin/reports/sales/leads/export`.
+UI component/template: `templates/admin/reports/sales_kpi.html`.
+Permission: `crm:lead:read`.
+Ownership: Self-Care-native sales and customer lifecycle owners. CRM engagement history is excluded.
+
+## Sales agent order performance
+
+REPORT: Sales Order Performance
+Data source: `SalesOrder` and native payment/order status fields.
+Backend query/service: `sales.reports.sales_order_kpi_report`.
+Transformation/calculation: Groups orders by `owner_agent_id`, status, currency, total, and amount paid for orders created in the selected period.
+Route/API: `/admin/reports/sales/orders`; CSV under `/admin/reports/sales/orders/export`.
+UI component/template: `templates/admin/reports/sales_kpi.html`.
+Permission: `crm:sales_order:read`.
+Ownership: Self-Care-native sales order and finance owners.

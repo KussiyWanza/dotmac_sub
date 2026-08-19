@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from app.models.service_team import ServiceTeam, ServiceTeamMember, ServiceTeamType
@@ -41,6 +42,7 @@ def _member(
         InboxAgentPresence(
             person_id=person_id,
             status=status,
+            last_seen_at=datetime.now(UTC) if status == "online" else None,
             max_concurrent_conversations=max_concurrent,
         )
     )
@@ -217,6 +219,49 @@ def test_assign_conversation_queues_when_no_agent_available(db_session):
     event = db_session.query(InboxRoutingEvent).one()
     assert event.event_type is InboxRoutingEventType.auto_assignment_declined
     assert event.decision_mode is InboxRoutingDecisionMode.automatic
+
+
+def test_stale_online_presence_is_not_available_for_auto_assignment(db_session):
+    team = _team(db_session)
+    agent = _member(db_session, team)
+    presence = (
+        db_session.query(InboxAgentPresence)
+        .filter(InboxAgentPresence.person_id == agent)
+        .one()
+    )
+    presence.last_seen_at = datetime.now(UTC) - timedelta(seconds=181)
+    conversation = _conversation(db_session)
+    db_session.commit()
+
+    result = team_inbox_assignment.assign_conversation_to_available_agent(
+        db_session,
+        conversation=conversation,
+        service_team_id=team.id,
+    )
+
+    assert result.kind == "queued"
+    assert result.reason == "no_available_agent"
+
+
+def test_repeated_online_presence_update_refreshes_freshness(db_session):
+    team = _team(db_session)
+    agent = _member(db_session, team)
+    presence = (
+        db_session.query(InboxAgentPresence)
+        .filter(InboxAgentPresence.person_id == agent)
+        .one()
+    )
+    observed_at = datetime.now(UTC)
+
+    updated = team_inbox_assignment.set_agent_presence(
+        db_session,
+        person_id=agent,
+        status=InboxAgentPresenceStatus.online.value,
+        now=observed_at,
+    )
+
+    assert updated.last_seen_at == observed_at
+    assert presence.last_seen_at == observed_at
 
 
 def test_set_agent_presence_creates_manual_override(db_session):

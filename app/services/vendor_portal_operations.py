@@ -193,6 +193,45 @@ class VendorRouteAuthoringProjection:
 
 
 @dataclass(frozen=True, slots=True)
+class VendorRouteAuthoringFilterOption:
+    value: str
+    label: str
+    selected_by_default: bool
+
+
+@dataclass(frozen=True, slots=True)
+class VendorRouteAuthoringRadiusOption:
+    value_meters: int
+    label: str
+    selected_by_default: bool
+
+
+VENDOR_ROUTE_AUTHORING_LAYER_FILTERS: tuple[VendorRouteAuthoringFilterOption, ...] = (
+    VendorRouteAuthoringFilterOption("proposed", "Proposed routes", True),
+    VendorRouteAuthoringFilterOption("as_built", "As-built routes", True),
+    VendorRouteAuthoringFilterOption(
+        "closure_proposal",
+        "Closure proposals",
+        True,
+    ),
+)
+VENDOR_ROUTE_AUTHORING_STATUS_FILTERS: tuple[VendorRouteAuthoringFilterOption, ...] = (
+    VendorRouteAuthoringFilterOption("draft", "Draft", True),
+    VendorRouteAuthoringFilterOption("submitted", "Submitted", True),
+    VendorRouteAuthoringFilterOption("accepted", "Accepted", True),
+    VendorRouteAuthoringFilterOption("rejected", "Rejected", True),
+    VendorRouteAuthoringFilterOption("pending", "Pending", True),
+    VendorRouteAuthoringFilterOption("applied", "Applied", True),
+)
+VENDOR_ROUTE_AUTHORING_RADIUS_OPTIONS: tuple[VendorRouteAuthoringRadiusOption, ...] = (
+    VendorRouteAuthoringRadiusOption(500, "500 m", False),
+    VendorRouteAuthoringRadiusOption(1000, "1 km", True),
+    VendorRouteAuthoringRadiusOption(5000, "5 km", False),
+    VendorRouteAuthoringRadiusOption(10000, "10 km", False),
+)
+
+
+@dataclass(frozen=True, slots=True)
 class StageVendorQuoteSubmission:
     context: CommandContext
     quote_id: str
@@ -1443,14 +1482,15 @@ class VendorPortalOperations:
                 "Provide a route or line items.",
             )
         if payload.geojson:
+            coordinates = payload.geojson.get("coordinates")
             if payload.geojson.get("type") != "LineString" or not isinstance(
-                payload.geojson.get("coordinates"), list
+                coordinates, list
             ):
                 raise _error(
                     "invalid_as_built_route",
                     "As-built route must be a GeoJSON LineString.",
                 )
-            if len(payload.geojson["coordinates"]) < 2:
+            if len(coordinates) < 2:
                 raise _error(
                     "invalid_as_built_route",
                     "As-built route requires at least two coordinates.",

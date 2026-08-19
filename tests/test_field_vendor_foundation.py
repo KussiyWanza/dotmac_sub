@@ -140,3 +140,23 @@ def test_vendor_routes_register_device_and_read_nearby_map(db_session):
     )
     assert nearby.status_code == 200
     assert nearby.json()["items"][0]["title"] == "FDH Jabi"
+
+    unsupported_type = client.get(
+        "/api/v1/field/vendor/map-assets/nearby",
+        params={"lat": 9.071, "lng": 7.451, "types": "olt_device"},
+    )
+    assert unsupported_type.status_code == 400
+    assert "Unsupported vendor map asset type" in unsupported_type.text
+
+    empty_type = client.get(
+        "/api/v1/field/vendor/map-assets/search",
+        params={"q": "FDH", "types": ","},
+    )
+    assert empty_type.status_code == 422
+    assert "Select at least one vendor map asset type" in empty_type.text
+
+    invalid_radius = client.get(
+        "/api/v1/field/vendor/map-assets/nearby",
+        params={"lat": 9.071, "lng": 7.451, "radius_m": 50001},
+    )
+    assert invalid_radius.status_code == 422

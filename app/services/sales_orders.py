@@ -57,6 +57,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.audit import AuditActorType
+from app.models.billing import Payment, PaymentAllocation, PaymentStatus
 from app.models.catalog import Subscription
 from app.models.project import Project, ProjectTask
 from app.models.sales import (
@@ -320,6 +321,8 @@ def _resolve_project_for_sales_order(db: Session, sales_order_id: object):
     """
     if not sales_order_id:
         return None
+    sales_order = db.get(SalesOrder, coerce_uuid(str(sales_order_id)))
+    quote_id = sales_order.quote_id if sales_order else None
     existing = (
         db.query(Project)
         .filter(Project.sales_order_id == coerce_uuid(str(sales_order_id)))
@@ -352,6 +355,32 @@ def _resolve_project_for_sales_order(db: Session, sales_order_id: object):
             metadata = row.metadata_ if isinstance(row.metadata_, dict) else {}
             if str(metadata.get("sales_order_id")) == str(sales_order_id):
                 return row
+    if not quote_id:
+        return None
+    related = (
+        db.query(Project)
+        .filter(Project.quote_id == quote_id)
+        .filter(Project.is_active.is_(True))
+        .order_by(Project.created_at.desc())
+        .first()
+    )
+    if related:
+        return related
+    if quote_id:
+        related = (
+            db.query(Project)
+            .filter(Project.is_active.is_(True))
+            .filter(
+                or_(
+                    Project.quote_id == quote_id,
+                    Project.metadata_["quote_id"].as_string() == str(quote_id),
+                )
+            )
+            .order_by(Project.created_at.desc())
+            .first()
+        )
+        if related:
+            return related
     return None
 
 
@@ -492,6 +521,100 @@ def _store_invoice_metadata(
         )
 
 
+def _linked_sales_order_payment_total(db: Session, sales_order_id: UUID) -> Decimal:
+    """Sum successful customer payments evidenced against this SalesOrder.
+
+    A payment may settle the installation invoice and leave the remainder as
+    reusable account credit. The allocation to a SalesOrder-linked invoice is
+    the structural evidence that the payment belongs to the order; the payment
+    amount then represents the commercial funding observation for the order.
+    """
+
+    payments = (
+        db.query(Payment)
+        .join(PaymentAllocation, PaymentAllocation.payment_id == Payment.id)
+        .join(
+            SalesOrderInvoiceLink,
+            SalesOrderInvoiceLink.invoice_id == PaymentAllocation.invoice_id,
+        )
+        .filter(SalesOrderInvoiceLink.sales_order_id == sales_order_id)
+        .filter(PaymentAllocation.is_active.is_(True))
+        .filter(Payment.is_active.is_(True))
+        .filter(
+            Payment.status.in_(
+                [PaymentStatus.succeeded, PaymentStatus.partially_refunded]
+            )
+        )
+        .options(selectinload(Payment.settlement))
+        .distinct()
+        .all()
+    )
+    total = Decimal("0.00")
+    for payment in payments:
+        amount = (
+            Decimal(payment.settlement.amount)
+            if payment.settlement is not None
+            else Decimal(payment.amount or 0)
+        )
+        if payment.status == PaymentStatus.partially_refunded:
+            amount = max(
+                Decimal("0.00"), amount - Decimal(payment.refunded_amount or 0)
+            )
+        total += amount
+    return round_money(total)
+
+
+def reconcile_sales_order_payment_from_invoice(
+    db: Session,
+    invoice_id: UUID | str,
+) -> tuple[SalesOrder, ...]:
+    """Refresh linked SalesOrder payment status after invoice settlement.
+
+    Billing owns payments and allocations; Sales owns the commercial order
+    state. This participant reads exact allocation evidence for invoices
+    structurally linked to a SalesOrder and updates the order without committing.
+    """
+
+    try:
+        invoice_uuid = coerce_uuid(str(invoice_id))
+    except (TypeError, ValueError):
+        return ()
+    links = (
+        db.query(SalesOrderInvoiceLink)
+        .filter(SalesOrderInvoiceLink.invoice_id == invoice_uuid)
+        .all()
+    )
+    reconciled: list[SalesOrder] = []
+    for link in links:
+        order = (
+            db.query(SalesOrder)
+            .filter(SalesOrder.id == link.sales_order_id)
+            .with_for_update()
+            .one_or_none()
+        )
+        if order is None or not order.is_active:
+            continue
+        previous_payment_status = order.payment_status
+        paid_amount = _linked_sales_order_payment_total(db, order.id)
+        _apply_payment_fields(
+            order,
+            {
+                "total": order.total,
+                "amount_paid": paid_amount,
+            },
+        )
+        stage_funding_transition(
+            db,
+            order,
+            previous_payment_status=previous_payment_status,
+            record_order_payment=False,
+        )
+        reconciled.append(order)
+    if reconciled:
+        db.flush()
+    return tuple(reconciled)
+
+
 def _record_invoice_failure(project: Project, detail: str) -> None:
     metadata = dict(project.metadata_ or {})
     metadata["selfcare_installation_invoice_error"] = {
@@ -518,6 +641,10 @@ def _sum_installation_lines(lines) -> Decimal:
         if "installation" not in description:
             continue
         amount = Decimal(getattr(line, "amount", 0) or 0)
+        if amount <= 0:
+            amount = Decimal(getattr(line, "quantity", 0) or 0) * Decimal(
+                getattr(line, "unit_price", 0) or 0
+            )
         if amount > 0:
             total += amount
     return total
@@ -581,7 +708,17 @@ def ensure_installation_invoice_for_sales_order(
 
     project = _resolve_project_for_sales_order(db, sales_order_id)
     if not project:
-        return
+        from app.services import sales_fulfillment
+
+        try:
+            project = sales_fulfillment.ensure_implementation_scope(
+                db,
+                sales_order_id=sales_order.id,
+                actor_id="sales.orders",
+                commit=False,
+            ).project
+        except sales_fulfillment.SalesFulfillmentError:
+            return
 
     locked = (
         db.query(Project)

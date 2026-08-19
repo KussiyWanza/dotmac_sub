@@ -16,12 +16,14 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Form, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models.vendor_routes import InstallationProjectStatus
 from app.services import web_vendors as web_vendors_service
 from app.services.auth_dependencies import can, require_permission
+from app.services.domain_errors import DomainError
 
 templates = Jinja2Templates(directory="templates")
 router = APIRouter(prefix="/vendors", tags=["web-admin-vendors"])
@@ -41,6 +43,12 @@ def _ctx(request: Request, db: Session, active_page: str) -> dict:
 
 def _error_detail(exc: Exception) -> str:
     return str(exc) or "Could not save the vendor."
+
+
+def _actor_id(request: Request) -> str | None:
+    auth = getattr(request.state, "auth", {}) or {}
+    actor = auth.get("principal_id") or auth.get("person_id")
+    return str(actor) if actor else None
 
 
 @router.get(
@@ -257,7 +265,7 @@ def vendor_user_create(
             email=email,
             role=role,
         )
-    except ValueError as exc:
+    except (ValueError, DomainError, SQLAlchemyError) as exc:
         # The owner rejects before writing, so nothing to roll back here.
         return _detail_with_error(request, db, vendor_id, _error_detail(exc))
     return RedirectResponse(url=f"/admin/vendors/{vendor_id}", status_code=303)
@@ -276,6 +284,48 @@ def vendor_user_revoke(
     try:
         web_vendors_service.revoke_vendor_user(db, membership_id=membership_id)
     except ValueError as exc:
+        return _detail_with_error(request, db, vendor_id, _error_detail(exc))
+    return RedirectResponse(url=f"/admin/vendors/{vendor_id}", status_code=303)
+
+
+@router.post(
+    "/{vendor_id}/users/{membership_id}/enable",
+    dependencies=[Depends(require_permission("inventory:write"))],
+)
+def vendor_user_enable(
+    request: Request,
+    vendor_id: str,
+    membership_id: str,
+    db: Session = Depends(get_db),
+):
+    try:
+        web_vendors_service.enable_vendor_user_login(
+            db,
+            membership_id=membership_id,
+            actor_id=_actor_id(request),
+        )
+    except (ValueError, DomainError) as exc:
+        return _detail_with_error(request, db, vendor_id, _error_detail(exc))
+    return RedirectResponse(url=f"/admin/vendors/{vendor_id}", status_code=303)
+
+
+@router.post(
+    "/{vendor_id}/users/{membership_id}/setup-link",
+    dependencies=[Depends(require_permission("inventory:write"))],
+)
+def vendor_user_setup_link(
+    request: Request,
+    vendor_id: str,
+    membership_id: str,
+    db: Session = Depends(get_db),
+):
+    try:
+        web_vendors_service.send_vendor_user_setup_link(
+            db,
+            membership_id=membership_id,
+            actor_id=_actor_id(request),
+        )
+    except (ValueError, DomainError) as exc:
         return _detail_with_error(request, db, vendor_id, _error_detail(exc))
     return RedirectResponse(url=f"/admin/vendors/{vendor_id}", status_code=303)
 

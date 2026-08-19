@@ -182,6 +182,9 @@ def _queue_outbox_reply(
             "bcc": list(payload.bcc_addresses),
         }
     )
+    audience_type = (
+        "subscriber" if conversation.subscriber_id is not None else "operational"
+    )
     result = submit(
         db,
         CommunicationIntent(
@@ -195,6 +198,13 @@ def _queue_outbox_reply(
             include_reseller=False,
             persist_policy_suppressions=False,
             recipients={channel: recipient},
+            audience_type=audience_type,
+            audience_id=(
+                conversation.subscriber_id
+                if conversation.subscriber_id is not None
+                else conversation.id
+            ),
+            resolve_subscriber_identity=False,
             metadata=intent_metadata,
             dedupe_key=payload.dedupe_key,
             delivery_latency=NotificationDeliveryLatency.immediate,

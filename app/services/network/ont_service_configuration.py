@@ -50,6 +50,7 @@ from app.services.events import emit_event
 from app.services.events.types import EventType
 from app.services.network.effective_ont_config import resolve_effective_ont_config
 from app.services.network.ont_desired_config import set_desired_config_values
+from app.services.network.ont_lan_block_choices import OPERATOR_LAN_BLOCK_PREFIXES
 from app.services.network.ont_management_ipam import (
     allocate_ont_management_ip,
     release_ont_management_ip,
@@ -65,11 +66,7 @@ from app.services.network.provisioning_events import (
     record_ont_provisioning_event,
 )
 from app.services.network.subscriber_wan_ipam import ensure_wan_static_ip_available
-from app.services.network_catalog_ip_block_bridge import (
-    IpBlockPrefix,
-    active_catalog_ip_block_choices,
-    subscriber_ip_block_entitlements,
-)
+from app.services.network_catalog_ip_block_bridge import IpBlockPrefix
 from app.services.network_operation_dispatch import (
     NetworkOperationCommand,
     stage_dispatch,
@@ -423,7 +420,7 @@ def _ip(value: str | None, field: str) -> str | None:
 def _change_updates(
     db: Session,
     ont: OntUnit,
-    subscriber_id: uuid.UUID | None,
+    _subscriber_id: uuid.UUID | None,
     section: OntConfigurationSection,
     change: OntConfigurationChange,
 ) -> tuple[dict[str, object], dict[str, object]]:
@@ -460,38 +457,16 @@ def _change_updates(
     elif section is OntConfigurationSection.lan and isinstance(
         change, LanConfigurationChange
     ):
-        active_prefixes = {
-            choice.prefix for choice in active_catalog_ip_block_choices(db)
-        }
-        if change.block_prefix is None or change.block_prefix not in active_prefixes:
+        if (
+            change.block_prefix is None
+            or change.block_prefix not in OPERATOR_LAN_BLOCK_PREFIXES
+        ):
             raise _error(
-                "catalog_ip_block_unavailable",
-                "The selected IP block is not available in the active Catalog.",
+                "invalid_lan_block_prefix",
+                "Select a supported LAN block size.",
                 block_prefix=(
                     change.block_prefix.value if change.block_prefix else None
                 ),
-            )
-        entitled_prefixes = (
-            {
-                entitlement.prefix
-                for entitlement in subscriber_ip_block_entitlements(db, subscriber_id)
-            }
-            if subscriber_id is not None
-            else set()
-        )
-        if change.block_prefix not in entitled_prefixes:
-            raise _error(
-                "ip_block_entitlement_required",
-                "The subscriber must have an active Catalog subscription for the "
-                "selected IP block before it can be applied.",
-                block_prefix=change.block_prefix.value,
-            )
-        if change.block_prefix is IpBlockPrefix.p32 and (
-            change.dhcp_enabled or change.dhcp_start or change.dhcp_end
-        ):
-            raise _error(
-                "dhcp_not_available_for_single_address",
-                "A /32 contains one static address and cannot provide DHCP.",
             )
         gateway = _ip(change.gateway_ip, "lan_gateway_ip")
         dhcp_start = _ip(change.dhcp_start, "lan_dhcp_start")

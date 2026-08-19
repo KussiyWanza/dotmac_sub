@@ -23,10 +23,13 @@ unrelated and remains native.
 | Technician performance | `provisioning_managers.technician_report_stats` and `recent_completed_appointments` | `/admin/reports/technician` | `reports:support:read` | Repaired completion semantics and date-consistent export |
 | Online activity | `crm_reporting`, native RADIUS owner | `/admin/reports/operational/online-activity` | `customer:read` | Subscriber/status/last-activity page, export, and empty state |
 | Subscriber billing risk | `crm_reporting`, native customer/billing owners | `/admin/reports/operational/billing-risk` | `reports:billing:read` | Facts only; no copied CRM engagement state |
+| Retention-risk queue preview | `crm_api.billing_risk_rows`, native customer/billing owners | `/admin/customer-retention` | `reports:billing:read` | Visible from Reports Hub; same retention tracker layout and native billing-risk profile drill-down; CRM engagement, follow-up, pipeline, and outreach state remain unavailable |
+| Lead performance | `sales.reports.lead_kpi_report` | `/admin/reports/sales/leads` | `crm:lead:read` | Agent won/contacted/recovery KPI table and CSV; native evidence only |
+| Sales order performance | `sales.reports.sales_order_kpi_report` | `/admin/reports/sales/orders` | `crm:sales_order:read` | Agent order/status/value KPI table and CSV |
 | Subscriber revenue/pipeline | `crm_reporting`, Invoice/Payment owners | `/admin/reports/operational/subscriber-revenue` | `reports:billing:read` | Period-filtered page/export |
 | Postpaid customers | `crm_reporting`, customer/billing owners | `/admin/reports/operational/postpaid-customers` | `reports:billing:read` | Native page/export |
 | CRM performance | `crm_reporting`, `team_inbox_metrics` | `/admin/reports/operational/crm-performance` | `reports:support:read` | Native team page/export |
-| Administrative agent performance | `crm_reporting`, `team_inbox_metrics` | `/admin/reports/operational/agent-performance` | `reports:support:read` | Native agent page/export |
+| Administrative agent performance | `crm_reporting`, `team_inbox_metrics` | `/admin/reports/operational/agent-performance` | `reports:support:read` | Native searchable agent page/export |
 | Personal agent performance | `crm_reporting`, signed-in principal scope | `/admin/reports/operational/my-performance` | `reports:support:read` | Fail-closed personal page/export |
 | Operations SLA violations | `crm_reporting`, Ticket/Project/ProjectTask due facts | `/admin/reports/operational/operations-sla` | `reports:support:read` | Period-filtered page/export |
 | Queue wait/classification | `crm_reporting`, native Inbox queue and recorded metadata | `/admin/reports/operational/queue-classification` | `reports:support:read` | Unclassified remains explicit |

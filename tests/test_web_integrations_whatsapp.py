@@ -6,6 +6,9 @@ import pytest
 
 from app.models.integration_platform import IntegrationInstallation
 from app.models.notification import NotificationChannel, NotificationTemplate
+from app.services import (
+    web_integrations_whatsapp as whatsapp_service,
+)
 from app.services import web_notifications
 from app.services.db_session_adapter import db_session_adapter
 from app.services.integrations import installations, whatsapp_capability
@@ -26,14 +29,11 @@ from app.services.web_integrations_whatsapp import (
 @pytest.fixture(autouse=True)
 def _successful_runtime_validation(monkeypatch):
     """Keep WhatsApp configuration tests local; no Meta call is permitted."""
-
-    from app.services.integrations import runtime_execution
-
     monkeypatch.setattr(
-        runtime_execution, "build_execution_context", lambda *args, **kwargs: object()
+        whatsapp_service, "build_execution_context", lambda *args, **kwargs: object()
     )
     monkeypatch.setattr(
-        runtime_execution,
+        whatsapp_service,
         "validate_connection",
         lambda _context: ValidationResult(valid=True),
     )
@@ -221,10 +221,8 @@ def test_save_config_requires_phone_number_id(db_session):
 def test_failed_runtime_validation_leaves_installation_disabled(
     db_session, monkeypatch
 ):
-    from app.services.integrations import runtime_execution
-
     monkeypatch.setattr(
-        runtime_execution,
+        whatsapp_service,
         "validate_connection",
         lambda _context: ValidationResult(
             valid=False, error_codes=("provider_unavailable",)

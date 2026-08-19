@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from datetime import datetime
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal, cast
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -24,8 +25,10 @@ def linestring_length_meters(geojson: dict[str, object]) -> float:
             second, (list, tuple)
         ):
             raise ValueError("Route coordinates must be coordinate pairs")
-        lon1, lat1 = float(first[0]), float(first[1])
-        lon2, lat2 = float(second[0]), float(second[1])
+        first_pair = cast(Sequence[Any], first)
+        second_pair = cast(Sequence[Any], second)
+        lon1, lat1 = float(first_pair[0]), float(first_pair[1])
+        lon2, lat2 = float(second_pair[0]), float(second_pair[1])
         lat1_rad = math.radians(lat1)
         lat2_rad = math.radians(lat2)
         lat_delta = math.radians(lat2 - lat1)
@@ -35,6 +38,38 @@ def linestring_length_meters(geojson: dict[str, object]) -> float:
         )
         total += 2 * radius_m * math.asin(min(1.0, math.sqrt(value)))
     return round(total, 1)
+
+
+def normalize_linestring_geojson(value: dict[str, object]) -> dict[str, object]:
+    if value.get("type") != "LineString":
+        raise ValueError("Route geometry must be a GeoJSON LineString")
+    coordinates = value.get("coordinates")
+    if not isinstance(coordinates, list) or len(coordinates) < 2:
+        raise ValueError("Route geometry requires at least two coordinates")
+
+    normalized: list[list[float]] = []
+    for coordinate in coordinates:
+        if not isinstance(coordinate, (list, tuple)) or len(coordinate) != 2:
+            raise ValueError(
+                "Each route coordinate must contain longitude and latitude"
+            )
+        coordinate_pair = cast(Sequence[Any], coordinate)
+        if isinstance(coordinate_pair[0], bool) or isinstance(coordinate_pair[1], bool):
+            raise ValueError(
+                "Each route coordinate must contain longitude and latitude"
+            )
+        try:
+            longitude = float(coordinate_pair[0])
+            latitude = float(coordinate_pair[1])
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Route coordinates must contain numeric values") from exc
+        if not math.isfinite(longitude) or not math.isfinite(latitude):
+            raise ValueError("Route coordinates must be finite")
+        if not -180 <= longitude <= 180 or not -90 <= latitude <= 90:
+            raise ValueError("Route coordinates are outside valid bounds")
+        normalized.append([longitude, latitude])
+
+    return {"type": "LineString", "coordinates": normalized}
 
 
 class VendorQuoteCreate(BaseModel):
@@ -67,42 +102,19 @@ class VendorQuoteLineUpdate(BaseModel):
 
 class VendorRouteRevisionCreate(BaseModel):
     geojson: dict[str, object]
-    length_meters: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    length_meters: float | None = Field(default=None, ge=0)
 
     @field_validator("geojson")
     @classmethod
     def validate_linestring(cls, value: dict[str, object]) -> dict[str, object]:
-        if value.get("type") != "LineString":
-            raise ValueError("Route geometry must be a GeoJSON LineString")
-        coordinates = value.get("coordinates")
-        if not isinstance(coordinates, list) or len(coordinates) < 2:
-            raise ValueError("Route geometry requires at least two coordinates")
+        return normalize_linestring_geojson(value)
 
-        normalized: list[list[float]] = []
-        for coordinate in coordinates:
-            if (
-                not isinstance(coordinate, (list, tuple))
-                or len(coordinate) != 2
-                or isinstance(coordinate[0], bool)
-                or isinstance(coordinate[1], bool)
-            ):
-                raise ValueError(
-                    "Each route coordinate must contain longitude and latitude"
-                )
-            try:
-                longitude = float(coordinate[0])
-                latitude = float(coordinate[1])
-            except (TypeError, ValueError) as exc:
-                raise ValueError(
-                    "Route coordinates must contain numeric values"
-                ) from exc
-            if not math.isfinite(longitude) or not math.isfinite(latitude):
-                raise ValueError("Route coordinates must be finite")
-            if not -180 <= longitude <= 180 or not -90 <= latitude <= 90:
-                raise ValueError("Route coordinates are outside valid bounds")
-            normalized.append([longitude, latitude])
-
-        return {"type": "LineString", "coordinates": normalized}
+    @field_validator("length_meters")
+    @classmethod
+    def validate_finite_length(cls, value: float | None) -> float | None:
+        if value is not None and not math.isfinite(value):
+            raise ValueError("Route length must be finite")
+        return value
 
     @model_validator(mode="after")
     def derive_authoritative_length(self) -> VendorRouteRevisionCreate:
@@ -117,12 +129,28 @@ class VendorAsBuiltLineCreate(VendorQuoteLineCreate):
 class VendorAsBuiltCreate(BaseModel):
     project_id: UUID
     proposed_revision_id: UUID | None = None
-    geojson: dict | None = None
+    geojson: dict[str, object] | None = None
     actual_length_meters: float | None = Field(default=None, ge=0)
     variation_type: str | None = Field(default=None, max_length=40)
     variation_reason: str | None = Field(default=None, max_length=2000)
     work_order_ref: str | None = Field(default=None, max_length=120)
     line_items: list[VendorAsBuiltLineCreate] = Field(default_factory=list)
+
+    @field_validator("geojson")
+    @classmethod
+    def validate_optional_linestring(
+        cls, value: dict[str, object] | None
+    ) -> dict[str, object] | None:
+        if value is None:
+            return None
+        return normalize_linestring_geojson(value)
+
+    @field_validator("actual_length_meters")
+    @classmethod
+    def validate_finite_actual_length(cls, value: float | None) -> float | None:
+        if value is not None and not math.isfinite(value):
+            raise ValueError("As-built route length must be finite")
+        return value
 
     @model_validator(mode="after")
     def derive_authoritative_length(self) -> VendorAsBuiltCreate:

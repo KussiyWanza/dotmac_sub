@@ -179,14 +179,12 @@ The ONT Configure page is an editor for one asynchronous transition.
   `service_intent`, or `reviewed_override`).
 - PPP: show only a masked derived username/provenance. The form neither accepts
   nor exposes the PPP password or allows an operator-authored username.
-- LAN IP block: choices come only from active `ip_address` Catalog offers via
-  `service_intent.ip_block_catalog`; the command owner converts the typed prefix
-  to a device mask and refuses a prefix no longer present in the active Catalog.
-  Sizes without an active subscriber entitlement remain visible but disabled;
-  the subscription lifecycle must grant the offer before configuration.
-  A `/32` disables and forbids DHCP. Mask-only edits force the complete
-  write-only LAN/DHCP parameter block to ACS rather than relying on the readable
-  DHCP-enabled flag.
+- LAN block size: choices come from the network-owned operator list for common
+  usable LAN block sizes (`/30` through `/24`). The command owner converts the
+  typed prefix to a device mask and refuses unsupported prefixes. Catalog offers
+  and subscriber entitlements do not gate this manual operator configuration
+  control. Mask-only edits force the complete write-only LAN/DHCP parameter
+  block to ACS rather than relying on the readable DHCP-enabled flag.
 - History: current summary reads only events bound to the active head and
   revision. Legacy, retired, and superseded events appear only in a separate
   evidence/history section.
