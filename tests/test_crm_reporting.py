@@ -32,7 +32,7 @@ def test_expected_operational_inventory_is_complete_and_exclusions_stay_excluded
         definition.title for definition in crm_reporting.REPORT_DEFINITIONS.values()
     } <= hub_names
     assert "Quarterly Report" not in hub_names
-    assert "Customer Retention" not in hub_names
+    assert "Customer Retention" in hub_names
 
     service_source = Path("app/services/crm_reporting.py").read_text(encoding="utf-8")
     assert "CustomerRetentionEngagement" not in service_source

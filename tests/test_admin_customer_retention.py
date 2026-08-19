@@ -4,7 +4,7 @@ from app.web.admin import build_router
 from app.web.admin import customer_retention as retention
 
 
-def test_hidden_customer_retention_routes_are_registered_without_hub_link():
+def test_customer_retention_routes_are_registered_and_visible_from_hub():
     router = build_router()
     paths = {
         (getattr(route, "path", ""), frozenset(getattr(route, "methods", set())))
@@ -13,6 +13,18 @@ def test_hidden_customer_retention_routes_are_registered_without_hub_link():
 
     assert ("/admin/customer-retention", frozenset({"GET"})) in paths
     assert ("/admin/customer-retention/{customer_id}", frozenset({"GET"})) in paths
+
+    from app.web.admin import reports
+
+    links = [
+        link for section in reports.REPORT_HUB_SECTIONS for link in section["links"]
+    ]
+    assert {
+        "name": "Customer Retention",
+        "url": "/admin/customer-retention",
+        "description": "Billing-risk accounts prioritized for customer recovery",
+        "permission": "reports:billing:read",
+    } in links
 
 
 def test_retention_rows_are_native_billing_risk_only():

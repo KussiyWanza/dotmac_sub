@@ -97,6 +97,12 @@ REPORT_HUB_SECTIONS: list[ReportHubSection] = [
                 "permission": "customer:read",
             },
             {
+                "name": "Customer Retention",
+                "url": "/admin/customer-retention",
+                "description": "Billing-risk accounts prioritized for customer recovery",
+                "permission": "reports:billing:read",
+            },
+            {
                 "name": "Network Usage",
                 "url": "/admin/reports/network",
                 "description": "Network utilization and infrastructure stats",
