@@ -46,8 +46,14 @@ from app.services.integrations.whatsapp_capability import (
     WHATSAPP_RECEIVE_CAPABILITY,
     WHATSAPP_SEND_CAPABILITY,
 )
+from app.services.operator_tenant import provision_operator_tenant
 from app.services.owner_commands import CommandContext
 from app.tasks import notifications as notification_tasks
+
+
+@pytest.fixture(autouse=True)
+def _operator_tenant(db_session):
+    provision_operator_tenant(db_session)
 
 
 class _Gateway:

@@ -8,8 +8,8 @@ from app.models.integration_platform import IntegrationInstallation
 from app.models.notification import NotificationChannel, NotificationTemplate
 from app.services import (
     web_integrations_whatsapp as whatsapp_service,
-    web_notifications,
 )
+from app.services import web_notifications
 from app.services.db_session_adapter import db_session_adapter
 from app.services.integrations import installations, whatsapp_capability
 from app.services.integrations.connectors import whatsapp_runtime

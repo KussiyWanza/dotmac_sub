@@ -366,6 +366,21 @@ def _resolve_project_for_sales_order(db: Session, sales_order_id: object):
     )
     if related:
         return related
+    if quote_id:
+        related = (
+            db.query(Project)
+            .filter(Project.is_active.is_(True))
+            .filter(
+                or_(
+                    Project.quote_id == quote_id,
+                    Project.metadata_["quote_id"].as_string() == str(quote_id),
+                )
+            )
+            .order_by(Project.created_at.desc())
+            .first()
+        )
+        if related:
+            return related
     return None
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from uuid import uuid4
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -10,7 +11,13 @@ from app.models.field_vendor import FieldVendorUser
 from app.models.system_user import SystemUser
 from app.services import vendor_admin
 from app.services import web_vendors as web_vendors_service
+from app.services.operator_tenant import provision_operator_tenant
 from app.web.admin.vendors import router
+
+
+@pytest.fixture(autouse=True)
+def _operator_tenant(db_session):
+    provision_operator_tenant(db_session)
 
 
 def _client(db_session) -> TestClient:
