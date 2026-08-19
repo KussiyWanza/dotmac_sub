@@ -637,6 +637,7 @@ def test_whatsapp_reply_to_explicit_contact_ignores_canceled_subscriber_match(
             metadata_={"reply_window_qualifying": True},
         )
     )
+    db_session.flush()
     monkeypatch.setattr(
         team_inbox_outbound.team_inbox_realtime,
         "publish_conversation_event",
