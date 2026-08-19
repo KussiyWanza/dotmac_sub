@@ -1398,15 +1398,9 @@ def ensure_session_for_outcome(
     session = active_session_for_conversation(db, conversation.id)
     now = datetime.now(UTC)
     if session is None:
-        state = (
-            "awaiting_customer"
-            if outcome.status is AiIntakeStatus.awaiting_follow_up
-            else "classified"
-            if outcome.status is AiIntakeStatus.classified
-            else "fallback_escalated"
-            if outcome.status in {AiIntakeStatus.fallback, AiIntakeStatus.escalated}
-            else "collecting_intent"
-        )
+        # A fresh conversation must receive the configured introduction before
+        # classification can produce a clarification question or handoff.
+        state = "welcome_pending"
         policy_metadata = dict(policy.metadata_ or {})
         session = AiIntakeSession(
             conversation_id=conversation.id,
