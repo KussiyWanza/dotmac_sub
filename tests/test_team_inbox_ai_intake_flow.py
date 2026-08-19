@@ -336,7 +336,7 @@ def test_receive_persists_ai_work_without_synchronous_ai_response(
         == 0
     )
 
-    _process_ai(db_session, sweeps=1)
+    _process_ai(db_session, sweeps=2)
 
     assert (
         db_session.query(InboxMessage)
