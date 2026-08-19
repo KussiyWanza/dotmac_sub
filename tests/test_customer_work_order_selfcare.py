@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
 
 from app.models.audit import AuditEvent
 from app.models.dispatch import TechnicianProfile, WorkOrderAssignmentQueue
-from app.models.field_location import FieldTechPresence
+from app.models.field_location import FieldTechLocationPing, FieldTechPresence
 from app.models.subscriber import Subscriber, UserType
 from app.models.system_user import SystemUser
 from app.models.work_order import WorkOrder
@@ -57,6 +57,26 @@ def _visit(db_session, customer: Subscriber, *, status: str) -> WorkOrder:
     return row
 
 
+def _location_ping(
+    technician: TechnicianProfile,
+    visit: WorkOrder,
+    *,
+    latitude: float,
+    longitude: float,
+    captured_at: datetime,
+) -> FieldTechLocationPing:
+    return FieldTechLocationPing(
+        technician_id=technician.id,
+        person_id=technician.person_id,
+        crm_work_order_id=visit.public_id,
+        latitude=latitude,
+        longitude=longitude,
+        captured_at=captured_at,
+        received_at=datetime.now(UTC),
+        source="mobile",
+    )
+
+
 def test_location_reads_native_assignment_presence_and_public_identity(db_session):
     customer = _customer(db_session)
     technician = _technician(db_session)
@@ -77,6 +97,13 @@ def test_location_reads_native_assignment_presence_and_public_identity(db_sessio
                 last_longitude=7.3986,
                 last_location_at=datetime.now(UTC),
             ),
+            _location_ping(
+                technician,
+                visit,
+                latitude=9.0765,
+                longitude=7.3986,
+                captured_at=datetime.now(UTC),
+            ),
         ]
     )
     db_session.commit()
@@ -89,6 +116,90 @@ def test_location_reads_native_assignment_presence_and_public_identity(db_sessio
     assert result.work_order_id == visit.public_id
     assert result.latitude == 9.0765
     assert result.updated_at is not None
+
+
+def test_location_hides_stale_presence(db_session):
+    customer = _customer(db_session)
+    technician = _technician(db_session)
+    visit = _visit(db_session, customer, status="in_progress")
+    db_session.add_all(
+        [
+            WorkOrderAssignmentQueue(
+                work_order_mirror_id=visit.id,
+                status="assigned",
+                assigned_technician_id=technician.id,
+            ),
+            FieldTechPresence(
+                technician_id=technician.id,
+                person_id=technician.person_id,
+                status="busy",
+                location_sharing_enabled=True,
+                last_latitude=9.0765,
+                last_longitude=7.3986,
+                last_location_at=datetime.now(UTC) - timedelta(minutes=3),
+            ),
+            _location_ping(
+                technician,
+                visit,
+                latitude=9.0765,
+                longitude=7.3986,
+                captured_at=datetime.now(UTC) - timedelta(minutes=3),
+            ),
+        ]
+    )
+    db_session.commit()
+
+    result = customer_work_order_selfcare.technician_location(
+        db_session, str(customer.id), visit.public_id
+    )
+
+    assert result.available is False
+    assert result.reason == "stale"
+    assert result.latitude is None
+    assert result.longitude is None
+
+
+def test_location_does_not_leak_latest_fix_from_another_work_order(db_session):
+    customer = _customer(db_session)
+    other_customer = _customer(db_session)
+    technician = _technician(db_session)
+    visit = _visit(db_session, customer, status="in_progress")
+    other_visit = _visit(db_session, other_customer, status="in_progress")
+    db_session.add_all(
+        [
+            WorkOrderAssignmentQueue(
+                work_order_mirror_id=visit.id,
+                status="assigned",
+                assigned_technician_id=technician.id,
+            ),
+            FieldTechPresence(
+                technician_id=technician.id,
+                person_id=technician.person_id,
+                status="busy",
+                location_sharing_enabled=True,
+                last_latitude=6.5244,
+                last_longitude=3.3792,
+                last_location_at=datetime.now(UTC),
+            ),
+            _location_ping(
+                technician,
+                other_visit,
+                latitude=6.5244,
+                longitude=3.3792,
+                captured_at=datetime.now(UTC),
+            ),
+        ]
+    )
+    db_session.commit()
+
+    result = customer_work_order_selfcare.technician_location(
+        db_session, str(customer.id), visit.public_id
+    )
+
+    assert result.available is False
+    assert result.reason == "no_fix"
+    assert result.latitude is None
+    assert result.longitude is None
 
 
 def test_rating_is_native_audited_and_idempotent(db_session):

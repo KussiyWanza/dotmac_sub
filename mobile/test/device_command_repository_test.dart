@@ -16,7 +16,7 @@ class _FakeAdapter implements HttpClientAdapter {
     calls.add(options);
     return ResponseBody.fromString(
       '{"command":"${options.path.endsWith('reboot') ? 'reboot' : 'wifi_update'}",'
-      '"status":"succeeded","subscription_id":"sub-1",'
+      '"status":"${options.path.endsWith('reboot') ? 'succeeded' : 'queued'}","subscription_id":"sub-1",'
       '"device_id":"ont-1","operation_id":"op-1",'
       '"message":"Command completed"}',
       200,
@@ -50,7 +50,7 @@ void main() {
     expect(outcome.operationId, 'op-1');
   });
 
-  test('Wi-Fi update posts only the canonical desired fields', () async {
+  test('Wi-Fi update posts desired fields with idempotency evidence', () async {
     final outcome = await repository.updateWifi(
       'sub-1',
       ssid: 'Home Network',
@@ -58,10 +58,20 @@ void main() {
     );
 
     expect(adapter.calls.single.path, '/me/subscriptions/sub-1/device/wifi');
-    expect(adapter.calls.single.data, {
-      'ssid': 'Home Network',
-      'password': 'password123',
-    });
+    final data = adapter.calls.single.data as Map<String, dynamic>;
+    expect(data['ssid'], 'Home Network');
+    expect(data['password'], 'password123');
+    expect(data['idempotency_key'], startsWith('wifi-'));
     expect(outcome.command, 'wifi_update');
+    expect(outcome.accepted, isTrue);
+  });
+
+  test('Wi-Fi status reads the background operation', () async {
+    final outcome = await repository.wifiUpdateStatus('sub-1');
+
+    expect(adapter.calls.single.path, '/me/subscriptions/sub-1/device/wifi');
+    expect(adapter.calls.single.method, 'GET');
+    expect(outcome.operationId, 'op-1');
+    expect(outcome.accepted, isTrue);
   });
 }

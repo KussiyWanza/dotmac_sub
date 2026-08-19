@@ -51,6 +51,12 @@ is either enabled with a complete enforceable policy or disabled with a written
 reason; a missing or malformed entry makes the snapshot `error` and pages
 `ChannelHealthContractInvalid`.
 
+Startup reconciliation appends disabled shipped defaults for newly supported
+channels to every active persisted registry while preserving existing operator
+policy verbatim. Runtime backfill remains a fail-safe for pre-reconciliation
+workers, but reports each distinct missing-channel set only once per process so
+the minute-level observer cannot flood logs.
+
 Each contract names the channel fact owner, natural/synthetic/hybrid monitoring
 mode, active ISO weekdays and local-time window, maximum quiet period,
 synthetic-probe maximum age where applicable, severity, and runbook. Business
@@ -157,6 +163,11 @@ are produced separately by the dedicated SMTP runtime and committed/verified
 through the team-inbox owner, keeping the observer clear of the
 consent/transport-ownership boundary
 (`tests/architecture/test_communication_eligibility_ownership.py`).
+
+Ingestion observations are bounded to the external channels owned by the
+contract registry. Internal `note` and `field_job` inbox traffic is deliberately
+excluded. A publication failure in either snapshot is logged and marks that
+domain's run as `error` without preventing the other domain from publishing.
 
 ## SMTP runtime and deployment gate
 

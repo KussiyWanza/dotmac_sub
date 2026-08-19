@@ -20,6 +20,184 @@ from app.services.sot_manifest import (
 
 SERVICES: tuple[SOTService, ...] = (
     SOTService(
+        name="billing.carried_source_identity_adjudication",
+        module="app.services.carried_source_identity_adjudication",
+        owns=("reviewed pre-handoff native customer provenance adjudication",),
+        depends_on=(
+            "auth.staff_provisioning",
+            "customer.accounts",
+            "events.dispatcher",
+            "observability.audit_log",
+        ),
+        notes=(
+            "Cutover-only decision owner for the narrow case where a customer "
+            "was created natively in Dotmac Omni before the fixed financial "
+            "handoff. It requires a fresh PII-free evidence fingerprint and two "
+            "distinct active staff reviewers. It records no money, assigns no "
+            "Splynx identity, and cannot convert ambiguous legacy evidence into "
+            "native provenance."
+        ),
+        contract=ServiceContract(
+            concerns=(
+                ConcernContract(
+                    name=(
+                        "reviewed pre-handoff native customer provenance adjudication"
+                    ),
+                    role=OwnerRole.COMMAND_WRITER,
+                    input_names=(
+                        "canonical customer creation provenance",
+                        "active independent staff reviewers",
+                        "reviewed native-provenance evidence",
+                        "recorded carried-source adjudication",
+                    ),
+                    canonical_writer=("billing.carried_source_identity_adjudication"),
+                ),
+            ),
+            authoritative_inputs=(
+                AuthorityInput(
+                    name="canonical customer creation provenance",
+                    owner="customer.accounts",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source=(
+                        "Subscriber creation instant, Dotmac Omni source marker, "
+                        "CRM subscriber and creation-chain references, and absence "
+                        "of retained Splynx customer identity"
+                    ),
+                ),
+                AuthorityInput(
+                    name="active independent staff reviewers",
+                    owner="auth.staff_provisioning",
+                    kind=AuthorityKind.CONTROL_INPUT,
+                    source=(
+                        "two distinct active SystemUser principals named by the "
+                        "review and independent approval"
+                    ),
+                ),
+                AuthorityInput(
+                    name="reviewed native-provenance evidence",
+                    owner="external:finance_review",
+                    kind=AuthorityKind.EXTERNAL_OBSERVATION,
+                    source=(
+                        "content-addressed evidence reference and SHA-256 digest "
+                        "supporting the exact PII-free preview fingerprint"
+                    ),
+                ),
+                AuthorityInput(
+                    name="recorded carried-source adjudication",
+                    owner="billing.carried_source_identity_adjudication",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source=(
+                        "immutable carried_source_identity_adjudications row, "
+                        "review identities, evidence digests, command identity, "
+                        "and idempotency fingerprint"
+                    ),
+                ),
+            ),
+            transaction=TransactionContract(
+                mode=TransactionMode.OWNER_MANAGED,
+                boundary=(
+                    "The confirmation command enters execute_owner_command once "
+                    "on a transaction-free session; decision, audit evidence, and "
+                    "owner output commit or roll back together."
+                ),
+                locking=(
+                    "The idempotency key is transaction-serialized, both active "
+                    "reviewers and the customer are locked, and unique constraints "
+                    "arbitrate one decision per customer."
+                ),
+                idempotency=(
+                    "The business key and command fingerprint bind the customer, "
+                    "fresh preview, content-addressed evidence, reviewers, and "
+                    "reason; exact replay returns the stored decision."
+                ),
+                retries=(
+                    "Retry the complete command with the same idempotency key. "
+                    "Changed provenance requires a fresh preview and review."
+                ),
+            ),
+            errors=ErrorContract(
+                domain_codes=(
+                    *owner_command_boundary_error_codes(
+                        "billing.carried_source_identity_adjudication"
+                    ),
+                    ("billing.carried_source_identity_adjudication.account_not_found"),
+                    ("billing.carried_source_identity_adjudication.decision_conflict"),
+                    (
+                        "billing.carried_source_identity_adjudication."
+                        "idempotency_conflict"
+                    ),
+                    (
+                        "billing.carried_source_identity_adjudication."
+                        "ineligible_evidence"
+                    ),
+                    ("billing.carried_source_identity_adjudication.invalid_evidence"),
+                    ("billing.carried_source_identity_adjudication.invalid_scope"),
+                    (
+                        "billing.carried_source_identity_adjudication."
+                        "missing_idempotency_key"
+                    ),
+                    ("billing.carried_source_identity_adjudication.reviewer_conflict"),
+                    (
+                        "billing.carried_source_identity_adjudication."
+                        "reviewer_unavailable"
+                    ),
+                    ("billing.carried_source_identity_adjudication.stale_preview"),
+                ),
+                mapping_owner="billing migration operator adapter",
+                fail_closed_on=(
+                    "any retained Splynx customer, service, invoice, or payment evidence",
+                    "missing or incomplete Dotmac Omni CRM creation provenance",
+                    "same, missing, or inactive reviewers",
+                    "a changed preview, reused business key, or existing decision",
+                ),
+            ),
+            events=EventContract(
+                event_types=("billing.carried_source_identity.adjudicated",),
+                schema_version=1,
+                delivery_owner="events.dispatcher",
+                compatibility=(
+                    "Version 1 carries only customer and decision UUIDs, the "
+                    "closed disposition, and reviewed preview fingerprint."
+                ),
+                replay=(
+                    "The immutable decision, audit event, and staged owner output "
+                    "commit once; exact command replay emits no second output."
+                ),
+            ),
+            migration=MigrationContract(
+                state=AuthorityMigrationState.CUTOVER_READY,
+                old_owner=(
+                    "manual source-ID fabrication or permanent unresolved funding block"
+                ),
+                new_owner="billing.carried_source_identity_adjudication",
+                verification=(
+                    "Eligibility, stale evidence, independent review, owner-command "
+                    "atomicity, replay, and complete-native-history regressions."
+                ),
+                cutover_gate=(
+                    "Finance and billing independently approve content-addressed "
+                    "evidence for every pre-handoff native exception before a new "
+                    "complete opening snapshot is signed."
+                ),
+                fallback_retirement=(
+                    "Remove the confirmation adapter after all opening positions "
+                    "are captured; retain adjudication and audit rows permanently."
+                ),
+            ),
+            steward="billing and finance operations",
+            design_refs=(
+                "docs/designs/SPLYNX_RETIREMENT.md",
+                "docs/runbooks/PREPAID_FUNDING_AUDIT_RESTORE.md",
+                "docs/SOT_RELATIONSHIP_MAP.md",
+            ),
+            test_refs=(
+                "tests/test_carried_source_identity_adjudication.py",
+                "tests/test_opening_balance_history.py",
+                "tests/architecture/test_prepaid_funding_reconstruction_ownership.py",
+            ),
+        ),
+    ),
+    SOTService(
         name="billing.opening_balance_history",
         module="app.services.billing.opening_balance_history",
         owns=(
@@ -27,6 +205,7 @@ SERVICES: tuple[SOTService, ...] = (
             "complete opening-balance customer target",
         ),
         depends_on=(
+            "billing.carried_source_identity_adjudication",
             "customer.accounts",
             "financial.credit_notes",
             "financial.invoices",
@@ -38,7 +217,9 @@ SERVICES: tuple[SOTService, ...] = (
             "restore. A complete empty transaction set is zero; missing, "
             "duplicate, malformed, or unreconciled source evidence fails the "
             "whole cohort. A carried customer with no retained source identity has "
-            "an explicit unresolved classification that blocks all materialization. "
+            "an explicit unresolved classification that blocks all materialization "
+            "unless a current dual-reviewed native-before-handoff decision proves "
+            "that complete Sub-native history is the lawful source. "
             "It contacts no external system, writes money, assigns an unknown "
             "balance, or remains a runtime authority after completion."
         ),
@@ -47,15 +228,19 @@ SERVICES: tuple[SOTService, ...] = (
                 ConcernContract(
                     name="carried-source identity classification",
                     role=OwnerRole.RESOLVER,
-                    input_names=("canonical migrated customer identity",),
+                    input_names=(
+                        "canonical migrated customer identity",
+                        "reviewed native-before-handoff provenance decision",
+                    ),
                 ),
                 ConcernContract(
                     name="complete opening-balance customer target",
                     role=OwnerRole.RESOLVER,
                     input_names=(
                         "frozen opening-balance transaction-net evidence",
-                        "canonical post-handoff native financial facts",
+                        "canonical Sub-native financial facts",
                         "canonical migrated customer identity",
+                        "reviewed native-before-handoff provenance decision",
                     ),
                 ),
             ),
@@ -71,14 +256,15 @@ SERVICES: tuple[SOTService, ...] = (
                     ),
                 ),
                 AuthorityInput(
-                    name="canonical post-handoff native financial facts",
+                    name="canonical Sub-native financial facts",
                     owner="financial.ledger",
                     kind=AuthorityKind.DERIVED_PROJECTION,
                     source=(
                         "currency-separated native payment, invoice, credit-note, "
-                        "and ledger facts strictly after the fixed legacy handoff; "
-                        "each underlying document remains owned by its named "
-                        "financial service"
+                        "and ledger facts after the fixed legacy handoff for "
+                        "migrated customers, or from account inception for a "
+                        "reviewed native-before-handoff customer; each underlying "
+                        "document remains owned by its named financial service"
                     ),
                 ),
                 AuthorityInput(
@@ -88,6 +274,16 @@ SERVICES: tuple[SOTService, ...] = (
                     source=(
                         "Subscriber id and retained one-to-one "
                         "splynx_customer_id provenance"
+                    ),
+                ),
+                AuthorityInput(
+                    name="reviewed native-before-handoff provenance decision",
+                    owner="billing.carried_source_identity_adjudication",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source=(
+                        "immutable dual-reviewed decision whose stored preview "
+                        "fingerprint still matches current customer and absence-"
+                        "of-Splynx evidence"
                     ),
                 ),
             ),
@@ -116,6 +312,7 @@ SERVICES: tuple[SOTService, ...] = (
                     "billing.opening_balance_history.source_cohort_incomplete",
                     "billing.opening_balance_history.source_identity_duplicate",
                     "billing.opening_balance_history.source_identity_mismatch",
+                    "billing.opening_balance_history.source_adjudication_stale",
                     "billing.opening_balance_history.source_history_malformed",
                     "billing.opening_balance_history.source_history_unreconciled",
                 ),

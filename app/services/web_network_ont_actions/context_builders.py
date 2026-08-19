@@ -13,11 +13,13 @@ from app.config import settings
 from app.models.network import OntAssignment
 from app.models.tr069 import Tr069CpeDevice
 from app.services import network as network_service
+from app.services.catalog.ip_block_choices import IpBlockPrefix
 from app.services.network._util import first_present as _first_present
 from app.services.network.effective_ont_config import (
     internet_wcd_index_from_effective_values,
     resolve_effective_ont_config,
 )
+from app.services.network.ont_lan_block_choices import operator_lan_block_prefix_choices
 from app.services.service_intent_ui_adapter import service_intent_ui_adapter
 from app.services.web_network_ont_actions._common import (
     _display_olt_value,
@@ -387,6 +389,7 @@ def _configure_form_context_from_state(
         config_pack_olt_id = getattr(config_pack, "olt_id", None)
 
     mgmt_ip_pool_ctx = management_ip_choices_for_ont(db, ont)
+    current_block_prefix = IpBlockPrefix.from_mask(str(lan_subnet or ""))
     return {
         "ont": ont,
         "ont_id": ont_id,
@@ -404,6 +407,8 @@ def _configure_form_context_from_state(
         "mgmt_vlan": values.get("mgmt_vlan"),
         "lan_gateway_ip": str(lan_gateway or ""),
         "lan_subnet_mask": str(lan_subnet or ""),
+        "lan_block_prefix": current_block_prefix.value if current_block_prefix else "",
+        "lan_block_prefix_choices": operator_lan_block_prefix_choices(),
         "lan_dhcp_enabled": lan_dhcp_enabled,
         "lan_dhcp_start": str(lan_dhcp_start or ""),
         "lan_dhcp_end": str(lan_dhcp_end or ""),

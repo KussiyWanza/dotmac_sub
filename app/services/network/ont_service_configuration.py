@@ -50,6 +50,7 @@ from app.services.events import emit_event
 from app.services.events.types import EventType
 from app.services.network.effective_ont_config import resolve_effective_ont_config
 from app.services.network.ont_desired_config import set_desired_config_values
+from app.services.network.ont_lan_block_choices import OPERATOR_LAN_BLOCK_PREFIXES
 from app.services.network.ont_management_ipam import (
     allocate_ont_management_ip,
     release_ont_management_ip,
@@ -65,6 +66,7 @@ from app.services.network.provisioning_events import (
     record_ont_provisioning_event,
 )
 from app.services.network.subscriber_wan_ipam import ensure_wan_static_ip_available
+from app.services.network_catalog_ip_block_bridge import IpBlockPrefix
 from app.services.network_operation_dispatch import (
     NetworkOperationCommand,
     stage_dispatch,
@@ -95,6 +97,11 @@ _CONFIGURE = OwnerCommandDefinition(
     owner=OWNER,
     concern=_COORDINATION_CONCERN,
     name="configure_ont_service",
+)
+_CONFIGURE_CUSTOMER_WIFI = OwnerCommandDefinition(
+    owner=OWNER,
+    concern=_COORDINATION_CONCERN,
+    name="configure_customer_wifi",
 )
 _EXECUTE = OwnerCommandDefinition(
     owner=OWNER,
@@ -152,7 +159,7 @@ class WanConfigurationChange:
 @dataclass(frozen=True, slots=True)
 class LanConfigurationChange:
     gateway_ip: str | None
-    subnet_mask: str | None
+    block_prefix: IpBlockPrefix | None
     dhcp_enabled: bool
     dhcp_start: str | None
     dhcp_end: str | None
@@ -164,6 +171,12 @@ class WifiConfigurationChange:
     ssid: str | None
     channel: str | None
     security_mode: str | None
+    password: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CustomerWifiConfigurationChange:
+    ssid: str
     password: str | None = None
 
 
@@ -200,6 +213,14 @@ class ConfigureOntServiceCommand:
     permission_granted: bool
     section: OntConfigurationSection
     change: OntConfigurationChange
+
+
+@dataclass(frozen=True, slots=True)
+class ConfigureCustomerWifiCommand:
+    context: CommandContext
+    subscriber_id: uuid.UUID
+    subscription_id: uuid.UUID
+    change: CustomerWifiConfigurationChange
 
 
 @dataclass(frozen=True, slots=True)
@@ -257,6 +278,7 @@ class OntServiceConfigurationProjection:
     assignment_id: uuid.UUID | None
     configuration_head_id: uuid.UUID | None
     revision: int | None
+    section: OntConfigurationSection | None
     operation_id: uuid.UUID | None
     phase: OntServiceConfigurationPhase | None
     waiting_reason: str | None
@@ -271,6 +293,18 @@ class OntServiceConfigurationProjection:
     next_action: OntConfigurationNextAction
     current_events: tuple[ConfigurationEventView, ...]
     historical_events: tuple[ConfigurationEventView, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class OntConfigurationSectionDeliveryProjection:
+    ont_unit_id: uuid.UUID
+    assignment_id: uuid.UUID
+    section: OntConfigurationSection
+    revision: int
+    operation_id: uuid.UUID
+    phase: OntServiceConfigurationPhase
+    failure_code: str | None
+    failure_message: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -322,17 +356,31 @@ def _json_default(value: object) -> object:
     raise TypeError(f"Unsupported fingerprint value: {type(value).__name__}")
 
 
-def _command_fingerprint(command: ConfigureOntServiceCommand) -> str:
+def _command_fingerprint(
+    command: ConfigureOntServiceCommand | ConfigureCustomerWifiCommand,
+) -> str:
     key = get_encryption_key()
     if key is None:
         raise _error(
             "fingerprint_key_unavailable",
             "Credential encryption key is required for safe request fingerprinting.",
         )
+    section = (
+        command.section
+        if isinstance(command, ConfigureOntServiceCommand)
+        else OntConfigurationSection.wifi
+    )
     material = json.dumps(
         {
-            "ont_unit_id": command.ont_unit_id,
-            "section": command.section,
+            "target": (
+                command.ont_unit_id
+                if isinstance(command, ConfigureOntServiceCommand)
+                else {
+                    "subscriber_id": command.subscriber_id,
+                    "subscription_id": command.subscription_id,
+                }
+            ),
+            "section": section,
             "change": asdict(command.change),
         },
         default=_json_default,
@@ -372,6 +420,7 @@ def _ip(value: str | None, field: str) -> str | None:
 def _change_updates(
     db: Session,
     ont: OntUnit,
+    _subscriber_id: uuid.UUID | None,
     section: OntConfigurationSection,
     change: OntConfigurationChange,
 ) -> tuple[dict[str, object], dict[str, object]]:
@@ -408,12 +457,66 @@ def _change_updates(
     elif section is OntConfigurationSection.lan and isinstance(
         change, LanConfigurationChange
     ):
+        if (
+            change.block_prefix is None
+            or change.block_prefix not in OPERATOR_LAN_BLOCK_PREFIXES
+        ):
+            raise _error(
+                "invalid_lan_block_prefix",
+                "Select a supported LAN block size.",
+                block_prefix=(
+                    change.block_prefix.value if change.block_prefix else None
+                ),
+            )
+        gateway = _ip(change.gateway_ip, "lan_gateway_ip")
+        dhcp_start = _ip(change.dhcp_start, "lan_dhcp_start")
+        dhcp_end = _ip(change.dhcp_end, "lan_dhcp_end")
+        if gateway is None:
+            raise _error(
+                "lan_address_required",
+                "The ONT LAN address is required for the selected IP block.",
+            )
+        if change.dhcp_enabled:
+            if dhcp_start is None or dhcp_end is None:
+                raise _error(
+                    "invalid_dhcp_pool",
+                    "Gateway, DHCP start, and DHCP end are required when DHCP "
+                    "is enabled.",
+                )
+            network = ipaddress.IPv4Network(
+                f"{gateway}/{change.block_prefix.prefix_length}", strict=False
+            )
+            start_address = ipaddress.IPv4Address(dhcp_start)
+            end_address = ipaddress.IPv4Address(dhcp_end)
+            gateway_address = ipaddress.IPv4Address(gateway)
+            unavailable = {
+                network.network_address,
+                network.broadcast_address,
+                gateway_address,
+            }
+            if (
+                start_address not in network
+                or end_address not in network
+                or start_address in unavailable
+                or end_address in unavailable
+                or int(start_address) > int(end_address)
+                or any(
+                    int(start_address) <= int(item) <= int(end_address)
+                    for item in unavailable
+                )
+            ):
+                raise _error(
+                    "invalid_dhcp_pool",
+                    "The DHCP range must fit inside the selected block and exclude "
+                    "network, broadcast, and gateway addresses.",
+                )
         updates = {
-            "lan.ip": _ip(change.gateway_ip, "lan_gateway_ip"),
-            "lan.subnet": _text(change.subnet_mask),
+            "lan.ip": gateway,
+            "lan.subnet": change.block_prefix.subnet_mask,
+            "lan.block_prefix": change.block_prefix.value,
             "lan.dhcp_enabled": bool(change.dhcp_enabled),
-            "lan.dhcp_start": _ip(change.dhcp_start, "lan_dhcp_start"),
-            "lan.dhcp_end": _ip(change.dhcp_end, "lan_dhcp_end"),
+            "lan.dhcp_start": dhcp_start,
+            "lan.dhcp_end": dhcp_end,
         }
         evidence = dict(updates)
     elif section is OntConfigurationSection.wifi and isinstance(
@@ -484,6 +587,23 @@ def _change_updates(
         raise _error(
             "section_mismatch", "Configuration section and typed change do not match."
         )
+    return updates, evidence
+
+
+def _customer_wifi_change_updates(
+    change: CustomerWifiConfigurationChange,
+) -> tuple[dict[str, object], dict[str, object]]:
+    ssid = change.ssid.strip()
+    password = change.password.strip() if change.password else None
+    if not 1 <= len(ssid) <= 32:
+        raise _error("invalid_change", "WiFi name must be 1-32 characters.")
+    if password is not None and not 8 <= len(password) <= 63:
+        raise _error("invalid_change", "WiFi password must be 8-63 characters.")
+    updates: dict[str, object] = {"wifi.ssid": ssid}
+    evidence: dict[str, object] = {"wifi.ssid": ssid}
+    if password is not None:
+        updates["wifi.password"] = encrypt_credential(password)
+        evidence["wifi.password"] = "changed"
     return updates, evidence
 
 
@@ -562,6 +682,111 @@ def _load_admission_scope(
     return ont, assignment, subscription, olt, pon
 
 
+def _load_customer_wifi_admission_scope(
+    db: Session, command: ConfigureCustomerWifiCommand
+) -> tuple[
+    OntUnit,
+    OntAssignment,
+    AssignmentSubscriptionSnapshot,
+    OLTDevice,
+    PonPort,
+]:
+    if command.context.scope != "customer:device:wifi":
+        raise _error(
+            "customer_scope_denied",
+            "Customer WiFi configuration requires customer device scope.",
+        )
+    candidates = list(
+        db.scalars(
+            select(OntAssignment)
+            .where(
+                OntAssignment.subscriber_id == command.subscriber_id,
+                OntAssignment.subscription_id == command.subscription_id,
+                OntAssignment.active.is_(True),
+            )
+            .order_by(OntAssignment.id)
+        )
+    )
+    if len(candidates) != 1:
+        raise _error(
+            "customer_subscription_not_found",
+            "No supported active device is linked to this service.",
+        )
+    candidate = candidates[0]
+    ont = db.scalar(
+        select(OntUnit).where(OntUnit.id == candidate.ont_unit_id).with_for_update()
+    )
+    if ont is None:
+        raise _error(
+            "customer_subscription_not_found",
+            "No supported active device is linked to this service.",
+        )
+    assignments = list(
+        db.scalars(
+            select(OntAssignment)
+            .where(
+                OntAssignment.ont_unit_id == ont.id,
+                OntAssignment.active.is_(True),
+            )
+            .order_by(OntAssignment.id)
+            .with_for_update()
+        )
+    )
+    if (
+        len(assignments) != 1
+        or assignments[0].id != candidate.id
+        or assignments[0].subscriber_id != command.subscriber_id
+        or assignments[0].subscription_id != command.subscription_id
+    ):
+        raise _error(
+            "customer_subscription_not_found",
+            "No supported active device is linked to this service.",
+        )
+    assignment = assignments[0]
+    if assignment.pon_port_id is None:
+        raise _error(
+            "assignment_incomplete",
+            "The active assignment lacks exact service or PON identity.",
+        )
+    subscription = assignment_subscription_snapshot(
+        db, command.subscription_id, for_update=True
+    )
+    if (
+        subscription is None
+        or subscription.status != "active"
+        or subscription.subscriber_id != command.subscriber_id
+    ):
+        raise _error(
+            "customer_subscription_not_found",
+            "No supported active device is linked to this service.",
+        )
+    pon = db.scalar(
+        select(PonPort).where(PonPort.id == assignment.pon_port_id).with_for_update()
+    )
+    if pon is None or not pon.is_active:
+        raise _error("pon_not_ready", "The assignment PON is missing or inactive.")
+    olt = db.scalar(
+        select(OLTDevice).where(OLTDevice.id == pon.olt_id).with_for_update()
+    )
+    if olt is None or not olt.is_active:
+        raise _error("olt_not_ready", "The assignment OLT is missing or inactive.")
+    if ont.olt_device_id != olt.id or ont.pon_port_id != pon.id:
+        raise _error(
+            "assignment_topology_conflict",
+            "ONT inventory and assignment PON identity disagree.",
+        )
+    if ont.authorization_status is not OntAuthorizationStatus.authorized:
+        raise _error(
+            "commissioning_not_ready", "ONT management commissioning is not ready."
+        )
+    if ont.uisp_device_id:
+        raise _error(
+            "customer_device_unsupported",
+            "Self-service device commands are not supported for this device.",
+        )
+    return ont, assignment, subscription, olt, pon
+
+
 def _head_for_assignment(
     db: Session, ont: OntUnit, assignment: OntAssignment
 ) -> OntServiceConfigurationHead:
@@ -605,11 +830,18 @@ def _connection_type(mode: object) -> str:
 
 
 def _admit(
-    db: Session, command: ConfigureOntServiceCommand
+    db: Session, command: ConfigureOntServiceCommand | ConfigureCustomerWifiCommand
 ) -> ConfigureOntServiceOutcome:
     idempotency_key = _require_idempotency(command.context)
     fingerprint = _command_fingerprint(command)
-    ont, assignment, _subscription, _olt, _pon = _load_admission_scope(db, command)
+    if isinstance(command, ConfigureCustomerWifiCommand):
+        section = OntConfigurationSection.wifi
+        ont, assignment, _subscription, _olt, _pon = (
+            _load_customer_wifi_admission_scope(db, command)
+        )
+    else:
+        section = command.section
+        ont, assignment, _subscription, _olt, _pon = _load_admission_scope(db, command)
     head = _head_for_assignment(db, ont, assignment)
     replay = db.scalar(
         select(OntServiceConfigurationRevision).where(
@@ -633,6 +865,16 @@ def _admit(
             replayed=True,
             message="Configuration request replayed.",
         )
+    if isinstance(command, ConfigureCustomerWifiCommand):
+        updates, evidence = _customer_wifi_change_updates(command.change)
+    else:
+        updates, evidence = _change_updates(
+            db,
+            ont,
+            assignment.subscriber_id,
+            section,
+            command.change,
+        )
     current_revision = db.scalar(
         select(OntServiceConfigurationRevision).where(
             OntServiceConfigurationRevision.head_id == head.id,
@@ -651,89 +893,93 @@ def _admit(
             revision=head.current_revision,
         )
 
-    updates, evidence = _change_updates(db, ont, command.section, command.change)
     set_desired_config_values(ont, updates)
-    resolved_effective = resolve_effective_ont_config(db, ont, olt=_olt)
-    effective = resolved_effective if isinstance(resolved_effective, dict) else {}
-    config_pack = effective.get("config_pack")
-    raw_values = effective.get("values")
-    values: dict[str, object] = raw_values if isinstance(raw_values, dict) else {}
-    if config_pack is None:
-        raise _error(
-            "config_pack_missing",
-            "The assignment OLT has no effective ONT config pack.",
-        )
-    mode = values.get("wan_mode")
-    connection_type = _connection_type(mode)
-    subscription_id = assignment.subscription_id
-    if subscription_id is None:
-        raise _error(
-            "assignment_incomplete",
-            "The active assignment lost its exact subscription identity.",
-        )
-    existing_intent = active_primary_internet_intent(
-        db, ont_id=ont.id, subscription_id=subscription_id, for_update=True
-    )
-    intent_vlan = existing_intent.s_vlan if existing_intent is not None else None
-    pack_vlan = values.get("wan_vlan")
-    try:
-        effective_vlan = int(str(intent_vlan or pack_vlan or 0))
-    except ValueError as exc:
-        raise _error(
-            "customer_vlan_missing",
-            "Effective customer VLAN is missing or invalid.",
-        ) from exc
-    if not 1 <= effective_vlan <= 4094:
-        raise _error(
-            "customer_vlan_missing", "Effective customer VLAN is missing or invalid."
-        )
-    vlan_source = (
-        WanVlanSource.service_intent
-        if intent_vlan is not None
-        else WanVlanSource.config_pack
-    )
-    intent = ensure_active_wan_service_intent_in_transaction(
-        db,
-        spec=WanServiceIntentSpec(
-            ont_id=ont.id,
-            subscription_id=subscription_id,
-            service_type="internet",
-            connection_type=connection_type,
-            is_primary=True,
-            name="Primary Internet",
-            priority=1,
-            s_vlan=effective_vlan,
-        ),
-        context=command.context,
-    )
-
+    wan_intent_id: uuid.UUID | None = None
+    effective_vlan: int | None = None
+    vlan_source: WanVlanSource | None = None
     masked_username: str | None = None
-    if connection_type == "pppoe":
-        from app.services.cpe_dialer_credential_reconcile import (
-            ProjectCpeDialerCredential,
-            project_cpe_dialer_credential_for_configuration,
-        )
-
-        try:
-            credential = project_cpe_dialer_credential_for_configuration(
-                db,
-                ProjectCpeDialerCredential(
-                    ont_unit_id=ont.id,
-                    subscription_id=subscription_id,
-                ),
+    if not isinstance(command, ConfigureCustomerWifiCommand):
+        resolved_effective = resolve_effective_ont_config(db, ont, olt=_olt)
+        effective = resolved_effective if isinstance(resolved_effective, dict) else {}
+        config_pack = effective.get("config_pack")
+        raw_values = effective.get("values")
+        values: dict[str, object] = raw_values if isinstance(raw_values, dict) else {}
+        if config_pack is None:
+            raise _error(
+                "config_pack_missing",
+                "The assignment OLT has no effective ONT config pack.",
             )
+        connection_type = _connection_type(values.get("wan_mode"))
+        subscription_id = assignment.subscription_id
+        if subscription_id is None:
+            raise _error(
+                "assignment_incomplete",
+                "The active assignment lost its exact subscription identity.",
+            )
+        existing_intent = active_primary_internet_intent(
+            db, ont_id=ont.id, subscription_id=subscription_id, for_update=True
+        )
+        intent_vlan = existing_intent.s_vlan if existing_intent is not None else None
+        pack_vlan = values.get("wan_vlan")
+        try:
+            effective_vlan = int(str(intent_vlan or pack_vlan or 0))
         except ValueError as exc:
             raise _error(
-                "authoritative_credential_unavailable",
-                "The assigned subscriber has no usable authoritative access credential.",
+                "customer_vlan_missing",
+                "Effective customer VLAN is missing or invalid.",
             ) from exc
-        masked_username = credential.masked_username
-    else:
-        from app.services.cpe_dialer_credential_reconcile import (
-            clear_cpe_dialer_projection_for_non_ppp,
+        if not 1 <= effective_vlan <= 4094:
+            raise _error(
+                "customer_vlan_missing",
+                "Effective customer VLAN is missing or invalid.",
+            )
+        vlan_source = (
+            WanVlanSource.service_intent
+            if intent_vlan is not None
+            else WanVlanSource.config_pack
         )
+        intent = ensure_active_wan_service_intent_in_transaction(
+            db,
+            spec=WanServiceIntentSpec(
+                ont_id=ont.id,
+                subscription_id=subscription_id,
+                service_type="internet",
+                connection_type=connection_type,
+                is_primary=True,
+                name="Primary Internet",
+                priority=1,
+                s_vlan=effective_vlan,
+            ),
+            context=command.context,
+        )
+        wan_intent_id = intent.instance_id
+        if connection_type == "pppoe":
+            from app.services.cpe_dialer_credential_reconcile import (
+                ProjectCpeDialerCredential,
+                project_cpe_dialer_credential_for_configuration,
+            )
 
-        clear_cpe_dialer_projection_for_non_ppp(db, ont_unit_id=ont.id)
+            try:
+                credential = project_cpe_dialer_credential_for_configuration(
+                    db,
+                    ProjectCpeDialerCredential(
+                        ont_unit_id=ont.id,
+                        subscription_id=subscription_id,
+                    ),
+                )
+            except ValueError as exc:
+                raise _error(
+                    "authoritative_credential_unavailable",
+                    "The assigned subscriber has no usable authoritative "
+                    "access credential.",
+                ) from exc
+            masked_username = credential.masked_username
+        else:
+            from app.services.cpe_dialer_credential_reconcile import (
+                clear_cpe_dialer_projection_for_non_ppp,
+            )
+
+            clear_cpe_dialer_projection_for_non_ppp(db, ont_unit_id=ont.id)
 
     next_revision = int(head.current_revision) + 1
     if current_revision is not None and current_revision.phase not in {
@@ -749,31 +995,32 @@ def _admit(
             assignment_id=assignment.id,
             configuration_head_id=head.id,
             configuration_revision=next_revision,
-            section=command.section.value,
+            section=section.value,
             command_fingerprint=fingerprint,
             correlation_key=f"ont-service-config:{assignment.id}:{correlation_hash}",
             initiated_by=command.context.actor,
-            wan_intent_id=intent.instance_id,
+            wan_intent_id=wan_intent_id,
             effective_customer_vlan=effective_vlan,
-            vlan_source=vlan_source.value,
+            vlan_source=vlan_source.value if vlan_source is not None else None,
         ),
     )
-    evidence.update(
-        {
-            "effective_customer_vlan": effective_vlan,
-            "vlan_source": vlan_source.value,
-            "wan_intent_id": str(intent.instance_id),
-            "pppoe_username_masked": masked_username,
-            "pppoe_provenance": (
-                "authoritative_access_credential" if masked_username else None
-            ),
-        }
-    )
+    if wan_intent_id is not None:
+        evidence.update(
+            {
+                "effective_customer_vlan": effective_vlan,
+                "vlan_source": vlan_source.value if vlan_source is not None else None,
+                "wan_intent_id": str(wan_intent_id),
+                "pppoe_username_masked": masked_username,
+                "pppoe_provenance": (
+                    "authoritative_access_credential" if masked_username else None
+                ),
+            }
+        )
     revision = OntServiceConfigurationRevision(
         head_id=head.id,
         assignment_id=assignment.id,
         revision=next_revision,
-        section=command.section.value,
+        section=section.value,
         command_fingerprint=fingerprint,
         idempotency_key=idempotency_key,
         desired_change_evidence=evidence,
@@ -800,8 +1047,8 @@ def _admit(
             "assignment_id": str(assignment.id),
             "revision": next_revision,
             "operation_id": str(operation.id),
-            "section": command.section.value,
-            "vlan_source": vlan_source.value,
+            "section": section.value,
+            "vlan_source": vlan_source.value if vlan_source is not None else None,
         },
     )
     emit_event(
@@ -813,7 +1060,7 @@ def _admit(
             "configuration_head_id": str(head.id),
             "revision": next_revision,
             "operation_id": str(operation.id),
-            "section": command.section.value,
+            "section": section.value,
         },
         actor=command.context.actor,
         subscriber_id=assignment.subscriber_id,
@@ -840,6 +1087,25 @@ def configure_ont_service(
         return execute_owner_command(
             db,
             definition=_CONFIGURE,
+            context=command.context,
+            operation=lambda: _admit(db, command),
+        )
+    except IntegrityError as exc:
+        raise _error(
+            "concurrent_configuration",
+            "Configuration changed concurrently; refresh and retry.",
+        ) from exc
+
+
+def configure_customer_wifi(
+    db: Session, command: ConfigureCustomerWifiCommand
+) -> ConfigureOntServiceOutcome:
+    """Atomically save and queue a customer-scoped WiFi configuration."""
+
+    try:
+        return execute_owner_command(
+            db,
+            definition=_CONFIGURE_CUSTOMER_WIFI,
             context=command.context,
             operation=lambda: _admit(db, command),
         )
@@ -910,6 +1176,21 @@ def _wifi_delivery_scope(
         if evidence_key in evidence
     )
     return OntWifiDeliveryScope(changed_fields=changed_fields)
+
+
+def _force_lan_delivery(revision: OntServiceConfigurationRevision) -> bool:
+    """Whether this exact admitted revision requires the write-only LAN block."""
+
+    return revision.section == OntConfigurationSection.lan.value and bool(
+        set(revision.desired_change_evidence or {})
+        & {
+            "lan.ip",
+            "lan.subnet",
+            "lan.dhcp_enabled",
+            "lan.dhcp_start",
+            "lan.dhcp_end",
+        }
+    )
 
 
 def _execution_locked(
@@ -988,6 +1269,7 @@ def _execution_locked(
         ont.id,
         mode="sweep" if command.explicit_repair else "sync",
         wifi_delivery_scope=_wifi_delivery_scope(revision),
+        force_lan_config=_force_lan_delivery(revision),
         lifecycle_binding=ReconcileLifecycleBinding(
             ont_unit_id=ont.id,
             assignment_id=assignment.id,
@@ -998,7 +1280,45 @@ def _execution_locked(
         readback_only=command.verification_attempt > 0,
         timeout_sec=120,
     )
-    if result.success and result.sync_status == "synced" and not result.drift_after:
+    delivered_without_readback = (
+        result.success
+        and result.sync_status == "synced"
+        and not result.drift_after
+        and _force_lan_delivery(revision)
+    )
+    if delivered_without_readback:
+        head.phase = OntServiceConfigurationPhase.delivered_unverified
+        revision.phase = OntServiceConfigurationPhase.delivered_unverified
+        head.waiting_reason = None
+        head.failure_code = "exact_lan_readback_unavailable"
+        head.failure_message = (
+            "The LAN configuration was delivered, but this ONT firmware does not "
+            "expose the subnet and DHCP range for exact readback."
+        )
+        network_operations.mark_succeeded(
+            db,
+            str(operation.id),
+            output_payload={
+                "configuration_head_id": str(head.id),
+                "configuration_revision": revision.revision,
+                "phase": OntServiceConfigurationPhase.delivered_unverified.value,
+                "verification": "unavailable",
+            },
+        )
+        _record_execution_event(
+            db,
+            ont=ont,
+            assignment=assignment,
+            head=head,
+            revision=revision,
+            operation_id=operation.id,
+            phase=OntServiceConfigurationPhase.delivered_unverified,
+            message=head.failure_message,
+            success=True,
+        )
+        phase = OntServiceConfigurationPhase.delivered_unverified
+        message = "Configuration delivered; exact LAN readback is unavailable."
+    elif result.success and result.sync_status == "synced" and not result.drift_after:
         now = datetime.now(UTC)
         head.phase = OntServiceConfigurationPhase.verified
         revision.phase = OntServiceConfigurationPhase.verified
@@ -1372,6 +1692,9 @@ def get_ont_service_configuration_projection(
         assignment_id=assignment.id if assignment is not None else None,
         configuration_head_id=head.id if head is not None else None,
         revision=revision.revision if revision is not None else None,
+        section=(
+            OntConfigurationSection(revision.section) if revision is not None else None
+        ),
         operation_id=head.latest_operation_id if head is not None else None,
         phase=head.phase if head is not None else None,
         waiting_reason=head.waiting_reason if head is not None else None,
@@ -1394,6 +1717,58 @@ def get_ont_service_configuration_projection(
         next_action=next_action,
         current_events=current_events,
         historical_events=historical_events,
+    )
+
+
+def get_latest_ont_configuration_section_delivery(
+    db: Session,
+    *,
+    ont_unit_id: uuid.UUID,
+    section: OntConfigurationSection,
+) -> OntConfigurationSectionDeliveryProjection | None:
+    """Return the newest delivery revision for one active assignment section."""
+
+    assignments = list(
+        db.scalars(
+            select(OntAssignment).where(
+                OntAssignment.ont_unit_id == ont_unit_id,
+                OntAssignment.active.is_(True),
+            )
+        )
+    )
+    if len(assignments) != 1:
+        return None
+    assignment = assignments[0]
+    head = db.scalar(
+        select(OntServiceConfigurationHead).where(
+            OntServiceConfigurationHead.assignment_id == assignment.id
+        )
+    )
+    if head is None:
+        return None
+    revision = db.scalar(
+        select(OntServiceConfigurationRevision)
+        .where(
+            OntServiceConfigurationRevision.head_id == head.id,
+            OntServiceConfigurationRevision.section == section.value,
+        )
+        .order_by(OntServiceConfigurationRevision.revision.desc())
+        .limit(1)
+    )
+    if revision is None:
+        return None
+    is_current = revision.revision == head.current_revision
+    return OntConfigurationSectionDeliveryProjection(
+        ont_unit_id=ont_unit_id,
+        assignment_id=assignment.id,
+        section=section,
+        revision=revision.revision,
+        operation_id=revision.operation_id,
+        phase=revision.phase,
+        failure_code=head.failure_code if is_current else revision.failure_code,
+        failure_message=(
+            head.failure_message if is_current else revision.failure_message
+        ),
     )
 
 
@@ -1547,13 +1922,16 @@ def repair_ont_service_configuration_drift(
 
 __all__ = (
     "AdvancedConfigurationChange",
+    "ConfigureCustomerWifiCommand",
     "ConfigureOntServiceCommand",
     "ConfigureOntServiceOutcome",
+    "CustomerWifiConfigurationChange",
     "ExecuteOntServiceConfigurationCommand",
     "ExecuteOntServiceConfigurationOutcome",
     "LanConfigurationChange",
     "ManagementConfigurationChange",
     "OntConfigurationNextAction",
+    "OntConfigurationSectionDeliveryProjection",
     "OntConfigurationChange",
     "OntConfigurationSection",
     "OntServiceConfigurationError",
@@ -1564,9 +1942,11 @@ __all__ = (
     "WanConfigurationChange",
     "WanVlanSource",
     "WifiConfigurationChange",
+    "configure_customer_wifi",
     "configure_ont_service",
     "execute_ont_service_configuration",
     "get_ont_service_configuration_projection",
+    "get_latest_ont_configuration_section_delivery",
     "inspect_ont_service_configuration_drift",
     "repair_ont_service_configuration_drift",
     "retry_ont_service_configuration",

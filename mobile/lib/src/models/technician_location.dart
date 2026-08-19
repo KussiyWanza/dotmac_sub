@@ -14,7 +14,7 @@ class TechnicianLocation {
   final bool available;
 
   /// Why the map is hidden when [available] is false (e.g. not_in_progress,
-  /// sharing_off, no_fix, not_linked).
+  /// sharing_off, no_fix, stale, not_linked).
   final String? reason;
   final double? latitude;
   final double? longitude;

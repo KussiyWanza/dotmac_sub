@@ -28,6 +28,11 @@ from app.schemas.settings import DomainSettingUpdate
 from app.services import catalog as catalog_service
 from app.services import settings_api
 from app.services import web_catalog_offers as web_catalog_offers_service
+from app.services.catalog.ip_block_choices import (
+    IpBlockPrefix,
+    active_catalog_ip_block_choices,
+    subscriber_ip_block_entitlements,
+)
 
 
 def test_catalog_offer_create_list(db_session):
@@ -95,6 +100,66 @@ def test_offer_description_metadata_roundtrip():
     assert meta["plan_kind"] == "ip_address"
     assert meta["ip_block_size"] == "/29"
     assert cleaned == "Public IP block add-on"
+
+
+def test_catalog_ip_block_choices_are_active_deduplicated_and_ordered(
+    db_session, subscriber
+):
+    def create_ip_offer(name: str, code: str, prefix: str, *, active: bool = True):
+        return catalog_service.offers.create(
+            db_session,
+            CatalogOfferCreate(
+                name=name,
+                code=code,
+                service_type=ServiceType.business,
+                access_type=AccessType.fiber,
+                price_basis=PriceBasis.flat,
+                description=web_catalog_offers_service.normalize_offer_description(
+                    description=name,
+                    plan_kind="ip_address",
+                    ip_block_size=prefix,
+                ),
+                status=OfferStatus.active if active else OfferStatus.inactive,
+            ),
+        )
+
+    offer_29 = create_ip_offer("Public /29", "IP-29-A", "/29")
+    create_ip_offer("Public /29 duplicate", "IP-29-B", "/29")
+    create_ip_offer("Public /24", "IP-24", "/24")
+    create_ip_offer("Inactive /28", "IP-28", "/28", active=False)
+    catalog_service.offers.create(
+        db_session,
+        CatalogOfferCreate(
+            name="Standard Internet",
+            code="STD-IP-CHOICE",
+            service_type=ServiceType.business,
+            access_type=AccessType.fiber,
+            price_basis=PriceBasis.flat,
+            status=OfferStatus.active,
+        ),
+    )
+    subscription = catalog_service.subscriptions.create(
+        db_session,
+        SubscriptionCreate(
+            account_id=subscriber.id,
+            offer_id=offer_29.id,
+            status=SubscriptionStatus.active,
+        ),
+        create_service_order=False,
+    )
+
+    choices = active_catalog_ip_block_choices(db_session)
+    entitlements = subscriber_ip_block_entitlements(db_session, subscriber.id)
+
+    assert tuple(choice.prefix for choice in choices) == (
+        IpBlockPrefix.p29,
+        IpBlockPrefix.p24,
+    )
+    assert choices[0].address_count == 8
+    assert len(choices[0].offer_ids) == 2
+    assert len(entitlements) == 1
+    assert entitlements[0].subscription_id == subscription.id
+    assert entitlements[0].prefix is IpBlockPrefix.p29
 
 
 def test_overview_page_data_filters_plan_kind_and_counts(db_session, subscriber):

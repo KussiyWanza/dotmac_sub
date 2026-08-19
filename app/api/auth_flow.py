@@ -47,6 +47,7 @@ from app.services import credential_recovery, customer_credential_enrollment
 from app.services import session_manager as session_manager_service
 from app.services import user_profile as user_profile_service
 from app.services.auth_dependencies import require_user_auth
+from app.services.db_session_adapter import db_session_adapter
 from app.services.domain_errors import DomainError
 from app.services.owner_commands import CommandContext
 
@@ -489,6 +490,7 @@ def credential_enrollment_endpoint(
     """Create a local credential from an emailed referral capability."""
 
     try:
+        db_session_adapter.release_read_transaction(db)
         result = customer_credential_enrollment.complete_referral_enrollment(
             db,
             customer_credential_enrollment.CompleteReferralEnrollmentCommand(

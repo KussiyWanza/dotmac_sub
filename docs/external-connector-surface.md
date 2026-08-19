@@ -2,7 +2,7 @@
 
 Sub adopts the Governance-owned schema-9 ratchet from accepted ADR 0011 at
 immutable canonical-main commit
-`4f6fbf98c25f7cfbb3dacc4f3d2f5fd7e473f193`.
+`a19259b10568d29dc0a9617347498fea7f1e7a97`.
 
 The ratchet freezes measured legacy connector surface while providers move
 behind Dotmac Integrator. It is transitional defence in depth, not runtime

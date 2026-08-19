@@ -11,7 +11,7 @@ abstract class LocationSource {
 
   /// Continuous fixes for background-capable tracking. The device source backs
   /// this with a platform location stream (Android foreground service / iOS
-  /// background updates) so fixes keep arriving while the app is backgrounded.
+  /// background updates) when the user has granted background access.
   /// Sources that can't stream return an empty stream.
   Stream<GeoPoint> positions() => Stream<GeoPoint>.empty();
 }

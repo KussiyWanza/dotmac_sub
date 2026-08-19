@@ -29,8 +29,27 @@ from app.services.web_customer_lists import (
     CUSTOMER_LIST_DEFINITION,
     build_customer_list_query,
     build_customers_index_context,
+    customer_name_presentation,
     search_customer_infrastructure_options,
 )
+
+
+def test_customer_name_presentation_keeps_four_words_unchanged():
+    presentation = customer_name_presentation("One Two Three Four")
+
+    assert presentation.full_text == "One Two Three Four"
+    assert presentation.display_text == "One Two Three Four"
+    assert presentation.is_truncated is False
+
+
+def test_customer_name_presentation_limits_long_names_to_four_words():
+    presentation = customer_name_presentation(
+        "  Alpha   Beta Gamma Delta Epsilon Holdings  "
+    )
+
+    assert presentation.full_text == "Alpha Beta Gamma Delta Epsilon Holdings"
+    assert presentation.display_text == "Alpha Beta Gamma Delta..."
+    assert presentation.is_truncated is True
 
 
 def _build_context(db_session, **params):

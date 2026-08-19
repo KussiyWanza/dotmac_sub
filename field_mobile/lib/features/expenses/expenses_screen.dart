@@ -865,6 +865,13 @@ class _NewExpenseRequestScreenState
               clientRef: clientRef,
               payload: payload,
             );
+        ref.invalidate(expenseRequestsProvider);
+        try {
+          await ref.read(expenseRequestsProvider.future);
+        } catch (_) {
+          // The queued request remains authoritative local history even if
+          // the remote list cannot be refreshed while offline.
+        }
         await ref.read(draftStoreProvider).delete(expenseRequestDraftId);
         ref.invalidate(expenseRequestDraftsProvider);
         if (!mounted) return;

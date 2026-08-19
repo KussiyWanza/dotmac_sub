@@ -58,6 +58,7 @@ from app.tasks.events import (
     retry_failed_events,
 )
 from app.tasks.exports import run_export_job, run_scheduled_export
+from app.tasks.field_location_retention import prune_field_location_history_task
 from app.tasks.forwarding_control_observations import (
     run_forwarding_control_observation_poll,
 )
@@ -279,6 +280,7 @@ __all__ = [
     "auto_resolve_stale_inbox_conversations",
     "run_scheduled_export",
     "run_export_job",
+    "prune_field_location_history_task",
     "retry_failed_events",
     "dispatch_pending_events",
     "mark_stale_processing_events",

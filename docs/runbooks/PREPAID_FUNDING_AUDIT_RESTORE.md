@@ -28,6 +28,9 @@ path unreachable in practice.
 Every migrated candidate has complete Splynx transaction history. Credits minus
 debits is its source position; a complete empty transaction set is zero. The
 isolated resolver then adds canonical Sub-native facts after the fixed handoff.
+A dual-reviewed customer proven to be Sub-native before the handoff instead
+uses complete canonical Sub facts from account inception; the reviewed decision
+does not assign a legacy identity or write money.
 A current account without an active baseline is source-batch debt, not an
 unknown balance or a permanent customer disposition. Until the exact cohort is
 materialized, enforcement continues to fail closed for those accounts. The
@@ -100,6 +103,41 @@ a classified blocked exit:
 It contains account UUIDs and reason codes only — no customer identity,
 credentials, free text, or delivery coordinates.
 
+If the blocker is a genuinely Sub-native pre-handoff account, do not invent a
+Splynx ID or edit the restored copy. After the adjudication code is deployed,
+run the PII-free preview against the authoritative Sub database:
+
+```bash
+python -m scripts.one_off.review_carried_source_identity \
+  --account-id ACCOUNT_UUID
+```
+
+Only an eligible preview may proceed. Finance and billing must independently
+review a content-addressed evidence document. Confirmation requires the exact
+fresh fingerprint, evidence reference and SHA-256, two different active staff
+UUIDs, attributable actor and reason, and a unique idempotency key:
+
+```bash
+python -m scripts.one_off.review_carried_source_identity \
+  --account-id ACCOUNT_UUID \
+  --apply \
+  --confirm RECORD_REVIEWED_NATIVE_BEFORE_HANDOFF \
+  --fingerprint PREVIEW_SHA256 \
+  --evidence-ref APPROVED_EVIDENCE_POINTER \
+  --evidence-sha256 EVIDENCE_SHA256 \
+  --reviewed-by-id BILLING_STAFF_UUID \
+  --approved-by-id FINANCE_STAFF_UUID \
+  --actor OPERATOR_PRINCIPAL \
+  --reason REVIEWED_REASON \
+  --idempotency-key UNIQUE_BUSINESS_KEY
+```
+
+This writes only the immutable adjudication, audit evidence, and owner output.
+Take a new database dump after confirmation, destroy and reprovision the audit
+restore from that dump, and rerun the complete export. The resolver rechecks
+the stored fingerprint; newly discovered Splynx evidence or changed provenance
+invalidates the decision and blocks export.
+
 There is no partial-subset option. Correct or rebuild the isolated source
 snapshot, rerun the complete export, and use `--signing-key-ref` pointing at the
 OpenBao Ed25519 private-key reference only when the cohort is complete.
@@ -120,7 +158,8 @@ data), and the network. Exported artifacts are kept.
 ## After the export: the completion pipeline
 
 1. `export_prepaid_funding_snapshot.py` — resolves the complete frozen history
-   plus canonical post-handoff facts and emits a signed exact-cohort artifact.
+   plus canonical Sub-native facts in the lawful interval for each provenance
+   disposition and emits a signed exact-cohort artifact.
 2. **Correct the source snapshot, then rerun.** An integrity error clears only
    when the resolver proves the complete source; never edit a generated target.
 3. `materialize_prepaid_funding_reconstruction.py` — verifies the Ed25519
@@ -143,9 +182,12 @@ a new batch gets `is_authority_cutover = False`, and its `position_at` must be
 strictly newer than the existing baselines or preview blocks with
 `reconstruction_position_not_newer`.
 
-**The target is not a copied deposit field.** The resolver proves the complete
-active transaction net equals the final source position, then adds only
-canonical post-handoff Sub facts. A mismatch blocks the whole artifact.
+**The target is not a copied deposit field.** For a migrated account, the
+resolver proves the complete active transaction net equals the final source
+position, then adds canonical post-handoff Sub facts. A reviewed pre-handoff
+Sub-native account has no Splynx history component and uses complete canonical
+Sub facts from inception. A mismatch or stale adjudication blocks the whole
+artifact.
 
 ## Monitoring
 

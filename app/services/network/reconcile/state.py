@@ -264,6 +264,7 @@ class OntDesiredState:
     wan_remote_access_source_cidrs: tuple[str, ...] = ()
     wan_remote_access_ssh_port: int = 22
     remote_access_paths: Tr069RemoteAccessParameterPaths | None = None
+    lan_gateway_ip: str | None = None
 
     # ``False`` is a real IPv6 target only when this says where it came from.
     # The adapter uses False as the in-memory representation of unknown solely

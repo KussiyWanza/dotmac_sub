@@ -461,6 +461,7 @@ def test_queue_health_separates_stale_due_from_future_scheduled(
 
     assert stats["stale_due"] == 1
     assert stats["scheduled_queued"] == 1
+    assert db_session.in_transaction() is False
 
 
 def test_deliver_notification_queue_schedules_failed_retry_with_backoff(

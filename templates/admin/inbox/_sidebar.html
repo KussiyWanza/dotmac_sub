@@ -178,18 +178,21 @@
                 <legend class="sr-only">Status</legend>
                 <div class="flex flex-wrap gap-1 rounded-xl bg-slate-100 p-1 dark:bg-slate-800/50">
                     <button type="submit" name="status" value=""
-                            :aria-pressed="(pendingStatusFilter === '' || (pendingStatusFilter === null && {{ 'true' if not status and not open_only and not has_ticket else 'false' }})).toString()"
+                            @click.prevent="applyStatusFilter('')"
+                            :aria-pressed="(pendingStatusFilter === '' || (pendingStatusFilter === null && {{ 'true' if not status and not open_only and not has_ticket and not reply_window_status else 'false' }})).toString()"
                             :class="pendingStatusFilter === '' && 'ring-2 ring-amber-500'"
-                            class="min-h-10 min-w-16 flex-1 rounded-lg px-2 text-xs font-semibold transition-colors {% if not status and not open_only and not has_ticket %}bg-white text-amber-700 shadow-sm dark:bg-slate-700 dark:text-amber-400{% else %}text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200{% endif %}">
+                            class="min-h-10 min-w-16 flex-1 rounded-lg px-2 text-xs font-semibold transition-colors {% if not status and not open_only and not has_ticket and not reply_window_status %}bg-white text-amber-700 shadow-sm dark:bg-slate-700 dark:text-amber-400{% else %}text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200{% endif %}">
                         All
                     </button>
                     <button type="submit" name="status" value="open"
+                            @click.prevent="applyStatusFilter('open')"
                             :aria-pressed="(pendingStatusFilter === 'open' || (pendingStatusFilter === null && {{ 'true' if status == 'open' and not has_ticket else 'false' }})).toString()"
                             :class="pendingStatusFilter === 'open' && 'ring-2 ring-emerald-500'"
                             class="min-h-10 min-w-16 flex-1 rounded-lg px-2 text-xs font-semibold transition-colors {% if status == 'open' and not has_ticket %}bg-white text-emerald-700 shadow-sm dark:bg-slate-700 dark:text-emerald-400{% else %}text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200{% endif %}">
                         <span class="inline-flex items-center justify-center gap-1.5"><span class="h-1.5 w-1.5 rounded-full bg-emerald-500" aria-hidden="true"></span>Open</span>
                     </button>
                     <button type="submit" name="status" value="pending"
+                            @click.prevent="applyStatusFilter('pending')"
                             :aria-pressed="(pendingStatusFilter === 'pending' || (pendingStatusFilter === null && {{ 'true' if status == 'pending' and not has_ticket else 'false' }})).toString()"
                             :class="pendingStatusFilter === 'pending' && 'ring-2 ring-amber-500'"
                             class="min-h-10 min-w-16 flex-1 rounded-lg px-2 text-xs font-semibold transition-colors {% if status == 'pending' and not has_ticket %}bg-white text-amber-700 shadow-sm dark:bg-slate-700 dark:text-amber-400{% else %}text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200{% endif %}">
@@ -197,18 +200,27 @@
                     </button>
                     <button type="button" @click="applyAssignmentFilter('attention')"
                             class="min-h-10 min-w-28 flex-1 rounded-lg px-2 text-xs font-semibold transition-colors"
-                            :class="assignmentFilterActive('attention') ? 'bg-white text-orange-700 shadow-sm dark:bg-slate-700 dark:text-orange-300' : 'text-slate-500 dark:text-slate-400'">
+                            :class="assignmentFilterActive('attention') ? 'bg-white text-orange-700 shadow-sm dark:bg-slate-700 dark:text-orange-300' : 'text-slate-500 hover:text-white dark:text-slate-400 dark:hover:text-white'">
                         Needs attention <span class="tabular-nums">{{ assignment_counts.needs_attention }}</span>
                     </button>
                     <button type="submit" name="has_ticket" value="true"
+                            @click.prevent="navigateFilter({ has_ticket: 'true' })"
                             class="min-h-10 min-w-24 flex-1 rounded-lg px-2 text-xs font-semibold transition-colors {% if has_ticket %}bg-white text-sky-700 shadow-sm dark:bg-slate-700 dark:text-sky-300{% else %}text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200{% endif %}">
                         Sent to ticket
                     </button>
                     <button type="submit" name="status" value="resolved"
+                            @click.prevent="applyStatusFilter('resolved')"
                             :aria-pressed="(pendingStatusFilter === 'resolved' || (pendingStatusFilter === null && {{ 'true' if status == 'resolved' and not has_ticket else 'false' }})).toString()"
                             :class="pendingStatusFilter === 'resolved' && 'ring-2 ring-slate-500'"
                             class="min-h-10 min-w-16 flex-1 rounded-lg px-2 text-xs font-semibold transition-colors {% if status == 'resolved' and not has_ticket %}bg-white text-slate-700 shadow-sm dark:bg-slate-700 dark:text-slate-300{% else %}text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200{% endif %}">
                         Resolved
+                    </button>
+                    <button type="submit" name="reply_window_status" value="expired"
+                            @click.prevent="applyStatusFilter('expired')"
+                            :aria-pressed="(pendingStatusFilter === 'expired' || (pendingStatusFilter === null && {{ 'true' if reply_window_status == 'expired' else 'false' }})).toString()"
+                            :class="pendingStatusFilter === 'expired' && 'ring-2 ring-rose-500'"
+                            class="min-h-10 min-w-24 flex-1 rounded-lg px-2 text-xs font-semibold transition-colors {% if reply_window_status == 'expired' %}bg-white text-rose-700 shadow-sm dark:bg-slate-700 dark:text-rose-300{% else %}text-slate-500 hover:text-white dark:text-slate-400 dark:hover:text-white{% endif %}">
+                        <span class="inline-flex items-center justify-center gap-1.5"><span class="h-1.5 w-1.5 rounded-full bg-rose-500" aria-hidden="true"></span>Expired</span>
                     </button>
                 </div>
                 </fieldset>
@@ -282,14 +294,6 @@
                     <label class="inline-flex min-h-10 min-w-20 flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-lg px-2 text-xs font-semibold {% if unread %}bg-white text-amber-700 shadow-sm dark:bg-slate-700 dark:text-amber-300{% else %}text-slate-500 dark:text-slate-400{% endif %}"><input type="checkbox" name="unread" value="true" {% if unread %}checked{% endif %} @change="$el.form.requestSubmit()" class="rounded border-slate-300 text-amber-500 focus:ring-amber-500">Unread</label>
                     <a href="/admin/inbox?open_only=true&amp;snoozed=true" class="inline-flex min-h-10 min-w-20 flex-1 items-center justify-center gap-1 rounded-lg px-2 text-xs font-semibold {% if snoozed %}bg-white text-violet-700 shadow-sm dark:bg-slate-700 dark:text-violet-300{% else %}text-slate-500 dark:text-slate-400{% endif %}">Snoozed <strong>{{ queue_metrics.snoozed_open }}</strong></a>
                     <a href="/admin/inbox?open_only=true&amp;muted=true" class="inline-flex min-h-10 min-w-20 flex-1 items-center justify-center gap-1 rounded-lg px-2 text-xs font-semibold {% if muted %}bg-white text-slate-700 shadow-sm dark:bg-slate-700 dark:text-slate-200{% else %}text-slate-500 dark:text-slate-400{% endif %}">Muted <strong>{{ queue_metrics.muted_open }}</strong></a>
-                    <button type="submit" name="reply_window_status" value=""
-                            class="min-h-10 min-w-20 flex-1 rounded-lg px-2 text-xs font-semibold transition-colors {% if not reply_window_status %}bg-white text-slate-700 shadow-sm dark:bg-slate-700 dark:text-slate-200{% else %}text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200{% endif %}">
-                        Any window
-                    </button>
-                    <button type="submit" name="reply_window_status" value="expired"
-                            class="min-h-10 min-w-24 flex-1 rounded-lg px-2 text-xs font-semibold transition-colors {% if reply_window_status == 'expired' %}bg-white text-rose-700 shadow-sm dark:bg-slate-700 dark:text-rose-300{% else %}text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200{% endif %}">
-                        <span class="inline-flex items-center justify-center gap-1.5"><span class="h-1.5 w-1.5 rounded-full bg-rose-500" aria-hidden="true"></span>Expired</span>
-                    </button>
                 </div>
                 </fieldset>
             </details>

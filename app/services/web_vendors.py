@@ -8,15 +8,17 @@ need is assembled here and handed to the route as a plain dict.
 from __future__ import annotations
 
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
 from app.models.field_vendor import VENDOR_USER_ROLES
 from app.models.vendor_routes import InstallationProjectStatus
-from app.services import vendor_admin, vendor_user_provisioning
+from app.services import credential_recovery, vendor_admin, vendor_user_provisioning
 from app.services.common import coerce_uuid
 from app.services.db_session_adapter import db_session_adapter
 from app.services.field import vendor_capabilities
+from app.services.owner_commands import CommandContext
 from app.services.project_vendor_delivery import ProjectVendorDeliveryVisibility
 from app.services.vendor_delivery_portfolio import (
     VendorPortfolioQuery,
@@ -292,6 +294,76 @@ def revoke_vendor_user(db: Session, *, membership_id: str) -> None:
     db_session_adapter.release_read_transaction(db)
     # The route hands this in as a path string; the owner command takes a UUID.
     vendor_user_provisioning.revoke_committed(db, coerce_uuid(membership_id))
+
+
+def _admin_command_context(
+    *,
+    actor_id: str | None,
+    scope: str,
+    reason: str,
+) -> CommandContext:
+    command_id = uuid4()
+    return CommandContext(
+        command_id=command_id,
+        correlation_id=command_id,
+        actor=actor_id or "system:vendor-admin",
+        scope=scope,
+        reason=reason,
+    )
+
+
+def enable_vendor_user_login(
+    db: Session,
+    *,
+    membership_id: str,
+    actor_id: str | None = None,
+) -> None:
+    db_session_adapter.release_read_transaction(db)
+    vendor_user_provisioning.enable_login_committed(
+        db,
+        vendor_user_provisioning.EnableVendorUserLogin(
+            membership_id=coerce_uuid(membership_id)
+        ),
+        context=_admin_command_context(
+            actor_id=actor_id,
+            scope=membership_id,
+            reason="Administrative vendor login enablement",
+        ),
+    )
+
+
+def send_vendor_user_setup_link(
+    db: Session,
+    *,
+    membership_id: str,
+    actor_id: str | None = None,
+) -> None:
+    db_session_adapter.release_read_transaction(db)
+    enabled = vendor_user_provisioning.enable_login_committed(
+        db,
+        vendor_user_provisioning.EnableVendorUserLogin(
+            membership_id=coerce_uuid(membership_id)
+        ),
+        context=_admin_command_context(
+            actor_id=actor_id,
+            scope=membership_id,
+            reason="Administrative vendor login enablement before setup link",
+        ),
+    )
+    db_session_adapter.release_read_transaction(db)
+    credential_recovery.request_exact_password_recovery(
+        db,
+        credential_recovery.RequestExactPasswordRecoveryCommand(
+            context=_admin_command_context(
+                actor_id=actor_id,
+                scope=credential_recovery.CREDENTIAL_RECOVERY_SCOPE,
+                reason="Administrative vendor password setup link",
+            ),
+            principal_type="system_user",
+            principal_id=enabled.system_user_id,
+            next_login_path="/vendor/auth/login?next=/vendor",
+        ),
+    )
 
 
 def create_vendor_from_form(

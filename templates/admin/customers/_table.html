@@ -104,8 +104,10 @@
                                class="h-4 w-4 rounded border-slate-300 text-amber-600 focus:ring-amber-500 dark:border-slate-600 dark:bg-slate-700 dark:ring-offset-slate-800" />
                     </td>
                     {% endif %}
-                    <td class="whitespace-nowrap px-4 py-4">
-                        <a href="{{ customer_path }}" class="flex items-center gap-3 group/link">
+                    <td class="w-[280px] max-w-[280px] px-4 py-4">
+                        <a href="{{ customer_path }}"
+                           aria-label="{{ customer.name }}"
+                           class="flex min-w-0 max-w-[248px] items-center gap-3 group/link">
                             <div class="relative flex-shrink-0">
                                 {% if customer.is_business %}
                                 <div class="flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br from-purple-100 to-purple-50 text-purple-600 ring-2 ring-white shadow-sm transition group-hover/link:shadow dark:from-purple-900/40 dark:to-purple-900/20 dark:text-purple-400 dark:ring-slate-800">
@@ -117,9 +119,10 @@
                                 </div>
                                 {% endif %}
                             </div>
-                            <div class="min-w-0">
-                                <p class="truncate text-sm font-semibold text-slate-900 transition group-hover/link:text-amber-600 dark:text-white dark:group-hover/link:text-amber-400">
-                                    {{ customer.name }}
+                            <div class="min-w-0 max-w-[188px]">
+                                <p class="truncate text-sm font-semibold text-slate-900 transition group-hover/link:text-amber-600 dark:text-white dark:group-hover/link:text-amber-400"
+                                   {% if customer.name_presentation.is_truncated %}title="{{ customer.name_presentation.full_text }}"{% endif %}>
+                                    {{ customer.name_presentation.display_text }}
                                 </p>
                                 {% if customer.email %}
                                 <p class="truncate text-xs text-slate-500 dark:text-slate-400">{{ customer.email }}</p>

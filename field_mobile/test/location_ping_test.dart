@@ -1,9 +1,54 @@
+import 'dart:io';
+
+import 'package:dotmac_field/core/location/location_ping_store.dart';
 import 'package:dotmac_field/core/location/location_source.dart';
 import 'package:dotmac_field/features/location/location_cadence.dart';
 import 'package:dotmac_field/features/location/location_ping_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  group('location batch response', () {
+    test('accepts a fully accounted mixed response', () {
+      expect(
+        locationBatchWasResolved({
+          'accepted': 1,
+          'errors': [
+            {'index': 1, 'code': 'technician_not_assigned'},
+          ],
+        }, 2),
+        isTrue,
+      );
+    });
+
+    test('retains the queue when response accounting is incomplete', () {
+      expect(
+        locationBatchWasResolved({'accepted': 1, 'errors': []}, 2),
+        isFalse,
+      );
+      expect(
+        locationBatchWasResolved({
+          'accepted': 0,
+          'errors': [
+            {'index': 0, 'code': 'invalid_ping'},
+            {'index': 0, 'code': 'invalid_ping'},
+          ],
+        }, 2),
+        isFalse,
+      );
+    });
+  });
+
+  test('shift states use the backend presence status contract', () {
+    expect(ShiftState.offShift.apiValue, 'off_shift');
+    expect(ShiftState.onBreak.apiValue, 'break');
+    expect(ShiftState.onShift.apiValue, 'on_shift');
+    expect(ShiftStateApi.fromApiValue('off_shift'), ShiftState.offShift);
+    expect(ShiftStateApi.fromApiValue('break'), ShiftState.onBreak);
+    expect(ShiftStateApi.fromApiValue('on_shift'), ShiftState.onShift);
+    expect(ShiftStateApi.fromApiValue('busy'), ShiftState.onShift);
+    expect(ShiftStateApi.fromApiValue('unknown'), isNull);
+  });
+
   group('pingInterval cadence', () {
     test('no pinging off shift or on break', () {
       expect(
@@ -63,14 +108,23 @@ void main() {
     });
 
     test('captures a fix on shift with status and work order', () async {
+      List<LocationPingPayload>? posted;
       final svc = LocationPingService(
         location: FakeLocation((latitude: 6.5, longitude: 3.3)),
-        poster: (_) async => true,
+        poster: (pings) async {
+          posted = pings;
+          return true;
+        },
         clock: () => DateTime.utc(2026, 6, 13, 9, 0, 0),
       )..setShift(ShiftState.onShift);
 
       await svc.captureOnce(hasActiveJob: true, workOrderId: 'wo-1');
       expect(svc.bufferedCount, 1);
+      await svc.flush();
+      expect(posted, hasLength(1));
+      final payload = posted!.single.toJson();
+      expect(payload['crm_work_order_id'], 'wo-1');
+      expect(payload, isNot(contains('work_order_id')));
     });
 
     test('a null fix is skipped without error', () async {
@@ -96,6 +150,45 @@ void main() {
   });
 
   group('LocationPingService sharing', () {
+    test('restores the server-owned sharing state', () async {
+      final svc = LocationPingService(
+        location: FakeLocation(null),
+        poster: (_) async => true,
+        sharingReader: () async => const LocationSharingSnapshot(
+          enabled: true,
+          shift: ShiftState.onBreak,
+        ),
+      );
+
+      expect(await svc.restoreShift(), ShiftState.onBreak);
+      expect(svc.shift, ShiftState.onBreak);
+    });
+
+    test('disabled server sharing restores off shift', () async {
+      final svc = LocationPingService(
+        location: FakeLocation(null),
+        poster: (_) async => true,
+        sharingReader: () async => const LocationSharingSnapshot(
+          enabled: false,
+          shift: ShiftState.onShift,
+        ),
+      );
+
+      expect(await svc.restoreShift(), ShiftState.offShift);
+      expect(svc.shift, ShiftState.offShift);
+    });
+
+    test('failed restore leaves the local state unchanged', () async {
+      final svc = LocationPingService(
+        location: FakeLocation(null),
+        poster: (_) async => true,
+        sharingReader: () async => null,
+      )..setShift(ShiftState.onBreak);
+
+      expect(await svc.restoreShift(), isNull);
+      expect(svc.shift, ShiftState.onBreak);
+    });
+
     test('updateShift calls sharing updater and updates local shift', () async {
       final calls = <({bool enabled, ShiftState shift})>[];
       final svc = LocationPingService(
@@ -158,6 +251,92 @@ void main() {
         poster: (_) async => false,
       );
       expect(await svc.flush(), isTrue);
+    });
+  });
+
+  group('durable location buffer', () {
+    test('corrupt queue is discarded with payload-free evidence', () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'field-location-corrupt',
+      );
+      final file = File('${directory.path}/pending.json');
+      await file.writeAsString('{private malformed payload');
+      final store = FileLocationPingStore(
+        file,
+        clock: () => DateTime.utc(2026, 8, 18, 12),
+      );
+      addTearDown(() async {
+        if (await directory.exists()) await directory.delete(recursive: true);
+      });
+
+      expect(await store.load(), isEmpty);
+      expect(await file.exists(), isFalse);
+      final marker = File('${file.path}.corrupt');
+      expect(await marker.exists(), isTrue);
+      expect(
+        await marker.readAsString(),
+        'discarded_at=2026-08-18T12:00:00.000Z\n',
+      );
+    });
+
+    test(
+      'file store survives service recreation and clears after sync',
+      () async {
+        final directory = await Directory.systemTemp.createTemp(
+          'field-location-pings',
+        );
+        final file = File('${directory.path}/pending.json');
+        final store = FileLocationPingStore(file);
+        addTearDown(() async {
+          if (await directory.exists()) await directory.delete(recursive: true);
+        });
+
+        final first = LocationPingService(
+          location: FakeLocation((latitude: 6.5, longitude: 3.3)),
+          poster: (_) async => false,
+          store: store,
+        )..setShift(ShiftState.onShift);
+        await first.captureOnce(workOrderId: 'wo-1');
+        expect(await file.exists(), isTrue);
+
+        List<LocationPingPayload>? restored;
+        final restarted = LocationPingService(
+          location: FakeLocation(null),
+          poster: (pings) async {
+            restored = pings;
+            return true;
+          },
+          store: store,
+        );
+
+        expect(await restarted.restoreBufferedPings(), 1);
+        expect(await restarted.flush(), isTrue);
+        expect(restored!.single.workOrderId, 'wo-1');
+        expect(restarted.bufferedCount, 0);
+        expect(await file.exists(), isFalse);
+      },
+    );
+
+    test('restored buffer retains only the newest configured fixes', () async {
+      final store = MemoryLocationPingStore();
+      await store.save([
+        for (var i = 0; i < 4; i++)
+          LocationPingPayload(
+            latitude: i.toDouble(),
+            longitude: i.toDouble(),
+            capturedAt: DateTime.utc(2026, 1, 1, 0, i),
+            shift: ShiftState.onShift,
+          ),
+      ]);
+      final service = LocationPingService(
+        location: FakeLocation(null),
+        poster: (_) async => false,
+        store: store,
+        maxBuffer: 2,
+      );
+
+      expect(await service.restoreBufferedPings(), 2);
+      expect(await store.load(), hasLength(2));
     });
   });
 
