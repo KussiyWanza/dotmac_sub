@@ -9,6 +9,13 @@ from uuid import UUID, uuid4
 import pytest
 
 from app.models.audit import AuditEvent
+from app.models.billing import (
+    Invoice,
+    InvoiceLine,
+    InvoiceStatus,
+    LedgerEntry,
+    LedgerEntryType,
+)
 from app.models.event_store import EventStore
 from app.models.party import PartyRole, PartyRoleStatus, PartyRoleType
 from app.models.project import (
@@ -24,10 +31,14 @@ from app.models.sales import (
     Quote,
     QuoteStatus,
     SalesOrder,
+    SalesOrderInvoiceLink,
     SalesOrderLine,
+    SalesOrderPaymentStatus,
+    SalesOrderStatus,
 )
 from app.models.subscriber import Reseller, Subscriber
 from app.models.work_order import WorkOrder
+from app.schemas.billing import PaymentCreate
 from app.schemas.dispatch import WorkOrderHeaderCreate
 from app.schemas.project import ProjectTaskUpdate
 from app.schemas.sales import (
@@ -38,6 +49,7 @@ from app.schemas.sales import (
     QuoteCreate,
     QuoteLineItemCreate,
 )
+from app.services import billing as billing_service
 from app.services import projects
 from app.services import sales as sales_service
 from app.services.db_session_adapter import db_session_adapter
@@ -197,6 +209,12 @@ def test_quote_acceptance_converts_every_record_in_one_workflow(db_session):
     project = db_session.get(Project, outcome.project_id)
     tasks = db_session.query(ProjectTask).filter_by(project_id=project.id).all()
     work_orders = db_session.query(WorkOrder).filter_by(project_id=project.id).all()
+    invoice = db_session.query(Invoice).filter_by(account_id=subscriber.id).one()
+    invoice_link = (
+        db_session.query(SalesOrderInvoiceLink)
+        .filter_by(sales_order_id=order.id, invoice_id=invoice.id)
+        .one()
+    )
 
     assert outcome.replayed is False
     assert accepted.status == QuoteStatus.accepted.value
@@ -209,6 +227,11 @@ def test_quote_acceptance_converts_every_record_in_one_workflow(db_session):
     assert (
         db_session.query(SalesOrderLine).filter_by(sales_order_id=order.id).count() == 1
     )
+    assert invoice.status == InvoiceStatus.issued
+    assert invoice.total == Decimal("150000.00")
+    assert invoice.balance_due == Decimal("150000.00")
+    assert invoice.crm_external_ref == f"project:{project.id}"
+    assert invoice_link.purpose == "installation"
     assert project.sales_order_id == order.id
     assert accepted.project_type == ProjectType.fiber_optics_installation.value
     assert project.project_type == accepted.project_type
@@ -231,6 +254,84 @@ def test_quote_acceptance_converts_every_record_in_one_workflow(db_session):
         .count()
         == 1
     )
+
+
+def test_quote_acceptance_invoices_only_installation_lines(db_session):
+    _template(db_session)
+    lead = _lead(db_session, "installation-only-invoice")
+    quote = _quote(db_session, lead)
+    sales_service.quote_line_items.create(
+        db_session,
+        QuoteLineItemCreate(
+            quote_id=quote.id,
+            description="First month service",
+            quantity="1",
+            unit_price="50000.00",
+        ),
+    )
+
+    outcome = _accept(db_session, quote.id)
+
+    order = db_session.get(SalesOrder, outcome.sales_order_id)
+    invoice = (
+        db_session.query(Invoice).filter_by(account_id=outcome.subscriber_id).one()
+    )
+    invoice_lines = db_session.query(InvoiceLine).filter_by(invoice_id=invoice.id).all()
+
+    assert order.total == Decimal("200000.00")
+    assert invoice.status == InvoiceStatus.issued
+    assert invoice.total == Decimal("150000.00")
+    assert invoice.balance_due == Decimal("150000.00")
+    assert len(invoice_lines) == 1
+    assert invoice_lines[0].description == "Installation cost"
+
+
+def test_recorded_payment_pays_installation_invoice_and_marks_full_order_paid(
+    db_session,
+):
+    _template(db_session)
+    lead = _lead(db_session, "payment-links-order")
+    quote = _quote(db_session, lead)
+    sales_service.quote_line_items.create(
+        db_session,
+        QuoteLineItemCreate(
+            quote_id=quote.id,
+            description="First month service",
+            quantity="1",
+            unit_price="50000.00",
+        ),
+    )
+    outcome = _accept(db_session, quote.id)
+    order = db_session.get(SalesOrder, outcome.sales_order_id)
+    invoice = (
+        db_session.query(Invoice).filter_by(account_id=outcome.subscriber_id).one()
+    )
+
+    billing_service.payments.create(
+        db_session,
+        PaymentCreate(
+            account_id=outcome.subscriber_id,
+            amount=Decimal("200000.00"),
+            currency="NGN",
+            status="succeeded",
+        ),
+        auto_allocate=True,
+    )
+    db_session.refresh(order)
+    db_session.refresh(invoice)
+
+    assert invoice.status == InvoiceStatus.paid
+    assert invoice.balance_due == Decimal("0.00")
+    assert order.payment_status == SalesOrderPaymentStatus.paid.value
+    assert order.status == SalesOrderStatus.paid.value
+    assert order.amount_paid == Decimal("200000.00")
+    assert order.balance_due == Decimal("0.00")
+    assert db_session.query(LedgerEntry).filter_by(
+        account_id=outcome.subscriber_id,
+        invoice_id=None,
+        entry_type=LedgerEntryType.credit,
+        is_active=True,
+    ).one().amount == Decimal("50000.00")
 
 
 def test_quote_acceptance_carries_lead_reseller_to_subscriber_and_fulfillment(
