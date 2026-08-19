@@ -708,7 +708,17 @@ def ensure_installation_invoice_for_sales_order(
 
     project = _resolve_project_for_sales_order(db, sales_order_id)
     if not project:
-        return
+        from app.services import sales_fulfillment
+
+        try:
+            project = sales_fulfillment.ensure_implementation_scope(
+                db,
+                sales_order_id=sales_order.id,
+                actor_id="sales.orders",
+                commit=False,
+            ).project
+        except sales_fulfillment.SalesFulfillmentError:
+            return
 
     locked = (
         db.query(Project)

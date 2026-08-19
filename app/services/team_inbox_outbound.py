@@ -185,7 +185,7 @@ def _queue_outbox_reply(
     result = submit(
         db,
         CommunicationIntent(
-            subscriber_id=None,
+            subscriber_id=conversation.subscriber_id,
             event_type="team_inbox.reply",
             category="service",
             communication_class=CommunicationClass.transactional,
