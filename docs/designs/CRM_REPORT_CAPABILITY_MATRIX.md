@@ -23,6 +23,7 @@ unrelated and remains native.
 | Technician performance | `provisioning_managers.technician_report_stats` and `recent_completed_appointments` | `/admin/reports/technician` | `reports:support:read` | Repaired completion semantics and date-consistent export |
 | Online activity | `crm_reporting`, native RADIUS owner | `/admin/reports/operational/online-activity` | `customer:read` | Subscriber/status/last-activity page, export, and empty state |
 | Subscriber billing risk | `crm_reporting`, native customer/billing owners | `/admin/reports/operational/billing-risk` | `reports:billing:read` | Facts only; no copied CRM engagement state |
+| Retention-risk queue preview | `crm_api.billing_risk_rows`, native customer/billing owners | `/admin/customer-retention` (hidden direct route) | `reports:billing:read` | Same retention tracker layout and native billing-risk profile drill-down; CRM engagement, follow-up, pipeline, and outreach state remain unavailable |
 | Subscriber revenue/pipeline | `crm_reporting`, Invoice/Payment owners | `/admin/reports/operational/subscriber-revenue` | `reports:billing:read` | Period-filtered page/export |
 | Postpaid customers | `crm_reporting`, customer/billing owners | `/admin/reports/operational/postpaid-customers` | `reports:billing:read` | Native page/export |
 | CRM performance | `crm_reporting`, `team_inbox_metrics` | `/admin/reports/operational/crm-performance` | `reports:support:read` | Native team page/export |
