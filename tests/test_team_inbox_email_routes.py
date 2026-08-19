@@ -22,6 +22,12 @@ ROUTES_TEMPLATE = Path("templates/admin/inbox/email_routes.html").read_text()
 ROUTES_MODULE = Path("app/web/admin/inbox.py").read_text()
 
 
+def test_ai_intake_meta_social_form_uses_connector_key():
+    assert 'value="meta.social"' in ROUTES_TEMPLATE
+    assert "ai_intake_policy.provider == 'meta.social'" in ROUTES_TEMPLATE
+    assert 'value="meta_social"' not in ROUTES_TEMPLATE
+
+
 def _team(db_session, name):
     team = ServiceTeam(name=name, team_type=ServiceTeamType.support.value)
     db_session.add(team)
