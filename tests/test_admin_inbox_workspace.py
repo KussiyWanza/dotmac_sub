@@ -303,6 +303,7 @@ def test_projection_supplies_live_agent_and_assignment_options(db_session):
     )
     assert projection.service_team_options[0].name == "Support"
     assert projection.service_team_options[0].id == team.id
+    assert projection.agent_options[0].team_ids == (team.id,)
     assert (
         team_inbox_projection.list_actor_service_team_options(db_session, user.id)
         == projection.service_team_options
@@ -390,6 +391,7 @@ def test_assignment_agent_options_show_team_and_presence_status(db_session):
         InboxAgentPresence(
             person_id=user.id,
             status=InboxAgentPresenceStatus.online.value,
+            last_seen_at=datetime.now(UTC),
         )
     )
     db_session.commit()
@@ -405,7 +407,10 @@ def test_assignment_agent_options_show_team_and_presence_status(db_session):
         InboxAgentPresenceStatus.online.value
     )
     assert 'name="service_team_id"' in conversation_template
+    assert conversation_template.count('name="service_team_id" required') == 1
     assert "service_team_options" in conversation_template
+    assert "selectedTeam" in conversation_template
+    assert "data-team-ids" in conversation_template
     assert "agent.presence_status" in conversation_template
 
 

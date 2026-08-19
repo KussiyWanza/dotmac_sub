@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
 from starlette.requests import Request
 
@@ -43,6 +44,7 @@ def _member(db_session, team: ServiceTeam):
         InboxAgentPresence(
             person_id=user.id,
             status=InboxAgentPresenceStatus.online.value,
+            last_seen_at=datetime.now(UTC),
         )
     )
     db_session.flush()
