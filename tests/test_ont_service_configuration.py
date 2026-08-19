@@ -36,7 +36,9 @@ from app.services.catalog.ip_block_choices import IpBlockPrefix
 from app.services.db_session_adapter import db_session_adapter
 from app.services.domain_errors import DomainError
 from app.services.network.ont_service_configuration import (
+    ConfigureCustomerWifiCommand,
     ConfigureOntServiceCommand,
+    CustomerWifiConfigurationChange,
     ExecuteOntServiceConfigurationCommand,
     LanConfigurationChange,
     OntConfigurationChange,
@@ -44,8 +46,10 @@ from app.services.network.ont_service_configuration import (
     RetryOntServiceConfigurationCommand,
     WanConfigurationChange,
     WifiConfigurationChange,
+    configure_customer_wifi,
     configure_ont_service,
     execute_ont_service_configuration,
+    get_latest_ont_configuration_section_delivery,
     get_ont_service_configuration_projection,
     retry_ont_service_configuration,
 )
@@ -197,6 +201,99 @@ def test_configuration_admission_commits_intent_operation_and_dispatch_atomicall
     assert operation.operation_type is NetworkOperationType.ont_service_config
     assert dispatch is not None
     assert head.phase is OntServiceConfigurationPhase.queued
+
+
+def test_customer_wifi_admission_saves_secret_and_queues_without_device_io(
+    db_session,
+    monkeypatch,
+    olt_device,
+    subscription,
+    subscriber,
+):
+    ont_id, assignment_id = _admission_scope(
+        db_session,
+        monkeypatch,
+        olt_device=olt_device,
+        subscription=subscription,
+        subscriber=subscriber,
+    )
+    subscriber_id = subscriber.id
+    subscription_id = subscription.id
+    db_session.commit()
+    monkeypatch.setattr(
+        "app.services.network.ont_service_configuration.resolve_effective_ont_config",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("WiFi admission must not resolve WAN configuration")
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.network.ont_service_configuration.active_primary_internet_intent",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("WiFi admission must not read PPP service intent")
+        ),
+    )
+    monkeypatch.setattr(
+        (
+            "app.services.network.ont_service_configuration."
+            "ensure_active_wan_service_intent_in_transaction"
+        ),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("WiFi admission must not write PPP service intent")
+        ),
+    )
+    command_id = uuid.uuid4()
+    outcome = configure_customer_wifi(
+        db_session,
+        ConfigureCustomerWifiCommand(
+            context=CommandContext(
+                command_id=command_id,
+                correlation_id=command_id,
+                actor="customer:test",
+                scope="customer:device:wifi",
+                reason="Customer requested a WiFi credential update",
+                idempotency_key="customer-wifi-admission",
+            ),
+            subscriber_id=subscriber_id,
+            subscription_id=subscription_id,
+            change=CustomerWifiConfigurationChange(
+                ssid="CustomerSSID",
+                password="CustomerSecret123",
+            ),
+        ),
+    )
+
+    ont = db_session.get(OntUnit, ont_id)
+    dispatch = db_session.scalar(
+        select(NetworkOperationDispatch).where(
+            NetworkOperationDispatch.operation_id == outcome.operation_id
+        )
+    )
+    operation = db_session.get(NetworkOperation, outcome.operation_id)
+    revision = db_session.scalar(
+        select(OntServiceConfigurationRevision).where(
+            OntServiceConfigurationRevision.operation_id == outcome.operation_id
+        )
+    )
+    status = get_latest_ont_configuration_section_delivery(
+        db_session,
+        ont_unit_id=ont_id,
+        section=OntConfigurationSection.wifi,
+    )
+    assert outcome.assignment_id == assignment_id
+    assert outcome.phase is OntServiceConfigurationPhase.queued
+    assert ont is not None
+    assert ont.desired_config["wifi"]["ssid"] == "CustomerSSID"
+    assert ont.desired_config["wifi"]["password"] != "CustomerSecret123"
+    assert str(ont.desired_config["wifi"]["password"]).startswith("enc:")
+    assert dispatch is not None
+    assert operation is not None
+    assert "wan_intent_id" not in operation.input_payload
+    assert "effective_customer_vlan" not in operation.input_payload
+    assert revision is not None
+    assert "wan_intent_id" not in revision.desired_change_evidence
+    assert status is not None
+    assert status.operation_id == outcome.operation_id
+    assert status.phase is OntServiceConfigurationPhase.queued
 
 
 def test_configuration_admission_rollback_leaves_no_partial_records(

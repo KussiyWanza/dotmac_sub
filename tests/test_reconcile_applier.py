@@ -778,6 +778,15 @@ def test_acs_set_wifi_config_batches_fields_and_resolves_password():
         paths.psk_path: "ACTUAL_PSK",
     }
     assert "ACTUAL_PSK" not in str(result.actions_applied)
+    assert result.actions_applied[0].evidence == {
+        "changed_fields": [
+            "wifi_enabled",
+            "wifi_ssid",
+            "wifi_channel",
+            "wifi_security_mode",
+            "wifi_password_ref",
+        ]
+    }
 
 
 def test_acs_set_remote_access_batches_ssh_and_telnet_guard():

@@ -7,7 +7,7 @@ Status: implementation in progress
 `network.ont_service_configuration`
 (`app.services.network.ont_service_configuration`) is the application
 coordinator for customer-service configuration submitted from the ONT Configure
-UI. The supported path is:
+UI or the authenticated customer WiFi action. The supported path is:
 
 ```text
 typed UI command
@@ -33,6 +33,7 @@ The coordinator owns:
   operation, and dispatch;
 - replay, same-revision repair, and superseding-revision policy;
 - the typed current-configuration projection and next action consumed by UI.
+- authenticated subscriber/subscription scope for customer WiFi admission.
 
 It does not own:
 
@@ -83,19 +84,26 @@ not guess bindings for existing errors or events.
 
 ## Admission, locking, and atomicity
 
-Lock order is `OntUnit -> active OntAssignment -> configuration head -> active
-WAN intent -> credential inputs -> operation/dispatch`. Admission rechecks the
-authenticated scope, exact active assignment and subscription, PON identity,
-authorization/commissioning readiness, submitted section, and effective config
-pack before mutation.
+Operator lock order is `OntUnit -> active OntAssignment -> configuration head
+-> active WAN intent -> credential inputs -> operation/dispatch`. Operator
+admission rechecks the authenticated scope, exact active assignment and
+subscription, PON identity, authorization/commissioning readiness, submitted
+section, and effective config pack before mutation.
+
+Customer WiFi admission accepts only SSID and optional password fields. It
+proves the exact active subscriber/subscription assignment inside the owner,
+preserves unrelated WiFi settings, encrypts the password before persistence,
+and returns the queued operation without WAN-intent, PPP-credential, OLT, ACS,
+or other network I/O. Its shorter lock order ends at the configuration head and
+operation/dispatch records.
 
 A command advances the head once and atomically:
 
-1. declares, activates, preserves, or replaces the exact-service WAN intent;
-2. projects PPPoE dialer values only from the active subscription credential;
-3. persists the typed desired changes;
-4. creates the revision and tracked `ont_service_config` operation;
-5. stages `ont_service_config_apply.v1` in the durable dispatch outbox.
+1. for operator routed-WAN admission, declares or updates exact-service WAN
+   intent and projects PPPoE values from the active credential;
+2. persists the typed desired changes;
+3. creates the revision and tracked `ont_service_config` operation;
+4. stages `ont_service_config_apply.v1` in the durable dispatch outbox.
 
 Any failure rolls back every item above. The route never commits, calls an OLT
 or ACS adapter, invokes `reconcile_ont`, or publishes a Celery task.
@@ -132,6 +140,16 @@ after broker delivery. It records these distinct phases:
 
 Readback-pending work remains on the same operation and uses bounded delayed
 verification dispatches. It is never rendered as configured.
+
+The section-scoped delivery projection returns the newest revision for a
+requested section on the exact active assignment. This lets customer WiFi
+status remain visible if a later operator change to another section supersedes
+it, without treating the historical WiFi revision as current whole-device
+state.
+
+WiFi execution is explicitly ACS-only. It carries forward the last OLT
+observation and does not resolve an OLT adapter or evaluate PPP authorization;
+neither concern can consume the WiFi delivery deadline or block the action.
 
 ## Return to inventory
 

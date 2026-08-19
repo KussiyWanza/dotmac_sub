@@ -32,7 +32,7 @@ SERVICES: tuple[SOTService, ...] = (
             "device operation re-execution eligibility",
             "immutable redrive lineage and reviewed-head evidence",
             "typed recovery eligibility and retry limits",
-            "customer subscription/device command scope and typed outcomes",
+            "customer reboot operation tracking and typed outcome evidence",
         ),
         depends_on=("network.identity",),
         notes=(
@@ -46,10 +46,12 @@ SERVICES: tuple[SOTService, ...] = (
             "remain immutable; approved retries create linked operations "
             "through app.services.network_operation_recovery. Unregistered "
             "device writes fail closed."
-            " Customer reboot and Wi-Fi adapters delegate subscription,"
-            " subscriber, and active assignment scope to"
-            " app.services.customer_device_commands; its stable outcome"
-            " carries the exact subscription, device, and operation IDs."
+            " Customer reboot adapters delegate subscription, subscriber,"
+            " and active assignment scope to app.services.customer_device_commands."
+            " Customer Wi-Fi admission is owned by"
+            " network.ont_service_configuration and uses this ledger only for"
+            " exact operation lifecycle evidence. Stable customer outcomes"
+            " carry the exact subscription, device, and operation IDs."
         ),
     ),
     SOTService(

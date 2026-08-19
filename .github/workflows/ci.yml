@@ -20,7 +20,9 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  PYTHON_VERSION: "3.12"
+  # The shared .venv embeds an absolute interpreter path, so every artifact
+  # consumer must resolve the exact same Python patch release as its producer.
+  PYTHON_VERSION: "3.12.13"
   POETRY_VERSION: "2.4.1"
   DATABASE_URL: "sqlite:///./test.db"
   SECRET_KEY: "ci-test-secret-key-not-for-production" # pragma: allowlist secret

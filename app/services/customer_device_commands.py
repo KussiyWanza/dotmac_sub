@@ -1,8 +1,8 @@
-"""Customer-scoped reboot and Wi-Fi command contract.
+"""Customer-facing reboot and Wi-Fi command outcomes.
 
-The network operation ledger owns device execution state.  This service owns
-customer/subscription/device scope and presents one typed outcome to every
-self-service adapter.
+Reboot retains its tracked-operation path. Wi-Fi delegates authenticated scope,
+desired state, revision, and durable dispatch to the ONT service-configuration
+owner. This adapter presents their lifecycle through one typed customer outcome.
 """
 
 from __future__ import annotations
@@ -23,9 +23,18 @@ from app.models.network_operation import (
     NetworkOperationTargetType,
     NetworkOperationType,
 )
+from app.models.ont_service_configuration import OntServiceConfigurationPhase
+from app.services.domain_errors import DomainError
 from app.services.network.ont_actions import OntActions
-from app.services.network.ont_features import OntFeatureService
+from app.services.network.ont_service_configuration import (
+    ConfigureCustomerWifiCommand,
+    CustomerWifiConfigurationChange,
+    OntConfigurationSection,
+    configure_customer_wifi,
+    get_latest_ont_configuration_section_delivery,
+)
 from app.services.network_operations import commit_tracked_action, run_tracked_action
+from app.services.owner_commands import CommandContext
 from app.services.settings_spec import resolve_value
 
 
@@ -35,6 +44,7 @@ class CustomerDeviceCommandKind(StrEnum):
 
 
 class CustomerDeviceCommandStatus(StrEnum):
+    queued = "queued"
     succeeded = "succeeded"
     waiting = "waiting"
     failed = "failed"
@@ -51,7 +61,10 @@ class CustomerDeviceCommandOutcome:
 
     @property
     def success(self) -> bool:
-        return self.status == CustomerDeviceCommandStatus.succeeded
+        return self.status in {
+            CustomerDeviceCommandStatus.queued,
+            CustomerDeviceCommandStatus.succeeded,
+        }
 
 
 class CustomerDeviceCommandError(ValueError):
@@ -190,11 +203,11 @@ def update_subscription_wifi(
     *,
     subscriber_id: UUID,
     subscription_id: UUID,
-    actor_id: str,
+    context: CommandContext,
     ssid: str,
     password: str | None,
 ) -> CustomerDeviceCommandOutcome:
-    """Apply and verify Wi-Fi state on the exact assigned non-UISP ONT."""
+    """Save and durably queue Wi-Fi state for the exact customer service."""
     ssid_value = ssid.strip()
     password_value = password.strip() if password else None
     if not 1 <= len(ssid_value) <= 32:
@@ -205,25 +218,97 @@ def update_subscription_wifi(
         raise CustomerDeviceCommandError(
             "invalid_wifi_password", "WiFi password must be 8-63 characters"
         )
+    try:
+        queued = configure_customer_wifi(
+            db,
+            ConfigureCustomerWifiCommand(
+                context=context,
+                subscriber_id=subscriber_id,
+                subscription_id=subscription_id,
+                change=CustomerWifiConfigurationChange(
+                    ssid=ssid_value,
+                    password=password_value,
+                ),
+            ),
+        )
+    except DomainError as exc:
+        code = (
+            "subscription_not_found"
+            if exc.code.endswith(".customer_subscription_not_found")
+            else "device_command_unsupported"
+            if exc.code.endswith(".customer_device_unsupported")
+            else "wifi_update_rejected"
+        )
+        raise CustomerDeviceCommandError(code, exc.message) from exc
+    return CustomerDeviceCommandOutcome(
+        command=CustomerDeviceCommandKind.wifi_update,
+        status=CustomerDeviceCommandStatus.queued,
+        subscription_id=subscription_id,
+        device_id=queued.ont_unit_id,
+        operation_id=queued.operation_id,
+        message="WiFi update queued. We will apply it in the background.",
+    )
+
+
+def get_subscription_wifi_status(
+    db: Session,
+    *,
+    subscriber_id: UUID,
+    subscription_id: UUID,
+) -> CustomerDeviceCommandOutcome:
+    """Return the latest customer-visible WiFi delivery status."""
+
     _subscription, ont = _assigned_ont(
         db, subscriber_id=subscriber_id, subscription_id=subscription_id
     )
-    result = run_tracked_action(
+    projection = get_latest_ont_configuration_section_delivery(
         db,
-        NetworkOperationType.wifi_update,
-        NetworkOperationTargetType.ont,
-        str(ont.id),
-        lambda: OntFeatureService.set_wifi_config(
-            db, str(ont.id), ssid=ssid_value, password=password_value
-        ),
-        correlation_key=f"customer:{subscription_id}:wifi:{ont.id}",
-        initiated_by=f"customer:{actor_id}",
+        ont_unit_id=ont.id,
+        section=OntConfigurationSection.wifi,
     )
-    outcome = _outcome(
+    if projection is None:
+        raise CustomerDeviceCommandError(
+            "wifi_operation_not_found", "No WiFi update has been submitted."
+        )
+    status_by_phase = {
+        OntServiceConfigurationPhase.saved: CustomerDeviceCommandStatus.queued,
+        OntServiceConfigurationPhase.queued: CustomerDeviceCommandStatus.queued,
+        OntServiceConfigurationPhase.applying: CustomerDeviceCommandStatus.waiting,
+        OntServiceConfigurationPhase.readback_pending: (
+            CustomerDeviceCommandStatus.waiting
+        ),
+        OntServiceConfigurationPhase.delivered_unverified: (
+            CustomerDeviceCommandStatus.succeeded
+        ),
+        OntServiceConfigurationPhase.verified: CustomerDeviceCommandStatus.succeeded,
+        OntServiceConfigurationPhase.failed: CustomerDeviceCommandStatus.failed,
+        OntServiceConfigurationPhase.superseded: CustomerDeviceCommandStatus.failed,
+        OntServiceConfigurationPhase.retired: CustomerDeviceCommandStatus.failed,
+    }
+    message_by_phase = {
+        OntServiceConfigurationPhase.saved: "WiFi update saved.",
+        OntServiceConfigurationPhase.queued: "WiFi update queued.",
+        OntServiceConfigurationPhase.applying: "WiFi update is being applied.",
+        OntServiceConfigurationPhase.readback_pending: (
+            "WiFi update applied; waiting for the device to confirm it."
+        ),
+        OntServiceConfigurationPhase.delivered_unverified: (
+            "WiFi update delivered; exact device readback is unavailable."
+        ),
+        OntServiceConfigurationPhase.verified: "WiFi update completed.",
+        OntServiceConfigurationPhase.failed: (
+            projection.failure_message or "WiFi update failed."
+        ),
+        OntServiceConfigurationPhase.superseded: (
+            "WiFi update was replaced by a newer configuration."
+        ),
+        OntServiceConfigurationPhase.retired: "WiFi update is no longer current.",
+    }
+    return CustomerDeviceCommandOutcome(
         command=CustomerDeviceCommandKind.wifi_update,
+        status=status_by_phase[projection.phase],
         subscription_id=subscription_id,
         device_id=ont.id,
-        result=result,
+        operation_id=projection.operation_id,
+        message=message_by_phase[projection.phase],
     )
-    commit_tracked_action(db)
-    return outcome
