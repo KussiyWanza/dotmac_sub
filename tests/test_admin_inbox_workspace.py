@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -610,6 +610,7 @@ def test_queue_and_detail_use_email_from_name_when_contact_is_unlinked(db_sessio
 def test_whatsapp_reply_to_explicit_contact_ignores_canceled_subscriber_match(
     db_session, monkeypatch
 ):
+    opened_at = datetime(2026, 7, 10, 8, 0, tzinfo=UTC)
     subscriber = Subscriber(
         first_name="Canceled",
         last_name="Match",
@@ -632,7 +633,7 @@ def test_whatsapp_reply_to_explicit_contact_ignores_canceled_subscriber_match(
             direction="inbound",
             body="Hello",
             from_address="+2348183750805",
-            received_at=datetime.now(UTC),
+            received_at=opened_at,
             metadata_={"reply_window_qualifying": True},
         )
     )
@@ -652,6 +653,7 @@ def test_whatsapp_reply_to_explicit_contact_ignores_canceled_subscriber_match(
             metadata={"source_route": "test_reply"},
         ),
         record_failure=True,
+        now=opened_at + timedelta(minutes=1),
     )
 
     assert result.kind == "queued"
