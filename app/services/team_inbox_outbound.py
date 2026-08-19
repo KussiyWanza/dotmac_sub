@@ -185,7 +185,7 @@ def _queue_outbox_reply(
     result = submit(
         db,
         CommunicationIntent(
-            subscriber_id=conversation.subscriber_id,
+            subscriber_id=None,
             event_type="team_inbox.reply",
             category="service",
             communication_class=CommunicationClass.transactional,
@@ -195,6 +195,9 @@ def _queue_outbox_reply(
             include_reseller=False,
             persist_policy_suppressions=False,
             recipients={channel: recipient},
+            audience_type="operational",
+            audience_id=conversation.id,
+            resolve_subscriber_identity=False,
             metadata=intent_metadata,
             dedupe_key=payload.dedupe_key,
             delivery_latency=NotificationDeliveryLatency.immediate,

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 from jinja2 import Environment, FileSystemLoader
 
+from app.models.notification import Notification
 from app.models.party import Party, PartyType
 from app.models.sales import Lead, LeadOriginCapture
 from app.models.service_team import ServiceTeam, ServiceTeamMember, ServiceTeamType
@@ -599,6 +600,61 @@ def test_queue_and_detail_use_email_from_name_when_contact_is_unlinked(db_sessio
     assert timeline is not None
     assert timeline.contact_name == row.contact_name
     assert timeline.contact_initials == row.contact_initials
+
+
+def test_whatsapp_reply_to_explicit_contact_ignores_canceled_subscriber_match(
+    db_session, monkeypatch
+):
+    subscriber = Subscriber(
+        first_name="Canceled",
+        last_name="Match",
+        email="canceled-match@example.test",
+        phone="08183750805",
+        status=SubscriberStatus.canceled,
+        is_active=False,
+    )
+    conversation = InboxConversation(
+        channel_type="whatsapp",
+        contact_address="+2348183750805",
+        status=InboxConversationStatus.open.value,
+    )
+    db_session.add_all([subscriber, conversation])
+    db_session.flush()
+    db_session.add(
+        InboxMessage(
+            conversation_id=conversation.id,
+            channel_type="whatsapp",
+            direction="inbound",
+            body="Hello",
+            from_address="+2348183750805",
+            received_at=datetime.now(UTC),
+            metadata_={"reply_window_qualifying": True},
+        )
+    )
+    monkeypatch.setattr(
+        team_inbox_outbound.team_inbox_realtime,
+        "publish_conversation_event",
+        lambda *args, **kwargs: None,
+    )
+
+    result = team_inbox_outbound.send_inbox_reply(
+        db_session,
+        conversation=conversation,
+        payload=team_inbox_outbound.InboxReplyPayload(
+            body_html="<p>We are checking this.</p>",
+            body_text="We are checking this.",
+            sent_by_person_id=uuid.uuid4(),
+            metadata={"source_route": "test_reply"},
+        ),
+        record_failure=True,
+    )
+
+    assert result.kind == "queued"
+    notification = db_session.get(Notification, result.notification_id)
+    assert notification is not None
+    assert notification.subscriber_id is None
+    assert notification.audience_type == "operational"
+    assert notification.audience_id == conversation.id
 
 
 def test_sidebar_projection_preserves_selection_without_loading_detail(
