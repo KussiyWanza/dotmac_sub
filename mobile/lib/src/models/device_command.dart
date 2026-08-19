@@ -16,6 +16,8 @@ class DeviceCommandOutcome {
   final String message;
 
   bool get succeeded => status == 'succeeded';
+  bool get accepted =>
+      const {'queued', 'waiting', 'succeeded'}.contains(status);
 
   factory DeviceCommandOutcome.fromJson(Map<String, dynamic> json) =>
       DeviceCommandOutcome(

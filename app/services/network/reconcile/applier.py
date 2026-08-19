@@ -678,21 +678,21 @@ def _execute(action: Action, ctx: ApplyContext) -> AppliedAction:
             changed: list[str] = []
             if action.enabled is not None:
                 wifi_params[action.paths.enabled] = action.enabled
-                changed.append("enabled")
+                changed.append("wifi_enabled")
             if action.ssid is not None:
                 wifi_params[action.paths.ssid] = action.ssid
-                changed.append("ssid")
+                changed.append("wifi_ssid")
             if action.channel is not None:
                 wifi_params[action.paths.channel] = action.channel
-                changed.append("channel")
+                changed.append("wifi_channel")
             if action.security_mode is not None:
                 wifi_params[action.paths.security_mode] = action.security_mode
-                changed.append("security_mode")
+                changed.append("wifi_security_mode")
             if action.password_ref is not None:
                 wifi_params[action.paths.psk_path] = _resolve_or_fail(
                     ctx, action, action.password_ref
                 )
-                changed.append("password")
+                changed.append("wifi_password_ref")
             if not wifi_params:
                 raise ApplyError(
                     action,
@@ -706,6 +706,7 @@ def _execute(action: Action, ctx: ApplyContext) -> AppliedAction:
                 None,
                 ",".join(changed),
                 started,
+                evidence={"changed_fields": changed},
             )
 
         case AcsSetRemoteAccess():

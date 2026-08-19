@@ -10,10 +10,11 @@ Phases (each described in design doc; failure at any phase produces a
   3. Materialise current desired state from the ``OntUnit`` row.
   4. Merge proposed_change → target desired state; validate via
      ``validate_desired``. Errors: ``INVALID_CHANGE``.
-  5. Build target adapters (OLT SSH adapter + GenieACS client). In production
-     these are resolved from the ``OltDevice`` and ``Tr069AcsServer`` rows;
-     tests inject stubs.
-  6. Read OLT + ACS observed state in parallel (two threads, I/O-bound).
+  5. Build the adapters required by the requested delivery scope. In
+     production these are resolved from ``OltDevice`` and ``Tr069AcsServer``;
+     explicit WiFi delivery is ACS-only and carries cached OLT evidence.
+  6. Read the required live observed state, parallelizing OLT + ACS when both
+     surfaces are in scope.
   7. Compute the plan from (target desired, observed, mode).
   8. Precondition: any surface the plan needs that was unreachable at read
      time → fast-fail. Errors: ``OLT_UNREACHABLE`` / ``ACS_UNREACHABLE``.
@@ -27,9 +28,9 @@ Phases (each described in design doc; failure at any phase produces a
  10. Persist: upsert observation; write back desired-state mutations on
      success; set ``sync_status``/``last_error``/``last_reconciled_at``.
 
-The function is synchronous (request-scoped) per the "no queue, no silent
-failure" design. Long operations (e.g. a full bootstrap) take up to
-``timeout_sec`` — operators expect this to be measured in tens of seconds.
+The function itself is synchronous. Interactive customer WiFi requests reach
+it through the durable configuration worker; operator and sweep callers may
+invoke it directly. Long operations take up to ``timeout_sec``.
 
 """
 
@@ -301,13 +302,22 @@ def reconcile_ont(
             olt_only_profile_change = mode == "sync" and proposed_fields == frozenset(
                 {"tr069_profile_id"}
             )
-            if olt_adapter is None:
+            wifi_only_delivery = wifi_delivery_scope is not None
+            if olt_adapter is None and not wifi_only_delivery:
                 olt_adapter = _resolve_olt_adapter(db, ont)
             if acs_client is None and not olt_only_profile_change:
                 acs_client = _resolve_acs_client(db, ont)
             acs_observed_fallback = (
                 _cached_acs_observation(db, ont)
                 if olt_only_profile_change and acs_client is None
+                else None
+            )
+            cached_wifi_observation = (
+                _cached_observation(db, ont) if wifi_only_delivery else None
+            )
+            olt_observed_fallback = (
+                cached_wifi_observation.olt
+                if cached_wifi_observation is not None
                 else None
             )
 
@@ -317,6 +327,7 @@ def reconcile_ont(
                 acs_client,
                 target,
                 deadline=deadline,
+                olt_observed_fallback=olt_observed_fallback,
                 acs_observed_fallback=acs_observed_fallback,
             )
 
@@ -326,10 +337,15 @@ def reconcile_ont(
             # OLT/ACS reader unreachable flags) — it's stored on the
             # observation row so the operator UI can flag "ONT mgmt plane
             # was down at last reconcile" without needing to re-ping later.
-            mgmt_ip_pingable = is_pingable(
-                target.mgmt_ip,
-                ping_function=ping_function,
-            )
+            if wifi_only_delivery:
+                mgmt_ip_pingable = bool(
+                    cached_wifi_observation and cached_wifi_observation.mgmt_ip_pingable
+                )
+            else:
+                mgmt_ip_pingable = is_pingable(
+                    target.mgmt_ip,
+                    ping_function=ping_function,
+                )
 
             observed_before = OntObservedState(
                 last_reconciled_at=started_at,
@@ -447,13 +463,16 @@ def reconcile_ont(
             # plan. Comparing them at apply time is a real check; echoing the
             # ruling's own fields back at it -- which an earlier version did --
             # compared the ruling against itself and enforced nothing.
-            ppp_ruling = authorize_ppp_delivery(db, ont, actions=plan.actions)
-            ppp_scope = derive_delivery_scope(db, ont, plan.actions)
-            if not ppp_ruling.authorized:
-                logger.info(
-                    "reconcile_ppp_delivery_not_authorized",
-                    extra=ppp_ruling.as_log_extra(),
-                )
+            ppp_ruling = None
+            ppp_scope = None
+            if not wifi_only_delivery:
+                ppp_ruling = authorize_ppp_delivery(db, ont, actions=plan.actions)
+                ppp_scope = derive_delivery_scope(db, ont, plan.actions)
+                if not ppp_ruling.authorized:
+                    logger.info(
+                        "reconcile_ppp_delivery_not_authorized",
+                        extra=ppp_ruling.as_log_extra(),
+                    )
             ctx = ApplyContext(
                 olt_adapter=olt_adapter,
                 acs_client=acs_client,
@@ -555,6 +574,7 @@ def reconcile_ont(
                 acs_client,
                 target,
                 deadline=deadline,
+                olt_observed_fallback=olt_observed_fallback,
                 acs_observed_fallback=acs_observed_fallback,
             )
             observed_after = OntObservedState(
@@ -562,9 +582,13 @@ def reconcile_ont(
                 last_reconcile_duration_ms=int(
                     (time.monotonic() - started_monotonic) * 1000
                 ),
-                mgmt_ip_pingable=is_pingable(
-                    target.mgmt_ip,
-                    ping_function=ping_function,
+                mgmt_ip_pingable=(
+                    mgmt_ip_pingable
+                    if wifi_only_delivery
+                    else is_pingable(
+                        target.mgmt_ip,
+                        ping_function=ping_function,
+                    )
                 ),
                 consecutive_sweep_unreachable=0,
                 olt=verify_olt_result.observed or _absent_olt(),
@@ -646,11 +670,10 @@ def reconcile_ont(
                 )
 
             if verify_plan.drifts:
-                # AUDIT-ONLY (dry-run for the future ACS verify-read grace):
-                # classify the residual drift and record whether this mismatch
-                # is purely ACS inform-lag (would_be_graced) vs genuine. Behaviour
-                # is unchanged — we still fail with VERIFICATION_MISMATCH — so we
-                # can quantify the oscillation cause before enabling any grace.
+                # Classify residual drift as ACS inform-lag or genuine. This
+                # reconcile pass still returns VERIFICATION_MISMATCH; the
+                # durable configuration lifecycle uses readback_pending
+                # evidence to schedule bounded delayed verification.
                 _cache_lag, _genuine = _classify_verify_drifts(
                     verify_plan.drifts, apply_outcome.actions_applied
                 )
@@ -663,8 +686,8 @@ def reconcile_ont(
                         "total_drifts": len(verify_plan.drifts),
                         "acs_cache_lag_candidates": len(_cache_lag),
                         "genuine_drifts": len(_genuine),
-                        # If True, the future grace would treat this as
-                        # converged-pending-reinform instead of out_of_sync.
+                        # If true, a lifecycle owner may wait for a fresh Inform
+                        # rather than treating stale cache as a terminal fault.
                         "would_be_graced": not _genuine,
                         "drift_fields": [
                             f"{d.surface}:{d.field}" for d in verify_plan.drifts
@@ -831,6 +854,7 @@ def _read_observed_parallel(
     desired: OntDesiredState,
     *,
     deadline: datetime,
+    olt_observed_fallback: OltObservedFields | None = None,
     acs_observed_fallback: AcsObservedFields | None = None,
 ):
     """Run OLT + ACS reads in parallel.
@@ -838,6 +862,24 @@ def _read_observed_parallel(
     Two I/O-bound calls, one each — a small thread pool is the right fit.
     The readers themselves don't share state, so no synchronisation needed.
     """
+    if olt_adapter is None:
+        olt_result = ReadResult(
+            success=True,
+            unreachable=False,
+            observed=olt_observed_fallback or _absent_olt(),
+            error=None,
+        )
+        if acs_client is None:
+            return (
+                olt_result,
+                ReadResult(
+                    success=True,
+                    unreachable=False,
+                    observed=acs_observed_fallback or _absent_acs(),
+                    error=None,
+                ),
+            )
+        return olt_result, read_acs_state(acs_client, desired, deadline=deadline)
     if acs_client is None:
         return (
             read_olt_state(olt_adapter, desired, deadline=deadline),
@@ -868,6 +910,17 @@ def _cached_acs_observation(db: Session, ont: OntUnit) -> AcsObservedFields:
     ).first()
     observed = observed_from_ont_observation(row)
     return observed.acs if observed is not None else _absent_acs()
+
+
+def _cached_observation(db: Session, ont: OntUnit) -> OntObservedState | None:
+    """Load cached non-ACS evidence for an explicitly ACS-only delivery."""
+
+    from app.models.ont_observation import OntObservation
+
+    row = db.scalars(
+        select(OntObservation).where(OntObservation.ont_unit_id == ont.id)
+    ).first()
+    return observed_from_ont_observation(row)
 
 
 def _absent_olt() -> OltObservedFields:
@@ -1041,13 +1094,20 @@ def _classify_verify_drifts(drifts, actions_applied):
     OLT-surface drift, a field we didn't touch, an unrepairable field — is
     **genuine** divergence that must still fail.
 
-    AUDIT-ONLY: callers use this purely to measure how often a verify mismatch
-    is explainable by inform-lag (``would_be_graced``). It does NOT change the
-    reconcile outcome — enforcing the grace is a separate, flag-gated step.
+    The current reconcile pass still fails on a mismatch. Lifecycle owners may
+    use the classification as evidence for bounded delayed readback instead of
+    treating an accepted ACS write with stale cache as a terminal failure.
     """
-    applied_acs_fields = {
-        a.field for a in actions_applied if getattr(a, "surface", None) == "acs"
-    }
+    applied_acs_fields: set[str] = set()
+    for action in actions_applied:
+        if getattr(action, "surface", None) != "acs":
+            continue
+        applied_acs_fields.add(str(action.field))
+        evidence = getattr(action, "evidence", None)
+        if isinstance(evidence, dict):
+            changed_fields = evidence.get("changed_fields")
+            if isinstance(changed_fields, (list, tuple)):
+                applied_acs_fields.update(str(field) for field in changed_fields)
     cache_lag = [
         d
         for d in drifts

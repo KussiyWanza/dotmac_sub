@@ -158,12 +158,16 @@ Completed in this slice:
   `customer_hold` lock history. Customer, admin, and automatic-expiry adapters
   now delegate to the same locked, reviewed-head, idempotent command and retain
   the exact enforcement-lock identifier in the outcome.
-- Customer reboot and Wi-Fi updates now enter one subscription-scoped command
-  boundary. It proves the authenticated subscriber, active subscription, and
-  exact active non-UISP ONT assignment before invoking the network operation
-  ledger. Web and `/api/v1/me` expose the same typed command, status,
-  subscription, device, operation, and message outcome; mobile provides both
-  actions and renders that canonical outcome without inferring device state.
+- Customer reboot and Wi-Fi updates enter subscription-scoped command
+  boundaries. Reboot retains synchronous operation tracking. Wi-Fi admission
+  proves the authenticated subscriber, active subscription, and exact active
+  non-UISP ONT assignment inside `network.ont_service_configuration`, saves
+  encrypted desired state with a revision, and stages durable background
+  delivery atomically. Web and `/api/v1/me` return the queued operation without
+  waiting for OLT or ACS I/O; the worker performs ACS-only delivery and delayed
+  readback through the shared configuration lifecycle. The service page and
+  Wi-Fi status endpoint read the newest Wi-Fi revision on the exact active
+  assignment and display queued, applying, readback, verified, or failed state.
 - Superseded customer device-command wrappers and their duplicate cooldown and
   validation decisions are retired; web routes, API, and mobile enter the
   canonical scoped owner directly.

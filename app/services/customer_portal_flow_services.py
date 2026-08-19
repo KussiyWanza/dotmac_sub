@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, TypedDict
-from uuid import UUID
+from uuid import UUID, uuid4
 
 
 class VacationHoldUsage(TypedDict):
@@ -32,6 +32,10 @@ from app.services.common import validate_enum as _validate_enum
 from app.services.customer_context import (
     optional_customer_account_id,
     resolve_customer_context,
+)
+from app.services.customer_device_commands import (
+    CustomerDeviceCommandError,
+    get_subscription_wifi_status,
 )
 from app.services.customer_network_context import resolve_active_customer_ont_assignment
 from app.services.customer_portal_flow_changes import (
@@ -1050,6 +1054,16 @@ def get_service_detail(
     )
     customer_assignment = _resolve_customer_subscription_assignment(db, subscription)
     customer_ont = customer_assignment.ont_unit if customer_assignment else None
+    wifi_operation = None
+    if customer_ont is not None:
+        try:
+            wifi_operation = get_subscription_wifi_status(
+                db,
+                subscriber_id=coerce_uuid(account_id),
+                subscription_id=subscription.id,
+            )
+        except CustomerDeviceCommandError:
+            wifi_operation = None
     customer_cpe = (
         db.query(CPEDevice)
         .filter(
@@ -1113,6 +1127,8 @@ def get_service_detail(
         "customer_ont": customer_ont,
         "customer_cpe": customer_cpe,
         "customer_wifi_ssid": _customer_wifi_ssid(customer_ont),
+        "wifi_idempotency_key": str(uuid4()),
+        "customer_wifi_operation": wifi_operation,
         "can_reboot_ont": bool(
             customer_ont is not None
             and not customer_ont_is_uisp
