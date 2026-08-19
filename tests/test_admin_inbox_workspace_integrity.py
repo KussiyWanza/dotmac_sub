@@ -229,7 +229,8 @@ def test_reply_submission_refreshes_inbox_fragments_without_page_navigation():
     assert 'workspace?.refreshConversationList?.("reply")' not in JAVASCRIPT
     assert 'this.draft = ""' in JAVASCRIPT
     assert "window.location.reload" not in JAVASCRIPT
-    assert "admin-inbox.js?v=20260817b" in INDEX
+    assert "admin-inbox.js?v=20260819a" in INDEX
+    assert "admin-inbox.js?v=20260817b" not in INDEX
 
 
 def test_reply_toast_tracks_authoritative_delivery_without_covering_send_action():
@@ -1002,6 +1003,7 @@ def test_expired_is_visible_in_status_and_attention_hover_text_is_white():
     assert 'name="reply_window_status" value="expired"' not in attention_group
     assert "Needs attention" in status_group
     assert status_group.count("hover:text-white") >= 2
+    assert "applyStatusFilter('resolved')" in status_group
     assert "applyStatusFilter('expired')" in status_group
     assert '"reply_window_status"' in JAVASCRIPT
 
