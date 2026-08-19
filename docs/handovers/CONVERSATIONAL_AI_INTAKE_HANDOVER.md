@@ -19,7 +19,8 @@ comment channels remain outside AI intake.
 - Team Inbox remains the owner of routing, queueing, assignment, status,
   transfers and provider delivery.
 - Round-robin assignment is durable per team and skips offline, inactive or full
-  agents.
+  agents. An online presence is considered assignable only when its
+  `last_seen_at` observation is no more than three minutes old.
 - Default active-conversation capacity is 10, configurable through Comms
   domain settings, with per-agent overrides preserved.
 - Queued customers receive configurable, versioned queue notices: initial

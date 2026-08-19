@@ -112,7 +112,7 @@ fact of generation, the advisor, the projection key, and provider telemetry.
 `AiIntakeConfig` (`app/models/ai_intake.py`) is the runtime configuration owner
 for conversational intake. No enabled matching row means classification is
 skipped and the existing channel route remains authoritative. A matching row
-controls channel/scope, confidence, one optional clarification turn, fallback
+controls channel/scope, confidence, optional clarification turns, fallback
 deadline and team, department overrides, custom instructions, and campaign
 attribution exclusion. The admin contract refuses email and limits
 clarification to one turn.
@@ -126,8 +126,10 @@ unredacted content are not stored in intake metadata.
 
 At or above the configured threshold, validated intent/category/department
 metadata is handed to `communications.team_inbox_routing`. Below threshold,
-one approved generic clarification may be recorded when enabled. The
-classifier does **not** send that text; the Team Inbox coordinator submits it
+an approved clarification may be recorded when enabled. The generic question
+and customer-type question are editable draft-policy fields, stored with the
+immutable version and projected to runtime only after activation. Older
+policies use the approved default wording. The classifier does **not** send that text; the Team Inbox coordinator submits it
 to `communications.team_inbox_outbound_intents`, which uses the normal durable
 WhatsApp, Facebook Messenger, or Instagram Direct notification path. The
 provider call remains asynchronous to webhook acknowledgement. A dedupe key

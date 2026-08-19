@@ -11,11 +11,14 @@ from sqlalchemy.orm import Session
 from app.models.integration_platform import IntegrationInstallation
 from app.services.integrations import (
     installations,
-    runtime_execution,
     whatsapp_capability,
 )
 from app.services.integrations.connectors.whatsapp_runtime import (
     WHATSAPP_PROVIDER_META,
+)
+from app.services.integrations.runtime_execution import (
+    build_execution_context,
+    validate_connection,
 )
 from app.services.integrations.whatsapp_capability import (
     WHATSAPP_RECEIVE_CAPABILITY,
@@ -116,9 +119,10 @@ def save_config(
     actor: str = "admin.whatsapp",
 ) -> IntegrationInstallation:
     provider_value = provider.strip().lower()
+    phone_number_id_value = phone_number_id.strip()
     if provider_value not in {option["id"] for option in _PROVIDER_OPTIONS}:
         raise ValueError("Unsupported WhatsApp API provider")
-    if not phone_number_id.strip():
+    if not phone_number_id_value:
         raise ValueError("WhatsApp phone number ID is required")
     try:
         templates = json.loads(message_templates_json or "[]")
@@ -164,7 +168,7 @@ def save_config(
         config={
             "provider": provider_value,
             "phone_number": phone_number.strip(),
-            "phone_number_id": phone_number_id.strip(),
+            "phone_number_id": phone_number_id_value,
             "waba_id": waba_id.strip(),
             "webhook_url": webhook_url.strip(),
             "graph_version": graph_version.strip() or "v21.0",
@@ -174,22 +178,33 @@ def save_config(
         secret_refs=secret_refs,
         actor=actor,
     )
+    existing_caps = {
+        binding.capability_id for binding in installation.capability_bindings
+    }
     for capability_id in (
         WHATSAPP_SEND_CAPABILITY,
         WHATSAPP_RECEIVE_CAPABILITY,
         WHATSAPP_TEMPLATE_READ_CAPABILITY,
     ):
-        installations.bind_capability(
-            db,
-            installation_id=installation.id,
-            capability_id=capability_id,
-            scope={
-                "channel": "whatsapp",
-                "phone_number_id": phone_number_id.strip(),
-            },
-            policy={"default": True},
-            actor=actor,
-        )
+        scope = {"channel": "whatsapp", "phone_number_id": phone_number_id_value}
+        if capability_id not in existing_caps:
+            installations.bind_capability(
+                db,
+                installation_id=installation.id,
+                capability_id=capability_id,
+                scope=scope,
+                policy={"default": True},
+                actor=actor,
+            )
+        else:
+            binding = next(
+                item
+                for item in installation.capability_bindings
+                if item.capability_id == capability_id
+            )
+            binding.scope_json = scope
+            binding.policy_json = {**dict(binding.policy_json or {}), "default": True}
+            binding.updated_by = actor
     static_result = installations.validate_static(
         db, installation_id=installation.id, actor=actor
     )
@@ -198,15 +213,16 @@ def save_config(
             "WhatsApp static validation failed: " + ",".join(static_result.error_codes)
         )
     send_binding = next(
-        binding
-        for binding in installation.capability_bindings
-        if binding.capability_id == WHATSAPP_SEND_CAPABILITY
+        item
+        for item in installation.capability_bindings
+        if item.capability_id == WHATSAPP_SEND_CAPABILITY
     )
-    runtime_result = runtime_execution.validate_connection(
-        runtime_execution.build_execution_context(
-            db, capability_binding_id=send_binding.id, allow_disabled=True
-        )
+    context = build_execution_context(
+        db,
+        capability_binding_id=send_binding.id,
+        allow_disabled=True,
     )
+    runtime_result = validate_connection(context)
     if not runtime_result.valid:
         raise ValueError(
             "WhatsApp runtime validation failed: "

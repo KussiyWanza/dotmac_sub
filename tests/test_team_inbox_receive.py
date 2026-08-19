@@ -102,6 +102,7 @@ def test_receive_inbound_email_auto_assigns_route_to_online_agent(db_session):
         InboxAgentPresence(
             person_id=user.id,
             status=InboxAgentPresenceStatus.online.value,
+            last_seen_at=datetime.now(UTC),
         )
     )
     _route(

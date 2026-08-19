@@ -453,6 +453,20 @@ def bind_credential_party(
     )
 
 
+def stage_credential_party_binding(
+    db: Session, command: CredentialPartyBinding
+) -> CredentialPartyBindingOutcome:
+    """Project one credential inside a surrounding owner transaction.
+
+    This is the transaction-neutral participant form of
+    ``bind_credential_party``. It keeps all projection field writes in this
+    owner module while allowing a provisioning owner to stage a newly-created
+    credential and its required Party projection atomically.
+    """
+
+    return _bind_credential_party(db, command)
+
+
 @dataclass(frozen=True, slots=True)
 class PrincipalReadinessCohort:
     principal_kind: str

@@ -163,6 +163,22 @@ def test_set_pppoe_credentials_names_internet_ppp_slot(monkeypatch) -> None:
     assert calls["expected"][name_path] == ont_action_wan.INTERNET_PPP_CONNECTION_NAME
 
 
+def test_internet_ppp_vlan_mismatch_is_repairable() -> None:
+    from app.services.network.ont_action_wan import _igd_ppp_container_conflict
+
+    assert (
+        _igd_ppp_container_conflict(
+            details={"ppp_service": "INTERNET", "ppp_vlan": "1"},
+            wan_vlan=203,
+        )
+        is None
+    )
+    assert _igd_ppp_container_conflict(
+        details={"ppp_service": "TR069", "ppp_vlan": "201"},
+        wan_vlan=203,
+    )
+
+
 def test_set_pppoe_credentials_creates_missing_igd_ppp_object(monkeypatch) -> None:
     from app.services.network import ont_action_wan
 

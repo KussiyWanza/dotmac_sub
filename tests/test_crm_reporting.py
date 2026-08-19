@@ -32,7 +32,18 @@ def test_expected_operational_inventory_is_complete_and_exclusions_stay_excluded
         definition.title for definition in crm_reporting.REPORT_DEFINITIONS.values()
     } <= hub_names
     assert "Quarterly Report" not in hub_names
-    assert "Customer Retention" not in hub_names
+    assert "Customer Retention" in hub_names
+    assert "Lead Performance" in hub_names
+    assert "Sales Order Performance" in hub_names
+    links = {
+        link["name"]: link
+        for section in report_routes.REPORT_HUB_SECTIONS
+        for link in section["links"]
+    }
+    assert links["Lead Performance"]["url"] == "/admin/reports/sales/leads"
+    assert links["Lead Performance"]["permission"] == "crm:lead:read"
+    assert links["Sales Order Performance"]["url"] == "/admin/reports/sales/orders"
+    assert links["Sales Order Performance"]["permission"] == "crm:sales_order:read"
 
     service_source = Path("app/services/crm_reporting.py").read_text(encoding="utf-8")
     assert "CustomerRetentionEngagement" not in service_source

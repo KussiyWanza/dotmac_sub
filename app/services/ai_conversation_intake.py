@@ -33,7 +33,12 @@ from app.models.team_inbox import (
     InboxMessage,
     InboxMessageDirection,
 )
-from app.schemas.ai_intake import AiIntakeOutcome, AiIntakeStatus
+from app.schemas.ai_intake import (
+    DEFAULT_CLARIFICATION_QUESTIONS,
+    AiIntakeOutcome,
+    AiIntakeStatus,
+    normalize_clarification_questions,
+)
 from app.schemas.ai_operations import (
     AiIntakeConfigMetadata,
     AiIntakeConfigUpsert,
@@ -168,7 +173,7 @@ class AiPolicyVersionDraftCommand:
     business_instructions: str | None = None
     approved_isp_information: str | None = None
     intent_definitions: tuple[Mapping[str, object], ...] = ()
-    clarification_questions: tuple[Mapping[str, object], ...] = ()
+    clarification_questions: tuple[str, str] | None = None
     intent_team_mappings: tuple[Mapping[str, object], ...] = ()
     queue_templates: Mapping[str, object] | None = None
     escalation_rules: Mapping[str, object] | None = None
@@ -190,7 +195,7 @@ class AiDraftPolicyCommand:
     business_instructions: str | None = None
     approved_isp_information: str | None = None
     intent_definitions: tuple[Mapping[str, object], ...] = ()
-    clarification_questions: tuple[Mapping[str, object], ...] = ()
+    clarification_questions: tuple[str, str] | None = None
     intent_team_mappings: tuple[Mapping[str, object], ...] = ()
     queue_templates: Mapping[str, object] | None = None
     escalation_rules: Mapping[str, object] | None = None
@@ -530,6 +535,10 @@ def _copy_version_payload(
     base: AiIntakePolicyVersion | None,
     command: AiPolicyVersionDraftCommand,
 ) -> dict[str, object | None]:
+    clarification_source: object = command.clarification_questions
+    if clarification_source is None and base is not None:
+        clarification_source = base.clarification_questions
+    clarification_questions = normalize_clarification_questions(clarification_source)
     return {
         "display_name": command.display_name
         or (base.display_name if base is not None else DEFAULT_DISPLAY_NAME),
@@ -547,9 +556,7 @@ def _copy_version_payload(
         "intent_definitions": list(command.intent_definitions)
         if command.intent_definitions
         else (list(base.intent_definitions or []) if base is not None else None),
-        "clarification_questions": list(command.clarification_questions)
-        if command.clarification_questions
-        else (list(base.clarification_questions or []) if base is not None else None),
+        "clarification_questions": list(clarification_questions),
         "intent_team_mappings": list(command.intent_team_mappings)
         if command.intent_team_mappings
         else (list(base.intent_team_mappings or []) if base is not None else None),
@@ -817,6 +824,14 @@ def admin_policy_context(db: Session) -> dict[str, object]:
     mapping_json = "[]"
     if editable_version is not None:
         mapping_json = json.dumps(editable_version.intent_team_mappings or [], indent=2)
+    try:
+        clarification_questions = normalize_clarification_questions(
+            editable_version.clarification_questions
+            if editable_version is not None
+            else None
+        )
+    except ValueError:
+        clarification_questions = DEFAULT_CLARIFICATION_QUESTIONS
     return {
         "ai_intake_policies": [
             {
@@ -854,6 +869,7 @@ def admin_policy_context(db: Session) -> dict[str, object]:
             else "Draft"
         ),
         "ai_intake_mapping_json": mapping_json,
+        "ai_intake_clarification_questions": clarification_questions,
         "ai_intake_escalation_rules": escalation_rules,
         "ai_intake_queue_templates": queue_templates,
         "ai_intake_data_cleanup_policy": data_cleanup_policy,
@@ -1302,7 +1318,7 @@ def ensure_policy_version_from_legacy_config(
         "gender_choices": data_cleanup_policy.get("gender_choices")
         or DEFAULT_GENDER_CHOICES,
         "dob_formats": data_cleanup_policy.get("dob_formats")
-        or ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"),
+        or ["%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"],
         "production_collection_enabled": bool(
             metadata.get("data_cleanup_enabled") or False
         ),
@@ -1345,7 +1361,11 @@ def ensure_policy_version_from_legacy_config(
             approved_isp_information=str(metadata.get("approved_isp_information") or "")
             or None,
             intent_definitions=metadata.get("intent_definitions"),
-            clarification_questions=metadata.get("clarification_questions"),
+            clarification_questions=list(
+                normalize_clarification_questions(
+                    metadata.get("clarification_questions")
+                )
+            ),
             intent_team_mappings=config.department_mappings,
             queue_templates=queue_templates,
             escalation_rules=metadata.get("escalation_rules"),
@@ -1398,15 +1418,9 @@ def ensure_session_for_outcome(
     session = active_session_for_conversation(db, conversation.id)
     now = datetime.now(UTC)
     if session is None:
-        state = (
-            "awaiting_customer"
-            if outcome.status is AiIntakeStatus.awaiting_follow_up
-            else "classified"
-            if outcome.status is AiIntakeStatus.classified
-            else "fallback_escalated"
-            if outcome.status in {AiIntakeStatus.fallback, AiIntakeStatus.escalated}
-            else "collecting_intent"
-        )
+        # A fresh conversation must receive the configured introduction before
+        # classification can produce a clarification question or handoff.
+        state = "welcome_pending"
         policy_metadata = dict(policy.metadata_ or {})
         session = AiIntakeSession(
             conversation_id=conversation.id,
@@ -1677,42 +1691,43 @@ def _process_one_session(
         else None
     )
     if session.state == "welcome_pending":
-        welcome_body = (
-            version.welcome_message
-            if version is not None and version.welcome_message
-            else DEFAULT_WELCOME_MESSAGE
-        )
-        welcome_metadata = ai_message_metadata(
-            session=session,
-            version=version,
-            purpose="welcome",
-        )
-        delivery = team_inbox_outbound.send_ai_intake_message(
-            db,
-            conversation=conversation,
-            body_text=welcome_body,
-            metadata=welcome_metadata,
-            dedupe_key=f"ai-intake-welcome:{session.id}",
-        )
-        record_generation_attempt(
-            db,
-            session=session,
-            purpose="welcome",
-            status="queued" if delivery.kind == "queued" else "failed",
-            inbound_message_id=inbound.id,
-            outbound_message_id=UUID(delivery.message_id)
-            if delivery.message_id
-            else None,
-            error_code=delivery.reason,
-        )
-        if delivery.kind == "queued":
+        if version is None or not version.welcome_message:
             session.state = "collecting_intent"
-            mark_conversation_ai_metadata(conversation, session=session, active=True)
+        else:
+            welcome_body = version.welcome_message
+            welcome_metadata = ai_message_metadata(
+                session=session,
+                version=version,
+                purpose="welcome",
+            )
+            delivery = team_inbox_outbound.send_ai_intake_message(
+                db,
+                conversation=conversation,
+                body_text=welcome_body,
+                metadata=welcome_metadata,
+                dedupe_key=f"ai-intake-welcome:{session.id}",
+            )
+            record_generation_attempt(
+                db,
+                session=session,
+                purpose="welcome",
+                status="queued" if delivery.kind == "queued" else "failed",
+                inbound_message_id=inbound.id,
+                outbound_message_id=UUID(delivery.message_id)
+                if delivery.message_id
+                else None,
+                error_code=delivery.reason,
+            )
+            if delivery.kind == "queued":
+                session.state = "collecting_intent"
+                mark_conversation_ai_metadata(
+                    conversation, session=session, active=True
+                )
+                return True
+            session.state = "failed"
+            complete_session(session, state="failed")
+            mark_conversation_ai_metadata(conversation, session=session, active=False)
             return True
-        session.state = "failed"
-        complete_session(session, state="failed")
-        mark_conversation_ai_metadata(conversation, session=session, active=False)
-        return True
     cleanup_only = session.state == "handoff_requested"
     cleanup_open = _process_data_cleanup_turn(
         db,

@@ -821,9 +821,11 @@ def test_installation_amount_falls_back_to_quote_lines(db_session, billing_calls
     )
     order = db_session.query(SalesOrder).filter_by(quote_id=quote.id).one()
 
+    assert len(billing_calls) == 1
+    assert billing_calls[0][1]["amount"] == Decimal("60000.00")
+
     billing_calls.clear()
     sales_order_service.ensure_installation_invoice_for_sales_order(
         db_session, order.id
     )
-    assert len(billing_calls) == 1
-    assert billing_calls[0][1]["amount"] == Decimal("60000.00")
+    assert billing_calls == []

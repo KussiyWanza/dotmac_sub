@@ -25,8 +25,7 @@ from app.models.audit import AuditActorType
 from app.models.service_team import ServiceTeam
 from app.models.subscriber import Subscriber
 from app.schemas.ai_intake import (
-    CUSTOMER_TYPE_FOLLOW_UP_QUESTION,
-    GENERIC_FOLLOW_UP_QUESTION,
+    DEFAULT_CLARIFICATION_QUESTIONS,
     AiIntakeCategory,
     AiIntakeClassification,
     AiIntakeIntent,
@@ -39,6 +38,10 @@ from app.schemas.ai_intake import (
     DataCleaningEligibility,
     DataCleaningEligibilityReason,
     DataCleaningState,
+    normalize_clarification_questions,
+)
+from app.schemas.ai_intake import (
+    GENERIC_FOLLOW_UP_QUESTION as GENERIC_FOLLOW_UP_QUESTION,
 )
 from app.schemas.ai_operations import AiIntakeConfigUpsert
 from app.services.ai.client import AIClientError
@@ -155,6 +158,7 @@ class ResolvedAiIntakeConfig:
     instructions: str | None
     department_mappings: tuple[DepartmentMapping, ...]
     data_cleaning_support_team_id: UUID | None
+    clarification_questions: tuple[str, str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,6 +183,7 @@ class AiIntakeConfigMetadataOutcome:
     welcome_message: str | None = None
     business_tone: str | None = None
     approved_isp_information: str | None = None
+    clarification_questions: tuple[str, str] = DEFAULT_CLARIFICATION_QUESTIONS
     queue_templates: dict | None = None
     data_cleanup_policy: dict | None = None
     data_cleanup_enabled: bool = False
@@ -265,6 +270,12 @@ def _config_outcome(
         )
     raw_metadata = row.metadata_ if isinstance(row.metadata_, dict) else {}
     try:
+        clarification_questions = normalize_clarification_questions(
+            raw_metadata.get("clarification_questions")
+        )
+    except ValueError as exc:
+        raise AiIntakeConfigurationError(str(exc)) from exc
+    try:
         data_cleaning_support_team_id = (
             UUID(str(raw_metadata["data_cleaning_support_team_id"]))
             if raw_metadata.get("data_cleaning_support_team_id")
@@ -315,6 +326,7 @@ def _config_outcome(
                 if raw_metadata.get("approved_isp_information")
                 else None
             ),
+            clarification_questions=clarification_questions,
             queue_templates=(
                 raw_metadata.get("queue_templates")
                 if isinstance(raw_metadata.get("queue_templates"), dict)
@@ -657,6 +669,12 @@ def _resolved_config(row: AiIntakeConfig) -> ResolvedAiIntakeConfig:
     raw_metadata = row.metadata_ if isinstance(row.metadata_, dict) else {}
     raw_support_team_id = raw_metadata.get("data_cleaning_support_team_id")
     try:
+        clarification_questions = normalize_clarification_questions(
+            raw_metadata.get("clarification_questions")
+        )
+    except ValueError as exc:
+        raise AiIntakeConfigurationError(str(exc)) from exc
+    try:
         data_cleaning_support_team_id = (
             UUID(str(raw_support_team_id)) if raw_support_team_id else None
         )
@@ -678,6 +696,7 @@ def _resolved_config(row: AiIntakeConfig) -> ResolvedAiIntakeConfig:
         instructions=instructions,
         department_mappings=_department_mappings(row.department_mappings),
         data_cleaning_support_team_id=data_cleaning_support_team_id,
+        clarification_questions=clarification_questions,
     )
 
 
@@ -1239,9 +1258,9 @@ def classify_message(db: Session, request: AiIntakeRequest) -> AiIntakeOutcome:
     if can_follow_up:
         next_count = request.follow_up_count + 1
         question = (
-            CUSTOMER_TYPE_FOLLOW_UP_QUESTION
+            config.clarification_questions[1]
             if intent_confident and party_type_unclear
-            else GENERIC_FOLLOW_UP_QUESTION
+            else config.clarification_questions[0]
         )
         classification = _safe_classification(
             parsed,

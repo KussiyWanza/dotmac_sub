@@ -86,8 +86,8 @@ def latest_qualifying_inbound_at(
     events are excluded by using only authoritative inbound Inbox messages.
     """
 
-    value = (
-        db.query(func.max(_message_time()))
+    rows = (
+        db.query(InboxMessage.received_at, InboxMessage.created_at)
         .filter(InboxMessage.conversation_id == conversation_id)
         .filter(InboxMessage.direction == InboxMessageDirection.inbound.value)
         .filter(
@@ -98,9 +98,10 @@ def latest_qualifying_inbound_at(
                 InboxMessage.metadata_["reply_window_qualifying"].is_(None),
             )
         )
-        .scalar()
+        .all()
     )
-    return _aware(value)
+    timestamps = [_aware(received_at or created_at) for received_at, created_at in rows]
+    return max((value for value in timestamps if value is not None), default=None)
 
 
 def decide_reply_window(
