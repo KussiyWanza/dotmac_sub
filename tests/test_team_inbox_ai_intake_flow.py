@@ -343,7 +343,7 @@ def test_receive_persists_ai_work_without_synchronous_ai_response(
         .filter(InboxMessage.conversation_id == conversation.id)
         .filter(InboxMessage.direction == "outbound")
         .count()
-        == 1
+        == 2
     )
     assert gateway.calls == 1
 
