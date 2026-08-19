@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections import Counter
 from typing import TypedDict
 
@@ -15,6 +16,7 @@ from app.services.auth_dependencies import require_permission
 from app.web.templates import templates
 
 router = APIRouter(tags=["web-admin-customer-retention"])
+logger = logging.getLogger(__name__)
 
 
 def _float_value(value: object) -> float:
@@ -97,7 +99,14 @@ def _normalize_rows(raw_rows: list[dict[str, object]]) -> list[RetentionRow]:
 
 
 def _load_rows(db: Session, search: str | None) -> list[RetentionRow]:
-    raw_rows, _total = crm_api.billing_risk_rows(db, page=1, per_page=10000)
+    try:
+        raw_rows, _total = crm_api.billing_risk_rows(db, page=1, per_page=10000)
+    except Exception as exc:
+        logger.warning(
+            "customer_retention_billing_risk_unavailable",
+            extra={"error_type": type(exc).__name__},
+        )
+        return []
     rows = _normalize_rows(raw_rows)
     term = str(search or "").strip().casefold()
     if not term:

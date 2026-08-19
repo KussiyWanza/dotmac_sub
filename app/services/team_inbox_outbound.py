@@ -196,7 +196,7 @@ def _queue_outbox_reply(
             body=body,
             channels=(channel,),
             include_reseller=False,
-            persist_policy_suppressions=conversation.subscriber_id is not None,
+            persist_policy_suppressions=False,
             recipients={channel: recipient},
             audience_type=audience_type,
             audience_id=(

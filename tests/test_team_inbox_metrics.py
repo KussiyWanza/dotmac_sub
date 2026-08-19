@@ -447,6 +447,7 @@ def test_escalation_candidates_ignore_responded_assigned_conversation(db_session
             person_id=person_id,
             status=InboxAgentPresenceStatus.online.value,
             max_concurrent_conversations=3,
+            last_seen_at=datetime.now(UTC),
         )
     )
     base = datetime(2026, 7, 10, 8, 0, tzinfo=UTC)
@@ -572,6 +573,7 @@ def test_inbox_escalation_report_action_auto_assigns_candidate(db_session):
             person_id=person_id,
             status=InboxAgentPresenceStatus.online.value,
             max_concurrent_conversations=3,
+            last_seen_at=datetime.now(UTC),
         )
     )
     base = datetime(2026, 1, 1, 8, 0, tzinfo=UTC)

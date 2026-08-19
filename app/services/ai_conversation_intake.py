@@ -1318,7 +1318,7 @@ def ensure_policy_version_from_legacy_config(
         "gender_choices": data_cleanup_policy.get("gender_choices")
         or DEFAULT_GENDER_CHOICES,
         "dob_formats": data_cleanup_policy.get("dob_formats")
-        or ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"),
+        or ["%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"],
         "production_collection_enabled": bool(
             metadata.get("data_cleanup_enabled") or False
         ),
@@ -1361,8 +1361,10 @@ def ensure_policy_version_from_legacy_config(
             approved_isp_information=str(metadata.get("approved_isp_information") or "")
             or None,
             intent_definitions=metadata.get("intent_definitions"),
-            clarification_questions=normalize_clarification_questions(
-                metadata.get("clarification_questions")
+            clarification_questions=list(
+                normalize_clarification_questions(
+                    metadata.get("clarification_questions")
+                )
             ),
             intent_team_mappings=config.department_mappings,
             queue_templates=queue_templates,
