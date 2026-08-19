@@ -19,7 +19,12 @@ from app.models.system_user import SystemUser
 from app.models.wireless_mast import WirelessMast
 from app.models.work_order import WorkOrder
 from app.services.auth_dependencies import require_user_auth
-from app.services.field.map_assets import field_map_assets
+from app.services.field.map_assets import (
+    SUPPORTED_FIELD_MAP_ASSET_TYPES,
+    VENDOR_ROUTE_AUTHORING_POI_FILTERS,
+    VENDOR_ROUTE_AUTHORING_POI_TYPES,
+    field_map_assets,
+)
 from app.services.field.map_search import field_map_search
 
 
@@ -92,6 +97,23 @@ def _seed_assets(db_session):
     )
     db_session.commit()
     return fdh, closure, access_point, building, mast
+
+
+def test_vendor_route_authoring_poi_types_are_supported() -> None:
+    assert VENDOR_ROUTE_AUTHORING_POI_TYPES == tuple(
+        filter_option.value for filter_option in VENDOR_ROUTE_AUTHORING_POI_FILTERS
+    )
+    assert tuple(
+        filter_option.value
+        for filter_option in VENDOR_ROUTE_AUTHORING_POI_FILTERS
+        if filter_option.selected_by_default
+    ) == ("fdh_cabinet", "splice_closure", "fiber_access_point")
+    assert all(
+        filter_option.label for filter_option in VENDOR_ROUTE_AUTHORING_POI_FILTERS
+    )
+    assert set(VENDOR_ROUTE_AUTHORING_POI_TYPES).issubset(
+        SUPPORTED_FIELD_MAP_ASSET_TYPES
+    )
 
 
 def test_list_map_assets_filters_active_geocoded_rows(db_session):
