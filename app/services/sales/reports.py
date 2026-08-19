@@ -11,6 +11,7 @@ from calendar import monthrange
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from typing import TypedDict
 from uuid import UUID
 
 from sqlalchemy import case, func, or_
@@ -88,6 +89,16 @@ class LeadKpiRow:
 @dataclass(frozen=True)
 class SalesOrderKpiRow:
     agent_id: UUID
+    orders_created: int
+    orders_confirmed: int
+    orders_paid: int
+    orders_fulfilled: int
+    orders_cancelled: int
+    order_values: dict[str, Decimal]
+    collected_values: dict[str, Decimal]
+
+
+class SalesOrderKpiAccumulator(TypedDict):
     orders_created: int
     orders_confirmed: int
     orders_paid: int
@@ -525,7 +536,7 @@ def sales_order_kpi_report(
         )
         .all()
     )
-    grouped: dict[UUID, dict[str, object]] = {}
+    grouped: dict[UUID, SalesOrderKpiAccumulator] = {}
     for order in orders:
         assert order.owner_agent_id is not None
         state = grouped.setdefault(
@@ -541,20 +552,17 @@ def sales_order_kpi_report(
             },
         )
         state["orders_created"] = int(state["orders_created"]) + 1
-        status_counts = {
-            SalesOrderStatus.confirmed.value: "orders_confirmed",
-            SalesOrderStatus.paid.value: "orders_paid",
-            SalesOrderStatus.fulfilled.value: "orders_fulfilled",
-            SalesOrderStatus.cancelled.value: "orders_cancelled",
-        }
-        count_key = status_counts.get(order.status)
-        if count_key:
-            state[count_key] = int(state[count_key]) + 1
+        if order.status == SalesOrderStatus.confirmed.value:
+            state["orders_confirmed"] += 1
+        elif order.status == SalesOrderStatus.paid.value:
+            state["orders_paid"] += 1
+        elif order.status == SalesOrderStatus.fulfilled.value:
+            state["orders_fulfilled"] += 1
+        elif order.status == SalesOrderStatus.cancelled.value:
+            state["orders_cancelled"] += 1
         currency = currency_code(order.currency)
         order_values = state["order_values"]
         collected_values = state["collected_values"]
-        assert isinstance(order_values, dict)
-        assert isinstance(collected_values, dict)
         order_values[currency] = order_values.get(currency, Decimal("0.00")) + Decimal(
             order.total or 0
         )
@@ -563,10 +571,19 @@ def sales_order_kpi_report(
         ) + Decimal(order.amount_paid or 0)
 
     return tuple(
-        SalesOrderKpiRow(agent_id=agent_id, **values)
+        SalesOrderKpiRow(
+            agent_id=agent_id,
+            orders_created=values["orders_created"],
+            orders_confirmed=values["orders_confirmed"],
+            orders_paid=values["orders_paid"],
+            orders_fulfilled=values["orders_fulfilled"],
+            orders_cancelled=values["orders_cancelled"],
+            order_values=values["order_values"],
+            collected_values=values["collected_values"],
+        )
         for agent_id, values in sorted(
             grouped.items(),
-            key=lambda item: (-int(item[1]["orders_created"]), str(item[0])),
+            key=lambda item: (-item[1]["orders_created"], str(item[0])),
         )
     )
 

@@ -348,11 +348,14 @@ def test_agent_performance_report_lists_active_team_members(db_session):
         search="Test Staff",
     )
     assert len(filtered_rows) == 1
-    assert team_inbox_metrics.agent_performance_report(
-        db_session,
-        service_team_id=team.id,
-        search="does-not-exist",
-    ) == []
+    assert (
+        team_inbox_metrics.agent_performance_report(
+            db_session,
+            service_team_id=team.id,
+            search="does-not-exist",
+        )
+        == []
+    )
 
 
 def test_analytics_api_returns_inbox_team_performance(db_session):

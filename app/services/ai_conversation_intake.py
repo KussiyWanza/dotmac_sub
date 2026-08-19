@@ -535,7 +535,7 @@ def _copy_version_payload(
     base: AiIntakePolicyVersion | None,
     command: AiPolicyVersionDraftCommand,
 ) -> dict[str, object | None]:
-    clarification_source = command.clarification_questions
+    clarification_source: object = command.clarification_questions
     if clarification_source is None and base is not None:
         clarification_source = base.clarification_questions
     clarification_questions = normalize_clarification_questions(clarification_source)

@@ -78,6 +78,38 @@ class DiscountReportTemplateContext(TypedDict):
     error: str | None
 
 
+class SalesReportRow(TypedDict, total=False):
+    agent_name: str
+    leads_won: int
+    leads_contacted: int
+    blocked_customers_contacted: int
+    customers_brought_back: int
+    orders_created: int
+    orders_confirmed: int
+    orders_paid: int
+    orders_fulfilled: int
+    orders_cancelled: int
+    order_value: str
+    collected_value: str
+
+
+class SalesReportMetric(TypedDict):
+    label: str
+    value: int
+
+
+class SalesReportContext(TypedDict):
+    report_kind: str
+    title: str
+    description: str
+    columns: tuple[str, ...]
+    rows: list[SalesReportRow]
+    metrics: tuple[SalesReportMetric, ...]
+    date_from: str
+    date_to: str
+    note: str
+
+
 REPORT_HUB_SECTIONS: list[ReportHubSection] = [
     {
         "id": "core",
@@ -498,7 +530,7 @@ def _sales_agent_names(db: Session, agent_ids: set[UUID]) -> dict[UUID, str]:
 
 def _sales_lead_report_context(
     db: Session, *, date_from: str | None, date_to: str | None
-) -> dict[str, object]:
+) -> SalesReportContext:
     start_at, end_at = _sales_report_window(date_from, date_to)
     report = sales_reports_service.lead_kpi_report(
         db,
@@ -506,7 +538,7 @@ def _sales_lead_report_context(
         end_at=end_at,
     )
     names = _sales_agent_names(db, {row.agent_id for row in report})
-    rows = [
+    rows: list[SalesReportRow] = [
         {
             "agent_name": names.get(row.agent_id, "Unavailable sales agent"),
             "leads_won": row.leads_won,
@@ -552,7 +584,7 @@ def _sales_lead_report_context(
 
 def _sales_order_report_context(
     db: Session, *, date_from: str | None, date_to: str | None
-) -> dict[str, object]:
+) -> SalesReportContext:
     start_at, end_at = _sales_report_window(date_from, date_to)
     report = sales_reports_service.sales_order_kpi_report(
         db,
@@ -560,7 +592,7 @@ def _sales_order_report_context(
         end_at=end_at,
     )
     names = _sales_agent_names(db, {row.agent_id for row in report})
-    rows = [
+    rows: list[SalesReportRow] = [
         {
             "agent_name": names.get(row.agent_id, "Unavailable sales agent"),
             "orders_created": row.orders_created,
@@ -610,13 +642,16 @@ def _sales_order_report_context(
     }
 
 
-def _sales_report_csv(context: dict[str, object]) -> str:
+def _sales_report_csv(context: SalesReportContext) -> str:
     output = StringIO()
     writer = csv.writer(output)
     writer.writerow(context["columns"])
     for row in context["rows"]:
         writer.writerow(
-            [row[_sales_report_column_key(column)] for column in context["columns"]]
+            [
+                row.get(_sales_report_column_key(column), "")
+                for column in context["columns"]
+            ]
         )
     return output.getvalue()
 
@@ -650,7 +685,8 @@ def sales_lead_performance_report(
     db: Session = Depends(get_db),
 ):
     context = _sales_lead_report_context(db, date_from=date_from, date_to=date_to)
-    context.update(
+    template_context: dict[str, object] = {**context}
+    template_context.update(
         _base_context(
             request,
             db,
@@ -659,7 +695,7 @@ def sales_lead_performance_report(
             context["description"],
         )
     )
-    return templates.TemplateResponse("admin/reports/sales_kpi.html", context)
+    return templates.TemplateResponse("admin/reports/sales_kpi.html", template_context)
 
 
 @router.get(
@@ -691,7 +727,8 @@ def sales_order_performance_report(
     db: Session = Depends(get_db),
 ):
     context = _sales_order_report_context(db, date_from=date_from, date_to=date_to)
-    context.update(
+    template_context: dict[str, object] = {**context}
+    template_context.update(
         _base_context(
             request,
             db,
@@ -700,7 +737,7 @@ def sales_order_performance_report(
             context["description"],
         )
     )
-    return templates.TemplateResponse("admin/reports/sales_kpi.html", context)
+    return templates.TemplateResponse("admin/reports/sales_kpi.html", template_context)
 
 
 @router.get(

@@ -643,7 +643,9 @@ def list_agent_options(db: Session) -> tuple[InboxAgentOption, ...]:
                 sorted(
                     team_ids_by_person_party.get(row.person_party_id, set()), key=str
                 )
-            ),
+            )
+            if row.person_party_id is not None
+            else (),
         )
         for row in rows
     )

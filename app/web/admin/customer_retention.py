@@ -17,6 +17,16 @@ from app.web.templates import templates
 router = APIRouter(tags=["web-admin-customer-retention"])
 
 
+def _float_value(value: object) -> float:
+    if value is None:
+        return 0.0
+    if isinstance(value, str):
+        return float(value or 0)
+    if isinstance(value, (int, float)):
+        return float(value)
+    return float(str(value or 0))
+
+
 class RetentionRow(TypedDict):
     customer_id: str
     name: str
@@ -36,7 +46,7 @@ class RetentionRow(TypedDict):
 def _risk_segment(row: dict[str, object]) -> str:
     if str(row.get("blocked_date") or "").strip():
         return "Suspended"
-    if float(row.get("balance") or 0) > 0:
+    if _float_value(row.get("balance")) > 0:
         return "Due Soon"
     return "Active"
 
@@ -52,7 +62,7 @@ def _recommended_action(segment: str, balance: float) -> str:
 def _normalize_rows(raw_rows: list[dict[str, object]]) -> list[RetentionRow]:
     rows: list[RetentionRow] = []
     for raw in raw_rows:
-        balance = float(raw.get("balance") or 0)
+        balance = _float_value(raw.get("balance"))
         segment = _risk_segment(raw)
         if segment == "Active":
             continue

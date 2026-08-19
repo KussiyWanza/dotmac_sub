@@ -76,7 +76,9 @@ PINNED_IMAGES: Final[dict[str, str]] = {
 
 #: Hostnames a shadow service may talk to. Anything else in a connection string
 #: is a live endpoint by definition — there is nothing else on this network.
-INTERNAL_HOSTS: Final[frozenset[str]] = frozenset({"postgres", "redis", "127.0.0.1", "localhost"})
+INTERNAL_HOSTS: Final[frozenset[str]] = frozenset(
+    {"postgres", "redis", "127.0.0.1", "localhost"}
+)
 
 #: Environment names that must never carry a value here. Credentials for real
 #: providers and an OpenBao token are the two ways a disposable environment
@@ -304,7 +306,10 @@ def contract_violations(compose: ShadowComposeFile) -> tuple[str, ...]:
         app = compose.services.get("app")
         if app is not None:
             condition = app.depends_on.get("migrate")
-            if condition is None or condition.condition != "service_completed_successfully":
+            if (
+                condition is None
+                or condition.condition != "service_completed_successfully"
+            ):
                 problems.append(
                     "app does not wait for migrate to complete successfully"
                 )
@@ -342,13 +347,17 @@ def _service_violations(
             )
 
     if service.build is not None:
-        problems.append(f"service {name!r} declares build:; images are pulled, not built")
+        problems.append(
+            f"service {name!r} declares build:; images are pulled, not built"
+        )
 
     # Host privilege.
     if service.privileged:
         problems.append(f"service {name!r} is privileged")
     if service.pid is not None:
-        problems.append(f"service {name!r} sets pid={service.pid!r} (host PID namespace)")
+        problems.append(
+            f"service {name!r} sets pid={service.pid!r} (host PID namespace)"
+        )
     if service.ipc is not None:
         problems.append(f"service {name!r} sets ipc={service.ipc!r}")
     if service.userns_mode is not None:
@@ -365,7 +374,9 @@ def _service_violations(
     if service.sysctls:
         problems.append(f"service {name!r} sets sysctls {sorted(service.sysctls)}")
     if service.extra_hosts:
-        problems.append(f"service {name!r} sets extra_hosts {list(service.extra_hosts)}")
+        problems.append(
+            f"service {name!r} sets extra_hosts {list(service.extra_hosts)}"
+        )
     if "no-new-privileges:true" not in service.security_opt:
         problems.append(f"service {name!r} does not set no-new-privileges")
 
@@ -387,9 +398,7 @@ def _service_violations(
         if network not in declared_networks:
             problems.append(f"service {name!r} joins undeclared network {network!r}")
     if SHADOW_INTERNAL_NETWORK not in service.networks:
-        problems.append(
-            f"service {name!r} does not join {SHADOW_INTERNAL_NETWORK!r}"
-        )
+        problems.append(f"service {name!r} does not join {SHADOW_INTERNAL_NETWORK!r}")
 
     # The rule this file learned the hard way: Docker ACCEPTS a `ports:` entry
     # on a container whose every network is `internal: true`, then never
@@ -419,7 +428,11 @@ def _service_violations(
             f"service {name!r} joins {SHADOW_EDGE_NETWORK!r} without publishing "
             "anything; only the published service belongs there"
         )
-    if not service.ports and service.networks and set(service.networks) - internal_networks:
+    if (
+        not service.ports
+        and service.networks
+        and set(service.networks) - internal_networks
+    ):
         problems.append(
             f"service {name!r} holds state and must be internal-only, but joins "
             f"{sorted(set(service.networks) - internal_networks)}"

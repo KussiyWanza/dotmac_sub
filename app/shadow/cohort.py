@@ -69,7 +69,8 @@ def _writer(name: str, remaining: int = 1) -> DisplacedWriter:
     must fail if a writer appears *or* disappears without review.
     """
     return DisplacedWriter(
-        sub_writer=name, ratchet=RetirementRatchet(remaining=remaining, ceiling=remaining)
+        sub_writer=name,
+        ratchet=RetirementRatchet(remaining=remaining, ceiling=remaining),
     )
 
 
@@ -96,7 +97,9 @@ def _module(
         authority_mode=AuthorityMode.NONE,
         release=None,
         blocking_prerequisite=blocked,
-        comparison_gate=ComparisonGate(statement=gate, reconciliation_hash=None, satisfied=False),
+        comparison_gate=ComparisonGate(
+            statement=gate, reconciliation_hash=None, satisfied=False
+        ),
         rollback_condition=rollback,
         displaced_writers=writers,
     )

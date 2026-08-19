@@ -207,9 +207,7 @@ def test_modules_may_share_a_source_revision() -> None:
     """
     rev = "1" * 40
     a = _entry(module="ipam", package="dotmac-ipam", source_revision=rev)
-    b = _entry(
-        module="fiber-plant", package="dotmac-fiber-plant", source_revision=rev
-    )
+    b = _entry(module="fiber-plant", package="dotmac-fiber-plant", source_revision=rev)
     manifest = CohortManifest(
         manifest_version="1", environment="shadow", modules=(a, b)
     )
@@ -286,9 +284,7 @@ def test_a_state_beyond_source_only_requires_a_release_identity(
 
 def test_released_state_is_accepted_once_a_release_identity_exists() -> None:
     """Sensitivity: the rule demands a release, it does not forbid the state."""
-    entry = _entry(
-        adoption_state=AdoptionState.RELEASED_UNCOMPOSED, release=_release()
-    )
+    entry = _entry(adoption_state=AdoptionState.RELEASED_UNCOMPOSED, release=_release())
     assert entry.adoption_state is AdoptionState.RELEASED_UNCOMPOSED
 
 
@@ -475,8 +471,7 @@ def _public_models() -> list[type[BaseModel]]:
     return [
         obj
         for name in shadow.__all__
-        if isinstance(obj := getattr(shadow, name), type)
-        and issubclass(obj, BaseModel)
+        if isinstance(obj := getattr(shadow, name), type) and issubclass(obj, BaseModel)
     ]
 
 
@@ -515,7 +510,10 @@ def test_no_public_contract_field_is_a_bare_mapping() -> None:
     for model in _public_models():
         for field, annotation in typing.get_type_hints(model).items():
             rendered = str(annotation)
-            if any(bad in rendered for bad in ("dict[str, typing.Any]", "Mapping[str, typing.Any]")):
+            if any(
+                bad in rendered
+                for bad in ("dict[str, typing.Any]", "Mapping[str, typing.Any]")
+            ):
                 offenders.append(f"{model.__name__}.{field}: {rendered}")
     assert not offenders, f"unshaped dict fields: {offenders}"
 
