@@ -41,6 +41,24 @@ SHADOW_PROJECT: Final[str] = "dotmac-sub-thin-shadow"
 SHADOW_BIND_HOST: Final[str] = "127.0.0.1"
 SHADOW_BIND_PORT: Final[int] = 18001
 
+#: The two networks, and the different way each denies egress.
+#:
+#: `shadow_internal` is `internal: true` — no route off the host at all — and
+#: everything that holds state lives only there. `shadow_edge` cannot be
+#: internal, because Docker silently ignores port publishing for a container
+#: whose every network is internal, so a loopback bind declared on such a
+#: container is accepted and then never listens. The edge instead denies egress
+#: by disabling IP masquerade: a packet leaving the container keeps its RFC1918
+#: source and is unroutable past this host, while inbound DNAT still works.
+SHADOW_INTERNAL_NETWORK: Final[str] = "shadow_internal"
+SHADOW_EDGE_NETWORK: Final[str] = "shadow_edge"
+
+#: Driver options the edge bridge must set, and the only values accepted.
+EDGE_DRIVER_OPTS: Final[dict[str, str]] = {
+    "com.docker.network.bridge.enable_ip_masquerade": "false",
+    "com.docker.network.bridge.host_binding_ipv4": SHADOW_BIND_HOST,
+}
+
 #: Exact image digests this stack is pinned to. A digest not on this list is
 #: refused even if it is syntactically pinned: "pinned" and "pinned to the
 #: artifact we reviewed" are different claims.
@@ -158,6 +176,7 @@ class ShadowNetwork(BaseModel):
     driver: str | None = None
     internal: bool = False
     external: bool = False
+    driver_opts: dict[str, str] = {}
 
 
 class ShadowVolume(BaseModel):
@@ -213,12 +232,32 @@ def contract_violations(compose: ShadowComposeFile) -> tuple[str, ...]:
     declared_internal = {
         key for key, network in compose.networks.items() if network.internal
     }
-    for key, network in compose.networks.items():
-        if not network.internal:
+    if set(compose.networks) != {SHADOW_INTERNAL_NETWORK, SHADOW_EDGE_NETWORK}:
+        problems.append(
+            f"networks are {sorted(compose.networks)}, expected exactly "
+            f"[{SHADOW_EDGE_NETWORK!r}, {SHADOW_INTERNAL_NETWORK!r}]"
+        )
+    internal_net = compose.networks.get(SHADOW_INTERNAL_NETWORK)
+    if internal_net is not None and not internal_net.internal:
+        problems.append(
+            f"{SHADOW_INTERNAL_NETWORK!r} is not internal: everything holding "
+            "state must have no route off the host"
+        )
+    edge = compose.networks.get(SHADOW_EDGE_NETWORK)
+    if edge is not None:
+        if edge.internal:
             problems.append(
-                f"network {key!r} is not internal: egress must be denied by the "
-                "network, not only by configuration"
+                f"{SHADOW_EDGE_NETWORK!r} is internal, so the loopback publish "
+                "on it would be silently ignored by Docker"
             )
+        for option, expected in EDGE_DRIVER_OPTS.items():
+            if edge.driver_opts.get(option) != expected:
+                problems.append(
+                    f"{SHADOW_EDGE_NETWORK!r} must set {option}={expected!r} "
+                    f"(got {edge.driver_opts.get(option)!r}); without it the "
+                    "edge bridge would give the shadow app real egress"
+                )
+    for key, network in compose.networks.items():
         if network.external:
             problems.append(f"network {key!r} is external: it may be a shared network")
         if any(r in network.name.lower() for r in KEYCLOAK_RESERVED):
@@ -242,7 +281,9 @@ def contract_violations(compose: ShadowComposeFile) -> tuple[str, ...]:
             )
 
     for name, service in compose.services.items():
-        problems.extend(_service_violations(name, service, declared_internal))
+        problems.extend(
+            _service_violations(name, service, set(compose.networks), declared_internal)
+        )
 
     if "migrate" not in compose.services:
         problems.append("no one-shot migrate service")
@@ -266,7 +307,10 @@ def contract_violations(compose: ShadowComposeFile) -> tuple[str, ...]:
 
 
 def _service_violations(
-    name: str, service: ShadowService, internal_networks: set[str]
+    name: str,
+    service: ShadowService,
+    declared_networks: set[str],
+    internal_networks: set[str],
 ) -> list[str]:
     problems: list[str] = []
 
@@ -334,10 +378,35 @@ def _service_violations(
 
     # Networking.
     for network in service.networks:
-        if network not in internal_networks:
-            problems.append(
-                f"service {name!r} joins non-internal network {network!r}"
-            )
+        if network not in declared_networks:
+            problems.append(f"service {name!r} joins undeclared network {network!r}")
+    if SHADOW_INTERNAL_NETWORK not in service.networks:
+        problems.append(
+            f"service {name!r} does not join {SHADOW_INTERNAL_NETWORK!r}"
+        )
+
+    # The rule this file learned the hard way: Docker ACCEPTS a `ports:` entry
+    # on a container whose every network is `internal: true`, then never
+    # publishes it. Nothing errors, `docker ps` shows the mapping as empty, and
+    # the bind looks configured right up until something tries to connect. A
+    # declaration-only check cannot see that, so the check is on membership.
+    on_edge = SHADOW_EDGE_NETWORK in service.networks
+    if service.ports and not on_edge:
+        problems.append(
+            f"service {name!r} publishes {list(service.ports)} but joins only "
+            f"internal networks — Docker will ignore the publish and the port "
+            f"will never listen; join {SHADOW_EDGE_NETWORK!r} as well"
+        )
+    if on_edge and not service.ports:
+        problems.append(
+            f"service {name!r} joins {SHADOW_EDGE_NETWORK!r} without publishing "
+            "anything; only the published service belongs there"
+        )
+    if not service.ports and service.networks and set(service.networks) - internal_networks:
+        problems.append(
+            f"service {name!r} holds state and must be internal-only, but joins "
+            f"{sorted(set(service.networks) - internal_networks)}"
+        )
     for published in service.ports:
         problems.extend(_port_violations(name, published))
 
@@ -394,8 +463,11 @@ __all__ = [
     "INTERNAL_HOSTS",
     "KEYCLOAK_RESERVED",
     "PINNED_IMAGES",
+    "EDGE_DRIVER_OPTS",
     "SHADOW_BIND_HOST",
     "SHADOW_BIND_PORT",
+    "SHADOW_EDGE_NETWORK",
+    "SHADOW_INTERNAL_NETWORK",
     "SHADOW_PROJECT",
     "DependsCondition",
     "HealthCheck",

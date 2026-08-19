@@ -13,11 +13,24 @@ financial authority. It satisfies **no** production cutover gate.
 | Deployment directory | `/opt/dotmac-sub-thin-shadow` |
 | Compose project | `dotmac-sub-thin-shadow` |
 | Application bind | `127.0.0.1:18001` (loopback only, no nginx route) |
-| Network | `dotmac-sub-thin-shadow_internal`, `internal: true` |
+| Networks | `…_internal` (`internal: true`, holds all state) and `…_edge` (carries only the loopback publish; masquerade disabled) |
 | Volumes | `…_db_data`, `…_redis_data`, `…_uploads`, `…_sink` |
 | Services | `postgres`, `redis`, `migrate` (one-shot), `app` |
 | App image | `ghcr.io/michaelayoade/dotmac_sub@sha256:342a9b80…` |
 | App revision | `9a5db5de005e82241e2490a930d84e5a0566d3ff` (run `32216213910`) |
+
+### Why two networks
+
+Docker **silently ignores port publishing** for a container whose every network
+is `internal: true`: the mapping is accepted, `docker ps` shows it empty, and
+the bind looks configured right up until something tries to connect. So
+everything holding state sits on the internal network with no route off the
+host, and the app additionally joins a thin `…_edge` bridge that exists only to
+make the loopback publish real. The edge denies egress a different way — IP
+masquerade is off, so a packet leaving the container keeps its RFC1918 source
+and is unroutable past this host, while inbound DNAT still works. The bridge is
+also pinned to `127.0.0.1`, so a `ports:` entry that forgot its bind address
+still cannot land on a public interface.
 
 No Celery workers, no Beat, no provider credentials, no OpenBao token, no access
 to production Sub / Vendor CP / ERP / Integrator databases, no Docker socket, no

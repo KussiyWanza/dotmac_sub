@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from app.shadow.compose_contract import (
+    EDGE_DRIVER_OPTS,
     PINNED_IMAGES,
     SHADOW_BIND_HOST,
     SHADOW_BIND_PORT,
@@ -207,17 +208,96 @@ def test_a_port_with_no_bind_address_is_refused(compose: ShadowComposeFile) -> N
     )
 
 
-def test_egress_is_denied_by_an_internal_network(compose: ShadowComposeFile) -> None:
-    assert all(network.internal for network in compose.networks.values())
+def test_state_holding_services_are_on_the_internal_network_only(
+    compose: ShadowComposeFile,
+) -> None:
+    assert compose.networks["shadow_internal"].internal
+    for name in ("postgres", "redis", "migrate"):
+        assert compose.services[name].networks == ("shadow_internal",), name
 
 
-def test_a_non_internal_network_is_refused(compose: ShadowComposeFile) -> None:
-    networks = {
-        key: network.model_copy(update={"internal": False})
-        for key, network in compose.networks.items()
-    }
+def test_the_internal_network_losing_its_internal_flag_is_refused(
+    compose: ShadowComposeFile,
+) -> None:
+    networks = dict(compose.networks)
+    networks["shadow_internal"] = networks["shadow_internal"].model_copy(
+        update={"internal": False}
+    )
     problems = contract_violations(compose.model_copy(update={"networks": networks}))
     assert any("not internal" in problem for problem in problems)
+
+
+def test_the_edge_network_denies_egress_by_disabling_masquerade(
+    compose: ShadowComposeFile,
+) -> None:
+    """It cannot be `internal` — a publish would be ignored — so it denies
+    egress by leaving container packets with an unroutable RFC1918 source."""
+    edge = compose.networks["shadow_edge"]
+    assert edge.internal is False
+    assert edge.driver_opts == EDGE_DRIVER_OPTS
+
+
+@pytest.mark.parametrize("option", sorted(EDGE_DRIVER_OPTS))
+def test_dropping_an_edge_driver_option_is_refused(
+    compose: ShadowComposeFile, option: str
+) -> None:
+    opts = dict(compose.networks["shadow_edge"].driver_opts)
+    opts.pop(option)
+    networks = dict(compose.networks)
+    networks["shadow_edge"] = networks["shadow_edge"].model_copy(
+        update={"driver_opts": opts}
+    )
+    problems = contract_violations(compose.model_copy(update={"networks": networks}))
+    assert any(option in problem for problem in problems)
+
+
+def test_enabling_masquerade_on_the_edge_is_refused(
+    compose: ShadowComposeFile,
+) -> None:
+    opts = dict(compose.networks["shadow_edge"].driver_opts)
+    opts["com.docker.network.bridge.enable_ip_masquerade"] = "true"
+    networks = dict(compose.networks)
+    networks["shadow_edge"] = networks["shadow_edge"].model_copy(
+        update={"driver_opts": opts}
+    )
+    problems = contract_violations(compose.model_copy(update={"networks": networks}))
+    assert any("real egress" in problem for problem in problems)
+
+
+def test_publishing_from_an_internal_only_service_is_refused(
+    compose: ShadowComposeFile,
+) -> None:
+    """The bug this rule exists for.
+
+    Docker accepts `ports:` on a container whose every network is internal and
+    then never publishes it: no error, an empty mapping in `docker ps`, and a
+    bind that looks configured until something tries to connect. The shipped
+    file had exactly this shape and passed a declaration-only check.
+    """
+    problems = _violations_for(compose, "app", networks=("shadow_internal",))
+    assert "Docker will ignore the publish" in problems
+
+
+def test_the_app_actually_joins_the_edge_network(
+    compose: ShadowComposeFile,
+) -> None:
+    """Sensitivity's companion: the shipped file has the shape that works."""
+    assert set(compose.services["app"].networks) == {"shadow_internal", "shadow_edge"}
+
+
+def test_a_state_service_joining_the_edge_network_is_refused(
+    compose: ShadowComposeFile,
+) -> None:
+    problems = _violations_for(
+        compose, "postgres", networks=("shadow_internal", "shadow_edge")
+    )
+    assert "without publishing" in problems or "internal-only" in problems
+
+
+def test_an_undeclared_network_is_refused(compose: ShadowComposeFile) -> None:
+    assert "undeclared network" in _violations_for(
+        compose, "app", networks=("shadow_internal", "shadow_elsewhere")
+    )
 
 
 def test_an_external_network_or_volume_is_refused(

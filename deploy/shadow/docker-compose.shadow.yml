@@ -140,7 +140,13 @@ services:
       migrate:
         condition: service_completed_successfully
     networks:
+      # Both: `shadow_internal` reaches postgres and redis, `shadow_edge`
+      # exists ONLY so the loopback publish below is real. Docker silently
+      # drops port publishing when a container's every network is
+      # `internal: true` — the mapping is accepted and then ignored, which
+      # looks identical to a working bind until something tries to connect.
       - shadow_internal
+      - shadow_edge
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=5).status==200 else 1)\""]
       interval: 15s
@@ -153,11 +159,27 @@ services:
       - uvicorn app.main:app --host 0.0.0.0 --port 8001 --no-access-log --workers 1
 
 networks:
+  # Everything that holds state lives here, and only here: no route off the
+  # host at all.
   shadow_internal:
     name: dotmac-sub-thin-shadow_internal
     driver: bridge
-    # No route off the host. This is the egress denial.
     internal: true
+
+  # Carries the loopback publish and nothing else. It cannot be `internal`,
+  # because an internal-only container publishes no ports — so egress is denied
+  # a different way here: IP masquerade is OFF, so a packet leaving the
+  # container keeps its RFC1918 source address and is unroutable past this
+  # host, while inbound DNAT to a published port is unaffected. The bridge is
+  # additionally pinned to 127.0.0.1, so a `ports:` entry that forgot its bind
+  # address still cannot land on a public interface.
+  shadow_edge:
+    name: dotmac-sub-thin-shadow_edge
+    driver: bridge
+    internal: false
+    driver_opts:
+      com.docker.network.bridge.enable_ip_masquerade: "false"
+      com.docker.network.bridge.host_binding_ipv4: "127.0.0.1"
 
 volumes:
   shadow_db_data:
