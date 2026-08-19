@@ -1712,6 +1712,12 @@ def _create_account_payment_from_preview(
         invoice = get_by_id(db, Invoice, allocation.invoice_id)
         if invoice:
             _finalize_invoice_payment_effects(db, invoice)
+            from app.services import sales_orders as sales_order_service
+
+            sales_order_service.reconcile_sales_order_payment_from_invoice(
+                db,
+                invoice.id,
+            )
     if not allocations:
         from app.services.account_lifecycle import compute_account_status
 
@@ -1879,6 +1885,12 @@ def _settle_existing_account_payment(
         invoice = get_by_id(db, Invoice, allocation.invoice_id)
         if invoice:
             _finalize_invoice_payment_effects(db, invoice)
+            from app.services import sales_orders as sales_order_service
+
+            sales_order_service.reconcile_sales_order_payment_from_invoice(
+                db,
+                invoice.id,
+            )
     if not allocations:
         from app.services.account_lifecycle import compute_account_status
 
@@ -4446,6 +4458,12 @@ class PaymentAllocations(ListResponseMixin):
                 _finalize_reviewed_document_payment_effects(db, invoice)
             else:
                 _finalize_invoice_payment_effects(db, invoice)
+                from app.services import sales_orders as sales_order_service
+
+                sales_order_service.reconcile_sales_order_payment_from_invoice(
+                    db,
+                    invoice.id,
+                )
             AuditEvents.stage(
                 db,
                 AuditEventCreate(
