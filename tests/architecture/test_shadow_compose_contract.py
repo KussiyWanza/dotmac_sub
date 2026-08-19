@@ -305,8 +305,9 @@ def test_a_real_delivery_path_is_refused(compose: ShadowComposeFile) -> None:
 def test_every_shipped_url_addresses_an_internal_shadow_service(
     compose: ShadowComposeFile,
 ) -> None:
-    from app.shadow.compose_contract import INTERNAL_HOSTS
     from urllib.parse import urlsplit
+
+    from app.shadow.compose_contract import INTERNAL_HOSTS
 
     for name, service in compose.services.items():
         for key, value in service.environment.items():
