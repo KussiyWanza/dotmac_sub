@@ -20,6 +20,7 @@ from app.models.field_vendor import FieldVendor, FieldVendorUser
 from app.models.subscriber import UserType
 from app.models.system_user import SystemUser
 from app.services import vendor_user_provisioning as provisioning
+from app.services.operator_tenant import provision_operator_tenant
 from app.services.db_session_adapter import db_session_adapter
 from app.services.field import vendor_capabilities as caps
 from app.services.field.vendor_auth import (
@@ -60,6 +61,11 @@ def _provision(db_session, vendor, **kwargs):
     command = _command(vendor, **kwargs)
     db_session_adapter.release_read_transaction(db_session)
     return provisioning.provision_committed(db_session, command)
+
+
+@pytest.fixture(autouse=True)
+def _vendor_identity_operator_tenant(db_session):
+    provision_operator_tenant(db_session)
 
 
 # ---------------------------------------------------------------------------
