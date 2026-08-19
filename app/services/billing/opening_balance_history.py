@@ -5,11 +5,12 @@ position carried in at the handoff. It contacts no external system and it never
 writes money. For every requested account the source position is the
 mathematical net of the complete active transaction set; an empty set is zero.
 
-The final target adds canonical Sub-native financial facts strictly after the
-handoff and no later than the reviewed opening instant. Any missing carried-in
-account or malformed/unreconciled source row fails the complete query. A native
-account created after handoff has an explicit zero history component. There is
-no per-account unknown or quarantine outcome.
+The final target adds canonical Sub-native financial facts no later than the
+reviewed opening instant. A migrated account starts at the handoff; a reviewed
+Sub-native account that predates the handoff starts at account inception. Any
+missing carried-in account or malformed/unreconciled source row fails the
+complete query. There is no guessed identity, per-account unknown balance, or
+quarantine outcome.
 """
 
 from __future__ import annotations
@@ -25,7 +26,14 @@ from uuid import UUID
 from sqlalchemy import Boolean, Integer, Numeric, Uuid, column, inspect, select, table
 from sqlalchemy.orm import Session
 
+from app.models.carried_source_identity import (
+    CarriedSourceIdentityAdjudication,
+    CarriedSourceIdentityDisposition,
+)
 from app.models.subscriber import Subscriber
+from app.services.carried_source_identity_adjudication import (
+    preview_carried_source_identity_adjudication,
+)
 from app.services.common import coerce_uuid, round_money
 from app.services.domain_errors import DomainError
 
@@ -44,6 +52,7 @@ class OpeningBalanceHistoryOrigin(StrEnum):
     """Why an account has its opening history position."""
 
     migrated_history = "migrated_history"
+    native_before_handoff = "native_before_handoff"
     native_after_handoff = "native_after_handoff"
 
 
@@ -51,6 +60,7 @@ class OpeningBalanceSourceIdentityDisposition(StrEnum):
     """Whether one customer has lawful carried-source identity provenance."""
 
     migrated_identity_present = "migrated_identity_present"
+    native_before_handoff = "native_before_handoff"
     native_after_handoff = "native_after_handoff"
     unresolved_carried_identity = "unresolved_carried_identity"
 
@@ -109,6 +119,8 @@ class OpeningBalanceSourceIdentityRow:
     disposition: OpeningBalanceSourceIdentityDisposition
     splynx_customer_id: int | None
     customer_created_at: datetime
+    adjudication_id: UUID | None
+    adjudication_fingerprint: str | None
     evidence_fingerprint: str
 
 
@@ -139,6 +151,8 @@ class OpeningBalanceHistoryRow:
     currency: str
     origin: OpeningBalanceHistoryOrigin
     splynx_customer_id: int | None
+    adjudication_id: UUID | None
+    adjudication_fingerprint: str | None
     history_transaction_count: int
     history_position: Decimal
     native_position: Decimal
@@ -210,6 +224,14 @@ def classify_opening_balance_source_identities(
             "source_identity_duplicate",
             "A carried-in customer identity maps to more than one Sub customer.",
         )
+    decisions = {
+        decision.account_id: decision
+        for decision in db.scalars(
+            select(CarriedSourceIdentityAdjudication).where(
+                CarriedSourceIdentityAdjudication.account_id.in_(ids)
+            )
+        ).all()
+    }
 
     canonical_rows: list[dict[str, object]] = []
     rows: list[OpeningBalanceSourceIdentityRow] = []
@@ -221,12 +243,46 @@ def classify_opening_balance_source_identities(
             if account.splynx_customer_id is not None
             else None
         )
+        decision = decisions.get(account_id)
+        adjudication_id: UUID | None = None
+        adjudication_fingerprint: str | None = None
         if source_id is not None:
+            if decision is not None:
+                raise _error(
+                    "source_adjudication_stale",
+                    "A reviewed native decision conflicts with carried source identity.",
+                    account_id=str(account_id),
+                )
             disposition = (
                 OpeningBalanceSourceIdentityDisposition.migrated_identity_present
             )
         elif created_at > native_after:
+            if decision is not None:
+                raise _error(
+                    "source_adjudication_stale",
+                    "A reviewed pre-handoff decision conflicts with account creation.",
+                    account_id=str(account_id),
+                )
             disposition = OpeningBalanceSourceIdentityDisposition.native_after_handoff
+        elif decision is not None:
+            current = preview_carried_source_identity_adjudication(db, account_id)
+            if (
+                decision.disposition
+                is not CarriedSourceIdentityDisposition.native_before_handoff
+                or decision.source_system != current.source_system
+                or _stored_utc(decision.financial_handoff_at) != native_after
+                or _stored_utc(decision.account_created_at) != created_at
+                or not current.eligible
+                or current.fingerprint != decision.preview_fingerprint
+            ):
+                raise _error(
+                    "source_adjudication_stale",
+                    "The reviewed native provenance no longer matches current evidence.",
+                    account_id=str(account_id),
+                )
+            disposition = OpeningBalanceSourceIdentityDisposition.native_before_handoff
+            adjudication_id = decision.id
+            adjudication_fingerprint = decision.preview_fingerprint
         else:
             disposition = (
                 OpeningBalanceSourceIdentityDisposition.unresolved_carried_identity
@@ -238,6 +294,10 @@ def classify_opening_balance_source_identities(
             "native_after": native_after.isoformat(),
             "position_at": position_at.isoformat(),
             "splynx_customer_id": source_id,
+            "adjudication_id": (
+                str(adjudication_id) if adjudication_id is not None else None
+            ),
+            "adjudication_fingerprint": adjudication_fingerprint,
         }
         canonical_rows.append(canonical)
         rows.append(
@@ -246,6 +306,8 @@ def classify_opening_balance_source_identities(
                 disposition=disposition,
                 splynx_customer_id=source_id,
                 customer_created_at=created_at,
+                adjudication_id=adjudication_id,
+                adjudication_fingerprint=adjudication_fingerprint,
                 evidence_fingerprint=_digest(canonical),
             )
         )
@@ -309,6 +371,7 @@ def resolve_opening_balance_history_targets(
             select(Subscriber).where(Subscriber.id.in_(ids))
         ).all()
     }
+    identity_by_account = {row.account_id: row for row in identity.rows}
 
     source = table(
         SOURCE_TABLE,
@@ -354,28 +417,56 @@ def resolve_opening_balance_history_targets(
         )
 
     from app.services.customer_financial_ledger import (
+        customer_financial_balances_by_currency,
         native_customer_financial_balances_by_currency,
     )
 
-    native = native_customer_financial_balances_by_currency(
+    post_handoff_native = native_customer_financial_balances_by_currency(
         db,
         ids,
         after=native_after,
         before=position_at,
     )
+    native_before_ids = tuple(
+        row.account_id
+        for row in identity.rows
+        if row.disposition
+        is OpeningBalanceSourceIdentityDisposition.native_before_handoff
+    )
+    complete_native = customer_financial_balances_by_currency(
+        db,
+        native_before_ids,
+        end=position_at,
+    )
     canonical_rows: list[dict[str, object]] = []
     resolved: list[OpeningBalanceHistoryRow] = []
     for account_id in ids:
         account = accounts[account_id]
+        identity_row = identity_by_account[account_id]
         evidence = by_account.get(account_id)
         if evidence is None:
-            origin = OpeningBalanceHistoryOrigin.native_after_handoff
+            if (
+                identity_row.disposition
+                is OpeningBalanceSourceIdentityDisposition.native_before_handoff
+            ):
+                origin = OpeningBalanceHistoryOrigin.native_before_handoff
+            else:
+                origin = OpeningBalanceHistoryOrigin.native_after_handoff
             source_id = None
             transaction_count = 0
             history_position = Decimal("0.00")
             source_deposit: Decimal | None = None
             reconciled: bool | None = None
         else:
+            if (
+                identity_row.disposition
+                is OpeningBalanceSourceIdentityDisposition.native_before_handoff
+            ):
+                raise _error(
+                    "source_identity_mismatch",
+                    "Reviewed Sub-native history conflicts with frozen Splynx evidence.",
+                    account_id=str(account_id),
+                )
             origin = OpeningBalanceHistoryOrigin.migrated_history
             source_id = int(evidence.splynx_customer_id)
             if source_id != account.splynx_customer_id:
@@ -407,8 +498,13 @@ def resolve_opening_balance_history_targets(
                     "Credits minus debits do not equal the frozen source position.",
                     account_id=str(account_id),
                 )
+        native_balances = (
+            complete_native
+            if origin is OpeningBalanceHistoryOrigin.native_before_handoff
+            else post_handoff_native
+        )
         native_position = round_money(
-            native.get(account_id, {}).get(currency, Decimal("0.00"))
+            native_balances.get(account_id, {}).get(currency, Decimal("0.00"))
         )
         target = round_money(history_position + native_position)
         canonical: dict[str, object] = {
@@ -416,6 +512,13 @@ def resolve_opening_balance_history_targets(
             "currency": currency,
             "origin": origin.value,
             "splynx_customer_id": source_id,
+            "source_identity_disposition": identity_row.disposition.value,
+            "adjudication_id": (
+                str(identity_row.adjudication_id)
+                if identity_row.adjudication_id is not None
+                else None
+            ),
+            "adjudication_fingerprint": identity_row.adjudication_fingerprint,
             "history_transaction_count": transaction_count,
             "history_position": str(history_position),
             "source_final_position": (
@@ -434,6 +537,8 @@ def resolve_opening_balance_history_targets(
                 currency=currency,
                 origin=origin,
                 splynx_customer_id=source_id,
+                adjudication_id=identity_row.adjudication_id,
+                adjudication_fingerprint=identity_row.adjudication_fingerprint,
                 history_transaction_count=transaction_count,
                 history_position=history_position,
                 native_position=native_position,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import (
@@ -17,6 +18,7 @@ from sqlalchemy import (
 )
 
 from app.models.billing import LedgerEntry, LedgerEntryType, LedgerSource
+from app.models.system_user import SystemUser
 from app.services.billing.opening_balance_history import (
     SOURCE_TABLE,
     OpeningBalanceHistoryError,
@@ -27,6 +29,15 @@ from app.services.billing.opening_balance_history import (
     classify_opening_balance_source_identities,
     resolve_opening_balance_history_targets,
 )
+from app.services.carried_source_identity_adjudication import (
+    OWNER as ADJUDICATION_OWNER,
+)
+from app.services.carried_source_identity_adjudication import (
+    ConfirmCarriedSourceIdentityCommand,
+    confirm_carried_source_identity_adjudication,
+    preview_carried_source_identity_adjudication,
+)
+from app.services.owner_commands import CommandContext
 
 HANDOFF = datetime(2026, 6, 18, tzinfo=UTC)
 SNAPSHOT = datetime(2026, 8, 4, tzinfo=UTC)
@@ -202,6 +213,99 @@ def test_migrated_account_without_splynx_identity_fails_the_complete_snapshot(
 
     assert exc.value.code.endswith("source_cohort_incomplete")
     assert exc.value.details["reason"] == "missing_carried_source_identity"
+
+
+def test_reviewed_native_account_before_handoff_uses_complete_sub_history(
+    db_session, subscriber, history_table
+):
+    subscriber.splynx_customer_id = None
+    subscriber.created_at = datetime(2026, 5, 22, tzinfo=UTC)
+    subscriber.crm_subscriber_id = uuid4()
+    subscriber.metadata_ = {
+        "source": "dotmac_omni",
+        "crm_person_id": str(uuid4()),
+        "crm_project_id": str(uuid4()),
+        "crm_quote_id": str(uuid4()),
+        "crm_sales_order_id": str(uuid4()),
+    }
+    reviewed_by = SystemUser(
+        first_name="Billing",
+        last_name="Reviewer",
+        email=f"opening-review-{uuid4().hex}@example.com",
+    )
+    approved_by = SystemUser(
+        first_name="Finance",
+        last_name="Approver",
+        email=f"opening-approve-{uuid4().hex}@example.com",
+    )
+    db_session.add_all((reviewed_by, approved_by))
+    db_session.commit()
+    preview = preview_carried_source_identity_adjudication(db_session, subscriber.id)
+    command = ConfirmCarriedSourceIdentityCommand(
+        context=CommandContext.system(
+            actor="pytest:billing-migration",
+            scope=ADJUDICATION_OWNER,
+            reason="Reviewed native provenance for complete-history opening.",
+            idempotency_key="opening-native-before-handoff:test",
+        ),
+        account_id=subscriber.id,
+        expected_preview_fingerprint=preview.fingerprint,
+        evidence_ref="finance-review:opening-history/test",
+        evidence_sha256="b" * 64,
+        reviewed_by_id=reviewed_by.id,
+        approved_by_id=approved_by.id,
+    )
+    db_session.rollback()
+    outcome = confirm_carried_source_identity_adjudication(db_session, command)
+    db_session.add_all(
+        (
+            LedgerEntry(
+                account_id=subscriber.id,
+                entry_type=LedgerEntryType.credit,
+                source=LedgerSource.adjustment,
+                amount=Decimal("10.00"),
+                currency="NGN",
+                memo="Native funding before handoff",
+                effective_date=datetime(2026, 6, 1, tzinfo=UTC),
+                created_at=datetime(2026, 6, 1, tzinfo=UTC),
+            ),
+            LedgerEntry(
+                account_id=subscriber.id,
+                entry_type=LedgerEntryType.credit,
+                source=LedgerSource.adjustment,
+                amount=Decimal("15.00"),
+                currency="NGN",
+                memo="Native funding after handoff",
+                effective_date=datetime(2026, 7, 1, tzinfo=UTC),
+                created_at=datetime(2026, 7, 1, tzinfo=UTC),
+            ),
+        )
+    )
+    db_session.flush()
+
+    identity = classify_opening_balance_source_identities(
+        db_session,
+        OpeningBalanceSourceIdentityQuery(
+            account_ids=(subscriber.id,),
+            native_after=HANDOFF,
+            position_at=SNAPSHOT,
+        ),
+    )
+    row = resolve_opening_balance_history_targets(
+        db_session, _query(subscriber.id)
+    ).rows[0]
+
+    assert (
+        identity.rows[0].disposition
+        is OpeningBalanceSourceIdentityDisposition.native_before_handoff
+    )
+    assert identity.rows[0].adjudication_id == outcome.decision_id
+    assert row.origin is OpeningBalanceHistoryOrigin.native_before_handoff
+    assert row.adjudication_id == outcome.decision_id
+    assert row.splynx_customer_id is None
+    assert row.history_position == Decimal("0.00")
+    assert row.native_position == Decimal("25.00")
+    assert row.target_position == Decimal("25.00")
 
 
 def test_missing_source_customer_fails_the_complete_snapshot(
