@@ -529,7 +529,9 @@ def _linked_sales_order_payment_total(db: Session, sales_order_id: UUID) -> Deci
             else Decimal(payment.amount or 0)
         )
         if payment.status == PaymentStatus.partially_refunded:
-            amount = max(Decimal("0.00"), amount - Decimal(payment.refunded_amount or 0))
+            amount = max(
+                Decimal("0.00"), amount - Decimal(payment.refunded_amount or 0)
+            )
         total += amount
     return round_money(total)
 
@@ -611,6 +613,10 @@ def _sum_installation_lines(lines) -> Decimal:
         if "installation" not in description:
             continue
         amount = Decimal(getattr(line, "amount", 0) or 0)
+        if amount <= 0:
+            amount = Decimal(getattr(line, "quantity", 0) or 0) * Decimal(
+                getattr(line, "unit_price", 0) or 0
+            )
         if amount > 0:
             total += amount
     return total

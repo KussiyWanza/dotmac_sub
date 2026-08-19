@@ -273,7 +273,9 @@ def test_quote_acceptance_invoices_only_installation_lines(db_session):
     outcome = _accept(db_session, quote.id)
 
     order = db_session.get(SalesOrder, outcome.sales_order_id)
-    invoice = db_session.query(Invoice).filter_by(account_id=outcome.subscriber_id).one()
+    invoice = (
+        db_session.query(Invoice).filter_by(account_id=outcome.subscriber_id).one()
+    )
     invoice_lines = db_session.query(InvoiceLine).filter_by(invoice_id=invoice.id).all()
 
     assert order.total == Decimal("200000.00")
@@ -301,7 +303,9 @@ def test_recorded_payment_pays_installation_invoice_and_marks_full_order_paid(
     )
     outcome = _accept(db_session, quote.id)
     order = db_session.get(SalesOrder, outcome.sales_order_id)
-    invoice = db_session.query(Invoice).filter_by(account_id=outcome.subscriber_id).one()
+    invoice = (
+        db_session.query(Invoice).filter_by(account_id=outcome.subscriber_id).one()
+    )
 
     billing_service.payments.create(
         db_session,
@@ -322,18 +326,12 @@ def test_recorded_payment_pays_installation_invoice_and_marks_full_order_paid(
     assert order.status == SalesOrderStatus.paid.value
     assert order.amount_paid == Decimal("200000.00")
     assert order.balance_due == Decimal("0.00")
-    assert (
-        db_session.query(LedgerEntry)
-        .filter_by(
-            account_id=outcome.subscriber_id,
-            invoice_id=None,
-            entry_type=LedgerEntryType.credit,
-            is_active=True,
-        )
-        .one()
-        .amount
-        == Decimal("50000.00")
-    )
+    assert db_session.query(LedgerEntry).filter_by(
+        account_id=outcome.subscriber_id,
+        invoice_id=None,
+        entry_type=LedgerEntryType.credit,
+        is_active=True,
+    ).one().amount == Decimal("50000.00")
 
 
 def test_quote_acceptance_carries_lead_reseller_to_subscriber_and_fulfillment(
