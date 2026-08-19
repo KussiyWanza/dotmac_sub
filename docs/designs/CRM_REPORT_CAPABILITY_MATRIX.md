@@ -27,7 +27,7 @@ unrelated and remains native.
 | Subscriber revenue/pipeline | `crm_reporting`, Invoice/Payment owners | `/admin/reports/operational/subscriber-revenue` | `reports:billing:read` | Period-filtered page/export |
 | Postpaid customers | `crm_reporting`, customer/billing owners | `/admin/reports/operational/postpaid-customers` | `reports:billing:read` | Native page/export |
 | CRM performance | `crm_reporting`, `team_inbox_metrics` | `/admin/reports/operational/crm-performance` | `reports:support:read` | Native team page/export |
-| Administrative agent performance | `crm_reporting`, `team_inbox_metrics` | `/admin/reports/operational/agent-performance` | `reports:support:read` | Native agent page/export |
+| Administrative agent performance | `crm_reporting`, `team_inbox_metrics` | `/admin/reports/operational/agent-performance` | `reports:support:read` | Native searchable agent page/export |
 | Personal agent performance | `crm_reporting`, signed-in principal scope | `/admin/reports/operational/my-performance` | `reports:support:read` | Fail-closed personal page/export |
 | Operations SLA violations | `crm_reporting`, Ticket/Project/ProjectTask due facts | `/admin/reports/operational/operations-sla` | `reports:support:read` | Period-filtered page/export |
 | Queue wait/classification | `crm_reporting`, native Inbox queue and recorded metadata | `/admin/reports/operational/queue-classification` | `reports:support:read` | Unclassified remains explicit |

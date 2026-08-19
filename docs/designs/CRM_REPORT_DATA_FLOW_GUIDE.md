@@ -171,7 +171,7 @@ Backend query/service: `team_inbox_metrics.agent_performance_report`, mapped by 
 Transformation/calculation: Counts active assignments and distinct handled conversations and calculates assignment wait and first human response per active team member.
 Route/API: `/admin/reports/operational/agent-performance`; CSV under `/export`.
 UI component/template: Shared operational template.
-Displayed as: Agents and Handled cards plus per-agent/team timing rows.
+Displayed as: Agents and Handled cards plus searchable, paginated per-agent/team timing rows.
 Permission: `reports:support:read`.
 Ownership: Self-Care-owned team-inbox projection.
 Data freshness/synchronization: Live current-history query.
