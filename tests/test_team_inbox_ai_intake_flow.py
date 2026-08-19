@@ -733,6 +733,10 @@ def test_policy_version_activation_supersedes_without_mutating_active_version(
             policy_id=policy_id,
             display_name="Dotmac Virtual Assistant",
             welcome_message="Hello from the configured assistant.",
+            clarification_questions=(
+                "Which service do you need help with?",
+                "Is this for you or an organization?",
+            ),
             intent_team_mappings=(
                 {
                     "intent": "technical_support",
@@ -753,6 +757,10 @@ def test_policy_version_activation_supersedes_without_mutating_active_version(
     active_version = db_session.get(AiIntakePolicyVersion, activated.version_id)
     assert active_version.status == "activated"
     assert active_version.welcome_message == "Hello from the configured assistant."
+    assert active_version.clarification_questions == [
+        "Which service do you need help with?",
+        "Is this for you or an organization?",
+    ]
     assert db_session.get(AiIntakePolicy, policy_id).active_version_id == (
         active_version.id
     )

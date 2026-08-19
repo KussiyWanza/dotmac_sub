@@ -488,6 +488,12 @@ def test_ai_intake_admin_lifecycle_uses_canonical_separate_actions():
     assert "ai_conversation_intake.disable_policy" in ROUTES_MODULE
     assert "ai_intake.upsert_config" not in ROUTES_MODULE
     assert '"production_collection_enabled": False' in ROUTES_MODULE
+    assert 'name="generic_clarification_question"' in ROUTES_TEMPLATE
+    assert 'name="customer_type_clarification_question"' in ROUTES_TEMPLATE
+    assert (
+        "Sent first when a new eligible conversation starts AI intake"
+        in ROUTES_TEMPLATE
+    )
 
 
 def test_ai_intake_admin_history_is_read_only_and_exposes_all_version_states():

@@ -338,6 +338,34 @@ def test_low_confidence_allows_one_controlled_follow_up_then_fallback(
     assert second.reason is AiIntakeReason.follow_up_limit_reached
 
 
+def test_configured_clarification_questions_are_used(db_session, monkeypatch):
+    _config(
+        db_session,
+        confidence_threshold=0.8,
+        metadata_={
+            "clarification_questions": [
+                "Which service do you need help with?",
+                "Is the connection for you or your organization?",
+            ]
+        },
+    )
+    gateway = _Gateway(
+        _classification(
+            intent="new_connection",
+            category="new_connection",
+            confidence=0.95,
+        )
+    )
+    monkeypatch.setattr(ai_intake, "_gateway", lambda: gateway)
+
+    outcome = ai_intake.classify_message(db_session, _request())
+
+    assert outcome.classification is not None
+    assert outcome.classification.follow_up_question == (
+        "Is the connection for you or your organization?"
+    )
+
+
 def test_clear_reply_after_follow_up_can_classify(db_session, monkeypatch):
     _config(db_session, confidence_threshold=0.8)
     gateway = _Gateway(_classification(confidence=0.95))
