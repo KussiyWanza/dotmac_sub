@@ -402,6 +402,11 @@ def _stage_accept_quote(
         actor_id=command.context.actor,
         commit=False,
     )
+    sales_orders.ensure_installation_invoice_for_sales_order(
+        db,
+        order.id,
+        commit=False,
+    )
     project_tasks = tuple(
         db.scalars(
             select(ProjectTask.id)

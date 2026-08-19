@@ -22,6 +22,12 @@ from app.models.system_user import SystemUser
 from app.services import vendor_user_provisioning as provisioning
 from app.services.db_session_adapter import db_session_adapter
 from app.services.field import vendor_capabilities as caps
+from app.services.field.vendor_auth import (
+    VendorLoginEligibilityQuery,
+    VendorLoginEligibilityStatus,
+    resolve_vendor_login_eligibility,
+)
+from app.services.operator_tenant import provision_operator_tenant
 
 
 def _vendor(db_session, *, is_active: bool = True) -> FieldVendor:
@@ -57,6 +63,11 @@ def _provision(db_session, vendor, **kwargs):
     return provisioning.provision_committed(db_session, command)
 
 
+@pytest.fixture(autouse=True)
+def _vendor_identity_operator_tenant(db_session):
+    provision_operator_tenant(db_session)
+
+
 # ---------------------------------------------------------------------------
 # Provisioning
 # ---------------------------------------------------------------------------
@@ -81,6 +92,26 @@ def test_provisioning_creates_the_whole_login_or_none_of_it(db_session):
     )
     # Same shape as staff provisioning: no usable secret is minted here.
     assert credential.must_change_password is True
+    assert principal.person_party_id is not None
+    assert credential.party_id == principal.person_party_id
+    assert credential.authentication_binding_id is not None
+    assert credential.tenant_id is not None
+
+
+def test_provisioned_vendor_login_is_vendor_eligible(db_session):
+    vendor = _vendor(db_session)
+    email = f"eligible-{uuid4().hex[:8]}@vendor.example"
+    membership = _provision(db_session, vendor, email=email)
+
+    result = resolve_vendor_login_eligibility(
+        db_session,
+        VendorLoginEligibilityQuery(identifier=email),
+    )
+
+    assert result.status is VendorLoginEligibilityStatus.ELIGIBLE
+    assert result.system_user_id == membership.system_user_id
+    assert result.vendor_user_id == membership.id
+    assert result.vendor_id == vendor.id
 
 
 def test_vendor_principals_are_distinguishable_from_staff(db_session):
@@ -222,6 +253,48 @@ def test_role_changes_take_effect_through_the_owner(db_session):
 
     db_session.refresh(membership)
     assert caps.INVOICE_WRITE in caps.capabilities_for_role(membership.role)
+
+
+def test_enable_login_repairs_legacy_unprojected_vendor_user(db_session):
+    vendor = _vendor(db_session)
+    principal = SystemUser(
+        first_name="Legacy",
+        last_name="Vendor",
+        display_name="Legacy Vendor",
+        email=f"legacy-{uuid4().hex[:8]}@vendor.example",
+        user_type=UserType.vendor,
+        is_active=True,
+    )
+    db_session.add(principal)
+    db_session.flush()
+    credential = UserCredential(
+        system_user_id=principal.id,
+        username=principal.email,
+        password_hash="not-used",
+        must_change_password=True,
+        is_active=True,
+    )
+    membership = FieldVendorUser(
+        vendor_id=vendor.id,
+        system_user_id=principal.id,
+        role="owner",
+        is_active=True,
+    )
+    db_session.add_all([credential, membership])
+    db_session.commit()
+    membership_id = membership.id
+
+    db_session_adapter.release_read_transaction(db_session)
+    outcome = provisioning.enable_login_committed(
+        db_session,
+        provisioning.EnableVendorUserLogin(membership_id=membership_id),
+    )
+
+    db_session.refresh(credential)
+    db_session.refresh(principal)
+    assert outcome.repaired_projection is True
+    assert principal.person_party_id is not None
+    assert credential.party_id == principal.person_party_id
 
 
 def test_unknown_capability_is_a_programmer_error(db_session):
