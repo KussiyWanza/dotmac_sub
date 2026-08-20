@@ -42,7 +42,7 @@ from app.services.owner_commands import (
 from app.services.settings_spec import resolve_integer
 
 DEFAULT_MAX_CONCURRENT_CONVERSATIONS = 10
-AGENT_PRESENCE_FRESHNESS_SECONDS = 180
+AGENT_PRESENCE_FRESHNESS_SECONDS = 30 * 60
 COUNTABLE_CAPACITY_STATUSES = frozenset(
     {
         InboxConversationStatus.open.value,
@@ -215,7 +215,7 @@ def team_capacity_snapshots(
     online_ids = {
         person_id
         for person_id, presence in presences.items()
-        if _effective_presence_status(presence) == InboxAgentPresenceStatus.online.value
+        if effective_presence_status(presence) == InboxAgentPresenceStatus.online.value
     }
     online_ids_by_team: dict[UUID, set[UUID]] = {team_id: set() for team_id in team_ids}
     for member, user in member_users:
@@ -259,7 +259,7 @@ def _coerce_uuid(value: str | UUID | None) -> UUID | None:
         return None
 
 
-def _effective_presence_status(
+def effective_presence_status(
     presence: InboxAgentPresence,
     *,
     now: datetime | None = None,
@@ -323,7 +323,7 @@ def set_agent_presence(
         presence = InboxAgentPresence(person_id=person_uuid)
         db.add(presence)
 
-    previous_effective_status = _effective_presence_status(presence)
+    previous_effective_status = effective_presence_status(presence)
     if previous_effective_status == clean_status:
         presence.last_seen_at = observed_at
         db.flush()
@@ -428,7 +428,7 @@ def list_available_team_agents(
         if presence is None:
             continue
         if (
-            _effective_presence_status(presence, now=observed_at)
+            effective_presence_status(presence, now=observed_at)
             != InboxAgentPresenceStatus.online.value
         ):
             continue
@@ -445,7 +445,7 @@ def list_available_team_agents(
                 person_id=str(user.id),
                 active_conversation_count=active_count,
                 max_concurrent_conversations=max_concurrent,
-                presence_status=_effective_presence_status(presence, now=observed_at),
+                presence_status=effective_presence_status(presence, now=observed_at),
                 presence_observed_at=presence.last_seen_at,
             )
         )
@@ -774,6 +774,25 @@ def assign_conversation_to_agent(
                 kind="invalid_agent",
                 service_team_id=str(team_uuid),
                 reason="person_id must reference an active staff user",
+            )
+
+    if decision_mode is InboxRoutingDecisionMode.manual and require_team_membership:
+        available_person_ids = {
+            candidate.person_id
+            for candidate in list_available_team_agents(
+                db,
+                team_uuid,
+                now=assigned_at,
+            )
+        }
+        if str(person_uuid) not in available_person_ids:
+            return InboxAssignmentResult(
+                kind="agent_unavailable",
+                service_team_id=str(team_uuid),
+                reason=(
+                    "Agent must be online with recent presence evidence and "
+                    "available capacity before assignment."
+                ),
             )
 
     previous_assignment = _active_assignment(db, conversation)
