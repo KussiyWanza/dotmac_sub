@@ -696,6 +696,13 @@ different owners.
   pre-creates the table (`ensure_alembic_version_table`). Composing kernel
   revisions into Sub's `version_locations` would put two independent heads in
   one version table — forbidden before the S7 ADR.
+- The narrower question — composing an installable module's own `mod_*`
+  lineage, which is NOT the kernel's public lineage — is ruled by
+  `docs/adr/0011-module-lineage-composition.md` (accepted 2026-08-20). It binds
+  module prerequisites to Sub's OWN revisions rather than kernel `0001`,
+  following the ERP precedent the kernel documents, and explicitly does not
+  authorize composing the kernel lineage or move the revision-0001 ratchet.
+  The bullet above still stands for the kernel's own revisions.
 - Kernel revision IDs are `0001_initial_tenant_schema` …
   `0026_platform_audit_log`
   (four-digit prefixes); Sub's files use three-digit-and-up prefixes
