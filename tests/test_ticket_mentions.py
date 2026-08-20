@@ -171,13 +171,14 @@ def test_parse_mentions_payload_accepts_strings_and_objects():
 
 def test_comment_form_preserves_person_and_group_mention_tokens(monkeypatch):
     captured = {}
+    ticket_id = uuid4()
     person_id = uuid4()
     group_id = uuid4()
 
     monkeypatch.setattr(
         web_support_tickets,
         "upload_ticket_attachments",
-        lambda *args, **kwargs: [],
+        lambda *args, **kwargs: (),
     )
     monkeypatch.setattr(
         web_support_tickets.db_session_adapter,
@@ -198,7 +199,7 @@ def test_comment_form_preserves_person_and_group_mention_tokens(monkeypatch):
     web_support_tickets.add_ticket_comment_from_form(
         None,
         request=None,
-        ticket_id="ticket-1",
+        ticket_id=str(ticket_id),
         actor_id=None,
         body="Please check this",
         is_internal=False,
