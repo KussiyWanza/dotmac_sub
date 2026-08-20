@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from app.models.service_team import ServiceTeam, ServiceTeamMember, ServiceTeamType
 from app.models.team_inbox import (
+    InboxAgentPresence,
     InboxAgentPresenceEvent,
     InboxAgentPresenceStatus,
     InboxAuditEvidenceGrade,
@@ -33,6 +34,13 @@ def _team_and_agent(db_session):
     db_session.add(
         ServiceTeamMember(team_id=team.id, person_id=person.id, is_active=True)
     )
+    db_session.add(
+        InboxAgentPresence(
+            person_id=user.id,
+            status=InboxAgentPresenceStatus.online.value,
+            last_seen_at=datetime.now(UTC),
+        )
+    )
     db_session.flush()
     return team, user.id
 
@@ -49,6 +57,13 @@ def test_reassignment_closes_interval_through_authoritative_event(db_session):
     _other_user, other_person = add_bound_staff_user(db_session)
     db_session.add(
         ServiceTeamMember(team_id=team.id, person_id=other_person.id, is_active=True)
+    )
+    db_session.add(
+        InboxAgentPresence(
+            person_id=_other_user.id,
+            status=InboxAgentPresenceStatus.online.value,
+            last_seen_at=datetime.now(UTC),
+        )
     )
     db_session.flush()
     second_agent = _other_user.id

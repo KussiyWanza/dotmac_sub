@@ -238,7 +238,7 @@ def test_reply_submission_refreshes_inbox_fragments_without_page_navigation():
     assert 'workspace?.refreshConversationList?.("reply")' not in JAVASCRIPT
     assert 'this.draft = ""' in JAVASCRIPT
     assert "window.location.reload" not in JAVASCRIPT
-    assert "admin-inbox.js?v=20260819a" in INDEX
+    assert "admin-inbox.js?v=20260820a" in INDEX
     assert "admin-inbox.js?v=20260817b" not in INDEX
 
 
@@ -287,7 +287,7 @@ def test_reply_request_always_releases_send_busy_state():
     assert '"htmx:timeout"' in JAVASCRIPT
     assert '"htmx:sendError"' in JAVASCRIPT
     assert '"htmx:responseError"' in JAVASCRIPT
-    assert "this.$cleanup(() => this.replyLifecycleCleanup?.())" in JAVASCRIPT
+    assert "this.$root.__inboxComposerCleanup = () =>" in JAVASCRIPT
 
     marker = JAVASCRIPT.index("      finishSendRequest(event) {")
     body = JAVASCRIPT[marker : marker + 850]
