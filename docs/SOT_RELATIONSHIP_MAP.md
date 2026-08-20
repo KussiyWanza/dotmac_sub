@@ -2734,7 +2734,9 @@ confirmation, tracking, or rating eligibility from raw statuses.
    bulk changes, automation configuration, and basic/advanced filters.
    A Ticket whose canonical current status is later removed from the configured
    subset retains its value and presentation while operators repair or move it.
-   The `not_closed` read scope continues to exclude only canonical `closed`.
+   Canceled tickets are returned only by the exact `canceled` list filter.
+   Default and `not_closed` scopes exclude canonical `canceled`; `not_closed`
+   also excludes canonical `closed`.
 3. Status configuration does not own labels, tones, icons, or platform colors;
    those are read-side presentation concerns.
 4. `support.ticket_bulk_commands` owns exact selected membership, normalized
