@@ -25,10 +25,17 @@ from app.schemas.status_presentation import StatusPresentation
 
 
 class AttachmentMeta(BaseModel):
-    file_name: str
-    content_type: str
-    file_size: int
-    storage_key: str
+    """Typed private-storage reference persisted with a Ticket attachment."""
+
+    model_config = ConfigDict(frozen=True, str_strip_whitespace=True)
+
+    file_name: str = Field(min_length=1, max_length=255)
+    content_type: str = Field(min_length=1, max_length=255)
+    file_size: int = Field(ge=0)
+    storage_key: str = Field(min_length=1, max_length=1024)
+    # Optional only for legacy/imported metadata. Every new local upload supplies
+    # this UUID so authorized attachment routes can resolve the StoredFile row.
+    stored_file_id: UUID | None = None
 
 
 class TicketBase(BaseModel):

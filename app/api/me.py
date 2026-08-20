@@ -1575,10 +1575,10 @@ def my_create_ticket(
         try:
             uploaded = web_support_tickets.upload_ticket_attachments(
                 db,
-                ticket_id=str(ticket.id),
+                ticket_id=ticket.id,
                 attachments=files,
-                entity_type="support_ticket_attachment",
-                actor_id=subscriber_id,
+                entity_type=web_support_tickets.TicketAttachmentEntityType.ticket,
+                actor_id=UUID(subscriber_id),
             )
         except ValueError as exc:
             raise HTTPException(
@@ -1637,16 +1637,16 @@ def my_add_ticket_comment(
     files = _validate_attachment_count(attachments)
     subscriber_id = _subscriber_id(principal)
     _owned_ticket(db, subscriber_id, ticket_id)
-    uploaded: list[dict] = []
+    uploaded: tuple[AttachmentMeta, ...] = ()
     if files:
         try:
             db_session_adapter.release_read_transaction(db)
             uploaded = web_support_tickets.upload_ticket_attachments(
                 db,
-                ticket_id=ticket_id,
+                ticket_id=UUID(ticket_id),
                 attachments=files,
-                entity_type="support_ticket_comment_attachment",
-                actor_id=subscriber_id,
+                entity_type=web_support_tickets.TicketAttachmentEntityType.comment,
+                actor_id=UUID(subscriber_id),
             )
         except ValueError as exc:
             raise HTTPException(
@@ -1662,7 +1662,7 @@ def my_add_ticket_comment(
             is_internal=False,
             author_type=TicketCommentAuthorType.customer,
             author_person_id=UUID(subscriber_id),
-            attachments=[AttachmentMeta(**item) for item in uploaded],
+            attachments=list(uploaded),
         ),
         actor_id=subscriber_id,
         request=request,
