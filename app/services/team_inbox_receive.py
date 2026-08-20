@@ -427,9 +427,7 @@ def receive_inbound_email(
     )
 
     thread_message_ids = _extract_message_ids(payload.in_reply_to, payload.references)
-    thread_resolution = _resolve_thread_conversation(
-        db, message_ids=thread_message_ids
-    )
+    thread_resolution = _resolve_thread_conversation(db, message_ids=thread_message_ids)
     conversation = thread_resolution.active_conversation
     created_conversation = conversation is None
 

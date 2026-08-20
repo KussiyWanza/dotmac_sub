@@ -516,8 +516,7 @@ def _conversation_history_scope(
             .where(
                 InboxConversationParticipant.conversation_id == conversation.id,
                 InboxConversationParticipant.channel_type == conversation.channel_type,
-                InboxConversationParticipant.normalized_endpoint
-                == normalized_endpoint,
+                InboxConversationParticipant.normalized_endpoint == normalized_endpoint,
                 InboxConversationParticipant.admission_source
                 == InboxParticipantAdmissionSource.inbound_from.value,
                 InboxConversationParticipant.is_active.is_(True),
@@ -697,7 +696,7 @@ def _recent_conversations(
         ContextAvailability.available,
         items=tuple(
             ConversationSummary(
-                UUID(row.id),
+                row.id,
                 row.subject or row.contact_address or "Conversation",
                 row.channel_type,
                 row.status,

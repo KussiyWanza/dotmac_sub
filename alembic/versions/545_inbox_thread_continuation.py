@@ -1,7 +1,7 @@
 """Link a continued Inbox conversation to its resolved predecessor.
 
-Revision ID: 544_inbox_thread_continuation
-Revises: 543_ont_config_unverified
+Revision ID: 545_inbox_thread_continuation
+Revises: 544_carried_source_adjudication
 Create Date: 2026-08-20
 """
 
@@ -14,8 +14,8 @@ from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
-revision: str = "544_inbox_thread_continuation"
-down_revision: str | None = "543_ont_config_unverified"
+revision: str = "545_inbox_thread_continuation"
+down_revision: str | None = "544_carried_source_adjudication"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

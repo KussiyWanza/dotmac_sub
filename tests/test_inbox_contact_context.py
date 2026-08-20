@@ -416,7 +416,7 @@ def test_contact_context_refuses_to_merge_ambiguous_party_history(db_session):
     db_session.flush()
     second_point = PartyContactPoint(
         party_id=second_party.id,
-        channel_type=channel_type,
+        channel_type=current.channel_type,
         normalized_value=f"second-{uuid4()}@example.com",
         display_value="Second participant",
         is_primary=True,
@@ -426,7 +426,7 @@ def test_contact_context_refuses_to_merge_ambiguous_party_history(db_session):
     db_session.add(
         InboxConversationParticipant(
             conversation_id=current.id,
-            channel_type=conversation.channel_type,
+            channel_type=current.channel_type,
             normalized_endpoint=second_point.normalized_value,
             party_contact_point_id=second_point.id,
             party_contact_point_bound_at=datetime.now(UTC),
