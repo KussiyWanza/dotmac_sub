@@ -177,6 +177,10 @@ delivery task on the dedicated `notifications_immediate` worker queue, so broker
 latency and long notification recovery sweeps do not hold the composer response
 open. The periodic notification runner remains on `notifications` as the
 recovery sweep when broker publication or the immediate worker is unavailable.
+Email replies with Inbox attachments resolve those durable Inbox asset IDs only;
+they never reinterpret Inbox display metadata as generic communication
+attachments. The supported email attachment types include PDF, XLSX, and the
+Team Inbox image types PNG, JPEG, GIF, and WebP.
 Immediate tasks and sweeps both lock and claim the exact
 eligible outbox row before provider delivery, so concurrent wake-ups are safe
 no-ops rather than duplicate sends. Immediate replies with no operator-supplied

@@ -168,6 +168,37 @@ def test_send_email_attaches_pdf_with_alternative_body(db_session, monkeypatch):
     assert parts[1].get_payload(decode=True) == b"%PDF-1.4 invoice"
 
 
+def test_send_email_attaches_png_with_alternative_body(db_session, monkeypatch):
+    fake_smtp = FakeSMTP()
+    monkeypatch.setattr("smtplib.SMTP", lambda *args, **kwargs: fake_smtp)
+    monkeypatch.setattr("smtplib.SMTP_SSL", lambda *args, **kwargs: fake_smtp)
+    monkeypatch.setenv("SMTP_HOST", "smtp.test.local")
+    monkeypatch.setenv("SMTP_FROM", "noreply@test.local")
+
+    result = email_service.send_email(
+        db=db_session,
+        to_email="customer@example.com",
+        subject="Network diagram",
+        body_html="<p>The image is attached.</p>",
+        body_text="The image is attached.",
+        track=False,
+        attachments=(
+            email_service.EmailAttachment(
+                filename="network-map.png",
+                content_type="image/png",
+                content=b"png-bytes",
+            ),
+        ),
+    )
+
+    assert result is True
+    parsed = message_from_string(fake_smtp.messages[0][2])
+    attachment = parsed.get_payload()[1]
+    assert attachment.get_content_type() == "image/png"
+    assert attachment.get_filename() == "network-map.png"
+    assert attachment.get_payload(decode=True) == b"png-bytes"
+
+
 def test_send_email_attaches_ncc_xlsx_with_correct_mime_type(db_session, monkeypatch):
     fake_smtp = FakeSMTP()
     monkeypatch.setattr("smtplib.SMTP", lambda *args, **kwargs: fake_smtp)
