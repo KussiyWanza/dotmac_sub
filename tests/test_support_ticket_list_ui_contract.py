@@ -134,7 +134,7 @@ def test_ticket_query_normalizes_declared_state_and_rejects_unknown_values():
         _query(filters='[["Ticket","metadata","=","private"]]')
 
 
-def test_not_closed_status_scope_excludes_only_closed_and_aligns_paging(
+def test_canceled_tickets_require_the_explicit_status_filter_and_align_paging(
     db_session,
 ):
     tickets_per_status = 3
@@ -148,8 +148,10 @@ def test_not_closed_status_scope_excludes_only_closed_and_aligns_paging(
     )
     db_session.commit()
 
-    expected_statuses = {
-        status.value for status in TicketStatus if status is not TicketStatus.closed
+    expected_not_closed_statuses = {
+        status.value
+        for status in TicketStatus
+        if status not in {TicketStatus.closed, TicketStatus.canceled}
     }
 
     context = web_support_tickets.build_tickets_list_context(
@@ -160,10 +162,12 @@ def test_not_closed_status_scope_excludes_only_closed_and_aligns_paging(
     )
 
     assert context["status"] == "not_closed"
-    assert context["total"] == len(expected_statuses) * tickets_per_status
+    assert context["total"] == len(expected_not_closed_statuses) * tickets_per_status
     assert context["total_pages"] == 2
     assert len(context["tickets"]) == 25
-    assert {ticket.status for ticket in context["tickets"]}.isdisjoint({"closed"})
+    assert {
+        ticket.status for ticket in context["tickets"]
+    } == expected_not_closed_statuses
     assert "status=not_closed" in context["list_query"].url(
         "/admin/support/tickets/export.csv"
     )
@@ -173,7 +177,7 @@ def test_not_closed_status_scope_excludes_only_closed_and_aligns_paging(
         list_query=_query(status="not_closed"),
         actor_id=None,
     )
-    assert {ticket.status for ticket in exported} == expected_statuses
+    assert {ticket.status for ticket in exported} == expected_not_closed_statuses
 
     csv_output = web_support_tickets.render_tickets_csv(
         db_session,
@@ -181,7 +185,21 @@ def test_not_closed_status_scope_excludes_only_closed_and_aligns_paging(
         actor_id=None,
         visible_columns_cookie="status",
     )
-    assert set(csv_output.splitlines()[1:]) == expected_statuses
+    assert set(csv_output.splitlines()[1:]) == expected_not_closed_statuses
+
+    default_scope = web_support_tickets.list_tickets_for_scope(
+        db_session,
+        list_query=_query(),
+        actor_id=None,
+    )
+    assert {ticket.status for ticket in default_scope}.isdisjoint({"canceled"})
+
+    canceled_scope = web_support_tickets.list_tickets_for_scope(
+        db_session,
+        list_query=_query(status="canceled"),
+        actor_id=None,
+    )
+    assert {ticket.status for ticket in canceled_scope} == {"canceled"}
 
 
 def test_unconfigured_status_remains_visible_in_admin_list_filter(db_session):

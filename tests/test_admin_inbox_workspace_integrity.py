@@ -104,10 +104,19 @@ def test_contact_drawer_exposes_authoritative_conversation_history_tab():
     assert 'role="tabpanel"' in DRAWER
     assert "contact_context.recent_conversations" in CONVERSATION_HISTORY
     assert 'href="{{ item.url }}"' in CONVERSATION_HISTORY
+    assert "conversation_history_scope.kind.value == 'exact_endpoint'" in (
+        CONVERSATION_HISTORY
+    )
+    assert "item.contact_address" in CONVERSATION_HISTORY
     assert 'datetime="{{ item.last_message_at.isoformat() }}"' in CONVERSATION_HISTORY
     assert (
         "Showing the {{ history.items | length }} most recent" in CONVERSATION_HISTORY
     )
+
+
+def test_continued_email_thread_links_to_its_resolved_predecessor():
+    assert "timeline.continued_from_url" in CONVERSATION
+    assert "Open the earlier conversation" in CONVERSATION
 
 
 def test_social_comments_have_dedicated_workspace_and_filter_entry_point():
@@ -229,7 +238,7 @@ def test_reply_submission_refreshes_inbox_fragments_without_page_navigation():
     assert 'workspace?.refreshConversationList?.("reply")' not in JAVASCRIPT
     assert 'this.draft = ""' in JAVASCRIPT
     assert "window.location.reload" not in JAVASCRIPT
-    assert "admin-inbox.js?v=20260819a" in INDEX
+    assert "admin-inbox.js?v=20260820a" in INDEX
     assert "admin-inbox.js?v=20260817b" not in INDEX
 
 
@@ -278,7 +287,7 @@ def test_reply_request_always_releases_send_busy_state():
     assert '"htmx:timeout"' in JAVASCRIPT
     assert '"htmx:sendError"' in JAVASCRIPT
     assert '"htmx:responseError"' in JAVASCRIPT
-    assert "this.$cleanup(() => this.replyLifecycleCleanup?.())" in JAVASCRIPT
+    assert "this.$root.__inboxComposerCleanup = () =>" in JAVASCRIPT
 
     marker = JAVASCRIPT.index("      finishSendRequest(event) {")
     body = JAVASCRIPT[marker : marker + 850]
@@ -631,6 +640,17 @@ def test_searches_cancel_stale_responses_and_fragment_cleanup_releases_resources
     assert "htmx:beforeCleanupElement" in JAVASCRIPT
     assert "window.clearInterval(element.__inboxReplyWindowTimer)" in JAVASCRIPT
     assert 'document.removeEventListener("click", closeOnOutsideClick)' in JAVASCRIPT
+
+
+def test_composer_cleanup_uses_the_fragment_lifecycle_not_an_unsupported_magic():
+    assert "this.$cleanup" not in JAVASCRIPT
+    assert "this.$root.__inboxComposerCleanup = () =>" in JAVASCRIPT
+    assert "element.__inboxComposerCleanup?.();" in JAVASCRIPT
+
+
+def test_htmx_release_ignores_requests_without_inbox_sequences():
+    assert "detailSequence != null" in JAVASCRIPT
+    assert "contactSequence != null" in JAVASCRIPT
 
 
 def test_realtime_subscriptions_are_reconciled_to_visible_topics():

@@ -152,6 +152,8 @@ class InboxConversationTimeline:
     contact_initials: str
     contact_name_source: str
     external_thread_id: str | None
+    continued_from_conversation_id: str | None
+    continued_from_url: str | None
     first_message_at: datetime | None
     last_message_at: datetime | None
     created_at: datetime
@@ -1767,6 +1769,16 @@ def get_conversation_timeline(
         contact_initials=contact_identity.initials,
         contact_name_source=contact_identity.source.value,
         external_thread_id=conversation.external_thread_id,
+        continued_from_conversation_id=(
+            str(conversation.continued_from_conversation_id)
+            if conversation.continued_from_conversation_id is not None
+            else None
+        ),
+        continued_from_url=(
+            f"/admin/inbox?c={conversation.continued_from_conversation_id}"
+            if conversation.continued_from_conversation_id is not None
+            else None
+        ),
         first_message_at=conversation.first_message_at,
         last_message_at=conversation.last_message_at,
         created_at=conversation.created_at,

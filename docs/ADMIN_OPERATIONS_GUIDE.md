@@ -649,6 +649,22 @@ Turn on auto-generated PPPoE and CoA only after validating naming, pool assignme
 | SNMP Community | (encrypted) | For monitoring |
 | Status | active | active, maintenance, offline, decommissioned |
 
+### Core Device Decommissioning
+
+**URL:** `/admin/network/devices?type=core`
+
+Use **Decommission Device** when a core monitoring device has been deliberately
+removed from service. Do not use it to classify a device that is unexpectedly
+offline. The confirmation preview blocks the transition while active child
+devices, forwarding declarations, linked NAS/router records, or affected active
+customers remain. A reason is required.
+
+After confirmation, monitoring stops and the device moves to **Decommissioned
+Devices** with a neutral **Decommissioned** status. Identity, interfaces,
+metrics, history, audit evidence, and events are retained. **Restore Device**
+returns the record to **Inactive**; re-admission to monitoring is a separate
+operator decision and must follow verification.
+
 ### IP Pool Configuration
 
 Each NAS should have linked IP pools:

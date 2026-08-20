@@ -30,6 +30,7 @@ RETIRED_CONTROLS = (
 PUBLIC_OPERATIONAL_SURFACES = (
     "app/schemas/network_monitoring.py",
     "app/services/status_presentation.py",
+    "app/services/network_device_status_presentation.py",
     "app/services/device_projection_views.py",
     "app/services/web_network_core_devices_inventory.py",
     "app/services/web_network_monitoring.py",

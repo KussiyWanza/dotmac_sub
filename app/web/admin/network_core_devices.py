@@ -421,7 +421,7 @@ def core_device_archive_execute(
         )
     return RedirectResponse(
         f"/admin/network/core-devices/{outcome.device_id}?message="
-        + quote_plus(f"{outcome.device_name} archived."),
+        + quote_plus(f"{outcome.device_name} decommissioned."),
         status_code=303,
     )
 
@@ -436,7 +436,7 @@ def core_device_restore_execute(
 ) -> RedirectResponse:
     context = _archive_command_context(
         auth,
-        reason="Restore archived core device to inactive inventory",
+        reason="Restore decommissioned core device to inactive inventory",
     )
     try:
         db_session_adapter.release_read_transaction(db)
@@ -454,7 +454,7 @@ def core_device_restore_execute(
             status_code=303,
         )
     message = (
-        f"{outcome.device_name} was not archived; no changes were made."
+        f"{outcome.device_name} was not decommissioned; no changes were made."
         if outcome.replayed
         else f"{outcome.device_name} restored as inactive."
     )
@@ -481,7 +481,7 @@ def core_device_edit(request: Request, device_id: str, db: Session = Depends(get
     if device.archived_at is not None:
         return RedirectResponse(
             f"/admin/network/core-devices/{device.id}?error="
-            + quote_plus("Restore this archived device before editing it."),
+            + quote_plus("Restore this decommissioned device before editing it."),
             status_code=303,
         )
     pop_sites = web_network_core_devices_service.pop_sites_for_forms(db)
@@ -1049,7 +1049,7 @@ def core_device_update(request: Request, device_id: str, db: Session = Depends(g
     if device.archived_at is not None:
         return RedirectResponse(
             f"/admin/network/core-devices/{device.id}?error="
-            + quote_plus("Restore this archived device before editing it."),
+            + quote_plus("Restore this decommissioned device before editing it."),
             status_code=303,
         )
     before_snapshot = model_to_dict(device)

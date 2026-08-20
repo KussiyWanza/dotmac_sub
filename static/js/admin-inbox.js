@@ -633,7 +633,10 @@
             history.replaceState({}, "", this.lastSuccessfulListUrl);
           }
           const detailSequence = event.detail?.xhr?.__inboxDetailSequence;
-          if (detailSequence === this.activeDetailRequest?.sequence) {
+          if (
+            detailSequence != null &&
+            detailSequence === this.activeDetailRequest?.sequence
+          ) {
             const wasBlocking = this.activeDetailRequest.blocking;
             this.activeDetailRequest = null;
             if (wasBlocking && detailSequence === this.detailRequestSequence) {
@@ -644,7 +647,10 @@
             }
           }
           const contactSequence = event.detail?.xhr?.__inboxContactSequence;
-          if (contactSequence === this.activeContactRequest?.sequence) {
+          if (
+            contactSequence != null &&
+            contactSequence === this.activeContactRequest?.sequence
+          ) {
             this.activeContactRequest = null;
             if (requestFailed) {
               this.showToast("Could not load contact details. Try again.");
@@ -2001,6 +2007,7 @@
             element.__inboxReplyWindowTimer = null;
           }
           element.__inboxMentionCleanup?.();
+          element.__inboxComposerCleanup?.();
         });
       },
 
@@ -2164,7 +2171,10 @@
           this.resizeTextarea();
           this.bindReplyLifecycle();
         });
-        this.$cleanup(() => this.replyLifecycleCleanup?.());
+        this.$root.__inboxComposerCleanup = () => {
+          this.replyLifecycleCleanup?.();
+          this.$root.__inboxComposerCleanup = null;
+        };
       },
 
       bindReplyLifecycle() {

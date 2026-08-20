@@ -31,6 +31,7 @@ from app.models.network_monitoring import (
     NetworkDevice,
     NetworkDeviceBandwidthGraph,
     NetworkDeviceBandwidthGraphSource,
+    NetworkDeviceLifecycleState,
     NetworkDeviceSnmpOid,
     PopSite,
 )
@@ -43,7 +44,12 @@ from app.services import ping as ping_service
 from app.services.brand_theme import DEFAULT_SEMANTIC_COLORS
 from app.services.device_operational_status import (
     NOT_WORKING,
+    DeviceOperationalState,
     annotate_operational_status,
+)
+from app.services.network_device_status_presentation import (
+    NetworkDeviceListStatusContext,
+    network_device_list_status_presentation,
 )
 from app.services.network_monitoring import set_network_device_active
 
@@ -987,9 +993,25 @@ def detail_page_data(
         for metric in ping_history_metrics
     ]
     nas_device = _core_mapped_nas_device(db, device)
+    lifecycle_state = (
+        NetworkDeviceLifecycleState.ARCHIVED
+        if device.archived_at is not None
+        else (
+            NetworkDeviceLifecycleState.ACTIVE
+            if device.is_active
+            else NetworkDeviceLifecycleState.INACTIVE
+        )
+    )
+    status_presentation = network_device_list_status_presentation(
+        NetworkDeviceListStatusContext(
+            operational_status=DeviceOperationalState(device.operational.status),
+            lifecycle_state=lifecycle_state,
+        )
+    )
 
     return {
         "device": device,
+        "status_presentation": status_presentation,
         "nas_device": nas_device,
         "interfaces": interfaces,
         "selected_interface": selected_interface,

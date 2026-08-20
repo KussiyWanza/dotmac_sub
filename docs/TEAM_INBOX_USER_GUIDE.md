@@ -71,8 +71,9 @@ Use the queue shortcuts and filters to find:
 - **Unassigned:** No agent currently owns the conversation.
 - **My conversations / My teams:** Work assigned to you or routed to your teams.
 
-The default **All** view represents active operational work and excludes
-resolved conversations. Use **Done** to view resolved history.
+The **All** status view includes every conversation status, including resolved
+history. Use the **Active** shortcut for operational work that is not resolved,
+or choose a specific status to narrow the queue.
 
 ### 3. Open and review the conversation
 
@@ -83,6 +84,10 @@ Before replying:
 - Check the current assignee, team, status, and priority.
 - Open **Contact details** when identity, billing, network, ticket, or previous
   conversation context may affect the answer.
+- In **Contact details → Conversations**, review previous active and resolved
+  threads. Personal endpoints appear together only when they have an exact
+  Subscriber or reviewed Party/Reseller relationship; otherwise history stays
+  limited to the exact endpoint.
 - Confirm that the conversation is linked to the correct customer when the
   identity is ambiguous or unmatched.
 

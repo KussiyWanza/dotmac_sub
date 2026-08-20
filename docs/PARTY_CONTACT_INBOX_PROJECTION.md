@@ -15,10 +15,12 @@ represent its legacy fields. It also lets an existing `InboxContactLink` point
 to reviewed canonical reachability without changing how Inbox currently routes
 or resolves a conversation.
 
-This is a shadow projection, not a data backfill or runtime cutover. Existing
-legacy contacts, Inbox routes, account state, subscription state, billing-block
-enforcement, authentication, authorization, notification eligibility,
-verification, and consent remain unchanged.
+This remains an additive reviewed projection rather than a data backfill.
+Inbox customer-history reads may use an active reviewed contact-point binding
+to group conversations for the exact Party. Existing legacy contact reads,
+Inbox routing and thread admission, account state, subscription state,
+billing-block enforcement, authentication, authorization, notification
+eligibility, verification, and consent remain unchanged.
 
 ## Authority boundary
 
@@ -30,7 +32,7 @@ verification, and consent remain unchanged.
 | Canonical contact-point value, provider scope, verification, and consent | `party.registry` | Existing Party fact; no legacy flag is copied into it |
 | Legacy contact field to canonical contact-point evidence | `party.registry` | Nullable projection rows; one row per reviewed source field |
 | Inbox channel/normalized-contact target and active-route lifecycle | `communications.team_inbox_routing` | Existing runtime authority remains unchanged |
-| Inbox route to canonical contact point | `communications.team_inbox_contact_resolution` | Nullable shadow projection written by `team_inbox_contact_links` |
+| Inbox route to canonical contact point | `communications.team_inbox_contact_resolution` | Nullable reviewed projection; read by customer history, not routing or thread admission |
 | `SubscriberContact.is_authorized` and login/access decisions | Existing customer/auth owners | A relationship or contact point never grants access |
 
 Party code cannot write an Inbox row. Team Inbox validates canonical Party

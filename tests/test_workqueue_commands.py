@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
@@ -8,6 +9,8 @@ from app.models.idempotency import IdempotencyKey
 from app.models.service_team import ServiceTeam, ServiceTeamMember
 from app.models.support import Ticket, TicketStatus
 from app.models.team_inbox import (
+    InboxAgentPresence,
+    InboxAgentPresenceStatus,
     InboxConversation,
     InboxConversationAssignment,
     InboxConversationStatus,
@@ -58,6 +61,13 @@ def _team_member(db, system_user_id: UUID, *, name: str = "Support") -> ServiceT
     db.flush()
     _user, person = add_bound_staff_user(db, system_user_id=system_user_id)
     db.add(ServiceTeamMember(team_id=team.id, person_id=person.id))
+    db.add(
+        InboxAgentPresence(
+            person_id=system_user_id,
+            status=InboxAgentPresenceStatus.online.value,
+            last_seen_at=datetime.now(UTC),
+        )
+    )
     db.flush()
     return team
 

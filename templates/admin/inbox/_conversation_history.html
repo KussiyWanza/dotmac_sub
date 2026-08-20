@@ -10,6 +10,11 @@
                 {{ history.total_count }} previous conversation{{ '' if history.total_count == 1 else 's' }}.
             {% endif %}
         </p>
+        {% if contact_context.conversation_history_scope.kind.value == 'exact_endpoint' %}
+        <p class="mb-3 rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-2 text-[11px] text-sky-800 dark:border-sky-800 dark:bg-sky-950/20 dark:text-sky-200">
+            Matched by this exact {{ contact_context.conversation_history_scope.channel_type | replace('_', ' ') }} endpoint. No broader identity was inferred.
+        </p>
+        {% endif %}
         <div class="space-y-2">
             {% for item in history.items %}
             <a href="{{ item.url }}"
@@ -21,6 +26,10 @@
                 </span>
                 <span class="mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] text-slate-500 dark:text-slate-400">
                     <span>{{ item.channel_type | replace('_', ' ') | title }}</span>
+                    {% if item.contact_address %}
+                    <span aria-hidden="true">&middot;</span>
+                    <span class="max-w-40 truncate" title="{{ item.contact_address }}">{{ item.contact_address }}</span>
+                    {% endif %}
                     <span aria-hidden="true">&middot;</span>
                     <span>{{ item.status | replace('_', ' ') | title }}</span>
                     {% if item.last_message_at %}
@@ -38,7 +47,7 @@
     {% elif history.availability.value == 'unavailable' %}
         <p class="text-xs text-slate-500">Unavailable</p>
     {% elif history.availability.value == 'not_calculated' %}
-        <p class="text-xs text-slate-500">Not calculated</p>
+        <p class="text-xs text-slate-500">Not calculated{% if history.message %} &middot; {{ history.message }}{% endif %}</p>
     {% else %}
         <p class="text-xs text-slate-500">&mdash;{% if history.message %} &middot; {{ history.message }}{% endif %}</p>
     {% endif %}

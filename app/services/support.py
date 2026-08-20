@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.models.domain_settings import SettingDomain
 from app.models.notification import NotificationChannel, NotificationStatus
 from app.models.sales import Lead
+from app.models.stored_file import StoredFile
 from app.models.subscriber import Subscriber
 from app.models.support import (
     AutomationTrigger,
@@ -38,6 +39,7 @@ from app.models.support import (
 )
 from app.schemas.notification import NotificationCreate
 from app.schemas.support import (
+    AttachmentMeta,
     TicketBulkUpdateRequest,
     TicketCommentCreate,
     TicketCommentUpdate,
@@ -90,6 +92,11 @@ logger = logging.getLogger(__name__)
 P = ParamSpec("P")
 R = TypeVar("R")
 _LIFECYCLE_CONCERN = "ticket lifecycle mutations"
+_COMMENT_ATTACHMENT_REPAIR_COMMAND = OwnerCommandDefinition(
+    owner="support.ticket_lifecycle",
+    concern=_LIFECYCLE_CONCERN,
+    name="repair_comment_attachment_references",
+)
 
 
 class SupportTicketError(DomainError):
@@ -139,6 +146,27 @@ class TicketMentionSyncOutcome:
 
     added: tuple[TicketCommentMention, ...]
     removed: tuple[TicketMentionTarget, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class TicketCommentAttachmentRepairCommand:
+    """Bounded repair request for comment metadata that lost StoredFile IDs."""
+
+    context: CommandContext
+    ticket_ids: tuple[UUID, ...]
+    apply: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class TicketCommentAttachmentRepairOutcome:
+    inspected: int
+    repairable: int
+    repaired: int
+    already_complete: int
+    malformed_metadata: int
+    missing_storage_key: int
+    missing_file_record: int
+    ambiguous_file_record: int
 
 
 def _ticket_error(code: str, message: str, **details: object) -> SupportTicketError:
@@ -219,6 +247,145 @@ def ticket_owner_command(name: str):
     return decorate
 
 
+def repair_ticket_comment_attachment_references(
+    db: Session,
+    command: TicketCommentAttachmentRepairCommand,
+) -> TicketCommentAttachmentRepairOutcome:
+    """Restore dropped StoredFile IDs from exact private-storage evidence.
+
+    The repair is deliberately bounded to explicitly named Tickets. It changes
+    only attachment items with no ``stored_file_id`` and only when exactly one
+    active comment-attachment StoredFile row matches both the Ticket and the
+    persisted storage key. Re-running the command is idempotent.
+    """
+
+    ticket_ids = tuple(dict.fromkeys(command.ticket_ids))
+    if not ticket_ids or len(ticket_ids) > 100:
+        raise _ticket_error(
+            "ticket_comment_attachment_repair_scope_invalid",
+            "Attachment repair requires between 1 and 100 Ticket IDs.",
+        )
+
+    def operation() -> TicketCommentAttachmentRepairOutcome:
+        query = db.query(TicketComment).filter(TicketComment.ticket_id.in_(ticket_ids))
+        if command.apply:
+            query = query.with_for_update()
+        comments = query.order_by(
+            TicketComment.ticket_id.asc(),
+            TicketComment.created_at.asc(),
+            TicketComment.id.asc(),
+        ).all()
+
+        storage_keys = {
+            str(item.get("storage_key") or "").strip()
+            for comment in comments
+            for item in (comment.attachments or [])
+            if isinstance(item, dict)
+            and not item.get("stored_file_id")
+            and str(item.get("storage_key") or "").strip()
+        }
+        files = (
+            db.query(StoredFile)
+            .filter(StoredFile.entity_type == "support_ticket_comment_attachment")
+            .filter(
+                StoredFile.entity_id.in_(
+                    tuple(str(ticket_id) for ticket_id in ticket_ids)
+                )
+            )
+            .filter(StoredFile.storage_key_or_relative_path.in_(storage_keys))
+            .filter(StoredFile.is_deleted.is_(False))
+            .order_by(StoredFile.id.asc())
+            .all()
+            if storage_keys
+            else []
+        )
+        files_by_evidence: dict[tuple[str, str], list[StoredFile]] = {}
+        for record in files:
+            files_by_evidence.setdefault(
+                (record.entity_id, record.storage_key_or_relative_path), []
+            ).append(record)
+
+        inspected = 0
+        repairable = 0
+        repaired = 0
+        already_complete = 0
+        malformed_metadata = 0
+        missing_storage_key = 0
+        missing_file_record = 0
+        ambiguous_file_record = 0
+        for comment in comments:
+            updated_attachments: list[object] = []
+            comment_repairs = 0
+            for raw_item in comment.attachments or []:
+                inspected += 1
+                if not isinstance(raw_item, dict):
+                    malformed_metadata += 1
+                    updated_attachments.append(raw_item)
+                    continue
+                item = dict(raw_item)
+                if item.get("stored_file_id"):
+                    already_complete += 1
+                    updated_attachments.append(item)
+                    continue
+                storage_key = str(item.get("storage_key") or "").strip()
+                if not storage_key:
+                    missing_storage_key += 1
+                    updated_attachments.append(item)
+                    continue
+                candidates = files_by_evidence.get(
+                    (str(comment.ticket_id), storage_key), []
+                )
+                if not candidates:
+                    missing_file_record += 1
+                    updated_attachments.append(item)
+                    continue
+                if len(candidates) != 1:
+                    ambiguous_file_record += 1
+                    updated_attachments.append(item)
+                    continue
+                repairable += 1
+                if command.apply:
+                    item["stored_file_id"] = str(candidates[0].id)
+                    repaired += 1
+                    comment_repairs += 1
+                updated_attachments.append(item)
+
+            if command.apply and comment_repairs:
+                comment.attachments = updated_attachments
+                log_audit_event(
+                    db=db,
+                    request=None,
+                    action="comment_attachment_reference_repair",
+                    entity_type="support_ticket",
+                    entity_id=str(comment.ticket_id),
+                    actor_id=command.context.actor,
+                    metadata={
+                        "comment_id": str(comment.id),
+                        "attachment_count": comment_repairs,
+                        "command_id": str(command.context.command_id),
+                        "reason": command.context.reason,
+                    },
+                )
+        db.flush()
+        return TicketCommentAttachmentRepairOutcome(
+            inspected=inspected,
+            repairable=repairable,
+            repaired=repaired,
+            already_complete=already_complete,
+            malformed_metadata=malformed_metadata,
+            missing_storage_key=missing_storage_key,
+            missing_file_record=missing_file_record,
+            ambiguous_file_record=ambiguous_file_record,
+        )
+
+    return execute_owner_command(
+        db,
+        definition=_COMMENT_ATTACHMENT_REPAIR_COMMAND,
+        context=command.context,
+        operation=operation,
+    )
+
+
 # Ticket.status is a free-form string column; these guard every write at the
 # boundary. closed/canceled/merged are terminal — they
 # cannot be reopened except by an explicit admin action (allow_reopen=True),
@@ -251,12 +418,18 @@ class TicketStatusScope:
         return cls()
 
     @classmethod
+    def excluding_canceled(cls) -> TicketStatusScope:
+        """Return the operational default scope without canceled tickets."""
+
+        return cls(excluded=frozenset({TicketStatus.canceled}))
+
+    @classmethod
     def matching(cls, status: TicketStatus) -> TicketStatusScope:
         return cls(exact=status)
 
     @classmethod
     def not_closed(cls) -> TicketStatusScope:
-        return cls(excluded=frozenset({TicketStatus.closed}))
+        return cls(excluded=frozenset({TicketStatus.closed, TicketStatus.canceled}))
 
 
 @dataclass(frozen=True, slots=True)
@@ -724,7 +897,7 @@ class TicketComments:
             author_system_user_id=author_system_user_id,
             body=payload.body.strip(),
             is_internal=payload.is_internal,
-            attachments=[item.model_dump() for item in payload.attachments],
+            attachments=[item.model_dump(mode="json") for item in payload.attachments],
         )
         db.add(comment)
         db.flush()
@@ -1007,7 +1180,9 @@ class TicketComments:
         if "is_internal" in data:
             comment.is_internal = bool(data["is_internal"])
         if "attachments" in data and data["attachments"] is not None:
-            comment.attachments = [item.model_dump() for item in data["attachments"]]
+            comment.attachments = [
+                item.model_dump(mode="json") for item in data["attachments"]
+            ]
         mention_sync = TicketMentionSyncOutcome(added=(), removed=())
         if payload.mentions is not None:
             if (
@@ -2974,10 +3149,17 @@ class Tickets:
     @staticmethod
     @ticket_owner_command("add_attachments")
     def add_attachments(
-        db: Session, ticket_id: str, attachments: list[dict] | None
+        db: Session,
+        ticket_id: str,
+        attachments: Sequence[AttachmentMeta] | None,
     ) -> Ticket:
         ticket = Tickets.get(db, ticket_id)
-        ticket.attachments = _merge_attachment_dicts(ticket.attachments, attachments)
+        serialized = (
+            [item.model_dump(mode="json") for item in attachments]
+            if attachments
+            else []
+        )
+        ticket.attachments = _merge_attachment_dicts(ticket.attachments, serialized)
         db.add(ticket)
         db.flush()
         db.refresh(ticket)

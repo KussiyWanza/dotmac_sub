@@ -65,13 +65,15 @@ def test_admin_can_archive_view_and_restore_core_device(
 
     current_row = admin_page.locator("tbody tr", has_text=name)
     expect(current_row).to_be_visible()
-    current_row.get_by_title("Archive Device").click()
+    current_row.get_by_title("Decommission Device").click()
     expect(
-        admin_page.get_by_role("heading", name="Archive core device")
+        admin_page.get_by_role("heading", name="Decommission core device")
     ).to_be_visible()
-    admin_page.get_by_label("Reason").fill("Removed from service in browser test")
+    admin_page.get_by_label("Decommission reason").fill(
+        "Removed from service in browser test"
+    )
     admin_page.locator("#core-device-archive-modal").get_by_role(
-        "button", name="Archive device", exact=True
+        "button", name="Decommission device", exact=True
     ).click()
 
     admin_page.wait_for_url(
@@ -79,7 +81,7 @@ def test_admin_can_archive_view_and_restore_core_device(
         wait_until="domcontentloaded",
     )
     expect(
-        admin_page.get_by_text("This device is archived and read-only.")
+        admin_page.get_by_text("This device is decommissioned and read-only.")
     ).to_be_visible()
     expect(admin_page.get_by_role("link", name="Edit")).to_have_count(0)
 
@@ -91,7 +93,9 @@ def test_admin_can_archive_view_and_restore_core_device(
     admin_page.goto(archived_url, wait_until="domcontentloaded")
     archived_row = admin_page.locator("tbody tr", has_text=name)
     expect(archived_row).to_be_visible()
-    expect(archived_row.get_by_text("Archived", exact=True).first).to_be_visible()
+    expect(
+        archived_row.locator("td").nth(2).get_by_text("Decommissioned", exact=True)
+    ).to_be_visible()
 
     archived_row.get_by_title("Restore Device").click()
     confirmation = admin_page.get_by_role("dialog")
@@ -103,7 +107,7 @@ def test_admin_can_archive_view_and_restore_core_device(
     )
     expect(admin_page.get_by_text(f"{name} restored as inactive.")).to_be_visible()
     expect(
-        admin_page.get_by_text("This device is archived and read-only.")
+        admin_page.get_by_text("This device is decommissioned and read-only.")
     ).to_have_count(0)
 
     e2e_db.expire_all()

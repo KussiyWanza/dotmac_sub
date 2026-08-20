@@ -10,7 +10,12 @@ from app.models.billing import CreditNoteStatus, InvoiceStatus, PaymentStatus
 from app.models.catalog import SubscriptionStatus
 from app.models.field_expense import FIELD_EXPENSE_STATUSES
 from app.models.field_material import FIELD_MATERIAL_REQUEST_STATUSES
-from app.models.network_monitoring import DeviceRole, DeviceStatus, NetworkDevice
+from app.models.network_monitoring import (
+    DeviceRole,
+    DeviceStatus,
+    NetworkDevice,
+    NetworkDeviceLifecycleState,
+)
 from app.models.payment_proof import WithholdingTaxStatus
 from app.models.subscriber import SubscriberStatus
 from app.models.support import Ticket, TicketStatus
@@ -26,6 +31,10 @@ from app.services.device_operational_status import (
     annotate_operational_status,
 )
 from app.services.field.work_order_status import WorkOrderStatus
+from app.services.network_device_status_presentation import (
+    NetworkDeviceListStatusContext,
+    network_device_list_status_presentation,
+)
 from app.services.status_presentation import (
     access_session_status_presentation,
     account_status_presentation,
@@ -213,6 +222,62 @@ def test_device_operational_presentation_covers_authoritative_vocabulary(
     assert presentation.label == label
     assert presentation.tone == tone
     assert presentation.icon == icon
+
+
+@pytest.mark.parametrize(
+    ("operational_status", "lifecycle_state", "value", "label", "tone", "icon"),
+    [
+        (
+            DeviceOperationalState.working,
+            NetworkDeviceLifecycleState.ACTIVE,
+            "working",
+            "Online",
+            StatusTone.positive,
+            StatusIcon.check,
+        ),
+        (
+            DeviceOperationalState.not_working,
+            NetworkDeviceLifecycleState.ACTIVE,
+            "not_working",
+            "Offline",
+            StatusTone.negative,
+            StatusIcon.x,
+        ),
+        (
+            DeviceOperationalState.not_working,
+            NetworkDeviceLifecycleState.INACTIVE,
+            "inactive",
+            "Inactive",
+            StatusTone.neutral,
+            StatusIcon.minus,
+        ),
+        (
+            DeviceOperationalState.not_working,
+            NetworkDeviceLifecycleState.ARCHIVED,
+            "archived",
+            "Decommissioned",
+            StatusTone.neutral,
+            StatusIcon.archive,
+        ),
+    ],
+)
+def test_network_device_list_presentation_prioritizes_lifecycle(
+    operational_status: DeviceOperationalState,
+    lifecycle_state: NetworkDeviceLifecycleState,
+    value: str,
+    label: str,
+    tone: StatusTone,
+    icon: StatusIcon,
+) -> None:
+    presentation = network_device_list_status_presentation(
+        NetworkDeviceListStatusContext(
+            operational_status=operational_status,
+            lifecycle_state=lifecycle_state,
+        )
+    )
+
+    assert (presentation.value, presentation.label) == (value, label)
+    assert (presentation.tone, presentation.icon) == (tone, icon)
 
 
 @pytest.mark.parametrize(

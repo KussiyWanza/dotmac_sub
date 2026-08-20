@@ -42,6 +42,14 @@ class DeviceStatus(enum.Enum):
     maintenance = "maintenance"
 
 
+class NetworkDeviceLifecycleState(enum.StrEnum):
+    """Administrative inventory lifecycle kept separate from reachability."""
+
+    ACTIVE = "active"
+    INACTIVE = "inactive"
+    ARCHIVED = "archived"
+
+
 class DeviceType(enum.Enum):
     router = "router"
     switch = "switch"

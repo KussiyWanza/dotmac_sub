@@ -489,10 +489,10 @@ def handle_ticket_create(
         if files:
             uploaded = web_support_tickets.upload_ticket_attachments(
                 db,
-                ticket_id=str(ticket.id),
+                ticket_id=ticket.id,
                 attachments=files,
-                entity_type="support_ticket_attachment",
-                actor_id=str(sid),
+                entity_type=web_support_tickets.TicketAttachmentEntityType.ticket,
+                actor_id=sid,
             )
             support_service.Tickets.add_attachments(db, str(ticket.id), uploaded)
         _record_ticket_created_portal_notification(db, ticket)
@@ -542,15 +542,15 @@ def handle_ticket_comment(
             author_person_id = coerce_uuid(ticket.subscriber_id)
         except (TypeError, ValueError):
             author_person_id = None
-        uploaded: list[dict] = []
+        uploaded: tuple[AttachmentMeta, ...] = ()
         if files:
             db_session_adapter.release_read_transaction(db)
             uploaded = web_support_tickets.upload_ticket_attachments(
                 db,
-                ticket_id=str(ticket.id),
+                ticket_id=ticket.id,
                 attachments=files,
-                entity_type="support_ticket_comment_attachment",
-                actor_id=str(ticket.subscriber_id),
+                entity_type=web_support_tickets.TicketAttachmentEntityType.comment,
+                actor_id=ticket.subscriber_id,
             )
         db_session_adapter.release_read_transaction(db)
         support_service.Tickets.create_comment(
@@ -561,7 +561,7 @@ def handle_ticket_comment(
                 is_internal=False,
                 author_type=TicketCommentAuthorType.customer,
                 author_person_id=author_person_id,
-                attachments=[AttachmentMeta(**item) for item in uploaded],
+                attachments=list(uploaded),
             ),
             actor_id=None,
         )

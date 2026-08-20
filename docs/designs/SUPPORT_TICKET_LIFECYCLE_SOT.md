@@ -23,6 +23,12 @@ The lifecycle owner controls, in one root owner command:
 - transactionally staged audit records, domain events, notifications, and SLA
   consequences.
 
+Local attachment metadata crosses the lifecycle boundary as typed
+`AttachmentMeta`. Its `stored_file_id` is the private `StoredFile` UUID used by
+authorized admin and portal streaming routes; the storage key is evidence and
+must not replace that identity. Legacy or imported metadata may lack the UUID,
+but every new local upload must preserve it through comment creation.
+
 Adapters may create/close sessions and map `DomainError` values. They do not
 commit lifecycle changes. Every public mutation enters
 `execute_owner_command` once on a transaction-free session; nested helpers use
@@ -58,8 +64,9 @@ Admin create, edit, quick-status, bulk-update, automation, list-filter, and
 advanced-filter controls consume that one subset. A Ticket whose canonical
 current status is later removed from the configured subset remains displayable
 and may preserve that unchanged value while another field is edited; the UI
-presents it as a non-selectable current value. The `not_closed` list scope
-remains a separate read contract that excludes canonical `closed`.
+presents it as a non-selectable current value. Canceled tickets are returned
+only by the exact `canceled` list filter. Default and `not_closed` list scopes
+exclude canonical `canceled`; `not_closed` also excludes canonical `closed`.
 
 Regional routing configuration is replaced through the typed
 `TicketConfigurationUpdate` command. Region keys are normalized to lowercase.
@@ -264,6 +271,14 @@ Repair reruns deterministic list/preview queries, SLA reconciliation, or the
 provenance verifier from canonical records. It never re-enables a legacy writer
 or infers lifecycle authority from CRM, tags, templates, cached UI state, or
 communication delivery.
+
+The bounded comment-attachment repair command accepts one to 100 exact Ticket
+UUIDs. It restores a missing `stored_file_id` only when the attachment's stored
+key, Ticket identity, active state, and `support_ticket_comment_attachment`
+entity type resolve to exactly one `StoredFile` row. Missing or ambiguous
+evidence is reported and left unchanged. Preview is the default; apply records
+an audit entry per changed comment and is idempotent on replay. The operator
+procedure is `docs/runbooks/SUPPORT_TICKET_COMMENT_ATTACHMENT_RECONCILIATION.md`.
 
 Migration 517 is also the idempotent drift repair for the retired `resolved`
 status: rerunning it updates only exact legacy status values that reappeared and

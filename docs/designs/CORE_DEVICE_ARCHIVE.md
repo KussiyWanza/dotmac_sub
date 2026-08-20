@@ -15,6 +15,12 @@ or its rebuildable projection. The three lifecycle states are:
 - `archived`: hidden from current inventory and available from the archived
   cohort for review and restoration.
 
+`archived` is the stable persistence, command, event, and query vocabulary.
+Operator-facing network-device surfaces call this state **Decommissioned** and
+call the archive action **Decommission Device**. This is a presentation label,
+not a second lifecycle state or a destructive deletion contract. It must not be
+confused with the separately owned permanent ONT decommission workflow.
+
 Restore clears the archive tombstone and returns the device as `inactive`.
 Re-admission is a separate operator decision so restore cannot assert that an
 unverified device is working.
@@ -45,6 +51,45 @@ restore. Reconciliation derives the archive marker from `NetworkDevice`, forces
 its operational result to `not_working`, and cannot reactivate it. External
 inventory synchronization may update observations but only the restore command
 may clear the archive tombstone.
+
+The unified network-device worklist keeps `operational_status` and
+`lifecycle_state` as separate authoritative inputs.
+`ui.network_device_status_presentation` applies this display precedence without
+rewriting either input:
+
+1. `archived` lifecycle -> **Decommissioned**;
+2. `inactive` lifecycle -> **Inactive**;
+3. active plus `working` -> **Online**;
+4. active plus `not_working` -> **Offline**.
+
+The Decommissioned presentation uses a neutral tone and archive icon. A
+decommissioned row therefore cannot present as an ordinary Offline outage even
+though its separately retained binary operational result remains
+`not_working`. Default inventory continues to exclude decommissioned rows; the
+explicit Decommissioned Devices cohort supports review and restoration.
+
+## Unified device page contract
+
+- Screen: `/admin/network/devices`, list/work surface for NOC and network
+  administrators.
+- Read owners: `network.device_projection` for projected lifecycle and
+  operation, sourced from `network.device_state`,
+  `network.monitoring_inventory`, and `network.core_device_archive`;
+  `ui.network_device_status_presentation` owns the combined label, tone, and
+  icon.
+- Command and eligibility owner: `network.core_device_archive` for core devices
+  only. Other device types retain their own lifecycle owners and do not inherit
+  this action.
+- First-viewport state: identity, type, lifecycle-aware status, management IP,
+  relevant relationship, last observation, and eligible actions.
+- Action: **Decommission Device** is permission-gated, opens the existing
+  authoritative impact preview, requires a reason and confirmation, and is
+  also available as an explicit secondary action on current core-device detail.
+- Restoration: **Restore Device** returns the record to inactive inventory and
+  never claims the device is Online.
+- Unauthorized actions remain hidden. Blocked confirmation renders the exact
+  owner-provided blockers. Internal route names, permission keys, event types,
+  and `lifecycle=archived` query values remain stable compatibility contracts.
 
 ## Evidence
 

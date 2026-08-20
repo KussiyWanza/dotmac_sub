@@ -23,6 +23,9 @@ from app.services import payment_proofs as svc
 from app.services.account_credit_deposits import AccountCreditDeposits
 from app.services.db_session_adapter import db_session_adapter
 from app.services.owner_commands import CommandContext
+from app.services.prepaid_funding_reconstruction import (
+    PrepaidFundingBaselineMissingError,
+)
 from app.services.topup_intents import (
     DIRECT_TRANSFER_PROVIDER,
     DirectTransferBankAccountEvidence,
@@ -634,6 +637,55 @@ def test_deposit_proof_review_uses_typed_account_credit_owner(db_session):
     assert payment.settlement.prepaid_amount == Decimal("0.00")
     assert invoice.status == InvoiceStatus.paid
     assert invoice.balance_due == Decimal("0.00")
+
+
+def test_deposit_proof_review_maps_missing_prepaid_baseline_to_domain_error(
+    db_session, monkeypatch
+):
+    sub = _account(db_session)
+    intent, _preview, _replayed = AccountCreditDeposits.stage_intent(
+        db_session,
+        account_id=sub.id,
+        amount="5000.00",
+        currency="NGN",
+        minimum="1000.00",
+        maximum="500000.00",
+        reference="TRF-MISSING-PREPAID-BASELINE",
+        provider_type="direct_bank_transfer",
+        provider_id=None,
+        expires_at=datetime.now(UTC) + timedelta(days=7),
+        idempotency_key="missing-prepaid-baseline-proof-intent",
+        channel=TopupIntentChannel.customer_selfcare,
+        created_by=str(sub.id),
+    )
+    db_session.commit()
+    proof = _submit_direct_transfer(db_session, sub, intent)
+
+    def raise_missing_baseline(*_args, **_kwargs):
+        raise PrepaidFundingBaselineMissingError(
+            "verified prepaid funding baseline missing for: test-account"
+        )
+
+    monkeypatch.setattr(
+        AccountCreditDeposits,
+        "stage_verified_settlement",
+        raise_missing_baseline,
+    )
+
+    with pytest.raises(svc.PaymentProofReviewError) as exc_info:
+        _verify(db_session, str(proof.id), verified_by="admin-1")
+
+    assert (
+        exc_info.value.code
+        == "financial.payment_proofs.prepaid_funding_baseline_missing"
+    )
+    db_session.expire_all()
+    persisted_proof = db_session.get(PaymentProof, proof.id)
+    persisted_intent = db_session.get(TopupIntent, intent.id)
+    assert persisted_proof.status == PaymentProofStatus.submitted
+    assert persisted_proof.payment_id is None
+    assert persisted_intent.status == TopupIntentStatus.submitted
+    assert db_session.query(Payment).count() == 0
 
 
 def test_verify_with_auto_allocate_pays_open_invoice(db_session):
