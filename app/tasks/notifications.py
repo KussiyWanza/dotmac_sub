@@ -683,12 +683,19 @@ def _deliver_notification_queue_stats(
                     activity = str(
                         delivery_metadata.get("activity") or "notification_queue"
                     )
+                # Team Inbox replies carry durable Inbox asset IDs.  Their
+                # display metadata also has an ``attachments`` key, but that
+                # is not the generic communication-attachment contract (it
+                # intentionally has no ``kind``).  Resolve one provenance
+                # path only so Inbox attachments cannot be rejected by the
+                # generic resolver before SMTP delivery.
                 resolved_attachments = (
-                    communication_attachments.resolve_email_attachments(
-                        db, notification
-                    )
-                    + team_inbox_media.resolve_delivery_attachments(
+                    team_inbox_media.resolve_delivery_attachments(
                         db, tuple(inbox_attachment_ids)
+                    )
+                    if inbox_attachment_ids
+                    else communication_attachments.resolve_email_attachments(
+                        db, notification
                     )
                 )
                 success = email_service.send_email(
