@@ -1,10 +1,35 @@
 {% extends "base.html" %}
 {% block body %}
-<div class="min-h-screen bg-slate-100 dark:bg-slate-950">
+<style>
+  .vendor-portal :is(input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]), textarea, select) {
+    padding-left: 0.875rem;
+    padding-right: 0.875rem;
+    padding-top: 0.625rem;
+    padding-bottom: 0.625rem;
+  }
+  .vendor-portal :is(input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]), textarea, select):focus {
+    border-color: #cbd5e1;
+    border-bottom-color: #38bdf8;
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+    outline: none;
+    box-shadow: inset 0 -2px 0 #38bdf8;
+  }
+  .dark .vendor-portal :is(input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]), textarea, select):focus {
+    border-color: #475569;
+    border-bottom-color: #38bdf8;
+  }
+  .vendor-portal input[type="search"]::-webkit-search-cancel-button,
+  .vendor-portal input[type="search"]::-webkit-search-decoration {
+    appearance: none;
+    -webkit-appearance: none;
+  }
+</style>
+<div class="vendor-portal min-h-screen bg-slate-100 dark:bg-slate-950">
   <header class="border-b border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
     <div class="mx-auto flex max-w-7xl items-center justify-between px-4 py-4 sm:px-6">
       <a href="/vendor" class="flex items-center gap-3 text-slate-950 dark:text-white">
-        <span class="flex h-10 w-10 items-center justify-center rounded-md bg-teal-600 text-lg font-bold text-white">D</span>
+        <span class="flex h-10 w-10 items-center justify-center rounded-md bg-cyan-600 text-lg font-bold text-white">D</span>
         <span><strong class="block text-base">Vendor operations</strong><span class="block text-xs text-slate-500">{{ vendor.name }}</span></span>
       </a>
       <div class="flex items-center gap-2">

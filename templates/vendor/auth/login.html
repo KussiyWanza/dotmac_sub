@@ -3,11 +3,11 @@
 {% block title %}Vendor Sign In - {{ portal_name or (brand.product_name if brand is defined and brand else 'DotMac Subs') }}{% endblock %}
 
 {% block auth_hero %}
-<div class="relative hidden overflow-hidden bg-gradient-to-br from-slate-950 via-emerald-950 to-teal-900 lg:flex lg:w-1/2 lg:items-end">
-  <div class="absolute -right-20 top-16 h-72 w-72 rounded-full bg-emerald-400/15 blur-3xl"></div>
+<div class="relative hidden overflow-hidden bg-gradient-to-br from-slate-950 via-blue-950 to-cyan-950 lg:flex lg:w-1/2 lg:items-end">
+  <div class="absolute -right-20 top-16 h-72 w-72 rounded-full bg-cyan-400/15 blur-3xl"></div>
   <div class="absolute bottom-20 left-12 h-56 w-56 rounded-full bg-amber-300/10 blur-3xl"></div>
   <div class="relative p-12 text-white">
-    <p class="text-sm font-semibold uppercase tracking-[0.2em] text-emerald-300">Vendor Operations</p>
+    <p class="text-sm font-semibold uppercase tracking-[0.2em] text-cyan-300">Vendor Operations</p>
     <h1 class="mt-4 max-w-lg text-4xl font-bold leading-tight">Keep every delivery moving from one workspace.</h1>
     <p class="mt-4 max-w-md text-lg text-slate-200">Review assigned projects, submit field evidence, manage materials and follow settlement progress.</p>
   </div>
@@ -17,7 +17,7 @@
 {% block content %}
 <div class="rounded-2xl border border-slate-200/70 bg-white/95 p-8 shadow-2xl backdrop-blur dark:border-slate-700 dark:bg-slate-800/95">
   <div class="mb-8 text-center">
-    <div class="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-xl bg-gradient-to-br from-emerald-500 to-teal-700 shadow-lg shadow-emerald-500/25">
+    <div class="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-xl bg-gradient-to-br from-cyan-500 to-blue-700 shadow-lg shadow-cyan-500/25">
       <svg class="h-7 w-7 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-6h13v6M9 17H5a2 2 0 01-2-2V7a2 2 0 012-2h11a2 2 0 012 2v4M9 17a2 2 0 104 0m5 0a2 2 0 104 0M7 9h4"/>
       </svg>
@@ -44,14 +44,14 @@
 
     <div>
       <label for="username" class="mb-2 block text-sm font-semibold text-slate-700 dark:text-slate-300">Email or username</label>
-      <input id="username" name="username" type="text" autocomplete="username" required autofocus placeholder="vendor@example.com" class="block w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm shadow-sm placeholder-slate-400 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+      <input id="username" name="username" type="text" autocomplete="username" required autofocus placeholder="vendor@example.com" class="block w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm shadow-sm placeholder-slate-400 focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
     </div>
 
     <div>
       <label for="password" class="mb-2 block text-sm font-semibold text-slate-700 dark:text-slate-300">Password</label>
       <div class="relative">
-        <input id="password" name="password" :type="showPassword ? 'text' : 'password'" autocomplete="current-password" required placeholder="Enter your password" class="block w-full rounded-xl border border-slate-300 bg-white px-4 py-3 pr-12 text-sm shadow-sm placeholder-slate-400 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
-        <button type="button" x-on:click="showPassword = !showPassword" :aria-pressed="showPassword.toString()" aria-label="Toggle password visibility" class="absolute inset-y-0 right-0 px-4 text-slate-400 hover:text-emerald-600">
+        <input id="password" name="password" :type="showPassword ? 'text' : 'password'" autocomplete="current-password" required placeholder="Enter your password" class="block w-full rounded-xl border border-slate-300 bg-white px-4 py-3 pr-12 text-sm shadow-sm placeholder-slate-400 focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+        <button type="button" x-on:click="showPassword = !showPassword" :aria-pressed="showPassword.toString()" aria-label="Toggle password visibility" class="absolute inset-y-0 right-0 px-4 text-slate-400 hover:text-cyan-600">
           <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.5 12C3.8 8 7.5 5 12 5s8.2 3 9.5 7c-1.3 4-5 7-9.5 7s-8.2-3-9.5-7z"/></svg>
         </button>
       </div>
@@ -59,13 +59,13 @@
 
     <div class="flex items-center justify-between gap-4">
       <label class="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
-        <input type="checkbox" name="remember" class="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 dark:border-slate-600 dark:bg-slate-700">
+        <input type="checkbox" name="remember" class="h-4 w-4 rounded border-slate-300 text-cyan-600 focus:ring-cyan-500 dark:border-slate-600 dark:bg-slate-700">
         Remember me for {{ remember_duration_label }}
       </label>
-      <a href="/vendor/auth/forgot-password" class="text-sm font-medium text-emerald-700 hover:text-emerald-800 dark:text-emerald-400">Forgot password?</a>
+      <a href="/vendor/auth/forgot-password" class="text-sm font-medium text-cyan-700 hover:text-cyan-800 dark:text-cyan-400">Forgot password?</a>
     </div>
 
-    <button type="submit" :disabled="loading" class="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-700 px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-emerald-500/20 hover:from-emerald-700 hover:to-teal-800 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:focus:ring-offset-slate-800">
+    <button type="submit" :disabled="loading" class="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-cyan-600 to-blue-700 px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-cyan-500/20 hover:from-cyan-700 hover:to-blue-800 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:focus:ring-offset-slate-800">
       <svg x-show="loading" class="h-4 w-4 animate-spin" fill="none" viewBox="0 0 24 24" aria-hidden="true"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.4 0 0 5.4 0 12h4z"></path></svg>
       <span x-text="loading ? 'Signing in...' : 'Sign in'">Sign in</span>
     </button>

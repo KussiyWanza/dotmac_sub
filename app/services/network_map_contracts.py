@@ -488,3 +488,56 @@ class NetworkMapPlantProjection:
                 "unmatched_olts": self.unmatched_olt_count,
             },
         }
+
+
+class VendorRoutePlanningAssetType(StrEnum):
+    fdh_cabinet = "fdh_cabinet"
+    splice_closure = "splice_closure"
+    fiber_access_point = "fiber_access_point"
+    service_building = "service_building"
+    fiber_segment = "fiber_segment"
+
+
+@dataclass(frozen=True, slots=True)
+class VendorRoutePlanningFeatureProperties:
+    id: UUID
+    asset_type: VendorRoutePlanningAssetType
+    name: str
+    segment_type: FiberSegmentType | None = None
+    source_owner: str = "ui.network_map_projection"
+
+    def to_transport(self) -> dict[str, object]:
+        values: dict[str, object | None] = {
+            "id": str(self.id),
+            "type": self.asset_type.value,
+            "name": self.name,
+            "segment_type": self.segment_type.value if self.segment_type else None,
+            "source_owner": self.source_owner,
+        }
+        return {key: value for key, value in values.items() if value is not None}
+
+
+@dataclass(frozen=True, slots=True)
+class VendorRoutePlanningFeature:
+    geometry: NetworkMapGeometry
+    properties: VendorRoutePlanningFeatureProperties
+
+    def to_transport(self) -> dict[str, object]:
+        return {
+            "type": "Feature",
+            "geometry": self.geometry.to_transport(),
+            "properties": self.properties.to_transport(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class VendorRoutePlanningMapProjection:
+    """Vendor-safe canonical plant context for proposed-route planning."""
+
+    features: tuple[VendorRoutePlanningFeature, ...]
+
+    def to_transport(self) -> dict[str, object]:
+        return {
+            "type": "FeatureCollection",
+            "features": [feature.to_transport() for feature in self.features],
+        }

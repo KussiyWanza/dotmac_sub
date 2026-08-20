@@ -40,6 +40,28 @@ The endpoint requires `network:map:read`; the dispatch route retains only
 `operations:dispatch:read` and omits plant controls for viewers without the
 additional permission.
 
+## Vendor route-planning subset
+
+The proposed-route planner in the native vendor portal consumes a minimized,
+read-only projection from the same `ui.network_map_projection` owner used by
+Network Admin. It includes canonical FDH cabinets, splice closures, fiber access
+points, service buildings, and validated feeder/distribution/drop geometry.
+Customer identities, ONTs, management addresses, device state, staff links, and
+free-form operational notes are excluded at the typed projection boundary. The
+As-built map remains project-scoped and does not consume this projection.
+
+The projection is rebuilt on each vendor project read. Missing coordinates or
+validated segment geometry omit only the affected feature; the vendor adapter
+does not infer locations, draw endpoint-proximity lines, or read CRM staging
+tables directly.
+
+The vendor presentation exposes only relevant canonical layer controls: FDHs,
+closures, access points, service buildings, and segments. OSP, backbone,
+customer-edge, all, and hidden presets are local visibility choices and do not
+change topology or authority. Search is positioned within the planning map and
+blue asset-type icons distinguish canonical point features without copying
+staff-only QA, OLT, device-health, or mutation controls from Network Admin.
+
 ## Isolated Network Map V2
 
 `GET /admin/network/map-v2` is a read-only parity preview with its own template,

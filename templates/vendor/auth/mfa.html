@@ -5,8 +5,8 @@
 {% block content %}
 <div class="rounded-2xl border border-slate-200/70 bg-white p-8 shadow-xl dark:border-slate-700 dark:bg-slate-800">
   <div class="mb-8 text-center">
-    <div class="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-100 dark:bg-emerald-900/30">
-      <svg class="h-7 w-7 text-emerald-700 dark:text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+    <div class="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-cyan-100 dark:bg-cyan-900/30">
+      <svg class="h-7 w-7 text-cyan-700 dark:text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
     </div>
     <h1 class="text-2xl font-bold text-slate-900 dark:text-white">Verify your identity</h1>
     <p class="mt-2 text-sm text-slate-500 dark:text-slate-400">Enter an authenticator code or one saved recovery code</p>
@@ -21,9 +21,9 @@
     <input type="hidden" name="next" value="{{ next }}">
     <div>
       <label for="code" class="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Verification or recovery code</label>
-      <input id="code" name="code" type="text" x-model="code" required maxlength="16" pattern="[A-Za-z0-9 -]{6,16}" autocomplete="one-time-code" inputmode="numeric" placeholder="000000 or XXXXX-XXXXX" class="block w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-center font-mono text-xl tracking-widest shadow-sm placeholder:tracking-normal focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+      <input id="code" name="code" type="text" x-model="code" required maxlength="16" pattern="[A-Za-z0-9 -]{6,16}" autocomplete="one-time-code" inputmode="numeric" placeholder="000000 or XXXXX-XXXXX" class="block w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-center font-mono text-xl tracking-widest shadow-sm placeholder:tracking-normal focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
     </div>
-    <button type="submit" :disabled="loading || code.length < 6" class="flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:focus:ring-offset-slate-800">
+    <button type="submit" :disabled="loading || code.length < 6" class="flex w-full items-center justify-center gap-2 rounded-xl bg-cyan-600 px-4 py-3 text-sm font-semibold text-white hover:bg-cyan-700 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:focus:ring-offset-slate-800">
       <svg x-show="loading" class="h-4 w-4 animate-spin" fill="none" viewBox="0 0 24 24" aria-hidden="true"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.4 0 0 5.4 0 12h4z"></path></svg>
       <span x-text="loading ? 'Verifying...' : 'Verify'">Verify</span>
     </button>

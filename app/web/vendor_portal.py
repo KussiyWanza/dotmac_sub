@@ -26,7 +26,12 @@ from app.schemas.vendor_purchase_invoice import (
     VendorPurchaseInvoiceCreate,
     VendorPurchaseInvoiceLineCreate,
 )
-from app.services import vendor_fiber, vendor_submission_proposals, work_order_views
+from app.services import (
+    network_map,
+    vendor_fiber,
+    vendor_submission_proposals,
+    work_order_views,
+)
 from app.services.common import coerce_uuid
 from app.services.db_session_adapter import db_session_adapter
 from app.services.domain_errors import DomainError
@@ -267,6 +272,7 @@ def vendor_project_detail(
         str(project["id"]),
         vendor_id,
     )
+    route_planning_map = network_map.build_vendor_route_planning_map_projection(db=db)
     supply = project_workspace(
         db,
         project_id=str(project["id"]),
@@ -293,6 +299,7 @@ def vendor_project_detail(
             "quote": quote,
             "invoice": invoice,
             "route_geojson": route_geojson,
+            "route_planning_map_geojson": route_planning_map.to_transport(),
             "supply": supply,
             "vendor_work_orders": vendor_work_orders,
             "can_propose_closure": can_propose_closure,

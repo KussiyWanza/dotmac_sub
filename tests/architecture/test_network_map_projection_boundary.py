@@ -10,6 +10,7 @@ from app.services import network_map
 from app.services.network_map_contracts import (
     NetworkMapPlantProjection,
     NetworkMapProjection,
+    VendorRoutePlanningMapProjection,
 )
 from app.services.sot_registry.registry import service_relationship
 
@@ -71,6 +72,20 @@ def test_plant_projection_is_typed_and_does_not_enter_customer_session_paths():
     assert "func.count(Splitter.id)" in source
     assert "func.count(FiberSplice.id)" in source
     assert "func.count(FiberSpliceTray.id)" in source
+
+
+def test_vendor_route_planner_uses_typed_canonical_plant_subset():
+    source = inspect.getsource(network_map.build_vendor_route_planning_map_projection)
+
+    assert (
+        get_type_hints(network_map.build_vendor_route_planning_map_projection)[
+            "return"
+        ]
+        is VendorRoutePlanningMapProjection
+    )
+    assert "build_network_map_plant_projection" in source
+    assert "NetworkMapFeatureType.customer" not in source
+    assert "NetworkMapFeatureType.ont" not in source
 
 
 def test_playwright_database_setup_uses_disposable_postgres_guard():

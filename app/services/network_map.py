@@ -72,6 +72,10 @@ from app.services.network_map_contracts import (
     NetworkMapV2SegmentTopology,
     NetworkMapV2TopologyStatus,
     NetworkMapV2UnavailableLayer,
+    VendorRoutePlanningAssetType,
+    VendorRoutePlanningFeature,
+    VendorRoutePlanningFeatureProperties,
+    VendorRoutePlanningMapProjection,
 )
 from app.services.status_presentation import access_session_status_presentation
 
@@ -930,6 +934,47 @@ def build_network_map_plant_projection(*, db: Session) -> NetworkMapPlantProject
         layer_counts=counts,
         unmatched_olt_count=unmatched_olt_count,
     )
+
+
+def build_vendor_route_planning_map_projection(
+    *, db: Session
+) -> VendorRoutePlanningMapProjection:
+    """Return the vendor-safe subset of the canonical Network Admin plant map.
+
+    The proposed-route planner needs accurate plant context but must not receive
+    customers, ONTs, management addresses, device health, or staff-only links.
+    Geometry and identity remain sourced from the same projection owner used by
+    Network Admin; this boundary only narrows and minimizes its transport.
+    """
+
+    asset_types = {
+        NetworkMapFeatureType.fdh_cabinet: VendorRoutePlanningAssetType.fdh_cabinet,
+        NetworkMapFeatureType.splice_closure: (
+            VendorRoutePlanningAssetType.splice_closure
+        ),
+        NetworkMapFeatureType.access_point: (
+            VendorRoutePlanningAssetType.fiber_access_point
+        ),
+        NetworkMapFeatureType.service_building: (
+            VendorRoutePlanningAssetType.service_building
+        ),
+        NetworkMapFeatureType.fiber_segment: VendorRoutePlanningAssetType.fiber_segment,
+    }
+    plant = build_network_map_plant_projection(db=db)
+    features = tuple(
+        VendorRoutePlanningFeature(
+            geometry=feature.geometry,
+            properties=VendorRoutePlanningFeatureProperties(
+                id=feature.properties.id,
+                asset_type=asset_types[feature.properties.feature_type],
+                name=feature.properties.name,
+                segment_type=feature.properties.segment_type,
+            ),
+        )
+        for feature in plant.features
+        if feature.properties.feature_type in asset_types
+    )
+    return VendorRoutePlanningMapProjection(features=features)
 
 
 def _v2_layer_for_feature(feature: NetworkMapFeature) -> NetworkMapV2Layer | None:

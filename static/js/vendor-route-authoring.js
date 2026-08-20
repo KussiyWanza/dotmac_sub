@@ -30,9 +30,14 @@
         var poiNearbyElement = document.getElementById(config.poiNearbyId);
         var poiClearElement = document.getElementById(config.poiClearId);
         var poiRadiusElement = document.getElementById(config.poiRadiusId);
+        var plantFilterButtons = elementsForSelector(config.plantFilterSelector);
+        var plantViewElement = document.getElementById(config.plantViewId);
         var map = window.L.map(mapElement).setView([9.0820, 8.6753], 6);
         var contextLayers = {};
         var contextLayerEntries = [];
+        var networkPlantLayerEntries = [];
+        var plantSegmentsVisible = true;
+        var visiblePlantSegmentTypes = null;
         var searchMarker = null;
         var searchController = null;
         var nearbyController = null;
@@ -71,6 +76,81 @@
         function selectedPoiTypes() {
             var values = selectedValues(poiFilters);
             return values.length ? values : ["fdh_cabinet", "splice_closure"];
+        }
+
+        function plantAssetCount(assetType) {
+            return networkPlantFeatures.filter(function (feature) {
+                return String((feature.properties || {}).type || "") === assetType;
+            }).length;
+        }
+
+        function plantAssetSelected(assetType) {
+            if (assetType === "fiber_segment") return plantSegmentsVisible;
+            var input = poiFilters.find(function (candidate) {
+                return candidate.value === assetType;
+            });
+            return Boolean(input && input.checked);
+        }
+
+        function syncPlantToolbarState() {
+            plantFilterButtons.forEach(function (button) {
+                var assetType = button.dataset.routePlantFilter || "";
+                var active = plantAssetSelected(assetType);
+                button.setAttribute("aria-pressed", String(active));
+                button.classList.toggle("border-cyan-500", active);
+                button.classList.toggle("bg-cyan-950/40", active);
+                button.classList.toggle("text-cyan-200", active);
+                button.classList.toggle("border-slate-600", !active);
+                button.classList.toggle("text-slate-300", !active);
+                var count = button.querySelector("[data-route-plant-count]");
+                if (count) count.textContent = String(plantAssetCount(assetType));
+            });
+        }
+
+        function setPlantPointSelection(selectedTypes) {
+            poiFilters.forEach(function (input) {
+                input.checked = selectedTypes.indexOf(input.value) !== -1;
+            });
+            syncFilterActionState("poi");
+        }
+
+        function applyPlantViewPreset(preset) {
+            if (preset === "custom") return;
+            visiblePlantSegmentTypes = null;
+            if (preset === "osp") {
+                setPlantPointSelection([
+                    "fdh_cabinet",
+                    "splice_closure",
+                    "fiber_access_point",
+                ]);
+                plantSegmentsVisible = false;
+            } else if (preset === "backbone") {
+                setPlantPointSelection([]);
+                plantSegmentsVisible = true;
+                visiblePlantSegmentTypes = ["feeder"];
+            } else if (preset === "customer_edge") {
+                setPlantPointSelection(["fiber_access_point", "service_building"]);
+                plantSegmentsVisible = true;
+                visiblePlantSegmentTypes = ["distribution", "drop"];
+            } else if (preset === "all") {
+                setPlantPointSelection(
+                    plantFilterButtons
+                        .map(function (button) {
+                            return button.dataset.routePlantFilter || "";
+                        })
+                        .filter(function (assetType) {
+                            return assetType && assetType !== "fiber_segment";
+                        }),
+                );
+                plantSegmentsVisible = true;
+            } else if (preset === "none") {
+                setPlantPointSelection([]);
+                plantSegmentsVisible = false;
+            }
+            clearNearbyPoints();
+            hideSearchResults();
+            syncNetworkPlantVisibility();
+            updateFilterSummary();
         }
 
         function labelForValue(value) {
@@ -112,6 +192,35 @@
             );
         }
 
+        function networkPlantFeatureVisible(feature) {
+            var properties = feature.properties || {};
+            var assetType = String(properties.type || "");
+            if (assetType === "fiber_segment") {
+                return (
+                    plantSegmentsVisible &&
+                    (!visiblePlantSegmentTypes ||
+                        visiblePlantSegmentTypes.indexOf(
+                            String(properties.segment_type || ""),
+                        ) !== -1)
+                );
+            }
+            var selectedTypes = selectedValues(poiFilters);
+            return !poiFilters.length || selectedTypes.indexOf(assetType) !== -1;
+        }
+
+        function syncNetworkPlantVisibility() {
+            networkPlantLayerEntries.forEach(function (entry) {
+                var shouldShow = networkPlantFeatureVisible(entry.feature);
+                var isShown = map.hasLayer(entry.layer);
+                if (shouldShow && !isShown) {
+                    entry.layer.addTo(map);
+                } else if (!shouldShow && isShown) {
+                    map.removeLayer(entry.layer);
+                }
+            });
+            syncPlantToolbarState();
+        }
+
         function syncContextLayerVisibility() {
             contextLayerEntries.forEach(function (entry) {
                 var shouldShow = contextFeatureVisible(entry.feature);
@@ -130,11 +239,19 @@
             var visibleContextCount = contextLayerEntries.filter(function (entry) {
                 return contextFeatureVisible(entry.feature);
             }).length;
+            var visiblePlantCount = networkPlantLayerEntries.filter(
+                function (entry) {
+                    return networkPlantFeatureVisible(entry.feature);
+                },
+            ).length;
             var layerLabels = selectedValues(layerFilters).map(labelForValue);
             var statusLabels = selectedValues(statusFilters).map(labelForValue);
             var poiLabels = selectedPoiTypes().map(labelForValue);
             var parts = [
                 visibleContextCount + " route/context feature" + (visibleContextCount === 1 ? "" : "s"),
+                visiblePlantCount +
+                    " canonical plant feature" +
+                    (visiblePlantCount === 1 ? "" : "s"),
                 nearbyPointCount + " reference plant point" + (nearbyPointCount === 1 ? "" : "s"),
             ];
             if (layerFilters.length) {
@@ -147,6 +264,91 @@
                 parts.push("points: " + (poiLabels.join(", ") || "default"));
             }
             filterSummaryElement.textContent = parts.join(" | ");
+        }
+
+        function networkPlantIcon(assetType) {
+            var paths = {
+                fdh_cabinet:
+                    '<path d="M4 4h16v16H4zM8 8h3v3H8zm5 0h3v3h-3zM8 13h3v3H8zm5 0h3v3h-3z"/>',
+                splice_closure:
+                    '<circle cx="12" cy="12" r="4"/><path d="M12 2v6m0 8v6M2 12h6m8 0h6"/>',
+                fiber_access_point:
+                    '<path d="M12 3a6 6 0 0 0-6 6c0 4.5 6 12 6 12s6-7.5 6-12a6 6 0 0 0-6-6zm0 8.5A2.5 2.5 0 1 1 12 6a2.5 2.5 0 0 1 0 5.5z"/>',
+                service_building:
+                    '<path d="M4 21V5h10v4h6v12h-6v-4h-4v4zm4-12h2V7H8zm0 4h2v-2H8zm6 0h2v-2h-2zm0 4h2v-2h-2z"/>',
+            };
+            return window.L.divIcon({
+                className: "",
+                html:
+                    '<span class="vendor-plant-marker" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor">' +
+                    (paths[assetType] || paths.fdh_cabinet) +
+                    "</svg></span>",
+                iconSize: [28, 28],
+                iconAnchor: [14, 14],
+                popupAnchor: [0, -16],
+            });
+        }
+
+        var networkPlantFeatures = (
+            (config.networkPlantGeojson && config.networkPlantGeojson.features) || []
+        );
+        if (networkPlantFeatures.length) {
+            var networkPlantLayer = window.L.geoJSON(
+                { type: "FeatureCollection", features: networkPlantFeatures },
+                {
+                    style: function (feature) {
+                        var properties = feature.properties || {};
+                        var colors = {
+                            feeder: "#2563eb",
+                            distribution: "#0ea5e9",
+                            drop: "#22d3ee",
+                        };
+                        return {
+                            color: colors[properties.segment_type] || "#38bdf8",
+                            weight: 3,
+                            opacity: 0.8,
+                        };
+                    },
+                    pointToLayer: function (feature, latlng) {
+                        var properties = feature.properties || {};
+                        return window.L.marker(latlng, {
+                            icon: networkPlantIcon(properties.type),
+                            keyboard: true,
+                            title: properties.name || "Network plant",
+                        });
+                    },
+                    onEachFeature: function (feature, layer) {
+                        var properties = feature.properties || {};
+                        networkPlantLayerEntries.push({
+                            feature: feature,
+                            layer: layer,
+                        });
+                        var popup = document.createElement("div");
+                        var heading = document.createElement("strong");
+                        heading.textContent = properties.name || "Network plant";
+                        popup.appendChild(heading);
+                        popup.appendChild(document.createElement("br"));
+                        popup.appendChild(
+                            document.createTextNode(
+                                String(
+                                    properties.type || "network asset",
+                                ).replaceAll("_", " "),
+                            ),
+                        );
+                        layer.bindPopup(popup);
+                    },
+                },
+            ).addTo(map);
+            syncNetworkPlantVisibility();
+            if (!contextFeatures.length) {
+                var networkPlantBounds = networkPlantLayer.getBounds();
+                if (networkPlantBounds.isValid()) {
+                    map.fitBounds(networkPlantBounds, {
+                        padding: [30, 30],
+                        maxZoom: 16,
+                    });
+                }
+            }
         }
 
         if (contextFeatures.length) {
@@ -265,6 +467,24 @@
             return [];
         }
 
+        function syncFilterActionState(target) {
+            var inputs = filtersForTarget(target);
+            if (!inputs.length) return;
+            var checkedCount = inputs.filter(function (input) {
+                return input.checked;
+            }).length;
+            filterActionButtons.forEach(function (button) {
+                if (button.dataset.routeFilterTarget !== target) return;
+                var action = button.dataset.routeFilterAction || "";
+                var active =
+                    (action === "all" && checkedCount === inputs.length) ||
+                    (action === "none" && checkedCount === 0);
+                button.setAttribute("aria-pressed", String(active));
+                button.classList.toggle("text-emerald-400", active);
+                button.classList.toggle("text-slate-400", !active);
+            });
+        }
+
         function applyFilterAction(target, action) {
             var inputs = filtersForTarget(target);
             if (!inputs.length) return;
@@ -272,7 +492,11 @@
             inputs.forEach(function (input) {
                 input.checked = checked;
             });
+            syncFilterActionState(target);
             if (target === "poi") {
+                if (plantViewElement) plantViewElement.value = "custom";
+                visiblePlantSegmentTypes = null;
+                syncNetworkPlantVisibility();
                 abortSearchRequest();
                 hideSearchResults();
                 clearNearbyPoints();
@@ -652,7 +876,12 @@
             });
         }
         layerFilters.concat(statusFilters).forEach(function (input) {
-            input.addEventListener("change", syncContextLayerVisibility);
+            input.addEventListener("change", function () {
+                syncFilterActionState(
+                    input.hasAttribute("data-route-layer-filter") ? "layer" : "status",
+                );
+                syncContextLayerVisibility();
+            });
         });
         filterActionButtons.forEach(function (button) {
             button.addEventListener("click", function () {
@@ -662,8 +891,36 @@
                 );
             });
         });
+        plantFilterButtons.forEach(function (button) {
+            button.addEventListener("click", function () {
+                var assetType = button.dataset.routePlantFilter || "";
+                if (plantViewElement) plantViewElement.value = "custom";
+                visiblePlantSegmentTypes = null;
+                if (assetType === "fiber_segment") {
+                    plantSegmentsVisible = !plantSegmentsVisible;
+                    syncNetworkPlantVisibility();
+                    updateFilterSummary();
+                    return;
+                }
+                var input = poiFilters.find(function (candidate) {
+                    return candidate.value === assetType;
+                });
+                if (!input) return;
+                input.checked = !input.checked;
+                input.dispatchEvent(new Event("change", { bubbles: true }));
+            });
+        });
+        if (plantViewElement) {
+            plantViewElement.addEventListener("change", function () {
+                applyPlantViewPreset(plantViewElement.value);
+            });
+        }
         poiFilters.forEach(function (input) {
             input.addEventListener("change", function () {
+                if (plantViewElement) plantViewElement.value = "custom";
+                visiblePlantSegmentTypes = null;
+                syncFilterActionState("poi");
+                syncNetworkPlantVisibility();
                 abortSearchRequest();
                 hideSearchResults();
                 clearNearbyPoints();
@@ -684,6 +941,7 @@
         if (poiNearbyElement) {
             poiNearbyElement.addEventListener("click", function () {
                 setError("");
+                mapElement.scrollIntoView({ behavior: "smooth", block: "center" });
                 if (!navigator.geolocation) {
                     setError("Location is not available on this device.");
                     return;
@@ -757,6 +1015,7 @@
             });
         });
 
+        ["layer", "status", "poi"].forEach(syncFilterActionState);
         updateFilterSummary();
 
         setTimeout(function () {
