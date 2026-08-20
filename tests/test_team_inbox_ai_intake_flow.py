@@ -46,8 +46,14 @@ from app.services.integrations.whatsapp_capability import (
     WHATSAPP_RECEIVE_CAPABILITY,
     WHATSAPP_SEND_CAPABILITY,
 )
+from app.services.operator_tenant import provision_operator_tenant
 from app.services.owner_commands import CommandContext
 from app.tasks import notifications as notification_tasks
+
+
+@pytest.fixture(autouse=True)
+def _operator_tenant(db_session):
+    provision_operator_tenant(db_session)
 
 
 class _Gateway:
@@ -183,6 +189,7 @@ def _config(
     threshold: float = 0.75,
     data_cleaning_support_team_id=None,
     mappings=None,
+    welcome_message: str | None = None,
     scope_key: str = "meta_cloud_api:phone-1",
     channel_type: str = InboxChannelType.whatsapp.value,
     missing_fallback: bool = False,
@@ -205,6 +212,7 @@ def _config(
             if data_cleaning_support_team_id
             else None,
             "data_cleanup_enabled": data_cleaning_support_team_id is not None,
+            "welcome_message": welcome_message,
         },
     )
     db_session.add(row)
@@ -328,14 +336,14 @@ def test_receive_persists_ai_work_without_synchronous_ai_response(
         == 0
     )
 
-    _process_ai(db_session, sweeps=1)
+    _process_ai(db_session, sweeps=2)
 
     assert (
         db_session.query(InboxMessage)
         .filter(InboxMessage.conversation_id == conversation.id)
         .filter(InboxMessage.direction == "outbound")
         .count()
-        == 1
+        == 2
     )
     assert gateway.calls == 1
 
@@ -592,6 +600,7 @@ def test_follow_up_reply_can_route_and_first_message_is_not_enqueued(
         db_session,
         fallback_team_id=fallback_id,
         threshold=0.8,
+        welcome_message="Hello, I am Dotmac Virtual Assistant. I can help understand your request and connect you to the right team.",
         mappings=[_mapping("technical_support", technical, "technical")],
     )
     gateway = _Gateway(confidence=0.3)
@@ -606,13 +615,19 @@ def test_follow_up_reply_can_route_and_first_message_is_not_enqueued(
     assert first_message.metadata_["ai_intake_follow_up_question"] == (
         ai_intake.GENERIC_FOLLOW_UP_QUESTION
     )
-    follow_up = (
+    outbound = (
         db_session.query(InboxMessage)
         .filter(InboxMessage.direction == "outbound")
-        .one()
+        .order_by(InboxMessage.created_at.asc())
+        .all()
     )
+    assert [message.body for message in outbound] == [
+        "Hello, I am Dotmac Virtual Assistant. I can help understand your request and connect you to the right team.",
+        ai_intake.GENERIC_FOLLOW_UP_QUESTION,
+    ]
+    assert outbound[0].metadata_["ai_message_purpose"] == "welcome"
+    follow_up = outbound[1]
     notification = db_session.get(Notification, follow_up.notification_id)
-    assert follow_up.body == ai_intake.GENERIC_FOLLOW_UP_QUESTION
     assert follow_up.metadata_["ai_intake_follow_up"] is True
     assert notification is not None
     assert notification.channel == NotificationChannel.whatsapp
@@ -633,7 +648,7 @@ def test_follow_up_reply_can_route_and_first_message_is_not_enqueued(
     assert conversation.primary_service_team_id == technical.id
     assert second_message.metadata_["ai_intake_status"] == "classified"
     assert conversation.assignments == []
-    assert _non_queue_outbound_count(db_session) == 1
+    assert _non_queue_outbound_count(db_session) == 2
 
 
 def test_second_uncertain_reply_falls_back_without_another_question(
@@ -658,7 +673,7 @@ def test_second_uncertain_reply_falls_back_without_another_question(
     assert conversation.primary_service_team_id == fallback.id
     assert second_message.metadata_["ai_intake_status"] == "fallback"
     assert second_message.metadata_["ai_intake_reason"] == "follow_up_limit_reached"
-    assert _non_queue_outbound_count(db_session) == 1
+    assert _non_queue_outbound_count(db_session) == 2
 
 
 def test_whatsapp_follow_up_dispatcher_sends_the_approved_question(
@@ -681,14 +696,17 @@ def test_whatsapp_follow_up_dispatcher_sends_the_approved_question(
         db_session, batch_size=10
     )
 
-    assert delivered == 1
-    assert calls[0]["body"] == ai_intake.GENERIC_FOLLOW_UP_QUESTION
+    assert delivered == 2
+    assert calls[1]["body"] == ai_intake.GENERIC_FOLLOW_UP_QUESTION
     outbound = (
         db_session.query(InboxMessage)
         .filter(InboxMessage.direction == "outbound")
-        .one()
+        .order_by(InboxMessage.created_at.asc())
+        .all()
     )
-    assert outbound.metadata_["delivery_status"] == "delivered"
+    assert all(
+        message.metadata_["delivery_status"] == "delivered" for message in outbound
+    )
 
 
 def test_policy_version_activation_supersedes_without_mutating_active_version(
@@ -721,6 +739,10 @@ def test_policy_version_activation_supersedes_without_mutating_active_version(
             policy_id=policy_id,
             display_name="Dotmac Virtual Assistant",
             welcome_message="Hello from the configured assistant.",
+            clarification_questions=(
+                "Which service do you need help with?",
+                "Is this for you or an organization?",
+            ),
             intent_team_mappings=(
                 {
                     "intent": "technical_support",
@@ -741,6 +763,10 @@ def test_policy_version_activation_supersedes_without_mutating_active_version(
     active_version = db_session.get(AiIntakePolicyVersion, activated.version_id)
     assert active_version.status == "activated"
     assert active_version.welcome_message == "Hello from the configured assistant."
+    assert active_version.clarification_questions == [
+        "Which service do you need help with?",
+        "Is this for you or an organization?",
+    ]
     assert db_session.get(AiIntakePolicy, policy_id).active_version_id == (
         active_version.id
     )
@@ -1492,7 +1518,7 @@ def test_stale_follow_up_recovers_to_configured_fallback_without_assignment(
         db_session.query(InboxMessage)
         .filter(InboxMessage.direction == "outbound")
         .count()
-        == 1
+        == 2
     )
     assert outcome.changed == 1
     assert conversation.primary_service_team_id == fallback_id

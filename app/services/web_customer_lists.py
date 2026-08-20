@@ -150,6 +150,29 @@ class CustomerListPage:
     page_meta: PageMeta
 
 
+@dataclass(frozen=True, slots=True)
+class CustomerNamePresentation:
+    """Bounded customer-name text for the admin list without losing the source."""
+
+    full_text: str
+    display_text: str
+    is_truncated: bool
+
+
+def customer_name_presentation(name: str) -> CustomerNamePresentation:
+    """Show at most four words in the customer table and preserve the full name."""
+
+    full_text = " ".join(name.split())
+    words = full_text.split()
+    is_truncated = len(words) > 4
+    display_text = f"{' '.join(words[:4])}..." if is_truncated else full_text
+    return CustomerNamePresentation(
+        full_text=full_text,
+        display_text=display_text,
+        is_truncated=is_truncated,
+    )
+
+
 class CustomerExportErrorCode(StrEnum):
     INVALID_FILTERS = "ui.customer_list_projection.invalid_filters"
     INVALID_TARGET = "ui.customer_list_projection.invalid_target"
@@ -807,6 +830,7 @@ def _build_customer_dict(person: Subscriber) -> dict[str, Any]:
                 break
 
     display_name = person.company_name or person.display_name or person.full_name
+    name_presentation = customer_name_presentation(str(display_name or ""))
     status_presentation = account_status_presentation(
         person.status,
         is_active=person.is_active,
@@ -815,6 +839,7 @@ def _build_customer_dict(person: Subscriber) -> dict[str, Any]:
         "id": str(person.id),
         "type": "business" if person.is_business else "person",
         "name": display_name,
+        "name_presentation": name_presentation,
         "subscriber_number": person.subscriber_number,
         "account_number": person.account_number,
         "account_label": _customer_display_identifier(

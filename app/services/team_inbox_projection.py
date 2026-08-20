@@ -369,6 +369,7 @@ class InboxAgentOption:
     initials: str
     presence_status: str
     email: str = ""
+    team_ids: tuple[UUID, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -605,6 +606,20 @@ def list_agent_options(db: Session) -> tuple[InboxAgentOption, ...]:
         else []
     )
     presence_by_person = {row.person_id: row for row in presence_rows}
+    person_party_ids = [row.person_party_id for row in rows]
+    membership_rows = (
+        db.query(ServiceTeamMember)
+        .filter(ServiceTeamMember.person_id.in_(person_party_ids))
+        .filter(ServiceTeamMember.is_active.is_(True))
+        .all()
+        if person_party_ids
+        else []
+    )
+    team_ids_by_person_party: dict[UUID, set[UUID]] = {}
+    for membership in membership_rows:
+        team_ids_by_person_party.setdefault(membership.person_id, set()).add(
+            membership.team_id
+        )
     return tuple(
         InboxAgentOption(
             id=row.id,
@@ -624,6 +639,13 @@ def list_agent_options(db: Session) -> tuple[InboxAgentOption, ...]:
                 else InboxAgentPresenceStatus.offline.value
             ),
             email=row.email,
+            team_ids=tuple(
+                sorted(
+                    team_ids_by_person_party.get(row.person_party_id, set()), key=str
+                )
+            )
+            if row.person_party_id is not None
+            else (),
         )
         for row in rows
     )
@@ -683,6 +705,7 @@ def list_mentionable_users(
             initials=_initials(row.first_name, row.last_name, row.display_name),
             presence_status=InboxAgentPresenceStatus.offline.value,
             email=row.email,
+            team_ids=tuple(active_team_ids),
         )
         for row in rows
     )
@@ -956,13 +979,7 @@ def _assignment_counts(
                 .scalar()
                 or 0
             )
-    ai_handling = int(
-        db.query(func.count(InboxConversation.id))
-        .filter(InboxConversation.is_active.is_(True))
-        .filter(InboxConversation.metadata_["ai_handling"].as_boolean().is_(True))
-        .scalar()
-        or 0
-    )
+    ai_handling = team_inbox_read.ai_handling_conversation_count(db)
     return InboxAssignmentCounts(
         all=all_count,
         assigned_to_me=assigned_to_me,

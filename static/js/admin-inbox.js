@@ -42,6 +42,7 @@
       upstreamSignal?.removeEventListener("abort", abortFromUpstream);
     }
   };
+  window.inboxFetchWithTimeout = fetchWithTimeout;
 
   window.inboxTeamFilterBuilder = function inboxTeamFilterBuilder(initialJson) {
     const blankCondition = (bucket = "and") => ({
@@ -992,6 +993,7 @@
           "needs_response",
           "needs_attention",
           "ai_handling",
+          "reply_window_status",
           "activity_from",
           "activity_to",
           "open_only",
@@ -1093,6 +1095,16 @@
           this.navigateFilter({ ai_handling: "true" });
         } else if (value) {
           this.navigateFilter({ assigned_person_id: value });
+        } else {
+          this.navigateFilter({});
+        }
+      },
+
+      applyStatusFilter(value) {
+        if (value === "expired") {
+          this.navigateFilter({ reply_window_status: "expired" });
+        } else if (value) {
+          this.navigateFilter({ status: value });
         } else {
           this.navigateFilter({});
         }
@@ -2925,7 +2937,7 @@
       sync();
     });
 
-    fetchWithTimeout(form.dataset.templateEndpoint, {
+    window.inboxFetchWithTimeout(form.dataset.templateEndpoint, {
       headers: { Accept: "application/json" },
     })
       .then((response) => response.json().then((payload) => ({ response, payload })))

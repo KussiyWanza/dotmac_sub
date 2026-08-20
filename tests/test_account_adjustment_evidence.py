@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -374,6 +375,40 @@ def test_adjustment_reversal_is_previewed_idempotent_and_structurally_linked(
     report = inspect_account_adjustment_evidence(db_session)
     assert report.scanned_count == 1
     assert report.drift_count == 0
+
+
+def test_reversal_preview_uses_authoritative_prepaid_position(
+    db_session, subscriber, monkeypatch
+):
+    """Opening-backed prepaid funding, not legacy free credit, binds reversal."""
+    from app.services.billing import adjustments as adjustment_service
+
+    _fund(db_session, subscriber, Decimal("19500.00"))
+    request = _request(subscriber, amount=Decimal("18812.50"))
+    debit_preview = preview_account_adjustment(
+        db_session, PreviewAccountAdjustmentQuery(request=request)
+    )
+    debit = _confirm(db_session, request, debit_preview.fingerprint)
+
+    monkeypatch.setattr(
+        adjustment_service,
+        "get_customer_financial_position",
+        lambda _db, _account_id: SimpleNamespace(
+            prepaid_available_balance=Decimal("-18112.50")
+        ),
+    )
+    preview = preview_account_adjustment_reversal(
+        db_session,
+        PreviewAccountAdjustmentReversalQuery(
+            adjustment_id=debit.adjustment.id,
+            request=AccountAdjustmentReversalPreviewRequest(
+                reason="Correct a duplicate prepaid consumption debit"
+            ),
+        ),
+    )
+
+    assert preview.prepaid_funding_before == Decimal("-18112.50")
+    assert preview.prepaid_funding_after == Decimal("700.00")
 
 
 def test_public_adjustment_owner_rejects_an_active_caller_transaction(

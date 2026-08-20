@@ -184,7 +184,14 @@ final todayJobsProvider = FutureProvider<JobList>((ref) async {
       .watch(jobsRepositoryProvider)
       .fetchJobs(status: filter, dateTo: end);
   return JobList(
-    list.jobs.where((job) => isActionableOnDay(job, start)).toList(),
+    list.jobs
+        .where((job) => isActionableOnDay(job, start))
+        .where(
+          (job) =>
+              filter != null ||
+              (job.status != 'completed' && job.status != 'canceled'),
+        )
+        .toList(),
     fromCache: list.fromCache,
   );
 });
@@ -218,8 +225,8 @@ bool _isSameLocalDay(DateTime? value, DateTime day) {
 /// Work that belongs in the technician's actionable Today view.
 ///
 /// Unscheduled and overdue open work must remain visible until completed.
-/// Terminal work is shown only on the day it completed, keeping the list
-/// aligned with the open/completed counters returned by `/field/me`.
+/// Terminal work is eligible only on the day it completed. The Today provider
+/// then keeps it out of the default Open view and exposes it through Done.
 bool isActionableOnDay(JobSummary job, DateTime day) {
   if (job.status == 'completed') {
     return _isSameLocalDay(job.completedAt, day);

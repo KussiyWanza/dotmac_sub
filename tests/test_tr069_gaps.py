@@ -1144,6 +1144,55 @@ class TestCreateOntFromTr069Device:
         db_session.refresh(device)
         assert device.ont_unit_id == existing.id
 
+    def test_create_ont_from_tr069_device_prefers_assigned_olt_record(
+        self, db_session
+    ) -> None:
+        from app.models.network import OLTDevice, OntAssignment, OntUnit
+        from app.services.web_network_tr069 import create_ont_from_tr069_device
+
+        server = Tr069AcsServer(
+            name="Canonical ONT ACS",
+            base_url="http://genieacs:7557",
+            is_active=True,
+        )
+        olt = OLTDevice(name="Canonical OLT", is_active=True)
+        db_session.add_all([server, olt])
+        db_session.flush()
+
+        duplicate = OntUnit(
+            serial_number="485754431D88FBD1",
+            is_active=True,
+        )
+        canonical = OntUnit(
+            serial_number="HWTC1D88FBD1",
+            is_active=True,
+            olt_device_id=olt.id,
+        )
+        db_session.add_all([duplicate, canonical])
+        db_session.flush()
+        db_session.add(OntAssignment(ont_unit_id=canonical.id, active=True))
+
+        device = Tr069CpeDevice(
+            acs_server_id=server.id,
+            serial_number="485754431D88FBD1",
+            genieacs_device_id="00259E-HG8546M-485754431D88FBD1",
+            oui="00259E",
+            product_class="HG8546M",
+            is_active=True,
+        )
+        db_session.add(device)
+        db_session.commit()
+
+        ont, created = create_ont_from_tr069_device(
+            db_session,
+            tr069_device_id=str(device.id),
+        )
+
+        assert created is False
+        assert ont.id == canonical.id
+        db_session.refresh(device)
+        assert device.ont_unit_id == canonical.id
+
 
 class TestTr069DashboardUi:
     def test_unconfigured_devices_offer_create_ont_action(self) -> None:
@@ -1689,6 +1738,52 @@ class TestDeviceResolution:
         assert linked.genieacs_device_id == "00259E-HG8546M-485754431DAF83D1"
         instance.get_device.assert_called_once_with("00259E-HG8546M-485754431DAF83D1")
         instance.list_devices.assert_not_called()
+
+    def test_direct_device_writes_require_persisted_genieacs_id(
+        self, db_session
+    ) -> None:
+        from app.models.network import OntUnit
+        from app.services.network._resolve import (
+            resolve_linked_genieacs_with_reason,
+        )
+
+        server = Tr069AcsServer(
+            name="Strict Write ACS",
+            base_url="http://genieacs:7557",
+            is_active=True,
+        )
+        db_session.add(server)
+        db_session.flush()
+        ont = OntUnit(
+            serial_number="HWTC1D88FBD1",
+            is_active=True,
+            tr069_acs_server_id=server.id,
+        )
+        db_session.add(ont)
+        db_session.flush()
+        linked = Tr069CpeDevice(
+            acs_server_id=server.id,
+            ont_unit_id=ont.id,
+            serial_number="485754431D88FBD1",
+            oui="00259E",
+            product_class="HG8546M",
+            is_active=True,
+        )
+        fallback = Tr069CpeDevice(
+            acs_server_id=server.id,
+            serial_number="485754431D88FBD1",
+            genieacs_device_id="00259E-HG8546M-485754431D88FBD1",
+            oui="00259E",
+            product_class="HG8546M",
+            is_active=True,
+        )
+        db_session.add_all([linked, fallback])
+        db_session.commit()
+
+        result, reason = resolve_linked_genieacs_with_reason(db_session, ont)
+
+        assert result is None
+        assert "no linked GenieACS device ID" in reason
 
     def test_resolve_clears_stale_linked_genieacs_id_when_acs_record_missing(
         self, db_session

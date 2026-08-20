@@ -18,10 +18,28 @@
         var searchResultsElement = document.getElementById(config.searchResultsId);
         var searchClearElement = document.getElementById(config.searchClearId);
         var searchHintElement = document.getElementById(config.searchHintId);
+        var filterSummaryElement = document.getElementById(config.filterSummaryId);
+        function elementsForSelector(selector) {
+            return selector ? Array.from(document.querySelectorAll(selector)) : [];
+        }
+
+        var layerFilters = elementsForSelector(config.layerFilterSelector);
+        var statusFilters = elementsForSelector(config.statusFilterSelector);
+        var poiFilters = elementsForSelector(config.poiFilterSelector);
+        var filterActionButtons = elementsForSelector(config.filterActionSelector);
+        var poiNearbyElement = document.getElementById(config.poiNearbyId);
+        var poiClearElement = document.getElementById(config.poiClearId);
+        var poiRadiusElement = document.getElementById(config.poiRadiusId);
         var map = window.L.map(mapElement).setView([9.0820, 8.6753], 6);
         var contextLayers = {};
+        var contextLayerEntries = [];
         var searchMarker = null;
         var searchController = null;
+        var nearbyController = null;
+        var nearbyPointCount = 0;
+        var nearbyDefaultLabel = poiNearbyElement
+            ? poiNearbyElement.textContent
+            : "";
 
         window.L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
             attribution:
@@ -39,6 +57,98 @@
                 );
             },
         );
+
+        function selectedValues(inputs) {
+            return inputs
+                .filter(function (input) {
+                    return input.checked;
+                })
+                .map(function (input) {
+                    return input.value;
+                });
+        }
+
+        function selectedPoiTypes() {
+            var values = selectedValues(poiFilters);
+            return values.length ? values : ["fdh_cabinet", "splice_closure"];
+        }
+
+        function labelForValue(value) {
+            return String(value || "").replaceAll("_", " ");
+        }
+
+        function featureLayerKey(feature) {
+            var properties = feature.properties || {};
+            return properties.kind === "as_built"
+                ? "as_built"
+                : properties.kind === "closure_proposal"
+                  ? "closure_proposal"
+                  : "proposed";
+        }
+
+        function featureStatusKey(feature) {
+            var properties = feature.properties || {};
+            return String(properties.status || "").trim();
+        }
+
+        function contextFeatureVisible(feature) {
+            var visibleLayers = selectedValues(layerFilters);
+            var visibleStatuses = selectedValues(statusFilters);
+            var layerKey = featureLayerKey(feature);
+            var statusKey = featureStatusKey(feature);
+            if (layerFilters.length && visibleLayers.indexOf(layerKey) === -1) {
+                return false;
+            }
+            if (
+                statusKey &&
+                statusFilters.length &&
+                visibleStatuses.indexOf(statusKey) === -1
+            ) {
+                return false;
+            }
+            return (
+                (!layerFilters.length || visibleLayers.length > 0) &&
+                (!statusKey || !statusFilters.length || visibleStatuses.length > 0)
+            );
+        }
+
+        function syncContextLayerVisibility() {
+            contextLayerEntries.forEach(function (entry) {
+                var shouldShow = contextFeatureVisible(entry.feature);
+                var isShown = map.hasLayer(entry.layer);
+                if (shouldShow && !isShown) {
+                    entry.layer.addTo(map);
+                } else if (!shouldShow && isShown) {
+                    map.removeLayer(entry.layer);
+                }
+            });
+            updateFilterSummary();
+        }
+
+        function updateFilterSummary() {
+            if (!filterSummaryElement) return;
+            var visibleContextCount = contextLayerEntries.filter(function (entry) {
+                return contextFeatureVisible(entry.feature);
+            }).length;
+            var layerLabels = selectedValues(layerFilters).map(labelForValue);
+            var statusLabels = selectedValues(statusFilters).map(labelForValue);
+            var poiLabels = selectedPoiTypes().map(labelForValue);
+            var parts = [
+                visibleContextCount + " route/context feature" + (visibleContextCount === 1 ? "" : "s"),
+                nearbyPointCount + " reference plant point" + (nearbyPointCount === 1 ? "" : "s"),
+            ];
+            if (layerFilters.length) {
+                parts.push("layers: " + (layerLabels.join(", ") || "none"));
+            }
+            if (statusFilters.length) {
+                parts.push("statuses: " + (statusLabels.join(", ") || "none"));
+            }
+            if (poiFilters.length) {
+                parts.push("points: " + (poiLabels.join(", ") || "default"));
+            }
+            filterSummaryElement.textContent = parts.join(" | ");
+        }
+
         if (contextFeatures.length) {
             var contextLayer = window.L.geoJSON(
                 { type: "FeatureCollection", features: contextFeatures },
@@ -73,6 +183,7 @@
                     onEachFeature: function (feature, layer) {
                         var properties = feature.properties || {};
                         if (properties.id) contextLayers[String(properties.id)] = layer;
+                        contextLayerEntries.push({ feature: feature, layer: layer });
                         if (properties.kind === "closure_proposal") {
                             var popup = document.createElement("div");
                             var heading = document.createElement("strong");
@@ -93,6 +204,7 @@
                     },
                 },
             ).addTo(map);
+            syncContextLayerVisibility();
             var contextBounds = contextLayer.getBounds();
             if (contextBounds.isValid()) {
                 map.fitBounds(contextBounds, { padding: [30, 30], maxZoom: 16 });
@@ -105,10 +217,71 @@
             weight: 4,
         }).addTo(map);
         var markers = window.L.layerGroup().addTo(map);
+        var poiLayer = window.L.layerGroup().addTo(map);
 
         function setError(message) {
             errorElement.textContent = message || "";
             errorElement.classList.toggle("hidden", !message);
+        }
+
+        function setDisabled(element, disabled) {
+            if (!element) return;
+            element.disabled = disabled;
+        }
+
+        function setNearbyLoading(isLoading) {
+            if (!poiNearbyElement) return;
+            poiNearbyElement.disabled = isLoading;
+            poiNearbyElement.setAttribute("aria-busy", isLoading ? "true" : "false");
+            poiNearbyElement.textContent = isLoading
+                ? "Loading points"
+                : nearbyDefaultLabel || "Show near me";
+        }
+
+        function abortNearbyRequest() {
+            if (!nearbyController) return;
+            nearbyController.abort();
+            nearbyController = null;
+            setNearbyLoading(false);
+        }
+
+        function abortSearchRequest() {
+            if (!searchController) return;
+            searchController.abort();
+            searchController = null;
+        }
+
+        function clearNearbyPoints() {
+            abortNearbyRequest();
+            poiLayer.clearLayers();
+            nearbyPointCount = 0;
+            updateFilterSummary();
+        }
+
+        function filtersForTarget(target) {
+            if (target === "layer") return layerFilters;
+            if (target === "status") return statusFilters;
+            if (target === "poi") return poiFilters;
+            return [];
+        }
+
+        function applyFilterAction(target, action) {
+            var inputs = filtersForTarget(target);
+            if (!inputs.length) return;
+            var checked = action === "all";
+            inputs.forEach(function (input) {
+                input.checked = checked;
+            });
+            if (target === "poi") {
+                abortSearchRequest();
+                hideSearchResults();
+                clearNearbyPoints();
+                if (searchElement && searchElement.value.trim().length >= 2) {
+                    runSearch();
+                }
+                return;
+            }
+            syncContextLayerVisibility();
         }
 
         function haversine(first, second) {
@@ -151,9 +324,9 @@
             });
 
             var valid = points.length >= 2;
-            submitElement.disabled = !valid;
-            undoElement.disabled = points.length === 0;
-            clearElement.disabled = points.length === 0;
+            setDisabled(submitElement, !valid);
+            setDisabled(undoElement, points.length === 0);
+            setDisabled(clearElement, points.length === 0);
             setError("");
 
             if (!valid) {
@@ -189,6 +362,74 @@
                     "'": "&#39;",
                 }[character];
             });
+        }
+
+        function assetTypeLabel(value) {
+            return labelForValue(value);
+        }
+
+        function bindPoiPopup(marker, item) {
+            var popup = document.createElement("div");
+            var heading = document.createElement("strong");
+            heading.textContent = item.title || item.subtitle || "Reference plant";
+            popup.appendChild(heading);
+            popup.appendChild(document.createElement("br"));
+            popup.appendChild(document.createTextNode(assetTypeLabel(item.type)));
+            popup.appendChild(document.createElement("br"));
+            popup.appendChild(
+                document.createTextNode("Reference only, not project-assigned."),
+            );
+            if (item.subtitle) {
+                popup.appendChild(document.createElement("br"));
+                popup.appendChild(document.createTextNode(item.subtitle));
+            }
+            if (item.distance_m !== null && item.distance_m !== undefined) {
+                popup.appendChild(document.createElement("br"));
+                popup.appendChild(
+                    document.createTextNode(
+                        Math.round(Number(item.distance_m)) + " m away",
+                    ),
+                );
+            }
+            marker.bindPopup(popup);
+        }
+
+        function renderNearbyPoints(items) {
+            poiLayer.clearLayers();
+            nearbyPointCount = 0;
+            items.forEach(function (item) {
+                var latitude = Number(item.latitude);
+                var longitude = Number(item.longitude);
+                if (
+                    !Number.isFinite(latitude) ||
+                    !Number.isFinite(longitude)
+                ) {
+                    return;
+                }
+                var marker = window.L.circleMarker([latitude, longitude], {
+                    radius: 6,
+                    color: "#ffffff",
+                    weight: 2,
+                    fillColor: window.themeColor("semantic-info-600"),
+                    fillOpacity: 0.9,
+                }).addTo(poiLayer);
+                bindPoiPopup(marker, item);
+                nearbyPointCount += 1;
+            });
+            updateFilterSummary();
+            if (searchHintElement) {
+                searchHintElement.textContent = nearbyPointCount
+                    ? nearbyPointCount + " reference plant points shown for selected types."
+                    : "No selected reference plant types found nearby.";
+            }
+            try {
+                var bounds = poiLayer.getBounds();
+                if (bounds.isValid()) {
+                    map.fitBounds(bounds, { padding: [30, 30], maxZoom: 17 });
+                }
+            } catch (error) {
+                /* No nearby points to fit. */
+            }
         }
 
         function parseCoordinates(value) {
@@ -235,7 +476,7 @@
         function renderSearchResults(items) {
             if (!searchResultsElement) return;
             if (!items.length) {
-                showSearchMessage("No cabinet or closure matches.");
+                showSearchMessage("No selected reference plant types match.");
                 return;
             }
             searchResultsElement.innerHTML = items
@@ -267,7 +508,7 @@
                 hideSearchResults();
                 if (searchHintElement) {
                     searchHintElement.textContent =
-                        "Use decimal coordinates like 6.5244, 3.3792 or search cabinet and closure names.";
+                        "Use decimal coordinates like 6.5244, 3.3792 or search selected reference plant types.";
                 }
                 return;
             }
@@ -291,10 +532,13 @@
                 showSearchMessage("Type at least 2 characters.");
                 return;
             }
-            if (searchController) searchController.abort();
+            abortSearchRequest();
             searchController = new AbortController();
+            showSearchMessage("Searching selected reference plant types...");
             fetch(
-                "/api/v1/field/vendor/map-assets/search?types=fdh_cabinet,splice_closure&limit=20&q=" +
+                "/api/v1/field/vendor/map-assets/search?types=" +
+                    encodeURIComponent(selectedPoiTypes().join(",")) +
+                    "&limit=20&q=" +
                     encodeURIComponent(query),
                 { signal: searchController.signal },
             )
@@ -311,18 +555,59 @@
                 });
         }
 
+        function loadNearbyPoints(latitude, longitude) {
+            abortNearbyRequest();
+            nearbyController = new AbortController();
+            setNearbyLoading(true);
+            var radius = Number(poiRadiusElement ? poiRadiusElement.value : 1000);
+            if (!Number.isFinite(radius) || radius <= 0) radius = 1000;
+            fetch(
+                "/api/v1/field/vendor/map-assets/nearby?lat=" +
+                    encodeURIComponent(latitude) +
+                    "&lng=" +
+                    encodeURIComponent(longitude) +
+                    "&radius_m=" +
+                    encodeURIComponent(radius) +
+                    "&types=" +
+                    encodeURIComponent(selectedPoiTypes().join(",")) +
+                    "&limit=100",
+                { signal: nearbyController.signal },
+            )
+                .then(function (response) {
+                    if (!response.ok) throw new Error("nearby_failed");
+                    return response.json();
+                })
+                .then(function (payload) {
+                    nearbyController = null;
+                    setNearbyLoading(false);
+                    renderNearbyPoints(
+                        Array.isArray(payload.items) ? payload.items : [],
+                    );
+                })
+                .catch(function (error) {
+                    if (error.name === "AbortError") return;
+                    nearbyController = null;
+                    setNearbyLoading(false);
+                    setError("Nearby map points are unavailable right now.");
+                });
+        }
+
         map.on("click", function (event) {
             addPoint(event.latlng.lat, event.latlng.lng);
         });
-        undoElement.addEventListener("click", function () {
-            points.pop();
-            redraw();
-        });
-        clearElement.addEventListener("click", function () {
-            points = [];
-            lengthElement.value = "";
-            redraw();
-        });
+        if (undoElement) {
+            undoElement.addEventListener("click", function () {
+                points.pop();
+                redraw();
+            });
+        }
+        if (clearElement) {
+            clearElement.addEventListener("click", function () {
+                points = [];
+                lengthElement.value = "";
+                redraw();
+            });
+        }
         if (searchElement) {
             var searchTimer = null;
             searchElement.addEventListener("input", function () {
@@ -337,6 +622,7 @@
         }
         if (searchClearElement) {
             searchClearElement.addEventListener("click", function () {
+                abortSearchRequest();
                 if (searchElement) searchElement.value = "";
                 if (searchMarker) {
                     map.removeLayer(searchMarker);
@@ -365,27 +651,95 @@
                 hideSearchResults();
             });
         }
-        locateElement.addEventListener("click", function () {
-            if (!navigator.geolocation) {
-                setError("Location is not available on this device.");
-                return;
-            }
-            navigator.geolocation.getCurrentPosition(
-                function (position) {
-                    addPoint(position.coords.latitude, position.coords.longitude);
-                    map.setView(
-                        [position.coords.latitude, position.coords.longitude],
-                        17,
-                    );
-                },
-                function () {
-                    setError(
-                        "Could not get your location. Check this site's location permission.",
-                    );
-                },
-                { enableHighAccuracy: true, timeout: 10000 },
-            );
+        layerFilters.concat(statusFilters).forEach(function (input) {
+            input.addEventListener("change", syncContextLayerVisibility);
         });
+        filterActionButtons.forEach(function (button) {
+            button.addEventListener("click", function () {
+                applyFilterAction(
+                    button.dataset.routeFilterTarget || "",
+                    button.dataset.routeFilterAction || "",
+                );
+            });
+        });
+        poiFilters.forEach(function (input) {
+            input.addEventListener("change", function () {
+                abortSearchRequest();
+                hideSearchResults();
+                clearNearbyPoints();
+                if (searchElement && searchElement.value.trim().length >= 2) {
+                    runSearch();
+                }
+            });
+        });
+        if (poiRadiusElement) {
+            poiRadiusElement.addEventListener("change", function () {
+                clearNearbyPoints();
+                if (searchHintElement) {
+                    searchHintElement.textContent =
+                        "Nearby points cleared. Use Show near me to load the new radius.";
+                }
+            });
+        }
+        if (poiNearbyElement) {
+            poiNearbyElement.addEventListener("click", function () {
+                setError("");
+                if (!navigator.geolocation) {
+                    setError("Location is not available on this device.");
+                    return;
+                }
+                navigator.geolocation.getCurrentPosition(
+                    function (position) {
+                        loadNearbyPoints(
+                            position.coords.latitude,
+                            position.coords.longitude,
+                        );
+                        map.setView(
+                            [position.coords.latitude, position.coords.longitude],
+                            16,
+                        );
+                    },
+                    function () {
+                        setError(
+                            "Could not get your location. Check this site's location permission.",
+                        );
+                    },
+                    { enableHighAccuracy: true, timeout: 10000 },
+                );
+            });
+        }
+        if (poiClearElement) {
+            poiClearElement.addEventListener("click", function () {
+                clearNearbyPoints();
+                if (searchHintElement) {
+                    searchHintElement.textContent =
+                        "Use decimal coordinates like 6.5244, 3.3792 or search selected reference plant types.";
+                }
+            });
+        }
+        if (locateElement) {
+            locateElement.addEventListener("click", function () {
+                if (!navigator.geolocation) {
+                    setError("Location is not available on this device.");
+                    return;
+                }
+                navigator.geolocation.getCurrentPosition(
+                    function (position) {
+                        addPoint(position.coords.latitude, position.coords.longitude);
+                        map.setView(
+                            [position.coords.latitude, position.coords.longitude],
+                            17,
+                        );
+                    },
+                    function () {
+                        setError(
+                            "Could not get your location. Check this site's location permission.",
+                        );
+                    },
+                    { enableHighAccuracy: true, timeout: 10000 },
+                );
+            });
+        }
         form.addEventListener("submit", function (event) {
             if (points.length >= 2) return;
             event.preventDefault();
@@ -402,6 +756,8 @@
                 }
             });
         });
+
+        updateFilterSummary();
 
         setTimeout(function () {
             map.invalidateSize();

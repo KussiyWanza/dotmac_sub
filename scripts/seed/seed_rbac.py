@@ -163,6 +163,10 @@ DEFAULT_PERMISSIONS = [
     ("subscription:read", "View subscriptions"),
     ("subscription:create", "Create subscriptions"),
     ("subscription:update", "Update subscriptions"),
+    (
+        "subscription:additional_ip:write",
+        "Assign and remove additional subscription IP ranges",
+    ),
     ("subscription:activate", "Activate suspended subscriptions"),
     ("subscription:suspend", "Suspend subscriptions"),
     ("subscription:cancel", "Cancel subscriptions"),

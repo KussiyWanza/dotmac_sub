@@ -1,0 +1,210 @@
+# Sub Thin Shadow — a disposable, egress-denied, synthetic-data stack.
+#
+# This is a SEPARATE assembly, never an overlay on the production stack. It
+# shares no project name, no network, no volume and no .env with either the
+# production Sub stack or the Keycloak stack that co-tenants the target host.
+#
+# The contrast with docker-compose.yml is the point. Production Sub runs
+# `privileged: true`, `pid: host`, `cap_add: [NET_ADMIN]`, and bind-mounts
+# /var/run/docker.sock and /etc/wireguard, because it programs real network
+# equipment. The shadow app must do none of that: it exercises domain code over
+# synthetic rows and has no business touching the host at all. Every one of
+# those keys is absent here and refused by
+# tests/architecture/test_shadow_compose_contract.py.
+#
+# Egress is denied structurally: `internal: true` gives the bridge no route off
+# the host, so a module that tries to reach a payment provider fails to connect
+# rather than succeeding quietly. Published loopback ports still work, because
+# inbound DNAT does not need the egress route.
+name: dotmac-sub-thin-shadow
+
+x-shadow-logging: &shadow-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-shadow-hardening: &shadow-hardening
+  security_opt:
+    - no-new-privileges:true
+  restart: unless-stopped
+  logging: *shadow-logging
+
+services:
+  postgres:
+    <<: *shadow-hardening
+    # PostGIS, digest-pinned: Sub's migrations create geometry columns.
+    image: postgis/postgis@sha256:681931a625df344215e9b8998bf34daf146b6a395ceacee4439eb9c85869239f
+    container_name: dotmac_sub_thin_shadow_postgres
+    mem_limit: 2g
+    pids_limit: 256
+    environment:
+      POSTGRES_DB: ${SHADOW_DB_NAME:-dotmac_sub_shadow}
+      POSTGRES_USER: ${SHADOW_DB_USER:-shadow_app}
+      POSTGRES_PASSWORD: ${SHADOW_DB_PASSWORD:?SHADOW_DB_PASSWORD must be set in the mode-0600 .env}
+    volumes:
+      - shadow_db_data:/var/lib/postgresql/data
+    networks:
+      - shadow_internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    <<: *shadow-hardening
+    image: redis@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2
+    container_name: dotmac_sub_thin_shadow_redis
+    mem_limit: 512m
+    pids_limit: 128
+    # No persistence: shadow state is disposable by construction, and a shadow
+    # RDB surviving a teardown is a way for stale synthetic state to be mistaken
+    # for a fresh run.
+    command:
+      - sh
+      - -c
+      - redis-server --save "" --appendonly no --requirepass "$${SHADOW_REDIS_PASSWORD}"
+    environment:
+      SHADOW_REDIS_PASSWORD: ${SHADOW_REDIS_PASSWORD:?SHADOW_REDIS_PASSWORD must be set in the mode-0600 .env}
+    volumes:
+      - shadow_redis_data:/data
+    networks:
+      - shadow_internal
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${SHADOW_REDIS_PASSWORD}\" ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # One-shot: runs to completion, then the app starts. `restart: no` is load
+  # bearing — a migration container that restarts on failure hides a broken
+  # migration behind a crash loop instead of failing the deploy.
+  migrate:
+    image: ghcr.io/michaelayoade/dotmac_sub@sha256:342a9b805d6ac9d56a116b9ac833c594b0ccd5f2f79a9b6c75b3f85ba36885d4
+    container_name: dotmac_sub_thin_shadow_migrate
+    restart: "no"
+    logging: *shadow-logging
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      APP_ENV: shadow
+      SERVER_NAME: dotmac-sub-thin-shadow
+      DATABASE_URL: postgresql+psycopg://${SHADOW_DB_USER:-shadow_app}:${SHADOW_DB_PASSWORD}@postgres:5432/${SHADOW_DB_NAME:-dotmac_sub_shadow}
+      REDIS_URL: redis://:${SHADOW_REDIS_PASSWORD}@redis:6379/0
+    # No external name resolution. Docker's embedded resolver (127.0.0.11)
+    # answers container/service names itself and only FORWARDS names it does
+    # not know; pointing that forwarder at the container's own loopback, where
+    # nothing listens, makes external lookups fail while `postgres` and `redis`
+    # still resolve. Without this, TCP egress is denied but a name lookup still
+    # leaves the host, which is a working exfiltration channel for anything
+    # willing to encode data in a query.
+    dns:
+      - 127.0.0.1
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - shadow_internal
+
+  app:
+    <<: *shadow-hardening
+    # The pinned Sub baseline. Built from revision
+    # 9a5db5de005e82241e2490a930d84e5a0566d3ff by run 32216213910.
+    image: ghcr.io/michaelayoade/dotmac_sub@sha256:342a9b805d6ac9d56a116b9ac833c594b0ccd5f2f79a9b6c75b3f85ba36885d4
+    container_name: dotmac_sub_thin_shadow_app
+    mem_limit: 4g
+    mem_reservation: 512m
+    cpus: 2.0
+    pids_limit: 256
+    # Loopback only. A shadow app on a public interface is an unauthenticated
+    # copy of a subscriber system reachable from the internet.
+    ports:
+      - "127.0.0.1:18001:8001"
+    environment:
+      APP_ENV: shadow
+      SERVER_NAME: dotmac-sub-thin-shadow
+      DATABASE_URL: postgresql+psycopg://${SHADOW_DB_USER:-shadow_app}:${SHADOW_DB_PASSWORD}@postgres:5432/${SHADOW_DB_NAME:-dotmac_sub_shadow}
+      REDIS_URL: redis://:${SHADOW_REDIS_PASSWORD}@redis:6379/0
+      SESSION_REDIS_URL: redis://:${SHADOW_REDIS_PASSWORD}@redis:6379/1
+      # Outbound consequence delivery is disabled by configuration as well as by
+      # the internal network, so a misread of either one alone is not enough to
+      # deliver anything.
+      S3_ENDPOINT_URL: ""
+      OPENBAO_ADDR: ""
+      GLITCHTIP_ENABLED: "false"
+      GLITCHTIP_DSN: ""
+      LOKI_URL: ""
+      APP_URL: "http://127.0.0.1:18001"
+      SHADOW_SINK_DIR: /app/shadow-sink
+    # No external name resolution. Docker's embedded resolver (127.0.0.11)
+    # answers container/service names itself and only FORWARDS names it does
+    # not know; pointing that forwarder at the container's own loopback, where
+    # nothing listens, makes external lookups fail while `postgres` and `redis`
+    # still resolve. Without this, TCP egress is denied but a name lookup still
+    # leaves the host, which is a working exfiltration channel for anything
+    # willing to encode data in a query.
+    dns:
+      - 127.0.0.1
+    volumes:
+      - shadow_uploads:/app/uploads
+      - shadow_sink:/app/shadow-sink
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      # Both: `shadow_internal` reaches postgres and redis, `shadow_edge`
+      # exists ONLY so the loopback publish below is real. Docker silently
+      # drops port publishing when a container's every network is
+      # `internal: true` — the mapping is accepted and then ignored, which
+      # looks identical to a working bind until something tries to connect.
+      - shadow_internal
+      - shadow_edge
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=5).status==200 else 1)\""]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 40s
+    command:
+      - /bin/sh
+      - -c
+      - uvicorn app.main:app --host 0.0.0.0 --port 8001 --no-access-log --workers 1
+
+networks:
+  # Everything that holds state lives here, and only here: no route off the
+  # host at all.
+  shadow_internal:
+    name: dotmac-sub-thin-shadow_internal
+    driver: bridge
+    internal: true
+
+  # Carries the loopback publish and nothing else. It cannot be `internal`,
+  # because an internal-only container publishes no ports — so egress is denied
+  # a different way here: IP masquerade is OFF, so a packet leaving the
+  # container keeps its RFC1918 source address and is unroutable past this
+  # host, while inbound DNAT to a published port is unaffected. The bridge is
+  # additionally pinned to 127.0.0.1, so a `ports:` entry that forgot its bind
+  # address still cannot land on a public interface.
+  shadow_edge:
+    name: dotmac-sub-thin-shadow_edge
+    driver: bridge
+    internal: false
+    driver_opts:
+      com.docker.network.bridge.enable_ip_masquerade: "false"
+      com.docker.network.bridge.host_binding_ipv4: "127.0.0.1"
+
+volumes:
+  shadow_db_data:
+    name: dotmac-sub-thin-shadow_db_data
+  shadow_redis_data:
+    name: dotmac-sub-thin-shadow_redis_data
+  shadow_uploads:
+    name: dotmac-sub-thin-shadow_uploads
+  shadow_sink:
+    name: dotmac-sub-thin-shadow_sink

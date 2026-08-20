@@ -101,6 +101,9 @@ restoration.
 - Canonical funding equals the approved opening plus later native facts.
 - The reviewed renewal has one debit, one active entitlement, and one posting.
 - `next_billing_at` equals the entitlement end.
+- An unsupported anchor ahead of entitlement evidence is repaired only from an
+  exact subscription-scoped preview; applied service-extension evidence blocks
+  retraction.
 - Admin and customer projections show the same available balance.
 - Exact command replay creates no duplicate opening, debit, entitlement, or
   renewed outcome.

@@ -535,6 +535,7 @@ def link_inbox_conversation_contact(
         subscriber_id=result.subscriber_id,
         reseller_id=result.reseller_id,
         previous_link_ids_deactivated=result.previous_link_ids_deactivated,
+        repaired_conversation_ids=result.repaired_conversation_ids,
     )
 
 

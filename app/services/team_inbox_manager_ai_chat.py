@@ -8,18 +8,17 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.team_inbox import InboxConversation, InboxMessage
 from app.services import control_registry
+from app.services import team_inbox_analysis_projection as analysis_projection
 from app.services.ai.client import AIClientError
 from app.services.ai.gateway import ai_gateway
 from app.services.ai.security import redact_secret_text
+from app.services.workqueue.scope import WorkqueueScope
 
 MANAGER_AI_PERMISSION = "support:inbox_ai:read"
 _MAX_QUESTION_CHARS = 2000
-_MAX_CONTEXT_MESSAGES = 40
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +39,13 @@ class ManagerChatPageState:
     error: str | None
     provider_enabled: bool
     generation_enabled: bool
+    mode: str
+    period: str
+    custom_start: str
+    custom_end: str
+    channel_type: str
+    status_filter: str
+    period_facts: analysis_projection.ManagerPeriodFacts | None
 
 
 def _coerce_uuid(value: object) -> UUID | None:
@@ -51,10 +57,11 @@ def _coerce_uuid(value: object) -> UUID | None:
         return None
 
 
-def _conversation_label(conversation: InboxConversation) -> str:
+def _conversation_label(
+    conversation: analysis_projection.ManagerEvidenceConversation,
+) -> str:
     parts = [
         conversation.subject,
-        conversation.contact_address,
         conversation.channel_type,
     ]
     label = " - ".join(str(part).strip() for part in parts if str(part or "").strip())
@@ -62,114 +69,79 @@ def _conversation_label(conversation: InboxConversation) -> str:
 
 
 def recent_conversation_options(
-    db: Session, *, selected_conversation_id: UUID | None = None, limit: int = 50
+    db: Session, *, scope: WorkqueueScope, selected_conversation_id: UUID | None = None
 ) -> tuple[ManagerChatConversationOption, ...]:
-    rows = (
-        db.execute(
-            select(InboxConversation)
-            .where(InboxConversation.is_active.is_(True))
-            .order_by(
-                InboxConversation.last_message_at.desc().nullslast(),
-                InboxConversation.created_at.desc(),
-            )
-            .limit(max(1, min(limit, 100)))
-        )
-        .scalars()
-        .all()
+    projection = analysis_projection.build_projection(
+        db,
+        analysis_projection.ManagerAnalysisRequest(
+            scope=scope, mode=analysis_projection.ManagerAnalysisMode.recent_queue
+        ),
     )
+    rows = list(projection.recent_conversations)
     if selected_conversation_id and all(
         row.id != selected_conversation_id for row in rows
     ):
-        selected = db.get(InboxConversation, selected_conversation_id)
-        if selected is not None:
-            rows = [selected, *rows]
+        selected_projection = analysis_projection.build_projection(
+            db,
+            analysis_projection.ManagerAnalysisRequest(
+                scope=scope,
+                mode=analysis_projection.ManagerAnalysisMode.conversation,
+                conversation_id=selected_conversation_id,
+            ),
+        )
+        if selected_projection.selected_conversation is not None:
+            rows.insert(0, selected_projection.selected_conversation)
     return tuple(
         ManagerChatConversationOption(
             id=row.id,
             label=_conversation_label(row),
-            status=row.status,
+            status=row.current_status,
             channel_type=row.channel_type,
-            last_message_at=row.last_message_at,
+            last_message_at=row.activity_at,
         )
         for row in rows
     )
 
 
-def _message_payload(message: InboxMessage) -> dict[str, Any]:
+def _message_payload(
+    message: analysis_projection.ManagerEvidenceMessage,
+) -> dict[str, Any]:
     return {
-        "id": str(message.id),
         "direction": message.direction,
-        "channel_type": message.channel_type,
-        "subject": message.subject,
-        "body": (message.body or "")[:2000],
-        "created_at": message.created_at.isoformat()
-        if message.created_at is not None
-        else None,
-        "received_at": message.received_at.isoformat()
-        if message.received_at is not None
-        else None,
-        "sent_at": message.sent_at.isoformat() if message.sent_at else None,
+        "body": message.body,
+        "occurred_at": message.occurred_at.isoformat(),
     }
 
 
 def _conversation_payload(
-    db: Session, conversation_id: UUID | None
+    conversation: analysis_projection.ManagerEvidenceConversation | None,
 ) -> dict[str, Any] | None:
-    if conversation_id is None:
-        return None
-    conversation = db.get(InboxConversation, conversation_id)
     if conversation is None:
         return None
-    messages = (
-        db.execute(
-            select(InboxMessage)
-            .where(InboxMessage.conversation_id == conversation.id)
-            .order_by(InboxMessage.created_at.desc())
-            .limit(_MAX_CONTEXT_MESSAGES)
-        )
-        .scalars()
-        .all()
-    )
-    metadata = (
-        conversation.metadata_ if isinstance(conversation.metadata_, dict) else {}
-    )
     return {
         "id": str(conversation.id),
-        "subscriber_id": str(conversation.subscriber_id)
-        if conversation.subscriber_id is not None
-        else None,
-        "primary_service_team_id": str(conversation.primary_service_team_id)
-        if conversation.primary_service_team_id is not None
-        else None,
         "channel_type": conversation.channel_type,
-        "status": conversation.status,
-        "priority": conversation.priority,
+        "status": conversation.current_status,
         "subject": conversation.subject,
-        "contact_address_present": bool(conversation.contact_address),
-        "first_message_at": conversation.first_message_at.isoformat()
-        if conversation.first_message_at is not None
-        else None,
-        "last_message_at": conversation.last_message_at.isoformat()
-        if conversation.last_message_at is not None
-        else None,
-        "ai_intake": metadata.get("ai_intake"),
-        "messages": [_message_payload(message) for message in reversed(messages)],
+        "activity_at": conversation.activity_at.isoformat(),
+        "reasons": conversation.reasons,
+        "messages": [_message_payload(message) for message in conversation.messages],
     }
 
 
-def _queue_payload(db: Session) -> dict[str, Any]:
+def _queue_payload(
+    projection: analysis_projection.ManagerAnalysisProjection,
+) -> dict[str, Any]:
     return {
         "recent_conversations": [
             {
                 "id": str(row.id),
-                "label": row.label,
-                "status": row.status,
+                "label": _conversation_label(row),
+                "status": row.current_status,
                 "channel_type": row.channel_type,
-                "last_message_at": row.last_message_at.isoformat()
-                if row.last_message_at is not None
-                else None,
+                "last_message_at": row.activity_at.isoformat(),
             }
-            for row in recent_conversation_options(db, limit=20)
+            for row in projection.recent_conversations
         ]
     }
 
@@ -179,6 +151,11 @@ def _system_prompt() -> str:
         "You are a manager-only Team Inbox analyst. Answer from the provided "
         "inbox context only. Give operational insight about customer intent, "
         "urgency, missing information, risk, and recommended manager follow-up. "
+        "Treat period facts as deterministic. In a period review, distinguish "
+        "current state of the historical cohort from transitions that happened "
+        "during that period, and state that qualitative findings use only the "
+        "reported evidence sample. Themes, frustration, and overlooked context "
+        "are AI observations, not canonical facts. "
         "Do not claim you performed assignments, replies, refunds, profile "
         "updates, or service changes. If context is insufficient, say what is "
         "missing. Keep the answer concise."
@@ -186,7 +163,17 @@ def _system_prompt() -> str:
 
 
 def answer_manager_question(
-    db: Session, *, question: str, conversation_id: UUID | str | None = None
+    db: Session,
+    *,
+    scope: WorkqueueScope,
+    question: str,
+    mode: str = "recent_queue",
+    conversation_id: UUID | str | None = None,
+    period: str = "last_7_days",
+    custom_start: str | None = None,
+    custom_end: str | None = None,
+    channel_type: str | None = None,
+    status: str | None = None,
 ) -> str:
     clean_question = str(question or "").strip()
     if not clean_question:
@@ -199,14 +186,61 @@ def answer_manager_question(
         raise AIClientError("AI provider is disabled", failure_type="ai_disabled")
 
     selected_id = _coerce_uuid(conversation_id)
+    try:
+        requested_mode = analysis_projection.ManagerAnalysisMode(mode)
+        requested_period = analysis_projection.ManagerAnalysisPeriod(period)
+        start_date = (
+            datetime.fromisoformat(custom_start).date() if custom_start else None
+        )
+        end_date = datetime.fromisoformat(custom_end).date() if custom_end else None
+    except ValueError as exc:
+        raise ValueError("Invalid Manager AI analysis filters.") from exc
+    projection = analysis_projection.build_projection(
+        db,
+        analysis_projection.ManagerAnalysisRequest(
+            scope=scope,
+            mode=requested_mode,
+            conversation_id=selected_id,
+            period=requested_period,
+            custom_start=start_date,
+            custom_end=end_date,
+            channel_type=channel_type or None,
+            status=status or None,
+        ),
+    )
     payload = {
         "question": clean_question,
-        "conversation": _conversation_payload(db, selected_id),
-        "queue": _queue_payload(db) if selected_id is None else None,
+        "mode": projection.mode.value,
+        "conversation": _conversation_payload(projection.selected_conversation),
+        "queue": _queue_payload(projection)
+        if projection.mode is analysis_projection.ManagerAnalysisMode.recent_queue
+        else None,
+        "period_facts": (
+            {
+                "period_start": projection.facts.period_start.isoformat(),
+                "period_end": projection.facts.period_end.isoformat(),
+                "timezone": projection.facts.timezone,
+                "cohort_definition": projection.facts.cohort_definition,
+                "total_conversations": projection.facts.total_conversations,
+                "current_state_status_counts": projection.facts.current_state_status_counts,
+                "channel_counts": projection.facts.channel_counts,
+                "resolved_transition_count": projection.facts.resolved_transition_count,
+                "reopened_conversation_ids": [
+                    str(value) for value in projection.facts.reopened_conversation_ids
+                ],
+                "escalated_conversation_ids": [
+                    str(value) for value in projection.facts.escalated_conversation_ids
+                ],
+                "ai_evidence_count": projection.facts.evidence_count,
+            }
+            if projection.facts
+            else None
+        ),
+        "evidence_conversations": [
+            _conversation_payload(value) for value in projection.evidence_conversations
+        ],
         "generated_at": datetime.now(UTC).isoformat(),
     }
-    if selected_id is not None and payload["conversation"] is None:
-        raise ValueError("Conversation was not found.")
 
     response, _routing = ai_gateway.generate_with_fallback(
         db,
@@ -220,15 +254,50 @@ def answer_manager_question(
 def build_page_state(
     db: Session,
     *,
+    scope: WorkqueueScope,
     conversation_id: UUID | str | None = None,
     question: str | None = None,
     answer: str | None = None,
     error: str | None = None,
+    mode: str = "recent_queue",
+    period: str = "last_7_days",
+    custom_start: str | None = None,
+    custom_end: str | None = None,
+    channel_type: str | None = None,
+    status: str | None = None,
 ) -> ManagerChatPageState:
     selected_id = _coerce_uuid(conversation_id)
+    period_facts = None
+    if mode == analysis_projection.ManagerAnalysisMode.period.value:
+        try:
+            period_projection = analysis_projection.build_projection(
+                db,
+                analysis_projection.ManagerAnalysisRequest(
+                    scope=scope,
+                    mode=analysis_projection.ManagerAnalysisMode.period,
+                    period=analysis_projection.ManagerAnalysisPeriod(period),
+                    custom_start=(
+                        datetime.fromisoformat(custom_start).date()
+                        if custom_start
+                        else None
+                    ),
+                    custom_end=(
+                        datetime.fromisoformat(custom_end).date()
+                        if custom_end
+                        else None
+                    ),
+                    channel_type=channel_type or None,
+                    status=status or None,
+                ),
+            )
+            period_facts = period_projection.facts
+        except ValueError:
+            # The POST returns the precise validation error; GET remains usable
+            # while a manager is completing a custom range.
+            period_facts = None
     return ManagerChatPageState(
         conversations=recent_conversation_options(
-            db, selected_conversation_id=selected_id
+            db, scope=scope, selected_conversation_id=selected_id
         ),
         selected_conversation_id=selected_id,
         question=str(question or ""),
@@ -236,4 +305,11 @@ def build_page_state(
         error=redact_secret_text(error) if error else None,
         provider_enabled=ai_gateway.enabled(db),
         generation_enabled=control_registry.is_enabled(db, "ai.generation"),
+        mode=mode,
+        period=period,
+        custom_start=custom_start or "",
+        custom_end=custom_end or "",
+        channel_type=channel_type or "",
+        status_filter=status or "",
+        period_facts=period_facts,
     )

@@ -189,6 +189,19 @@ transaction set is zero, while a missing, duplicate, malformed, or mismatched
 row aborts the whole artifact. A native account created after the fixed handoff
 has an explicit zero history component plus canonical Sub-native facts.
 
+One pre-handoff exception is represented without laundering provenance. If a
+customer was created natively in Dotmac Omni before the financial handoff, has
+the complete CRM creation-chain references, and has no retained Splynx
+customer, service, invoice, or payment evidence, the cutover-only owner
+`billing.carried_source_identity_adjudication` may record
+`native_before_handoff`. Confirmation binds a fresh PII-free preview to a
+content-addressed evidence reference and requires two distinct active staff
+reviewers. The decision neither invents a Splynx ID nor posts money. While its
+fingerprint still matches current evidence, `billing.opening_balance_history`
+uses complete canonical Sub-native financial facts from account inception for
+that customer. Missing review or later conflicting evidence remains a blocking
+error; it never falls back to a guessed zero.
+
 This is a one-time authority migration, not a live Splynx integration. The
 resolver cannot contact Splynx or write money, its complete result is sealed and
 reviewed before materialization, and no runtime balance read consults its table.

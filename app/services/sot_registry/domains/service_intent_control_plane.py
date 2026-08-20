@@ -31,6 +31,93 @@ DOMAIN = DomainSOT(
             owns=("catalog policy lookup", "offer policy interpretation"),
         ),
         SOTService(
+            name="service_intent.ip_block_catalog",
+            module="app.services.catalog.ip_block_choices",
+            owns=(
+                "active catalog IPv4 block-size choices",
+                "subscriber IPv4 block entitlement resolution",
+            ),
+            depends_on=(
+                "service_intent.catalog_policy",
+                "service_intent.subscription_lifecycle",
+            ),
+            notes=(
+                "Interprets the existing typed plan markers on active CatalogOffer "
+                "records and de-duplicates them by prefix. Manual ONT LAN block "
+                "configuration is network-owned and does not consume this resolver."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name="active catalog IPv4 block-size choices",
+                        role=OwnerRole.RESOLVER,
+                        input_names=("active canonical IP-address offers",),
+                    ),
+                    ConcernContract(
+                        name="subscriber IPv4 block entitlement resolution",
+                        role=OwnerRole.RESOLVER,
+                        input_names=(
+                            "active canonical IP-address offers",
+                            "active subscriber subscriptions",
+                        ),
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="active canonical IP-address offers",
+                        owner="service_intent.catalog_policy",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "active CatalogOffer rows with plan_kind=ip_address and "
+                            "a supported ip_block_size marker"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="active subscriber subscriptions",
+                        owner="service_intent.subscription_lifecycle",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="active Subscription rows joined to canonical offers",
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.READ_ONLY,
+                    boundary="Callers own the read-only session and transaction lifetime.",
+                    locking="No locks; results describe committed catalog and lifecycle rows.",
+                    idempotency="The same committed offers and subscriptions resolve identically.",
+                    retries="Read-only resolution is safe to retry.",
+                ),
+                errors=ErrorContract(
+                    domain_codes=(),
+                    mapping_owner=(
+                        "ONT configuration context and service-configuration owner"
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.COMPLETE,
+                    old_owner="catalog plan-marker readers without a typed resolver",
+                    new_owner="service_intent.ip_block_catalog",
+                    verification=("Catalog choice and entitlement resolver tests"),
+                    cutover_gate=(
+                        "Catalog IP block size readers call this typed resolver"
+                    ),
+                    fallback_retirement=(
+                        "Catalog IP block readers contain no copied prefix parsing."
+                    ),
+                ),
+                steward="commercial and network operations",
+                design_refs=(
+                    "docs/designs/ONT_UI_SERVICE_CONFIGURATION_SOT.md",
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                    "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                ),
+                test_refs=(
+                    "tests/test_catalog_services.py",
+                    "tests/test_ont_config_ui_contract.py",
+                    "tests/test_ont_service_configuration.py",
+                ),
+            ),
+        ),
+        SOTService(
             name="service_intent.catalog_validation",
             module="app.services.catalog.validation",
             owns=("catalog mutation validation", "offer/profile consistency"),

@@ -342,6 +342,21 @@ def test_agent_performance_report_lists_active_team_members(db_session):
     assert rows[0].metrics.active_assignment_count == 1
     assert rows[0].metrics.average_queue_wait_seconds == 180
 
+    filtered_rows = team_inbox_metrics.agent_performance_report(
+        db_session,
+        service_team_id=team.id,
+        search="Test Staff",
+    )
+    assert len(filtered_rows) == 1
+    assert (
+        team_inbox_metrics.agent_performance_report(
+            db_session,
+            service_team_id=team.id,
+            search="does-not-exist",
+        )
+        == []
+    )
+
 
 def test_analytics_api_returns_inbox_team_performance(db_session):
     team = _team(db_session)
@@ -432,6 +447,7 @@ def test_escalation_candidates_ignore_responded_assigned_conversation(db_session
             person_id=person_id,
             status=InboxAgentPresenceStatus.online.value,
             max_concurrent_conversations=3,
+            last_seen_at=datetime.now(UTC),
         )
     )
     base = datetime(2026, 7, 10, 8, 0, tzinfo=UTC)
@@ -557,6 +573,7 @@ def test_inbox_escalation_report_action_auto_assigns_candidate(db_session):
             person_id=person_id,
             status=InboxAgentPresenceStatus.online.value,
             max_concurrent_conversations=3,
+            last_seen_at=datetime.now(UTC),
         )
     )
     base = datetime(2026, 1, 1, 8, 0, tzinfo=UTC)

@@ -44,6 +44,31 @@ def test_new_templates_parse_as_jinja() -> None:
         environment.parse(_read(path))
 
 
+def test_add_question_button_uses_shipped_dark_theme_contrast_classes() -> None:
+    template = _read("templates/admin/surveys/form.html")
+    stylesheet = _read("static/css/main.css")
+    button_start = template.index("Add Question")
+    button = template[template.rfind("<button", 0, button_start) : button_start]
+
+    for light_class in (
+        "border-teal-300",
+        "bg-teal-50",
+        "text-teal-700",
+        "hover:bg-teal-100",
+    ):
+        assert light_class in button
+
+    for dark_class in (
+        "dark:border-teal-700",
+        "dark:bg-teal-950",
+        "dark:text-white",
+        "dark:hover:bg-teal-900",
+    ):
+        assert dark_class in button
+        selector = "." + dark_class.replace(":", "\\:")
+        assert selector in stylesheet
+
+
 def test_public_survey_form_has_csrf_and_typed_question_controls() -> None:
     template = _read("templates/public/surveys/respond.html")
 

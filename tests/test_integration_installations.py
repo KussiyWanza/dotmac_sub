@@ -10,8 +10,14 @@ from app.models.integration_platform import (
     IntegrationInstallationState,
     IntegrationValidationStatus,
 )
+from app.services import web_integrations_whatsapp
 from app.services.integrations import installations
 from app.services.integrations.runtime import ValidationResult
+from app.services.integrations.whatsapp_capability import (
+    WHATSAPP_RECEIVE_CAPABILITY,
+    WHATSAPP_SEND_CAPABILITY,
+    WHATSAPP_TEMPLATE_READ_CAPABILITY,
+)
 
 
 def _create_whatsapp_installation(db_session, *, name: str = "WhatsApp primary"):
@@ -205,6 +211,49 @@ def test_whatsapp_configuration_rejects_non_meta_provider(db_session):
                 "service_credentials": "bao://secret/integrations/whatsapp#token"
             },
         )
+
+
+def test_whatsapp_config_save_persists_phone_number_id_and_enables_bindings(
+    db_session, monkeypatch
+):
+    monkeypatch.setenv("WHATSAPP_TEST_TOKEN", "test-token")
+    monkeypatch.setenv("WHATSAPP_TEST_SECRET", "test-secret")
+    monkeypatch.setenv("WHATSAPP_TEST_VERIFY_TOKEN", "test-verify-token")
+
+    installation = web_integrations_whatsapp.save_config(
+        db_session,
+        provider="meta_cloud_api",
+        phone_number="+2348012345678",
+        phone_number_id="445744508632976",
+        waba_id="443723705501042",
+        webhook_url="https://selfcare.dotmac.io/api/webhooks/whatsapp",
+        graph_version="v21.0",
+        api_key="env://WHATSAPP_TEST_TOKEN",
+        api_secret="env://WHATSAPP_TEST_SECRET",
+        webhook_verify_token="env://WHATSAPP_TEST_VERIFY_TOKEN",
+        message_templates_json="[]",
+        actor="test-operator",
+    )
+
+    config = dict(installation.current_config_revision.config_json or {})
+    bindings = {
+        binding.capability_id: binding for binding in installation.capability_bindings
+    }
+
+    assert config["phone_number_id"] == "445744508632976"
+    assert installation.state == IntegrationInstallationState.enabled.value
+    assert set(bindings) == {
+        WHATSAPP_SEND_CAPABILITY,
+        WHATSAPP_RECEIVE_CAPABILITY,
+        WHATSAPP_TEMPLATE_READ_CAPABILITY,
+    }
+    for binding in bindings.values():
+        assert binding.state == IntegrationBindingState.enabled.value
+        assert binding.scope_json == {
+            "channel": "whatsapp",
+            "phone_number_id": "445744508632976",
+        }
+        assert binding.policy_json == {"default": True}
 
 
 def test_quarantine_and_retirement_are_terminal_for_execution_config(db_session):

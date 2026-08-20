@@ -10,6 +10,7 @@ See docs/designs/TEAM_INBOX_ADMIN_UI_PORT.md §5.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from app.services import team_inbox_projection
@@ -173,7 +174,20 @@ def test_mark_read_posts_with_csrf_header():
     assert 'Accept: "application/json"' in body
     assert "this.applyConversationRead(id)" in body
     assert 'this.refreshSidebar("read_state")' not in body
-    assert "this.markConversationRead(id, 1)" in body
+
+
+def test_whatsapp_reopen_uses_the_exported_timeout_fetcher():
+    """The reopen loader lives outside the closure that defines the helper."""
+    assert "window.inboxFetchWithTimeout = fetchWithTimeout;" in JAVASCRIPT
+
+    marker = JAVASCRIPT.index("function initWhatsAppTemplateReopen")
+    next_initializer = JAVASCRIPT.index("function initWhatsAppTemplateReopenForms")
+    body = JAVASCRIPT[marker:next_initializer]
+    assert "window.inboxFetchWithTimeout(form.dataset.templateEndpoint" in body
+    assert not re.search(
+        r"(?m)^\s*fetchWithTimeout\(form\.dataset\.templateEndpoint",
+        body,
+    )
 
 
 def test_mark_read_updates_only_the_unread_row_and_total():
@@ -215,7 +229,8 @@ def test_reply_submission_refreshes_inbox_fragments_without_page_navigation():
     assert 'workspace?.refreshConversationList?.("reply")' not in JAVASCRIPT
     assert 'this.draft = ""' in JAVASCRIPT
     assert "window.location.reload" not in JAVASCRIPT
-    assert "admin-inbox.js?v=20260817b" in INDEX
+    assert "admin-inbox.js?v=20260819a" in INDEX
+    assert "admin-inbox.js?v=20260817b" not in INDEX
 
 
 def test_reply_toast_tracks_authoritative_delivery_without_covering_send_action():
@@ -982,10 +997,26 @@ def test_status_and_assignment_filters_use_flexible_wrapping_groups():
     assert SIDEBAR.count(group_classes) == 3
     assert 'name="status" value="open"' in SIDEBAR
     assert 'name="status" value="pending"' in SIDEBAR
+    assert 'name="reply_window_status" value="expired"' in SIDEBAR
     assert 'name="has_ticket" value="true"' in SIDEBAR
     assert 'name="status" value="resolved"' in SIDEBAR
     assert "bg-emerald-500" in SIDEBAR
     assert "bg-amber-500" in SIDEBAR
+
+
+def test_expired_is_visible_in_status_and_attention_hover_text_is_white():
+    status_group = SIDEBAR.split('<legend class="sr-only">Status</legend>', 1)[1]
+    status_group = status_group.split("</fieldset>", 1)[0]
+    attention_group = SIDEBAR.split('<legend class="sr-only">Attention</legend>', 1)[1]
+    attention_group = attention_group.split("</fieldset>", 1)[0]
+
+    assert 'name="reply_window_status" value="expired"' in status_group
+    assert 'name="reply_window_status" value="expired"' not in attention_group
+    assert "Needs attention" in status_group
+    assert status_group.count("hover:text-white") >= 2
+    assert "applyStatusFilter('resolved')" in status_group
+    assert "applyStatusFilter('expired')" in status_group
+    assert '"reply_window_status"' in JAVASCRIPT
 
 
 def test_blank_priority_is_omitted_from_inbox_htmx_filter_requests():

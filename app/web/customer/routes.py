@@ -1352,9 +1352,10 @@ def customer_update_service_wifi(
     ssid: str = Form(""),
     password: str = Form(""),
     password_confirm: str = Form(""),
+    idempotency_key: str = Form(...),
     db: Session = Depends(get_db),
 ) -> Response:
-    """Submit a customer self-service WiFi SSID/password update."""
+    """Save and queue a customer self-service WiFi SSID/password update."""
     customer = get_current_customer_from_request(request, db)
     if not customer:
         return RedirectResponse(url="/portal/auth/login", status_code=303)
@@ -1372,11 +1373,25 @@ def customer_update_service_wifi(
             raise CustomerDeviceCommandError(
                 "wifi_password_mismatch", "WiFi passwords do not match"
             )
+        command_id = uuid4()
+        request_id = str(getattr(request.state, "request_id", "") or "").strip()
+        try:
+            correlation_id = UUID(request_id)
+        except ValueError:
+            correlation_id = command_id
+        finish_read_transaction(db)
         outcome = update_subscription_wifi(
             db,
             subscriber_id=UUID(str(account_id)),
             subscription_id=subscription_id,
-            actor_id=str(customer.get("id") or account_id),
+            context=CommandContext(
+                command_id=command_id,
+                correlation_id=correlation_id,
+                actor=f"customer:{customer.get('id') or account_id}",
+                scope="customer:device:wifi",
+                reason="Customer requested a WiFi credential update",
+                idempotency_key=idempotency_key,
+            ),
             ssid=ssid,
             password=password.strip() or None,
         )
@@ -1384,13 +1399,7 @@ def customer_update_service_wifi(
     except CustomerDeviceCommandError as exc:
         outcome = None
         ok, message = False, str(exc)
-    if outcome is not None and outcome.success:
-        _emit_customer_event(
-            db,
-            "customer_wifi_updated",
-            {"subscription_id": str(subscription_id), "ssid_updated": True},
-        )
-    status = "wifi_updated" if ok else "wifi_error"
+    status = "wifi_queued" if ok else "wifi_error"
     evidence = ""
     if outcome is not None:
         evidence = (

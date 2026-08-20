@@ -32,9 +32,13 @@ from app.models.ont_service_configuration import (
     OntServiceConfigurationPhase,
     OntServiceConfigurationRevision,
 )
+from app.services.catalog.ip_block_choices import IpBlockPrefix
+from app.services.db_session_adapter import db_session_adapter
 from app.services.domain_errors import DomainError
 from app.services.network.ont_service_configuration import (
+    ConfigureCustomerWifiCommand,
     ConfigureOntServiceCommand,
+    CustomerWifiConfigurationChange,
     ExecuteOntServiceConfigurationCommand,
     LanConfigurationChange,
     OntConfigurationChange,
@@ -42,8 +46,10 @@ from app.services.network.ont_service_configuration import (
     RetryOntServiceConfigurationCommand,
     WanConfigurationChange,
     WifiConfigurationChange,
+    configure_customer_wifi,
     configure_ont_service,
     execute_ont_service_configuration,
+    get_latest_ont_configuration_section_delivery,
     get_ont_service_configuration_projection,
     retry_ont_service_configuration,
 )
@@ -197,6 +203,99 @@ def test_configuration_admission_commits_intent_operation_and_dispatch_atomicall
     assert head.phase is OntServiceConfigurationPhase.queued
 
 
+def test_customer_wifi_admission_saves_secret_and_queues_without_device_io(
+    db_session,
+    monkeypatch,
+    olt_device,
+    subscription,
+    subscriber,
+):
+    ont_id, assignment_id = _admission_scope(
+        db_session,
+        monkeypatch,
+        olt_device=olt_device,
+        subscription=subscription,
+        subscriber=subscriber,
+    )
+    subscriber_id = subscriber.id
+    subscription_id = subscription.id
+    db_session.commit()
+    monkeypatch.setattr(
+        "app.services.network.ont_service_configuration.resolve_effective_ont_config",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("WiFi admission must not resolve WAN configuration")
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.network.ont_service_configuration.active_primary_internet_intent",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("WiFi admission must not read PPP service intent")
+        ),
+    )
+    monkeypatch.setattr(
+        (
+            "app.services.network.ont_service_configuration."
+            "ensure_active_wan_service_intent_in_transaction"
+        ),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("WiFi admission must not write PPP service intent")
+        ),
+    )
+    command_id = uuid.uuid4()
+    outcome = configure_customer_wifi(
+        db_session,
+        ConfigureCustomerWifiCommand(
+            context=CommandContext(
+                command_id=command_id,
+                correlation_id=command_id,
+                actor="customer:test",
+                scope="customer:device:wifi",
+                reason="Customer requested a WiFi credential update",
+                idempotency_key="customer-wifi-admission",
+            ),
+            subscriber_id=subscriber_id,
+            subscription_id=subscription_id,
+            change=CustomerWifiConfigurationChange(
+                ssid="CustomerSSID",
+                password="CustomerSecret123",
+            ),
+        ),
+    )
+
+    ont = db_session.get(OntUnit, ont_id)
+    dispatch = db_session.scalar(
+        select(NetworkOperationDispatch).where(
+            NetworkOperationDispatch.operation_id == outcome.operation_id
+        )
+    )
+    operation = db_session.get(NetworkOperation, outcome.operation_id)
+    revision = db_session.scalar(
+        select(OntServiceConfigurationRevision).where(
+            OntServiceConfigurationRevision.operation_id == outcome.operation_id
+        )
+    )
+    status = get_latest_ont_configuration_section_delivery(
+        db_session,
+        ont_unit_id=ont_id,
+        section=OntConfigurationSection.wifi,
+    )
+    assert outcome.assignment_id == assignment_id
+    assert outcome.phase is OntServiceConfigurationPhase.queued
+    assert ont is not None
+    assert ont.desired_config["wifi"]["ssid"] == "CustomerSSID"
+    assert ont.desired_config["wifi"]["password"] != "CustomerSecret123"
+    assert str(ont.desired_config["wifi"]["password"]).startswith("enc:")
+    assert dispatch is not None
+    assert operation is not None
+    assert "wan_intent_id" not in operation.input_payload
+    assert "effective_customer_vlan" not in operation.input_payload
+    assert revision is not None
+    assert "wan_intent_id" not in revision.desired_change_evidence
+    assert status is not None
+    assert status.operation_id == outcome.operation_id
+    assert status.phase is OntServiceConfigurationPhase.queued
+
+
 def test_configuration_admission_rollback_leaves_no_partial_records(
     db_session,
     monkeypatch,
@@ -284,7 +383,7 @@ def test_duplicate_replays_and_changed_input_with_same_key_conflicts(
                 section=OntConfigurationSection.lan,
                 change=LanConfigurationChange(
                     gateway_ip="192.168.44.1",
-                    subnet_mask="255.255.255.0",
+                    block_prefix=IpBlockPrefix.p24,
                     dhcp_enabled=True,
                     dhcp_start="192.168.44.10",
                     dhcp_end="192.168.44.200",
@@ -343,7 +442,7 @@ def test_failed_revision_blocks_same_material_but_not_deliberate_next_revision(
             section=OntConfigurationSection.lan,
             change=LanConfigurationChange(
                 gateway_ip="192.168.55.1",
-                subnet_mask="255.255.255.0",
+                block_prefix=IpBlockPrefix.p24,
                 dhcp_enabled=True,
                 dhcp_start="192.168.55.10",
                 dhcp_end="192.168.55.200",
@@ -354,6 +453,101 @@ def test_failed_revision_blocks_same_material_but_not_deliberate_next_revision(
     assert second.revision == 2
     assert second.operation_id != first.operation_id
     assert revision_one.phase is OntServiceConfigurationPhase.superseded
+
+
+def test_lan_32_is_not_an_operator_lan_block_choice(
+    db_session, monkeypatch, olt_device, subscription, subscriber
+):
+    ont_id, _assignment_id = _admission_scope(
+        db_session,
+        monkeypatch,
+        olt_device=olt_device,
+        subscription=subscription,
+        subscriber=subscriber,
+    )
+    with pytest.raises(DomainError) as exc_info:
+        configure_ont_service(
+            db_session,
+            _configure_command(
+                ont_id,
+                idempotency_key="lan-32-refused",
+                section=OntConfigurationSection.lan,
+                change=LanConfigurationChange(
+                    gateway_ip="198.51.100.10",
+                    block_prefix=IpBlockPrefix.p32,
+                    dhcp_enabled=True,
+                    dhcp_start="198.51.100.10",
+                    dhcp_end="198.51.100.10",
+                ),
+            ),
+        )
+
+    assert exc_info.value.code.endswith(".invalid_lan_block_prefix")
+    assert db_session.get(OntUnit, ont_id).desired_config in (None, {})
+
+
+def test_lan_operator_prefix_is_converted_to_mask_and_queued(
+    db_session, monkeypatch, olt_device, subscription, subscriber
+):
+    ont_id, _assignment_id = _admission_scope(
+        db_session,
+        monkeypatch,
+        olt_device=olt_device,
+        subscription=subscription,
+        subscriber=subscriber,
+    )
+    outcome = configure_ont_service(
+        db_session,
+        _configure_command(
+            ont_id,
+            idempotency_key="lan-29-queued",
+            section=OntConfigurationSection.lan,
+            change=LanConfigurationChange(
+                gateway_ip="198.51.100.1",
+                block_prefix=IpBlockPrefix.p29,
+                dhcp_enabled=True,
+                dhcp_start="198.51.100.2",
+                dhcp_end="198.51.100.6",
+            ),
+        ),
+    )
+
+    desired_lan = db_session.get(OntUnit, ont_id).desired_config["lan"]
+    assert desired_lan["block_prefix"] == "/29"
+    assert desired_lan["subnet"] == "255.255.255.248"
+    assert outcome.phase is OntServiceConfigurationPhase.queued
+
+
+def test_lan_operator_prefix_does_not_require_catalog_entitlement(
+    db_session, monkeypatch, olt_device, subscription, subscriber
+):
+    ont_id, _assignment_id = _admission_scope(
+        db_session,
+        monkeypatch,
+        olt_device=olt_device,
+        subscription=subscription,
+        subscriber=subscriber,
+    )
+    outcome = configure_ont_service(
+        db_session,
+        _configure_command(
+            ont_id,
+            idempotency_key="lan-entitlement-not-required",
+            section=OntConfigurationSection.lan,
+            change=LanConfigurationChange(
+                gateway_ip="198.51.100.1",
+                block_prefix=IpBlockPrefix.p30,
+                dhcp_enabled=False,
+                dhcp_start=None,
+                dhcp_end=None,
+            ),
+        ),
+    )
+
+    desired_lan = db_session.get(OntUnit, ont_id).desired_config["lan"]
+    assert desired_lan["block_prefix"] == "/30"
+    assert desired_lan["subnet"] == "255.255.255.252"
+    assert outcome.phase is OntServiceConfigurationPhase.queued
 
 
 def _lifecycle(
@@ -507,6 +701,75 @@ def test_wifi_worker_passes_typed_redacted_delivery_scope(db_session, monkeypatc
         }
     )
     assert "Subscriber WiFi" not in str(scope)
+
+
+def test_lan_worker_forces_write_and_reports_exact_readback_unavailable(
+    db_session, monkeypatch
+):
+    ont = OntUnit(serial_number=f"LAN-{uuid.uuid4().hex[:10]}", is_active=True)
+    db_session.add(ont)
+    db_session.flush()
+    assignment = OntAssignment(ont_unit_id=ont.id, active=True)
+    db_session.add(assignment)
+    db_session.flush()
+    head, revision, operation = _lifecycle(
+        db_session,
+        ont,
+        assignment,
+        phase=OntServiceConfigurationPhase.queued,
+        suffix="lan-mask",
+        section=OntConfigurationSection.lan,
+        desired_change_evidence={
+            "lan.ip": "198.51.100.1",
+            "lan.subnet": "255.255.255.248",
+            "lan.block_prefix": "/29",
+            "lan.dhcp_enabled": True,
+            "lan.dhcp_start": "198.51.100.2",
+            "lan.dhcp_end": "198.51.100.6",
+        },
+    )
+    db_session.commit()
+    calls: list[dict[str, object]] = []
+
+    def reconciled(*_args, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            success=True,
+            sync_status="synced",
+            drift_after=(),
+            failure=None,
+        )
+
+    monkeypatch.setattr("app.services.network.reconcile.core.reconcile_ont", reconciled)
+    command_id = uuid.uuid4()
+    ont_id = ont.id
+    operation_id = operation.id
+    head_id = head.id
+    revision_number = revision.revision
+    db_session_adapter.release_read_transaction(db_session)
+    outcome = execute_ont_service_configuration(
+        db_session,
+        ExecuteOntServiceConfigurationCommand(
+            context=CommandContext.system(
+                actor="test:worker",
+                scope="network:ont:execute",
+                reason="test forced LAN delivery",
+                command_id=command_id,
+                correlation_id=operation_id,
+                idempotency_key="lan-delivery-scope",
+            ),
+            ont_unit_id=ont_id,
+            operation_id=operation_id,
+            configuration_head_id=head_id,
+            revision=revision_number,
+        ),
+    )
+
+    assert calls[-1]["force_lan_config"] is True
+    assert outcome.phase is OntServiceConfigurationPhase.delivered_unverified
+    assert revision.verified_at is None
+    assert head.failure_code == "exact_lan_readback_unavailable"
+    assert operation.status is NetworkOperationStatus.succeeded
 
 
 def test_inventory_retirement_clears_only_current_projection_and_keeps_history(

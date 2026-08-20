@@ -112,7 +112,7 @@ fact of generation, the advisor, the projection key, and provider telemetry.
 `AiIntakeConfig` (`app/models/ai_intake.py`) is the runtime configuration owner
 for conversational intake. No enabled matching row means classification is
 skipped and the existing channel route remains authoritative. A matching row
-controls channel/scope, confidence, one optional clarification turn, fallback
+controls channel/scope, confidence, optional clarification turns, fallback
 deadline and team, department overrides, custom instructions, and campaign
 attribution exclusion. The admin contract refuses email and limits
 clarification to one turn.
@@ -126,8 +126,10 @@ unredacted content are not stored in intake metadata.
 
 At or above the configured threshold, validated intent/category/department
 metadata is handed to `communications.team_inbox_routing`. Below threshold,
-one approved generic clarification may be recorded when enabled. The
-classifier does **not** send that text; the Team Inbox coordinator submits it
+an approved clarification may be recorded when enabled. The generic question
+and customer-type question are editable draft-policy fields, stored with the
+immutable version and projected to runtime only after activation. Older
+policies use the approved default wording. The classifier does **not** send that text; the Team Inbox coordinator submits it
 to `communications.team_inbox_outbound_intents`, which uses the normal durable
 WhatsApp, Facebook Messenger, or Instagram Direct notification path. The
 provider call remains asynchronous to webhook acknowledgement. A dedupe key
@@ -198,8 +200,11 @@ default-off controls and never send automatically.
   domain row and inserts returned text only into an unsent browser composer.
 - **Manager Inbox AI.** `app.services.team_inbox_manager_ai_chat` is a
   read-only advisory view behind `support:inbox_ai:read` and the
-  `ai.generation` control. It may answer manager questions from a bounded
-  Team Inbox conversation or recent-queue projection, but it cannot assign,
+  `ai.generation` control. It consumes the owned
+  `communications.team_inbox_analysis_projection` for a bounded Team Inbox
+  conversation, recent queue, or period review. Period facts cover the full
+  authorized cohort; qualitative AI review is limited to the explicitly
+  reported evidence sample. It cannot assign,
   reply, close, refund, profile-update, or otherwise mutate a domain row.
 - **Conversational AI intake.** WhatsApp, Facebook Messenger and Instagram DM
   may enter `pending` UI state with an active `ai_intake_sessions` row. The AI

@@ -123,3 +123,6 @@ remediation_*.json
 # 2026-01-26 and stayed exposed until 2026-07-27.
 /configs/openvpn/
 /configs/**/*.conf
+
+# Sub Thin Shadow host-generated credentials (mode 0600, never committed)
+deploy/shadow/.env

@@ -12,7 +12,7 @@ Mounted at /api/v1/me with router-level require_user_auth (see main.py).
 import logging
 from datetime import datetime
 from decimal import Decimal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import (
     APIRouter,
@@ -413,6 +413,7 @@ def reboot_my_subscription_device(
 @router.post(
     "/subscriptions/{subscription_id}/device/wifi",
     response_model=CustomerDeviceCommandOutcomeRead,
+    status_code=status.HTTP_202_ACCEPTED,
 )
 def update_my_subscription_wifi(
     subscription_id: UUID,
@@ -427,16 +428,61 @@ def update_my_subscription_wifi(
     )
 
     try:
-        return update_subscription_wifi(
+        command_id = uuid4()
+        with owner_session(db) as owner_db:
+            return update_subscription_wifi(
+                owner_db,
+                subscriber_id=UUID(_subscriber_id(principal)),
+                subscription_id=subscription_id,
+                context=CommandContext(
+                    command_id=command_id,
+                    correlation_id=command_id,
+                    actor=(
+                        f"customer:{principal.get('id') or _subscriber_id(principal)}"
+                    ),
+                    scope="customer:device:wifi",
+                    reason="Customer requested a WiFi credential update",
+                    idempotency_key=payload.idempotency_key,
+                ),
+                ssid=payload.ssid,
+                password=payload.password,
+            )
+    except CustomerDeviceCommandError as exc:
+        status_code = 404 if exc.code == "subscription_not_found" else 409
+        raise HTTPException(
+            status_code=status_code,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+
+
+@router.get(
+    "/subscriptions/{subscription_id}/device/wifi",
+    response_model=CustomerDeviceCommandOutcomeRead,
+)
+def get_my_subscription_wifi_status(
+    subscription_id: UUID,
+    db: Session = Depends(get_db),
+    principal: dict = Depends(require_user_auth),
+):
+    """Return the latest Wi-Fi delivery status for the caller's service."""
+
+    from app.services.customer_device_commands import (
+        CustomerDeviceCommandError,
+        get_subscription_wifi_status,
+    )
+
+    try:
+        return get_subscription_wifi_status(
             db,
             subscriber_id=UUID(_subscriber_id(principal)),
             subscription_id=subscription_id,
-            actor_id=str(principal.get("id") or _subscriber_id(principal)),
-            ssid=payload.ssid,
-            password=payload.password,
         )
     except CustomerDeviceCommandError as exc:
-        status_code = 404 if exc.code == "subscription_not_found" else 409
+        status_code = (
+            404
+            if exc.code in {"subscription_not_found", "wifi_operation_not_found"}
+            else 409
+        )
         raise HTTPException(
             status_code=status_code,
             detail={"code": exc.code, "message": str(exc)},

@@ -45,6 +45,8 @@ from app.services.topology.customer_path import resolve_customer_path
 from app.web.request_parsing import parse_form_data, parse_form_data_sync
 
 logger = logging.getLogger(__name__)
+
+ADDITIONAL_IP_WRITE_PERMISSION = "subscription:additional_ip:write"
 templates = Jinja2Templates(directory="templates")
 router = APIRouter(prefix="/catalog", tags=["web-admin-catalog"])
 
@@ -666,7 +668,7 @@ def catalog_subscription_ipv4_available(
 
 @router.get(
     "/subscriptions/ipam/route-children",
-    dependencies=[Depends(require_permission("catalog:read"))],
+    dependencies=[Depends(require_permission(ADDITIONAL_IP_WRITE_PERMISSION))],
 )
 def catalog_subscription_route_children(
     parent_cidr: str = Query(...),
@@ -708,7 +710,12 @@ def catalog_service_access_available_ipv4(
 
 @router.get("/subscriptions/{subscription_id}/edit", response_class=HTMLResponse)
 def catalog_subscription_edit(
-    request: Request, subscription_id: str, db: Session = Depends(get_db)
+    request: Request,
+    subscription_id: str,
+    db: Session = Depends(get_db),
+    auth: dict = Depends(
+        require_any_permission("catalog:read", ADDITIONAL_IP_WRITE_PERMISSION)
+    ),
 ) -> HTMLResponse:
     form_context = (
         web_catalog_subscription_workflows_service.subscription_edit_form_context(
@@ -726,9 +733,43 @@ def catalog_subscription_edit(
 
     context = _base_context(request, db, active_page="catalog-subscriptions")
     context.update(form_context)
+    context["can_manage_subscription_catalog"] = has_permission(
+        auth, db, "catalog:write"
+    )
+    context["can_manage_additional_ip"] = has_permission(
+        auth, db, ADDITIONAL_IP_WRITE_PERMISSION
+    )
     context["notice"] = request.query_params.get("notice")
     context["error"] = request.query_params.get("error") or context.get("error")
     return templates.TemplateResponse("admin/catalog/subscription_form.html", context)
+
+
+@router.post(
+    "/subscriptions/{subscription_id}/additional-ip",
+    dependencies=[Depends(require_permission(ADDITIONAL_IP_WRITE_PERMISSION))],
+)
+def catalog_subscription_additional_ip_update(
+    request: Request,
+    subscription_id: str,
+    form: FormData = Depends(parse_form_data),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    error = web_catalog_subscription_workflows_service.handle_subscription_additional_ip_form(
+        db,
+        subscription_id=subscription_id,
+        form=form,
+        request=request,
+        actor_id=_get_actor_id(request),
+    )
+    base_url = f"/admin/catalog/subscriptions/{subscription_id}/edit"
+    if error:
+        return RedirectResponse(
+            f"{base_url}?error={quote_plus(error)}#additional-ip", status_code=303
+        )
+    notice = quote_plus("Additional IP allocation updated.")
+    return RedirectResponse(
+        f"{base_url}?notice={notice}#additional-ip", status_code=303
+    )
 
 
 @router.get(

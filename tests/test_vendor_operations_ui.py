@@ -8,12 +8,24 @@ def test_vendor_operations_search_and_procurement_controls_are_visibly_spaced():
 
     assert 'class="mt-4 flex flex-col gap-3 sm:flex-row"' in template
     assert 'id="vendor-operations-search"' in template
+    search_input = template.split('id="vendor-operations-search"', maxsplit=1)[1]
+    search_input = search_input.split(">", maxsplit=1)[0]
+    assert "pl-3" in search_input
     assert 'class="grid gap-4 border-t border-slate-100' in template
     assert template.count("border border-slate-400") >= 4
     assert template.count("focus:border-teal-500") >= 4
     assert 'name="mode"' in template
     assert 'name="vendor_id"' in template
     assert 'name="bidding_close_at"' in template
+    bidding_close_input = template.split('name="bidding_close_at"', maxsplit=1)[1]
+    bidding_close_input = bidding_close_input.split(">", maxsplit=1)[0]
+    assert "pr-10" in bidding_close_input
+    calendar_icon = template.split("data-bidding-close-calendar-icon", maxsplit=1)[
+        1
+    ].split(">", maxsplit=1)[0]
+    assert "pointer-events-none" in calendar_icon
+    assert "dark:text-slate-300" in calendar_icon
+    assert "dark:bg-slate-900" in calendar_icon
 
 
 def test_draft_procurement_and_advance_cards_share_a_responsive_row():

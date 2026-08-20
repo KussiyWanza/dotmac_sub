@@ -60,6 +60,11 @@ void main() {
     expect(decoded.height, lessThan(600));
   });
 
+  test('native camera capture is bounded to the stored photo limit', () {
+    expect(cameraCaptureMaxWidth, maxPhotoDimension);
+    expect(cameraCaptureMaxHeight, maxPhotoDimension);
+  });
+
   test('small images are not upscaled', () {
     final processed = processPhoto(_testImage(width: 800, height: 400));
     final decoded = img.decodeImage(processed)!;
@@ -86,6 +91,25 @@ void main() {
     expect(await queue.captureForJob(workOrderId: 'wo-1'), isFalse);
     expect(await queue.pendingCount(), 0);
   });
+
+  test(
+    'lost Android camera result is recovered once for its work order',
+    () async {
+      // Simulate Android killing the first queue after it durably records the
+      // capture target but before image_picker returns to Dart.
+      final marker = File('${tempDir.path}/.pending_completion_capture');
+      await marker.writeAsString('wo-recovered', flush: true);
+      source.lostBytes = _testImage(width: 800, height: 400);
+
+      expect(await queue.recoverForJob(workOrderId: 'wo-recovered'), isTrue);
+      expect(await queue.recoverForJob(workOrderId: 'wo-recovered'), isFalse);
+
+      final row = (await db.select(db.pendingPhotos).get()).single;
+      expect(row.workOrderId, 'wo-recovered');
+      expect(row.kind, 'photo');
+      expect(File(row.localPath).existsSync(), isTrue);
+    },
+  );
 
   group('flushPhotos', () {
     late FakeHttpAdapter adapter;

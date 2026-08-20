@@ -230,6 +230,15 @@ class ProjectListProjectionPage:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class ProjectCustomerContext:
+    """Typed customer-account navigation rendered on a project detail page."""
+
+    name: str
+    subscriber_id: UUID
+    detail_url: str
+
+
 def query_project_list_projection(
     db: Session, query: ProjectListProjectionQuery
 ) -> ProjectListProjectionPage:
@@ -620,6 +629,18 @@ def _subscriber_label(project: Project) -> str:
     if getattr(subscriber, "subscriber_number", None):
         return f"{label} ({subscriber.subscriber_number})"
     return str(label)
+
+
+def _project_customer_context(project: Project) -> ProjectCustomerContext | None:
+    subscriber = project.subscriber
+    if subscriber is None:
+        return None
+    customer_type = "business" if subscriber.is_business else "person"
+    return ProjectCustomerContext(
+        name=_subscriber_label(project),
+        subscriber_id=subscriber.id,
+        detail_url=f"/admin/customers/{customer_type}/{subscriber.id}",
+    )
 
 
 def _status_summary_cards(db: Session) -> list[dict[str, str | int]]:
@@ -1204,6 +1225,7 @@ def build_project_detail_context(
         "staff_options": staff,
         "staff_lookup": _label_lookup(staff),
         "mention_agents": project_mentions.list_project_mention_users(db),
+        "project_customer": _project_customer_context(project),
         "subscriber_label": _subscriber_label(project),
         "template": template,
         "all_statuses": [item.value for item in ProjectStatus],

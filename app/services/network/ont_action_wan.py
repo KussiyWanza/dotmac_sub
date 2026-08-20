@@ -348,12 +348,49 @@ def _igd_ppp_container_conflict(
 
     if service == "TR069":
         return "the selected WANConnectionDevice is the TR-069 management WAN"
-    if requested_vlan and detected_vlan and detected_vlan != requested_vlan:
+    if (
+        requested_vlan
+        and detected_vlan
+        and detected_vlan != requested_vlan
+        and service not in {"", "INTERNET"}
+    ):
         return (
             f"the selected WANConnectionDevice is VLAN {detected_vlan}, "
             f"not requested PPPoE VLAN {requested_vlan}"
         )
     return None
+
+
+def _resolve_igd_wcd_index(device: dict[str, Any], requested_index: int) -> int:
+    """Use the requested WCD when present, otherwise use ACS's live WCD.
+
+    Huawei config packs describe the intended layout, but the ONT's GenieACS
+    document is authoritative for the object path that can receive a write.
+    This matters when a device exposes management and Internet objects under a
+    different WCD index than the OLT profile default.
+    """
+    wan_device = (
+        device.get("InternetGatewayDevice", {}).get("WANDevice", {})
+        if isinstance(device.get("InternetGatewayDevice"), dict)
+        else {}
+    )
+    if not isinstance(wan_device, dict):
+        return requested_index
+    wcd_indexes: list[int] = []
+    for wan_device_value in wan_device.values():
+        if not isinstance(wan_device_value, dict):
+            continue
+        wcd = wan_device_value.get("WANConnectionDevice", {})
+        if not isinstance(wcd, dict):
+            continue
+        for key, value in wcd.items():
+            if not str(key).isdigit() or not isinstance(value, dict):
+                continue
+            if value.get("_object") is True or "WANPPPConnection" in value:
+                wcd_indexes.append(int(key))
+    if requested_index in wcd_indexes:
+        return requested_index
+    return min(wcd_indexes) if wcd_indexes else requested_index
 
 
 def _igd_wan_container_is_blank(
@@ -625,6 +662,10 @@ def set_pppoe_credentials(
     params: dict[str, str] = {}
 
     if root == "InternetGatewayDevice":
+        if hasattr(client, "get_device"):
+            instance_index = _resolve_igd_wcd_index(
+                client.get_device(device_id), instance_index
+            )
         ppp_child_index, ensure_error = _ensure_igd_ppp_wan_service(
             ont=ont,
             client=client,

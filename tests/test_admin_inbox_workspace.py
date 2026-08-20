@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from jinja2 import Environment, FileSystemLoader
 
+from app.models.notification import Notification
 from app.models.party import Party, PartyType
 from app.models.sales import Lead, LeadOriginCapture
 from app.models.service_team import ServiceTeam, ServiceTeamMember, ServiceTeamType
@@ -303,6 +304,7 @@ def test_projection_supplies_live_agent_and_assignment_options(db_session):
     )
     assert projection.service_team_options[0].name == "Support"
     assert projection.service_team_options[0].id == team.id
+    assert projection.agent_options[0].team_ids == (team.id,)
     assert (
         team_inbox_projection.list_actor_service_team_options(db_session, user.id)
         == projection.service_team_options
@@ -390,6 +392,7 @@ def test_assignment_agent_options_show_team_and_presence_status(db_session):
         InboxAgentPresence(
             person_id=user.id,
             status=InboxAgentPresenceStatus.online.value,
+            last_seen_at=datetime.now(UTC),
         )
     )
     db_session.commit()
@@ -405,7 +408,10 @@ def test_assignment_agent_options_show_team_and_presence_status(db_session):
         InboxAgentPresenceStatus.online.value
     )
     assert 'name="service_team_id"' in conversation_template
+    assert conversation_template.count('name="service_team_id" required') == 1
     assert "service_team_options" in conversation_template
+    assert "selectedTeam" in conversation_template
+    assert "data-team-ids" in conversation_template
     assert "agent.presence_status" in conversation_template
 
 
@@ -599,6 +605,64 @@ def test_queue_and_detail_use_email_from_name_when_contact_is_unlinked(db_sessio
     assert timeline is not None
     assert timeline.contact_name == row.contact_name
     assert timeline.contact_initials == row.contact_initials
+
+
+def test_whatsapp_reply_to_explicit_contact_ignores_canceled_subscriber_match(
+    db_session, monkeypatch
+):
+    opened_at = datetime(2026, 7, 10, 8, 0, tzinfo=UTC)
+    subscriber = Subscriber(
+        first_name="Canceled",
+        last_name="Match",
+        email="canceled-match@example.test",
+        phone="08183750805",
+        status=SubscriberStatus.canceled,
+        is_active=False,
+    )
+    conversation = InboxConversation(
+        channel_type="whatsapp",
+        contact_address="+2348183750805",
+        status=InboxConversationStatus.open.value,
+    )
+    db_session.add_all([subscriber, conversation])
+    db_session.flush()
+    db_session.add(
+        InboxMessage(
+            conversation_id=conversation.id,
+            channel_type="whatsapp",
+            direction="inbound",
+            body="Hello",
+            from_address="+2348183750805",
+            received_at=opened_at,
+            metadata_={"reply_window_qualifying": True},
+        )
+    )
+    db_session.flush()
+    monkeypatch.setattr(
+        team_inbox_outbound.team_inbox_realtime,
+        "publish_conversation_event",
+        lambda *args, **kwargs: None,
+    )
+
+    result = team_inbox_outbound.send_inbox_reply(
+        db_session,
+        conversation=conversation,
+        payload=team_inbox_outbound.InboxReplyPayload(
+            body_html="<p>We are checking this.</p>",
+            body_text="We are checking this.",
+            sent_by_person_id=uuid.uuid4(),
+            metadata={"source_route": "test_reply"},
+        ),
+        record_failure=True,
+        now=opened_at + timedelta(minutes=1),
+    )
+
+    assert result.kind == "queued"
+    notification = db_session.get(Notification, result.notification_id)
+    assert notification is not None
+    assert notification.subscriber_id is None
+    assert notification.audience_type == "operational"
+    assert notification.audience_id == conversation.id
 
 
 def test_sidebar_projection_preserves_selection_without_loading_detail(

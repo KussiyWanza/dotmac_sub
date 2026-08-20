@@ -34,7 +34,7 @@ class AttachmentMeta(BaseModel):
 class TicketBase(BaseModel):
     # Strip surrounding whitespace so a whitespace-only title fails the
     # ``min_length=1`` check instead of creating a blank-titled ticket.
-    model_config = ConfigDict(str_strip_whitespace=True)
+    model_config = ConfigDict(str_strip_whitespace=True, populate_by_name=True)
 
     subscriber_id: UUID | None = None
     customer_account_id: UUID | None = None

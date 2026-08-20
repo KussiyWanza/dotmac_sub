@@ -21,11 +21,16 @@ from app.models.catalog import SubscriptionStatus
 from app.models.sales import QuoteStatus
 from app.models.team_inbox import InboxConversation, InboxConversationStatus
 from app.services import crm_reporting as crm_reporting_service
+from app.services import (
+    display_format,
+    ncc_workbook,
+    team_inbox_assignment,
+    team_inbox_outbound,
+)
 from app.services import ncc_complaints_report as ncc_complaints_service
 from app.services import ncc_regulatory_pack as ncc_pack_service
 from app.services import ncc_report_email as ncc_weekly_delivery_service
 from app.services import ncc_subscriber_report as ncc_report_service
-from app.services import ncc_workbook, team_inbox_assignment, team_inbox_outbound
 from app.services import team_inbox_metrics as team_inbox_metrics_service
 from app.services import ticket_sla_reports as ticket_sla_reports_service
 from app.services import web_document_discount_report as discount_report_service
@@ -39,6 +44,7 @@ from app.services.auth_dependencies import (
 )
 from app.services.db_session_adapter import db_session_adapter
 from app.services.domain_errors import DomainError
+from app.services.sales import reports as sales_reports_service
 
 templates = Jinja2Templates(directory="templates")
 router = APIRouter(prefix="/reports", tags=["web-admin-reports"])
@@ -71,6 +77,38 @@ class DiscountReportTemplateContext(TypedDict):
     error: str | None
 
 
+class SalesReportRow(TypedDict, total=False):
+    agent_name: str
+    leads_won: int
+    leads_contacted: int
+    blocked_customers_contacted: int
+    customers_brought_back: int
+    orders_created: int
+    orders_confirmed: int
+    orders_paid: int
+    orders_fulfilled: int
+    orders_cancelled: int
+    order_value: str
+    collected_value: str
+
+
+class SalesReportMetric(TypedDict):
+    label: str
+    value: int
+
+
+class SalesReportContext(TypedDict):
+    report_kind: str
+    title: str
+    description: str
+    columns: tuple[str, ...]
+    rows: list[SalesReportRow]
+    metrics: tuple[SalesReportMetric, ...]
+    date_from: str
+    date_to: str
+    note: str
+
+
 REPORT_HUB_SECTIONS: list[ReportHubSection] = [
     {
         "id": "core",
@@ -95,6 +133,24 @@ REPORT_HUB_SECTIONS: list[ReportHubSection] = [
                 "url": "/admin/reports/churn",
                 "description": "Retention, churn reasons, and cancellations",
                 "permission": "customer:read",
+            },
+            {
+                "name": "Customer Retention",
+                "url": "/admin/customer-retention",
+                "description": "Billing-risk accounts prioritized for customer recovery",
+                "permission": "reports:billing:read",
+            },
+            {
+                "name": "Lead Performance",
+                "url": "/admin/reports/sales/leads",
+                "description": "Sales-agent lead conversion and recovery KPIs",
+                "permission": "crm:lead:read",
+            },
+            {
+                "name": "Sales Order Performance",
+                "url": "/admin/reports/sales/orders",
+                "description": "Sales-agent order, payment, and fulfillment KPIs",
+                "permission": "crm:sales_order:read",
             },
             {
                 "name": "Network Usage",
@@ -399,6 +455,7 @@ def _operational_report_query(
     page: int,
     per_page: int | None,
     personal: bool,
+    search: str | None = None,
 ) -> crm_reporting_service.CrmReportQuery:
     person_id = None
     if personal:
@@ -414,6 +471,7 @@ def _operational_report_query(
         page=page,
         per_page=per_page,
         person_id=person_id,
+        search=search.strip() if search else None,
     )
 
 
@@ -444,6 +502,249 @@ def reports_hub(request: Request, db: Session = Depends(get_db)):
         "sections": REPORT_HUB_SECTIONS,
     }
     return templates.TemplateResponse("admin/reports/hub.html", context)
+
+
+def _sales_report_window(
+    date_from: str | None, date_to: str | None
+) -> tuple[datetime, datetime]:
+    end_at = _parse_date_end(date_to) or datetime.now(UTC)
+    start_at = _parse_date_start(date_from) or end_at - timedelta(days=30)
+    return start_at, end_at
+
+
+def _sales_agent_names(db: Session, agent_ids: set[UUID]) -> dict[UUID, str]:
+    return sales_reports_service.sales_agent_names(db, agent_ids)
+
+
+def _sales_lead_report_context(
+    db: Session, *, date_from: str | None, date_to: str | None
+) -> SalesReportContext:
+    start_at, end_at = _sales_report_window(date_from, date_to)
+    report = sales_reports_service.lead_kpi_report(
+        db,
+        start_at=start_at,
+        end_at=end_at,
+    )
+    names = _sales_agent_names(db, {row.agent_id for row in report})
+    rows: list[SalesReportRow] = [
+        {
+            "agent_name": names.get(row.agent_id, "Unavailable sales agent"),
+            "leads_won": row.leads_won,
+            "leads_contacted": row.leads_contacted,
+            "blocked_customers_contacted": row.blocked_customers_contacted,
+            "customers_brought_back": row.customers_brought_back,
+        }
+        for row in report
+    ]
+    return {
+        "report_kind": "leads",
+        "title": "Lead Performance",
+        "description": "Sales-agent conversion and customer recovery KPIs.",
+        "columns": (
+            "Agent",
+            "Leads won",
+            "Leads contacted",
+            "Blocked customers contacted",
+            "Customers brought back",
+        ),
+        "rows": rows,
+        "metrics": (
+            {"label": "Agents", "value": len(rows)},
+            {"label": "Leads won", "value": sum(row["leads_won"] for row in rows)},
+            {
+                "label": "Blocked contacted",
+                "value": sum(row["blocked_customers_contacted"] for row in rows),
+            },
+            {
+                "label": "Brought back",
+                "value": sum(row["customers_brought_back"] for row in rows),
+            },
+        ),
+        "date_from": date_from or "",
+        "date_to": date_to or "",
+        "note": (
+            "Contacted uses recorded lead progression. Brought back requires a "
+            "native blocked/suspended-to-active lifecycle event; CRM engagement "
+            "history is not included."
+        ),
+    }
+
+
+def _sales_order_report_context(
+    db: Session, *, date_from: str | None, date_to: str | None
+) -> SalesReportContext:
+    start_at, end_at = _sales_report_window(date_from, date_to)
+    report = sales_reports_service.sales_order_kpi_report(
+        db,
+        start_at=start_at,
+        end_at=end_at,
+    )
+    names = _sales_agent_names(db, {row.agent_id for row in report})
+    rows: list[SalesReportRow] = [
+        {
+            "agent_name": names.get(row.agent_id, "Unavailable sales agent"),
+            "orders_created": row.orders_created,
+            "orders_confirmed": row.orders_confirmed,
+            "orders_paid": row.orders_paid,
+            "orders_fulfilled": row.orders_fulfilled,
+            "orders_cancelled": row.orders_cancelled,
+            "order_value": display_format.format_currency_groups(
+                row.order_values, empty_currency="NGN"
+            ),
+            "collected_value": display_format.format_currency_groups(
+                row.collected_values, empty_currency="NGN"
+            ),
+        }
+        for row in report
+    ]
+    return {
+        "report_kind": "orders",
+        "title": "Sales Order Performance",
+        "description": "Sales-agent order, payment, and fulfillment KPIs.",
+        "columns": (
+            "Agent",
+            "Orders created",
+            "Confirmed",
+            "Paid",
+            "Fulfilled",
+            "Cancelled",
+            "Order value",
+            "Collected value",
+        ),
+        "rows": rows,
+        "metrics": (
+            {"label": "Agents", "value": len(rows)},
+            {
+                "label": "Orders created",
+                "value": sum(row["orders_created"] for row in rows),
+            },
+            {"label": "Paid", "value": sum(row["orders_paid"] for row in rows)},
+            {
+                "label": "Fulfilled",
+                "value": sum(row["orders_fulfilled"] for row in rows),
+            },
+        ),
+        "date_from": date_from or "",
+        "date_to": date_to or "",
+        "note": "Order KPIs are scoped by sales-order creation date; values are grouped by currency.",
+    }
+
+
+def _sales_report_csv(context: SalesReportContext) -> str:
+    output = StringIO()
+    writer = csv.writer(output)
+    writer.writerow(context["columns"])
+    for row in context["rows"]:
+        writer.writerow(
+            [
+                row.get(_sales_report_column_key(column), "")
+                for column in context["columns"]
+            ]
+        )
+    return output.getvalue()
+
+
+def _sales_report_column_key(column: str) -> str:
+    return {
+        "Agent": "agent_name",
+        "Leads won": "leads_won",
+        "Leads contacted": "leads_contacted",
+        "Blocked customers contacted": "blocked_customers_contacted",
+        "Customers brought back": "customers_brought_back",
+        "Orders created": "orders_created",
+        "Confirmed": "orders_confirmed",
+        "Paid": "orders_paid",
+        "Fulfilled": "orders_fulfilled",
+        "Cancelled": "orders_cancelled",
+        "Order value": "order_value",
+        "Collected value": "collected_value",
+    }[column]
+
+
+@router.get(
+    "/sales/leads",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("crm:lead:read"))],
+)
+def sales_lead_performance_report(
+    request: Request,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    db: Session = Depends(get_db),
+):
+    context = _sales_lead_report_context(db, date_from=date_from, date_to=date_to)
+    template_context: dict[str, object] = {**context}
+    template_context.update(
+        _base_context(
+            request,
+            db,
+            "sales-lead-performance",
+            context["title"],
+            context["description"],
+        )
+    )
+    return templates.TemplateResponse("admin/reports/sales_kpi.html", template_context)
+
+
+@router.get(
+    "/sales/leads/export",
+    dependencies=[Depends(require_permission("crm:lead:read"))],
+)
+def sales_lead_performance_export(
+    date_from: str | None = None,
+    date_to: str | None = None,
+    db: Session = Depends(get_db),
+):
+    context = _sales_lead_report_context(db, date_from=date_from, date_to=date_to)
+    return Response(
+        content=_sales_report_csv(context),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="lead-performance.csv"'},
+    )
+
+
+@router.get(
+    "/sales/orders",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("crm:sales_order:read"))],
+)
+def sales_order_performance_report(
+    request: Request,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    db: Session = Depends(get_db),
+):
+    context = _sales_order_report_context(db, date_from=date_from, date_to=date_to)
+    template_context: dict[str, object] = {**context}
+    template_context.update(
+        _base_context(
+            request,
+            db,
+            "sales-order-performance",
+            context["title"],
+            context["description"],
+        )
+    )
+    return templates.TemplateResponse("admin/reports/sales_kpi.html", template_context)
+
+
+@router.get(
+    "/sales/orders/export",
+    dependencies=[Depends(require_permission("crm:sales_order:read"))],
+)
+def sales_order_performance_export(
+    date_from: str | None = None,
+    date_to: str | None = None,
+    db: Session = Depends(get_db),
+):
+    context = _sales_order_report_context(db, date_from=date_from, date_to=date_to)
+    return Response(
+        content=_sales_report_csv(context),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": 'attachment; filename="sales-order-performance.csv"'
+        },
+    )
 
 
 @router.get(
@@ -2118,6 +2419,7 @@ def reports_operational_export(
     report_slug: str,
     date_from: str | None = None,
     date_to: str | None = None,
+    search: str | None = Query(default=None, max_length=120),
     db: Session = Depends(get_db),
 ):
     definition = _operational_definition(request, report_slug)
@@ -2130,6 +2432,9 @@ def reports_operational_export(
         page=1,
         per_page=None,
         personal=definition.slug == crm_reporting_service.CrmReportSlug.MY_PERFORMANCE,
+        search=search
+        if definition.slug == crm_reporting_service.CrmReportSlug.AGENT_PERFORMANCE
+        else None,
     )
     report = crm_reporting_service.get_report(db, slug=definition.slug, query=query)
     return Response(
@@ -2149,6 +2454,7 @@ def reports_operational_page(
     report_slug: str,
     date_from: str | None = None,
     date_to: str | None = None,
+    search: str | None = Query(default=None, max_length=120),
     page: int = Query(default=1, ge=1),
     per_page: int = Query(default=50, ge=10, le=200),
     db: Session = Depends(get_db),
@@ -2163,6 +2469,9 @@ def reports_operational_page(
         page=page,
         per_page=per_page,
         personal=definition.slug == crm_reporting_service.CrmReportSlug.MY_PERFORMANCE,
+        search=search
+        if definition.slug == crm_reporting_service.CrmReportSlug.AGENT_PERFORMANCE
+        else None,
     )
     report = crm_reporting_service.get_report(db, slug=definition.slug, query=query)
     context = _base_context(
@@ -2177,6 +2486,7 @@ def reports_operational_page(
             "report": report,
             "date_from": date_from or "",
             "date_to": date_to or "",
+            "search": search or "",
         }
     )
     return templates.TemplateResponse("admin/reports/operational.html", context)

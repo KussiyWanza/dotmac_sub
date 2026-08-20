@@ -9,9 +9,16 @@ from uuid import uuid4
 from sqlalchemy.orm import Session
 
 from app.models.integration_platform import IntegrationInstallation
-from app.services.integrations import installations, whatsapp_capability
+from app.services.integrations import (
+    installations,
+    whatsapp_capability,
+)
 from app.services.integrations.connectors.whatsapp_runtime import (
     WHATSAPP_PROVIDER_META,
+)
+from app.services.integrations.runtime_execution import (
+    build_execution_context,
+    validate_connection,
 )
 from app.services.integrations.whatsapp_capability import (
     WHATSAPP_RECEIVE_CAPABILITY,
@@ -66,6 +73,7 @@ def build_config_state(db: Session) -> dict[str, Any]:
         "form": {
             "provider": config.get("provider", WHATSAPP_PROVIDER_META),
             "phone_number": config.get("phone_number", ""),
+            "phone_number_id": config.get("phone_number_id", ""),
             "waba_id": config.get("waba_id", ""),
             "webhook_url": config.get("webhook_url", ""),
             "graph_version": config.get("graph_version", "v21.0"),
@@ -100,6 +108,7 @@ def save_config(
     *,
     provider: str,
     phone_number: str,
+    phone_number_id: str,
     webhook_url: str,
     api_key: str,
     api_secret: str,
@@ -110,8 +119,11 @@ def save_config(
     actor: str = "admin.whatsapp",
 ) -> IntegrationInstallation:
     provider_value = provider.strip().lower()
+    phone_number_id_value = phone_number_id.strip()
     if provider_value not in {option["id"] for option in _PROVIDER_OPTIONS}:
         raise ValueError("Unsupported WhatsApp API provider")
+    if not phone_number_id_value:
+        raise ValueError("WhatsApp phone number ID is required")
     try:
         templates = json.loads(message_templates_json or "[]")
     except json.JSONDecodeError as exc:
@@ -156,6 +168,7 @@ def save_config(
         config={
             "provider": provider_value,
             "phone_number": phone_number.strip(),
+            "phone_number_id": phone_number_id_value,
             "waba_id": waba_id.strip(),
             "webhook_url": webhook_url.strip(),
             "graph_version": graph_version.strip() or "v21.0",
@@ -173,17 +186,54 @@ def save_config(
         WHATSAPP_RECEIVE_CAPABILITY,
         WHATSAPP_TEMPLATE_READ_CAPABILITY,
     ):
+        scope = {"channel": "whatsapp", "phone_number_id": phone_number_id_value}
         if capability_id not in existing_caps:
             installations.bind_capability(
                 db,
                 installation_id=installation.id,
                 capability_id=capability_id,
-                scope={"channel": "whatsapp"},
+                scope=scope,
                 policy={"default": True},
                 actor=actor,
             )
-    installations.validate_static(db, installation_id=installation.id, actor=actor)
-    return installation
+        else:
+            binding = next(
+                item
+                for item in installation.capability_bindings
+                if item.capability_id == capability_id
+            )
+            binding.scope_json = scope
+            binding.policy_json = {**dict(binding.policy_json or {}), "default": True}
+            binding.updated_by = actor
+    static_result = installations.validate_static(
+        db, installation_id=installation.id, actor=actor
+    )
+    if not static_result.valid:
+        raise ValueError(
+            "WhatsApp static validation failed: " + ",".join(static_result.error_codes)
+        )
+    send_binding = next(
+        item
+        for item in installation.capability_bindings
+        if item.capability_id == WHATSAPP_SEND_CAPABILITY
+    )
+    context = build_execution_context(
+        db,
+        capability_binding_id=send_binding.id,
+        allow_disabled=True,
+    )
+    runtime_result = validate_connection(context)
+    if not runtime_result.valid:
+        raise ValueError(
+            "WhatsApp runtime validation failed: "
+            + ",".join(runtime_result.error_codes)
+        )
+    return installations.enable_after_connection_validation(
+        db,
+        installation_id=installation.id,
+        connection_result=runtime_result,
+        actor=actor,
+    )
 
 
 def run_test_send(

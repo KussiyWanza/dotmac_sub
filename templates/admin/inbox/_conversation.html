@@ -138,7 +138,7 @@
                 </div>
             </div>
 
-            <div class="relative" x-data="{ open: false, assignOpen: false, transcriptOpen: false }" @keydown.escape="open = false; assignOpen = false; transcriptOpen = false">
+            <div class="relative" x-data="{ open: false, assignOpen: false, transcriptOpen: false, selectedTeam: '{{ timeline.primary_service_team_id or '' }}', selectedAgent: '' }" @keydown.escape="open = false; assignOpen = false; transcriptOpen = false">
                 <button type="button" @click="open = !open" @click.outside="open = false" class="inline-flex h-10 w-10 items-center justify-center rounded-lg text-slate-600 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:text-slate-300 dark:hover:bg-slate-800" aria-label="More conversation actions" :aria-expanded="open.toString()">•••</button>
                 <div x-show="open" x-cloak class="absolute right-0 z-30 mt-2 w-56 rounded-lg border border-slate-200 bg-white p-1 shadow-xl dark:border-slate-700 dark:bg-slate-900" role="menu">
                     <button type="button" @click="refreshThread('{{ timeline.id }}'); open = false" class="min-h-10 w-full rounded-md px-3 text-left text-xs hover:bg-amber-50 dark:hover:bg-slate-800" role="menuitem">Refresh thread</button>
@@ -167,21 +167,15 @@
                     <form method="post" action="/admin/inbox/{{ timeline.id }}/assign" class="space-y-2">
                         {% include "components/forms/csrf_input.html" %}
                         <label class="block text-[11px] font-semibold text-slate-600 dark:text-slate-300">Team
-                            <select name="service_team_id" required class="mt-1 h-10 w-full rounded-lg border-slate-300 text-xs dark:border-slate-700 dark:bg-slate-950">
+                            <select name="service_team_id" required x-model="selectedTeam" @change="selectedAgent = ''" class="mt-1 h-10 w-full rounded-lg border-slate-300 text-xs dark:border-slate-700 dark:bg-slate-950">
                                 <option value="">Choose a team</option>
                                 {% for team in service_team_options %}<option value="{{ team.id }}" {% if timeline.primary_service_team_id and team.id|string == timeline.primary_service_team_id|string %}selected{% endif %}>{{ team.name }}</option>{% endfor %}
                             </select>
                         </label>
                         <label class="block text-[11px] font-semibold text-slate-600 dark:text-slate-300">Assign to
-                            <select name="person_id" required class="mt-1 h-10 w-full rounded-lg border-slate-300 text-xs dark:border-slate-700 dark:bg-slate-950">
+                            <select name="person_id" x-model="selectedAgent" required class="mt-1 h-10 w-full rounded-lg border-slate-300 text-xs dark:border-slate-700 dark:bg-slate-950">
                                 <option value="">Choose a teammate…</option>
-                                {% for agent in agent_options %}<option value="{{ agent.id }}">{{ agent.name }} - {{ agent.presence_status | replace('_', ' ') | title }}</option>{% endfor %}
-                            </select>
-                        </label>
-                        <label class="block text-[11px] font-semibold text-slate-600 dark:text-slate-300">Team
-                            <select name="service_team_id" required class="mt-1 h-10 w-full rounded-lg border-slate-300 text-xs dark:border-slate-700 dark:bg-slate-950">
-                                <option value="">Choose a team...</option>
-                                {% for team in service_team_options | default(()) %}<option value="{{ team.id }}" {% if timeline.primary_service_team_id and team.id|string == timeline.primary_service_team_id|string %}selected{% endif %}>{{ team.name }}</option>{% endfor %}
+                                {% for agent in agent_options %}<option value="{{ agent.id }}" data-team-ids="{{ agent.team_ids | join(',') }}" x-bind:hidden="selectedTeam !== '' && !$el.dataset.teamIds.split(',').includes(selectedTeam)" x-bind:disabled="selectedTeam !== '' && !$el.dataset.teamIds.split(',').includes(selectedTeam)">{{ agent.name }} - {{ agent.presence_status | replace('_', ' ') | title }}</option>{% endfor %}
                             </select>
                         </label>
                         <input type="hidden" name="reason" value="Escalated from the inbox workspace">

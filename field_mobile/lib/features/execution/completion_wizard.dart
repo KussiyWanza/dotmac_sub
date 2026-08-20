@@ -10,15 +10,26 @@ import 'completion_state.dart';
 import 'execution_controller.dart';
 import 'signature_pad.dart';
 
-/// Camera abstraction: returns true when a photo was captured and queued.
-/// The device build overrides this with PhotoQueue.captureForJob at
-/// bootstrap; the default no-op keeps headless environments safe.
-typedef PhotoCapture =
-    Future<bool> Function({String? workOrderId, String? installationProjectId});
+const completionPhotoPreviewSize = 112.0;
+const completionPhotoDecodeSize = 224;
 
-final photoCaptureProvider = Provider<PhotoCapture>(
-  (ref) =>
-      ({workOrderId, installationProjectId}) async => false,
+abstract interface class CompletionPhotoGateway {
+  Future<bool> capture({required String workOrderId});
+  Future<bool> recoverLost({required String workOrderId});
+}
+
+class NoopCompletionPhotoGateway implements CompletionPhotoGateway {
+  const NoopCompletionPhotoGateway();
+
+  @override
+  Future<bool> capture({required String workOrderId}) async => false;
+
+  @override
+  Future<bool> recoverLost({required String workOrderId}) async => false;
+}
+
+final photoCaptureProvider = Provider<CompletionPhotoGateway>(
+  (ref) => const NoopCompletionPhotoGateway(),
 );
 
 /// Queues a rendered customer signature as a kind=signature attachment.
@@ -73,7 +84,19 @@ class _CompletionWizardState extends ConsumerState<CompletionWizard> {
       photoCount: widget.existingPhotoCount,
       hasSignature: widget.hasExistingSignature,
     );
-    Future.microtask(_loadLocalEvidence);
+    Future.microtask(_recoverCameraResult);
+  }
+
+  Future<void> _recoverCameraResult() async {
+    try {
+      await ref
+          .read(photoCaptureProvider)
+          .recoverLost(workOrderId: widget.jobId);
+    } catch (_) {
+      // A missing/invalid Android lost-data record must not block the wizard.
+    } finally {
+      await _loadLocalEvidence();
+    }
   }
 
   Future<void> _loadLocalEvidence() async {
@@ -223,9 +246,9 @@ class _CompletionWizardState extends ConsumerState<CompletionWizard> {
             localPhotos: _localPhotos,
             onRemovePhoto: _removeLocalPhoto,
             onAddPhoto: () async {
-              final captured = await ref.read(photoCaptureProvider)(
-                workOrderId: widget.jobId,
-              );
+              final captured = await ref
+                  .read(photoCaptureProvider)
+                  .capture(workOrderId: widget.jobId);
               if (captured) {
                 await _loadLocalEvidence();
               }
@@ -460,22 +483,9 @@ class _EvidenceStep extends StatelessWidget {
                 final photo = localPhotos[index];
                 return Stack(
                   children: [
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(10),
-                      child: Image.file(
-                        File(photo.localPath),
-                        key: Key('completion-photo-${photo.clientRef}'),
-                        width: 112,
-                        height: 112,
-                        fit: BoxFit.cover,
-                        errorBuilder: (_, _, _) => const SizedBox(
-                          width: 112,
-                          height: 112,
-                          child: Center(
-                            child: Icon(Icons.broken_image_outlined),
-                          ),
-                        ),
-                      ),
+                    CompletionPhotoThumbnail(
+                      localPath: photo.localPath,
+                      clientRef: photo.clientRef,
                     ),
                     Positioned(
                       top: 4,
@@ -509,6 +519,38 @@ class _EvidenceStep extends StatelessWidget {
       ],
     );
   }
+}
+
+/// Memory-bounded preview for locally queued completion evidence.
+class CompletionPhotoThumbnail extends StatelessWidget {
+  const CompletionPhotoThumbnail({
+    super.key,
+    required this.localPath,
+    required this.clientRef,
+  });
+
+  final String localPath;
+  final String clientRef;
+
+  @override
+  Widget build(BuildContext context) => ClipRRect(
+    borderRadius: BorderRadius.circular(10),
+    child: Image.file(
+      File(localPath),
+      key: Key('completion-photo-$clientRef'),
+      width: completionPhotoPreviewSize,
+      height: completionPhotoPreviewSize,
+      cacheWidth: completionPhotoDecodeSize,
+      cacheHeight: completionPhotoDecodeSize,
+      filterQuality: FilterQuality.low,
+      fit: BoxFit.cover,
+      errorBuilder: (_, _, _) => const SizedBox(
+        width: completionPhotoPreviewSize,
+        height: completionPhotoPreviewSize,
+        child: Center(child: Icon(Icons.broken_image_outlined)),
+      ),
+    ),
+  );
 }
 
 class _SignOffStep extends StatelessWidget {

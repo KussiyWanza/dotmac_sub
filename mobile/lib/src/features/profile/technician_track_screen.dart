@@ -92,6 +92,7 @@ class TechnicianTrackScreen extends ConsumerWidget {
       'sharing_off' =>
         "The technician's live location isn't being shared right now.",
       'no_fix' => "Waiting for the technician's location…",
+      'stale' => "Waiting for an updated technician location...",
       'not_linked' => "Live tracking isn't available for this visit.",
       _ => "Live tracking isn't available right now.",
     };

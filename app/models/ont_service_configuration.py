@@ -30,6 +30,7 @@ class OntServiceConfigurationPhase(enum.Enum):
     queued = "queued"
     applying = "applying"
     readback_pending = "readback_pending"
+    delivered_unverified = "delivered_unverified"
     verified = "verified"
     failed = "failed"
     superseded = "superseded"

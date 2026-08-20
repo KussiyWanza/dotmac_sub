@@ -3,8 +3,8 @@
 **Status:** Rebaselined 2026-08-02 for slice S1 of the selective kernel-adoption
 plan; amended the same day for slice S2 (dependency pinned — see "S2 acceptance
 claim") and slice S3 (composition declared in `app/composition.py` — see "S3
-acceptance claim"). The pin moved to `dotmac-kernel==0.1.0a50` on 2026-08-13 —
-see "Pin history". Supersedes the
+acceptance claim"). The pin moved to `dotmac-kernel==0.1.0a50` on 2026-08-13
+and to `dotmac-kernel==0.1.0a81` on 2026-08-20 — see "Pin history". Supersedes the
 2026-07-19 Phase-0 draft, which was surveyed before the kernel was released and
 against `origin/main` 7807afcd. No code, schema, or dependency change is
 authorized by this document alone.
@@ -51,6 +51,15 @@ collision inventory re-verified at each rebase rather than assumed to hold:
   continue to include hosted tables, transient DDL names, and both repositories'
   migration histories.
 
+- against released kernel a81 (Sub unchanged since the a50 measurement), the
+  kernel's declared model tables intersect Sub's `app/models/**` in exactly the
+  same seven names, and the nine current lineage-head overlaps are unchanged.
+  Kernel revisions 0024-0026 add one new lineage-head table
+  (`external_identity_bindings`), alter `auth_sessions`, and re-grant
+  `platform_audit_events`; none of those names exists in Sub, so neither
+  executable ratchet moves. The remeasurement was run against the a81 source
+  tree, not assumed from the changelog.
+
 The recon is re-run on every pin and Sub model change because a stale inventory
 would silently under-report the very risk the S7 ADR gate exists to hold.
 
@@ -87,6 +96,49 @@ per-table cutover decisions.
 
 
 ## Pin history
+
+**2026-08-20 — `0.1.0a50` → `0.1.0a81`.** A deliberate catch-up repin, not a
+new kernel consumption: Sub's imported surface is unchanged and every module
+it actually consumes (`settings_resolver`, `settings_models`,
+`setting_scopes`, `setting_value_types`, `settings_cache`, `settings_crypto`,
+`secret_sources`, `capabilities`, `profiles`, `providers.provisioning`) is
+byte-identical between a50 and a81. Only `assembly`, `features`, `models` and
+the package `__init__` changed, and all four changed additively — no name Sub
+imports was removed, renamed or given a new required argument.
+
+Protected release run `32346291258` built, inspected, published and
+registry-verified a81. The annotated tag `dotmac-kernel-v0.1.0a81` peels to
+Starter main `8f99413826e5adf3d35379ebc6deb79bcb5c8242`. The lock records wheel
+SHA256 `f3b82ed2f1a12897cf7e9b801c905f0f7018fbbb5f9045aa6bef02a3632665bb`
+and sdist SHA256
+`2c4fe080d0d2b31271ca0b0c2d435d0ad2d3a2fb81c25c591a1bc0b3774d3810`;
+re-locking moved no other package.
+
+Two breaking changes to a released surface were crossed and both are inert for
+Sub. a61 replaced a60's implicit plane selector with the explicit
+`ProductAssemblySpec.module_planes` contract (ADR-0028): `SUB_ASSEMBLY`
+declares four `FeatureManifest`s, none of which declares
+`supported_plane_sets`, so `validate_module_plane_selections` requires no
+selection and the field keeps its empty default. a70 made `actor_type` (and
+`actor_id` for every non-system actor) explicit on `write_audit_event` and made
+`resolve_audit_actor` raise on the two former fallback shapes; `app/` calls
+neither — `dotmac_kernel.audit` remains forbidden by the import guard and
+`app/models/audit.py::AuditEvent` remains Sub's own writer.
+
+The guarded transitive package surface grows from nineteen modules to
+twenty-four. `planes` and `prerequisites` arrive through `assembly`/`modules`,
+`external_identity` through `models`, `outbox_event_types` through `features`,
+and the private `_transactions` through the a73 change that stopped
+consent/delivery/idempotency/external-identity importing the eager kernel
+database owner merely to open a SAVEPOINT. Each is LOADED, none is used: no
+kernel middleware is mounted, no kernel endpoint is served, and the top-level
+route prefix set is unchanged.
+
+Sub still does not compose a kernel migration lineage, import a kernel
+authority into `app/`, activate FORCE RLS, move the revision-0001 ratchet, or
+transfer any business owner. The seven competing model declarations and the
+nine current lineage-head overlaps are re-measured and unchanged; see the
+collision inventory below.
 
 **2026-08-13 — `0.1.0a42` → `0.1.0a50`.** Sub takes the first released
 product-manifest contract rather than following the kernel's latest version by
@@ -555,7 +607,7 @@ Rules the guard enforces beyond the module list:
 - `dotmac_kernel.testing.*` is consume-pure for `tests/` and the dev dependency
   group only; it is not on the `app/` allowlist.
 
-## Collision inventory (kernel 0.1.0a50 vs Sub through migration 528)
+## Collision inventory (kernel 0.1.0a81 vs Sub through migration 528)
 
 The authoritative migration-lineage measurement has nine overlaps at current
 lineage head plus one transient name that still needs a chain disposition; see
@@ -626,7 +678,10 @@ Hosted overlaps and non-competing names worth recording: kernel `tenants`,
 `platform_outbox_events`,
 `platform_admins`, `platform_sessions`, `platform_audit_events`,
 `party_role_grants`, and
-`tenant_entitlement_grants` do not collide with a Sub model. The first two are
+`tenant_entitlement_grants` do not collide with a Sub model. Kernel revision
+0024's `external_identity_bindings` (a81) joins that non-colliding list — Sub
+has no table or model of that name, and `dotmac_kernel.external_identity`
+stays off the `app/` allowlist. The first two are
 intentionally hosted through the admitted kernel models; a40 renamed the inbox
 tables to `idempotency_records` / `platform_idempotency_records`, which likewise
 do not collide. `communication_deliveries` and `feature_flag_overrides` are also
@@ -641,8 +696,15 @@ different owners.
   pre-creates the table (`ensure_alembic_version_table`). Composing kernel
   revisions into Sub's `version_locations` would put two independent heads in
   one version table — forbidden before the S7 ADR.
+- The narrower question — composing an installable module's own `mod_*`
+  lineage, which is NOT the kernel's public lineage — is ruled by
+  `docs/adr/0011-module-lineage-composition.md` (accepted 2026-08-20). It binds
+  module prerequisites to Sub's OWN revisions rather than kernel `0001`,
+  following the ERP precedent the kernel documents, and explicitly does not
+  authorize composing the kernel lineage or move the revision-0001 ratchet.
+  The bullet above still stands for the kernel's own revisions.
 - Kernel revision IDs are `0001_initial_tenant_schema` …
-  `0023_audit_actor_and_forensics`
+  `0026_platform_audit_log`
   (four-digit prefixes); Sub's files use three-digit-and-up prefixes
   (`001_squashed_initial_schema` …, 498 files plus `versions_archive`). The ID
   strings do not collide today, but Sub's numeric-prefix guard

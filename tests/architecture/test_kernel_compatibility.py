@@ -23,7 +23,7 @@ What this file proves, with zero skips:
 - the Sub app builds with the kernel installed, and every ``dotmac_kernel``
   module in its import graph is one the ledger allowlist admits OR one the
   kernel reaches for itself (``TRANSITIVE_KERNEL_MODULES``, a reviewed
-  snapshot — nineteen of them, which is worth knowing) — and no kernel
+  snapshot — twenty-four of them, which is worth knowing) — and no kernel
   middleware is mounted, no kernel route endpoint is served, and the top-level
   route prefix set is exactly the reviewed pin.
 
@@ -56,9 +56,9 @@ PYPROJECT = PROJECT_ROOT / "pyproject.toml"
 
 #: The reviewed kernel pin. Changing it is a ledger amendment
 #: (docs/PLATFORM_ADOPTION_LEDGER.md), never a lockfile side effect.
-KERNEL_PIN = "0.1.0a50"
-KERNEL_WHEEL_SHA256 = "3030954c84c8ed4caae877412df4c1f3db0b2e4dd94895f1bd9a3a954fa77371"
-KERNEL_SDIST_SHA256 = "87c0df99a33f4d4b79f3e22842166524b3dec9f077af7ad5757e6fb3600274f7"
+KERNEL_PIN = "0.1.0a81"
+KERNEL_WHEEL_SHA256 = "f3b82ed2f1a12897cf7e9b801c905f0f7018fbbb5f9045aa6bef02a3632665bb"
+KERNEL_SDIST_SHA256 = "2c4fe080d0d2b31271ca0b0c2d435d0ad2d3a2fb81c25c591a1bc0b3774d3810"
 
 #: The private index source name pyproject must route the kernel through.
 KERNEL_SOURCE = "forgejo"
@@ -66,11 +66,20 @@ KERNEL_SOURCE = "forgejo"
 #: What the kernel loads FOR ITS OWN USE once `app/` imports the settings
 #: resolver, measured rather than assumed — and larger than anyone expected.
 #:
-#: Consuming one kernel subsystem pulls nineteen more modules into the process,
+#: Consuming one kernel subsystem pulls twenty-four more modules into the process,
 #: including `audit`, `security`, `identity`, `permissions` and `entitlements`
 #: — precisely the surfaces the adoption ledger keeps out of `app/`. Nothing in
 #: `app/` imports them and the AST guard still refuses one that tries; they are
 #: here because `settings_resolver` reaches them internally.
+#:
+#: The a50 -> a81 repin added five names, each traced to an ALLOWED import
+#: rather than absorbed: `planes` and `prerequisites` arrive through
+#: `assembly`/`modules` (the ADR-0028 explicit plane contract), `external_identity`
+#: through `models` (kernel revision 0024's binding table), `outbox_event_types`
+#: through `features`, and the private `_transactions` through the a73 change
+#: that stopped consent/delivery/idempotency/external-identity importing the
+#: eager kernel database owner just to open a SAVEPOINT. None of them is an
+#: authority Sub consults, and none is reachable from `app/`.
 #:
 #: Being LOADED is not being USED: a module in `sys.modules` creates no second
 #: authority, mounts no route, and answers no question Sub asks. The sibling
@@ -84,18 +93,23 @@ KERNEL_SOURCE = "forgejo"
 #: of these — that list is `ALLOWED_KERNEL_MODULES`, and it is the boundary.
 TRANSITIVE_KERNEL_MODULES = frozenset(
     {
+        "dotmac_kernel._transactions",
         "dotmac_kernel.audit",
         "dotmac_kernel.audit_actions",
         "dotmac_kernel.cache",
         "dotmac_kernel.config",
         "dotmac_kernel.entitlements",
         "dotmac_kernel.exceptions",
+        "dotmac_kernel.external_identity",
         "dotmac_kernel.flags",
         "dotmac_kernel.identity",
         "dotmac_kernel.models_platform",
         "dotmac_kernel.modules",
         "dotmac_kernel.namespaces",
+        "dotmac_kernel.outbox_event_types",
         "dotmac_kernel.permissions",
+        "dotmac_kernel.planes",
+        "dotmac_kernel.prerequisites",
         "dotmac_kernel.product_manifest",
         "dotmac_kernel.query",
         "dotmac_kernel.security",
@@ -234,7 +248,7 @@ def test_pyproject_pins_kernel_exactly_from_the_named_index() -> None:
 
 
 def test_lock_carries_the_reviewed_kernel_release_bytes() -> None:
-    """The current pin resolves to the exact registry-verified a50 artifacts."""
+    """The current pin resolves to the exact registry-verified a81 artifacts."""
     import tomllib
 
     with (PROJECT_ROOT / "poetry.lock").open("rb") as lock_file:

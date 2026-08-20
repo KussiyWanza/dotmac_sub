@@ -16,9 +16,28 @@ GENERIC_FOLLOW_UP_QUESTION = (
 CUSTOMER_TYPE_FOLLOW_UP_QUESTION = (
     "Is this new internet request for you personally or for an organization?"
 )
+DEFAULT_CLARIFICATION_QUESTIONS = (
+    GENERIC_FOLLOW_UP_QUESTION,
+    CUSTOMER_TYPE_FOLLOW_UP_QUESTION,
+)
 APPROVED_FOLLOW_UP_QUESTIONS = frozenset(
     {GENERIC_FOLLOW_UP_QUESTION, CUSTOMER_TYPE_FOLLOW_UP_QUESTION}
 )
+
+
+def normalize_clarification_questions(value: object) -> tuple[str, str]:
+    """Validate the ordered, customer-visible questions stored in policy JSON."""
+
+    if value is None:
+        return DEFAULT_CLARIFICATION_QUESTIONS
+    if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple)):
+        raise ValueError("clarification_questions must contain two text values")
+    if len(value) != 2 or any(not isinstance(item, str) for item in value):
+        raise ValueError("clarification_questions must contain exactly two text values")
+    questions = tuple(item.strip() for item in value)
+    if any(not item or len(item) > 300 for item in questions):
+        raise ValueError("clarification questions must be between 1 and 300 characters")
+    return (questions[0], questions[1])
 
 
 class AiIntakeIntent(StrEnum):
