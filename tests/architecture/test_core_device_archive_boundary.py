@@ -27,6 +27,12 @@ def test_archive_owner_is_fully_registered() -> None:
     assert owner.contract is not None
     assert owner.contract.concerns
 
+    presentation_owner = service_relationship("ui.network_device_status_presentation")
+    assert presentation_owner.module == (
+        "app.services.network_device_status_presentation"
+    )
+    assert presentation_owner.is_contracted
+
 
 def test_web_adapter_delegates_without_writing_archive_fields() -> None:
     tree = ast.parse(ROUTE.read_text(encoding="utf-8"))
@@ -62,7 +68,8 @@ def test_schema_and_detail_surface_preserve_reversible_state() -> None:
     assert "Restore all archived core devices before downgrading" in migration
 
     template = DETAIL_TEMPLATE.read_text(encoding="utf-8")
-    assert "This device is archived and read-only." in template
+    assert "This device is decommissioned and read-only." in template
+    assert "Decommission Device" in template
     assert 'action="/admin/network/core-devices/{{ device.id }}/restore"' in template
 
 

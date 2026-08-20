@@ -332,6 +332,7 @@ _DEVICE_OPERATIONAL_PRESENTATIONS: dict[str, tuple[str, StatusTone, StatusIcon]]
     "not_working": ("Not working", StatusTone.negative, StatusIcon.x),
 }
 
+
 _CONNECTION_HEALTH_PRESENTATIONS: dict[str, tuple[str, StatusTone, StatusIcon]] = {
     ConnectionHealthState.connected.value: (
         "Connected",
@@ -739,18 +740,6 @@ def device_operational_status_presentation(
 
     value = _status_value(getattr(status, "status", status))
     return _presentation(value, _DEVICE_OPERATIONAL_PRESENTATIONS)
-
-
-def network_device_list_status_presentation(
-    status: object | str | None,
-) -> StatusPresentation:
-    """Present binary device operation in familiar connectivity language."""
-
-    presentation = device_operational_status_presentation(status)
-    labels = {"working": "Online", "not_working": "Offline"}
-    return presentation.model_copy(
-        update={"label": labels.get(presentation.value, presentation.label)}
-    )
 
 
 def topology_hop_status_presentation(state: str | None) -> StatusPresentation:

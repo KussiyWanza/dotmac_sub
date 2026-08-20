@@ -11,7 +11,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.network import OLTDevice
-from app.models.network_monitoring import DeviceInterface, NetworkDevice, PopSite
+from app.models.network_monitoring import (
+    DeviceInterface,
+    NetworkDevice,
+    NetworkDeviceLifecycleState,
+    PopSite,
+)
 from app.schemas.status_presentation import StatusTone
 from app.services import device_projection_views
 from app.services import network as network_service
@@ -250,9 +255,9 @@ def get_cpe_ports(db: Session, cpe_id: object) -> list[Port]:
     return list(db.scalars(select(Port).where(Port.device_id == cpe_id)).all())
 
 
-LIFECYCLE_ACTIVE = "active"
-LIFECYCLE_INACTIVE = "inactive"
-LIFECYCLE_ARCHIVED = "archived"
+LIFECYCLE_ACTIVE = NetworkDeviceLifecycleState.ACTIVE.value
+LIFECYCLE_INACTIVE = NetworkDeviceLifecycleState.INACTIVE.value
+LIFECYCLE_ARCHIVED = NetworkDeviceLifecycleState.ARCHIVED.value
 
 
 def _lifecycle_state(device: object) -> str:
@@ -747,7 +752,7 @@ def _device_row_actions(device: dict) -> dict[str, Action]:
                 None
                 if can_ping
                 else (
-                    "Archived devices are read-only"
+                    "Decommissioned devices are read-only"
                     if is_archived
                     else "No management IP on record"
                 )
@@ -762,7 +767,7 @@ def _device_row_actions(device: dict) -> dict[str, Action]:
             reason=None
             if can_reboot
             else (
-                "Archived devices are read-only"
+                "Decommissioned devices are read-only"
                 if is_archived
                 else "Reboot is not available for this device type"
                 if not rebootable
@@ -780,12 +785,12 @@ def _device_row_actions(device: dict) -> dict[str, Action]:
         ),
         "archive": Action(
             key="archive",
-            label="Restore Device" if is_archived else "Archive Device",
+            label="Restore Device" if is_archived else "Decommission Device",
             allowed=can_archive or can_restore,
             reason=(
                 None
                 if can_archive or can_restore
-                else "Archive is available only for core devices"
+                else "Decommission is available only for core devices"
             ),
             permission=ARCHIVE_SCOPE,
             preview_url=(
