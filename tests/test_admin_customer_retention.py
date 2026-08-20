@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from jinja2 import nodes
+
 from app.web.admin import build_router
 from app.web.admin import customer_retention as retention
 
@@ -53,3 +55,26 @@ def test_retention_rows_are_native_billing_risk_only():
     assert rows[0]["risk_segment"] == "Suspended"
     assert rows[1]["risk_segment"] == "Due Soon"
     assert all("engagement" not in row for row in rows)
+
+
+def test_retention_templates_only_import_published_ui_macros():
+    environment = retention.templates.env
+    macro_module = environment.get_template("components/ui/macros.html").module
+
+    for template_name in (
+        "admin/reports/customer_retention_tracker.html",
+        "admin/reports/customer_retention_profile.html",
+    ):
+        source, _, _ = environment.loader.get_source(environment, template_name)
+        parsed = environment.parse(source)
+        imported_names = {
+            imported if isinstance(imported, str) else imported[0]
+            for node in parsed.find_all(nodes.FromImport)
+            if getattr(node.template, "value", None) == "components/ui/macros.html"
+            for imported in node.names
+        }
+
+        missing = sorted(
+            name for name in imported_names if not hasattr(macro_module, name)
+        )
+        assert missing == [], f"{template_name} imports unavailable macros: {missing}"
