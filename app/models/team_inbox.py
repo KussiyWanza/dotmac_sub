@@ -298,12 +298,21 @@ class InboxConversation(Base):
     __tablename__ = "inbox_conversations"
     __table_args__ = (
         Index("ix_inbox_conversations_subscriber", "subscriber_id"),
+        Index(
+            "ix_inbox_conversations_continued_from",
+            "continued_from_conversation_id",
+        ),
         Index("ix_inbox_conversations_primary_team", "primary_service_team_id"),
         Index("ix_inbox_conversations_status_last", "status", "last_message_at"),
         Index(
             "ix_inbox_conversations_external_thread",
             "channel_type",
             "external_thread_id",
+        ),
+        CheckConstraint(
+            "continued_from_conversation_id IS NULL OR "
+            "continued_from_conversation_id <> id",
+            name="ck_inbox_conversations_not_self_continuation",
         ),
     )
 
@@ -328,6 +337,10 @@ class InboxConversation(Base):
     subject: Mapped[str | None] = mapped_column(String(200))
     contact_address: Mapped[str | None] = mapped_column(String(255))
     external_thread_id: Mapped[str | None] = mapped_column(String(255))
+    continued_from_conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("inbox_conversations.id", ondelete="SET NULL"),
+    )
     first_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
@@ -724,7 +737,9 @@ class InboxConversationParticipant(Base):
     a new vendor or an unreviewed address unrepresentable — the exact problem
     this table exists to remove.
 
-    Shadow projection: nothing reads it for a threading or export decision yet.
+    The customer-context history projection reads exact inbound endpoints and
+    reviewed Party bindings from this evidence. Thread admission and transcript
+    export policy remain deliberately deferred.
     """
 
     __tablename__ = "inbox_conversation_participants"

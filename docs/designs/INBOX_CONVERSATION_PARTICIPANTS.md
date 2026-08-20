@@ -1,6 +1,6 @@
 # Conversation participants
 
-**Status:** shadow projection implemented; every consequence still deferred.
+**Status:** customer-history reader cut over; threading and export consequences deferred.
 **Decision owner:** Michael.
 **Owning service:** `communications.team_inbox_participants`
 (`app/services/team_inbox_participants.py`).
@@ -43,7 +43,8 @@ that endpoint belongs to. A mandatory Party FK would recreate the original
 problem: an unknown colleague, a new vendor, an ambiguous shared address or an
 unreviewed contact would stay unrepresentable. It would also contradict
 `docs/PARTY_CONTACT_INBOX_PROJECTION.md`, where the Party binding is explicitly
-nullable and shadow-only.
+nullable and requires reviewed evidence before the bounded history reader may
+use it.
 
 ### Admission source before relationship
 
@@ -108,10 +109,20 @@ wait for the policy: nothing recovers an SPF result for a message already
 accepted, so every message received before capture began is permanently
 un-adjudicable.
 
+## Implemented read consequence
+
+`communications.team_inbox_contact_context` reads active participant rows for
+conversation history. A reviewed `party_contact_point_id` may broaden history
+to that exact Party. Without reviewed identity, only an `inbound_from` endpoint
+with the same channel may match; provider-scoped social identifiers must also
+use the same provider account scope. This read does not admit a sender to an
+existing thread, authorize an export, or infer that another Party endpoint
+participated.
+
 ## Pending decisions
 
-None of these are implemented, and none should be inferred from this table
-existing.
+None of the following is implemented, and none should be inferred from the
+bounded history read above.
 
 1. **Admission policy.** Whether an unrecognised sender may join a thread, and
    what weight transport authentication carries in that decision.

@@ -177,7 +177,7 @@ def test_row_actions_allowed_ping_carries_no_reason() -> None:
     assert actions["reboot"].requires_confirmation is True
     assert actions["reboot"].preview_url.endswith("/reboot/preview")
     assert actions["archive"].allowed
-    assert actions["archive"].label == "Archive Device"
+    assert actions["archive"].label == "Decommission Device"
     assert actions["archive"].preview_url.endswith("/archive/preview")
 
 

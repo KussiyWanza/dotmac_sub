@@ -525,8 +525,9 @@ DOMAIN = DomainSOT(
                         kind=AuthorityKind.CONTROL_INPUT,
                         source=(
                             "typed TicketCreate, TicketUpdate, TicketMentionTarget, "
-                            "comment, merge, link, "
-                            "resolution, satisfaction, attachment, and bulk command inputs "
+                            "comment, merge, link, resolution, satisfaction, typed "
+                            "AttachmentMeta with private StoredFile UUID, bounded comment "
+                            "attachment-reference repair, and bulk command inputs "
                             "with CommandContext plus the closed silent-internal creation "
                             "consequence mode"
                         ),
@@ -674,6 +675,7 @@ DOMAIN = DomainSOT(
                         "ticket_comment_mentions_not_allowed",
                         "ticket_comment_mention_invalid",
                         "ticket_comment_mention_target_unavailable",
+                        "ticket_comment_attachment_repair_scope_invalid",
                         *owner_command_boundary_error_codes("support.ticket_lifecycle"),
                     ),
                     mapping_owner=(
@@ -720,8 +722,9 @@ DOMAIN = DomainSOT(
                     new_owner="support.ticket_lifecycle",
                     verification=(
                         "Support lifecycle, assignment, automation, comment, attachment, "
-                        "link, duplicate, merge, CSAT, portal, unmatched-radio silent creation "
-                        "and legacy-number repair, and architecture tests"
+                        "comment attachment-reference repair, link, duplicate, merge, CSAT, "
+                        "portal, unmatched-radio silent creation and legacy-number repair, "
+                        "and architecture tests"
                     ),
                     cutover_gate=(
                         "all Ticket mutations enter the registered owner; policies return "

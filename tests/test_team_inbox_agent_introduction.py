@@ -5,7 +5,12 @@ from uuid import uuid4
 from app.models.party import Party
 from app.models.service_team import ServiceTeam, ServiceTeamMember
 from app.models.system_user import SystemUser
-from app.models.team_inbox import InboxConversation, InboxMessage
+from app.models.team_inbox import (
+    InboxAgentPresence,
+    InboxAgentPresenceStatus,
+    InboxConversation,
+    InboxMessage,
+)
 from app.services.team_inbox_agent_introduction import (
     rendered_introduction,
     update_preference,
@@ -32,6 +37,13 @@ def _agent_and_team(db_session):
     db_session.flush()
     db_session.add(
         ServiceTeamMember(team_id=team.id, person_id=party.id, role="member")
+    )
+    db_session.add(
+        InboxAgentPresence(
+            person_id=user.id,
+            status=InboxAgentPresenceStatus.online.value,
+            last_seen_at=datetime.now(UTC),
+        )
     )
     db_session.flush()
     return user, team

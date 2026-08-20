@@ -6,9 +6,11 @@ import csv
 import io
 import json
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum
+from typing import BinaryIO, Protocol
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -64,9 +66,21 @@ from app.services.status_presentation import ticket_status_presentation
 
 logger = logging.getLogger(__name__)
 
+
+class TicketAttachmentEntityType(str, Enum):
+    ticket = "support_ticket_attachment"
+    comment = "support_ticket_comment_attachment"
+
+
 TICKET_ATTACHMENT_ENTITY_TYPES = frozenset(
-    {"support_ticket_attachment", "support_ticket_comment_attachment"}
+    entity_type.value for entity_type in TicketAttachmentEntityType
 )
+
+
+class TicketAttachmentUpload(Protocol):
+    filename: str | None
+    content_type: str | None
+    file: BinaryIO
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,7 +255,8 @@ _TICKET_STATUS_FILTERS = frozenset(
 def _ticket_status_scope(value: str | None) -> support_service.TicketStatusScope:
     normalized = canonical_ticket_status_value(str(value or "").strip().lower())
     if not normalized:
-        return support_service.TicketStatusScope.all()
+        # Canceled tickets are visible only through their explicit status filter.
+        return support_service.TicketStatusScope.excluding_canceled()
     if normalized == NOT_CLOSED_TICKET_STATUS_FILTER:
         return support_service.TicketStatusScope.not_closed()
     return support_service.TicketStatusScope.matching(TicketStatus(normalized))
@@ -530,23 +545,24 @@ def _status_summary_cards(
     ]
 
 
-def _resolve_uploaded_by_subscriber_id(db: Session, actor_id: str | None) -> str | None:
-    uid = parse_uuid_or_none(actor_id)
-    if not uid:
+def _resolve_uploaded_by_subscriber_id(
+    db: Session, actor_id: UUID | None
+) -> UUID | None:
+    if actor_id is None:
         return None
-    return str(uid) if db.get(Subscriber, uid) else None
+    return actor_id if db.get(Subscriber, actor_id) else None
 
 
 @support_service.ticket_owner_command("stage_attachment_uploads")
 def upload_ticket_attachments(
     db: Session,
     *,
-    ticket_id: str,
-    attachments: list,
-    entity_type: str,
-    actor_id: str | None,
-) -> list[dict]:
-    uploaded_metadata = []
+    ticket_id: UUID,
+    attachments: Sequence[TicketAttachmentUpload],
+    entity_type: TicketAttachmentEntityType,
+    actor_id: UUID | None,
+) -> tuple[AttachmentMeta, ...]:
+    uploaded_metadata: list[AttachmentMeta] = []
     uploaded_by = _resolve_uploaded_by_subscriber_id(db, actor_id)
     try:
         for attachment in attachments or []:
@@ -568,24 +584,24 @@ def upload_ticket_attachments(
             record = file_uploads.stage_upload(
                 db=db,
                 domain="attachments",
-                entity_type=entity_type,
-                entity_id=ticket_id,
+                entity_type=entity_type.value,
+                entity_id=str(ticket_id),
                 original_filename=filename,
                 content_type=content_type,
                 data=payload,
-                uploaded_by=uploaded_by,
+                uploaded_by=str(uploaded_by) if uploaded_by else None,
                 owner_subscriber_id=None,
             )
             uploaded_metadata.append(
-                {
-                    "file_name": record.original_filename,
-                    "content_type": record.content_type or content_type,
-                    "file_size": int(record.file_size),
-                    "storage_key": record.storage_key_or_relative_path,
-                    "stored_file_id": str(record.id),
-                }
+                AttachmentMeta(
+                    file_name=record.original_filename,
+                    content_type=record.content_type or content_type,
+                    file_size=int(record.file_size),
+                    storage_key=record.storage_key_or_relative_path,
+                    stored_file_id=record.id,
+                )
             )
-        return uploaded_metadata
+        return tuple(uploaded_metadata)
     except Exception:
         # Database metadata is rolled back by the Ticket owner. Object keys are
         # content-addressed; an interrupted command is repaired by the storage
@@ -838,7 +854,7 @@ def build_ticket_comment_payload(
     body: str,
     is_internal: bool,
     actor_id: str | None,
-    uploaded: list[dict],
+    uploaded: Sequence[AttachmentMeta],
     mentions: tuple[TicketMentionTarget, ...] = (),
 ) -> TicketCommentCreate:
     return TicketCommentCreate(
@@ -846,7 +862,7 @@ def build_ticket_comment_payload(
         is_internal=is_internal,
         author_type=TicketCommentAuthorType.staff,
         author_system_user_id=parse_uuid_or_none(actor_id),
-        attachments=[AttachmentMeta(**item) for item in uploaded],
+        attachments=list(uploaded),
         mentions=mentions,
     )
 
@@ -931,10 +947,10 @@ def create_ticket_from_form(
     if attachments:
         uploaded = upload_ticket_attachments(
             db,
-            ticket_id=str(ticket.id),
+            ticket_id=ticket.id,
             attachments=attachments,
-            entity_type="support_ticket_attachment",
-            actor_id=actor_id,
+            entity_type=TicketAttachmentEntityType.ticket,
+            actor_id=parse_uuid_or_none(actor_id),
         )
         support_service.tickets.add_attachments(db, str(ticket.id), uploaded)
     return ticket
@@ -1046,10 +1062,10 @@ def add_ticket_comment_from_form(
     db_session_adapter.release_read_transaction(db)
     uploaded = upload_ticket_attachments(
         db,
-        ticket_id=ticket_id,
+        ticket_id=UUID(ticket_id),
         attachments=attachments,
-        entity_type="support_ticket_comment_attachment",
-        actor_id=actor_id,
+        entity_type=TicketAttachmentEntityType.comment,
+        actor_id=parse_uuid_or_none(actor_id),
     )
     mention_targets = _parse_mentions_payload(mentions)
     payload = build_ticket_comment_payload(

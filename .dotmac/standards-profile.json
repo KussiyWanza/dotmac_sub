@@ -117,13 +117,13 @@
         "path": "tests/test_email_services.py",
         "symbol": "test_send_email_auth_failure_logs",
         "category": "outbound_transport",
-        "fingerprint": "a9809141615918513c5cc6552aca7b7c25ee797ecaa488c50b021eb5bb438e64"
+        "fingerprint": "6d46d2e8739c255f200a739f274b929df281df518e52790fa9f80ce34c01d803"
       },
       {
         "path": "tests/test_email_services.py",
         "symbol": "test_smtp_connection_auth_failure_logs",
         "category": "outbound_transport",
-        "fingerprint": "a9809141615918513c5cc6552aca7b7c25ee797ecaa488c50b021eb5bb438e64"
+        "fingerprint": "6d46d2e8739c255f200a739f274b929df281df518e52790fa9f80ce34c01d803"
       },
       {
         "path": "tests/test_genieacs_services.py",

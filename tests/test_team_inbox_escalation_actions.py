@@ -98,7 +98,7 @@ def test_escalate_inbox_conversation_auto_assigns_available_agent(db_session):
 
 def test_escalate_inbox_conversation_can_target_active_team_member(db_session):
     team = _team(db_session, "Field Service")
-    agent = _member(db_session, team, status=InboxAgentPresenceStatus.away.value)
+    agent = _member(db_session, team, status=InboxAgentPresenceStatus.online.value)
     conversation = _conversation(db_session)
     db_session.commit()
 

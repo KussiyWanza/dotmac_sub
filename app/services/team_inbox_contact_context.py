@@ -9,21 +9,28 @@ from enum import StrEnum
 from typing import Generic, TypeVar
 from uuid import UUID
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.elements import ColumnElement
 
+from app.models.lead_intake import LeadIntakeInvitation
 from app.models.party import Party, PartyContactPoint
 from app.models.project import Project, ProjectTask
 from app.models.sales import Lead, LeadStatus
+from app.models.subscriber import Reseller, Subscriber
 from app.models.support import Ticket
-from app.models.team_inbox import InboxConversation
+from app.models.team_inbox import (
+    InboxContactLink,
+    InboxConversation,
+    InboxConversationParticipant,
+    InboxParticipantAdmissionSource,
+)
 from app.services import (
     conversation_lead_relationships,
     inbox_lead_actions,
     projects,
     support,
-    team_inbox_read,
 )
 
 logger = logging.getLogger(__name__)
@@ -44,6 +51,27 @@ class InboxIdentityState(StrEnum):
     identity_review_required = "identity_review_required"
     unresolved = "unresolved"
     unavailable = "unavailable"
+
+
+class ConversationHistoryMatchKind(StrEnum):
+    subscriber = "subscriber"
+    party = "party"
+    reseller = "reseller"
+    exact_endpoint = "exact_endpoint"
+    ambiguous = "ambiguous"
+    unavailable = "unavailable"
+
+
+@dataclass(frozen=True, slots=True)
+class ConversationHistoryScope:
+    kind: ConversationHistoryMatchKind
+    subscriber_id: UUID | None = None
+    party_id: UUID | None = None
+    reseller_id: UUID | None = None
+    channel_type: str | None = None
+    normalized_endpoint: str | None = None
+    provider_account_scope: str | None = None
+    reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +123,7 @@ class ConversationSummary:
     channel_type: str
     status: str
     last_message_at: datetime | None
+    contact_address: str | None
     url: str
 
 
@@ -145,6 +174,7 @@ class InboxContactContext:
     identity_state: InboxIdentityState
     party_id: UUID | None
     subscriber_id: UUID | None
+    conversation_history_scope: ConversationHistoryScope
     profile: ContextSection[PartyProfileSummary]
     leads: ContextSection[LeadSummary]
     tickets: ContextSection[TicketSummary]
@@ -369,30 +399,293 @@ def _tickets(
     )
 
 
+def _uuid_or_none(value: object) -> UUID | None:
+    try:
+        return UUID(str(value)) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _contact_resolution(conversation: InboxConversation) -> dict[str, object]:
+    metadata = (
+        conversation.metadata_ if isinstance(conversation.metadata_, dict) else {}
+    )
+    value = metadata.get("contact_resolution")
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _conversation_history_scope(
+    db: Session,
+    *,
+    conversation: InboxConversation,
+    identity_state: InboxIdentityState,
+    party_id: UUID | None,
+    subscriber_id: UUID | None,
+) -> ConversationHistoryScope:
+    if subscriber_id is not None:
+        return ConversationHistoryScope(
+            ConversationHistoryMatchKind.subscriber,
+            subscriber_id=subscriber_id,
+            reason="Exact reviewed Subscriber relationship.",
+        )
+    if identity_state is InboxIdentityState.identity_review_required:
+        return ConversationHistoryScope(
+            ConversationHistoryMatchKind.ambiguous,
+            reason=(
+                "Several reviewed Party identities participate in this conversation."
+            ),
+        )
+    if party_id is not None:
+        return ConversationHistoryScope(
+            ConversationHistoryMatchKind.party,
+            party_id=party_id,
+            reason="Exact reviewed Party relationship.",
+        )
+
+    resolution = _contact_resolution(conversation)
+    normalized_endpoint = str(
+        resolution.get("normalized_contact") or conversation.contact_address or ""
+    ).strip()
+    active_link = None
+    if normalized_endpoint and conversation.channel_type:
+        active_link = (
+            db.query(InboxContactLink)
+            .filter(InboxContactLink.channel_type == conversation.channel_type)
+            .filter(InboxContactLink.normalized_contact == normalized_endpoint)
+            .filter(InboxContactLink.is_active.is_(True))
+            .one_or_none()
+        )
+    if active_link is not None:
+        if active_link.subscriber_id is not None:
+            return ConversationHistoryScope(
+                ConversationHistoryMatchKind.subscriber,
+                subscriber_id=active_link.subscriber_id,
+                reason="Reviewed Inbox endpoint-to-Subscriber link.",
+            )
+        if active_link.party_contact_point_id is not None:
+            point = db.get(PartyContactPoint, active_link.party_contact_point_id)
+            if point is not None and point.is_active:
+                return ConversationHistoryScope(
+                    ConversationHistoryMatchKind.party,
+                    party_id=point.party_id,
+                    reason="Reviewed canonical Party contact-point link.",
+                )
+        if active_link.reseller_id is not None:
+            reseller = db.get(Reseller, active_link.reseller_id)
+            if reseller is not None and reseller.party_id is not None:
+                return ConversationHistoryScope(
+                    ConversationHistoryMatchKind.party,
+                    party_id=reseller.party_id,
+                    reason="Reviewed reseller Party relationship.",
+                )
+            return ConversationHistoryScope(
+                ConversationHistoryMatchKind.reseller,
+                reseller_id=active_link.reseller_id,
+                reason="Reviewed Inbox endpoint-to-Reseller link.",
+            )
+
+    if str(resolution.get("status") or "") == "ambiguous":
+        return ConversationHistoryScope(
+            ConversationHistoryMatchKind.ambiguous,
+            reason="The conversation endpoint matches more than one identity.",
+        )
+
+    reseller_id = _uuid_or_none(resolution.get("reseller_id"))
+    if str(resolution.get("status") or "") == "linked_reseller" and reseller_id:
+        reseller = db.get(Reseller, reseller_id)
+        if reseller is not None and reseller.party_id is not None:
+            return ConversationHistoryScope(
+                ConversationHistoryMatchKind.party,
+                party_id=reseller.party_id,
+                reason="Exact resolved reseller Party relationship.",
+            )
+        return ConversationHistoryScope(
+            ConversationHistoryMatchKind.reseller,
+            reseller_id=reseller_id,
+            reason="Exact resolved Reseller relationship.",
+        )
+
+    if not normalized_endpoint or not conversation.channel_type:
+        return ConversationHistoryScope(
+            ConversationHistoryMatchKind.unavailable,
+            reason="The conversation has no exact external endpoint.",
+        )
+    participant_scopes = tuple(
+        db.scalars(
+            select(InboxConversationParticipant.provider_account_scope)
+            .where(
+                InboxConversationParticipant.conversation_id == conversation.id,
+                InboxConversationParticipant.channel_type == conversation.channel_type,
+                InboxConversationParticipant.normalized_endpoint == normalized_endpoint,
+                InboxConversationParticipant.admission_source
+                == InboxParticipantAdmissionSource.inbound_from.value,
+                InboxConversationParticipant.is_active.is_(True),
+            )
+            .distinct()
+            .order_by(InboxConversationParticipant.provider_account_scope)
+        ).all()
+    )
+    if len(participant_scopes) > 1 and conversation.channel_type in {
+        "facebook_messenger",
+        "instagram_dm",
+    }:
+        return ConversationHistoryScope(
+            ConversationHistoryMatchKind.ambiguous,
+            reason="The endpoint appears under several provider account scopes.",
+        )
+    return ConversationHistoryScope(
+        ConversationHistoryMatchKind.exact_endpoint,
+        channel_type=conversation.channel_type,
+        normalized_endpoint=normalized_endpoint,
+        provider_account_scope=participant_scopes[0]
+        if participant_scopes
+        else "default",
+        reason="Exact normalized endpoint; no broader identity was inferred.",
+    )
+
+
+def _history_filter(
+    scope: ConversationHistoryScope,
+) -> ColumnElement[bool]:
+    if scope.kind is ConversationHistoryMatchKind.subscriber:
+        assert scope.subscriber_id is not None
+        return InboxConversation.subscriber_id == scope.subscriber_id
+    if scope.kind is ConversationHistoryMatchKind.party:
+        assert scope.party_id is not None
+        subscriber_ids = select(Subscriber.id).where(
+            Subscriber.party_id == scope.party_id
+        )
+        participant_conversation_ids = (
+            select(InboxConversationParticipant.conversation_id)
+            .join(
+                PartyContactPoint,
+                PartyContactPoint.id
+                == InboxConversationParticipant.party_contact_point_id,
+            )
+            .where(
+                PartyContactPoint.party_id == scope.party_id,
+                PartyContactPoint.is_active.is_(True),
+                InboxConversationParticipant.is_active.is_(True),
+            )
+        )
+        completed_intake_conversation_ids = select(
+            LeadIntakeInvitation.conversation_id
+        ).where(
+            LeadIntakeInvitation.party_id == scope.party_id,
+            LeadIntakeInvitation.status == "completed",
+        )
+        canonical_point_ids = select(PartyContactPoint.id).where(
+            PartyContactPoint.party_id == scope.party_id,
+            PartyContactPoint.is_active.is_(True),
+        )
+        reseller_ids = select(Reseller.id).where(Reseller.party_id == scope.party_id)
+        reviewed_scalar_link = (
+            select(InboxContactLink.id)
+            .where(
+                InboxContactLink.channel_type == InboxConversation.channel_type,
+                InboxContactLink.normalized_contact
+                == InboxConversation.contact_address,
+                InboxContactLink.party_contact_point_id.in_(canonical_point_ids),
+                InboxContactLink.is_active.is_(True),
+            )
+            .exists()
+        )
+        reviewed_reseller_link = (
+            select(InboxContactLink.id)
+            .where(
+                InboxContactLink.channel_type == InboxConversation.channel_type,
+                InboxContactLink.normalized_contact
+                == InboxConversation.contact_address,
+                InboxContactLink.reseller_id.in_(reseller_ids),
+                InboxContactLink.is_active.is_(True),
+            )
+            .exists()
+        )
+        return or_(
+            InboxConversation.subscriber_id.in_(subscriber_ids),
+            InboxConversation.id.in_(participant_conversation_ids),
+            InboxConversation.id.in_(completed_intake_conversation_ids),
+            reviewed_scalar_link,
+            reviewed_reseller_link,
+        )
+    if scope.kind is ConversationHistoryMatchKind.reseller:
+        assert scope.reseller_id is not None
+        reviewed_link = (
+            select(InboxContactLink.id)
+            .where(
+                InboxContactLink.channel_type == InboxConversation.channel_type,
+                InboxContactLink.normalized_contact
+                == InboxConversation.contact_address,
+                InboxContactLink.reseller_id == scope.reseller_id,
+                InboxContactLink.is_active.is_(True),
+            )
+            .exists()
+        )
+        recorded_reseller = InboxConversation.metadata_["contact_resolution"][
+            "reseller_id"
+        ].as_string() == str(scope.reseller_id)
+        return or_(reviewed_link, recorded_reseller)
+    if scope.kind is ConversationHistoryMatchKind.exact_endpoint:
+        assert scope.channel_type is not None
+        assert scope.normalized_endpoint is not None
+        participant_conversation_ids = select(
+            InboxConversationParticipant.conversation_id
+        ).where(
+            InboxConversationParticipant.channel_type == scope.channel_type,
+            InboxConversationParticipant.normalized_endpoint
+            == scope.normalized_endpoint,
+            InboxConversationParticipant.provider_account_scope
+            == (scope.provider_account_scope or "default"),
+            InboxConversationParticipant.admission_source
+            == InboxParticipantAdmissionSource.inbound_from.value,
+            InboxConversationParticipant.is_active.is_(True),
+        )
+        participant_match = InboxConversation.id.in_(participant_conversation_ids)
+        if scope.channel_type in {"facebook_messenger", "instagram_dm"}:
+            return participant_match
+        return or_(
+            participant_match,
+            and_(
+                InboxConversation.channel_type == scope.channel_type,
+                InboxConversation.contact_address == scope.normalized_endpoint,
+            ),
+        )
+    raise ValueError(f"Unsupported conversation history scope: {scope.kind}")
+
+
 def _recent_conversations(
     db: Session,
     *,
-    conversation_id: UUID,
-    subscriber_id: UUID | None,
+    conversation: InboxConversation,
+    scope: ConversationHistoryScope,
     permitted: bool,
 ) -> ContextSection[ConversationSummary]:
     if not permitted:
         return _restricted()
-    if subscriber_id is None:
-        return _not_applicable(
-            "Recent conversations require an exact Subscriber relationship."
+    if scope.kind is ConversationHistoryMatchKind.ambiguous:
+        return ContextSection(
+            ContextAvailability.not_calculated,
+            message=scope.reason or "Identity review is required.",
         )
-    result = team_inbox_read.list_conversations(
-        db,
-        subscriber_id=subscriber_id,
-        order_by="last_message_at",
-        order_dir="desc",
-        limit=6,
-        offset=0,
+    if scope.kind is ConversationHistoryMatchKind.unavailable:
+        return _not_applicable(scope.reason or "Conversation identity is unavailable.")
+    query = (
+        db.query(InboxConversation)
+        .filter(InboxConversation.is_active.is_(True))
+        .filter(InboxConversation.id != conversation.id)
+        .filter(_history_filter(scope))
     )
-    current_text = str(conversation_id)
-    rows = tuple(row for row in result.items if row.id != current_text)[:5]
-    count = max(0, result.count - 1)
+    count = query.count()
+    rows = tuple(
+        query.order_by(
+            func.coalesce(
+                InboxConversation.last_message_at, InboxConversation.created_at
+            ).desc(),
+            InboxConversation.id.asc(),
+        )
+        .limit(5)
+        .all()
+    )
     if count == 0:
         return ContextSection(
             ContextAvailability.empty,
@@ -403,11 +696,12 @@ def _recent_conversations(
         ContextAvailability.available,
         items=tuple(
             ConversationSummary(
-                UUID(row.id),
+                row.id,
                 row.subject or row.contact_address or "Conversation",
                 row.channel_type,
                 row.status,
                 row.last_message_at,
+                row.contact_address,
                 f"/admin/inbox?c={row.id}",
             )
             for row in rows
@@ -542,6 +836,13 @@ def build_contact_context(
     if conversation is None or not conversation.is_active:
         return None
     identity_state, party_id, subscriber_id = _identity(db, conversation)
+    conversation_history_scope = _conversation_history_scope(
+        db,
+        conversation=conversation,
+        identity_state=identity_state,
+        party_id=party_id,
+        subscriber_id=subscriber_id,
+    )
     lead_ids = (
         tuple(
             db.scalars(
@@ -591,6 +892,7 @@ def build_contact_context(
         identity_state=identity_state,
         party_id=party_id,
         subscriber_id=subscriber_id,
+        conversation_history_scope=conversation_history_scope,
         profile=_safe_section(
             "profile",
             lambda: _profile(
@@ -622,8 +924,8 @@ def build_contact_context(
             "recent_conversations",
             lambda: _recent_conversations(
                 db,
-                conversation_id=conversation_id,
-                subscriber_id=subscriber_id,
+                conversation=conversation,
+                scope=conversation_history_scope,
                 permitted=permissions.can_read_tickets,
             ),
         ),

@@ -6,6 +6,7 @@ import smtplib
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.mime.application import MIMEApplication
+from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import getaddresses
@@ -153,6 +154,10 @@ def _build_email_message(
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": (
             "vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         ),
+        "image/png": "png",
+        "image/jpeg": "jpeg",
+        "image/gif": "gif",
+        "image/webp": "webp",
     }
     for attachment in attachments:
         subtype = attachment_subtypes.get(attachment.content_type)
@@ -160,7 +165,11 @@ def _build_email_message(
             raise ValueError("Email attachment content type is not allowed")
         if len(attachment.content) > MAX_EMAIL_ATTACHMENT_BYTES:
             raise ValueError("Email attachment exceeds the size limit")
-        part = MIMEApplication(attachment.content, _subtype=subtype)
+        part = (
+            MIMEImage(attachment.content, _subtype=subtype)
+            if attachment.content_type.startswith("image/")
+            else MIMEApplication(attachment.content, _subtype=subtype)
+        )
         part.add_header(
             "Content-Disposition",
             "attachment",

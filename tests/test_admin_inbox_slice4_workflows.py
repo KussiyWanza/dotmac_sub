@@ -10,12 +10,15 @@ See docs/designs/TEAM_INBOX_ADMIN_UI_PORT.md §5, slice 4.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 from app.models.service_team import ServiceTeam, ServiceTeamMember, ServiceTeamType
 from app.models.team_inbox import (
+    InboxAgentPresence,
+    InboxAgentPresenceStatus,
     InboxConversation,
     InboxConversationStatus,
 )
@@ -47,6 +50,13 @@ def _team(db_session, name="Support", *, member_id=None):
                 team_id=captured,
                 person_id=person.id,
                 is_active=True,
+            )
+        )
+        db_session.add(
+            InboxAgentPresence(
+                person_id=_user.id,
+                status=InboxAgentPresenceStatus.online.value,
+                last_seen_at=datetime.now(UTC),
             )
         )
     db_session.commit()

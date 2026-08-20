@@ -6,7 +6,7 @@
     <div class="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl dark:bg-slate-800">
         <div class="flex items-start justify-between gap-4">
             <div>
-                <h3 class="text-lg font-semibold text-slate-900 dark:text-white">Archive core device</h3>
+                <h3 class="text-lg font-semibold text-slate-900 dark:text-white">Decommission core device</h3>
                 {% if preview %}
                 <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">{{ preview.device_name }}</p>
                 {% endif %}
@@ -18,25 +18,25 @@
         <div class="mt-5 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800 dark:border-rose-800 dark:bg-rose-900/20 dark:text-rose-300">{{ error }}</div>
         {% elif not preview.allowed %}
         <div class="mt-5 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800 dark:border-rose-800 dark:bg-rose-900/20 dark:text-rose-300">
-            <p class="font-semibold">Archive is blocked</p>
+            <p class="font-semibold">Decommission is blocked</p>
             <ul class="mt-2 list-disc space-y-1 pl-5">
                 {% for blocker in preview.blockers %}<li>{{ blocker }}</li>{% endfor %}
             </ul>
         </div>
         {% else %}
         <div class="mt-5 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
-            Monitoring will stop and the device will move to Archived Devices. Its history, interfaces, metrics, and identity will be retained.
+            Monitoring will stop and the device will move to Decommissioned Devices. Its history, interfaces, metrics, and identity will be retained. This reversible retirement does not delete the device.
         </div>
         <form method="POST" action="/admin/network/core-devices/{{ preview.device_id }}/archive" class="mt-5 space-y-4">
             {% include "components/forms/csrf_input.html" %}
             <input type="hidden" name="preview_fingerprint" value="{{ preview.fingerprint.value }}">
             <div>
-                <label for="archive-reason" class="block text-sm font-medium text-slate-700 dark:text-slate-300">Reason</label>
-                <textarea id="archive-reason" name="reason" required minlength="3" maxlength="500" rows="3" class="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-900 dark:text-white" placeholder="Why is this device being archived?"></textarea>
+                <label for="archive-reason" class="block text-sm font-medium text-slate-700 dark:text-slate-300">Decommission reason</label>
+                <textarea id="archive-reason" name="reason" required minlength="3" maxlength="500" rows="3" class="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-900 dark:text-white" placeholder="Why is this device being decommissioned?"></textarea>
             </div>
             <div class="flex justify-end gap-3">
                 <button type="button" @click="show = false; setTimeout(() => document.getElementById('core-device-archive-modal').innerHTML = '', 200)" class="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 dark:border-slate-600 dark:text-slate-300">Cancel</button>
-                <button type="submit" class="rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-700">Archive device</button>
+                <button type="submit" class="rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-700">Decommission device</button>
             </div>
         </form>
         {% endif %}

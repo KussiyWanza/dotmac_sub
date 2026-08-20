@@ -383,10 +383,15 @@ implementation.
   a fresh drawer query; read failure never replays the mutation.
 - The drawer keeps customer identity visible while Details and Conversations
   tabs provide progressive disclosure. The Conversations badge is the
-  authoritative full count of previous conversations for the exact Subscriber;
-  its bounded newest-first list shows channel, status, and last activity and
-  routes each row to the exact prior Inbox conversation. Assignment does not
-  narrow this customer history.
+  authoritative full count of matching previous active and resolved
+  conversations. History spans different endpoints only through an exact
+  Subscriber, reviewed Party contact-point, or reviewed Reseller relationship;
+  otherwise it is restricted to the exact normalized inbound endpoint and, for
+  provider-scoped social identifiers, the same provider account scope.
+  Ambiguous identity evidence renders `Not calculated`.
+  The bounded newest-first list shows endpoint, channel, status, and last
+  activity and routes each row to the exact prior Inbox conversation.
+  Assignment does not narrow this customer history.
 
 ## ONT Configure Page Contract
 

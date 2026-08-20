@@ -55,9 +55,10 @@ Campaign materialization remains the flush-only
 `communications.team_inbox_campaigns` participant under the campaign and
 outbound-intent owners.
 
-The Inbox **All** status filter is the active operational queue and excludes
-resolved conversations. The explicit **Done** filter is the resolved-history
-view.
+The Inbox **All** status filter includes every lifecycle status, including
+resolved conversations. The separate **Active** shortcut is the operational
+non-resolved cohort. Explicit status filters still narrow the queue to one
+status.
 
 ## Inbound flow and idempotency
 
@@ -74,6 +75,20 @@ view.
    contact and routing, then stores the consequence identity on the observation.
 4. A processed observation is a no-op on retry. Existing message and thread
    constraints provide a second idempotency boundary.
+
+An inbound email that references an active thread joins it. If the exact
+referenced thread is resolved, the message opens a new active conversation and
+stores `continued_from_conversation_id` pointing to that resolved predecessor.
+The predecessor stays resolved, and the timeline presents a direct link back to
+it. No speculative backfill is performed for older rows without exact header
+evidence.
+
+The contact-context history query includes active and resolved conversations.
+It broadens across endpoints only for an exact Subscriber relationship, a
+reviewed Party contact-point binding, or a reviewed Reseller relationship.
+Otherwise it matches the exact normalized inbound endpoint and, for
+provider-scoped social identifiers, the same provider account scope. Ambiguous
+evidence fails closed as `not_calculated` instead of merging customer records.
 
 An operator-selected Subscriber is carried into the conversation command as an
 explicit identity decision. A reviewed manual contact link also repairs every
@@ -130,9 +145,12 @@ capacity snapshot; it never makes a routing decision.
 
 Automatic assignment uses `inbox_team_round_robin_cursors`, one durable cursor
 per service team. The routing owner locks the team and cursor, builds the
-eligible online candidate list, skips inactive/offline/full agents, advances
+eligible online candidate list, skips inactive/offline/stale/full agents, advances
 the cursor only inside the assignment transaction, and records routing evidence
-with candidate capacity details. The default capacity is ten active
+with candidate capacity details. An `online` presence is eligible only when its
+`last_seen_at` evidence is no more than 30 minutes old; missing or stale
+presence fails closed as offline. Manual assignment to a target-team member uses
+the same availability gate. The default capacity is ten active
 conversations per agent unless `InboxAgentPresence.max_concurrent_conversations`
 overrides it. Capacity counts active human assignments on `open`, human-owned
 `pending`, and `snoozed` conversations while ownership remains active. It
@@ -177,6 +195,10 @@ delivery task on the dedicated `notifications_immediate` worker queue, so broker
 latency and long notification recovery sweeps do not hold the composer response
 open. The periodic notification runner remains on `notifications` as the
 recovery sweep when broker publication or the immediate worker is unavailable.
+Email replies with Inbox attachments resolve those durable Inbox asset IDs only;
+they never reinterpret Inbox display metadata as generic communication
+attachments. The supported email attachment types include PDF, XLSX, and the
+Team Inbox image types PNG, JPEG, GIF, and WebP.
 Immediate tasks and sweeps both lock and claim the exact
 eligible outbox row before provider delivery, so concurrent wake-ups are safe
 no-ops rather than duplicate sends. Immediate replies with no operator-supplied

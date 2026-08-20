@@ -69,6 +69,13 @@ class InboundEmailReceiveResult:
     subscriber_id: str | None = None
     reseller_id: str | None = None
     resolution_status: str = "unmatched"
+    continued_from_conversation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class EmailThreadResolution:
+    active_conversation: InboxConversation | None
+    continued_from_conversation_id: UUID | None
 
 
 def receive_fiber_inquiry(
@@ -301,12 +308,12 @@ def _find_duplicate_message(
     )
 
 
-def _find_thread_conversation(
+def _resolve_thread_conversation(
     db: Session,
     *,
     message_ids: list[str],
-) -> InboxConversation | None:
-    """The live conversation a referenced Message-ID belongs to, if any.
+) -> EmailThreadResolution:
+    """Resolve the active thread or its exact resolved predecessor.
 
     Only a live thread is joinable. The referenced message used to be matched
     with no conditions on its conversation at all, so a reply could attach to a
@@ -320,18 +327,22 @@ def _find_thread_conversation(
     already does.
     """
     if not message_ids:
-        return None
+        return EmailThreadResolution(None, None)
     message = (
         db.query(InboxMessage)
         .join(InboxConversation, InboxConversation.id == InboxMessage.conversation_id)
         .filter(InboxMessage.channel_type == InboxChannelType.email.value)
         .filter(InboxMessage.external_message_id.in_(message_ids))
         .filter(InboxConversation.is_active.is_(True))
-        .filter(InboxConversation.status != InboxConversationStatus.resolved.value)
         .order_by(InboxMessage.created_at.desc())
         .first()
     )
-    return message.conversation if message else None
+    if message is None:
+        return EmailThreadResolution(None, None)
+    conversation = message.conversation
+    if conversation.status == InboxConversationStatus.resolved.value:
+        return EmailThreadResolution(None, conversation.id)
+    return EmailThreadResolution(conversation, None)
 
 
 def _trim_subject(value: str | None) -> str | None:
@@ -416,7 +427,8 @@ def receive_inbound_email(
     )
 
     thread_message_ids = _extract_message_ids(payload.in_reply_to, payload.references)
-    conversation = _find_thread_conversation(db, message_ids=thread_message_ids)
+    thread_resolution = _resolve_thread_conversation(db, message_ids=thread_message_ids)
+    conversation = thread_resolution.active_conversation
     created_conversation = conversation is None
 
     if conversation is None:
@@ -429,6 +441,9 @@ def receive_inbound_email(
             external_thread_id=thread_message_ids[0]
             if thread_message_ids
             else external_message_id,
+            continued_from_conversation_id=(
+                thread_resolution.continued_from_conversation_id
+            ),
             first_message_at=received_at,
             last_message_at=received_at,
             metadata_={"contact_resolution": resolution.as_metadata()},
@@ -539,4 +554,9 @@ def receive_inbound_email(
         else None,
         reseller_id=str(resolution.reseller_id) if resolution.reseller_id else None,
         resolution_status=resolution.status,
+        continued_from_conversation_id=(
+            str(thread_resolution.continued_from_conversation_id)
+            if thread_resolution.continued_from_conversation_id is not None
+            else None
+        ),
     )

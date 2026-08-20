@@ -103,6 +103,10 @@ their canonical Inbox views; the other shortcuts select their exact projected
 cohorts. The broad non-resolved cohort is labelled Active so it cannot be
 confused with the narrower `status=open` filter.
 
+Within the Status group, **All** is literal and includes every lifecycle status,
+including resolved conversations. It is distinct from the **Active** shortcut;
+the UI does not add a second “All history” control.
+
 Active filters render once as removable chips with one Clear all action. The
 remaining controls are grouped by operator task under Status, Assignment,
 Attention, Routing, Advanced, and Saved views disclosures. A counted shortcut
@@ -332,10 +336,12 @@ coerced to zero. Sections fail independently.
 The contact drawer keeps identity visible and separates customer details from
 conversation history with two keyboard-operable tabs. The Conversations tab
 shows the authoritative previous-conversation count and the five newest
-cross-agent records with channel, status, and last activity date. Each row
+cross-agent records with endpoint, channel, status, and last activity date.
+Each row
 routes to the exact prior thread through `/admin/inbox?c=<conversation-id>`;
-the UI does not filter history to the current assignee or infer customer
-identity from contact text.
+the UI does not filter history to the current assignee. It broadens across
+endpoints only through an exact Subscriber or reviewed Party/Reseller evidence;
+otherwise it uses the exact inbound endpoint and fails closed on ambiguity.
 
 `communications.inbox_lead_actions` resolves the profile and Lead controls.
 It reuses a direct Lead, requires an authoritative pipeline before examining

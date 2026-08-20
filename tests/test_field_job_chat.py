@@ -41,6 +41,8 @@ from app.models.service_team import (
 from app.models.subscriber import Subscriber, UserType
 from app.models.system_user import SystemUser
 from app.models.team_inbox import (
+    InboxAgentPresence,
+    InboxAgentPresenceStatus,
     InboxChannelType,
     InboxConversationStatus,
     InboxMessage,
@@ -126,6 +128,13 @@ def _profile(
         assert user.person_party_id is not None
         team = _team_member(db_session, user.person_party_id)
         profile._test_service_team_id = team.id
+        db_session.add(
+            InboxAgentPresence(
+                person_id=user.id,
+                status=InboxAgentPresenceStatus.online.value,
+                last_seen_at=datetime.now(UTC),
+            )
+        )
     return profile
 
 

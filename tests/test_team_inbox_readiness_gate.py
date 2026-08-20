@@ -40,6 +40,8 @@ import pytest
 from app.models.notification import Notification
 from app.models.service_team import ServiceTeam, ServiceTeamMember, ServiceTeamType
 from app.models.team_inbox import (
+    InboxAgentPresence,
+    InboxAgentPresenceStatus,
     InboxAuditEvidenceGrade,
     InboxAuditSource,
     InboxComment,
@@ -377,6 +379,13 @@ def test_an_assignment_records_who_assigned_it(db_session, actor):
             team_id=team.id,
             person_id=agent_person.id,
             is_active=True,
+        )
+    )
+    db_session.add(
+        InboxAgentPresence(
+            person_id=agent.id,
+            status=InboxAgentPresenceStatus.online.value,
+            last_seen_at=datetime.now(UTC),
         )
     )
     team_id = team.id

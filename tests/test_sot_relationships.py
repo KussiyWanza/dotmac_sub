@@ -688,6 +688,13 @@ def test_domain_sot_relationships_encode_cross_domain_dependencies():
         "operations.vendor_advances",
         "integration.dotmac_erp_payables_adapter",
     )
+    assert sot_relationships.dependencies_for(
+        "ui.network_device_status_presentation"
+    ) == (
+        "network.device_state",
+        "network.monitoring_inventory",
+        "network.core_device_archive",
+    )
     assert sot_relationships.dependencies_for("operations.material_dependencies") == (
         "control.settings_spec",
         "events.dispatcher",
@@ -1132,6 +1139,14 @@ def test_domain_sot_relationships_resolve_owning_service_by_concern():
     )
     assert device_presentation is not None
     assert device_presentation.name == "ui.status_presentation"
+
+    network_device_list_presentation = sot_relationships.owning_service_for(
+        "network device worklist lifecycle-aware status presentation"
+    )
+    assert network_device_list_presentation is not None
+    assert (
+        network_device_list_presentation.name == "ui.network_device_status_presentation"
+    )
 
     connection_health = sot_relationships.owning_service_for(
         "customer-safe connection health vocabulary"

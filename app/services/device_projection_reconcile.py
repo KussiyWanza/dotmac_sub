@@ -39,7 +39,7 @@ from typing import cast
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from app.models.network_monitoring import DeviceProjection
+from app.models.network_monitoring import DeviceProjection, NetworkDeviceLifecycleState
 from app.services.common import coerce_uuid
 from app.services.domain_errors import DomainError
 from app.services.events import emit_event
@@ -74,7 +74,7 @@ _RECONCILE_COMMAND = OwnerCommandDefinition(
 # operator-triggered rebuilds from racing the natural-key upsert.
 _RECONCILE_LOCK_KEY = 328_160_319
 
-_LIFECYCLE_STATES = ("active", "inactive", "archived")
+_LIFECYCLE_STATES = tuple(state.value for state in NetworkDeviceLifecycleState)
 
 
 def _gated_status(lifecycle_state: str, status: str) -> str:

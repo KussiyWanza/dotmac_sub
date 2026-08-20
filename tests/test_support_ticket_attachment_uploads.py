@@ -11,10 +11,12 @@ def test_support_ticket_attachments_use_subscriber_safe_uploaded_by(
     """Support ticket uploads keep file ownership out of subscriber scope."""
     captured: dict[str, object] = {}
 
+    file_id = uuid4()
+
     def _fake_upload(**kwargs):
         captured.update(kwargs)
         return SimpleNamespace(
-            id="file-1",
+            id=file_id,
             original_filename=kwargs["original_filename"],
             content_type=kwargs["content_type"],
             file_size=len(kwargs["data"]),
@@ -30,13 +32,13 @@ def test_support_ticket_attachments_use_subscriber_safe_uploaded_by(
 
     uploaded = web_support_tickets.upload_ticket_attachments.__wrapped__(
         db_session,
-        ticket_id="ticket-1",
+        ticket_id=uuid4(),
         attachments=[attachment],
-        entity_type="support_ticket_attachment",
+        entity_type=web_support_tickets.TicketAttachmentEntityType.ticket,
         actor_id=None,
     )
 
-    assert uploaded[0]["stored_file_id"] == "file-1"
+    assert uploaded[0].stored_file_id == file_id
     assert captured["uploaded_by"] is None
     assert captured["owner_subscriber_id"] is None
 
@@ -46,10 +48,12 @@ def test_support_ticket_attachments_ignore_system_user_uploaded_by(
 ):
     captured: dict[str, object] = {}
 
+    file_id = uuid4()
+
     def _fake_upload(**kwargs):
         captured.update(kwargs)
         return SimpleNamespace(
-            id="file-2",
+            id=file_id,
             original_filename=kwargs["original_filename"],
             content_type=kwargs["content_type"],
             file_size=len(kwargs["data"]),
@@ -65,11 +69,11 @@ def test_support_ticket_attachments_ignore_system_user_uploaded_by(
 
     uploaded = web_support_tickets.upload_ticket_attachments.__wrapped__(
         db_session,
-        ticket_id="ticket-2",
+        ticket_id=uuid4(),
         attachments=[attachment],
-        entity_type="support_ticket_comment_attachment",
-        actor_id=str(uuid4()),
+        entity_type=web_support_tickets.TicketAttachmentEntityType.comment,
+        actor_id=uuid4(),
     )
 
-    assert uploaded[0]["stored_file_id"] == "file-2"
+    assert uploaded[0].stored_file_id == file_id
     assert captured["uploaded_by"] is None
