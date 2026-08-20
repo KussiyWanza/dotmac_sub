@@ -13,21 +13,27 @@ count of `0`. Optional missing scalars use `—`. A failed or forbidden query is
 never represented as zero.
 
 `communications.team_inbox_contact_context` composes exact Party/profile,
-Subscriber, Lead, active Ticket, recent conversation, Project, and Project Task
-facts. Ticket, Project, and Task status inclusion comes from their lifecycle
+Subscriber or Reseller identity, Lead, active Ticket, recent conversation,
+Project, and Project Task facts. Ticket, Project, and Task status inclusion
+comes from their lifecycle
 owners. Counts cover the full authoritative query while displayed collections
 are bounded to five newest records. Database reads are transaction-current;
 the drawer records its observation time and refreshes on every return to the
 originating conversation. Each section has its own availability result.
 
 The drawer exposes conversation history as a dedicated tab beside customer
-details. Its badge is the full count of previous active Inbox conversations
-for the exact Subscriber, independent of which agent handled them. The tab
-lists the five newest previous conversations with channel, status, and last
-activity date; selecting one returns to that exact conversation through the
-server-owned `/admin/inbox?c=<conversation-id>` destination. When more than
-five exist, the bounded result is stated explicitly rather than presented as
-the complete count.
+details. Its badge is the full count of matching previous active and resolved
+Inbox conversations, independent of which agent handled them. The typed match
+scope uses an exact Subscriber first, then a reviewed Party contact-point or
+Reseller relationship. Without broader reviewed identity, it uses only the
+exact normalized inbound endpoint and, for provider-scoped social identifiers,
+the same provider account scope. Conflicting identity or provider-scope
+evidence returns `not_calculated` and never merges records. The tab lists the
+five newest previous conversations with endpoint,
+channel, status, and last activity date; selecting one returns to that exact
+conversation through the server-owned `/admin/inbox?c=<conversation-id>`
+destination. When more than five exist, the bounded result is stated explicitly
+rather than presented as the complete count.
 
 ## Identity and action policy
 

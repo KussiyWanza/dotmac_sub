@@ -170,6 +170,7 @@ def test_a_reply_joins_the_thread_it_references(db_session):
     db_session.commit()
 
     assert second.conversation_id == first.conversation_id
+    assert second.continued_from_conversation_id is None
 
 
 def test_a_reply_to_a_resolved_thread_opens_a_new_one(db_session):
@@ -190,6 +191,15 @@ def test_a_reply_to_a_resolved_thread_opens_a_new_one(db_session):
     db_session.commit()
 
     assert second.conversation_id != first.conversation_id
+    assert second.continued_from_conversation_id == first.conversation_id
+    continued = db_session.get(InboxConversation, second.conversation_id)
+    assert continued.continued_from_conversation_id == conversation.id
+    timeline = team_inbox_read.get_conversation_timeline(
+        db_session, conversation_id=continued.id
+    )
+    assert timeline is not None
+    assert timeline.continued_from_conversation_id == str(conversation.id)
+    assert timeline.continued_from_url == f"/admin/inbox?c={conversation.id}"
     db_session.refresh(conversation)
     assert conversation.status == InboxConversationStatus.resolved.value
 
