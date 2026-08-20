@@ -618,6 +618,17 @@ def test_searches_cancel_stale_responses_and_fragment_cleanup_releases_resources
     assert 'document.removeEventListener("click", closeOnOutsideClick)' in JAVASCRIPT
 
 
+def test_composer_cleanup_uses_the_fragment_lifecycle_not_an_unsupported_magic():
+    assert "this.$cleanup" not in JAVASCRIPT
+    assert "this.$root.__inboxComposerCleanup = () =>" in JAVASCRIPT
+    assert "element.__inboxComposerCleanup?.();" in JAVASCRIPT
+
+
+def test_htmx_release_ignores_requests_without_inbox_sequences():
+    assert "detailSequence != null" in JAVASCRIPT
+    assert "contactSequence != null" in JAVASCRIPT
+
+
 def test_realtime_subscriptions_are_reconciled_to_visible_topics():
     marker = JAVASCRIPT.index("      subscribeVisibleTopics() {")
     body = JAVASCRIPT[marker : marker + 1300]
