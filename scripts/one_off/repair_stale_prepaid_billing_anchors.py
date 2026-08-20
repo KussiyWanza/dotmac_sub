@@ -1,4 +1,4 @@
-"""Repair prepaid billing anchors that lag their exact funded coverage.
+"""Repair prepaid billing anchors that diverge from exact funded coverage.
 
 The cohort: an ACTIVE ``ServiceEntitlement`` ends after the subscription's
 ``next_billing_at``. The customer has already paid for that period — the
@@ -16,6 +16,11 @@ The same owner also admits an active prepaid subscription with a NULL anchor
 when an active entitlement proves its exact paid-through boundary. NULL rows
 without that evidence remain review stock.
 
+An anchor ahead of exact coverage is excluded from bulk discovery. Operators
+may select explicit subscription UUIDs and opt into unsupported-lead repair;
+an applied service extension still quarantines the row rather than being
+silently clawed back.
+
 Preview-then-apply, idempotent, and evidence-producing:
   * preview is read-only and fingerprint-bound;
   * apply re-reads every candidate under an account lock and skips any row
@@ -31,6 +36,7 @@ No money is posted, moved, or forgiven. Dry run by default.
 from __future__ import annotations
 
 import argparse
+from uuid import UUID
 
 from app.db import SessionLocal
 from app.services.prepaid_service_renewals import (
@@ -66,16 +72,39 @@ def main() -> None:
     parser.add_argument(
         "--reason",
         default=(
-            "Advance billing anchor to exact funded entitlement coverage after "
-            "the payment-allocation funding-change event gap"
+            "Align billing anchor to exact funded entitlement coverage after "
+            "operator review of projection drift"
         ),
         help="Why the repair is being run; recorded as durable audit evidence.",
     )
+    parser.add_argument(
+        "--subscription-id",
+        action="append",
+        default=[],
+        type=UUID,
+        help="Limit the preview/apply to this subscription UUID; repeatable.",
+    )
+    parser.add_argument(
+        "--include-unsupported-leads",
+        action="store_true",
+        help=(
+            "Allow an explicitly selected evidence-free anchor lead to be "
+            "retracted to exact entitlement coverage. Requires --subscription-id."
+        ),
+    )
     args = parser.parse_args()
+
+    if args.include_unsupported_leads and not args.subscription_id:
+        parser.error("--include-unsupported-leads requires --subscription-id")
 
     db = SessionLocal()
     try:
-        preview = preview_stale_prepaid_billing_anchor_repair(db, limit=args.limit)
+        preview = preview_stale_prepaid_billing_anchor_repair(
+            db,
+            limit=args.limit,
+            subscription_ids=tuple(args.subscription_id),
+            include_unsupported_leads=args.include_unsupported_leads,
+        )
         print(f"cohort candidates: {preview.cohort_size}")
         print(f"preview fingerprint: {preview.fingerprint}")
         if preview.truncated:
@@ -94,7 +123,7 @@ def main() -> None:
                 f"{previous} -> "
                 f"{candidate.coverage_end.isoformat()}  "
                 + (
-                    f"(+{candidate.drift.days}d)"
+                    f"({candidate.drift.days:+d}d)"
                     if candidate.drift is not None
                     else "(exact entitlement evidence)"
                 )
@@ -121,7 +150,12 @@ def main() -> None:
         print(f"  skipped_changed: {result.skipped_changed}")
         print(f"  replayed: {result.replayed}")
 
-        remaining = preview_stale_prepaid_billing_anchor_repair(db, limit=args.limit)
+        remaining = preview_stale_prepaid_billing_anchor_repair(
+            db,
+            limit=args.limit,
+            subscription_ids=tuple(args.subscription_id),
+            include_unsupported_leads=args.include_unsupported_leads,
+        )
         print(f"  remaining cohort (this page): {remaining.cohort_size}")
         if remaining.truncated or remaining.cohort_size:
             print("  re-run until the remaining cohort is zero")

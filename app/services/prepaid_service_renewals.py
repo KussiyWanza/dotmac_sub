@@ -1759,7 +1759,7 @@ _STALE_BILLING_ANCHOR_REPAIR_ACTION = "repair_stale_prepaid_billing_anchor"
 
 @dataclass(frozen=True, slots=True)
 class StaleBillingAnchorCandidate:
-    """One subscription whose anchor is absent or trails funded coverage."""
+    """One subscription whose anchor diverges from exact funded coverage."""
 
     subscription_id: UUID
     account_id: UUID
@@ -1804,6 +1804,7 @@ def _stale_billing_anchor_candidates(
     *,
     limit: int,
     subscription_ids: Sequence[UUID] = (),
+    include_unsupported_leads: bool = False,
 ) -> tuple[tuple[StaleBillingAnchorCandidate, ...], bool]:
     coverage = (
         select(
@@ -1813,6 +1814,35 @@ def _stale_billing_anchor_candidates(
         .where(ServiceEntitlement.status == ServiceEntitlementStatus.active)
         .group_by(ServiceEntitlement.subscription_id)
         .subquery()
+    )
+    lagging_or_absent = or_(
+        Subscription.next_billing_at.is_(None),
+        coverage.c.coverage_end > Subscription.next_billing_at,
+    )
+    # Pulling an anchor backwards is intentionally narrower than advancing it.
+    # An applied service extension is exact coverage owned by another service;
+    # this repair must never erase that grant. Unsupported leads are therefore
+    # eligible only in an explicitly selected, reviewed cohort with no applied
+    # extension evidence at all.
+    applied_extension_exists = (
+        select(ServiceExtensionEntry.id)
+        .join(
+            ServiceExtension,
+            ServiceExtension.id == ServiceExtensionEntry.extension_id,
+        )
+        .where(
+            ServiceExtensionEntry.subscription_id == Subscription.id,
+            ServiceExtension.status == ServiceExtensionStatus.applied,
+        )
+        .exists()
+    )
+    unsupported_lead = (
+        coverage.c.coverage_end < Subscription.next_billing_at
+    ) & ~applied_extension_exists
+    candidate_predicate = (
+        or_(lagging_or_absent, unsupported_lead)
+        if include_unsupported_leads
+        else lagging_or_absent
     )
     query = (
         select(
@@ -1825,10 +1855,7 @@ def _stale_billing_anchor_candidates(
         .where(
             Subscription.status == SubscriptionStatus.active,
             Subscription.billing_mode == BillingMode.prepaid,
-            or_(
-                Subscription.next_billing_at.is_(None),
-                coverage.c.coverage_end > Subscription.next_billing_at,
-            ),
+            candidate_predicate,
         )
         .order_by(Subscription.next_billing_at, Subscription.id)
     )
@@ -1867,8 +1894,9 @@ def preview_stale_prepaid_billing_anchor_repair(
     *,
     limit: int = 500,
     subscription_ids: Sequence[UUID] = (),
+    include_unsupported_leads: bool = False,
 ) -> StaleBillingAnchorRepairPreview:
-    """Report subscriptions whose anchor lags their exact funded coverage.
+    """Report subscriptions whose anchor diverges from exact funded coverage.
 
     This includes the pre-existing drift cohort created while the
     payment-allocation path committed entitlements without ever reaching this
@@ -1877,13 +1905,26 @@ def preview_stale_prepaid_billing_anchor_repair(
     inferred from mutable catalog cadence, subscription creation, or current
     time; NULL rows without exact coverage evidence remain review stock.
 
+    Leads are excluded by default because they may represent coverage owned by
+    another service. ``include_unsupported_leads`` is accepted only for an
+    explicitly selected subscription cohort; an applied service extension
+    still quarantines the row. This makes backwards repair a deliberate,
+    fingerprint-bound operator action rather than a bulk inference.
+
     Read-only. No money is posted, moved, or forgiven.
     """
 
     if limit < 1:
         raise ValueError("limit must be positive")
+    if include_unsupported_leads and not subscription_ids:
+        raise ValueError(
+            "unsupported billing-anchor leads require explicit subscription_ids"
+        )
     candidates, truncated = _stale_billing_anchor_candidates(
-        db, limit=limit, subscription_ids=subscription_ids
+        db,
+        limit=limit,
+        subscription_ids=subscription_ids,
+        include_unsupported_leads=include_unsupported_leads,
     )
     return StaleBillingAnchorRepairPreview(
         as_of=datetime.now(UTC),
@@ -1901,7 +1942,7 @@ def apply_stale_prepaid_billing_anchor_repair(
     reason: str,
     commit: bool = True,
 ) -> StaleBillingAnchorRepairResult:
-    """Advance every previewed anchor to its exact funded coverage end.
+    """Align every previewed anchor to its exact funded coverage end.
 
     Idempotent by construction and by reservation. The write is a pure
     recomputation from surviving entitlement evidence, so a repaired row leaves
@@ -1928,7 +1969,13 @@ def apply_stale_prepaid_billing_anchor_repair(
             skipped_changed += 1
             continue
         current, truncated_scan = _stale_billing_anchor_candidates(
-            db, limit=1, subscription_ids=(candidate.subscription_id,)
+            db,
+            limit=1,
+            subscription_ids=(candidate.subscription_id,),
+            include_unsupported_leads=(
+                candidate.current_next_billing_at is not None
+                and candidate.current_next_billing_at > candidate.coverage_end
+            ),
         )
         del truncated_scan
         if not current:
