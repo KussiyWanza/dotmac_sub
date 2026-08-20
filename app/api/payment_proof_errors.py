@@ -13,6 +13,7 @@ _CONFLICT_SUFFIXES = (
     ".already_reviewed",
     ".duplicate_transfer_reference",
     ".deposit_settlement_rejected",
+    ".prepaid_funding_baseline_missing",
     ".active_caller_transaction",
     ".nested_owner_command",
     ".already_corrected",

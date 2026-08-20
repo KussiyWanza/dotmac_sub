@@ -1118,6 +1118,7 @@ SERVICES: tuple[SOTService, ...] = (
                     "financial.payment_proofs.verified_amount_non_positive",
                     "financial.payment_proofs.duplicate_transfer_reference",
                     "financial.payment_proofs.deposit_settlement_rejected",
+                    "financial.payment_proofs.prepaid_funding_baseline_missing",
                     "financial.payment_proofs.billing_account_not_found",
                     "financial.payment_proofs.withholding_tax_basis_unavailable",
                     "financial.payment_proofs.verified_amount_conflict",
@@ -1161,6 +1162,8 @@ SERVICES: tuple[SOTService, ...] = (
                     "failure to stage an eligible payment, tax source, review work "
                     "item, top-up intent link/resolution, audit, notification, or event "
                     "consequence",
+                    "missing reviewed prepaid funding opening evidence for a "
+                    "deposit-backed proof that would apply customer credit",
                     "active caller transaction or manifest mismatch",
                 ),
             ),
