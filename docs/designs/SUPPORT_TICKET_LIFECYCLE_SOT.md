@@ -58,8 +58,9 @@ Admin create, edit, quick-status, bulk-update, automation, list-filter, and
 advanced-filter controls consume that one subset. A Ticket whose canonical
 current status is later removed from the configured subset remains displayable
 and may preserve that unchanged value while another field is edited; the UI
-presents it as a non-selectable current value. The `not_closed` list scope
-remains a separate read contract that excludes canonical `closed`.
+presents it as a non-selectable current value. Canceled tickets are returned
+only by the exact `canceled` list filter. Default and `not_closed` list scopes
+exclude canonical `canceled`; `not_closed` also excludes canonical `closed`.
 
 Regional routing configuration is replaced through the typed
 `TicketConfigurationUpdate` command. Region keys are normalized to lowercase.

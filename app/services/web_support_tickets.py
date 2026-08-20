@@ -241,7 +241,8 @@ _TICKET_STATUS_FILTERS = frozenset(
 def _ticket_status_scope(value: str | None) -> support_service.TicketStatusScope:
     normalized = canonical_ticket_status_value(str(value or "").strip().lower())
     if not normalized:
-        return support_service.TicketStatusScope.all()
+        # Canceled tickets are visible only through their explicit status filter.
+        return support_service.TicketStatusScope.excluding_canceled()
     if normalized == NOT_CLOSED_TICKET_STATUS_FILTER:
         return support_service.TicketStatusScope.not_closed()
     return support_service.TicketStatusScope.matching(TicketStatus(normalized))

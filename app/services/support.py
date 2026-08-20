@@ -251,12 +251,18 @@ class TicketStatusScope:
         return cls()
 
     @classmethod
+    def excluding_canceled(cls) -> TicketStatusScope:
+        """Return the operational default scope without canceled tickets."""
+
+        return cls(excluded=frozenset({TicketStatus.canceled}))
+
+    @classmethod
     def matching(cls, status: TicketStatus) -> TicketStatusScope:
         return cls(exact=status)
 
     @classmethod
     def not_closed(cls) -> TicketStatusScope:
-        return cls(excluded=frozenset({TicketStatus.closed}))
+        return cls(excluded=frozenset({TicketStatus.closed, TicketStatus.canceled}))
 
 
 @dataclass(frozen=True, slots=True)
