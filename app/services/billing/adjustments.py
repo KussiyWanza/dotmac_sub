@@ -549,10 +549,15 @@ def preview_account_adjustment_reversal(
             adjustment_id=str(adjustment.id),
         )
     reason = _text(query.request.reason, "reason")
+    # Reversal evidence must describe the same customer position the runtime
+    # prepaid policy consumes. The legacy unallocated-credit reader can differ
+    # from a reviewed opening position because the opening freezes all facts up
+    # to its cutover timestamp. A post-opening reversal is a new native fact,
+    # so preview it against the authoritative opening-plus-native balance.
     funding_before = round_money(
-        get_account_credit_balance(
-            db, str(adjustment.account_id), currency=adjustment.currency
-        )
+        get_customer_financial_position(
+            db, adjustment.account_id
+        ).prepaid_available_balance
     )
     funding_after = round_money(funding_before + adjustment.amount)
     fingerprint = _fingerprint(

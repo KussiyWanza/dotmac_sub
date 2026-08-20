@@ -164,6 +164,13 @@ entitlement. `Subscription.next_billing_at` is also a projection: a future
 anchor without exact evidence is `unresolved_projection`, blocks adverse
 action, and enters reconciliation.
 
+The prepaid-renewal owner's billing-anchor repair discovers absent or lagging
+anchors from exact active entitlement evidence. An evidence-free anchor lead
+is never repaired in bulk: an operator must select the exact subscription in a
+fingerprint-bound preview and explicitly allow retraction, and an applied
+service extension quarantines the candidate. Confirmation aligns the anchor to
+the entitlement end and records durable audit evidence without posting money.
+
 For a lapsed prepaid settlement, the replacement period starts on the
 payment's `Africa/Lagos` calendar date. The owner resolves WAT local midnight
 and advances the typed calendar cadence before converting the half-open period

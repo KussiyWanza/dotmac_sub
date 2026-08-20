@@ -3047,8 +3047,12 @@ SERVICES: tuple[SOTService, ...] = (
             "project_paid_invoice_billing_anchors helper is gone. The reviewed "
             "repair also admits a NULL active-prepaid anchor only when an "
             "active entitlement proves its exact paid-through target; the "
-            "legacy cadence/forgiveness backfill is retired and evidence-free "
-            "rows remain review stock. A lapsed "
+            "legacy cadence/forgiveness backfill is retired. An anchor ahead "
+            "of exact entitlement evidence remains outside bulk discovery: "
+            "retraction requires an explicit subscription-scoped preview, and "
+            "applied service-extension evidence quarantines it so another "
+            "owner's grant cannot be clawed back. Other evidence-free rows "
+            "remain review stock. A lapsed "
             "settlement period first resolves the payment instant into the "
             "Africa/Lagos calendar, starts at local midnight, advances by the "
             "typed cadence, and persists the resulting boundaries as UTC "
@@ -3144,6 +3148,7 @@ SERVICES: tuple[SOTService, ...] = (
                     input_names=(
                         "prepaid subscription and renewal terms",
                         "funded service entitlement evidence",
+                        "applied service-extension coverage evidence",
                     ),
                     canonical_writer="financial.prepaid_service_renewals",
                 ),
@@ -3219,6 +3224,15 @@ SERVICES: tuple[SOTService, ...] = (
                     source=(
                         "active ServiceEntitlement linked to the exact renewal "
                         "debit and service period"
+                    ),
+                ),
+                AuthorityInput(
+                    name="applied service-extension coverage evidence",
+                    owner="financial.service_extensions",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source=(
+                        "applied ServiceExtension and its exact immutable "
+                        "ServiceExtensionEntry grant interval"
                     ),
                 ),
             ),
