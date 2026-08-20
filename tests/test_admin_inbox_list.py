@@ -80,7 +80,7 @@ def test_order_by_last_message_at_ignores_priority(db_session):
     assert [row.id for row in result.items] == [str(a.id), str(b.id)]
 
 
-def test_all_status_is_the_active_queue_and_done_is_resolved_history(db_session):
+def test_all_status_includes_every_status_while_active_excludes_resolved(db_session):
     now = datetime(2026, 7, 19, 12, 0, tzinfo=UTC)
     open_conversation = _conv(
         db_session, priority=1, last_message_at=now, thread="open"
@@ -104,6 +104,10 @@ def test_all_status_is_the_active_queue_and_done_is_resolved_history(db_session)
     all_queue = team_inbox_projection.build_queue_projection(
         db_session, team_inbox_projection.InboxQueueRequest()
     )
+    active_queue = team_inbox_projection.build_queue_projection(
+        db_session,
+        team_inbox_projection.InboxQueueRequest(open_only=True),
+    )
     done_queue = team_inbox_projection.build_queue_projection(
         db_session,
         team_inbox_projection.InboxQueueRequest(
@@ -124,6 +128,11 @@ def test_all_status_is_the_active_queue_and_done_is_resolved_history(db_session)
     )
 
     assert {row.id for row in all_queue.rows} == {
+        str(open_conversation.id),
+        str(pending_conversation.id),
+        str(resolved_conversation.id),
+    }
+    assert {row.id for row in active_queue.rows} == {
         str(open_conversation.id),
         str(pending_conversation.id),
     }
@@ -149,6 +158,33 @@ def test_explicit_open_only_still_excludes_resolved_history(db_session):
     )
 
     assert [row.id for row in result.rows] == [str(active.id)]
+
+
+def test_resolved_realtime_row_remains_under_all_and_leaves_active(db_session):
+    now = datetime(2026, 7, 19, 12, 0, tzinfo=UTC)
+    resolved = _conv(
+        db_session,
+        priority=1,
+        last_message_at=now,
+        thread="resolved-realtime",
+        status=InboxConversationStatus.resolved.value,
+    )
+    db_session.commit()
+
+    all_row = team_inbox_projection.get_queue_row_projection(
+        db_session,
+        conversation_id=resolved.id,
+        request=team_inbox_projection.InboxQueueRequest(),
+    )
+    active_row = team_inbox_projection.get_queue_row_projection(
+        db_session,
+        conversation_id=resolved.id,
+        request=team_inbox_projection.InboxQueueRequest(open_only=True),
+    )
+
+    assert all_row.row is not None
+    assert all_row.row.id == str(resolved.id)
+    assert active_row.row is None
 
 
 def test_list_conversations_can_skip_exact_total_count(db_session):

@@ -104,10 +104,19 @@ def test_contact_drawer_exposes_authoritative_conversation_history_tab():
     assert 'role="tabpanel"' in DRAWER
     assert "contact_context.recent_conversations" in CONVERSATION_HISTORY
     assert 'href="{{ item.url }}"' in CONVERSATION_HISTORY
+    assert "conversation_history_scope.kind.value == 'exact_endpoint'" in (
+        CONVERSATION_HISTORY
+    )
+    assert "item.contact_address" in CONVERSATION_HISTORY
     assert 'datetime="{{ item.last_message_at.isoformat() }}"' in CONVERSATION_HISTORY
     assert (
         "Showing the {{ history.items | length }} most recent" in CONVERSATION_HISTORY
     )
+
+
+def test_continued_email_thread_links_to_its_resolved_predecessor():
+    assert "timeline.continued_from_url" in CONVERSATION
+    assert "Open the earlier conversation" in CONVERSATION
 
 
 def test_social_comments_have_dedicated_workspace_and_filter_entry_point():

@@ -200,6 +200,16 @@
         </div>
     </header>
 
+    {% if timeline.continued_from_url %}
+    <div class="border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100">
+        This conversation continues an earlier resolved email thread.
+        <a href="{{ timeline.continued_from_url }}"
+           class="ml-1 font-semibold underline decoration-amber-400 underline-offset-2 hover:text-amber-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:hover:text-amber-200">
+            Open the earlier conversation
+        </a>
+    </div>
+    {% endif %}
+
     {% include "admin/inbox/_comment_thread.html" %}
     <div x-show="!commentMode" class="contents">
     <div x-show="newMessagesAvailable" x-cloak class="border-b border-amber-200 bg-amber-50 px-4 py-2 text-center dark:border-amber-800 dark:bg-amber-950/30">

@@ -55,9 +55,10 @@ Campaign materialization remains the flush-only
 `communications.team_inbox_campaigns` participant under the campaign and
 outbound-intent owners.
 
-The Inbox **All** status filter is the active operational queue and excludes
-resolved conversations. The explicit **Done** filter is the resolved-history
-view.
+The Inbox **All** status filter includes every lifecycle status, including
+resolved conversations. The separate **Active** shortcut is the operational
+non-resolved cohort. Explicit status filters still narrow the queue to one
+status.
 
 ## Inbound flow and idempotency
 
@@ -74,6 +75,20 @@ view.
    contact and routing, then stores the consequence identity on the observation.
 4. A processed observation is a no-op on retry. Existing message and thread
    constraints provide a second idempotency boundary.
+
+An inbound email that references an active thread joins it. If the exact
+referenced thread is resolved, the message opens a new active conversation and
+stores `continued_from_conversation_id` pointing to that resolved predecessor.
+The predecessor stays resolved, and the timeline presents a direct link back to
+it. No speculative backfill is performed for older rows without exact header
+evidence.
+
+The contact-context history query includes active and resolved conversations.
+It broadens across endpoints only for an exact Subscriber relationship, a
+reviewed Party contact-point binding, or a reviewed Reseller relationship.
+Otherwise it matches the exact normalized inbound endpoint and, for
+provider-scoped social identifiers, the same provider account scope. Ambiguous
+evidence fails closed as `not_calculated` instead of merging customer records.
 
 An operator-selected Subscriber is carried into the conversation command as an
 explicit identity decision. A reviewed manual contact link also repairs every
