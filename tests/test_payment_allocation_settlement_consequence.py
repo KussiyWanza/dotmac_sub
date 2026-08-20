@@ -710,6 +710,99 @@ def test_stale_anchor_repair_preview_then_apply_drives_the_cohort_to_zero(
     assert at(subscription.next_billing_at) == at(entitlement.ends_at)
 
 
+def test_reviewed_anchor_repair_retracts_an_explicit_unsupported_lead(
+    db_session, subscriber, subscription
+):
+    """A selected evidence-free lead may be aligned to exact entitlement."""
+    invoice = _prepaid_invoice(db_session, subscriber, subscription)
+    payment = _settled_payment(db_session, subscriber)
+    _allocate(db_session, payment, invoice)
+    entitlement = _entitlement(db_session, invoice)
+    unsupported_lead = at(entitlement.ends_at) + timedelta(days=13)
+    subscription.next_billing_at = unsupported_lead
+    db_session.commit()
+
+    default_preview = preview_stale_prepaid_billing_anchor_repair(
+        db_session,
+        limit=1,
+        subscription_ids=(subscription.id,),
+    )
+    assert default_preview.cohort_size == 0
+
+    preview = preview_stale_prepaid_billing_anchor_repair(
+        db_session,
+        limit=1,
+        subscription_ids=(subscription.id,),
+        include_unsupported_leads=True,
+    )
+    assert preview.cohort_size == 1
+    assert preview.candidates[0].current_next_billing_at == unsupported_lead
+    assert preview.candidates[0].coverage_end == at(entitlement.ends_at)
+
+    result = apply_stale_prepaid_billing_anchor_repair(
+        db_session,
+        preview,
+        actor="pytest:operator",
+        reason="Resolve an operator-reviewed unsupported billing-anchor lead",
+    )
+    assert result.repaired == 1
+    db_session.refresh(subscription)
+    assert at(subscription.next_billing_at) == at(entitlement.ends_at)
+
+
+def test_reviewed_anchor_repair_quarantines_an_applied_extension(
+    db_session, subscriber, subscription
+):
+    """Targeted lead repair never retracts another owner's active grant."""
+    invoice = _prepaid_invoice(db_session, subscriber, subscription)
+    payment = _settled_payment(db_session, subscriber)
+    _allocate(db_session, payment, invoice)
+    entitlement = _entitlement(db_session, invoice)
+    granted_through = at(entitlement.ends_at) + timedelta(days=7)
+
+    extension = ServiceExtension(
+        reason="Regional outage goodwill",
+        window_start=PERIOD_START,
+        window_end=PERIOD_END,
+        days=7,
+        scope_type=ServiceExtensionScope.subscribers,
+        status=ServiceExtensionStatus.applied,
+        applied_at=PERIOD_START,
+    )
+    db_session.add(extension)
+    db_session.flush()
+    db_session.add(
+        ServiceExtensionEntry(
+            extension_id=extension.id,
+            subscription_id=subscription.id,
+            subscriber_id=subscriber.id,
+            grant_starts_at=at(entitlement.ends_at),
+            grant_ends_at=granted_through,
+        )
+    )
+    subscription.next_billing_at = granted_through
+    db_session.commit()
+
+    preview = preview_stale_prepaid_billing_anchor_repair(
+        db_session,
+        limit=1,
+        subscription_ids=(subscription.id,),
+        include_unsupported_leads=True,
+    )
+    assert preview.cohort_size == 0
+
+
+def test_unsupported_lead_repair_requires_an_explicit_cohort(db_session):
+    """Backwards anchor repair can never become an unreviewed bulk action."""
+    import pytest
+
+    with pytest.raises(ValueError, match="explicit subscription_ids"):
+        preview_stale_prepaid_billing_anchor_repair(
+            db_session,
+            include_unsupported_leads=True,
+        )
+
+
 def test_missing_anchor_repair_requires_exact_active_entitlement(
     db_session, subscriber, subscription
 ):
