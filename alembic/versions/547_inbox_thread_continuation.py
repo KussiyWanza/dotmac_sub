@@ -1,7 +1,7 @@
 """Link a continued Inbox conversation to its resolved predecessor.
 
-Revision ID: 545_inbox_thread_continuation
-Revises: 544_carried_source_adjudication
+Revision ID: 547_inbox_thread_continuation
+Revises: 546_module_database_roles_prerequisite
 Create Date: 2026-08-20
 """
 
@@ -14,8 +14,8 @@ from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
-revision: str = "545_inbox_thread_continuation"
-down_revision: str | None = "544_carried_source_adjudication"
+revision: str = "547_inbox_thread_continuation"
+down_revision: str | None = "546_module_database_roles_prerequisite"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
