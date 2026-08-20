@@ -158,6 +158,39 @@ def test_archived_rows_are_hidden_by_default_and_queryable_explicitly(db_session
     assert archived_total == 1
     assert archived[0]["name"] == "retired"
     assert archived[0]["is_archived"] is True
+    assert archived[0]["status"] == "not_working"
+    assert archived[0]["status_presentation"].value == "archived"
+    assert archived[0]["status_presentation"].label == "Decommissioned"
+    assert archived[0]["status_presentation"].tone.value == "neutral"
+
+
+def test_core_device_row_actions_use_decommission_language(db_session):
+    _proj(db_session, "1", name="current", lifecycle_state="active")
+    _proj(
+        db_session,
+        "2",
+        name="retired",
+        status="not_working",
+        lifecycle_state="archived",
+    )
+
+    current_payload = inventory.devices_list_page_data(
+        db_session,
+        inventory.build_network_device_list_query(device_type="core"),
+    )
+    decommissioned_payload = inventory.devices_list_page_data(
+        db_session,
+        inventory.build_network_device_list_query(
+            device_type="core", lifecycle="archived"
+        ),
+    )
+
+    assert current_payload["devices"][0]["actions"]["archive"].label == (
+        "Decommission Device"
+    )
+    assert decommissioned_payload["devices"][0]["actions"]["archive"].label == (
+        "Restore Device"
+    )
 
 
 def test_stats_and_repair_evidence(db_session):

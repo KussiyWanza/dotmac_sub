@@ -20,8 +20,12 @@ from datetime import datetime
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from app.models.network_monitoring import DeviceProjection
-from app.services.status_presentation import network_device_list_status_presentation
+from app.models.network_monitoring import DeviceProjection, NetworkDeviceLifecycleState
+from app.services.device_operational_status import DeviceOperationalState
+from app.services.network_device_status_presentation import (
+    NetworkDeviceListStatusContext,
+    network_device_list_status_presentation,
+)
 
 # Fields the free-text search matches (mirrors the legacy in-memory search).
 _SEARCH_COLUMNS = (
@@ -87,7 +91,10 @@ def _row_to_dict(row: DeviceProjection) -> dict:
         "status": row.operational_status,
         "operational_reason": row.operational_reason,
         "status_presentation": network_device_list_status_presentation(
-            row.operational_status
+            NetworkDeviceListStatusContext(
+                operational_status=DeviceOperationalState(row.operational_status),
+                lifecycle_state=NetworkDeviceLifecycleState(row.lifecycle_state),
+            )
         ),
         "last_seen": row.last_seen,
         "subscriber": row.subscriber_id,

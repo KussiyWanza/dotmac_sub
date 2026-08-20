@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.models.catalog import NasDevice
 from app.models.forwarding_topology import ForwardingTopologyDeclaration
-from app.models.network_monitoring import NetworkDevice
+from app.models.network_monitoring import NetworkDevice, NetworkDeviceLifecycleState
 from app.models.router_management import Router
 from app.services.audit_adapter import AuditActor, stage_audit_event
 from app.services.domain_errors import DomainError
@@ -53,10 +53,10 @@ def _error(suffix: str, message: str, **details: object) -> CoreDeviceArchiveErr
     )
 
 
-class CoreDeviceLifecycle(StrEnum):
-    ACTIVE = "active"
-    INACTIVE = "inactive"
-    ARCHIVED = "archived"
+# Compatibility name for the archive owner's public outcomes. The shared enum
+# is defined alongside the persisted lifecycle facts so read projections and
+# command outcomes cannot drift onto different vocabularies.
+CoreDeviceLifecycle = NetworkDeviceLifecycleState
 
 
 class CoreDeviceMutation(StrEnum):
@@ -89,7 +89,7 @@ class ArchivePreviewFingerprint:
         except ValueError as exc:
             raise _error(
                 "invalid_preview_fingerprint",
-                "Review the archive impact again before confirming.",
+                "Review the decommission impact again before confirming.",
             ) from exc
 
 
@@ -191,7 +191,7 @@ def _affected_customer_count(db: Session, device: NetworkDevice) -> int:
     except Exception as exc:
         raise _error(
             "impact_unavailable",
-            "Archive impact could not be calculated. Try again after topology "
+            "Decommission impact could not be calculated. Try again after topology "
             "is available.",
             device_id=str(device.id),
         ) from exc
@@ -246,7 +246,7 @@ def _preview(db: Session, device: NetworkDevice) -> CoreDeviceArchivePreview:
     affected_count = _affected_customer_count(db, device)
     blockers: list[str] = []
     if device.archived_at is not None:
-        blockers.append("Device is already archived")
+        blockers.append("Device is already decommissioned")
     if child_ids:
         blockers.append(f"{len(child_ids)} active child device(s)")
     if forwarding_ids:
@@ -321,7 +321,7 @@ def require_core_device_mutable(
     if lifecycle_state is CoreDeviceLifecycle.ARCHIVED:
         raise _error(
             "archived_device_read_only",
-            "Restore this archived device before changing or operating it.",
+            "Restore this decommissioned device before changing or operating it.",
             device_id=str(device.id),
             mutation=request.mutation.value,
         )
@@ -334,7 +334,9 @@ def require_core_device_mutable(
 
 def _validate_context(context: CommandContext) -> None:
     if context.scope != ARCHIVE_SCOPE:
-        raise _error("scope_mismatch", "Core-device archive permission is required.")
+        raise _error(
+            "scope_mismatch", "Core-device decommission permission is required."
+        )
     reason = context.reason.strip()
     if len(reason) < 3 or len(reason) > 500:
         raise _error(
@@ -395,13 +397,13 @@ def archive_core_device(
         if preview.fingerprint != command.expected_preview_fingerprint:
             raise _error(
                 "stale_preview",
-                "The device or its dependencies changed. Review the archive "
+                "The device or its dependencies changed. Review the decommission "
                 "impact again.",
             )
         if not preview.allowed:
             raise _error(
                 "dependencies_block_archive",
-                "Resolve the listed dependencies before archiving this device.",
+                "Resolve the listed dependencies before decommissioning this device.",
                 blockers=list(preview.blockers),
             )
         archived_at = datetime.now(UTC)

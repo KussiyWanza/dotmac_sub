@@ -1,7 +1,7 @@
 {% extends "layouts/admin.html" %}
 {% from "components/ui/macros.html" import icon_server, ambient_background, page_header, stats_card, action_button, status_badge, filter_bar, search_input, filter_select, row_action, empty_state, icon_plus, icon_view, icon_edit, icon_warning, animation_styles %}
 
-{% block title %}{{ 'Archived Network Devices' if lifecycle == 'archived' else 'Network Devices' }} - Admin{% endblock %}
+{% block title %}{{ 'Decommissioned Network Devices' if lifecycle == 'archived' else 'Network Devices' }} - Admin{% endblock %}
 
 {% block content %}
 <div class="space-y-8">
@@ -27,8 +27,8 @@
 
 
     {% call page_header(
-        title="Archived Network Devices" if lifecycle == 'archived' else "Network Devices",
-        subtitle="Review and restore archived core devices" if lifecycle == 'archived' else "Manage core, OLT, ONT, and CPE devices across the network",
+        title="Decommissioned Network Devices" if lifecycle == 'archived' else "Network Devices",
+        subtitle="Review and restore decommissioned core devices" if lifecycle == 'archived' else "Manage core, OLT, ONT, and CPE devices across the network",
         icon=icon_server(),
         color="accent",
         breadcrumbs=[{"label": "Network", "href": "/admin/network"}, {"label": "Network Devices"}]
@@ -36,7 +36,7 @@
         {% if lifecycle == 'archived' %}
         {{ action_button("Current Devices", "/admin/network/devices?type=core", icon_view(), "secondary", "slate") }}
         {% else %}
-        {{ action_button("Archived Devices", "/admin/network/devices?type=core&lifecycle=archived", icon_view(), "secondary", "slate") }}
+        {{ action_button("Decommissioned Devices", "/admin/network/devices?type=core&lifecycle=archived", icon_view(), "secondary", "slate") }}
         {{ action_button("Add Device", "/admin/network/devices/create", icon_plus(), "primary", "cyan", "blue") }}
         {% endif %}
     {% endcall %}
