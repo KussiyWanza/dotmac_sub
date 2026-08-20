@@ -145,9 +145,12 @@ capacity snapshot; it never makes a routing decision.
 
 Automatic assignment uses `inbox_team_round_robin_cursors`, one durable cursor
 per service team. The routing owner locks the team and cursor, builds the
-eligible online candidate list, skips inactive/offline/full agents, advances
+eligible online candidate list, skips inactive/offline/stale/full agents, advances
 the cursor only inside the assignment transaction, and records routing evidence
-with candidate capacity details. The default capacity is ten active
+with candidate capacity details. An `online` presence is eligible only when its
+`last_seen_at` evidence is no more than 30 minutes old; missing or stale
+presence fails closed as offline. Manual assignment to a target-team member uses
+the same availability gate. The default capacity is ten active
 conversations per agent unless `InboxAgentPresence.max_concurrent_conversations`
 overrides it. Capacity counts active human assignments on `open`, human-owned
 `pending`, and `snoozed` conversations while ownership remains active. It

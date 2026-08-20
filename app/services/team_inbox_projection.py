@@ -34,6 +34,7 @@ from app.services import (
     conversation_ticket_handoff,
     service_team_lifecycle,
     subscriber_summary,
+    team_inbox_assignment,
     team_inbox_contact_links,
     team_inbox_filters,
     team_inbox_media,
@@ -630,11 +631,7 @@ def list_agent_options(db: Session) -> tuple[InboxAgentOption, ...]:
             ),
             initials=_initials(row.first_name, row.last_name, row.display_name),
             presence_status=(
-                (
-                    presence.manual_override_status
-                    or presence.status
-                    or InboxAgentPresenceStatus.offline.value
-                )
+                team_inbox_assignment.effective_presence_status(presence)
                 if (presence := presence_by_person.get(row.id)) is not None
                 else InboxAgentPresenceStatus.offline.value
             ),
