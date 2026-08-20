@@ -2701,6 +2701,12 @@ confirmation, tracking, or rating eligibility from raw statuses.
    mention-set delta and notify only newly added targets; unchanged and removed
    targets do not generate repeat deliveries. Legacy `@label` text is not
    identity evidence and is not backfilled.
+   New local attachment metadata carries the exact private `StoredFile` UUID in
+   typed `AttachmentMeta`; authorized streaming routes use that UUID while the
+   storage key remains evidence rather than identity. The lifecycle owner's
+   bounded repair command restores a legacy missing UUID only from one exact
+   active Ticket/type/storage-key match, reports missing or ambiguous evidence,
+   and leaves uncertain rows unchanged.
 2. `support.ticket_configuration` owns the operator-visible status subset,
    priority/type choices, routing, and SLA policy. Its typed regional routing
    projection supplies the admin new-ticket preview; the browser displays that

@@ -5845,6 +5845,18 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "GET /api/v1/me/subscriptions/{subscription_id}/device/wifi": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:subscription_id!"
+   ],
+   "request": null,
+   "responses": {
+    "200": "8bd97beb0d9c",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "GET /api/v1/me/subscriptions/{subscription_id}/service-change": {
    "params": [
     "header:authorization",
@@ -18875,7 +18887,7 @@
   "AssetCatalogItem": "71268e149b30",
   "AssetCatalogResponse": "4e709b9bb309",
   "AssetCatalogSummary": "0b8db6079180",
-  "AttachmentMeta": "de5420f7d9eb",
+  "AttachmentMeta": "1ef357e281c1",
   "AuditActorType": "add968509176",
   "AuditEventRead": "ba1463d9e560",
   "AuthProvider": "12388e0c7135",
