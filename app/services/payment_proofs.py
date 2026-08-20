@@ -52,6 +52,9 @@ from app.services.owner_commands import (
     OwnerCommandDefinition,
     execute_owner_command,
 )
+from app.services.prepaid_funding_reconstruction import (
+    PrepaidFundingBaselineMissingError,
+)
 from app.services.topup_intents import (
     DIRECT_TRANSFER_PROVIDER,
     DirectTransferBankAccountEvidence,
@@ -1384,6 +1387,16 @@ def _verify_proof(
                 "deposit_settlement_rejected",
                 str(exc),
                 deposit_error_code=exc.code,
+            ) from exc
+        except PrepaidFundingBaselineMissingError as exc:
+            raise _error(
+                "prepaid_funding_baseline_missing",
+                (
+                    "This proof cannot be verified until the customer has a "
+                    "reviewed prepaid funding opening position. Complete the "
+                    "prepaid opening repair, then retry verification."
+                ),
+                proof_id=str(proof.id),
             ) from exc
         payment = settlement.payment
     else:
