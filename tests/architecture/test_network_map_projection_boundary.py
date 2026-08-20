@@ -78,9 +78,7 @@ def test_vendor_route_planner_uses_typed_canonical_plant_subset():
     source = inspect.getsource(network_map.build_vendor_route_planning_map_projection)
 
     assert (
-        get_type_hints(network_map.build_vendor_route_planning_map_projection)[
-            "return"
-        ]
+        get_type_hints(network_map.build_vendor_route_planning_map_projection)["return"]
         is VendorRoutePlanningMapProjection
     )
     assert "build_network_map_plant_projection" in source

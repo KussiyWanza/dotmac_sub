@@ -231,7 +231,7 @@ def test_vendor_route_planner_reuses_minimized_canonical_plant_projection(
         "build_network_map_plant_projection",
         lambda *, db: NetworkMapPlantProjection(
             features=(safe_feature, excluded_feature),
-            layer_counts={layer: 0 for layer in NetworkMapPlantLayer},
+            layer_counts=dict.fromkeys(NetworkMapPlantLayer, 0),
             unmatched_olt_count=0,
         ),
     )
@@ -254,7 +254,7 @@ def test_authoring_ui_draws_saves_and_submits_owned_revisions() -> None:
     assert 'id="route-author-map"' in TEMPLATE
     assert 'id="route-author-geojson"' in TEMPLATE
     assert 'id="route-author-length"' in TEMPLATE
-    assert 'min-h-11 w-40 rounded-md border-slate-700 bg-slate-900' in TEMPLATE
+    assert "min-h-11 w-40 rounded-md border-slate-700 bg-slate-900" in TEMPLATE
     assert 'id="route-author-locate"' in TEMPLATE
     assert 'data-route-focus="{{ revision.id }}"' in TEMPLATE
     assert "/static/js/vendor-route-authoring.js" in TEMPLATE
@@ -356,7 +356,10 @@ def test_authoring_ui_draws_saves_and_submits_owned_revisions() -> None:
     assert 'syncFilterActionState("poi")' in AUTHORING_JS
     assert '["layer", "status", "poi"].forEach(syncFilterActionState)' in AUTHORING_JS
     assert "Loading points" in AUTHORING_JS
-    assert 'mapElement.scrollIntoView({ behavior: "smooth", block: "center" })' in AUTHORING_JS
+    assert (
+        'mapElement.scrollIntoView({ behavior: "smooth", block: "center" })'
+        in AUTHORING_JS
+    )
     assert "Searching selected reference plant types" in AUTHORING_JS
     assert "Reference only, not project-assigned" in AUTHORING_JS
     assert (
@@ -473,7 +476,10 @@ def test_authoring_filter_contracts_render_in_project_template() -> None:
     assert 'id="route-author-search-hint"' in rendered
     assert 'id="route-author-poi-nearby"' in rendered
     assert 'aria-label="Canonical plant map filters"' in rendered
-    assert "Search cabinets, closures, access points, buildings, or coordinates" in rendered
+    assert (
+        "Search cabinets, closures, access points, buildings, or coordinates"
+        in rendered
+    )
     assert "vendor-map-search-surface" in rendered
     assert "backdrop-filter: blur(12px)" in rendered
     assert 'data-route-filter-action="all"' in rendered
@@ -490,30 +496,30 @@ def test_authoring_filter_contracts_render_in_project_template() -> None:
     assert "Reference plant helps planning" in rendered
     assert 'aria-label="Project workspace"' in rendered
     assert 'href="#route-plan"' in rendered
-    assert 'html { scroll-behavior: smooth; }' in rendered
-    assert '@media (prefers-reduced-motion: reduce)' in rendered
-    assert 'bg-cyan-600' in rendered
-    assert 'text-cyan-400' in rendered
-    assert 'hover:bg-cyan-700 hover:text-white' in rendered
-    assert 'vendor-portal min-h-screen' in rendered
-    assert 'padding-left: 0.875rem' in rendered
-    assert 'padding-top: 0.625rem' in rendered
-    assert 'padding-bottom: 0.625rem' in rendered
-    assert 'border-bottom-color: #38bdf8' in rendered
-    assert 'border-bottom-left-radius: 0' in rendered
-    assert 'border-bottom-right-radius: 0' in rendered
-    assert 'box-shadow: inset 0 -2px 0 #38bdf8' in rendered
+    assert "html { scroll-behavior: smooth; }" in rendered
+    assert "@media (prefers-reduced-motion: reduce)" in rendered
+    assert "bg-cyan-600" in rendered
+    assert "text-cyan-400" in rendered
+    assert "hover:bg-cyan-700 hover:text-white" in rendered
+    assert "vendor-portal min-h-screen" in rendered
+    assert "padding-left: 0.875rem" in rendered
+    assert "padding-top: 0.625rem" in rendered
+    assert "padding-bottom: 0.625rem" in rendered
+    assert "border-bottom-color: #38bdf8" in rendered
+    assert "border-bottom-left-radius: 0" in rendered
+    assert "border-bottom-right-radius: 0" in rendered
+    assert "box-shadow: inset 0 -2px 0 #38bdf8" in rendered
     assert 'input[type="search"]::-webkit-search-cancel-button' in rendered
-    assert '-webkit-appearance: none' in rendered
+    assert "-webkit-appearance: none" in rendered
     assert 'id="route-author-search-clear"' in rendered
-    assert 'hover:bg-slate-700 hover:text-white' in rendered
-    assert '<summary class=' in rendered
+    assert "hover:bg-slate-700 hover:text-white" in rendered
+    assert "<summary class=" in rendered
     assert "Map layers and reference points" in rendered
     assert 'id="route-reference-details"' in rendered
-    assert 'data-route-reference-panel' in rendered
-    assert 'prefers-reduced-motion: reduce' in rendered
-    assert 'cubic-bezier(0.22, 1, 0.36, 1)' in rendered
-    assert 'border-slate-700 bg-slate-900 shadow-sm' in rendered
+    assert "data-route-reference-panel" in rendered
+    assert "prefers-reduced-motion: reduce" in rendered
+    assert "cubic-bezier(0.22, 1, 0.36, 1)" in rendered
+    assert "border-slate-700 bg-slate-900 shadow-sm" in rendered
     for group_label in ("Layers", "Status", "Points"):
         assert f'<legend class="sr-only">{group_label}</legend>' in rendered
         assert (

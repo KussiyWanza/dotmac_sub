@@ -1030,9 +1030,7 @@ DOMAIN = DomainSOT(
                 ),
                 errors=ErrorContract(
                     domain_codes=(),
-                    mapping_owner=(
-                        "app.web.admin.network and app.web.vendor_portal"
-                    ),
+                    mapping_owner=("app.web.admin.network and app.web.vendor_portal"),
                 ),
                 projections=(
                     ProjectionContract(

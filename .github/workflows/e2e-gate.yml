@@ -13,7 +13,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  PYTHON_VERSION: "3.12"
+  PYTHON_VERSION: "3.12.13"
+  POETRY_VERSION: "2.4.1"
   # Read auth for the private Forgejo PyPI index (dotmac-kernel). Same
   # ci-reader pattern as ci.yml; token source of record is OpenBao
   # (secret/dotmac/forgejo/read-token).
@@ -64,15 +65,55 @@ jobs:
 
       - name: Install Python + Poetry
         if: steps.relevance.outputs.relevant == 'true'
+        id: python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      - name: Restore Poetry installation
+        if: steps.relevance.outputs.relevant == 'true'
+        id: poetry-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.local
+          key: poetry-v1-${{ runner.os }}-${{ steps.python.outputs.python-version }}-${{ env.POETRY_VERSION }}
+
+      - name: Install Poetry
+        if: steps.relevance.outputs.relevant == 'true' && steps.poetry-cache.outputs.cache-hit != 'true'
+        uses: snok/install-poetry@v1
+        with:
+          version: ${{ env.POETRY_VERSION }}
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+
+      - name: Configure Poetry
+        if: steps.relevance.outputs.relevant == 'true'
+        run: |
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/poetry" config virtualenvs.create true
+          "$HOME/.local/bin/poetry" config virtualenvs.in-project true
+
+      - name: Remove repository development environment pointer
+        if: steps.relevance.outputs.relevant == 'true'
+        run: |
+          if [ -L .venv ]; then
+            rm .venv
+          fi
+
+      - name: Restore Python environment
+        if: steps.relevance.outputs.relevant == 'true'
+        id: python-cache
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: python-venv-v3-${{ runner.os }}-${{ steps.python.outputs.python-version }}-${{ env.POETRY_VERSION }}-${{ hashFiles('poetry.lock', 'pyproject.toml') }}
+
       - name: Install dependencies + browser
         if: steps.relevance.outputs.relevant == 'true'
         run: |
-          pipx install poetry
-          poetry install --no-interaction
+          if [ "${{ steps.python-cache.outputs.cache-hit }}" != "true" ]; then
+            poetry install --no-interaction
+          fi
           poetry run playwright install chromium --with-deps
 
       - name: Migrate + seed + start app from this PR's code
