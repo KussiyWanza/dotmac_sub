@@ -77,10 +77,9 @@ class SupportRepository {
 
   /// POST /me/support/tickets — scoped to the caller; no subscriber id sent.
   ///
-  /// When [attachmentPaths] is non-empty the request is sent as
-  /// multipart/form-data with a repeatable `attachments` file field (FROZEN
-  /// backend contract: images + PDF, ≤5 MB each, ≤5 files); otherwise a plain
-  /// JSON body is posted as before.
+  /// The endpoint accepts multipart/form-data, including when no files are
+  /// attached. Files use a repeatable `attachments` field (FROZEN backend
+  /// contract: images + PDF, ≤5 MB each, ≤5 files).
   Future<Ticket> createTicket({
     required String title,
     String? description,
@@ -88,7 +87,7 @@ class SupportRepository {
     String? ticketType,
     List<String>? attachmentPaths,
   }) async {
-    final fields = <String, dynamic>{
+    final fields = <String, String>{
       'title': title,
       if (description != null) 'description': description,
       'priority': priority,
@@ -97,7 +96,7 @@ class SupportRepository {
     final data = await guard(
       () => dio.post(
         '/me/support/tickets',
-        data: _bodyFor(fields, attachmentPaths),
+        data: _multipartBodyFor(fields, attachmentPaths),
       ),
     );
     return Ticket.fromJson(data as Map<String, dynamic>);
@@ -120,7 +119,7 @@ class SupportRepository {
 
   /// POST /me/support/tickets/{id}/comments
   ///
-  /// Same multipart rules as [createTicket] when [attachmentPaths] is supplied.
+  /// Uses the same multipart contract as [createTicket].
   Future<TicketComment> addComment(
     String ticketId,
     String body, {
@@ -129,20 +128,22 @@ class SupportRepository {
     final data = await guard(
       () => dio.post(
         '/me/support/tickets/$ticketId/comments',
-        data: _bodyFor({'body': body}, attachmentPaths),
+        data: _multipartBodyFor({'body': body}, attachmentPaths),
       ),
     );
     return TicketComment.fromJson(data as Map<String, dynamic>);
   }
 
-  /// Build either a plain JSON map (no files) or a [FormData] carrying the text
-  /// [fields] plus a repeatable `attachments` file field — one entry per path,
-  /// the frozen backend contract for ticket/comment uploads.
-  Object _bodyFor(Map<String, dynamic> fields, List<String>? attachmentPaths) {
-    if (attachmentPaths == null || attachmentPaths.isEmpty) return fields;
+  /// Build the [FormData] required by the ticket and comment endpoints. The
+  /// body stays multipart even without files because FastAPI declares the text
+  /// inputs with `Form(...)`, not a JSON request model.
+  FormData _multipartBodyFor(
+    Map<String, String> fields,
+    List<String>? attachmentPaths,
+  ) {
     final form = FormData();
-    fields.forEach((k, v) => form.fields.add(MapEntry(k, v.toString())));
-    for (final path in attachmentPaths) {
+    form.fields.addAll(fields.entries);
+    for (final path in attachmentPaths ?? const <String>[]) {
       form.files.add(
         MapEntry(
           'attachments',
