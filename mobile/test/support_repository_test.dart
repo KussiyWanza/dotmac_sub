@@ -18,9 +18,9 @@ class _FakeAdapter implements HttpClientAdapter {
     return ResponseBody.fromString(
       isComment
           ? '{"id":"comment-1","ticket_id":"ticket-1",'
-                '"body":"Still offline","is_internal":false}'
+              '"body":"Still offline","is_internal":false}'
           : '{"id":"ticket-1","title":"No internet",'
-                '"status":"open","priority":"normal"}',
+              '"status":"open","priority":"normal"}',
       201,
       headers: {
         Headers.contentTypeHeader: [Headers.jsonContentType],

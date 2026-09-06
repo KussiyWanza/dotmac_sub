@@ -399,5 +399,5 @@ class ChatController extends FamilyNotifier<ChatState, String>
 /// outlives any single screen so leaving Support never ends the chat.
 final chatControllerProvider =
     NotifierProvider.family<ChatController, ChatState, String>(
-      ChatController.new,
-    );
+  ChatController.new,
+);

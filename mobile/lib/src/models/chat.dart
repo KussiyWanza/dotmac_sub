@@ -22,13 +22,16 @@ class ChatSession {
   factory ChatSession.fromJson(
     Map<String, dynamic> json, {
     required Uri brokerBaseUri,
-  }) => ChatSession(
-    sessionId: _requiredString(json, 'session_id'),
-    visitorToken: _requiredString(json, 'visitor_token'),
-    apiBase: _resolveHttpUri(_requiredString(json, 'api_base'), brokerBaseUri),
-    wsUrl: _resolveWebSocketUri(_requiredString(json, 'ws_url'), brokerBaseUri),
-    conversationId: _optionalString(json['conversation_id']),
-  );
+  }) =>
+      ChatSession(
+        sessionId: _requiredString(json, 'session_id'),
+        visitorToken: _requiredString(json, 'visitor_token'),
+        apiBase:
+            _resolveHttpUri(_requiredString(json, 'api_base'), brokerBaseUri),
+        wsUrl: _resolveWebSocketUri(
+            _requiredString(json, 'ws_url'), brokerBaseUri),
+        conversationId: _optionalString(json['conversation_id']),
+      );
 
   static String _requiredString(Map<String, dynamic> json, String field) {
     final value = _optionalString(json[field]);
@@ -45,9 +48,8 @@ class ChatSession {
 
   static Uri _resolveHttpUri(String value, Uri brokerBaseUri) {
     final parsed = Uri.parse(value);
-    final resolved = parsed.hasScheme
-        ? parsed
-        : brokerBaseUri.resolveUri(parsed);
+    final resolved =
+        parsed.hasScheme ? parsed : brokerBaseUri.resolveUri(parsed);
     if (!resolved.hasScheme ||
         resolved.host.isEmpty ||
         (resolved.scheme != 'http' && resolved.scheme != 'https')) {
@@ -124,16 +126,17 @@ class ChatMessage {
     String? id,
     MessageStatus? status,
     DateTime? createdAt,
-  }) => ChatMessage(
-    id: id ?? this.id,
-    body: body,
-    fromAgent: fromAgent,
-    authorName: authorName,
-    authorAvatar: authorAvatar,
-    createdAt: createdAt ?? this.createdAt,
-    readAt: readAt,
-    status: status ?? this.status,
-  );
+  }) =>
+      ChatMessage(
+        id: id ?? this.id,
+        body: body,
+        fromAgent: fromAgent,
+        authorName: authorName,
+        authorAvatar: authorAvatar,
+        createdAt: createdAt ?? this.createdAt,
+        readAt: readAt,
+        status: status ?? this.status,
+      );
 
   static DateTime? _parseDate(Object? v) =>
       v is String ? DateTime.tryParse(v) : null;
@@ -145,30 +148,30 @@ class ChatMessage {
 
   /// From GET /session/{id}/messages (WidgetMessageRead).
   factory ChatMessage.fromHistory(Map<String, dynamic> j) => ChatMessage(
-    id: (j['id'] ?? '').toString(),
-    body: (j['body'] ?? '').toString(),
-    fromAgent: j['direction'] == 'outbound',
-    authorName: _str(j['author_name']),
-    authorAvatar: _str(j['author_avatar']),
-    createdAt: _parseDate(j['created_at']),
-    readAt: _parseDate(j['read_at']),
-  );
+        id: (j['id'] ?? '').toString(),
+        body: (j['body'] ?? '').toString(),
+        fromAgent: j['direction'] == 'outbound',
+        authorName: _str(j['author_name']),
+        authorAvatar: _str(j['author_avatar']),
+        createdAt: _parseDate(j['created_at']),
+        readAt: _parseDate(j['read_at']),
+      );
 
   /// From POST /session/{id}/message (WidgetMessageResponse) — our own message.
   factory ChatMessage.fromSendResponse(Map<String, dynamic> j) => ChatMessage(
-    id: (j['message_id'] ?? '').toString(),
-    body: (j['body'] ?? '').toString(),
-    fromAgent: false,
-    createdAt: _parseDate(j['created_at']),
-  );
+        id: (j['message_id'] ?? '').toString(),
+        body: (j['body'] ?? '').toString(),
+        fromAgent: false,
+        createdAt: _parseDate(j['created_at']),
+      );
 
   /// From a `message_new` WebSocket event (broadcast_to_widget_visitor).
   factory ChatMessage.fromSocket(Map<String, dynamic> j) => ChatMessage(
-    id: (j['message_id'] ?? j['id'] ?? '').toString(),
-    body: (j['body'] ?? '').toString(),
-    fromAgent: j['direction'] == 'outbound',
-    authorName: _str(j['author_name']),
-    authorAvatar: _str(j['author_avatar']),
-    createdAt: _parseDate(j['created_at']),
-  );
+        id: (j['message_id'] ?? j['id'] ?? '').toString(),
+        body: (j['body'] ?? '').toString(),
+        fromAgent: j['direction'] == 'outbound',
+        authorName: _str(j['author_name']),
+        authorAvatar: _str(j['author_avatar']),
+        createdAt: _parseDate(j['created_at']),
+      );
 }
