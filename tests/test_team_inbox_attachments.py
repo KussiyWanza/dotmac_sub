@@ -33,6 +33,7 @@ from app.services.object_storage import StreamResult
 CONVERSATION = Path("templates/admin/inbox/_conversation.html").read_text()
 JAVASCRIPT = Path("static/js/admin-inbox.js").read_text()
 ROUTES = Path("app/web/admin/inbox.py").read_text()
+TRIAGE = Path("templates/components/ui/triage.html").read_text()
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 64
 
@@ -225,6 +226,70 @@ def test_metadata_only_email_asset_is_not_presented_as_downloadable(db_session):
     assert team_inbox_media.asset_content_available(asset) is False
     assert attachment.url is None
     assert attachment.content_available is False
+
+
+def test_anonymous_provider_attachment_is_promoted_once(db_session):
+    conversation_id = _conversation_id(db_session)
+    message = InboxMessage(
+        conversation_id=conversation_id,
+        channel_type="instagram_dm",
+        direction="inbound",
+        body="[ephemeral]",
+        metadata_={
+            "attachments": [
+                {
+                    "type": "ephemeral",
+                    "provider": "meta_social",
+                    "download_status": "metadata_only",
+                }
+            ]
+        },
+    )
+    db_session.add(message)
+    db_session.flush()
+
+    first = team_inbox_media.promote_message_attachments(db_session, message=message)
+    second = team_inbox_media.promote_message_attachments(db_session, message=message)
+
+    assert [asset.id for asset in second] == [asset.id for asset in first]
+    assert (
+        db_session.query(InboxMediaAsset)
+        .filter(InboxMediaAsset.message_id == message.id)
+        .count()
+        == 1
+    )
+
+
+def test_distinct_anonymous_attachments_keep_separate_stable_rows(db_session):
+    conversation_id = _conversation_id(db_session)
+    message = InboxMessage(
+        conversation_id=conversation_id,
+        channel_type="instagram_dm",
+        direction="inbound",
+        body="[ephemeral]",
+        metadata_={
+            "attachments": [
+                {"type": "ephemeral", "provider": "meta_social"},
+                {"type": "ephemeral", "provider": "meta_social"},
+            ]
+        },
+    )
+    db_session.add(message)
+    db_session.flush()
+
+    first = team_inbox_media.promote_message_attachments(db_session, message=message)
+    second = team_inbox_media.promote_message_attachments(db_session, message=message)
+
+    assert len(first) == 2
+    assert len({asset.id for asset in first}) == 2
+    assert [asset.id for asset in second] == [asset.id for asset in first]
+
+
+def test_ephemeral_instagram_media_has_clear_unavailable_copy():
+    assert (
+        'message.channel_type == "instagram_dm" and att.type == "ephemeral"' in TRIAGE
+    )
+    assert "Disappearing Instagram media — unavailable in Selfcare" in TRIAGE
 
 
 def test_whatsapp_provider_media_stays_downloadable_without_local_file(db_session):
