@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
@@ -272,6 +272,94 @@ class InvoiceSyncRead(BaseModel):
     is_proforma: bool = False
     updated_at: datetime
     lines: list[InvoiceSyncLineRead] = Field(default_factory=list)
+
+
+class InvoiceAccountingSyncDisposition(StrEnum):
+    """Whether ERP may post, must quarantine, or should ignore an invoice."""
+
+    READY = "ready"
+    BLOCKED = "blocked"
+    NOT_APPLICABLE = "not_applicable"
+
+
+class InvoiceAccountingSyncSourceKind(StrEnum):
+    """Provenance classification for an invoice accounting projection."""
+
+    NATIVE = "native"
+    SPLYNX_LEGACY = "splynx_legacy"
+
+
+class InvoiceAccountingSyncIssueCode(StrEnum):
+    """Stable, machine-actionable reasons an invoice cannot be posted."""
+
+    NO_ACTIVE_LINES = "no_active_lines"
+    LINE_AMOUNT_MISMATCH = "line_amount_mismatch"
+    MISSING_TAX_RATE_REFERENCE = "missing_tax_rate_reference"
+    TAX_SNAPSHOT_MISSING = "tax_snapshot_missing"
+    HEADER_SUBTOTAL_MISMATCH = "header_subtotal_mismatch"
+    TAXED_HEADER_WITHOUT_LINE_TAX = "taxed_header_without_line_tax"
+    HEADER_TAX_MISMATCH = "header_tax_mismatch"
+    HEADER_TOTAL_MISMATCH = "header_total_mismatch"
+    LEGACY_HEADER_TOTALS_MISSING = "legacy_header_totals_missing"
+    DISCOUNT_ALLOCATION_UNDEFINED = "discount_allocation_undefined"
+
+
+class InvoiceAccountingSyncIssueRead(BaseModel):
+    """Typed evidence for one accounting projection contradiction."""
+
+    code: InvoiceAccountingSyncIssueCode
+    line_id: UUID | None = None
+    expected_amount: Decimal | None = None
+    actual_amount: Decimal | None = None
+
+
+class InvoiceAccountingSyncLineRead(BaseModel):
+    """Immutable source line facts with explicit tax-inclusive semantics."""
+
+    id: UUID
+    description: str
+    quantity: Decimal
+    unit_price: Decimal
+    source_amount: Decimal
+    net_amount_before_discount: Decimal
+    tax_amount_before_discount: Decimal
+    gross_amount_before_discount: Decimal
+    tax_rate_id: UUID | None = None
+    tax_rate_code: str | None = None
+    tax_rate_percent: Decimal | None = None
+    tax_rate_is_active: bool | None = None
+    tax_application: TaxApplication
+
+
+class InvoiceAccountingSyncRead(BaseModel):
+    """Versioned, fail-closed invoice projection for Dotmac ERP accounting."""
+
+    contract_version: Literal["invoice-accounting-sync.v2"]
+    source_kind: InvoiceAccountingSyncSourceKind
+    source_invoice_id: UUID
+    source_splynx_invoice_id: int | None = None
+    account_id: UUID
+    account: InvoiceSyncAccountRead
+    invoice_number: str | None = None
+    status: InvoiceStatus
+    currency: str
+    subtotal_before_discount: Decimal
+    discount_type: InvoiceDiscountType | None = None
+    discount_value: Decimal | None = None
+    discount_amount: Decimal
+    discounted_subtotal: Decimal
+    tax_total: Decimal
+    total: Decimal
+    balance_due: Decimal
+    issued_at: datetime | None = None
+    due_at: datetime | None = None
+    paid_at: datetime | None = None
+    memo: str | None = None
+    is_proforma: bool
+    updated_at: datetime
+    disposition: InvoiceAccountingSyncDisposition
+    issues: list[InvoiceAccountingSyncIssueRead] = Field(default_factory=list)
+    lines: list[InvoiceAccountingSyncLineRead] = Field(default_factory=list)
 
 
 class CreditNoteBase(BaseModel):

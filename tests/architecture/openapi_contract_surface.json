@@ -5365,6 +5365,24 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "GET /api/v1/invoices/accounting-sync/v2": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "query:account_id",
+    "query:invoice_id",
+    "query:is_active",
+    "query:limit",
+    "query:offset",
+    "query:status",
+    "query:updated_since"
+   ],
+   "request": null,
+   "responses": {
+    "200": "5b040a46c8db",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "GET /api/v1/invoices/sync": {
    "params": [
     "header:authorization",
@@ -19558,6 +19576,12 @@
   "IntegratorSettlementMirrorReport": "6c4cf5ced22b",
   "IntegratorSettlementReceipt": "5aefc8c7f135",
   "InterfaceStatus": "20c251764046",
+  "InvoiceAccountingSyncDisposition": "24602856e05b",
+  "InvoiceAccountingSyncIssueCode": "794ea8914f37",
+  "InvoiceAccountingSyncIssueRead": "605f4d7a3162",
+  "InvoiceAccountingSyncLineRead": "c8e15125f57a",
+  "InvoiceAccountingSyncRead": "7dfa7a66e30c",
+  "InvoiceAccountingSyncSourceKind": "8be30288740f",
   "InvoiceBulkActionResponse": "4f4b4d0b09e5",
   "InvoiceBulkVoidRequest": "20ea34f498f7",
   "InvoiceBulkWriteOffRequest": "5a2aadec6ec8",
@@ -19707,6 +19731,7 @@
   "ListResponse_IntegrationJobRead_": "4084eb06197f",
   "ListResponse_IntegrationRunRead_": "2d2a86b0a611",
   "ListResponse_IntegrationTargetRead_": "13dc8fbea6bf",
+  "ListResponse_InvoiceAccountingSyncRead_": "735a4e44c7b5",
   "ListResponse_InvoiceLineRead_": "c0bb00916c4f",
   "ListResponse_InvoiceRead_": "3c1c5f729682",
   "ListResponse_InvoiceSyncRead_": "661a97de2eee",

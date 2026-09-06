@@ -146,5 +146,9 @@ def diff_surfaces(pinned: dict[str, Any], current: dict[str, Any]) -> list[str]:
             lines.append(f"added {kind[:-1]}: {key}")
         for key in sorted(set(old) & set(new)):
             if old[key] != new[key]:
-                lines.append(f"changed {kind[:-1]}: {key}")
+                lines.append(
+                    f"changed {kind[:-1]}: {key}; "
+                    f"pinned={json.dumps(old[key], sort_keys=True)}; "
+                    f"current={json.dumps(new[key], sort_keys=True)}"
+                )
     return lines

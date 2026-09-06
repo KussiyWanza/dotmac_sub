@@ -1131,6 +1131,17 @@ class InvoiceLine(Base):
     __tablename__ = "invoice_lines"
     __table_args__ = (
         Index("ix_invoice_lines_invoice_id", "invoice_id"),
+        CheckConstraint(
+            "(tax_rate_snapshot_version IS NULL "
+            "AND tax_rate_code_snapshot IS NULL "
+            "AND tax_rate_percent_snapshot IS NULL "
+            "AND tax_rate_is_active_snapshot IS NULL) "
+            "OR (tax_rate_snapshot_version = 1 "
+            "AND tax_rate_id IS NOT NULL "
+            "AND tax_rate_percent_snapshot IS NOT NULL "
+            "AND tax_rate_is_active_snapshot IS NOT NULL)",
+            name="ck_invoice_lines_tax_snapshot_complete",
+        ),
         Index(
             "uq_invoice_lines_active_billing_line_key",
             "billing_line_key",
@@ -1155,6 +1166,10 @@ class InvoiceLine(Base):
     tax_rate_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("tax_rates.id")
     )
+    tax_rate_snapshot_version: Mapped[int | None] = mapped_column(Integer)
+    tax_rate_code_snapshot: Mapped[str | None] = mapped_column(String(40))
+    tax_rate_percent_snapshot: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
+    tax_rate_is_active_snapshot: Mapped[bool | None] = mapped_column(Boolean)
     tax_application: Mapped[TaxApplication] = mapped_column(
         Enum(TaxApplication), default=TaxApplication.exclusive
     )
