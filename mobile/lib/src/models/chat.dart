@@ -1,5 +1,5 @@
-/// Models for the live-chat bridge. The sub broker returns an opaque visitor
-/// token + the CRM endpoints the client then talks to directly.
+/// Models for the live-chat bridge. The authenticated broker returns an opaque
+/// visitor token plus either native Selfcare or temporary CRM transport URLs.
 class ChatSession {
   ChatSession({
     required this.sessionId,
@@ -11,17 +11,80 @@ class ChatSession {
 
   final String sessionId;
   final String visitorToken;
-  final String apiBase;
-  final String wsUrl;
+
+  /// Absolute REST endpoint resolved at the API adapter boundary.
+  final Uri apiBase;
+
+  /// Absolute WebSocket endpoint resolved at the API adapter boundary.
+  final Uri wsUrl;
   final String? conversationId;
 
-  factory ChatSession.fromJson(Map<String, dynamic> j) => ChatSession(
-        sessionId: j['session_id'] as String,
-        visitorToken: j['visitor_token'] as String,
-        apiBase: j['api_base'] as String,
-        wsUrl: j['ws_url'] as String? ?? '',
-        conversationId: j['conversation_id'] as String?,
+  factory ChatSession.fromJson(
+    Map<String, dynamic> json, {
+    required Uri brokerBaseUri,
+  }) =>
+      ChatSession(
+        sessionId: _requiredString(json, 'session_id'),
+        visitorToken: _requiredString(json, 'visitor_token'),
+        apiBase:
+            _resolveHttpUri(_requiredString(json, 'api_base'), brokerBaseUri),
+        wsUrl: _resolveWebSocketUri(
+            _requiredString(json, 'ws_url'), brokerBaseUri),
+        conversationId: _optionalString(json['conversation_id']),
       );
+
+  static String _requiredString(Map<String, dynamic> json, String field) {
+    final value = _optionalString(json[field]);
+    if (value == null) {
+      throw FormatException('Chat session is missing $field.');
+    }
+    return value;
+  }
+
+  static String? _optionalString(Object? value) {
+    final text = value?.toString().trim();
+    return text == null || text.isEmpty ? null : text;
+  }
+
+  static Uri _resolveHttpUri(String value, Uri brokerBaseUri) {
+    final parsed = Uri.parse(value);
+    final resolved =
+        parsed.hasScheme ? parsed : brokerBaseUri.resolveUri(parsed);
+    if (!resolved.hasScheme ||
+        resolved.host.isEmpty ||
+        (resolved.scheme != 'http' && resolved.scheme != 'https')) {
+      throw const FormatException(
+        'Chat REST endpoint is not a valid HTTP URL.',
+      );
+    }
+    return resolved;
+  }
+
+  static Uri _resolveWebSocketUri(String value, Uri brokerBaseUri) {
+    final parsed = Uri.parse(value);
+    if (parsed.hasScheme) {
+      if (parsed.host.isEmpty ||
+          (parsed.scheme != 'ws' && parsed.scheme != 'wss')) {
+        throw const FormatException(
+          'Chat realtime endpoint is not a valid WebSocket URL.',
+        );
+      }
+      return parsed;
+    }
+
+    final resolved = brokerBaseUri.resolveUri(parsed);
+    final socketScheme = switch (resolved.scheme) {
+      'http' => 'ws',
+      'https' => 'wss',
+      _ => null,
+    };
+    if (socketScheme == null || resolved.host.isEmpty) {
+      throw const FormatException(
+        'Chat realtime endpoint is not a valid WebSocket URL.',
+      );
+    }
+    return resolved.replace(scheme: socketScheme);
+  }
 }
 
 /// Delivery state of one of OUR messages (agent messages are always [sent]).
@@ -59,8 +122,11 @@ class ChatMessage {
   /// Null until read; only meaningful for the subscriber's own messages.
   final DateTime? readAt;
 
-  ChatMessage copyWith(
-          {String? id, MessageStatus? status, DateTime? createdAt}) =>
+  ChatMessage copyWith({
+    String? id,
+    MessageStatus? status,
+    DateTime? createdAt,
+  }) =>
       ChatMessage(
         id: id ?? this.id,
         body: body,

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../core/api_exception.dart';
 import '../models/chat.dart';
 import '../repositories/chat_repository.dart';
 import '../repositories/chat_socket.dart';
@@ -152,6 +153,8 @@ class ChatController extends FamilyNotifier<ChatState, String>
       unawaited(_repo.markRead(session));
       _startPolling();
       _connectSocket();
+    } on ApiException catch (error) {
+      state = state.copyWith(loading: false, error: error.message);
     } catch (_) {
       state = state.copyWith(
         loading: false,
@@ -197,7 +200,7 @@ class ChatController extends FamilyNotifier<ChatState, String>
 
   Future<void> _connectSocket() async {
     final session = state.session;
-    if (!_foreground || session == null || session.wsUrl.isEmpty) return;
+    if (!_foreground || session == null) return;
     if (_socket != null) return;
     final socket = ChatSocket(
       wsUrl: session.wsUrl,
