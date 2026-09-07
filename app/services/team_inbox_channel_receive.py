@@ -523,8 +523,8 @@ def _recent_intake_context(
         .all()
     )
     context: list[AiIntakeContextMessage] = []
+    row: InboxMessage
     for row in reversed(rows):
-        row: InboxMessage
         body = _message_body(row.body)
         if not body:
             continue
