@@ -216,21 +216,68 @@ class ManagerDispatchScreen extends ConsumerWidget {
   }
 }
 
-class ManagerExpenseReviewScreen extends ConsumerWidget {
+class ManagerExpenseReviewScreen extends ConsumerStatefulWidget {
   const ManagerExpenseReviewScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<ManagerExpenseReviewScreen> createState() =>
+      _ManagerExpenseReviewScreenState();
+}
+
+class _ManagerExpenseReviewScreenState
+    extends ConsumerState<ManagerExpenseReviewScreen> {
+  List<ExpenseRequest>? _lastLoadedExpenses;
+  final _resolvedExpenseIds = <String>{};
+  late final ProviderSubscription<AsyncValue<List<ExpenseRequest>>>
+  _expensesSubscription;
+
+  @override
+  void initState() {
+    super.initState();
+    _expensesSubscription = ref.listenManual(managerExpensesProvider, (
+      _,
+      next,
+    ) {
+      final items = next.valueOrNull;
+      if (items == null || !mounted) return;
+      setState(() => _lastLoadedExpenses = items);
+    });
+  }
+
+  @override
+  void dispose() {
+    _expensesSubscription.close();
+    super.dispose();
+  }
+
+  void _markResolved(String id) {
+    if (!mounted) return;
+    setState(() => _resolvedExpenseIds.add(id));
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final expenses = ref.watch(managerExpensesProvider);
+    final latestItems = expenses.valueOrNull ?? _lastLoadedExpenses;
+    final visibleItems = latestItems
+        ?.where((item) => !_resolvedExpenseIds.contains(item.id))
+        .toList();
+
     return Scaffold(
       appBar: AppBar(title: const Text('Approvals')),
       body: RefreshIndicator(
         onRefresh: () async => ref.invalidate(managerExpensesProvider),
-        child: expenses.when(
-          data: (items) => ListView(
+        child: switch (visibleItems) {
+          final items? => ListView(
             physics: const AlwaysScrollableScrollPhysics(),
             padding: const EdgeInsets.all(16),
             children: [
+              if (expenses.hasError) ...[
+                _ApprovalRefreshError(
+                  onRetry: () => ref.invalidate(managerExpensesProvider),
+                ),
+                const SizedBox(height: 12),
+              ],
               Text(
                 'Pending expenses',
                 style: Theme.of(
@@ -245,12 +292,58 @@ class ManagerExpenseReviewScreen extends ConsumerWidget {
                 )
               else
                 for (final request in items)
-                  _ExpenseApprovalCard(request: request),
+                  _ExpenseApprovalCard(
+                    request: request,
+                    onResolved: _markResolved,
+                  ),
             ],
           ),
-          loading: () => const Center(child: CircularProgressIndicator()),
-          error: (_, _) =>
-              const Center(child: Text('Could not load expense approvals')),
+          null when expenses.isLoading => const Center(
+            child: CircularProgressIndicator(),
+          ),
+          null => ListView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: const EdgeInsets.all(16),
+            children: [
+              _ApprovalRefreshError(
+                initialLoad: true,
+                onRetry: () => ref.invalidate(managerExpensesProvider),
+              ),
+            ],
+          ),
+        },
+      ),
+    );
+  }
+}
+
+class _ApprovalRefreshError extends StatelessWidget {
+  const _ApprovalRefreshError({
+    required this.onRetry,
+    this.initialLoad = false,
+  });
+
+  final VoidCallback onRetry;
+  final bool initialLoad;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Row(
+          children: [
+            const Icon(Icons.cloud_off_outlined),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                initialLoad
+                    ? 'Could not load expense approvals.'
+                    : 'Could not refresh approvals. Showing the last loaded results.',
+              ),
+            ),
+            TextButton(onPressed: onRetry, child: const Text('Retry')),
+          ],
         ),
       ),
     );
@@ -544,6 +637,7 @@ class _DispatchJobCard extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final canUnassign = job.assignmentQueueId != null;
     final time = job.scheduledStart == null
         ? 'Unscheduled'
         : DateFormat('d MMM, HH:mm').format(job.scheduledStart!.toLocal());
@@ -601,11 +695,17 @@ class _DispatchJobCard extends ConsumerWidget {
                 ),
                 const SizedBox(width: 8),
                 OutlinedButton.icon(
-                  onPressed: technicians.isEmpty
+                  onPressed: canUnassign
+                      ? () => _unassign(context, ref, job)
+                      : technicians.isEmpty
                       ? null
                       : () => _assign(context, ref, job, technicians),
-                  icon: const Icon(Icons.assignment_ind_outlined),
-                  label: const Text('Assign'),
+                  icon: Icon(
+                    canUnassign
+                        ? Icons.person_remove_outlined
+                        : Icons.assignment_ind_outlined,
+                  ),
+                  label: Text(canUnassign ? 'Unassign' : 'Assign'),
                 ),
               ],
             ),
@@ -617,9 +717,10 @@ class _DispatchJobCard extends ConsumerWidget {
 }
 
 class _ExpenseApprovalCard extends ConsumerStatefulWidget {
-  const _ExpenseApprovalCard({required this.request});
+  const _ExpenseApprovalCard({required this.request, required this.onResolved});
 
   final ExpenseRequest request;
+  final ValueChanged<String> onResolved;
 
   @override
   ConsumerState<_ExpenseApprovalCard> createState() =>
@@ -631,39 +732,50 @@ class _ExpenseApprovalCardState extends ConsumerState<_ExpenseApprovalCard> {
 
   Future<void> _approve() async {
     await _run(
-      () =>
-          ref.read(managerRepositoryProvider).approveExpense(widget.request.id),
+      () async {
+        final result = await ref
+            .read(managerRepositoryProvider)
+            .approveExpense(widget.request.id);
+        return expenseApprovalMessage(result);
+      },
+      failureMessage:
+          'Expense was not approved; ERP sync is unavailable. Please retry.',
     );
   }
 
   Future<void> _reject() async {
     final reason = await _rejectReason(context);
     if (reason == null || reason.trim().isEmpty) return;
-    await _run(
-      () => ref
+    await _run(() async {
+      await ref
           .read(managerRepositoryProvider)
-          .rejectExpense(widget.request.id, reason),
-    );
+          .rejectExpense(widget.request.id, reason);
+      return 'Expense rejected';
+    }, failureMessage: 'Could not reject expense');
   }
 
-  Future<void> _run(Future<void> Function() action) async {
+  Future<void> _run(
+    Future<String> Function() action, {
+    required String failureMessage,
+  }) async {
     if (_busy) return;
     setState(() => _busy = true);
     try {
-      await action();
+      final message = await action();
+      widget.onResolved(widget.request.id);
       ref
         ..invalidate(managerExpensesProvider)
         ..invalidate(managerSummaryProvider);
       if (mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(const SnackBar(content: Text('Expense updated')));
+        ).showSnackBar(SnackBar(content: Text(message)));
       }
     } catch (_) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Could not update expense')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(failureMessage)));
       }
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -736,6 +848,18 @@ class _ExpenseApprovalCardState extends ConsumerState<_ExpenseApprovalCard> {
       ),
     );
   }
+}
+
+String expenseApprovalMessage(ExpenseApprovalResult result) {
+  return switch (result.erpSyncStatus) {
+    'pending' || 'sent' => 'Expense approved; waiting for ERP',
+    'accepted' => 'Expense approved and synced to ERP',
+    'rejected' ||
+    'dead' ||
+    'not_configured' ||
+    'not_queued' => 'Expense approved; ERP sync needs attention',
+    _ => 'Expense approved; waiting for ERP',
+  };
 }
 
 class _StatusPill extends StatelessWidget {
@@ -847,16 +971,98 @@ Future<void> _assign(
   }
 }
 
-Future<String?> _rejectReason(BuildContext context) async {
-  final controller = TextEditingController();
-  final result = await showDialog<String>(
+Future<void> _unassign(
+  BuildContext context,
+  WidgetRef ref,
+  ManagerJob job,
+) async {
+  final assignmentQueueId = job.assignmentQueueId;
+  if (assignmentQueueId == null) return;
+  final confirmed = await showDialog<bool>(
     context: context,
     builder: (context) => AlertDialog(
+      title: const Text('Unassign technician?'),
+      content: Text(
+        'Remove ${job.assignedToLabel ?? 'the assigned technician'} from '
+        '${job.title}?',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(false),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(true),
+          child: const Text('Unassign'),
+        ),
+      ],
+    ),
+  );
+  if (confirmed != true || !context.mounted) return;
+  try {
+    await ref
+        .read(managerRepositoryProvider)
+        .unassignJob(
+          assignmentQueueId: assignmentQueueId,
+          reason: 'Manager unassigned technician from mobile dispatch',
+        );
+    ref
+      ..invalidate(managerJobsProvider)
+      ..invalidate(managerSummaryProvider)
+      ..invalidate(managerTechniciansProvider);
+    if (context.mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Technician unassigned')));
+    }
+  } catch (_) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not unassign technician')),
+      );
+    }
+  }
+}
+
+Future<String?> _rejectReason(BuildContext context) async {
+  return showDialog<String>(
+    context: context,
+    builder: (_) => const _RejectExpenseDialog(),
+  );
+}
+
+class _RejectExpenseDialog extends StatefulWidget {
+  const _RejectExpenseDialog();
+
+  @override
+  State<_RejectExpenseDialog> createState() => _RejectExpenseDialogState();
+}
+
+class _RejectExpenseDialogState extends State<_RejectExpenseDialog> {
+  final _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    FocusManager.instance.primaryFocus?.unfocus();
+    Navigator.of(context).pop(_controller.text);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
       title: const Text('Reject expense'),
       content: TextField(
-        controller: controller,
+        key: const Key('expense-rejection-reason'),
+        controller: _controller,
         autofocus: true,
         maxLines: 3,
+        textInputAction: TextInputAction.done,
+        onSubmitted: (_) => _submit(),
         decoration: const InputDecoration(labelText: 'Reason'),
       ),
       actions: [
@@ -864,15 +1070,10 @@ Future<String?> _rejectReason(BuildContext context) async {
           onPressed: () => Navigator.of(context).pop(),
           child: const Text('Cancel'),
         ),
-        FilledButton(
-          onPressed: () => Navigator.of(context).pop(controller.text),
-          child: const Text('Reject'),
-        ),
+        FilledButton(onPressed: _submit, child: const Text('Reject')),
       ],
-    ),
-  );
-  controller.dispose();
-  return result;
+    );
+  }
 }
 
 Offset _relativeOffset(ManagerTechnician tech, List<ManagerTechnician> live) {

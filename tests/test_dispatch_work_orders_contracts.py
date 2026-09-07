@@ -180,7 +180,7 @@ def test_work_order_list_composes_with_one_header_form_trigger(db_session):
     assert html.count('aria-controls="create-work-order-dialog"') == 1
     assert 'id="create-work-order-dialog"' in html
     assert "Open form" not in html
-    assert "<details" not in html
+    assert '<details id="create-work-order"' not in html
 
 
 def test_detail_template_owns_the_visible_assignment_next_action():

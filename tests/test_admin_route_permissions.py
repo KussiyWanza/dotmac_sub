@@ -127,6 +127,16 @@ def test_dispatch_work_order_routes_require_operations_dispatch_permission():
     # queue — replacing the coarse operations:dispatch guard.
     for path, method, permission in [
         ("/dispatch/work-orders", "GET", "operations:dispatch:read"),
+        (
+            "/dispatch/work-orders/{work_order_id}",
+            "GET",
+            "operations:dispatch:read",
+        ),
+        (
+            "/dispatch/work-orders/{work_order_id}/expenses",
+            "POST",
+            "operations:dispatch:write",
+        ),
         ("/dispatch/work-orders", "POST", "operations:dispatch:write"),
         ("/dispatch/work-orders/{work_order_id}", "POST", "operations:dispatch:write"),
         (

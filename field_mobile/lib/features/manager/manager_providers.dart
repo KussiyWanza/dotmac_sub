@@ -1,5 +1,6 @@
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:uuid/uuid.dart';
 
 import '../../app/status_presentation.dart';
 import '../auth/auth_state.dart';
@@ -126,6 +127,7 @@ class ManagerJob {
     required this.workType,
     this.scheduledStart,
     this.scheduledEnd,
+    this.assignmentQueueId,
     this.assignedToPersonId,
     this.assignedToLabel,
     this.subscriberLabel,
@@ -144,6 +146,7 @@ class ManagerJob {
   final String workType;
   final DateTime? scheduledStart;
   final DateTime? scheduledEnd;
+  final String? assignmentQueueId;
   final String? assignedToPersonId;
   final String? assignedToLabel;
   final String? subscriberLabel;
@@ -163,6 +166,7 @@ class ManagerJob {
     workType: json['work_type']?.toString() ?? 'other',
     scheduledStart: _date(json['scheduled_start']),
     scheduledEnd: _date(json['scheduled_end']),
+    assignmentQueueId: json['assignment_queue_id']?.toString(),
     assignedToPersonId: json['assigned_to_person_id']?.toString(),
     assignedToLabel: json['assigned_to_label']?.toString(),
     subscriberLabel: json['subscriber_label']?.toString(),
@@ -170,6 +174,44 @@ class ManagerJob {
     latitude: _double(json['latitude']),
     longitude: _double(json['longitude']),
   );
+}
+
+class ManagerAssignmentUpdate {
+  const ManagerAssignmentUpdate({required this.id, required this.status});
+
+  final String id;
+  final String status;
+
+  factory ManagerAssignmentUpdate.fromJson(Map<String, dynamic> json) =>
+      ManagerAssignmentUpdate(
+        id: json['id']?.toString() ?? '',
+        status: json['status']?.toString() ?? 'unknown',
+      );
+}
+
+class ExpenseApprovalResult {
+  const ExpenseApprovalResult({
+    required this.id,
+    required this.status,
+    required this.erpSyncStatus,
+    this.erpSyncEventId,
+    this.erpSyncError,
+  });
+
+  final String id;
+  final String status;
+  final String erpSyncStatus;
+  final String? erpSyncEventId;
+  final String? erpSyncError;
+
+  factory ExpenseApprovalResult.fromJson(Map<String, dynamic> json) =>
+      ExpenseApprovalResult(
+        id: json['id']?.toString() ?? '',
+        status: json['status']?.toString() ?? 'approved',
+        erpSyncStatus: json['erp_sync_status']?.toString() ?? 'not_queued',
+        erpSyncEventId: json['erp_sync_event_id']?.toString(),
+        erpSyncError: json['erp_sync_error']?.toString(),
+      );
 }
 
 class ManagerRepository {
@@ -237,6 +279,22 @@ class ManagerRepository {
         );
   }
 
+  Future<ManagerAssignmentUpdate> unassignJob({
+    required String assignmentQueueId,
+    required String reason,
+  }) async {
+    final response = await _ref
+        .read(apiClientProvider)
+        .dio
+        .post(
+          '/api/v1/field/manager/assignments/$assignmentQueueId/unassign',
+          data: {'reason': reason},
+        );
+    return ManagerAssignmentUpdate.fromJson(
+      (response.data as Map).cast<String, dynamic>(),
+    );
+  }
+
   Future<List<ExpenseRequest>> fetchExpenses() async {
     final response = await _ref
         .read(apiClientProvider)
@@ -245,11 +303,17 @@ class ManagerRepository {
     return _items(response.data).map(ExpenseRequest.fromJson).toList();
   }
 
-  Future<void> approveExpense(String id) async {
-    await _ref
+  Future<ExpenseApprovalResult> approveExpense(String id) async {
+    final response = await _ref
         .read(apiClientProvider)
         .dio
-        .post('/api/v1/field/manager/expenses/$id/approve');
+        .post(
+          '/api/v1/field/manager/expenses/$id/approve',
+          options: Options(headers: {'X-Request-ID': const Uuid().v4()}),
+        );
+    return ExpenseApprovalResult.fromJson(
+      (response.data as Map).cast<String, dynamic>(),
+    );
   }
 
   Future<void> rejectExpense(String id, String reason) async {

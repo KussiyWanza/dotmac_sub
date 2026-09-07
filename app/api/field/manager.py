@@ -1,19 +1,25 @@
 from dataclasses import asdict
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.schemas.common import ListResponse
+from app.schemas.dispatch import (
+    WorkOrderAssignmentQueueRead,
+    WorkOrderAssignmentQueueUpdate,
+)
 from app.schemas.field import (
     FieldEquipmentCustodyRead,
     FieldEquipmentIssueRequest,
     FieldEquipmentReturnRequest,
+    FieldExpenseApprovalRead,
     FieldExpenseRequestRead,
     FieldManagerExpenseRejectRequest,
     FieldManagerJob,
     FieldManagerJobAssignRequest,
+    FieldManagerJobUnassignRequest,
     FieldManagerMaterialRejectRequest,
     FieldManagerMeResponse,
     FieldManagerSummary,
@@ -31,7 +37,12 @@ from app.services.auth_dependencies import require_any_permission, require_permi
 from app.services.db_session_adapter import db_session_adapter
 from app.services.domain_errors import DomainError
 from app.services.field.equipment_custody import field_equipment_custody
-from app.services.field.expense_requests import field_expense_requests
+from app.services.field.expense_requests import (
+    ApproveFieldExpenseRequest,
+    FieldExpenseRequestError,
+    approve_field_expense_request_command,
+    field_expense_requests,
+)
 from app.services.field.manager import field_manager
 from app.services.field.material_requests import field_material_requests
 from app.services.owner_commands import CommandContext
@@ -43,6 +54,7 @@ from app.services.vendor_purchase_invoices import (
     ReviewVendorPurchaseInvoiceCommand,
     vendor_purchase_invoices,
 )
+from app.services.work_order_commands import work_order_commands
 
 router = APIRouter(prefix="/manager", tags=["field-manager"])
 
@@ -108,6 +120,32 @@ def _invoice_review_context(auth: dict, *, invoice_id: str) -> CommandContext:
         actor=str(auth["principal_id"]),
         scope=invoice_id,
         reason="field_manager_vendor_purchase_invoice_review",
+    )
+
+
+def _expense_approval_context(
+    auth: dict, *, expense_request_id: UUID, request_id: UUID
+) -> CommandContext:
+    return CommandContext(
+        command_id=request_id,
+        correlation_id=request_id,
+        actor=f"user:{auth['principal_id']}",
+        scope="operations:expense_request:write",
+        reason=f"approve_expense_request:{expense_request_id}",
+        idempotency_key=str(request_id),
+    )
+
+
+def _expense_approval_error(exc: FieldExpenseRequestError) -> HTTPException:
+    if exc.code.endswith("request_not_found"):
+        status_code = 404
+    elif exc.code.endswith(("erp_staging_failed", "erp_delivery_not_configured")):
+        status_code = 503
+    else:
+        status_code = 409
+    return HTTPException(
+        status_code=status_code,
+        detail={"code": exc.code, "message": exc.message, "details": exc.details},
     )
 
 
@@ -206,6 +244,29 @@ def field_manager_assign_job(
     )
 
 
+@router.post(
+    "/assignments/{assignment_queue_id}/unassign",
+    response_model=WorkOrderAssignmentQueueRead,
+)
+def field_manager_unassign_job(
+    assignment_queue_id: UUID,
+    payload: FieldManagerJobUnassignRequest,
+    auth: dict = Depends(_dispatch_write),
+    request_id: str | None = Header(default=None, alias="X-Request-ID"),
+    db: Session = Depends(get_db),
+):
+    return work_order_commands.update_queue_entry(
+        db=db,
+        queue_id=str(assignment_queue_id),
+        payload=WorkOrderAssignmentQueueUpdate(
+            status="skipped",
+            reason=payload.reason,
+        ),
+        auth=auth,
+        request_id=request_id,
+    )
+
+
 @router.get("/expenses", response_model=ListResponse[FieldExpenseRequestRead])
 def field_manager_expenses(
     status_filter: str | None = Query(default="submitted", alias="status"),
@@ -222,14 +283,31 @@ def field_manager_expenses(
 
 @router.post(
     "/expenses/{expense_request_id}/approve",
-    response_model=FieldExpenseRequestRead,
+    response_model=FieldExpenseApprovalRead,
 )
 def field_manager_approve_expense(
-    expense_request_id: str,
+    expense_request_id: UUID,
     auth: dict = Depends(_expense_write),
+    request_id: UUID | None = Header(default=None, alias="X-Request-ID"),
     db: Session = Depends(get_db),
 ):
-    return field_expense_requests.approve(db, expense_request_id)
+    command_id = request_id or uuid4()
+    db_session_adapter.release_read_transaction(db)
+    try:
+        return approve_field_expense_request_command(
+            db=db,
+            command=ApproveFieldExpenseRequest(
+                context=_expense_approval_context(
+                    auth,
+                    expense_request_id=expense_request_id,
+                    request_id=command_id,
+                ),
+                expense_request_id=expense_request_id,
+                reviewer_system_user_id=UUID(str(auth["principal_id"])),
+            ),
+        )
+    except FieldExpenseRequestError as exc:
+        raise _expense_approval_error(exc) from exc
 
 
 @router.post(

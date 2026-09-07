@@ -535,3 +535,34 @@ implementation.
 - Responsive behavior: desktop and mobile keep assignment, revision,
   operation, phase, reason, and action visible; HTMX refreshes the same owner
   projection rather than inferring progress in the browser.
+
+## Admin Work-Order Expense Entry Page Contract
+
+- Audience and task: authenticated staff with read access to the exact work order
+  can track their own work-order expense claims. Creating a claim additionally
+  requires the matching write-tier dispatch access. Technician assignment is
+  not required on this admin web surface.
+- Authority: `ui.work_order_expense_projection` owns the form, validation
+  presentation, requester-owned list, action eligibility, and ERP delivery
+  labels. `operations.expense_requests` owns the atomic claim and durable ERP
+  staging; ERP owns approval routing and reimbursement.
+- First viewport: the work-order identity remains the page context. The expense
+  card explains that approval and payment happen in ERP, shows the actor's
+  existing claims, and exposes one New Expense Claim action when ERP categories
+  are available.
+- Mutation: the multipart POST is explicitly CSRF protected, write-tier guarded,
+  and scoped to the work order in the URL. No work-order, requester, person,
+  user, or requester email input is accepted. A stable client reference prevents
+  double creation.
+- Form: purpose and expense date are required, currency defaults to NGN, notes
+  are optional, and at least one stacked repeatable item remains. Items expose
+  ERP category, description, positive amount, optional date/vendor/receipt
+  URL or upload/notes, category receipt rules, and category maximums. Server
+  validation is authoritative; the running total is browser assistance.
+- States: locally submitted, pending delivery, delivered but awaiting ERP
+  acceptance, accepted, approved, rejected with reason, paid, and sync
+  unavailable/failed remain distinct. A sent outbox event is never labelled
+  accepted by ERP.
+- Responsive behavior: line items are stacked cards at every width, controls
+  retain labels and text errors, totals name their currency, and add/remove and
+  submit actions remain accessible without relying on colour.

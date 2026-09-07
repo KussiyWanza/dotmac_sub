@@ -10,14 +10,24 @@ from fastapi.testclient import TestClient
 from app.api.field import router
 from app.db import get_db
 from app.models.dispatch import TechnicianProfile, WorkOrderAssignmentQueue
+from app.models.field_erp_sync import (
+    FieldErpSyncFlow,
+    SyncFlowOwner,
+    SyncFlowOwnership,
+)
 from app.models.field_location import FieldTechPresence
 from app.models.subscriber import Subscriber, UserType
 from app.models.system_user import SystemUser
 from app.models.work_order import WorkOrder
 from app.services.auth_dependencies import require_user_auth
-from app.services.field.expense_requests import field_expense_requests
+from app.services.field.expense_requests import (
+    ApproveFieldExpenseRequest,
+    approve_field_expense_request_command,
+    field_expense_requests,
+)
 from app.services.field.jobs import field_jobs
 from app.services.field.manager import field_manager
+from app.services.owner_commands import CommandContext
 
 
 def _user(db_session, name: str = "Manager") -> SystemUser:
@@ -42,6 +52,40 @@ def _auth(user: SystemUser, roles: list[str] | None = None) -> dict:
         "roles": roles if roles is not None else ["admin"],
         "scopes": [],
     }
+
+
+def _approve_expense(db_session, *, request_id, reviewer_id):
+    command_id = uuid4()
+    db_session.commit()
+    return approve_field_expense_request_command(
+        db=db_session,
+        command=ApproveFieldExpenseRequest(
+            context=CommandContext(
+                command_id=command_id,
+                correlation_id=command_id,
+                actor=f"user:{reviewer_id}",
+                scope="operations:expense_request:write",
+                reason=f"approve_expense_request:{request_id}",
+                idempotency_key=str(command_id),
+            ),
+            expense_request_id=request_id,
+            reviewer_system_user_id=reviewer_id,
+        ),
+    )
+
+
+def _enable_expense_flow(db_session) -> None:
+    flow = FieldErpSyncFlow.expense_claim.value
+    row = (
+        db_session.query(SyncFlowOwnership)
+        .filter(SyncFlowOwnership.flow == flow)
+        .one_or_none()
+    )
+    if row is None:
+        db_session.add(SyncFlowOwnership(flow=flow, owner=SyncFlowOwner.sub.value))
+    else:
+        row.owner = SyncFlowOwner.sub.value
+    db_session.flush()
 
 
 def _profile(db_session, user: SystemUser, **overrides) -> TechnicianProfile:
@@ -281,6 +325,7 @@ def test_manager_expense_approve_and_reject(db_session):
     )
     first = _expense(db_session, tech_user, profile, work_order)
     second = _expense(db_session, tech_user, profile, work_order)
+    _enable_expense_flow(db_session)
     db_session.commit()
 
     pending = field_expense_requests.list_all(db_session, status="submitted")
@@ -289,9 +334,12 @@ def test_manager_expense_approve_and_reject(db_session):
         str(second["id"]),
     }
 
-    approved = field_expense_requests.approve(db_session, str(first["id"]))
-    assert approved["status"] == "approved"
-    assert approved["approved_at"] is not None
+    approved = _approve_expense(
+        db_session, request_id=first["id"], reviewer_id=tech_user.id
+    )
+    assert approved.status == "approved"
+    assert approved.approved_at is not None
+    assert approved.erp_sync_status.value == "pending"
 
     rejected = field_expense_requests.reject(
         db_session, str(second["id"]), "No receipt provided"
@@ -299,9 +347,11 @@ def test_manager_expense_approve_and_reject(db_session):
     assert rejected["status"] == "rejected"
     assert rejected["rejection_reason"] == "No receipt provided"
 
-    with pytest.raises(HTTPException) as re_approve:
-        field_expense_requests.approve(db_session, str(first["id"]))
-    assert re_approve.value.status_code == 409
+    re_approved = _approve_expense(
+        db_session, request_id=first["id"], reviewer_id=tech_user.id
+    )
+    assert re_approved.status == "approved"
+    assert re_approved.erp_sync_event_id == approved.erp_sync_event_id
 
     still_pending = {
         str(item["id"])
@@ -336,6 +386,7 @@ def test_manager_api(db_session):
         assigned_to_crm_person_id="crm-api-tech",
     )
     expense = _expense(db_session, tech_user, profile, work_order)
+    _enable_expense_flow(db_session)
     db_session.commit()
 
     me = client.get("/api/v1/field/manager/me")
@@ -378,7 +429,25 @@ def test_manager_api(db_session):
     )
     assert assigned.status_code == 200
     # Reassignment must not rewind an active field-execution lifecycle.
-    assert assigned.json()["status"] == "in_progress"
+    assigned_body = assigned.json()
+    assert assigned_body["status"] == "in_progress"
+    assert assigned_body["assignment_queue_id"] is not None
+
+    unassigned = client.post(
+        "/api/v1/field/manager/assignments/"
+        f"{assigned_body['assignment_queue_id']}/unassign",
+        json={"reason": "Rebalance field workload"},
+    )
+    assert unassigned.status_code == 200
+    assert unassigned.json()["status"] == "skipped"
+    refreshed_jobs = client.get("/api/v1/field/manager/jobs").json()["items"]
+    refreshed_job = next(
+        entry for entry in refreshed_jobs if entry["id"] == "wo-mgr-api"
+    )
+    assert refreshed_job["assignment_queue_id"] is None
+    assert refreshed_job["assigned_to_person_id"] is None
+    assert refreshed_job["assigned_to_label"] is None
+    assert refreshed_job["status"] == "in_progress"
 
     expenses = client.get("/api/v1/field/manager/expenses")
     assert expenses.status_code == 200
@@ -387,6 +456,7 @@ def test_manager_api(db_session):
     approved = client.post(f"/api/v1/field/manager/expenses/{expense['id']}/approve")
     assert approved.status_code == 200
     assert approved.json()["status"] == "approved"
+    assert approved.json()["erp_sync_status"] == "pending"
 
     short_reason = client.post(
         f"/api/v1/field/manager/expenses/{expense['id']}/reject",

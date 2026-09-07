@@ -35,6 +35,7 @@ Widget _app({
   LocationPingService? locationPingService,
   AuthController Function() controller = _AuthedController.new,
   ManagerProfile? managerProfile,
+  List<ManagerJob> managerJobs = const [],
   List<Override> extra = const [],
 }) {
   return ProviderScope(
@@ -60,7 +61,7 @@ Widget _app({
         managerTechniciansProvider.overrideWith(
           (ref) async => const <ManagerTechnician>[],
         ),
-        managerJobsProvider.overrideWith((ref) async => const <ManagerJob>[]),
+        managerJobsProvider.overrideWith((ref) async => managerJobs),
         managerExpensesProvider.overrideWith((ref) async => const []),
         meProvider.overrideWith(
           (ref) async => const MeSummary(
@@ -170,6 +171,25 @@ void main() {
           permissions: ['operations:work_order:read'],
           isManager: true,
         ),
+        managerJobs: [
+          ManagerJob(
+            id: 'wo-dispatch-1',
+            title: 'Install service at Garki',
+            status: 'scheduled',
+            priority: 'normal',
+            workType: 'install',
+          ),
+          ManagerJob(
+            id: 'wo-dispatch-2',
+            title: 'Repair customer drop',
+            status: 'dispatched',
+            priority: 'high',
+            workType: 'repair',
+            assignmentQueueId: 'queue-1',
+            assignedToPersonId: 'person-1',
+            assignedToLabel: 'Ada Technician',
+          ),
+        ],
       ),
     );
     await tester.pumpAndSettle();
@@ -182,6 +202,17 @@ void main() {
     expect(find.text('Approvals'), findsWidgets);
     expect(find.text('Materials'), findsNothing);
     expect(find.text('Sales'), findsNothing);
+
+    await tester.tap(find.text('Dispatch'));
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('Open work orders'), findsOneWidget);
+    expect(find.text('Install service at Garki'), findsOneWidget);
+    expect(find.text('Assign'), findsOneWidget);
+    expect(find.text('Repair customer drop'), findsOneWidget);
+    expect(find.text('Assigned to Ada Technician'), findsOneWidget);
+    expect(find.text('Unassign'), findsOneWidget);
   });
 
   testWidgets('start shift enables mobile location sharing', (tester) async {

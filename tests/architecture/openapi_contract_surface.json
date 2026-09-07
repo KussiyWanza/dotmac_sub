@@ -14743,6 +14743,19 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "POST /api/v1/field/manager/assignments/{assignment_queue_id}/unassign": {
+   "params": [
+    "header:X-Request-ID",
+    "header:authorization",
+    "header:x-api-key",
+    "path:assignment_queue_id!"
+   ],
+   "request": "f5008b845753",
+   "responses": {
+    "200": "08afcc245f37",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "POST /api/v1/field/manager/equipment-custody": {
    "params": [
     "header:authorization",
@@ -14768,13 +14781,14 @@
   },
   "POST /api/v1/field/manager/expenses/{expense_request_id}/approve": {
    "params": [
+    "header:X-Request-ID",
     "header:authorization",
     "header:x-api-key",
     "path:expense_request_id!"
    ],
    "request": null,
    "responses": {
-    "200": "6cc1ebd3f658",
+    "200": "39a569c0cfe0",
     "422": "a11c9d9b2af8"
    }
   },
@@ -19428,11 +19442,12 @@
   "FieldEquipmentRead": "c401fc79d178",
   "FieldEquipmentRecord": "7c7bcf16d5ae",
   "FieldEquipmentReturnRequest": "80e3640552d3",
+  "FieldExpenseApprovalRead": "64ecf6941a17",
   "FieldExpenseCategoryRead": "c8edfa89ab4d",
   "FieldExpenseRequestCreate": "4a21a0cb3712",
   "FieldExpenseRequestItemCreate": "3b23aa8d5a6d",
   "FieldExpenseRequestItemRead": "515094e4452b",
-  "FieldExpenseRequestRead": "4e1e5219e3d4",
+  "FieldExpenseRequestRead": "838acdc17f32",
   "FieldExpenseRequestSubmit": "e8a7e3d6ec5a",
   "FieldExpenseVendorRead": "fd8c5d96e664",
   "FieldFiberCustomerTraceRead": "77b4750e8e06",
@@ -19463,8 +19478,9 @@
   "FieldLinkBudgetRead": "0fe4def40cc4",
   "FieldManagerActiveWorkOrder": "f637e2628bf8",
   "FieldManagerExpenseRejectRequest": "5892aecb2cb3",
-  "FieldManagerJob": "2ad78b39db67",
+  "FieldManagerJob": "ec32bb6e783f",
   "FieldManagerJobAssignRequest": "b448cdab2bda",
+  "FieldManagerJobUnassignRequest": "2a9593a4d2f2",
   "FieldManagerMaterialRejectRequest": "c88a1edfa686",
   "FieldManagerMeResponse": "2f2d847e8029",
   "FieldManagerSummary": "5b25b71d2a7f",

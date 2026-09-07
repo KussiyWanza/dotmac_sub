@@ -187,6 +187,22 @@ WORKFLOW_GUIDANCE: tuple[AdminWorkflowGuidance, ...] = (
         ),
     ),
     _guide(
+        "work-order-expenses",
+        "Operations",
+        "Record a work-order expense",
+        "Field operations staff",
+        "Create and track your own expense claim against the exact work order.",
+        ("/admin/dispatch/work-orders",),
+        "Open the exact work order and review its customer and operational context.",
+        "Choose New Expense Claim when you have dispatch write access and ERP categories are available.",
+        "Enter the purpose, date, currency, and item details; attach required receipt evidence before submitting.",
+        "Return to the work order to track delivery and ERP acceptance separately.",
+        notes=(
+            "Only your claims appear in this card; approval, reimbursement, and payment remain in ERP.",
+            "A submitted claim is not approved, and a sent delivery is not ERP acceptance.",
+        ),
+    ),
+    _guide(
         "project-authoring",
         "Projects",
         "Create and update projects",
