@@ -758,15 +758,25 @@ def test_lead_performance_rows_paginate_twenty_at_a_time():
     assert not third.has_next
 
 
-def test_lead_performance_template_has_bottom_right_page_controls():
+def test_sales_performance_template_has_bottom_right_page_controls():
     source, _, _ = report_routes.templates.env.loader.get_source(
         report_routes.templates.env, "admin/reports/sales_kpi.html"
     )
 
-    assert 'report_kind == "leads"' in source
-    assert 'aria-label="Lead performance pages"' in source
+    assert 'report_kind == "leads"' not in source
+    assert 'aria-label="{{ title }} pages"' in source
     assert "page={{ page + 1 }}" in source
     assert "page={{ page - 1 }}" in source
+
+
+def test_sales_order_performance_route_uses_twenty_row_pagination():
+    source = Path("app/web/admin/reports.py").read_text(encoding="utf-8")
+    route = source[source.index("def sales_order_performance_report(") :]
+    route = route[: route.index("@router.get", 1)]
+
+    assert "page: int = Query(default=1, ge=1)" in route
+    assert '_paginate_sales_report_rows(context["rows"], page=page)' in route
+    assert '"rows": report_page.rows' in route
 
 
 def test_sales_order_report_columns_render_exact_prefixed_row_keys():

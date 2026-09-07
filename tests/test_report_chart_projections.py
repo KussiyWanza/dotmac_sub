@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 from typing import NoReturn
 
@@ -318,3 +319,13 @@ def test_report_chart_macro_always_renders_a_visible_state() -> None:
     assert 'data-report-chart-state="present"' in present_html
     assert 'id="test-chart"' in present_html
     assert "chartWouldInitialize" in present_html
+
+
+def test_technician_secondary_cards_use_compact_independent_heights() -> None:
+    template = Path("templates/admin/reports/technician.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert "grid grid-cols-1 items-start gap-6 lg:grid-cols-2" in template
+    assert 'chart-container mb-3" style="min-height: 160px;' in template
+    assert "justify-between border-b border-slate-100 py-1" in template

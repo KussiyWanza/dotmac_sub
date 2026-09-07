@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from app.models.service_team import ServiceTeam, ServiceTeamType
 from app.models.support import Ticket
@@ -14,6 +15,22 @@ from app.models.ticket_workflow import (
     WorkflowEntityType,
 )
 from app.services import ticket_sla_reports
+
+
+def test_ticket_sla_queue_is_compact_without_horizontal_scrolling() -> None:
+    template = Path("templates/admin/reports/ticket_sla.html").read_text(
+        encoding="utf-8"
+    )
+
+    queue = template[template.index('{% call card("SLA Breach Queue"') :]
+    assert 'class="overflow-x-auto"' not in queue
+    assert 'class="w-full table-fixed' in queue
+    assert 'class="hidden lg:block"' in queue
+    assert "lg:hidden" in queue
+    assert "Over target:" in queue
+    assert 'aria-label="SLA breach queue pages"' in queue
+    assert "violation_page.page + 1" in queue
+    assert "violation_page.per_page" in queue
 
 
 def _policy(db_session) -> SlaPolicy:
@@ -195,6 +212,52 @@ def test_ticket_sla_report_violation_records(db_session):
     assert record["region"] == "north"
     assert record["breach_minutes"] >= 60
     assert record["sla_status"] == SlaBreachStatus.open.value
+
+
+def test_ticket_sla_violation_page_fetches_fifteen_rows_at_a_time(db_session):
+    policy = _policy(db_session)
+    ticket = Ticket(title="Paginated SLA breach", number="T-PAGE")
+    db_session.add(ticket)
+    db_session.flush()
+    now = datetime.now(UTC).replace(microsecond=0)
+    for index in range(16):
+        clock = SlaClock(
+            policy_id=policy.id,
+            entity_type=WorkflowEntityType.ticket.value,
+            entity_id=ticket.id,
+            status=SlaClockStatus.breached.value,
+            started_at=now - timedelta(hours=index + 3),
+            due_at=now - timedelta(hours=index + 2),
+            breached_at=now - timedelta(minutes=index + 1),
+        )
+        db_session.add(clock)
+        db_session.flush()
+        db_session.add(
+            SlaBreach(
+                clock_id=clock.id,
+                status=SlaBreachStatus.open.value,
+                breached_at=now - timedelta(minutes=index + 1),
+            )
+        )
+    db_session.commit()
+
+    first = ticket_sla_reports.violation_page(
+        db_session,
+        query=ticket_sla_reports.TicketSlaViolationPageQuery(page=1),
+    )
+    second = ticket_sla_reports.violation_page(
+        db_session,
+        query=ticket_sla_reports.TicketSlaViolationPageQuery(page=2),
+    )
+
+    assert len(first.rows) == 15
+    assert first.total_count == 16
+    assert first.total_pages == 2
+    assert first.has_previous is False
+    assert first.has_next is True
+    assert len(second.rows) == 1
+    assert second.has_previous is True
+    assert second.has_next is False
 
 
 def test_ticket_sla_report_violation_records_open_only(db_session):
