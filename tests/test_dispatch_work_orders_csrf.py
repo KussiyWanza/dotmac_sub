@@ -72,6 +72,7 @@ def _rendered_token() -> str:
         "/admin/dispatch/work-orders",
         "/admin/dispatch/work-orders/sub-csrf-test",
         "/admin/dispatch/work-orders/sub-csrf-test/queue",
+        "/admin/dispatch/work-orders/sub-csrf-test/expenses",
     ],
 )
 def test_dispatch_form_post_without_token_is_rejected(path):
@@ -84,6 +85,7 @@ def test_dispatch_form_post_without_token_is_rejected(path):
         "/admin/dispatch/work-orders",
         "/admin/dispatch/work-orders/sub-csrf-test",
         "/admin/dispatch/work-orders/sub-csrf-test/queue",
+        "/admin/dispatch/work-orders/sub-csrf-test/expenses",
     ],
 )
 def test_dispatch_form_post_with_rendered_token_is_accepted(path):
@@ -104,6 +106,10 @@ def test_create_update_and_queue_forms_enclose_the_csrf_component():
         (
             detail_source,
             'action="/admin/dispatch/work-orders/{{ work_order.public_id }}/queue"',
+        ),
+        (
+            detail_source,
+            'action="/admin/dispatch/work-orders/{{ work_order.public_id }}/expenses"',
         ),
     ):
         forms = re.findall(r"<form\b[^>]*>.*?</form\s*>", source, re.S | re.I)

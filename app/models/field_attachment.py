@@ -11,7 +11,7 @@ FIELD_ATTACHMENT_KINDS = ("photo", "signature", "document")
 
 
 class FieldAttachment(Base):
-    """Private field evidence attached to CRM-synced work-order data."""
+    """Private field evidence attached to an authoritative work order."""
 
     __tablename__ = "field_attachments"
     __table_args__ = (
@@ -47,8 +47,8 @@ class FieldAttachment(Base):
     longitude: Mapped[float | None] = mapped_column(Float)
     captured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     signer_name: Mapped[str | None] = mapped_column(String(160))
-    uploaded_by_technician_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("technician_profiles.id"), nullable=False
+    uploaded_by_technician_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("technician_profiles.id"), nullable=True
     )
     uploaded_by_person_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), nullable=False

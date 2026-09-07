@@ -30,7 +30,7 @@ FIELD_EXPENSE_STATUSES = (
 
 
 class FieldExpenseRequest(Base):
-    """Technician expense request attached to a CRM-synced work-order mirror."""
+    """Staff expense request attached to an authoritative work order."""
 
     __tablename__ = "field_expense_requests"
     __table_args__ = (
@@ -53,8 +53,8 @@ class FieldExpenseRequest(Base):
         nullable=False,
     )
     crm_expense_request_id: Mapped[str | None] = mapped_column(String(64), unique=True)
-    requested_by_technician_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("technician_profiles.id"), nullable=False
+    requested_by_technician_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("technician_profiles.id"), nullable=True
     )
     requested_by_person_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), nullable=False

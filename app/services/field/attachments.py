@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -12,9 +13,101 @@ from sqlalchemy.orm import Session
 from app.models.field_attachment import FIELD_ATTACHMENT_KINDS, FieldAttachment
 from app.models.stored_file import StoredFile
 from app.models.work_order import WorkOrder
+from app.services.domain_errors import DomainError
 from app.services.field.jobs import _profile_from_principal, _scoped_query
 from app.services.file_storage import FileValidationError, file_uploads
 from app.services.object_storage import ObjectNotFoundError, StreamResult
+from app.services.owner_commands import owner_command_active
+
+
+@dataclass(frozen=True, slots=True)
+class StageExpenseReceiptAttachment:
+    work_order_id: UUID
+    work_order_public_id: str
+    uploaded_by_person_id: UUID
+    uploaded_by_system_user_id: UUID
+    uploaded_by_technician_id: UUID | None
+    file_name: str
+    mime_type: str | None
+    content: bytes
+    client_ref: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class ExpenseReceiptAttachmentOutcome:
+    id: UUID
+
+
+def stage_expense_receipt_attachment(
+    db: Session, command: StageExpenseReceiptAttachment
+) -> ExpenseReceiptAttachmentOutcome:
+    """Stage one receipt inside the expense owner's active transaction."""
+
+    if not owner_command_active(db, owner="operations.expense_requests"):
+        raise RuntimeError("Expense receipts require the expense request owner")
+    work_order = db.get(WorkOrder, command.work_order_id)
+    if (
+        work_order is None
+        or not work_order.is_active
+        or work_order.public_id != command.work_order_public_id
+    ):
+        raise _expense_receipt_error("Work order not found")
+    if not command.content:
+        raise _expense_receipt_error("Receipt file is empty")
+    existing = (
+        db.query(FieldAttachment)
+        .filter(FieldAttachment.client_ref == command.client_ref)
+        .filter(
+            FieldAttachment.uploaded_by_system_user_id
+            == command.uploaded_by_system_user_id
+        )
+        .one_or_none()
+    )
+    if existing is not None:
+        if existing.work_order_mirror_id != work_order.id:
+            raise _expense_receipt_error("Receipt identity conflict")
+        return ExpenseReceiptAttachmentOutcome(id=existing.id)
+
+    try:
+        stored = file_uploads.stage_upload(
+            db=db,
+            domain="attachments",
+            entity_type="field_attachment",
+            entity_id=work_order.public_id,
+            original_filename=command.file_name or "receipt",
+            content_type=command.mime_type,
+            data=command.content,
+            uploaded_by=str(command.uploaded_by_system_user_id),
+            owner_subscriber_id=None,
+        )
+    except FileValidationError as exc:
+        raise _expense_receipt_error(str(exc)) from exc
+    attachment = FieldAttachment(
+        work_order_mirror_id=work_order.id,
+        stored_file_id=stored.id,
+        kind="document",
+        file_name=stored.original_filename,
+        mime_type=stored.content_type
+        or command.mime_type
+        or "application/octet-stream",
+        size_bytes=stored.file_size,
+        uploaded_by_technician_id=command.uploaded_by_technician_id,
+        uploaded_by_person_id=command.uploaded_by_person_id,
+        uploaded_by_system_user_id=command.uploaded_by_system_user_id,
+        client_ref=command.client_ref,
+    )
+    db.add(attachment)
+    db.flush()
+    return ExpenseReceiptAttachmentOutcome(id=attachment.id)
+
+
+def _expense_receipt_error(message: str) -> DomainError:
+    from app.services.field.expense_requests import FieldExpenseRequestError
+
+    return FieldExpenseRequestError(
+        code="operations.expense_requests.invalid_request",
+        message=message,
+    )
 
 
 def _download_path(attachment_id: UUID) -> str:
