@@ -254,7 +254,10 @@
 
   function connectSocket() {
     if (!session || socket) return;
-    socket = new WebSocket(absoluteWs(session.ws_url) + "?token=" + encodeURIComponent(session.visitor_token));
+    socket = new WebSocket(
+      absoluteWs(session.ws_url),
+      ["dotmac-auth", session.visitor_token]
+    );
     socket.onopen = function () {
       socket.send(JSON.stringify({type: "subscribe", topic: "conversation:" + session.conversation_id}));
     };
