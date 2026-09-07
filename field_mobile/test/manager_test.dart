@@ -63,7 +63,10 @@ void main() {
     await tester.tap(find.widgetWithText(FilledButton, 'Approve'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Expense updated'), findsOneWidget);
+    expect(
+      find.text('Expense approved; ERP sync needs attention'),
+      findsOneWidget,
+    );
     expect(find.text('Site transport'), findsNothing);
     expect(find.text('No expense approvals pending'), findsOneWidget);
     expect(
@@ -138,6 +141,6 @@ void main() {
     expect(tester.takeException(), isNull);
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
-    expect(find.text('Expense updated'), findsOneWidget);
+    expect(find.text('Expense rejected'), findsOneWidget);
   });
 }
