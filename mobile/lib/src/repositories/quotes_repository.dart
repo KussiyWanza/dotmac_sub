@@ -12,13 +12,13 @@ class QuotesRepository {
   final Dio dio;
 
   /// GET /me/quotes
-  Future<List<Quote>> quotes() async {
+  Future<QuotesPage> quotes() async {
     final data = await guard(() => dio.get('/me/quotes'));
-    final list = (data as Map<String, dynamic>)['quotes'] as List? ?? const [];
-    return list.cast<Map<String, dynamic>>().map(Quote.fromJson).toList();
+    return QuotesPage.fromJson(data as Map<String, dynamic>);
   }
 
-  /// POST /me/quote-request — drop a pin; the CRM returns feasibility + estimate.
+  /// POST /me/quote-request — drop a pin; the active quote owner returns
+  /// feasibility and an estimate.
   Future<Quote> requestQuote({
     required double latitude,
     required double longitude,

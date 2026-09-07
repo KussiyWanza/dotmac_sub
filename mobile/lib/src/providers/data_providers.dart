@@ -576,7 +576,7 @@ final ticketCommentsProvider = FutureProvider.autoDispose
   return ref.watch(supportRepositoryProvider).comments(ticketId);
 });
 
-final quotesProvider = FutureProvider.autoDispose<List<Quote>>((ref) async {
+final quotesProvider = FutureProvider.autoDispose<QuotesPage>((ref) async {
   cacheFor(ref);
   return ref.watch(quotesRepositoryProvider).quotes();
 });

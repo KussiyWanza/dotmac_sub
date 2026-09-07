@@ -2,14 +2,16 @@ import 'package:dio/dio.dart';
 
 /// Normalised API error surfaced to the UI layer.
 ///
-/// The backend returns either `{"detail": "message"}` or, for auth flows,
-/// `{"detail": {"code": "...", "message": "..."}}` (see schemas/auth_flow.py).
+/// The shared backend error boundary returns top-level `code`, `message`, and
+/// `request_id` fields. Legacy endpoints may still return `detail` as a string
+/// or as a `{code, message}` object.
 class ApiException implements Exception {
-  ApiException(this.message, {this.statusCode, this.code});
+  ApiException(this.message, {this.statusCode, this.code, this.requestId});
 
   final String message;
   final int? statusCode;
   final String? code;
+  final String? requestId;
 
   bool get isUnauthorized => statusCode == 401;
 
@@ -24,15 +26,30 @@ class ApiException implements Exception {
     final data = response?.data;
 
     if (data is Map) {
+      final message = data['message'];
+      if (message != null && message.toString().trim().isNotEmpty) {
+        return ApiException(
+          message.toString(),
+          statusCode: status,
+          code: data['code']?.toString(),
+          requestId: data['request_id']?.toString(),
+        );
+      }
       final detail = data['detail'];
       if (detail is String) {
-        return ApiException(detail, statusCode: status);
+        return ApiException(
+          detail,
+          statusCode: status,
+          code: data['code']?.toString(),
+          requestId: data['request_id']?.toString(),
+        );
       }
       if (detail is Map) {
         return ApiException(
           (detail['message'] ?? 'Request failed').toString(),
           statusCode: status,
           code: detail['code']?.toString(),
+          requestId: data['request_id']?.toString(),
         );
       }
     }

@@ -67,30 +67,41 @@ class _QuotesScreenState extends ConsumerState<QuotesScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final quotes = ref.watch(quotesProvider);
+    final quotesPage = ref.watch(quotesProvider);
+    final canRequest = quotesPage.asData?.value.actionsAvailable == true;
     return Scaffold(
       appBar: AppBar(title: const Text('Get a quote')),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => context.push('/quotes/request'),
-        icon: const Icon(Icons.add_location_alt_outlined),
-        label: const Text('Request installation'),
-      ),
+      floatingActionButton: canRequest
+          ? FloatingActionButton.extended(
+              onPressed: () => context.push('/quotes/request'),
+              icon: const Icon(Icons.add_location_alt_outlined),
+              label: const Text('Request installation'),
+            )
+          : null,
       body: RefreshIndicator(
         onRefresh: () async => ref.invalidate(quotesProvider),
         child: AsyncValueView(
-          value: quotes,
+          value: quotesPage,
           onRetry: () => ref.invalidate(quotesProvider),
-          data: (list) {
-            if (list.isEmpty) return _empty(context);
-            return ListView.separated(
+          data: (page) {
+            if (page.quotes.isEmpty) return _empty(context, page);
+            return ListView(
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 96),
-              itemCount: list.length,
-              separatorBuilder: (_, __) => const SizedBox(height: 12),
-              itemBuilder: (_, i) => _QuoteCard(
-                quote: list[i],
-                paying: _payingId == list[i].id,
-                onPay: () => _payDeposit(list[i]),
-              ),
+              children: [
+                if (!page.actionsAvailable) ...[
+                  _availabilityNotice(context, page),
+                  const SizedBox(height: 12),
+                ],
+                for (final quote in page.quotes) ...[
+                  _QuoteCard(
+                    quote: quote,
+                    actionsAvailable: page.actionsAvailable,
+                    paying: _payingId == quote.id,
+                    onPay: () => _payDeposit(quote),
+                  ),
+                  const SizedBox(height: 12),
+                ],
+              ],
             );
           },
         ),
@@ -98,8 +109,13 @@ class _QuotesScreenState extends ConsumerState<QuotesScreen> {
     );
   }
 
-  Widget _empty(BuildContext context) => ListView(
+  Widget _empty(BuildContext context, QuotesPage page) => ListView(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
         children: [
+          if (!page.actionsAvailable) ...[
+            const SizedBox(height: 16),
+            _availabilityNotice(context, page),
+          ],
           const SizedBox(height: 120),
           Icon(
             Icons.map_outlined,
@@ -123,16 +139,42 @@ class _QuotesScreenState extends ConsumerState<QuotesScreen> {
           ),
         ],
       );
+
+  Widget _availabilityNotice(BuildContext context, QuotesPage page) {
+    final scheme = Theme.of(context).colorScheme;
+    return Card(
+      color: scheme.surfaceContainerHighest,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(Icons.info_outline, color: scheme.onSurfaceVariant),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                page.actionsUnavailableMessage ??
+                    'Online quote requests are currently unavailable. '
+                        'Please contact support to continue.',
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class _QuoteCard extends StatelessWidget {
   const _QuoteCard({
     required this.quote,
+    required this.actionsAvailable,
     required this.paying,
     required this.onPay,
   });
 
   final Quote quote;
+  final bool actionsAvailable;
   final bool paying;
   final VoidCallback onPay;
 
@@ -185,7 +227,7 @@ class _QuoteCard extends StatelessWidget {
                   (quote.estimateProvisional ? ' (provisional)' : ''),
             ),
             _row(context, 'Deposit', naira(quote.depositAmount)),
-            if (quote.canPayDeposit) ...[
+            if (actionsAvailable && quote.canPayDeposit) ...[
               const SizedBox(height: 12),
               SizedBox(
                 width: double.infinity,

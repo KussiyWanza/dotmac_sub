@@ -22,10 +22,14 @@ from app.models.audit import AuditActorType
 from app.models.quote_mirror import QuoteMirror, QuoteSyncState
 from app.models.subscriber import Subscriber
 from app.schemas.notification import PushIntent
+from app.schemas.portal import MyQuotesResponse, QuoteItem
 from app.services.audit_adapter import AuditActor, record_audit_event
 from app.services.common import coerce_uuid
 from app.services.domain_errors import DomainError
-from app.services.quote_retirement import retirement_outcome
+from app.services.quote_retirement import (
+    QUOTE_ACTIONS_UNAVAILABLE_MESSAGE,
+    retirement_outcome,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +47,7 @@ class QuoteReadState(StrEnum):
 
 @dataclass(frozen=True)
 class QuoteReadResult:
-    payload: dict[str, object]
+    payload: MyQuotesResponse
     state: QuoteReadState
 
 
@@ -98,10 +102,7 @@ PORTAL_QUOTE_DEPOSIT_PREFLIGHT_REFUSED = "sales.portal_quote.deposit_preflight_r
 #: One customer-safe message for every refusal. It states the two facts a
 #: customer needs - nothing was charged, nothing was changed - and leaks no
 #: endpoint, host or capability detail.
-PORTAL_QUOTE_UNAVAILABLE_MESSAGE = (
-    "Online quoting is unavailable. Nothing was charged and no quote was "
-    "changed. Please contact support to continue."
-)
+PORTAL_QUOTE_UNAVAILABLE_MESSAGE = QUOTE_ACTIONS_UNAVAILABLE_MESSAGE
 
 
 class PortalQuoteCommandError(DomainError):
@@ -325,8 +326,8 @@ def read_for_subscriber(
     subscriber_id: str,
     *,
     refresh_ttl_seconds: int = _DEFAULT_REFRESH_TTL_SECONDS,
-) -> dict[str, object]:
-    """Return the stable mobile/API payload without transport-state fields."""
+) -> MyQuotesResponse:
+    """Return the typed historical quote page and retired action state."""
     return read_for_subscriber_result(
         db,
         subscriber_id,
@@ -347,18 +348,20 @@ def read_for_subscriber_result(
         .where(QuoteMirror.subscriber_id == sub_uuid)
         .order_by(QuoteMirror.created_at.desc())
     ).all()
-    items = [_row_to_item(r) for r in rows]
+    items = [QuoteItem.model_validate(_row_to_item(r)) for r in rows]
     open_count = sum(
         1 for r in rows if r.status not in ("accepted", "rejected", "expired")
     )
+    retirement = retirement_outcome()
     return QuoteReadResult(
-        payload={
-            "quotes": items,
-            "total": len(items),
-            "open": open_count,
-            "source_state": retirement_outcome().status,
-            "actions_available": retirement_outcome().actions_available,
-        },
+        payload=MyQuotesResponse(
+            quotes=items,
+            total=len(items),
+            open=open_count,
+            source_state=retirement.status,
+            actions_available=retirement.actions_available,
+            actions_unavailable_message=retirement.customer_message,
+        ),
         state=QuoteReadState.retired,
     )
 

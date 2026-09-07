@@ -5477,7 +5477,10 @@ Quote-request and deposit surfaces branch on the explicit
 `quotes_native_write_enabled` cutover control: the native branch is owned by
 `sales.selfserve`, and its deposit "already paid" decision belongs to the paid
 deposit Invoice in the billing ledger — never to a mirror flag the CRM could
-stale-sync.
+stale-sync. Quote read owners also project action availability and any
+customer-safe unavailable explanation; mobile and web adapters render that
+decision and never infer command eligibility from an empty list or HTTP status.
+
 ## CRM Network Map Point Migration Addendum
 
 `network.crm_network_map_point_migration` owns the CRM Network Map point-asset

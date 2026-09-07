@@ -79,11 +79,13 @@ def _quote_payment_unavailable(
 def _quotes(db: Session, subscriber_id: str) -> tuple[dict[str, object], str]:
     if selfserve_service.native_read_enabled(db):
         return (
-            selfserve_service.selfserve_quotes.read_for_subscriber(db, subscriber_id),
+            selfserve_service.selfserve_quotes.read_for_subscriber(
+                db, subscriber_id
+            ).model_dump(mode="json"),
             quotes_mirror.QuoteReadState.current.value,
         )
     result = quotes_mirror.read_for_subscriber_result(db, subscriber_id)
-    return result.payload, result.state.value
+    return result.payload.model_dump(mode="json"), result.state.value
 
 
 @router.get("/quotes", response_class=HTMLResponse)

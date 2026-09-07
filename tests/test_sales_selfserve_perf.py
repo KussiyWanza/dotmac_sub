@@ -106,13 +106,13 @@ def test_read_for_subscriber_resolves_projects_in_one_query(db_session):
     with _StatementCounter(db_session.bind.engine) as counter:
         result = selfserve.selfserve_quotes.read_for_subscriber(db_session, str(sub.id))
 
-    assert result["total"] == 4
+    assert result.total == 4
     # The batch resolver is the only statement that scans projects by the
     # typed quote_id key. Exactly one, independent of the quote count.
     project_lookups = counter.matching("from projects", "quote_id")
     assert len(project_lookups) == 1, project_lookups
     # Every payload got its project id resolved (proves batch results applied).
-    assert all(item["project_id"] is not None for item in result["quotes"])
+    assert all(item.project_id is not None for item in result.quotes)
 
 
 def test_batch_resolver_parity_no_project(db_session):
