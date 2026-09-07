@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from threading import Lock
+from time import monotonic
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -42,6 +45,24 @@ class NotificationQueuePresentation:
     label: str
     tone: str
     timing: str
+
+
+@dataclass(frozen=True, slots=True)
+class BulkNotificationSetupQuery:
+    """Bound the cost and freshness semantics of notification setup reads."""
+
+    synchronize_registry: bool = True
+    cache_ttl_seconds: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.cache_ttl_seconds < 0:
+            raise ValueError("cache_ttl_seconds must be non-negative")
+
+
+_CUSTOMER_NOTIFICATION_PICKER_TTL_SECONDS = 30.0
+_bulk_notification_context_lock = Lock()
+_bulk_notification_context_cached_at = 0.0
+_bulk_notification_context_cache: dict[str, object] | None = None
 
 
 def notification_queue_presentation(
@@ -524,8 +545,13 @@ def _whatsapp_channel_ready(db: Session) -> tuple[bool, str]:
     return True, "Meta Cloud API is configured"
 
 
-def bulk_notification_setup_context(db: Session) -> dict[str, object]:
-    sync_whatsapp_registry_templates(db)
+def _build_bulk_notification_setup_context(
+    db: Session,
+    *,
+    synchronize_registry: bool,
+) -> dict[str, object]:
+    if synchronize_registry:
+        sync_whatsapp_registry_templates(db)
     template_list = notification_service.templates.list(
         db=db,
         channel=None,
@@ -594,6 +620,58 @@ def bulk_notification_setup_context(db: Session) -> dict[str, object]:
         "bulk_notification_channels": channels_state,
         "bulk_notification_templates": templates_state,
     }
+
+
+def bulk_notification_setup_context(
+    db: Session,
+    *,
+    query: BulkNotificationSetupQuery | None = None,
+) -> dict[str, object]:
+    """Return channel/template setup with explicit synchronization and caching."""
+
+    global _bulk_notification_context_cached_at, _bulk_notification_context_cache
+
+    resolved_query = query or BulkNotificationSetupQuery()
+    now = monotonic()
+    if resolved_query.cache_ttl_seconds > 0:
+        with _bulk_notification_context_lock:
+            if (
+                _bulk_notification_context_cache is not None
+                and now - _bulk_notification_context_cached_at
+                < resolved_query.cache_ttl_seconds
+            ):
+                return deepcopy(_bulk_notification_context_cache)
+
+    context = _build_bulk_notification_setup_context(
+        db,
+        synchronize_registry=resolved_query.synchronize_registry,
+    )
+    if resolved_query.cache_ttl_seconds > 0:
+        with _bulk_notification_context_lock:
+            _bulk_notification_context_cached_at = monotonic()
+            _bulk_notification_context_cache = deepcopy(context)
+    return context
+
+
+def customer_notification_picker_context(db: Session) -> dict[str, object]:
+    """Serve customer pages without registry writes or repeated setup fan-out."""
+
+    return bulk_notification_setup_context(
+        db,
+        query=BulkNotificationSetupQuery(
+            synchronize_registry=False,
+            cache_ttl_seconds=_CUSTOMER_NOTIFICATION_PICKER_TTL_SECONDS,
+        ),
+    )
+
+
+def _clear_bulk_notification_setup_cache() -> None:
+    """Reset worker-local cache state for deterministic tests."""
+
+    global _bulk_notification_context_cached_at, _bulk_notification_context_cache
+    with _bulk_notification_context_lock:
+        _bulk_notification_context_cached_at = 0.0
+        _bulk_notification_context_cache = None
 
 
 def queue_context(db: Session, query: ListQuery) -> dict[str, object]:

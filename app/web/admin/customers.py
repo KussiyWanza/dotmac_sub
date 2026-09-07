@@ -541,7 +541,7 @@ def customers_list(
             **page_data,
             **subscription_action_permissions,
             "customer_bulk_action_contract": customer_bulk_action_contract,
-            **web_notifications_service.bulk_notification_setup_context(db),
+            **web_notifications_service.customer_notification_picker_context(db),
             "active_page": "customers",
             "active_menu": "operations",
             "current_user": current_user,
@@ -893,7 +893,9 @@ def person_detail(
     location_capture_enabled = can_confirm_location and location_capture.prompt_enabled(
         db
     )
-    notification_context = web_notifications_service.bulk_notification_setup_context(db)
+    notification_context = (
+        web_notifications_service.customer_notification_picker_context(db)
+    )
     pppoe_access = detail_data.get("pppoe_access") or {
         "has_credential": False,
         "credential_id": None,
