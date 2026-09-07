@@ -1079,11 +1079,18 @@ if [[ "${BACKUP_MODE}" == "required" ]]; then
   # REPO_DIR is the ephemeral Actions workspace and DEPLOY_DIR is the pinned
   # host directory that actually holds .env, so the backup aborted with
   # "Missing <workspace>/.env" and no production deploy ever completed.
+  run_database_backup() {
+    DB_BACKUP_BASENAME="${DB_BACKUP_BASENAME:-dotmac_sub}" \
+      DB_BACKUP_DIR="${DB_BACKUP_DIR:-/var/backups/dotmac_sub/deployments}" \
+      DB_BACKUP_LEGACY_DIR="${DB_BACKUP_LEGACY_DIR:-/var/backups/dotmac_sub}" \
+      DB_BACKUP_RETENTION_PREFIX="${DB_BACKUP_RETENTION_PREFIX:-dotmac_sub_run_}" \
+      DB_BACKUP_RETENTION_COUNT="${DB_BACKUP_RETENTION_COUNT:-5}" \
+      ROOT_DIR="${DEPLOY_DIR}" bash "${REPO_DIR}/scripts/db_backup.sh"
+  }
   if [[ "${DEPLOYMENT_TARGET}" == "production" && -n "${DEPLOY_RUN_ID:-}" && -z "${DB_BACKUP_BASENAME:-}" ]]; then
-    DB_BACKUP_BASENAME="dotmac_sub_run_${DEPLOY_RUN_ID}" \
-      ROOT_DIR="${DEPLOY_DIR}" bash "${REPO_DIR}/scripts/db_backup.sh" &
+    DB_BACKUP_BASENAME="dotmac_sub_run_${DEPLOY_RUN_ID}" run_database_backup &
   else
-    ROOT_DIR="${DEPLOY_DIR}" bash "${REPO_DIR}/scripts/db_backup.sh" &
+    run_database_backup &
   fi
   BACKUP_PID=$!
   wait "${BACKUP_PID}"
@@ -1227,6 +1234,9 @@ log "Deployed ${TAG} successfully (was ${PREV_IMAGE:-none})"
 log "DEPLOY RECEIPT: tag=${TAG} revision=${FULL_SHA} prerequisites=${PREREQUISITE_OUTCOME}"
 
 log "Pruning old ${IMAGE_REPO} images (keeping ${IMAGE_RETAIN_COUNT} rollback images)"
-IMAGE_REPO="${IMAGE_REPO}" RETAIN_IMAGES="${IMAGE_RETAIN_COUNT}" \
-  bash "${REPO_DIR}/scripts/docker_image_retention.sh" || \
+if ! IMAGE_REPO="${IMAGE_REPO}" RETAIN_IMAGES="${IMAGE_RETAIN_COUNT}" \
+  bash "${REPO_DIR}/scripts/docker_image_retention.sh"; then
   log "Image retention failed; deploy is healthy, but old image cleanup needs attention"
+  exit 1
+fi
+log "Image retention completed and verified"
