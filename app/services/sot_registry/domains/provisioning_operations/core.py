@@ -707,14 +707,18 @@ SERVICES: tuple[SOTService, ...] = (
         module="app.services.field.expense_requests",
         owns=(
             "field expense request submission",
+            "field expense approval and ERP delivery staging",
             "field expense vendor picker",
         ),
-        depends_on=("operations.work_orders",),
+        depends_on=("integration.backoffice_adapter", "operations.work_orders"),
         notes=(
             "One typed command creates and submits a technician expense request "
             "atomically. The client reference and normalized fingerprint make "
-            "network retries safe. The vendor picker is read-only and only "
-            "projects active vendor labels for field expense entry."
+            "network retries safe. A separate typed manager approval owns the "
+            "local financial decision and stages the idempotent ERP delivery "
+            "intent. Submission never sends an unapproved expense. The vendor "
+            "picker is read-only and only projects active vendor labels for "
+            "field expense entry."
         ),
         contract=ServiceContract(
             concerns=(
@@ -722,6 +726,15 @@ SERVICES: tuple[SOTService, ...] = (
                     name="field expense request submission",
                     role=OwnerRole.COMMAND_WRITER,
                     input_names=("canonical service work-order state",),
+                    canonical_writer="operations.expense_requests",
+                ),
+                ConcernContract(
+                    name="field expense approval and ERP delivery staging",
+                    role=OwnerRole.COMMAND_WRITER,
+                    input_names=(
+                        "canonical submitted expense request",
+                        "expense ERP delivery cutover control",
+                    ),
                     canonical_writer="operations.expense_requests",
                 ),
                 ConcernContract(
@@ -741,6 +754,24 @@ SERVICES: tuple[SOTService, ...] = (
                     ),
                 ),
                 AuthorityInput(
+                    name="canonical submitted expense request",
+                    owner="operations.expense_requests",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source=(
+                        "Locked active FieldExpenseRequest, item rows, requester "
+                        "identity, and submitted lifecycle evidence"
+                    ),
+                ),
+                AuthorityInput(
+                    name="expense ERP delivery cutover control",
+                    owner="integration.backoffice_adapter",
+                    kind=AuthorityKind.CONTROL_INPUT,
+                    source=(
+                        "expense_claim single-writer ownership and the durable "
+                        "provider-neutral ERP outbox contract"
+                    ),
+                ),
+                AuthorityInput(
                     name="legacy active vendor identity observation",
                     owner="external:legacy_vendor_registry",
                     kind=AuthorityKind.EXTERNAL_OBSERVATION,
@@ -753,31 +784,56 @@ SERVICES: tuple[SOTService, ...] = (
             transaction=TransactionContract(
                 mode=TransactionMode.OWNER_MANAGED,
                 boundary=(
-                    "Create, submit, work-order activity marking, and optional ERP "
-                    "delivery staging complete in one owner transaction. The "
-                    "vendor picker performs a read-only session-scoped query."
+                    "Submission and work-order activity marking complete in one "
+                    "owner transaction without ERP delivery. Manager approval "
+                    "locks the request and, after cutover, must stage its ERP "
+                    "outbox intent in the same owner transaction. The vendor "
+                    "picker performs a "
+                    "read-only session-scoped query."
                 ),
-                locking="The command locks the scoped active work order.",
+                locking=(
+                    "Submission locks the scoped active work order; approval locks "
+                    "the active expense request before its status transition."
+                ),
                 idempotency=(
                     "A unique client reference replays only when the normalized "
-                    "command fingerprint is identical."
+                    "submission fingerprint is identical. An already-approved "
+                    "request returns its current delivery outcome; the first "
+                    "transition records its command id, and "
+                    "exp-{request_id}-submit-v1 remains the stable compatibility "
+                    "delivery key."
                 ),
-                retries="Identical client-reference retries return the committed request.",
+                retries=(
+                    "Identical submission retries return the committed request. "
+                    "A staging failure rolls back approval for safe command retry; "
+                    "after staging, ERP transport retries from the durable outbox "
+                    "without reversing the local approval."
+                ),
             ),
             errors=ErrorContract(
                 domain_codes=(
                     "operations.expense_requests.invalid_request",
                     "operations.expense_requests.idempotency_conflict",
+                    "operations.expense_requests.erp_delivery_not_configured",
+                    "operations.expense_requests.erp_staging_failed",
+                    "operations.expense_requests.incomplete_approval",
+                    "operations.expense_requests.invalid_transition",
                     "operations.expense_requests.requester_not_found",
+                    "operations.expense_requests.request_not_found",
                     "operations.expense_requests.work_order_not_found",
                     *owner_command_boundary_error_codes("operations.expense_requests"),
                 ),
                 mapping_owner="field expense request API adapter",
-                retryable_codes=(),
+                retryable_codes=(
+                    "operations.expense_requests.erp_delivery_not_configured",
+                    "operations.expense_requests.erp_staging_failed",
+                ),
                 fail_closed_on=(
                     "unknown technician or work order",
                     "invalid receipt evidence",
                     "client-reference fingerprint conflict",
+                    "expense-flow ownership not assigned to Sub",
+                    "ERP outbox staging failure after expense-flow cutover",
                 ),
             ),
             events=EventContract(
@@ -790,22 +846,37 @@ SERVICES: tuple[SOTService, ...] = (
                 ),
                 replay=(
                     "The canonical expense request, item rows, command fingerprint, "
-                    "and ERP outbox evidence rebuild submission consequences."
+                    "approval command evidence, and ERP outbox evidence rebuild "
+                    "submission and delivery consequences."
                 ),
             ),
             migration=MigrationContract(
                 state=AuthorityMigrationState.CUTOVER_READY,
                 old_owner="separate field expense draft creation and submit calls",
                 new_owner="operations.expense_requests",
-                verification="Atomic submission, replay, and conflict tests pass.",
-                cutover_gate="Mobile online and offline clients use the atomic endpoint.",
+                verification=(
+                    "Atomic submission, approval/outbox, replay, failure rollback, "
+                    "and conflict tests pass."
+                ),
+                cutover_gate=(
+                    "Mobile clients use the typed approval endpoint, ERP delivery "
+                    "capabilities are enabled, and expense_claim ownership moves to "
+                    "Sub before approving a new production expense. Historical test "
+                    "expenses are not backfilled."
+                ),
                 fallback_retirement=(
                     "Retire separate mobile create-then-submit use after compatibility expiry."
                 ),
             ),
             steward="field operations and finance",
-            design_refs=("docs/SOT_RELATIONSHIP_MAP.md",),
-            test_refs=("tests/test_field_expense_requests.py",),
+            design_refs=(
+                "docs/SOT_RELATIONSHIP_MAP.md",
+                "docs/runbooks/EXPENSE_CLAIM_ERP_CUTOVER.md",
+            ),
+            test_refs=(
+                "tests/test_field_expense_requests.py",
+                "tests/test_dotmac_erp_expense_sync.py",
+            ),
         ),
     ),
     SOTService(

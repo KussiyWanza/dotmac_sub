@@ -1,5 +1,6 @@
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:uuid/uuid.dart';
 
 import '../../app/status_presentation.dart';
 import '../auth/auth_state.dart';
@@ -172,6 +173,31 @@ class ManagerJob {
   );
 }
 
+class ExpenseApprovalResult {
+  const ExpenseApprovalResult({
+    required this.id,
+    required this.status,
+    required this.erpSyncStatus,
+    this.erpSyncEventId,
+    this.erpSyncError,
+  });
+
+  final String id;
+  final String status;
+  final String erpSyncStatus;
+  final String? erpSyncEventId;
+  final String? erpSyncError;
+
+  factory ExpenseApprovalResult.fromJson(Map<String, dynamic> json) =>
+      ExpenseApprovalResult(
+        id: json['id']?.toString() ?? '',
+        status: json['status']?.toString() ?? 'approved',
+        erpSyncStatus: json['erp_sync_status']?.toString() ?? 'not_queued',
+        erpSyncEventId: json['erp_sync_event_id']?.toString(),
+        erpSyncError: json['erp_sync_error']?.toString(),
+      );
+}
+
 class ManagerRepository {
   const ManagerRepository(this._ref);
 
@@ -245,11 +271,17 @@ class ManagerRepository {
     return _items(response.data).map(ExpenseRequest.fromJson).toList();
   }
 
-  Future<void> approveExpense(String id) async {
-    await _ref
+  Future<ExpenseApprovalResult> approveExpense(String id) async {
+    final response = await _ref
         .read(apiClientProvider)
         .dio
-        .post('/api/v1/field/manager/expenses/$id/approve');
+        .post(
+          '/api/v1/field/manager/expenses/$id/approve',
+          options: Options(headers: {'X-Request-ID': const Uuid().v4()}),
+        );
+    return ExpenseApprovalResult.fromJson(
+      (response.data as Map).cast<String, dynamic>(),
+    );
   }
 
   Future<void> rejectExpense(String id, String reason) async {

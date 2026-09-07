@@ -18,10 +18,10 @@ Three responsibilities live here:
 * **reconcile** — ``refresh_expense_claim_statuses`` polls ERP for in-flight
   claims and refreshes the mirror fields (ports CRM's status-poll refresh).
 
-INERT UNTIL CUTOVER: nothing here sends. The submit hook only enqueues when the
-master flag ``dotmac_erp_sync_enabled`` is on, and delivery is additionally gated
-per-flow by ``sync_flow_ownership.expense_claim`` (seeded ``crm``). Both must flip
-at cutover before a single claim reaches ERP.
+INERT UNTIL CUTOVER: nothing here sends. Manager approval stages a durable event
+only when ``sync_flow_ownership.expense_claim`` belongs to Sub (seeded ``crm``).
+The worker resolves the ERP capability when it delivers that event. Ownership
+must move to Sub at cutover before a single claim reaches ERP.
 """
 
 from __future__ import annotations
@@ -69,8 +69,9 @@ _ERP_TERMINAL_STATUS_MAP = {
 def expense_claim_idempotency_key(request: FieldExpenseRequest) -> str:
     """Stable per-request key: ``exp-{id}-submit-v1``.
 
-    Constant across re-submits of the same request, so a re-enqueue returns the
-    existing outbox row and a re-delivery is a no-op on the ERP side.
+    The historical ``submit-v1`` spelling is retained to deduplicate any row
+    staged by an older deployment. Approval replays therefore return the same
+    outbox row instead of creating a second ERP claim.
     """
     return f"exp-{request.id}-submit-v1"
 
@@ -135,11 +136,11 @@ def build_expense_claim_payload(request: FieldExpenseRequest) -> dict:
 def expense_claim_eligibility_error(request: FieldExpenseRequest) -> str | None:
     """Return a reason string if the request is NOT eligible for ERP sync, else None.
 
-    Ports CRM's ``_validate_expense_request_for_sync``: must be ``submitted``,
-    have at least one line, and carry a requester email (ERP needs it to match
-    the employee).
+    Only locally approved expenses may cross the ERP delivery boundary. A claim
+    must also have at least one line and a requester email so ERP can match the
+    employee.
     """
-    if request.status != "submitted":
+    if request.status != "approved":
         return (
             f"Expense request {request.id} is in {request.status} status and "
             "cannot be synced"
@@ -152,14 +153,14 @@ def expense_claim_eligibility_error(request: FieldExpenseRequest) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Enqueue (submit hook target)
+# Enqueue (manager-approval release point)
 # ---------------------------------------------------------------------------
 
 
 def enqueue_expense_claim(
-    db: Session, request: FieldExpenseRequest
+    db: Session, request: FieldExpenseRequest, *, isolate: bool = True
 ) -> FieldErpSyncEvent | None:
-    """Enqueue the expense-claim outbox intent for a submitted request.
+    """Enqueue the expense-claim outbox intent for an approved request.
 
     Validates eligibility, builds the payload + stable key, and calls
     ``outbox.enqueue`` (idempotent on the key). Returns the outbox row, or ``None``
@@ -181,6 +182,7 @@ def enqueue_expense_claim(
         entity_id=request.id,
         idempotency_key=expense_claim_idempotency_key(request),
         payload=payload,
+        isolate=isolate,
     )
 
 

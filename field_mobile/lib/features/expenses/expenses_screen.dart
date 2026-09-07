@@ -282,9 +282,7 @@ class _ExpenseRequestDetailScreenState
             ),
             const SizedBox(height: 16),
             _ExpenseStatusTimeline(request: data),
-            if (data.erpClaimNumber != null ||
-                (data.erpSyncStatus == 'failed' &&
-                    data.erpSyncError != null)) ...[
+            if (data.erpClaimNumber != null || data.erpSyncStatus != null) ...[
               const SizedBox(height: 16),
               _ExpenseErpSummary(request: data),
             ],
@@ -458,7 +456,20 @@ class _ExpenseErpSummary extends StatelessWidget {
               ].join(' · '),
             ),
           ),
-        if (request.erpSyncStatus == 'failed' && request.erpSyncError != null)
+        if (request.erpSyncStatus != null)
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.sync_outlined),
+            title: const Text('ERP sync'),
+            subtitle: Text(_expenseErpSyncLabel(request.erpSyncStatus!)),
+          ),
+        if ({
+              'dead',
+              'rejected',
+              'not_configured',
+              'not_queued',
+            }.contains(request.erpSyncStatus) &&
+            request.erpSyncError != null)
           Text(
             'Sync failed: ${request.erpSyncError!}',
             style: TextStyle(color: Theme.of(context).colorScheme.error),
@@ -467,6 +478,17 @@ class _ExpenseErpSummary extends StatelessWidget {
     );
   }
 }
+
+String _expenseErpSyncLabel(String status) => switch (status) {
+  'pending' => 'Waiting to send',
+  'sent' => 'Sent; waiting for ERP confirmation',
+  'accepted' => 'Synced',
+  'rejected' => 'Rejected by ERP',
+  'dead' => 'Failed; needs attention',
+  'not_configured' => 'ERP delivery is not configured',
+  'not_queued' => 'Not queued; needs attention',
+  _ => status.replaceAll('_', ' '),
+};
 
 class _ExpenseRequestItemTile extends StatelessWidget {
   const _ExpenseRequestItemTile({required this.item, this.currency});

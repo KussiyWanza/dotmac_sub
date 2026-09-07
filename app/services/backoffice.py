@@ -11,13 +11,19 @@ local outbound port owned and deployed by Sub.
 from __future__ import annotations
 
 import logging
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, Protocol
+from enum import Enum
+from typing import TYPE_CHECKING, Any, Protocol
 from uuid import UUID
 
 from sqlalchemy.orm import Session
+
+if TYPE_CHECKING:
+    from app.models.field_erp_sync import FieldErpSyncEvent
+    from app.models.field_expense import FieldExpenseRequest
 
 logger = logging.getLogger(__name__)
 
@@ -26,17 +32,23 @@ class BackofficeUnavailableError(RuntimeError):
     """The configured local back-office adapter cannot serve the request."""
 
 
-@dataclass(frozen=True)
+class BackofficeEnqueueStatus(str, Enum):
+    ENQUEUED = "enqueued"
+    NOT_OWNED = "not_owned"
+    NOT_ENQUEUED = "not_enqueued"
+
+
+@dataclass(frozen=True, slots=True)
 class BackofficeEnqueueResult:
     """Outcome of asking the configured local adapter to stage delivery."""
 
-    status: str
+    status: BackofficeEnqueueStatus
     provider: str | None = None
-    event: object | None = None
+    event: FieldErpSyncEvent | None = None
 
     @property
     def requires_attention(self) -> bool:
-        return self.status == "not_enqueued"
+        return self.status is not BackofficeEnqueueStatus.ENQUEUED
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +57,7 @@ class BackofficeDeliveryView:
 
     flow_owner: str
     sub_owns_delivery: bool
+    event_id: UUID | None
     event_status: str | None
     attempts: int
     last_error: str | None
@@ -151,6 +164,7 @@ def get_material_request_delivery(
     return BackofficeDeliveryView(
         flow_owner=owner,
         sub_owns_delivery=owner == SyncFlowOwner.sub.value,
+        event_id=event.id if event is not None else None,
         event_status=event.status if event is not None else None,
         attempts=event.attempts if event is not None else 0,
         last_error=event.last_error if event is not None else None,
@@ -158,6 +172,50 @@ def get_material_request_delivery(
         updated_at=event.updated_at if event is not None else None,
         sent_at=event.sent_at if event is not None else None,
     )
+
+
+def get_expense_claim_deliveries(
+    db: Session, request_ids: Collection[UUID]
+) -> dict[UUID, BackofficeDeliveryView]:
+    """Return the authoritative ERP outbox projection for expense requests."""
+    from app.models.field_erp_sync import (
+        FieldErpSyncEvent,
+        FieldErpSyncFlow,
+        SyncFlowOwner,
+        get_flow_ownership,
+    )
+
+    ids = tuple(dict.fromkeys(request_ids))
+    if not ids:
+        return {}
+    flow = FieldErpSyncFlow.expense_claim.value
+    owner = get_flow_ownership(db)[flow]
+    rows = (
+        db.query(FieldErpSyncEvent)
+        .filter(
+            FieldErpSyncEvent.flow == flow,
+            FieldErpSyncEvent.entity_type == "field_expense_request",
+            FieldErpSyncEvent.entity_id.in_(ids),
+        )
+        .order_by(FieldErpSyncEvent.created_at.asc())
+        .all()
+    )
+    latest = {row.entity_id: row for row in rows}
+    return {
+        request_id: BackofficeDeliveryView(
+            flow_owner=owner,
+            sub_owns_delivery=owner == SyncFlowOwner.sub.value,
+            event_id=(row.id if row is not None else None),
+            event_status=(row.status if row is not None else None),
+            attempts=(row.attempts if row is not None else 0),
+            last_error=(row.last_error if row is not None else None),
+            queued_at=(row.created_at if row is not None else None),
+            updated_at=(row.updated_at if row is not None else None),
+            sent_at=(row.sent_at if row is not None else None),
+        )
+        for request_id in ids
+        for row in (latest.get(request_id),)
+    }
 
 
 def build_gateway(db: Session) -> BackofficeGateway:
@@ -200,7 +258,7 @@ def _enqueue_with_provider(
     once an adapter is configured.
     """
     if not _flow_owned_by_sub(db, flow):
-        return BackofficeEnqueueResult(status="not_owned")
+        return BackofficeEnqueueResult(status=BackofficeEnqueueStatus.NOT_OWNED)
 
     provider = _provider_for_outbox(db)
 
@@ -226,14 +284,40 @@ def _enqueue_with_provider(
     else:
         raise ValueError(f"Unsupported back-office flow: {flow}")
     return BackofficeEnqueueResult(
-        status="enqueued" if event is not None else "not_enqueued",
+        status=(
+            BackofficeEnqueueStatus.ENQUEUED
+            if event is not None
+            else BackofficeEnqueueStatus.NOT_ENQUEUED
+        ),
         provider=provider,
         event=event,
     )
 
 
-def enqueue_expense_claim(db: Session, request: Any) -> BackofficeEnqueueResult:
-    return _enqueue_with_provider(db, flow="expense_claim", source=request)
+def enqueue_expense_claim(
+    db: Session, request: FieldExpenseRequest
+) -> BackofficeEnqueueResult:
+    """Stage an approved claim without requiring the delivery runtime to be online.
+
+    Flow ownership is the single-writer cutover gate. The capability binding is
+    resolved later by the delivery worker, so a temporary configuration outage
+    cannot erase an approved expense's durable delivery intent.
+    """
+    if not _flow_owned_by_sub(db, "expense_claim"):
+        return BackofficeEnqueueResult(status=BackofficeEnqueueStatus.NOT_OWNED)
+
+    from app.services.dotmac_erp.expense_sync import enqueue_expense_claim as enqueue
+
+    event = enqueue(db, request, isolate=False)
+    return BackofficeEnqueueResult(
+        status=(
+            BackofficeEnqueueStatus.ENQUEUED
+            if event is not None
+            else BackofficeEnqueueStatus.NOT_ENQUEUED
+        ),
+        provider="dotmac.erp",
+        event=event,
+    )
 
 
 def enqueue_material_request_outbox(db: Session, request: Any):

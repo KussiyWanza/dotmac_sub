@@ -631,39 +631,49 @@ class _ExpenseApprovalCardState extends ConsumerState<_ExpenseApprovalCard> {
 
   Future<void> _approve() async {
     await _run(
-      () =>
-          ref.read(managerRepositoryProvider).approveExpense(widget.request.id),
+      () async {
+        final result = await ref
+            .read(managerRepositoryProvider)
+            .approveExpense(widget.request.id);
+        return expenseApprovalMessage(result);
+      },
+      failureMessage:
+          'Expense was not approved; ERP sync is unavailable. Please retry.',
     );
   }
 
   Future<void> _reject() async {
     final reason = await _rejectReason(context);
     if (reason == null || reason.trim().isEmpty) return;
-    await _run(
-      () => ref
+    await _run(() async {
+      await ref
           .read(managerRepositoryProvider)
-          .rejectExpense(widget.request.id, reason),
-    );
+          .rejectExpense(widget.request.id, reason);
+      return 'Expense rejected';
+    }, failureMessage: 'Could not reject expense');
   }
 
-  Future<void> _run(Future<void> Function() action) async {
+  Future<void> _run(
+    Future<String> Function() action, {
+    required String failureMessage,
+  }) async {
     if (_busy) return;
     setState(() => _busy = true);
     try {
-      await action();
+      final message = await action();
       ref
         ..invalidate(managerExpensesProvider)
         ..invalidate(managerSummaryProvider);
       if (mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(const SnackBar(content: Text('Expense updated')));
+        ).showSnackBar(SnackBar(content: Text(message)));
       }
     } catch (_) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Could not update expense')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(failureMessage)));
       }
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -736,6 +746,18 @@ class _ExpenseApprovalCardState extends ConsumerState<_ExpenseApprovalCard> {
       ),
     );
   }
+}
+
+String expenseApprovalMessage(ExpenseApprovalResult result) {
+  return switch (result.erpSyncStatus) {
+    'pending' || 'sent' => 'Expense approved; waiting for ERP',
+    'accepted' => 'Expense approved and synced to ERP',
+    'rejected' ||
+    'dead' ||
+    'not_configured' ||
+    'not_queued' => 'Expense approved; ERP sync needs attention',
+    _ => 'Expense approved; waiting for ERP',
+  };
 }
 
 class _StatusPill extends StatelessWidget {

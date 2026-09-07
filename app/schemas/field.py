@@ -526,6 +526,8 @@ class FieldExpenseRequestRead(BaseModel):
     expense_claim_reference: str | None = None
     expense_claim_number: str | None = None
     expense_claim_status: str | None = None
+    erp_sync_status: str | None = None
+    erp_sync_error: str | None = None
     client_ref: UUID | None = None
     total_amount: Decimal
     submitted_at: datetime | None = None
@@ -535,6 +537,15 @@ class FieldExpenseRequestRead(BaseModel):
     created_at: datetime
     updated_at: datetime
     items: list[FieldExpenseRequestItemRead] = Field(default_factory=list)
+
+
+class FieldExpenseApprovalRead(BaseModel):
+    id: UUID
+    status: Literal["approved"]
+    approved_at: datetime
+    erp_sync_status: str
+    erp_sync_event_id: UUID | None = None
+    erp_sync_error: str | None = None
 
 
 class FieldJobHistoryItem(BaseModel):
