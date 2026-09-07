@@ -103,6 +103,7 @@ WORKFLOW_GUIDANCE: tuple[AdminWorkflowGuidance, ...] = (
         "Open the specific record before performing a state-changing action.",
         notes=(
             "Timeline and ledger entries are evidence; review them before deciding on a correction.",
+            "Customer pages use a short-lived notification-choice snapshot; use the bulk notification setup workflow when provider templates need to be refreshed.",
         ),
     ),
     _guide(

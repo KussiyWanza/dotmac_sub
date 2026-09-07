@@ -720,7 +720,7 @@ def test_person_detail_renders_exact_assignment_instead_of_stale_served_copy(
 
     monkeypatch.setattr(
         customer_routes.web_notifications_service,
-        "bulk_notification_setup_context",
+        "customer_notification_picker_context",
         lambda _db: {},
     )
     monkeypatch.setattr(
@@ -994,7 +994,7 @@ def test_person_detail_normalizes_usage_period(monkeypatch, db_session):
     )
     monkeypatch.setattr(
         customer_routes.web_notifications_service,
-        "bulk_notification_setup_context",
+        "customer_notification_picker_context",
         lambda db: {},
     )
     monkeypatch.setattr(
