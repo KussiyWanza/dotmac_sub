@@ -297,7 +297,10 @@ ThemeData _base(Brightness brightness) {
     ),
     outlinedButtonTheme: OutlinedButtonThemeData(
       style: OutlinedButton.styleFrom(
-        minimumSize: const Size.fromHeight(AppSizes.touchTarget),
+        // A global button theme must keep its horizontal constraint finite.
+        // Size.fromHeight uses an infinite width, which cannot be laid out
+        // when an outlined button is a non-flex child of a Row.
+        minimumSize: const Size(64, AppSizes.touchTarget),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(AppRadii.control),
         ),

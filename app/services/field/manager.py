@@ -307,6 +307,7 @@ class FieldManager:
     def _job_payload(db: Session, row: WorkOrder) -> dict:
         location = _location(row)
         subscriber = db.get(Subscriber, row.subscriber_id)
+        assignment = _current_assignment(db, row)
         profile = _assigned_profile(db, row)
         assigned_label = row.technician_name or row.assigned_to_name
         if assigned_label is None and profile is not None:
@@ -314,6 +315,7 @@ class FieldManager:
         return {
             "id": row.public_id,
             "work_order_mirror_id": row.id,
+            "assignment_queue_id": assignment.id if assignment is not None else None,
             "title": row.title,
             "description": row.description,
             "status": row.status,
@@ -361,7 +363,14 @@ def _assigned_profile(db: Session, row: WorkOrder) -> TechnicianProfile | None:
         )
         if profile is not None:
             return profile
-    entry = (
+    entry = _current_assignment(db, row)
+    if entry is None:
+        return None
+    return db.get(TechnicianProfile, entry.assigned_technician_id)
+
+
+def _current_assignment(db: Session, row: WorkOrder) -> WorkOrderAssignmentQueue | None:
+    return (
         db.query(WorkOrderAssignmentQueue)
         .filter(WorkOrderAssignmentQueue.work_order_mirror_id == row.id)
         .filter(WorkOrderAssignmentQueue.status == DispatchQueueStatus.assigned)
@@ -369,9 +378,6 @@ def _assigned_profile(db: Session, row: WorkOrder) -> TechnicianProfile | None:
         .order_by(WorkOrderAssignmentQueue.created_at.desc())
         .first()
     )
-    if entry is None:
-        return None
-    return db.get(TechnicianProfile, entry.assigned_technician_id)
 
 
 def _filter_assigned_to(db: Session, query, profile: TechnicianProfile):

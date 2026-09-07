@@ -1273,6 +1273,7 @@ class TechnicianSatisfactionResponse(BaseModel):
 class FieldManagerJob(BaseModel):
     id: str
     work_order_mirror_id: UUID
+    assignment_queue_id: UUID | None = None
     title: str
     description: str | None = None
     status: str
@@ -1295,6 +1296,10 @@ class FieldManagerJobAssignRequest(BaseModel):
     scheduled_start: datetime | None = None
     scheduled_end: datetime | None = None
     status: str | None = Field(default=None, max_length=20)
+
+
+class FieldManagerJobUnassignRequest(BaseModel):
+    reason: str = Field(min_length=2, max_length=500)
 
 
 class FieldManagerExpenseRejectRequest(BaseModel):

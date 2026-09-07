@@ -126,6 +126,7 @@ class ManagerJob {
     required this.workType,
     this.scheduledStart,
     this.scheduledEnd,
+    this.assignmentQueueId,
     this.assignedToPersonId,
     this.assignedToLabel,
     this.subscriberLabel,
@@ -144,6 +145,7 @@ class ManagerJob {
   final String workType;
   final DateTime? scheduledStart;
   final DateTime? scheduledEnd;
+  final String? assignmentQueueId;
   final String? assignedToPersonId;
   final String? assignedToLabel;
   final String? subscriberLabel;
@@ -163,6 +165,7 @@ class ManagerJob {
     workType: json['work_type']?.toString() ?? 'other',
     scheduledStart: _date(json['scheduled_start']),
     scheduledEnd: _date(json['scheduled_end']),
+    assignmentQueueId: json['assignment_queue_id']?.toString(),
     assignedToPersonId: json['assigned_to_person_id']?.toString(),
     assignedToLabel: json['assigned_to_label']?.toString(),
     subscriberLabel: json['subscriber_label']?.toString(),
@@ -170,6 +173,19 @@ class ManagerJob {
     latitude: _double(json['latitude']),
     longitude: _double(json['longitude']),
   );
+}
+
+class ManagerAssignmentUpdate {
+  const ManagerAssignmentUpdate({required this.id, required this.status});
+
+  final String id;
+  final String status;
+
+  factory ManagerAssignmentUpdate.fromJson(Map<String, dynamic> json) =>
+      ManagerAssignmentUpdate(
+        id: json['id']?.toString() ?? '',
+        status: json['status']?.toString() ?? 'unknown',
+      );
 }
 
 class ManagerRepository {
@@ -235,6 +251,22 @@ class ManagerRepository {
           '/api/v1/field/manager/jobs/$jobId/assign',
           data: {'person_id': personId},
         );
+  }
+
+  Future<ManagerAssignmentUpdate> unassignJob({
+    required String assignmentQueueId,
+    required String reason,
+  }) async {
+    final response = await _ref
+        .read(apiClientProvider)
+        .dio
+        .post(
+          '/api/v1/field/manager/assignments/$assignmentQueueId/unassign',
+          data: {'reason': reason},
+        );
+    return ManagerAssignmentUpdate.fromJson(
+      (response.data as Map).cast<String, dynamic>(),
+    );
   }
 
   Future<List<ExpenseRequest>> fetchExpenses() async {

@@ -637,6 +637,7 @@ class _DispatchJobCard extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final canUnassign = job.assignmentQueueId != null;
     final time = job.scheduledStart == null
         ? 'Unscheduled'
         : DateFormat('d MMM, HH:mm').format(job.scheduledStart!.toLocal());
@@ -694,11 +695,17 @@ class _DispatchJobCard extends ConsumerWidget {
                 ),
                 const SizedBox(width: 8),
                 OutlinedButton.icon(
-                  onPressed: technicians.isEmpty
+                  onPressed: canUnassign
+                      ? () => _unassign(context, ref, job)
+                      : technicians.isEmpty
                       ? null
                       : () => _assign(context, ref, job, technicians),
-                  icon: const Icon(Icons.assignment_ind_outlined),
-                  label: const Text('Assign'),
+                  icon: Icon(
+                    canUnassign
+                        ? Icons.person_remove_outlined
+                        : Icons.assignment_ind_outlined,
+                  ),
+                  label: Text(canUnassign ? 'Unassign' : 'Assign'),
                 ),
               ],
             ),
@@ -938,6 +945,59 @@ Future<void> _assign(
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('Could not assign job')));
+    }
+  }
+}
+
+Future<void> _unassign(
+  BuildContext context,
+  WidgetRef ref,
+  ManagerJob job,
+) async {
+  final assignmentQueueId = job.assignmentQueueId;
+  if (assignmentQueueId == null) return;
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('Unassign technician?'),
+      content: Text(
+        'Remove ${job.assignedToLabel ?? 'the assigned technician'} from '
+        '${job.title}?',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(false),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(true),
+          child: const Text('Unassign'),
+        ),
+      ],
+    ),
+  );
+  if (confirmed != true || !context.mounted) return;
+  try {
+    await ref
+        .read(managerRepositoryProvider)
+        .unassignJob(
+          assignmentQueueId: assignmentQueueId,
+          reason: 'Manager unassigned technician from mobile dispatch',
+        );
+    ref
+      ..invalidate(managerJobsProvider)
+      ..invalidate(managerSummaryProvider)
+      ..invalidate(managerTechniciansProvider);
+    if (context.mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Technician unassigned')));
+    }
+  } catch (_) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not unassign technician')),
+      );
     }
   }
 }

@@ -378,7 +378,25 @@ def test_manager_api(db_session):
     )
     assert assigned.status_code == 200
     # Reassignment must not rewind an active field-execution lifecycle.
-    assert assigned.json()["status"] == "in_progress"
+    assigned_body = assigned.json()
+    assert assigned_body["status"] == "in_progress"
+    assert assigned_body["assignment_queue_id"] is not None
+
+    unassigned = client.post(
+        "/api/v1/field/manager/assignments/"
+        f"{assigned_body['assignment_queue_id']}/unassign",
+        json={"reason": "Rebalance field workload"},
+    )
+    assert unassigned.status_code == 200
+    assert unassigned.json()["status"] == "skipped"
+    refreshed_jobs = client.get("/api/v1/field/manager/jobs").json()["items"]
+    refreshed_job = next(
+        entry for entry in refreshed_jobs if entry["id"] == "wo-mgr-api"
+    )
+    assert refreshed_job["assignment_queue_id"] is None
+    assert refreshed_job["assigned_to_person_id"] is None
+    assert refreshed_job["assigned_to_label"] is None
+    assert refreshed_job["status"] == "in_progress"
 
     expenses = client.get("/api/v1/field/manager/expenses")
     assert expenses.status_code == 200
