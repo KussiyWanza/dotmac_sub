@@ -1837,12 +1837,28 @@ class AuthFlow(ListResponseMixin):
 
         for attempt in range(2):
             try:
+                active_staff_binding = staff_binding
+                if staff_binding is not None:
+                    staff_principal = (
+                        staff_party_authentication.resolve_staff_principal_by_party(
+                            db,
+                            staff_binding.party_id,
+                            staff_binding.system_user_id,
+                            reference=staff_binding.system_user_id,
+                        )
+                    )
+                    active_staff_binding = (
+                        staff_party_authentication.StaffSessionBinding(
+                            party_id=staff_binding.party_id,
+                            system_user_id=staff_principal.id,
+                        )
+                    )
                 return AuthFlow._issue_tokens_once(
                     db,
                     principal_type_or_principal_id,
                     principal_id_or_request,
                     request,
-                    staff_binding=staff_binding,
+                    staff_binding=active_staff_binding,
                 )
             except OperationalError as exc:
                 # PostgreSQL rejects every subsequent statement until the

@@ -33,7 +33,11 @@ from app.models.team_inbox import (
     InboxAgentPresenceStatus,
 )
 from app.services import auth_flow as auth_flow_service
-from app.services import credential_recovery, staff_provisioning
+from app.services import (
+    credential_recovery,
+    staff_party_authentication,
+    staff_provisioning,
+)
 from app.services import web_system_user_mutations as web_system_user_mutations_service
 from app.services.auth_dependencies import require_user_auth
 from app.services.auth_flow import (
@@ -94,6 +98,57 @@ def test_session_issuance_retries_postgresql_deadlock_once(monkeypatch, db_sessi
     assert result == {"access_token": "access", "refresh_token": "refresh"}
     assert attempts == 2
     assert rollbacks == 1
+
+
+def test_staff_session_issuance_reresolves_binding_after_deadlock(
+    monkeypatch, db_session
+):
+    party_id = uuid.uuid4()
+    system_user_id = uuid.uuid4()
+    binding = staff_party_authentication.StaffSessionBinding(
+        party_id=party_id,
+        system_user_id=system_user_id,
+    )
+    resolutions = 0
+    attempts = 0
+
+    def resolve_staff(_db, resolved_party_id, asserted_user_id, *, reference):
+        nonlocal resolutions
+        resolutions += 1
+        assert resolved_party_id == party_id
+        assert asserted_user_id == system_user_id
+        assert reference == system_user_id
+        return SimpleNamespace(id=system_user_id)
+
+    def issue_once(*_args, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OperationalError(
+                "SELECT ... FOR UPDATE",
+                {},
+                SimpleNamespace(sqlstate="40P01"),
+            )
+        return {"access_token": "access", "refresh_token": "refresh"}
+
+    monkeypatch.setattr(
+        staff_party_authentication,
+        "resolve_staff_principal_by_party",
+        resolve_staff,
+    )
+    monkeypatch.setattr(AuthFlow, "_issue_tokens_once", staticmethod(issue_once))
+
+    result = AuthFlow._issue_tokens(
+        db_session,
+        "system_user",
+        str(system_user_id),
+        _make_request(),
+        staff_binding=binding,
+    )
+
+    assert result == {"access_token": "access", "refresh_token": "refresh"}
+    assert attempts == 2
+    assert resolutions == 2
 
 
 def _route_requires_auth(path: str) -> bool:
