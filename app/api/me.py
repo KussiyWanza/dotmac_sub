@@ -25,6 +25,7 @@ from fastapi import (
     UploadFile,
     status,
 )
+from fastapi.responses import Response, StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -131,6 +132,8 @@ from app.schemas.usage import (
 from app.services import account_deletion as account_deletion_service
 from app.services import autopay as autopay_service
 from app.services import billing as billing_service
+from app.services import billing_invoice_pdf as billing_invoice_pdf_service
+from app.services import billing_payment_receipts as payment_receipts_service
 from app.services import catalog as catalog_service
 from app.services import chat_session as chat_session_service
 from app.services import (
@@ -167,6 +170,8 @@ from app.services.customer_context import require_customer_account_id
 from app.services.db_session_adapter import db_session_adapter
 from app.services.domain_errors import DomainError
 from app.services.events.handlers.owner_session import owner_session
+from app.services.file_storage import build_content_disposition
+from app.services.object_storage import ObjectNotFoundError
 from app.services.owner_commands import CommandContext
 from app.services.sales import selfserve as selfserve_service
 
@@ -241,6 +246,42 @@ def my_invoice(
     return invoice
 
 
+@router.get("/invoices/{invoice_id}/pdf")
+def my_invoice_pdf(
+    invoice_id: str,
+    db: Session = Depends(get_db),
+    principal: dict = Depends(require_user_auth),
+) -> Response:
+    """Download the caller's canonical invoice PDF."""
+
+    account_id = _subscriber_id(principal)
+    invoice = billing_service.invoices.get(db=db, invoice_id=invoice_id)
+    if not invoice or str(getattr(invoice, "account_id", "")) != account_id:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    try:
+        document = billing_invoice_pdf_service.resolve_download(
+            db,
+            invoice=invoice,
+            requested_by_id=account_id,
+        )
+    except ObjectNotFoundError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Invoice PDF is not available yet. Please try again.",
+        ) from exc
+
+    headers = {
+        "Content-Disposition": build_content_disposition(document.filename),
+    }
+    if document.stream.content_length is not None:
+        headers["Content-Length"] = str(document.stream.content_length)
+    return StreamingResponse(
+        document.stream.chunks,
+        media_type=document.stream.content_type or "application/pdf",
+        headers=headers,
+    )
+
+
 @router.get("/payments", response_model=ListResponse[PaymentRead])
 def my_payments(
     status: str | None = None,
@@ -254,6 +295,54 @@ def my_payments(
     account_id = _subscriber_id(principal)
     return billing_service.payments.list_response(
         db, account_id, None, status, None, order_by, order_dir, limit, offset
+    )
+
+
+@router.get("/payments/{payment_id}", response_model=PaymentRead)
+def my_payment(
+    payment_id: str,
+    db: Session = Depends(get_db),
+    principal: dict = Depends(require_user_auth),
+) -> PaymentRead:
+    """Return one payment only when it belongs to the signed-in subscriber."""
+
+    account_id = _subscriber_id(principal)
+    payment = billing_service.payments.get(db=db, payment_id=payment_id)
+    if not payment or str(getattr(payment, "account_id", "")) != account_id:
+        raise HTTPException(status_code=404, detail="Payment not found")
+    return payment
+
+
+@router.get("/payments/{payment_id}/receipt/pdf")
+def my_payment_receipt_pdf(
+    payment_id: str,
+    db: Session = Depends(get_db),
+    principal: dict = Depends(require_user_auth),
+) -> Response:
+    """Download the caller's canonical successful-payment receipt PDF."""
+
+    try:
+        document = payment_receipts_service.build_customer_receipt_pdf_download(
+            db,
+            subscriber_id=_subscriber_id(principal),
+            payment_id=payment_id,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning(
+            "Failed rendering self-care payment receipt %s",
+            payment_id,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Payment receipt is not available. Please try again.",
+        ) from exc
+    return Response(
+        content=document.content,
+        media_type=document.content_type,
+        headers={"Content-Disposition": build_content_disposition(document.filename)},
     )
 
 
@@ -362,6 +451,21 @@ def my_ledger(
     return billing_service.ledger_entries.list_response(
         db, account_id, entry_type, source, True, order_by, order_dir, limit, offset
     )
+
+
+@router.get("/ledger/{entry_id}", response_model=LedgerEntryRead)
+def my_ledger_entry(
+    entry_id: str,
+    db: Session = Depends(get_db),
+    principal: dict = Depends(require_user_auth),
+) -> LedgerEntryRead:
+    """Return one immutable ledger entry within the caller's account scope."""
+
+    account_id = _subscriber_id(principal)
+    entry = billing_service.ledger_entries.get(db=db, entry_id=entry_id)
+    if not entry or str(getattr(entry, "account_id", "")) != account_id:
+        raise HTTPException(status_code=404, detail="Ledger entry not found")
+    return entry
 
 
 @router.get("/subscriptions", response_model=ListResponse[SubscriptionRead])

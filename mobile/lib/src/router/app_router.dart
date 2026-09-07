@@ -17,8 +17,10 @@ import '../features/profile/refer_and_earn_screen.dart';
 import '../features/profile/service_location_screen.dart';
 import '../features/profile/technician_track_screen.dart';
 import '../features/profile/work_orders_screen.dart';
+import '../features/billing/activity_detail_screen.dart';
 import '../features/billing/invoice_detail_screen.dart';
 import '../features/billing/invoices_screen.dart';
+import '../features/billing/payment_detail_screen.dart';
 import '../features/billing/transfer_proofs_screen.dart';
 import '../features/billing/payment_methods_screen.dart';
 import '../features/billing/payment_webview_screen.dart';
@@ -364,6 +366,18 @@ final routerProvider = Provider<GoRouter>((ref) {
                     path: 'invoices/:id',
                     builder: (_, state) => InvoiceDetailScreen(
                       invoiceId: state.pathParameters['id']!,
+                    ),
+                  ),
+                  GoRoute(
+                    path: 'payments/:id',
+                    builder: (_, state) => PaymentDetailScreen(
+                      paymentId: state.pathParameters['id']!,
+                    ),
+                  ),
+                  GoRoute(
+                    path: 'activity/:id',
+                    builder: (_, state) => ActivityDetailScreen(
+                      entryId: state.pathParameters['id']!,
                     ),
                   ),
                 ],
