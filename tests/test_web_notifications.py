@@ -148,3 +148,35 @@ def test_bulk_notification_setup_context_reports_missing_channel_config(monkeypa
     assert channels["sms"]["message"] == "SMS is disabled"
     assert channels["whatsapp"]["ready"] is False
     assert channels["whatsapp"]["message"] == "No enabled WhatsApp capability binding"
+
+
+def test_customer_notification_picker_skips_sync_and_caches_plain_context(monkeypatch):
+    web_notifications_service._clear_bulk_notification_setup_cache()
+    calls: list[bool] = []
+
+    def build(_db, *, synchronize_registry: bool):
+        calls.append(synchronize_registry)
+        return {
+            "bulk_notification_channels": [{"id": "email"}],
+            "bulk_notification_templates": [],
+        }
+
+    monkeypatch.setattr(
+        web_notifications_service,
+        "_build_bulk_notification_setup_context",
+        build,
+    )
+    monkeypatch.setattr(web_notifications_service, "monotonic", lambda: 100.0)
+
+    first = web_notifications_service.customer_notification_picker_context(object())
+    first_channels = first["bulk_notification_channels"]
+    assert isinstance(first_channels, list)
+    first_channels.append({"id": "mutated"})
+    second = web_notifications_service.customer_notification_picker_context(object())
+
+    assert calls == [False]
+    assert second == {
+        "bulk_notification_channels": [{"id": "email"}],
+        "bulk_notification_templates": [],
+    }
+    web_notifications_service._clear_bulk_notification_setup_cache()
