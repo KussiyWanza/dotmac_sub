@@ -914,6 +914,13 @@ class InboxMessage(Base):
             "conversation_id",
         ),
         Index(
+            "ix_inbox_messages_delivery_status",
+            "direction",
+            text("(metadata ->> 'delivery_status')"),
+            text("created_at DESC"),
+            postgresql_include=("id",),
+        ),
+        Index(
             "ix_inbox_messages_unread",
             "conversation_id",
             "received_at",
