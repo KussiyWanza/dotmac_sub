@@ -179,7 +179,9 @@ def test_churn_reasons_keep_labels_below_chart_without_duplicate_legend() -> Non
     source = Path("templates/admin/reports/churn.html").read_text()
 
     chart_position = source.index('id="churn-reasons-chart"')
-    breakdown_position = source.index("{% for reason, count in churn_reasons.items() %}")
+    breakdown_position = source.index(
+        "{% for reason, count in churn_reasons.items() %}"
+    )
     assert chart_position < breakdown_position
     assert "{ legend: { display: false } }" in source
     assert "{ plugins: { legend: { display: false } } }" not in source

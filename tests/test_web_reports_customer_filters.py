@@ -46,9 +46,12 @@ def test_customer_report_breakdowns_scroll_only_beyond_fifteen_records():
     assert "grid grid-cols-1 items-start gap-6 lg:grid-cols-2" in page_template
     assert "plan_distribution|length > 15" in page_template
     assert "regional_breakdown|length > 15" in page_template
-    assert page_template.count(
-        'style="max-height: 29.25rem; overflow-x: hidden; overflow-y: auto;"'
-    ) == 2
+    assert (
+        page_template.count(
+            'style="max-height: 29.25rem; overflow-x: hidden; overflow-y: auto;"'
+        )
+        == 2
+    )
 
 
 def test_customer_growth_chart_height_is_reduced_by_forty_percent():

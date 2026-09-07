@@ -549,9 +549,7 @@ class CustomerRetentionPage:
         return self.page < self.total_pages
 
 
-def _retention_action(
-    segment: CustomerRetentionRiskSegment, balance: Decimal
-) -> str:
+def _retention_action(segment: CustomerRetentionRiskSegment, balance: Decimal) -> str:
     if segment is CustomerRetentionRiskSegment.SUSPENDED:
         return "Review the blocked account and confirm restore conditions."
     if balance >= 50000:
@@ -658,9 +656,7 @@ def get_customer_retention_page(
         select(
             func.count(cohort_sq.c.subscriber_id),
             func.coalesce(func.sum(cohort_sq.c.balance), 0),
-            func.coalesce(
-                func.sum(case((cohort_sq.c.risk_rank == 0, 1), else_=0)), 0
-            ),
+            func.coalesce(func.sum(case((cohort_sq.c.risk_rank == 0, 1), else_=0)), 0),
         )
     ).one()
     total_count = int(totals[0] or 0)
@@ -668,17 +664,21 @@ def get_customer_retention_page(
     suspended_count = int(totals[2] or 0)
     total_pages = max(1, (total_count + query.per_page - 1) // query.per_page)
     effective_page = min(query.page, total_pages)
-    selected = db.execute(
-        select(cohort_sq.c.subscriber_id)
-        .order_by(
-            cohort_sq.c.risk_rank,
-            cohort_sq.c.balance.desc(),
-            cohort_sq.c.name_sort,
-            cohort_sq.c.subscriber_id,
+    selected = (
+        db.execute(
+            select(cohort_sq.c.subscriber_id)
+            .order_by(
+                cohort_sq.c.risk_rank,
+                cohort_sq.c.balance.desc(),
+                cohort_sq.c.name_sort,
+                cohort_sq.c.subscriber_id,
+            )
+            .offset((effective_page - 1) * query.per_page)
+            .limit(query.per_page)
         )
-        .offset((effective_page - 1) * query.per_page)
-        .limit(query.per_page)
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     subscribers_by_id = {
         subscriber.id: subscriber
         for subscriber in db.scalars(

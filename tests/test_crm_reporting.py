@@ -742,8 +742,7 @@ def test_sales_report_columns_bind_labels_to_exact_row_keys():
 
 def test_lead_performance_rows_paginate_twenty_at_a_time():
     rows: list[report_routes.SalesReportRow] = [
-        {"agent_name": f"Agent {index}", "leads_won": index}
-        for index in range(45)
+        {"agent_name": f"Agent {index}", "leads_won": index} for index in range(45)
     ]
 
     first = report_routes._paginate_sales_report_rows(rows, page=1)
