@@ -29,8 +29,10 @@ class ReportsPage(BasePage):
                     "a[href='/admin/reports'], a[href='/admin/reports/hub']"
                 ).first
                 expect(reports_link).to_be_visible()
-                reports_link.click(no_wait_after=True)
-                self.page.wait_for_load_state("domcontentloaded")
+                reports_link.click()
+                self.page.wait_for_url(
+                    "**/admin/reports/hub", wait_until="domcontentloaded"
+                )
                 return
             except PlaywrightError as exc:
                 last_error = exc

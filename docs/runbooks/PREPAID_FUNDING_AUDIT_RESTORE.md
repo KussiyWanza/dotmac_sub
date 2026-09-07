@@ -63,8 +63,9 @@ because the `_audit` database-name check has already rejected that case.
 ## Procedure
 
 Run on the host holding the backups. Prerequisites: a deploy-time dump in
-`/var/backups/dotmac_sub/`, and **≥ 60 GB free** — a 2.4 GB gzip dump expands
-to roughly 25 GB with indexes. The script preflights both.
+`/var/backups/dotmac_sub/deployments/` or the legacy
+`/var/backups/dotmac_sub/` location, and **≥ 60 GB free** — a 2.4 GB gzip
+dump expands to roughly 25 GB with indexes. The script preflights both.
 
 ### 1. Provision
 

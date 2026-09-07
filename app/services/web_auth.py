@@ -11,7 +11,7 @@ from starlette.responses import Response
 
 from app.services import auth_flow as auth_flow_service
 from app.services import credential_recovery, staff_party_authentication
-from app.services.auth_flow import AuthFlow
+from app.services.auth_flow import AuthFlow, LoginAudience
 from app.services.domain_errors import DomainError
 from app.services.owner_commands import CommandContext
 from app.web.portal_branding import auth_branding_context
@@ -65,6 +65,14 @@ def _safe_next(next_url: str | None, fallback: str = "/admin/dashboard") -> str:
     ):
         return next_url
     return fallback
+
+
+def _login_audience(redirect_url: str) -> LoginAudience:
+    """Select the admission policy from the requested portal destination."""
+
+    if redirect_url == "/admin" or redirect_url.startswith("/admin/"):
+        return LoginAudience.admin
+    return LoginAudience.general
 
 
 def _wants_persistent_session(request: Request) -> bool:
@@ -155,6 +163,7 @@ def login_submit(
             password=password,
             request=request,
             provider=None,
+            audience=_login_audience(redirect_url),
         )
         if result.get("mfa_required"):
             mfa_url = f"/auth/mfa?next={next_url}" if next_url else "/auth/mfa"
@@ -208,6 +217,10 @@ def login_submit(
         _set_remember_cookie(response, db, request, remember)
         return response
     except Exception as exc:
+        # A database exception leaves PostgreSQL transactions unusable until
+        # rollback. The error page reads auth settings, so recover the session
+        # before deriving its presentation context.
+        db.rollback()
         error_msg = "Invalid credentials"
         if hasattr(exc, "detail"):
             detail = exc.detail
@@ -292,6 +305,7 @@ def mfa_submit(
             mfa_token=mfa_token,
             code=code,
             request=request,
+            audience=_login_audience(redirect_url),
         )
         response = RedirectResponse(url=redirect_url, status_code=303)
         response.delete_cookie("mfa_pending")
@@ -357,7 +371,7 @@ def _mfa_enrollment_binding(
         invalid_detail="Invalid MFA enrollment token",
     )
     try:
-        staff_party_authentication.resolve_staff_principal_by_party(
+        principal = staff_party_authentication.resolve_staff_principal_by_party(
             db,
             binding.party_id,
             binding.system_user_id,
@@ -365,6 +379,8 @@ def _mfa_enrollment_binding(
         )
     except staff_party_authentication.StaffProjectionError as exc:
         raise ValueError("Invalid MFA enrollment token") from exc
+    if not auth_flow_service.is_admin_portal_principal("system_user", principal):
+        raise ValueError("Invalid MFA enrollment token")
     return binding
 
 

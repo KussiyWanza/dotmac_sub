@@ -11,6 +11,7 @@ from app.services import auth_cache
 from app.services.auth_flow import (
     _load_rbac_claims,
     decode_access_token,
+    is_admin_portal_principal,
     validate_active_session,
 )
 
@@ -197,11 +198,6 @@ def require_web_auth(
     return auth_info
 
 
-# Principal types permitted to reach staff/admin web surfaces. Subscriber and
-# reseller logins both authenticate as "subscriber"; only staff are "system_user".
-STAFF_PRINCIPAL_TYPES = frozenset({"system_user"})
-
-
 def require_admin_web_auth(
     auth: dict = Depends(require_web_auth),
     request: Request = None,  # type: ignore[assignment]
@@ -210,13 +206,14 @@ def require_admin_web_auth(
     """Require an authenticated *staff* principal for admin web routes.
 
     ``require_web_auth`` already guarantees the request is authenticated (and
-    redirects to login otherwise). This adds a default-deny on principal type so
-    that subscriber/reseller logins cannot reach ``/admin`` — closing the gap
-    where any authenticated principal could read or mutate admin-only resources
-    (e.g. secret management, API-key minting). Per-route permission checks
-    (``require_permission``) still apply on top of this baseline.
+    redirects to login otherwise). This adds a default-deny on both principal
+    type and user type, so customer, reseller, and vendor logins cannot reach
+    ``/admin``. Per-route permission checks (``require_permission``) still
+    apply on top of this baseline.
     """
-    if auth.get("principal_type") not in STAFF_PRINCIPAL_TYPES:
+    if not is_admin_portal_principal(
+        str(auth.get("principal_type") or ""), auth.get("subscriber")
+    ):
         raise HTTPException(
             status_code=403,
             detail="Administrator access is required for this area.",

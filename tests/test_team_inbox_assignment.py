@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -496,6 +497,16 @@ def test_staff_sign_in_defaults_presence_online_and_clears_prior_override(db_ses
     assert event.reason_code == team_inbox_assignment.InboxPresenceReason.staff_sign_in
     assert event.source_id == f"auth-session:{auth_session_id}"
     assert (presence.metadata_ or {}).get("manual_status_history") is None
+
+
+def test_staff_sign_in_locks_only_team_inbox_presence():
+    sign_in_source = inspect.getsource(
+        team_inbox_assignment.record_agent_signed_in_presence
+    )
+    presence_source = inspect.getsource(team_inbox_assignment.set_agent_presence)
+
+    assert ".with_for_update()" not in sign_in_source
+    assert ".with_for_update()" in presence_source
 
 
 def test_staff_sign_in_refreshes_online_presence_without_false_transition(db_session):

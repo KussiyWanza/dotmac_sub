@@ -105,6 +105,31 @@ resume modes.
 The candidate runs the same image, environment, and database schema as the
 primary. It is bound to localhost and exists only for the handoff window.
 
+## Deployment retention
+
+Production deployment backups are written to
+`/var/backups/dotmac_sub/deployments`. Each filename retains the GitHub run ID
+required by post-migration resume, while cleanup selects the stable
+`dotmac_sub_run_` family across both that directory and the legacy
+`/var/backups/dotmac_sub` location. The five newest deployment backups are
+retained. Files outside that family are manual or migration evidence and are
+never selected by deployment cleanup. Legacy deployment backups age out across
+the next five successful deployments without moving a path that a failed-run
+resume may still name.
+
+Image cleanup identifies images by their full Docker image ID. Digest-pulled
+images that Docker displays with a `<none>` tag remain eligible. Every image
+referenced by any container is protected, and the five newest unused
+application images are retained for rollback. Older unused application images
+are removed by ID. When fewer than five rollback images exist, all are kept.
+Do not substitute `docker image prune -a`: Docker protects running containers,
+but that broad command does not preserve the required rollback history.
+
+Both cleanup steps print the retained and removed counts and verify their
+result. Backup cleanup failure stops before migrations. Image cleanup runs only
+after the application and workers pass their health gates; a failure marks the
+deployment run failed without rolling back the already healthy release.
+
 ## Module database prerequisites
 
 Composed modules own one immutable `mod_*` schema each, and those schemas and

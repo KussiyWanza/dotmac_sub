@@ -8,6 +8,7 @@ import string
 import warnings
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
+from enum import Enum
 from typing import Any, cast
 from uuid import UUID
 
@@ -24,7 +25,7 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 from sqlalchemy import func
 from sqlalchemy import select as sa_select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -49,7 +50,7 @@ from app.models.rbac import (
     SystemUserPermission,
     SystemUserRole,
 )
-from app.models.subscriber import ResellerUser, Subscriber, SubscriberStatus
+from app.models.subscriber import ResellerUser, Subscriber, SubscriberStatus, UserType
 from app.models.system_user import SystemUser
 from app.request_meta import client_ip
 from app.schemas.auth_flow import LoginResponse, LogoutResponse, TokenResponse
@@ -69,6 +70,23 @@ PASSWORD_CONTEXT = CryptContext(
     default="pbkdf2_sha256",
     deprecated="auto",
 )
+
+
+class LoginAudience(str, Enum):
+    """The portal a successful login is allowed to enter."""
+
+    general = "general"
+    admin = "admin"
+
+
+def is_admin_portal_principal(principal_type: str, principal: object | None) -> bool:
+    """Whether a resolved principal may receive an admin-portal session."""
+
+    return (
+        principal_type == "system_user"
+        and isinstance(principal, SystemUser)
+        and principal.user_type is UserType.system_user
+    )
 
 
 def _env_value(name: str) -> str | None:
@@ -1187,6 +1205,8 @@ class AuthFlow(ListResponseMixin):
         password: str,
         request: Request,
         provider: str | None,
+        *,
+        audience: LoginAudience = LoginAudience.general,
     ):
         if isinstance(provider, AuthProvider):
             provider_value = provider.value
@@ -1299,6 +1319,16 @@ class AuthFlow(ListResponseMixin):
             }
         ):
             raise HTTPException(status_code=403, detail="Account disabled")
+        if audience is LoginAudience.admin and not is_admin_portal_principal(
+            principal_type, principal
+        ):
+            # Verify credentials before this refusal to avoid turning the admin
+            # login into an account-type oracle. The rejection still happens
+            # before any successful-login mutation or session issuance.
+            raise HTTPException(
+                status_code=403,
+                detail="Administrator access is required for this area.",
+            )
         staff_binding = (
             staff_party_authentication.binding_for_principal(principal)
             if principal_type == "system_user"
@@ -1619,12 +1649,20 @@ class AuthFlow(ListResponseMixin):
         return method
 
     @staticmethod
-    def mfa_verify(db: Session, mfa_token: str, code: str, request: Request):
+    def mfa_verify(
+        db: Session,
+        mfa_token: str,
+        code: str,
+        request: Request,
+        *,
+        audience: LoginAudience = LoginAudience.general,
+    ):
         payload = _decode_jwt(db, mfa_token, "mfa")
         principal_id = payload.get("principal_id") or payload.get("sub")
         principal_type = payload.get("principal_type") or "subscriber"
         if not principal_id:
             raise HTTPException(status_code=401, detail="Invalid MFA token")
+        principal: object | None = None
         staff_binding: staff_party_authentication.StaffSessionBinding | None = None
         if principal_type == "system_user":
             staff_binding = staff_binding_from_token_payload(
@@ -1649,6 +1687,14 @@ class AuthFlow(ListResponseMixin):
                     detail="Invalid MFA token",
                 ) from exc
             principal_id = str(principal.id)
+
+        if audience is LoginAudience.admin and not is_admin_portal_principal(
+            str(principal_type), principal
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Administrator access is required for this area.",
+            )
 
         method = _primary_totp_method(db, principal_type, str(principal_id))
         if not method:
@@ -1827,7 +1873,64 @@ class AuthFlow(ListResponseMixin):
         request: Request | None = None,
         *,
         staff_binding: staff_party_authentication.StaffSessionBinding | None = None,
-    ):
+    ) -> dict[str, str]:
+        """Issue one session, retrying a transaction-level deadlock once.
+
+        Credential and MFA success evidence is committed before this boundary.
+        A deadlock rollback therefore discards only the incomplete session and
+        presence projection; the complete attempt can safely be replayed.
+        """
+
+        for attempt in range(2):
+            try:
+                active_staff_binding = staff_binding
+                if staff_binding is not None:
+                    staff_principal = (
+                        staff_party_authentication.resolve_staff_principal_by_party(
+                            db,
+                            staff_binding.party_id,
+                            staff_binding.system_user_id,
+                            reference=staff_binding.system_user_id,
+                        )
+                    )
+                    active_staff_binding = (
+                        staff_party_authentication.StaffSessionBinding(
+                            party_id=staff_binding.party_id,
+                            system_user_id=staff_principal.id,
+                        )
+                    )
+                return AuthFlow._issue_tokens_once(
+                    db,
+                    principal_type_or_principal_id,
+                    principal_id_or_request,
+                    request,
+                    staff_binding=active_staff_binding,
+                )
+            except OperationalError as exc:
+                # PostgreSQL rejects every subsequent statement until the
+                # failed transaction is explicitly rolled back.
+                db.rollback()
+                sqlstate = getattr(exc.orig, "sqlstate", None)
+                if sqlstate != "40P01" or attempt == 1:
+                    raise
+                logger.warning(
+                    "auth_session_issue_deadlock_retry",
+                    extra={
+                        "event": "auth_session_issue_deadlock_retry",
+                        "attempt": attempt + 2,
+                    },
+                )
+        raise RuntimeError("unreachable session issuance retry state")
+
+    @staticmethod
+    def _issue_tokens_once(
+        db: Session,
+        principal_type_or_principal_id: str,
+        principal_id_or_request: str | Request,
+        request: Request | None = None,
+        *,
+        staff_binding: staff_party_authentication.StaffSessionBinding | None = None,
+    ) -> dict[str, str]:
         # Backward compatibility: older callers passed (db, principal_id, request)
         # and implicitly targeted subscriber principals.
         if request is None:

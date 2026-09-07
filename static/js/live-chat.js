@@ -250,11 +250,12 @@
     // Bind this socket to the current session generation; a re-scope bumps
     // state.gen so a stale socket's callbacks (esp. onclose reconnect) no-op.
     var myGen = state.gen;
-    var url = state.session.ws_url + "?token=" +
-      encodeURIComponent(state.session.visitor_token);
     var ws;
     try {
-      ws = new WebSocket(url);
+      ws = new WebSocket(
+        state.session.ws_url,
+        ["dotmac-auth", state.session.visitor_token]
+      );
     } catch (e) {
       return;
     }
