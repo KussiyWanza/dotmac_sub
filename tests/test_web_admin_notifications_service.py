@@ -84,9 +84,9 @@ def test_notification_badge_loads_once_without_recurring_poll() -> None:
 
 
 def test_operation_tracker_initializes_only_for_queued_operations() -> None:
-    base = (
-        Path(__file__).parents[1] / "templates" / "base.html"
-    ).read_text(encoding="utf-8")
+    base = (Path(__file__).parents[1] / "templates" / "base.html").read_text(
+        encoding="utf-8"
+    )
 
     assert "window.initOperationTracker();" not in base
     assert (
