@@ -447,6 +447,7 @@ def set_agent_presence(
     presence = (
         db.query(InboxAgentPresence)
         .filter(InboxAgentPresence.person_id == person_uuid)
+        .with_for_update()
         .one_or_none()
     )
     if presence is None:
@@ -508,16 +509,20 @@ def record_agent_signed_in_presence(
     This is a flush-only Team Inbox participant in the auth-session issuance
     transaction. The caller owns commit/rollback, so a delivered staff session
     and its default availability cannot disagree.
+
+    Authentication already resolved and validated the active SystemUser before
+    entering session issuance. Team Inbox therefore locks only its own presence
+    row; taking a second lock on the auth-owned principal here inverted the lock
+    order of concurrent staff operations and caused login deadlocks.
     """
 
-    locked_principal_id = (
+    active_principal_id = (
         db.query(SystemUser.id)
         .filter(SystemUser.id == command.system_user_id)
         .filter(SystemUser.is_active.is_(True))
-        .with_for_update()
         .scalar()
     )
-    if locked_principal_id is None:
+    if active_principal_id is None:
         raise ValueError("system_user_id must reference an active staff user")
     existing = (
         db.query(InboxAgentPresence)

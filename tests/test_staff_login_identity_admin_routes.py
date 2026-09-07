@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
 from starlette.requests import Request
 
 import app.web.admin as web_admin
@@ -122,6 +123,30 @@ def test_staff_edit_form_carries_field_technician_access() -> None:
 
     assert parsed.field_technician_access is True
     assert command.field_technician_access is True
+
+
+def test_staff_edit_form_rejects_passwords_shorter_than_eight_characters() -> None:
+    form = web_system_user_edit.parse_edit_form(
+        {
+            "first_name": "Field",
+            "last_name": "Tech",
+            "email": "field.tech@example.com",
+            "new_password": "short",
+            "confirm_password": "short",
+        }
+    )
+
+    with pytest.raises(ValueError, match="at least 8 characters"):
+        web_system_user_edit.build_update_command(
+            user_id=uuid4(),
+            context=staff_provisioning.CommandContext.system(
+                actor="system:test",
+                scope=staff_provisioning.STAFF_ASSIGN_SCOPE,
+                reason="test password length",
+            ),
+            form=form,
+            can_update_password=True,
+        )
 
 
 def test_staff_edit_page_carries_field_technician_access(monkeypatch) -> None:
@@ -255,3 +280,16 @@ def test_staff_edit_template_shows_field_service_access_status() -> None:
     assert "Enabled" in template
     assert "Not enabled" in template
     assert "success" in template
+
+
+def test_staff_edit_template_password_controls_default_to_no_forced_reset() -> None:
+    template = (
+        PROJECT_ROOT / "templates" / "admin" / "system" / "users" / "edit.html"
+    ).read_text()
+
+    assert 'name="new_password" id="new_password" minlength="8"' in template
+    assert 'name="confirm_password" id="confirm_password" minlength="8"' in template
+    assert (
+        'name="require_password_change" id="require_password_change" checked'
+        not in template
+    )

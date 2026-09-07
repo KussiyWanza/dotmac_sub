@@ -159,6 +159,18 @@ def test_production_deploy_exposes_fail_closed_post_migration_resume() -> None:
     assert "prior_backup_path" in workflow
     assert "AUTHORIZATION_RUN_ID" in workflow
     assert "DB_BACKUP_BASENAME: dotmac_sub_run_${{ github.run_id }}" in workflow
+    assert "DB_BACKUP_RETENTION_PREFIX: dotmac_sub_run_" in workflow
+    assert 'DB_BACKUP_RETENTION_COUNT: "5"' in workflow
+    assert "/var/backups/dotmac_sub/deployments" in deploy
+    assert (
+        'DB_BACKUP_RETENTION_PREFIX="${DB_BACKUP_RETENTION_PREFIX:-dotmac_sub_run_}"'
+        in deploy
+    )
+    assert 'DB_BACKUP_RETENTION_COUNT="${DB_BACKUP_RETENTION_COUNT:-5}"' in deploy
+    retention_block = deploy[deploy.index("Pruning old ${IMAGE_REPO} images") :]
+    assert "if ! IMAGE_REPO=" in retention_block
+    assert "Image retention failed" in retention_block
+    assert "exit 1" in retention_block
     assert "PRODUCTION_DEPLOY_RESUME_AUTHORIZATION_RUN_ID" in adapter
     assert "scripts.deploy_resume_policy verify-post-migration" in deploy
     assert "Skipping migrations under verified post-migration resume evidence" in deploy

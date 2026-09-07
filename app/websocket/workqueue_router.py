@@ -20,7 +20,7 @@ from app.services.workqueue import (
     principal_from_auth,
 )
 from app.services.workqueue.events import channels_for_scope
-from app.websocket.auth import authenticate_staff_websocket
+from app.websocket.auth import accepted_auth_subprotocol, authenticate_staff_websocket
 from app.websocket.events import InboundMessage, InboundMessageType
 from app.websocket.manager import get_connection_manager
 
@@ -41,7 +41,7 @@ def _resolve_channels(auth: dict, audience: str | None) -> list[str]:
 
 @router.websocket("/ws/workqueue")
 async def workqueue_websocket(websocket: WebSocket):
-    await websocket.accept()
+    await websocket.accept(subprotocol=accepted_auth_subprotocol(websocket))
 
     auth = await authenticate_staff_websocket(websocket)
     if not auth:

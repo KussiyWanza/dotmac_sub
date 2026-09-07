@@ -54,6 +54,8 @@ def build_update_command(
             raise ValueError("Only admins can update passwords.")
         if not form.new_password or not form.confirm_password:
             raise ValueError("Password and confirmation are required.")
+        if len(form.new_password) < 8:
+            raise ValueError("Password must be at least 8 characters.")
         if form.new_password != form.confirm_password:
             raise ValueError("Passwords do not match.")
     return staff_provisioning.UpdateStaffIdentityCommand(
