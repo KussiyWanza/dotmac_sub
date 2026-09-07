@@ -14720,13 +14720,14 @@
   },
   "POST /api/v1/field/manager/expenses/{expense_request_id}/approve": {
    "params": [
+    "header:X-Request-ID",
     "header:authorization",
     "header:x-api-key",
     "path:expense_request_id!"
    ],
    "request": null,
    "responses": {
-    "200": "6cc1ebd3f658",
+    "200": "39a569c0cfe0",
     "422": "a11c9d9b2af8"
    }
   },
@@ -19380,11 +19381,12 @@
   "FieldEquipmentRead": "c401fc79d178",
   "FieldEquipmentRecord": "7c7bcf16d5ae",
   "FieldEquipmentReturnRequest": "80e3640552d3",
+  "FieldExpenseApprovalRead": "64ecf6941a17",
   "FieldExpenseCategoryRead": "c8edfa89ab4d",
   "FieldExpenseRequestCreate": "4a21a0cb3712",
   "FieldExpenseRequestItemCreate": "3b23aa8d5a6d",
   "FieldExpenseRequestItemRead": "515094e4452b",
-  "FieldExpenseRequestRead": "4e1e5219e3d4",
+  "FieldExpenseRequestRead": "838acdc17f32",
   "FieldExpenseRequestSubmit": "e8a7e3d6ec5a",
   "FieldExpenseVendorRead": "fd8c5d96e664",
   "FieldFiberCustomerTraceRead": "77b4750e8e06",

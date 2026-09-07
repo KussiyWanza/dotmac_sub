@@ -35,8 +35,16 @@ ERP upserts every entity by authenticated organization, entity type, and the
 Self-Care UUID. Tasks are stored as ERP project tasks and retain their project,
 optional parent-task, and optional ticket links. Imported records populate the
 Project, Ticket, and Task choices on both the employee expense-claim form and
-the Finance expense form. ERP remains the owner of the expense records; it does
-not become the owner of the source project or ticket lifecycle.
+the Finance expense form. ERP owns the resulting accounting claim and payment
+record; it does not become the owner of the source request, approval, project,
+or ticket lifecycle.
+
+Self-Care owns technician expense-request submission and manager approval. Only
+the committed manager approval stages the ERP expense-claim delivery intent;
+submission alone never sends financial data to ERP. The outbox exposes pending,
+sent, accepted, rejected, and dead-letter states independently from the local
+approval so the field app does not describe a saved approval as an ERP sync.
+This approval cutover does not bulk-backfill older approved test requests.
 
 ## Verification
 
