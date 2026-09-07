@@ -216,7 +216,7 @@ def build_work_order_expense_panel(
         label="New Expense Claim",
         allowed=action_reason is None,
         reason=action_reason,
-        permission="operations:dispatch:read",
+        permission="operations:dispatch:write",
     )
     return WorkOrderExpensePanel(
         work_order_id=work_order.id,

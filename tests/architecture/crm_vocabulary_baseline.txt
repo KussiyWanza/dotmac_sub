@@ -40,7 +40,7 @@
 #
 #
 #
-# --- app: 251 files ---
+# --- app: 250 files ---
 app/api/campaigns.py
 app/api/crm.py
 app/api/crm_referrals.py
@@ -76,7 +76,6 @@ app/models/comms_campaign.py
 app/models/crm_sync_failure.py
 app/models/cross_app_drift.py
 app/models/dispatch.py
-app/models/field_attachment.py
 app/models/field_chat.py
 app/models/field_erp_sync.py
 app/models/field_expense.py
@@ -760,4 +759,4 @@ tests/test_work_order_views.py
 tests/test_workqueue_parity.py
 tests/test_workqueue_web.py
 #
-# TOTAL: 710 files
+# TOTAL: 709 files

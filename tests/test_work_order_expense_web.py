@@ -68,7 +68,7 @@ def _context(user: SystemUser, request_id):
         command_id=request_id,
         correlation_id=request_id,
         actor=f"user:{user.id}",
-        scope="operations:dispatch:read",
+        scope="operations:dispatch:write",
         reason="Create an expense from a work order",
         idempotency_key=str(request_id),
     )
@@ -320,6 +320,7 @@ def test_panel_isolates_claims_and_does_not_treat_sent_as_accepted(
         work_order_public_id=work_order.public_id,
         actor_system_user_id=owner.id,
     )
+    assert panel.create_action.permission == "operations:dispatch:write"
     assert [claim.purpose for claim in panel.claims] == ["My transport"]
     assert panel.claims[0].delivery_state is expense_web.ExpenseDeliveryState.PENDING
     assert panel.claims[0].delivery_label == "Delivered; awaiting ERP acceptance"

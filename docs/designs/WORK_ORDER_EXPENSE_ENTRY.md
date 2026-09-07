@@ -5,8 +5,9 @@
 Authenticated staff who can open an exact admin work-order detail page may
 create an expense claim from that page. Technician assignment is not the access
 rule for this web surface. Global dispatch-read access, or a matching reseller
-or region scoped grant, is required. Field/mobile expense entry retains its
-assigned-technician scope.
+or region scoped grant, permits viewing the page; creating a claim separately
+requires the equivalent scoped `operations:dispatch:write` grant. Field/mobile
+expense entry retains its assigned-technician scope.
 
 Every claim created here is bound to the work order in the route. The browser
 does not submit a work-order identifier and cannot create a work-order-less
@@ -25,8 +26,8 @@ requester identifiers and email are not form inputs.
   line items, requester evidence, idempotency fingerprint, receipt metadata,
   work-order activity mark, and durable ERP delivery staging.
 - The admin route parses HTTP form and file values, enforces CSRF and exact
-  work-order RBAC scope, releases its read transaction, and invokes the typed
-  owner command. It does not commit or call ERP.
+  work-order write-tier RBAC scope, releases its read transaction, and invokes
+  the typed owner command. It does not commit or call ERP.
 - ERP remains authoritative for approval routing, rejection, reimbursement
   account details, and payment. The form deliberately has no approver, bank,
   cost-centre, ERP task, fleet vehicle, or receipt-number controls.

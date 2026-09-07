@@ -1591,7 +1591,8 @@ DOMAIN = DomainSOT(
                         kind=AuthorityKind.CONTROL_INPUT,
                         source=(
                             "Authenticated active SystemUser identity and exact global, "
-                            "reseller, or region work-order access decision"
+                            "reseller, or region dispatch-read decision for viewing and "
+                            "dispatch-write decision for expense submission"
                         ),
                     ),
                     AuthorityInput(

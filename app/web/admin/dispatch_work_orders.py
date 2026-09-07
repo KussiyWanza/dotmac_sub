@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+from collections.abc import Callable
 from urllib.parse import urlencode
 from uuid import UUID, uuid4, uuid5
 
@@ -39,7 +40,8 @@ from app.web.request_parsing import parse_form_data_sync
 
 templates = Jinja2Templates(directory="templates")
 router = APIRouter(prefix="/dispatch", tags=["web-admin-dispatch"])
-_WORK_ORDER_PERMISSION = "operations:dispatch:read"
+_WORK_ORDER_READ_PERMISSION = "operations:dispatch:read"
+_WORK_ORDER_EXPENSE_PERMISSION = "operations:dispatch:write"
 
 
 def _ctx(request: Request, db: Session) -> dict:
@@ -54,30 +56,42 @@ def _ctx(request: Request, db: Session) -> dict:
     }
 
 
-def _work_order_scope(request: Request, db: Session) -> tuple[str, str] | None:
-    """Resolve the exact work-order scope for the shared RBAC guard."""
+def _work_order_scope_for(
+    permission_key: str,
+) -> Callable[[Request, Session], tuple[str, str] | None]:
+    """Build an exact work-order scope resolver for one permission tier."""
 
-    pair = get_work_order_row(db, str(request.path_params.get("work_order_id") or ""))
-    if pair is None:
-        raise HTTPException(status_code=404, detail="Work order not found")
-    _, subscriber = pair
-    candidates: list[tuple[str, str]] = []
-    if subscriber.reseller_id is not None:
-        candidates.append(("reseller", str(subscriber.reseller_id)))
-    if subscriber.region:
-        candidates.append(("region", subscriber.region))
-    auth = getattr(request.state, "auth", None)
-    if isinstance(auth, dict):
-        grants = grant_scopes_for_permission(auth, db, _WORK_ORDER_PERMISSION)
-        if isinstance(grants, set):
-            for candidate in candidates:
-                if candidate in grants:
-                    return candidate
-    return candidates[0] if candidates else None
+    def _work_order_scope(request: Request, db: Session) -> tuple[str, str] | None:
+        pair = get_work_order_row(
+            db, str(request.path_params.get("work_order_id") or "")
+        )
+        if pair is None:
+            raise HTTPException(status_code=404, detail="Work order not found")
+        _, subscriber = pair
+        candidates: list[tuple[str, str]] = []
+        if subscriber is not None:
+            if subscriber.reseller_id is not None:
+                candidates.append(("reseller", str(subscriber.reseller_id)))
+            if subscriber.region:
+                candidates.append(("region", subscriber.region))
+        auth = getattr(request.state, "auth", None)
+        if isinstance(auth, dict):
+            grants = grant_scopes_for_permission(auth, db, permission_key)
+            if isinstance(grants, set):
+                for candidate in candidates:
+                    if candidate in grants:
+                        return candidate
+        return candidates[0] if candidates else None
+
+    return _work_order_scope
 
 
-_require_work_order_access = require_scoped_permission(
-    _WORK_ORDER_PERMISSION, _work_order_scope
+_require_work_order_read_access = require_scoped_permission(
+    _WORK_ORDER_READ_PERMISSION, _work_order_scope_for(_WORK_ORDER_READ_PERMISSION)
+)
+_require_work_order_expense_access = require_scoped_permission(
+    _WORK_ORDER_EXPENSE_PERMISSION,
+    _work_order_scope_for(_WORK_ORDER_EXPENSE_PERMISSION),
 )
 
 
@@ -230,7 +244,7 @@ def dispatch_work_order_detail(
     notice: str | None = None,
     error: str | None = None,
     db: Session = Depends(get_db),
-    auth: dict = Depends(_require_work_order_access),
+    auth: dict = Depends(_require_work_order_read_access),
 ):
     return _expense_detail_response(
         request,
@@ -251,7 +265,7 @@ def create_work_order_expense(
     request: Request,
     work_order_id: str,
     db: Session = Depends(get_db),
-    auth: dict = Depends(_require_work_order_access),
+    auth: dict = Depends(_require_work_order_expense_access),
 ):
     actor_id = _actor_id(auth)
     raw_form = parse_form_data_sync(request)
@@ -275,7 +289,7 @@ def create_work_order_expense(
                     command_id=prepared.request_id,
                     correlation_id=prepared.request_id,
                     actor=f"user:{actor_id}",
-                    scope=_WORK_ORDER_PERMISSION,
+                    scope=_WORK_ORDER_EXPENSE_PERMISSION,
                     reason=f"Create expense for work order {work_order_id}",
                     idempotency_key=str(prepared.request_id),
                 ),

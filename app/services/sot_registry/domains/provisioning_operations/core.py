@@ -782,7 +782,7 @@ SERVICES: tuple[SOTService, ...] = (
                     kind=AuthorityKind.CONTROL_INPUT,
                     source=(
                         "Authenticated system-user identity and global, reseller, or "
-                        "region operations:dispatch:read access resolved for the exact "
+                        "region operations:dispatch:write access resolved for the exact "
                         "work order"
                     ),
                 ),

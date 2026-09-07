@@ -538,9 +538,10 @@ implementation.
 
 ## Admin Work-Order Expense Entry Page Contract
 
-- Audience and task: any authenticated staff member with access to the exact
-  work order can create and track their own work-order expense claim. Technician
-  assignment is not required on this admin web surface.
+- Audience and task: authenticated staff with read access to the exact work order
+  can track their own work-order expense claims. Creating a claim additionally
+  requires the matching write-tier dispatch access. Technician assignment is
+  not required on this admin web surface.
 - Authority: `ui.work_order_expense_projection` owns the form, validation
   presentation, requester-owned list, action eligibility, and ERP delivery
   labels. `operations.expense_requests` owns the atomic claim and durable ERP
@@ -549,9 +550,10 @@ implementation.
   card explains that approval and payment happen in ERP, shows the actor's
   existing claims, and exposes one New Expense Claim action when ERP categories
   are available.
-- Mutation: the multipart POST is explicitly CSRF protected and scoped to the
-  work order in the URL. No work-order, requester, person, user, or requester
-  email input is accepted. A stable client reference prevents double creation.
+- Mutation: the multipart POST is explicitly CSRF protected, write-tier guarded,
+  and scoped to the work order in the URL. No work-order, requester, person,
+  user, or requester email input is accepted. A stable client reference prevents
+  double creation.
 - Form: purpose and expense date are required, currency defaults to NGN, notes
   are optional, and at least one stacked repeatable item remains. Items expose
   ERP category, description, positive amount, optional date/vendor/receipt

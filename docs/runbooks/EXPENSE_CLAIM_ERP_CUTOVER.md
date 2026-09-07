@@ -18,12 +18,13 @@
    human or finance-administration permissions.
 4. Confirm the ERP accepts `source_claim_id` and the stable
    `exp-{request_id}-submit-v1` idempotency key.
-5. Confirm any previous CRM expense sender is disabled before changing ownership.
+5. Confirm the previous expense sender is disabled before changing ownership.
 
 ## Controlled activation
 
-1. Keep `sync_flow_ownership.expense_claim` assigned to `crm` while deploying and
-   validating the application change.
+1. Record and retain the pre-cutover legacy owner for
+   `sync_flow_ownership.expense_claim` while deploying and validating the
+   application change.
 2. Verify a submitted expense creates no outbox row.
 3. Assign `expense_claim` ownership to `sub` through the reviewed production
    configuration procedure.
@@ -43,8 +44,9 @@ backfills them. Any future historical repair requires a separate reviewed scope.
 
 ## Rollback
 
-Reassign `expense_claim` ownership to `crm` to stop new Sub deliveries, then
-disable the expense delivery/status capabilities. Do not delete outbox evidence.
+Restore the recorded pre-cutover legacy ownership of `expense_claim` to stop new
+Sub deliveries, then disable the expense delivery/status capabilities. Do not
+delete outbox evidence.
 Investigate any pending event by its event ID before deciding whether to resume
 delivery. Production configuration and ownership changes are operational work and
 are not performed by this branch.
