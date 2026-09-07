@@ -1093,11 +1093,11 @@ def test_composable_engine_preserves_low_confidence_follow_up(db_session, monkey
 
     assert conversation.primary_service_team_id is None
     assert first_message.metadata_["ai_intake_status"] == "awaiting_follow_up"
-    assert first_message.metadata_["ai_intake_engine_action"] == "legacy_clarification"
+    assert first_message.metadata_["ai_intake_engine_action"] == "respond"
     assert (
-        first_message.metadata_["ai_intake_engine_reason"]
-        == "legacy_classifier_clarification"
+        first_message.metadata_["ai_intake_engine_reason"] == "classifier_clarification"
     )
+    assert first_message.metadata_["ai_intake_question_key"] == "intent_clarification"
     assert first_message.metadata_["ai_intake_requires_follow_up"] is True
     assert [message.body for message in outbound] == [
         "Hello from AI intake.",
@@ -2107,7 +2107,12 @@ def test_customer_reply_after_short_inactivity_resumes_same_ai_session(
     db_session, monkeypatch
 ):
     fallback = _team(db_session, "Configured Fallback Team")
-    _config(db_session, fallback_team_id=fallback.id, threshold=0.8)
+    config = _config(db_session, fallback_team_id=fallback.id, threshold=0.8)
+    config.metadata_ = {
+        **dict(config.metadata_ or {}),
+        "conversational_engine_enabled": True,
+        "conversation_engine_mode": "langgraph_v1",
+    }
     gateway = _Gateway(confidence=0.2)
     monkeypatch.setattr(ai_intake, "_gateway", lambda: gateway)
 
@@ -2122,7 +2127,7 @@ def test_customer_reply_after_short_inactivity_resumes_same_ai_session(
 
     outcome = _recover_ai_timeouts(db_session, now=wait_started + timedelta(minutes=5))
     gateway.calls = 0
-    _receive(
+    reply = _receive(
         db_session,
         message_id="wamid-timeout-after-reply-2",
         body="Are you there?",
@@ -2134,13 +2139,34 @@ def test_customer_reply_after_short_inactivity_resumes_same_ai_session(
         .filter(AiIntakeSession.conversation_id == received.conversation_id)
         .all()
     )
+    conversation = db_session.get(InboxConversation, received.conversation_id)
     session = sessions[0]
     assert outcome.changed == 0
     assert len(sessions) == 1
     assert session.state == "awaiting_customer"
     assert session.customer_wait_started_at is not None
     assert session.customer_wait_expires_at is None
-    assert gateway.calls == 1
+    assert gateway.calls >= 1
+    session_metadata = dict(session.metadata_ or {})
+    assert session_metadata[f"processed_inbound:{reply.message_id}"] is True
+    assert (
+        len([key for key in session_metadata if key.startswith("processed_inbound:")])
+        == 2
+    )
+    assert conversation.assignments == []
+    assert (
+        db_session.query(InboxConversationQueueEntry)
+        .filter(InboxConversationQueueEntry.conversation_id == conversation.id)
+        .count()
+        == 0
+    )
+    assert (
+        db_session.query(InboxMessage)
+        .filter(InboxMessage.conversation_id == conversation.id)
+        .filter(InboxMessage.direction == InboxMessageDirection.internal.value)
+        .count()
+        == 0
+    )
 
 
 def test_customer_silence_does_not_assign_available_agent(db_session, monkeypatch):
@@ -2294,9 +2320,10 @@ def test_legacy_awaiting_customer_null_deadline_is_backfilled_not_handed_off(
     assert outcome.changed == 1
     assert outcome.skipped == 0
     assert session.state == "awaiting_customer"
-    assert session.customer_wait_started_at.replace(tzinfo=UTC) == now
+    now_utc = now.replace(tzinfo=UTC)
+    assert session.customer_wait_started_at.replace(tzinfo=UTC) == now_utc
     assert session.customer_wait_expires_at is None
-    assert session.expires_at.replace(tzinfo=UTC) == now + timedelta(hours=72)
+    assert session.expires_at.replace(tzinfo=UTC) == now_utc + timedelta(hours=72)
     assert (
         db_session.query(InboxMessage)
         .filter(InboxMessage.conversation_id == received.conversation_id)

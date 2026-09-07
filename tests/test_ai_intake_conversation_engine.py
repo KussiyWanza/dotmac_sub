@@ -175,7 +175,7 @@ def test_identified_subscriber_does_not_request_portal_id(db_session, monkeypatc
     assert decision.metadata["question_key"] == "device_scope"
     assert "Portal ID" not in (decision.response_text or "")
     assert decision.state.subscriber_id == str(subscriber.id)
-    assert decision.state.monitoring_results == []
+    assert decision.state.monitoring_results == [{"status": "no_data"}]
     assert any(
         item["tool"] == "subscriber_monitoring" and item["status"] == "no_data"
         for item in decision.state.tool_executions
@@ -607,7 +607,9 @@ def test_configured_no_internet_playbook_asks_first_line_steps(db_session):
     assert second.action == "respond"
     assert "red LOS" in (second.response_text or "")
     assert "Sorry about the downtime." not in (second.response_text or "")
-    assert "los_status" in second.state.already_requested_fields
+    assert "los_state" in second.state.already_requested_fields
+    assert second.metadata["question_key"] == "los_status"
+    assert second.metadata["expected_fact"] == "los_state"
 
 
 def test_no_internet_without_playbook_does_not_auto_handoff_after_classification(
