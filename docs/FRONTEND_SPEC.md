@@ -822,6 +822,18 @@ Credit, debit, and net headline values always summarize the complete scoped
 ledger, not only the visible page. The full-ledger and CSV actions retain the
 same customer scope and existing ledger-read permission.
 
+**Customer service-extension history contract:**
+`ui.service_extension_detail_projection` owns the embedded customer-scoped
+request history under the Billing tab. The projection starts from canonical
+`ServiceExtension` lifecycle facts, returns one row per distinct request, and
+attaches customer subscription billing-impact evidence when entries exist.
+Pending, applied, canceled, and reversed requests share the same status
+presentation as the admin extension detail. The badge is the full matching
+request count rather than the bounded visible-row count. Reading is gated by
+`billing:extension:read`; the create action is independently gated by
+`billing:extension:create`. Empty means no matching request, not merely no
+applied billing entry.
+
 **Network tab presentation contract:** The lazy Network projection remains a
 sibling of the other primary customer tabs. HTMX replaces only the inner Network
 fragment; the stable outer element retains the `activeTab === 'network'`

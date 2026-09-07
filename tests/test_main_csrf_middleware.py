@@ -408,6 +408,51 @@ def test_attendance_check_in_requires_csrf_header():
     assert response.status_code == 403
 
 
+def test_csrf_error_refresh_links_to_same_site_referer_for_failed_post():
+    request = _build_request(
+        path="/admin/network/cpes",
+        method="POST",
+        headers=[
+            (b"host", b"testserver"),
+            (
+                b"referer",
+                b"http://testserver/admin/network/cpes/new?subscriber_id=123",
+            ),
+        ],
+    )
+
+    async def call_next(_request: Request) -> Response:
+        raise AssertionError("invalid CSRF must not reach its route")
+
+    response = _run_async(csrf_middleware(request, call_next))
+    body = response.body.decode("utf-8")
+
+    assert response.status_code == 403
+    assert 'href="/admin/network/cpes/new?subscriber_id=123"' in body
+    assert "window.location.reload()" in body
+
+
+def test_csrf_error_refresh_does_not_trust_cross_site_referer():
+    request = _build_request(
+        path="/admin/network/cpes",
+        method="POST",
+        headers=[
+            (b"host", b"testserver"),
+            (b"referer", b"https://example.invalid/admin/network/cpes/new"),
+        ],
+    )
+
+    async def call_next(_request: Request) -> Response:
+        raise AssertionError("invalid CSRF must not reach its route")
+
+    response = _run_async(csrf_middleware(request, call_next))
+    body = response.body.decode("utf-8")
+
+    assert response.status_code == 403
+    assert "example.invalid" not in body
+    assert "window.location.reload()" in body
+
+
 def test_attendance_check_out_accepts_matching_double_submit_csrf():
     token = "attendance-csrf-token"
     request = _build_request(

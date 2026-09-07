@@ -133,7 +133,6 @@ app/services/provisioning_managers.py
 app/services/qualification.py
 app/services/queue_mapping.py
 app/services/quote_deposits.py
-app/services/quotes_mirror.py
 app/services/radius.py
 app/services/radius_auth.py
 app/services/reseller_portal.py

@@ -10,8 +10,11 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.schemas.erp_staff_access_webhook import (
+    ERP_STAFF_ACCESS_WEBHOOK_ADAPTER,
     ErpStaffAccessReceipt,
-    ErpStaffAccessWebhook,
+    ErpStaffAccountStatusEvent,
+    ErpStaffLeaveRestrictionEvent,
+    ErpStaffLeaveRestrictionWebhook,
 )
 from app.services import erp_staff_access
 from app.services.db_session_adapter import db_session_adapter
@@ -89,7 +92,7 @@ async def receive_erp_staff_access(
         )
         raise HTTPException(status_code=401, detail="Invalid ERP webhook signature")
     try:
-        payload = ErpStaffAccessWebhook.model_validate_json(raw)
+        payload = ERP_STAFF_ACCESS_WEBHOOK_ADAPTER.validate_json(raw)
     except (ValueError, ValidationError):
         raise HTTPException(status_code=422, detail="Invalid ERP staff access payload")
 
@@ -126,27 +129,43 @@ async def receive_erp_staff_access(
     )
     db_session_adapter.release_read_transaction(db)
     try:
-        if payload.leave_restriction is not None:
+        owner_event = payload.to_owner_event(event_id=delivery_id)
+        if owner_event is None:
+            current = integration_inbox.get_receipt(db, receipt_id=receipt_id)
+            consequence = {
+                "event_id": delivery_id,
+                "event_type": payload.event_type,
+                "applied": False,
+                "status": "unmapped",
+            }
+            integration_inbox.complete_consequence(
+                db,
+                receipt=current,
+                consequence=consequence,
+            )
+            return ErpStaffAccessReceipt(
+                **consequence,
+                replayed=False,
+            )
+        if isinstance(payload, ErpStaffLeaveRestrictionWebhook):
+            assert isinstance(owner_event, ErpStaffLeaveRestrictionEvent)
             outcome = erp_staff_access.apply_staff_leave_restriction_event(
                 db,
                 erp_staff_access.ApplyLeaveRestrictionCommand(
                     context=context,
-                    event=payload.leave_restriction,
+                    event=owner_event,
                     delivery_id=delivery_id,
                 ),
             )
-        elif payload.account_status is not None:
+        else:
+            assert isinstance(owner_event, ErpStaffAccountStatusEvent)
             outcome = erp_staff_access.apply_staff_account_status_event(
                 db,
                 erp_staff_access.ApplyAccountStatusCommand(
                     context=context,
-                    event=payload.account_status,
+                    event=owner_event,
                     delivery_id=delivery_id,
                 ),
-            )
-        else:  # pragma: no cover - schema validator prevents this branch.
-            raise HTTPException(
-                status_code=422, detail="Invalid ERP staff access payload"
             )
     except DomainError as exc:
         integration_inbox.fail_claimed_consequence(

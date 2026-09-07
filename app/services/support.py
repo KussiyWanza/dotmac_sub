@@ -2678,23 +2678,91 @@ class Tickets:
     def set_satisfaction(
         db: Session, ticket: Ticket, *, rating: int, comment: str | None = None
     ) -> Ticket:
-        """Record customer CSAT on a closed ticket under ``metadata.csat``."""
+        """Record customer CSAT on a closed ticket.
+
+        New submissions are authoritative in ``support_csat_requests``. The
+        legacy ``metadata.csat`` value is maintained as a compatibility
+        projection for existing readers.
+        """
         if ticket.status != TicketStatus.closed.value:
             raise _ticket_error(
                 "satisfaction_not_eligible",
                 "You can rate support once the ticket is closed.",
             )
-        meta = dict(ticket.metadata_ or {})
-        meta["csat"] = {
-            "rating": int(rating),
-            "comment": (comment or "").strip() or None,
-            "at": datetime.now(UTC).isoformat(),
-        }
-        ticket.metadata_ = meta
-        db.add(ticket)
+        from app.services import support_csat
+
+        support_csat.submit_ticket_rating(
+            db,
+            ticket,
+            rating=rating,
+            comment=comment,
+            submitted_by=str(ticket.subscriber_id or ticket.customer_account_id or ""),
+            channel="portal",
+        )
         db.flush()
         db.refresh(ticket)
         return ticket
+
+    @staticmethod
+    def _stage_csat_request_for_closed_ticket(
+        db: Session,
+        ticket: Ticket,
+        *,
+        force_new_cycle: bool,
+        resolution_at: datetime | None = None,
+        request: object | None = None,
+        actor_id: str | None = None,
+    ) -> None:
+        """Best-effort CSAT request staging for a completed Ticket cycle."""
+
+        def create_request():
+            from app.services import support_csat
+
+            return support_csat.ensure_ticket_request(
+                db,
+                ticket,
+                force_new_cycle=force_new_cycle,
+                resolution_at=resolution_at,
+            )
+
+        try:
+            csat_request = execute_owner_savepoint(db, create_request)
+        except Exception as exc:  # noqa: BLE001 - Ticket closure must still commit
+            logger.error(
+                "ticket_csat_request_failed ticket_id=%s error=%s",
+                ticket.id,
+                exc,
+            )
+            log_audit_event(
+                db=db,
+                request=request,
+                action="csat_request_failed",
+                entity_type="support_ticket",
+                entity_id=str(ticket.id),
+                actor_id=actor_id,
+                metadata={
+                    "resolution_at": resolution_at.isoformat()
+                    if resolution_at
+                    else None
+                },
+            )
+            return
+        if csat_request is None:
+            return
+        try:
+            from app.services import support_csat
+
+            execute_owner_savepoint(
+                db,
+                lambda: support_csat.queue_request_notification(db, csat_request),
+            )
+        except Exception as exc:  # noqa: BLE001 - CSAT remains portal-accessible
+            logger.warning(
+                "ticket_csat_notification_failed ticket_id=%s request_id=%s error=%s",
+                ticket.id,
+                csat_request.id,
+                exc,
+            )
 
     @staticmethod
     def _add_system_comment(
@@ -2899,6 +2967,12 @@ class Tickets:
             },
             actor="support.ticket_lifecycle",
             subscriber_id=ticket.subscriber_id,
+        )
+        Tickets._stage_csat_request_for_closed_ticket(
+            db,
+            ticket,
+            force_new_cycle=True,
+            resolution_at=ticket.closed_at,
         )
         db.flush()
         db.refresh(ticket)
@@ -3509,6 +3583,7 @@ class Tickets:
         }
 
         data = payload.model_dump(exclude_unset=True)
+        preserve_service_team = "service_team_id" in data
         assignee_person_ids = data.pop("assignee_person_ids", None)
 
         if "status" in data and data["status"] is None:
@@ -3535,7 +3610,7 @@ class Tickets:
         if assignee_person_ids is not None:
             Tickets._replace_assignees(db, ticket, assignee_person_ids)
 
-        if Tickets._auto_assignment_enabled(db):
+        if Tickets._auto_assignment_enabled(db) and not preserve_service_team:
             Tickets._apply_auto_assignment(ticket, db)
 
         Tickets._apply_sla_policy(db, ticket, explicit_due_at="due_at" in data)
@@ -3607,7 +3682,10 @@ class Tickets:
             from app.models.support import AutomationTrigger
 
             Tickets._apply_automation_rules(
-                db, ticket, AutomationTrigger.status_changed
+                db,
+                ticket,
+                AutomationTrigger.status_changed,
+                preserve_service_team=preserve_service_team,
             )
             from app.services import sla_operational_notifications
 
@@ -3616,6 +3694,15 @@ class Tickets:
                 ticket,
                 previous_status=before["status"],
             )
+            if after["status"] == TicketStatus.closed.value:
+                Tickets._stage_csat_request_for_closed_ticket(
+                    db,
+                    ticket,
+                    force_new_cycle=True,
+                    resolution_at=ticket.closed_at,
+                    request=request,
+                    actor_id=actor_id,
+                )
         if before["priority"] != after["priority"]:
             log_audit_event(
                 db=db,
@@ -3629,7 +3716,10 @@ class Tickets:
             from app.models.support import AutomationTrigger
 
             Tickets._apply_automation_rules(
-                db, ticket, AutomationTrigger.priority_changed
+                db,
+                ticket,
+                AutomationTrigger.priority_changed,
+                preserve_service_team=preserve_service_team,
             )
 
         Tickets._queue_tag_notifications(

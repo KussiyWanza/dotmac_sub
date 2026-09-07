@@ -141,12 +141,19 @@ def ensure_implementation_scope(
             actor_id=actor,
             require_project_template=order.quote is not None,
         )
-        installation = installation_projects.ensure_for_project(
+        scope = installation_projects.ensure_for_project(
             db,
-            project_id=project.id,
-            subscriber_id=order.subscriber_id,
-            actor_id=actor,
+            command=installation_projects.EnsureProjectScope(
+                project_id=project.id,
+                subscriber_id=order.subscriber_id,
+                actor_id=actor,
+            ),
         )
+        installation = db.get(InstallationProject, scope.installation_project_id)
+        if installation is None:
+            raise SalesFulfillmentError(
+                "scope_not_found", "Installation scope not found"
+            )
         if commit:
             db.commit()
             db.refresh(order)

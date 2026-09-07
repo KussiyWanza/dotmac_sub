@@ -5365,6 +5365,24 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "GET /api/v1/invoices/accounting-sync/v2": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "query:account_id",
+    "query:invoice_id",
+    "query:is_active",
+    "query:limit",
+    "query:offset",
+    "query:status",
+    "query:updated_since"
+   ],
+   "request": null,
+   "responses": {
+    "200": "5b040a46c8db",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "GET /api/v1/invoices/sync": {
    "params": [
     "header:authorization",
@@ -19505,6 +19523,8 @@
   "InboxTimelineMessageRead": "b29644b7b503",
   "InboxTimelineTeamRead": "0e7f8064a2de",
   "InformPayload": "338a13a14dd0",
+  "InfrastructureReference": "45072c99b2ce",
+  "InfrastructureType": "dfbf0db36551",
   "InstallAppointmentCreate": "92b473c163ab",
   "InstallAppointmentRead": "01daf8d2c86e",
   "InstallAppointmentUpdate": "28f4d5850436",
@@ -19556,6 +19576,12 @@
   "IntegratorSettlementMirrorReport": "6c4cf5ced22b",
   "IntegratorSettlementReceipt": "5aefc8c7f135",
   "InterfaceStatus": "20c251764046",
+  "InvoiceAccountingSyncDisposition": "24602856e05b",
+  "InvoiceAccountingSyncIssueCode": "794ea8914f37",
+  "InvoiceAccountingSyncIssueRead": "605f4d7a3162",
+  "InvoiceAccountingSyncLineRead": "c8e15125f57a",
+  "InvoiceAccountingSyncRead": "7dfa7a66e30c",
+  "InvoiceAccountingSyncSourceKind": "8be30288740f",
   "InvoiceBulkActionResponse": "4f4b4d0b09e5",
   "InvoiceBulkVoidRequest": "20ea34f498f7",
   "InvoiceBulkWriteOffRequest": "5a2aadec6ec8",
@@ -19705,6 +19731,7 @@
   "ListResponse_IntegrationJobRead_": "4084eb06197f",
   "ListResponse_IntegrationRunRead_": "2d2a86b0a611",
   "ListResponse_IntegrationTargetRead_": "13dc8fbea6bf",
+  "ListResponse_InvoiceAccountingSyncRead_": "735a4e44c7b5",
   "ListResponse_InvoiceLineRead_": "c0bb00916c4f",
   "ListResponse_InvoiceRead_": "3c1c5f729682",
   "ListResponse_InvoiceSyncRead_": "661a97de2eee",
@@ -19838,7 +19865,7 @@
   "MyLocationRequestRead": "7a095cc41e3d",
   "MyPaymentMethodRead": "9490ed29f797",
   "MyProjectsResponse": "d1e5df424960",
-  "MyQuotesResponse": "ec1f4dbc31bd",
+  "MyQuotesResponse": "f8071945ba5f",
   "MyReferralsResponse": "8f11934342e6",
   "MyWorkOrdersResponse": "8ea011ae6981",
   "NasConfigBackupCreate": "72d66e37aa86",
@@ -20073,12 +20100,12 @@
   "ProductPortDescriptorV1": "7fa027fa20f0",
   "ProductPortDescriptorV3": "cdcc534fd811",
   "ProjectCostSummary": "f953c7ceefa5",
-  "ProjectCreate": "306ae5d9f212",
+  "ProjectCreate": "53a0c89795cd",
   "ProjectGanttUpdate": "38b022ae411d",
   "ProjectItem": "df3035be834b",
   "ProjectKanbanMove": "7578fb10fb86",
   "ProjectPriority": "81159a031246",
-  "ProjectRead": "c3e170fcab3e",
+  "ProjectRead": "8b9f6a8ed70b",
   "ProjectStage": "0f50e77c4ccb",
   "ProjectStageState": "acffacb745a6",
   "ProjectStatus": "39abcda05ebd",
@@ -20092,7 +20119,7 @@
   "ProjectTaskStatusTransition": "62828b3ad076",
   "ProjectTaskUpdate": "be5ae31b8297",
   "ProjectType": "a29853f91876",
-  "ProjectUpdate": "c8ada8baddbd",
+  "ProjectUpdate": "53c319e44d41",
   "ProofReview": "419d3ee08c88",
   "ProrationPolicy": "d107683093f4",
   "ProviderEventOrderBy": "92e8a0fc9bbe",

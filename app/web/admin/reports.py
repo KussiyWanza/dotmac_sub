@@ -32,6 +32,7 @@ from app.services import ncc_complaints_report as ncc_complaints_service
 from app.services import ncc_regulatory_pack as ncc_pack_service
 from app.services import ncc_report_email as ncc_weekly_delivery_service
 from app.services import ncc_subscriber_report as ncc_report_service
+from app.services import support_csat as support_csat_service
 from app.services import team_inbox_metrics as team_inbox_metrics_service
 from app.services import ticket_sla_reports as ticket_sla_reports_service
 from app.services import web_document_discount_report as discount_report_service
@@ -235,6 +236,12 @@ REPORT_HUB_SECTIONS: list[ReportHubSection] = [
                 "name": "Inbox Escalations",
                 "url": "/admin/reports/inbox-escalations",
                 "description": "Conversations that need supervisor attention",
+                "permission": "reports:support:read",
+            },
+            {
+                "name": "Support CSAT",
+                "url": "/admin/reports/support-csat",
+                "description": "Customer satisfaction ratings by ticket, inbox, agent, and team",
                 "permission": "reports:support:read",
             },
         ],
@@ -1146,6 +1153,191 @@ def reports_ticket_sla_export(
         content,
         media_type="text/csv",
         headers={"Content-Disposition": 'attachment; filename="ticket-sla.csv"'},
+    )
+
+
+def _parse_optional_uuid(value: str | None, *, field: str) -> UUID | None:
+    clean = str(value or "").strip()
+    if not clean:
+        return None
+    try:
+        return UUID(clean)
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"Invalid {field}") from None
+
+
+def _csat_query(
+    *,
+    date_from: str | None,
+    date_to: str | None,
+    rating: int | None,
+    source_type: str | None,
+    status: str,
+    agent_person_id: str | None,
+    service_team_id: str | None,
+    page: int,
+    per_page: int | None,
+) -> support_csat_service.CsatReportQuery:
+    try:
+        parsed_source = (
+            support_csat_service.CsatSourceType(source_type) if source_type else None
+        )
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid source type") from None
+    try:
+        parsed_status = support_csat_service.CsatRequestStatus(status)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid CSAT status") from None
+    return support_csat_service.CsatReportQuery(
+        date_from=_parse_date_start(date_from),
+        date_to=_parse_date_end(date_to),
+        rating=rating,
+        source_type=parsed_source,
+        agent_person_id=_parse_optional_uuid(agent_person_id, field="agent"),
+        service_team_id=_parse_optional_uuid(service_team_id, field="service team"),
+        status=parsed_status,
+        page=page,
+        per_page=per_page,
+    )
+
+
+def _csat_report_rows(rows) -> list[dict[str, object]]:
+    rendered: list[dict[str, object]] = []
+    for row in rows:
+        is_ticket = (
+            row.source_type == support_csat_service.CsatSourceType.support_ticket.value
+        )
+        rendered.append(
+            {
+                "source_type": "Ticket" if is_ticket else "Inbox",
+                "source_reference": row.source_reference or str(row.source_id),
+                "source_url": (
+                    f"/admin/support/tickets/{row.source_id}"
+                    if is_ticket
+                    else f"/admin/inbox?c={row.source_id}"
+                ),
+                "agent": row.agent_display_name or "Unassigned",
+                "team": row.service_team_name or "Unassigned",
+                "rating": row.rating or "",
+                "comment": row.comment or "",
+                "customer": row.customer_display_name
+                or row.customer_email
+                or "Unknown",
+                "resolution_at": row.resolution_at,
+                "submitted_at": row.submitted_at,
+                "status": row.status,
+            }
+        )
+    return rendered
+
+
+@router.get(
+    "/support-csat",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("reports:support:read"))],
+)
+def reports_support_csat(
+    request: Request,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    rating: int | None = Query(default=None, ge=1, le=5),
+    source_type: str | None = None,
+    status: str = support_csat_service.CsatRequestStatus.submitted.value,
+    agent_person_id: str | None = None,
+    service_team_id: str | None = None,
+    page: int = Query(default=1, ge=1),
+    per_page: int = Query(default=50, ge=10, le=200),
+    db: Session = Depends(get_db),
+):
+    from app.web.admin import get_current_user, get_sidebar_stats
+
+    query = _csat_query(
+        date_from=date_from,
+        date_to=date_to,
+        rating=rating,
+        source_type=source_type,
+        status=status,
+        agent_person_id=agent_person_id,
+        service_team_id=service_team_id,
+        page=page,
+        per_page=per_page,
+    )
+    total = support_csat_service.report_total(db, query)
+    rows = support_csat_service.report_rows(db, query)
+    summary = support_csat_service.report_summary(db, query)
+    context = {
+        "request": request,
+        "active_page": "reports-support-csat",
+        "active_menu": "reports",
+        "current_user": get_current_user(request),
+        "sidebar_stats": get_sidebar_stats(db),
+        "date_from": date_from or "",
+        "date_to": date_to or "",
+        "rating": rating,
+        "source_type": source_type or "",
+        "status": status,
+        "agent_person_id": agent_person_id or "",
+        "service_team_id": service_team_id or "",
+        "page": page,
+        "per_page": per_page,
+        "total": total,
+        "has_previous": page > 1,
+        "has_next": (page * per_page) < total,
+        "rows": _csat_report_rows(rows),
+        "summary": summary,
+        "recent_activities": recent_activity_for_paths(db, ["/admin/reports"]),
+    }
+    return templates.TemplateResponse("admin/reports/support_csat.html", context)
+
+
+@router.get(
+    "/support-csat/export",
+    dependencies=[Depends(require_permission("reports:support:read"))],
+)
+def reports_support_csat_export(
+    date_from: str | None = None,
+    date_to: str | None = None,
+    rating: int | None = Query(default=None, ge=1, le=5),
+    source_type: str | None = None,
+    status: str = support_csat_service.CsatRequestStatus.submitted.value,
+    agent_person_id: str | None = None,
+    service_team_id: str | None = None,
+    db: Session = Depends(get_db),
+):
+    query = _csat_query(
+        date_from=date_from,
+        date_to=date_to,
+        rating=rating,
+        source_type=source_type,
+        status=status,
+        agent_person_id=agent_person_id,
+        service_team_id=service_team_id,
+        page=1,
+        per_page=None,
+    )
+    output = StringIO()
+    writer = csv.DictWriter(
+        output,
+        fieldnames=[
+            "source_type",
+            "source_reference",
+            "source_url",
+            "agent",
+            "team",
+            "rating",
+            "comment",
+            "customer",
+            "resolution_at",
+            "submitted_at",
+            "status",
+        ],
+    )
+    writer.writeheader()
+    writer.writerows(_csat_report_rows(support_csat_service.report_rows(db, query)))
+    return Response(
+        output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="support-csat.csv"'},
     )
 
 

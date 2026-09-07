@@ -2,11 +2,19 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 
-from app.models.billing import LedgerEntry, LedgerEntryType, LedgerSource
+from app.models.billing import (
+    Invoice,
+    InvoiceLine,
+    InvoiceStatus,
+    LedgerEntry,
+    LedgerEntryType,
+    LedgerSource,
+    TaxRate,
+)
 from app.models.billing_contract import BillingRecordAuthority
 from app.models.catalog import BillingMode, Subscription, SubscriptionStatus
 from app.models.customer_subledger import (
@@ -15,6 +23,7 @@ from app.models.customer_subledger import (
     PositionEffectKind,
     PostingCommandKind,
 )
+from app.models.prepaid_funding import PrepaidOpeningFundingConsumption
 from app.models.subscriber import Subscriber, SubscriberStatus
 from app.services import customer_financial_ledger
 from app.services.billing.customer_subledger import resolve_position
@@ -527,16 +536,16 @@ def test_approved_residual_closes_position_without_double_counting_forward_fact(
     # The reviewed source amount is the original authority-cutoff position;
     # later canonical facts remain later facts and are not folded into it.
     unrelated_blocker.splynx_customer_id = "16382"
-    db_session.add(
-        LedgerEntry(
-            account_id=unrelated_blocker_id,
-            entry_type=LedgerEntryType.credit,
-            source=LedgerSource.other,
-            amount=Decimal("8477.75"),
-            currency="NGN",
-            memo="pytest reviewed post-cutoff credit-note effect",
-            effective_date=cutoff + timedelta(days=1),
-        )
+    blocker_intent = _intent(db_session, unrelated_blocker, provider, amount="8477.75")
+    _settle(
+        db_session,
+        intent_id=blocker_intent.id,
+        transaction=_transaction(
+            blocker_intent,
+            amount="8477.75",
+            provider_fee="0.00",
+            external_id="opening-migrated-post-cutover-deposit",
+        ),
     )
     db_session.commit()
 
@@ -596,9 +605,26 @@ def test_approved_residual_closes_position_without_double_counting_forward_fact(
     )
     assert migrated_capture.captured_count == 1
     assert migrated_capture.positive_total == Decimal("67334.75")
+    migrated_opening = (
+        db_session.query(CustomerSubledgerOpeningPosition)
+        .filter(CustomerSubledgerOpeningPosition.account_id == unrelated_blocker_id)
+        .one()
+    )
+    assert migrated_opening.baseline_id is None
     assert verified_prepaid_funding_balance(
         db_session, unrelated_blocker_id
     ) == Decimal("75812.50")
+
+    ensure_test_prepaid_contract(
+        db_session,
+        blocker_subscription,
+        Decimal("17500.00"),
+    )
+    tax_rate = TaxRate(name=f"VAT-{uuid4().hex[:8]}", rate=Decimal("7.5000"))
+    db_session.add(tax_rate)
+    db_session.flush()
+    unrelated_blocker.tax_rate_id = tax_rate.id
+    db_session.commit()
 
     period_start = cutoff + timedelta(days=7)
     period_end = cutoff + timedelta(days=38)
@@ -627,6 +653,23 @@ def test_approved_residual_closes_position_without_double_counting_forward_fact(
     )
     assert reviewed_renewal.renewal.preview.funding_after == Decimal("57000.00")
     assert reviewed_renewal.outcome is not None
+    assert reviewed_renewal.renewal.invoice is not None
+    invoice = db_session.get(Invoice, reviewed_renewal.renewal.invoice.id)
+    assert invoice is not None
+    assert invoice.status is InvoiceStatus.paid
+    assert invoice.subtotal == Decimal("17500.00")
+    assert invoice.tax_total == Decimal("1312.50")
+    assert invoice.total == Decimal("18812.50")
+    consumption = db_session.query(PrepaidOpeningFundingConsumption).one()
+    assert consumption.baseline_id is None
+    assert consumption.opening_position_id == migrated_opening.id
+    assert consumption.amount == Decimal("10334.75")
+    assert consumption.invoice_id == invoice.id
+    assert consumption.approval_evidence_ref == "pytest:finance-reviewed-opening-run"
+    line = db_session.query(InvoiceLine).filter_by(invoice_id=invoice.id).one()
+    assert line.amount == Decimal("17500.00")
+    assert line.tax_rate_id == tax_rate.id
+    assert reviewed_renewal.renewal.entitlement.source_invoice_line_id == line.id
     refreshed_subscription = db_session.get(Subscription, blocker_subscription_id)
     assert refreshed_subscription is not None
     assert refreshed_subscription.next_billing_at is not None

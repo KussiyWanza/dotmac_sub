@@ -1509,7 +1509,7 @@ DOMAIN = DomainSOT(
             owns=(
                 "typed ERP operational-context projection mapping",
                 "version-2 ERP operational-context transport and response validation",
-                "per-domain ERP operational-context delivery watermarks",
+                "per-domain ERP operational-context delivery watermarks and retry admission",
             ),
             depends_on=(
                 "events.dispatcher",
@@ -1546,7 +1546,7 @@ DOMAIN = DomainSOT(
                         ),
                     ),
                     ConcernContract(
-                        name="per-domain ERP operational-context delivery watermarks",
+                        name="per-domain ERP operational-context delivery watermarks and retry admission",
                         role=OwnerRole.PROJECTION_WRITER,
                         input_names=(
                             "canonical Sub projects and project tasks",
@@ -1613,7 +1613,7 @@ DOMAIN = DomainSOT(
                         "all selected domain watermarks together only after zero errors."
                     ),
                     locking=(
-                        "Per-domain cursor rows serialize watermark advancement; the "
+                        "The singleton retry row serializes all runs with SKIP LOCKED before cursor locks; the "
                         "keyset cursor orders source updates by updated_at and UUID."
                     ),
                     idempotency=(
@@ -1621,8 +1621,10 @@ DOMAIN = DomainSOT(
                         "a failed batch replays from unchanged watermarks."
                     ),
                     retries=(
-                        "The scheduled capability retries transient transport failures; "
-                        "item errors leave every selected watermark unchanged."
+                        "Transient attempts back off from five minutes to one hour; permanent or "
+                        "configuration failures block for six hours. A changed configuration "
+                        "fingerprint permits an earlier probe. Failure evidence commits with "
+                        "unchanged watermarks; source records are never discarded."
                     ),
                 ),
                 errors=ErrorContract(
@@ -1669,7 +1671,10 @@ DOMAIN = DomainSOT(
                 ),
                 test_refs=("tests/test_dotmac_erp_domain_sync.py",),
                 events=EventContract(
-                    event_types=("erp.operational_context.watermark_advanced",),
+                    event_types=(
+                        "erp.operational_context.watermark_advanced",
+                        "erp.operational_context.retry_deferred",
+                    ),
                     schema_version=1,
                     delivery_owner="events.dispatcher",
                     compatibility=(
@@ -1705,6 +1710,217 @@ DOMAIN = DomainSOT(
                         repair_owner=(
                             "integration.dotmac_erp_operational_context_adapter"
                         ),
+                    ),
+                ),
+            ),
+        ),
+        SOTService(
+            name="integration.procurement_purchase_order_cutover",
+            module="app.services.procurement_purchase_order_cutover",
+            owns=(
+                "Selfcare procurement ERP ownership cutover and reconciled PO backfill",
+            ),
+            depends_on=(
+                "integration.backoffice_adapter",
+                "observability.audit_log",
+                "operations.vendor_project_records",
+                "control.settings_spec",
+            ),
+            notes=(
+                "One bounded operator command atomically revalidates exact approved "
+                "quote/vendor anchors, records fresh ERP supplier verification, moves "
+                "the PO and invoice single-writer guards to Selfcare, and stages stable PO "
+                "outbox intents. It never calls ERP inside the transaction."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name=(
+                            "Selfcare procurement ERP ownership cutover and reconciled "
+                            "PO backfill"
+                        ),
+                        role=OwnerRole.APPLICATION_COORDINATOR,
+                        input_names=(
+                            "canonical approved vendor quote targets",
+                            "fresh verified ERP supplier bindings",
+                            "procurement single-writer controls",
+                            "procurement cutover command evidence",
+                        ),
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="canonical approved vendor quote targets",
+                        owner="operations.vendor_project_records",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "locked InstallationProject, approved ProjectQuote, vendor, "
+                            "and positive active quote-line records"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="fresh verified ERP supplier bindings",
+                        owner="external:dotmac_erp",
+                        kind=AuthorityKind.EXTERNAL_OBSERVATION,
+                        source=(
+                            "operator-reviewed unique active ERP supplier identity, "
+                            "provider reference, match method, verification timestamp, "
+                            "and fingerprint of the current Selfcare source reference"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="procurement single-writer controls",
+                        owner="control.settings_spec",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "the locked purchase_order and purchase_invoice ownership "
+                            "rows, which must name the seeded owner before first "
+                            "cutover and Selfcare afterward"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="procurement cutover command evidence",
+                        owner=("integration.procurement_purchase_order_cutover"),
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "typed command, actor, reason, production scope, exact target "
+                            "triples, command UUID, and stable idempotency key"
+                        ),
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.COORDINATOR_MANAGED,
+                    boundary=(
+                        "One owner command locks both procurement ownership rows, "
+                        "installation projects, and vendors; it commits verified "
+                        "supplier bindings, both owner flips, PO outbox rows, and audit "
+                        "evidence atomically."
+                    ),
+                    locking=(
+                        "Lock purchase-order and purchase-invoice ownership in flow order, "
+                        "then installation projects and vendors in UUID order before "
+                        "revalidating every target."
+                    ),
+                    idempotency=(
+                        "The command UUID and target digest arbitrate replay; po-ip-{id} "
+                        "uniquely deduplicates each staged ERP purchase order."
+                    ),
+                    retries=(
+                        "Validation failures are terminal. Database concurrency failures "
+                        "retry the whole command with the same UUID and evidence. ERP "
+                        "transport retries occur only after commit through the outbox."
+                    ),
+                ),
+                errors=ErrorContract(
+                    domain_codes=(
+                        *owner_command_boundary_error_codes(
+                            "integration.procurement_purchase_order_cutover"
+                        ),
+                        "integration.procurement_purchase_order_cutover.invalid_batch",
+                        "integration.procurement_purchase_order_cutover.duplicate_target",
+                        (
+                            "integration.procurement_purchase_order_cutover."
+                            "duplicate_supplier_verification"
+                        ),
+                        (
+                            "integration.procurement_purchase_order_cutover."
+                            "invalid_idempotency_key"
+                        ),
+                        (
+                            "integration.procurement_purchase_order_cutover."
+                            "idempotency_conflict"
+                        ),
+                        "integration.procurement_purchase_order_cutover.replay_drift",
+                        (
+                            "integration.procurement_purchase_order_cutover."
+                            "missing_flow_ownership"
+                        ),
+                        "integration.procurement_purchase_order_cutover.invalid_flow_owner",
+                        "integration.procurement_purchase_order_cutover.target_not_found",
+                        (
+                            "integration.procurement_purchase_order_cutover."
+                            "supplier_verification_scope_mismatch"
+                        ),
+                        "integration.procurement_purchase_order_cutover.vendor_not_found",
+                        (
+                            "integration.procurement_purchase_order_cutover."
+                            "supplier_verification_mismatch"
+                        ),
+                        (
+                            "integration.procurement_purchase_order_cutover."
+                            "invalid_supplier_verification_time"
+                        ),
+                        (
+                            "integration.procurement_purchase_order_cutover."
+                            "stale_supplier_verification"
+                        ),
+                        (
+                            "integration.procurement_purchase_order_cutover."
+                            "invalid_erp_supplier_reference"
+                        ),
+                        (
+                            "integration.procurement_purchase_order_cutover."
+                            "erp_supplier_reference_conflict"
+                        ),
+                        (
+                            "integration.procurement_purchase_order_cutover."
+                            "erp_supplier_code_conflict"
+                        ),
+                        "integration.procurement_purchase_order_cutover.target_changed",
+                        (
+                            "integration.procurement_purchase_order_cutover."
+                            "existing_procurement_reference"
+                        ),
+                        "integration.procurement_purchase_order_cutover.ineligible_target",
+                        (
+                            "integration.procurement_purchase_order_cutover."
+                            "existing_outbox_payload_mismatch"
+                        ),
+                    ),
+                    mapping_owner=(
+                        "scripts.procurement.cutover_purchase_orders operator adapter"
+                    ),
+                    retryable_codes=(),
+                    fail_closed_on=(
+                        "the seeded owner is not recorded for a new cutover",
+                        "missing, stale, changed, duplicate, or ambiguous supplier evidence",
+                        "changed approved quote or vendor anchor",
+                        "existing procurement identity or mismatched outbox payload",
+                        "any ineligible target in the requested batch",
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.CUTOVER_READY,
+                    old_owner="retired procurement sender and supplier provenance",
+                    new_owner=("integration.procurement_purchase_order_cutover"),
+                    verification=(
+                        "Exact ERP supplier reconciliation, zero Selfcare/ERP source-ID "
+                        "correlations, focused command tests, architecture guards, and "
+                        "staging outbox acceptance."
+                    ),
+                    cutover_gate=(
+                        "The ERP Sub PO and purchase-invoice endpoints are deployed, every "
+                        "included vendor has one fresh active ERP identity, the old "
+                        "endpoints are retired, and the exact historical target batch has "
+                        "no ERP correlation."
+                    ),
+                    fallback_retirement=(
+                        "The retired sender remains unable to deliver; the two owner rows "
+                        "prevent Selfcare delivery rollback without an explicit "
+                        "forward-fix operation."
+                    ),
+                ),
+                steward="vendor finance integrations",
+                design_refs=(
+                    "docs/designs/MATERIALS_VENDOR_ERP_CHAIN.md",
+                    "docs/runbooks/PURCHASE_ORDER_ERP_CUTOVER.md",
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                ),
+                test_refs=(
+                    "tests/test_procurement_purchase_order_cutover.py",
+                    (
+                        "tests/architecture/"
+                        "test_procurement_purchase_order_cutover_boundary.py"
                     ),
                 ),
             ),

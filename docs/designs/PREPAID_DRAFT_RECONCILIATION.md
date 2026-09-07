@@ -58,8 +58,10 @@ already absorbed, leaving false partial debt and understating customer credit.
   projection and payment allocation.
 - `financial.prepaid_funding_reconstruction` owns the signed, reviewed opening
   baseline. It remains a funding source, never a Payment.
-- `financial.prepaid_service_renewals` owns direct renewal debit and entitlement
-  evidence when no authoritative draft exists.
+- `financial.prepaid_service_renewals` owns funded renewal coordination when no
+  authoritative draft exists. It creates a deterministic draft through the
+  invoice participant and requires this reconciler's existing settlement
+  participants to make it paid before entitlement is granted.
 - `financial.prepaid_draft_reconciliation` is the only classifier and repair
   coordinator when a prepaid draft already exists. It alone writes opening
   funding consumption and durable reconciliation exceptions.
@@ -166,8 +168,8 @@ historical baseline is unrelated to that exact cash application. Mixed or
 underfunded repairs continue to require the reviewed opening-funding workflow.
 
 An existing prepaid draft has first claim on the service-period document
-boundary. A funding-change consequence checks it before an invoice-less direct
-renewal:
+boundary. A funding-change consequence checks it before creating a new funded
+renewal invoice:
 
 - exact native payment-backed funding equal to or above the full balance:
   issue and fully settle the draft atomically;
@@ -194,7 +196,7 @@ renewal:
 
 When a current funding-change transaction finds the exact duplicate case, the
 same owner stages the void first and reports it separately from a funded draft.
-The caller may then spend the current funding on the now-due invoice-less
+The caller may then spend the current funding on the now-due invoice-backed
 renewal. A settled draft still terminates the path because it funded that
 period; multiple or unproven overlaps remain blocking.
 
@@ -411,7 +413,7 @@ which approved path created it.
 
 ## Rollout
 
-1. Deploy the funding-change draft-first guard.
+1. Deploy the funding-change draft-first guard and funded-renewal invoice path.
 2. Run the full dry-run cohort and retain the reviewed JSON.
 3. Preview exact funded onboarding proformas one invoice/subscription pair at a
    time; adopt one canary and verify that only documentary identity changed.

@@ -56,7 +56,6 @@ from app.models.payment_proof import (
     PaymentProofStatus,
 )
 from app.models.provisioning import ServiceOrder, ServiceOrderStatus
-from app.models.service_extension import ServiceExtensionEntry
 from app.models.subscriber import (
     ChannelType,
     Reseller,
@@ -75,6 +74,9 @@ from app.services import geocoding as geocoding_service
 from app.services import notification as notification_service
 from app.services import subscriber as subscriber_service
 from app.services import subscriber_summary as subscriber_summary_service
+from app.services import (
+    web_billing_service_extensions as web_billing_service_extensions_service,
+)
 from app.services import web_customer_user_access as web_customer_user_access_service
 from app.services.access_resolution import resolve_customer_access
 from app.services.billing_profile import resolve_billing_profiles
@@ -131,6 +133,26 @@ class CustomerDetailNetworkQuery:
     def __post_init__(self) -> None:
         if not 1 <= self.limit <= 50:
             raise ValueError("Customer detail network limit must be between 1 and 50")
+
+
+@dataclass(frozen=True, slots=True)
+class AdminBillingWorkspaceCounts:
+    pending_payment_proofs: int
+    open_credit_notes: int
+    open_credit_amount: Decimal
+    service_extensions: int
+
+
+@dataclass(frozen=True, slots=True)
+class AdminBillingWorkspace:
+    payment_proofs: tuple[PaymentProof, ...]
+    payment_proof_corrections_by_proof: dict[UUID, PaymentProofCorrection]
+    credit_notes: tuple[CreditNote, ...]
+    credit_applications: tuple[CreditNoteApplication, ...]
+    service_extension_history: (
+        web_billing_service_extensions_service.CustomerServiceExtensionHistory
+    )
+    billing_workspace_counts: AdminBillingWorkspaceCounts
 
 
 TERMINAL_TICKET_STATUSES = {
@@ -536,22 +558,31 @@ def _build_common_financials(db: Session, accounts: Sequence[Subscriber]):
 
 
 def _build_admin_billing_workspace(
-    db: Session, account_ids: list[UUID]
-) -> dict[str, object]:
+    db: Session,
+    account_ids: list[UUID],
+    *,
+    include_service_extensions: bool,
+) -> AdminBillingWorkspace:
+    empty_extension_history = (
+        web_billing_service_extensions_service.CustomerServiceExtensionHistory(
+            items=(),
+            total_count=0,
+        )
+    )
     if not account_ids:
-        return {
-            "payment_proofs": [],
-            "payment_proof_corrections_by_proof": {},
-            "credit_notes": [],
-            "credit_applications": [],
-            "service_extensions": [],
-            "billing_workspace_counts": {
-                "pending_payment_proofs": 0,
-                "open_credit_notes": 0,
-                "open_credit_amount": Decimal("0.00"),
-                "service_extensions": 0,
-            },
-        }
+        return AdminBillingWorkspace(
+            payment_proofs=(),
+            payment_proof_corrections_by_proof={},
+            credit_notes=(),
+            credit_applications=(),
+            service_extension_history=empty_extension_history,
+            billing_workspace_counts=AdminBillingWorkspaceCounts(
+                pending_payment_proofs=0,
+                open_credit_notes=0,
+                open_credit_amount=Decimal("0.00"),
+                service_extensions=0,
+            ),
+        )
 
     payment_proofs = (
         db.query(PaymentProof)
@@ -589,13 +620,14 @@ def _build_admin_billing_workspace(
         .limit(10)
         .all()
     )
-    service_extensions = (
-        db.query(ServiceExtensionEntry)
-        .options(selectinload(ServiceExtensionEntry.extension))
-        .filter(ServiceExtensionEntry.subscriber_id.in_(account_ids))
-        .order_by(ServiceExtensionEntry.created_at.desc())
-        .limit(10)
-        .all()
+    service_extension_history = (
+        web_billing_service_extensions_service.build_customer_service_extension_history(
+            db,
+            subscriber_ids=tuple(account_ids),
+            limit=10,
+        )
+        if include_service_extensions
+        else empty_extension_history
     )
 
     open_credit_notes = [
@@ -605,30 +637,33 @@ def _build_admin_billing_workspace(
         and (note.total or Decimal("0.00")) > (note.applied_total or Decimal("0.00"))
     ]
     open_credit_amount = sum(
-        (note.total or Decimal("0.00")) - (note.applied_total or Decimal("0.00"))
-        for note in open_credit_notes
+        (
+            (note.total or Decimal("0.00")) - (note.applied_total or Decimal("0.00"))
+            for note in open_credit_notes
+        ),
+        Decimal("0.00"),
     )
 
-    return {
-        "payment_proofs": payment_proofs,
-        "payment_proof_corrections_by_proof": {
+    return AdminBillingWorkspace(
+        payment_proofs=tuple(payment_proofs),
+        payment_proof_corrections_by_proof={
             correction.duplicate_proof_id: correction
             for correction in payment_proof_corrections
         },
-        "credit_notes": credit_notes,
-        "credit_applications": credit_applications,
-        "service_extensions": service_extensions,
-        "billing_workspace_counts": {
-            "pending_payment_proofs": sum(
+        credit_notes=tuple(credit_notes),
+        credit_applications=tuple(credit_applications),
+        service_extension_history=service_extension_history,
+        billing_workspace_counts=AdminBillingWorkspaceCounts(
+            pending_payment_proofs=sum(
                 1
                 for proof in payment_proofs
                 if proof.status == PaymentProofStatus.submitted
             ),
-            "open_credit_notes": len(open_credit_notes),
-            "open_credit_amount": open_credit_amount,
-            "service_extensions": len(service_extensions),
-        },
-    }
+            open_credit_notes=len(open_credit_notes),
+            open_credit_amount=open_credit_amount,
+            service_extensions=service_extension_history.total_count,
+        ),
+    )
 
 
 def _build_relationship_data(db: Session, account_ids: list[UUID]) -> dict[str, object]:
@@ -1711,6 +1746,7 @@ def build_customer_detail_snapshot(
     customer_id: str,
     *,
     include_conversations: bool = False,
+    include_service_extensions: bool = False,
     network_query: CustomerDetailNetworkQuery | None = None,
 ) -> dict[str, Any]:
     """Build unified customer detail snapshot.
@@ -1797,7 +1833,11 @@ def build_customer_detail_snapshot(
     )
     financials["monthly_recurring"] = monthly_recurring
     relationship_data = _build_relationship_data(db, account_ids)
-    billing_workspace = _build_admin_billing_workspace(db, account_ids)
+    billing_workspace = _build_admin_billing_workspace(
+        db,
+        account_ids,
+        include_service_extensions=include_service_extensions,
+    )
 
     # Address resolution with fallback
     if not addresses:

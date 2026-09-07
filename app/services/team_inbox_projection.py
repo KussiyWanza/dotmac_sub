@@ -2136,6 +2136,35 @@ def build_social_comments_projection(
     )
 
 
+def _effective_open_only(
+    *,
+    search: str | None,
+    open_only: bool,
+    status: str | None,
+    view: str | None,
+) -> bool:
+    """Resolve the lifecycle scope for one canonical Inbox queue query.
+
+    Plain queue loads remain operational and active-only. A non-empty search
+    spans history unless the operator explicitly selected an active-only or
+    single-status lifecycle filter.
+    """
+
+    has_search = bool(str(search or "").strip())
+    return open_only or (not has_search and status is None and view != "all")
+
+
+def _uses_lazy_history_pagination(
+    *,
+    search: str | None,
+    status: str | None,
+    view: str | None,
+) -> bool:
+    """Avoid a full count scan for demand-loaded historical queue queries."""
+
+    return bool(str(search or "").strip()) or view == "all" or status == "resolved"
+
+
 def get_queue_row_projection(
     db: Session,
     *,
@@ -2153,7 +2182,12 @@ def get_queue_row_projection(
         else None
     )
     view = "all" if str(request.view or "").strip().lower() == "all" else None
-    effective_open_only = request.open_only or (status is None and view != "all")
+    effective_open_only = _effective_open_only(
+        search=request.search,
+        open_only=request.open_only,
+        status=status,
+        view=view,
+    )
     channel = (
         request.channel_type
         if request.channel_type in {item.value for item in InboxChannelType}
@@ -2312,10 +2346,12 @@ def build_queue_projection(
         else None
     )
     view = "all" if str(raw_view or "").strip().lower() == "all" else None
-    # Plain Inbox loads are operational work queues, so they default to the
-    # active non-resolved cohort. The explicit All view keeps resolved history
-    # available without letting it re-enter the day-to-day queue.
-    effective_open_only = open_only or (status is None and view != "all")
+    effective_open_only = _effective_open_only(
+        search=search,
+        open_only=open_only,
+        status=status,
+        view=view,
+    )
     channel = (
         raw_channel
         if raw_channel in {item.value for item in InboxChannelType}
@@ -2388,6 +2424,9 @@ def build_queue_projection(
         page=max(1, raw_page),
         per_page=safe_per_page,
     )
+    include_exact_total = request.include_total_count and not (
+        _uses_lazy_history_pagination(search=search, status=status, view=view)
+    )
 
     def fetch(query: ListQuery) -> team_inbox_read.InboxConversationListResult:
         return team_inbox_read.list_conversations(
@@ -2418,11 +2457,18 @@ def build_queue_projection(
             order_dir=query.sort_dir,
             limit=query.per_page,
             offset=query.offset,
-            include_total_count=request.include_total_count,
+            include_total_count=include_exact_total,
         )
 
     result = fetch(requested_query)
-    page_meta = PageMeta.from_query(requested_query, result.count)
+    count_is_exact = include_exact_total or result.count <= (
+        requested_query.offset + len(result.items)
+    )
+    page_meta = PageMeta.from_query(
+        requested_query,
+        result.count,
+        total_is_exact=count_is_exact,
+    )
     list_query = requested_query.with_page(page_meta.page)
     if list_query.page != requested_query.page:
         result = fetch(list_query)

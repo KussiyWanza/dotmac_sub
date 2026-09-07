@@ -1701,8 +1701,7 @@ def my_rate_ticket(
     db: Session = Depends(get_db),
     principal: dict = Depends(require_user_auth),
 ):
-    """Rate the support experience on the caller's own closed ticket
-    (CSAT, 1-5 + optional comment). Re-rating overwrites the previous score."""
+    """Rate the caller's own closed ticket once for the current CSAT cycle."""
     ticket = _owned_ticket(db, _subscriber_id(principal), ticket_id)
     db_session_adapter.release_read_transaction(db)
     return support_service.tickets.set_satisfaction(

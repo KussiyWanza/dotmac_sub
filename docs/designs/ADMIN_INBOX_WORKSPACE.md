@@ -119,7 +119,8 @@ remaining controls are grouped by operator task under Status, Assignment,
 Attention, Routing, Advanced, and Saved views disclosures. A counted shortcut
 is not repeated in a second group: Unreplied and Unassigned exist only in the
 compact shortcut row, while Unread, Snoozed, Muted, Needs attention, and reply
-window state live under Attention. Status and Assignment begin open; less-used
+window state live under Attention. Routing begins open so the Channel and Team
+selectors are directly discoverable when the outer control expands; the other
 groups use progressive disclosure. Collapsing the outer control changes only
 visibility and preserves every URL-owned filter.
 
@@ -154,8 +155,13 @@ the inbox behind it.
 Search remains a server-owned list query. The browser waits 300ms after input,
 updates only the `search` URL parameter, resets pagination, preserves the other
 active filters and selected conversation, and refreshes the authoritative
-sidebar projection. The filter form carries the current search value forward
-when another filter is submitted.
+sidebar projection. Without an explicit lifecycle filter, a non-empty search
+includes active and resolved history. Explicit Active or status choices still
+narrow search results. Historical search is demand-loaded after the debounced
+input and retrieves one bounded page plus next-page evidence. Until the final
+page proves the exact total, the pagination copy says that more results are
+available instead of presenting a provisional count as exact. The filter form
+carries the current search value forward when another filter is submitted.
 
 The desktop sidebar resize handle is an absolutely positioned 12px by 56px
 control attached to the sidebar's right edge. It is available from 640px
@@ -167,7 +173,9 @@ width in local storage. The default remains 320px.
 
 Status, assignment, channel, team, agent, activity-window, unread, and saved-view
 controls continue to submit the canonical projection filters. Channel remains
-the communication method and Team remains staff ownership. A separate Inbox
+the communication method and Team remains staff ownership. Lifecycle,
+assignment/team, and channel selections are composable URL dimensions: choosing
+one preserves the others, including All + My Team + Email. A separate Inbox
 selector is rendered only after the projection exposes a specific receiving
 account or mailbox identifier and real choices; Team must never be relabelled
 as Inbox.
@@ -217,9 +225,10 @@ template catalog, or the manager dashboard. A normal full-page request remains
 the deterministic rebuild path for those projections.
 
 Queue-only refreshes use a distinct typed projection composition. They compute
-only filtered rows, exact pagination, and row display facts; sidebar metrics,
-agent presence, selector options, labels, and saved views are not queried or
-rendered merely to be discarded by the HTMX queue selector.
+only filtered rows, owner-selected exact or lazy pagination evidence, and row
+display facts; sidebar metrics, agent presence, selector options, labels, and
+saved views are not queried or rendered merely to be discarded by the HTMX
+queue selector.
 
 Each queue row displays only projected facts. Contact display identity resolves
 in this order: the linked canonical Party name, the linked legacy Subscriber

@@ -88,6 +88,7 @@ class EventType(enum.Enum):
         "integration.installation.meta_social_configured"
     )
     integration_job_capability_activated = "integration.job.capability_activated"
+    erp_operational_context_retry_deferred = "erp.operational_context.retry_deferred"
     erp_operational_context_watermark_advanced = (
         "erp.operational_context.watermark_advanced"
     )
@@ -275,6 +276,7 @@ class EventType(enum.Enum):
     olt_updated = "olt.updated"
     olt_deleted = "olt.deleted"
     olt_topology_imported = "olt.topology_imported"
+    lldp_observations_reconciled = "lldp.observations_reconciled"
 
     # ONT events (5)
     ont_discovered = "ont.discovered"

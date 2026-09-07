@@ -14,7 +14,7 @@ from app.models.project import (
     ProjectTemplateTaskDependency,
     ProjectType,
 )
-from app.models.subscriber import SubscriberCategory
+from app.models.subscriber import Subscriber, SubscriberCategory
 from app.schemas.project import ProjectCreate, ProjectTaskCreate
 from app.services import web_dispatch_work_orders, web_projects
 from app.services.project_filters import (
@@ -118,6 +118,105 @@ def test_project_list_query_normalizes_sort_filters_and_page_size():
     assert (
         web_projects.build_project_list_query(order_by="priority").sort_by == "priority"
     )
+
+
+class TestProjectCustomerPicker:
+    def test_searches_by_account_and_returns_native_uuid(self, db_session, subscriber):
+        subscriber.first_name = "Typeahead"
+        subscriber.last_name = "Customer"
+        subscriber.email = "project-picker-unique@example.test"
+        subscriber.account_number = "ACC-TYPEAHEAD-420"
+        subscriber.subscriber_number = "SUB-TYPEAHEAD-420"
+        db_session.commit()
+
+        for term in (
+            "Typeahead Customer",
+            "ACC-TYPEAHEAD-420",
+            "project-picker-unique",
+            str(subscriber.id),
+        ):
+            result = web_projects.search_project_customers(
+                db_session,
+                web_projects.ProjectCustomerSearchQuery(term=term, limit=20),
+            )
+
+            assert result.count == 1
+            assert result.items[0].id == subscriber.id
+        assert result.items[0].account_number == "ACC-TYPEAHEAD-420"
+        assert str(subscriber.id) not in result.items[0].label
+        assert result.as_response().items == list(result.items)
+
+    @pytest.mark.parametrize(
+        "query",
+        (
+            web_projects.ProjectCustomerSearchQuery(term="x", limit=20),
+            web_projects.ProjectCustomerSearchQuery(term="valid", limit=21),
+        ),
+    )
+    def test_rejects_unbounded_search_requests(self, db_session, query):
+        with pytest.raises(ProjectProjectionError):
+            web_projects.search_project_customers(db_session, query)
+
+    def test_form_context_resolves_only_selected_customer(self, db_session, subscriber):
+        context = web_projects.build_project_form_context(
+            db_session, form={"subscriber_id": str(subscriber.id)}
+        )
+
+        assert "subscriber_options" not in context
+        assert context["selected_customer"].id == subscriber.id
+
+    def test_malformed_customer_selection_fails_closed(self, db_session):
+        with pytest.raises(ValueError, match="search results"):
+            web_projects.create_project_from_form(
+                db_session,
+                request=None,
+                actor_id=None,
+                name="Invalid customer project",
+                subscriber_id="typed display text",
+            )
+
+    def test_customer_search_excludes_inactive_accounts(self, db_session, subscriber):
+        inactive = Subscriber(
+            first_name="Inactive",
+            last_name="Picker",
+            email="inactive-picker@example.test",
+            account_number="ACC-INACTIVE-PICKER",
+            is_active=False,
+            reseller_id=subscriber.reseller_id,
+        )
+        db_session.add(inactive)
+        db_session.commit()
+
+        result = web_projects.search_project_customers(
+            db_session,
+            web_projects.ProjectCustomerSearchQuery(
+                term="ACC-INACTIVE-PICKER", limit=20
+            ),
+        )
+
+        assert result.items == ()
+
+    def test_customer_search_caps_large_result_set(self, db_session, subscriber):
+        db_session.add_all(
+            [
+                Subscriber(
+                    first_name="BulkPicker",
+                    last_name=f"Customer {index:02d}",
+                    email=f"bulk-picker-{index:02d}@example.test",
+                    reseller_id=subscriber.reseller_id,
+                )
+                for index in range(35)
+            ]
+        )
+        db_session.commit()
+
+        result = web_projects.search_project_customers(
+            db_session,
+            web_projects.ProjectCustomerSearchQuery(term="BulkPicker", limit=20),
+        )
+
+        assert result.count == 20
+        assert len(result.items) == 20
 
 
 class TestListContext:
@@ -311,6 +410,20 @@ class TestFormHandlers:
                 value="nope",
             )
         assert exc_info.value.code == "ui.project_list_projection.invalid_filter"
+
+    def test_edit_can_clear_selected_customer(self, db_session, subscriber):
+        project = _create_project(db_session, subscriber)
+
+        updated = web_projects.update_project_from_form(
+            db_session,
+            request=None,
+            project_id=str(project.id),
+            actor_id=None,
+            name=project.name,
+            subscriber_id="",
+        )
+
+        assert updated.subscriber_id is None
 
     def test_comment_edit_requires_author(self, db_session, subscriber):
         project = _create_project(db_session, subscriber)

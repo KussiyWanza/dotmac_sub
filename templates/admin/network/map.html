@@ -1334,7 +1334,9 @@
     // Fit bounds
     function fitAllBounds() {
         const visibleBounds = [];
-        allFeatures.filter(item => !item.filteredOut).forEach(item => {
+        allFeatures.filter(item => (
+            !item.filteredOut && map.hasLayer(layers[item.layerName])
+        )).forEach(item => {
             if (item.marker) visibleBounds.push(item.marker.getLatLng());
             else if (item.polyline) visibleBounds.push(...item.polyline.getLatLngs());
         });
@@ -1364,6 +1366,7 @@
         'layer-distribution': 'distribution',
         'layer-drop': 'drop'
     };
+    let layersSuppressed = true;
 
     Object.entries(layerToggles).forEach(([checkboxId, layerName]) => {
         const checkbox = document.getElementById(checkboxId);
@@ -1371,6 +1374,8 @@
             checkbox.addEventListener('change', function() {
                 if (this.checked) map.addLayer(layers[layerName]);
                 else map.removeLayer(layers[layerName]);
+                layersSuppressed = Object.keys(layerToggles)
+                    .every(id => !document.getElementById(id).checked);
                 syncLayerBulkButtons();
             });
         }
@@ -1386,6 +1391,7 @@
         layersNone.setAttribute('aria-pressed', String(noneChecked));
     }
     function setAllLayers(enabled) {
+        layersSuppressed = !enabled;
         Object.entries(layerToggles).forEach(([checkboxId, layerName]) => {
             const checkbox = document.getElementById(checkboxId);
             checkbox.checked = enabled;
@@ -1393,6 +1399,7 @@
             else map.removeLayer(layers[layerName]);
         });
         syncLayerBulkButtons();
+        if (!enabled) applyMapFilters();
     }
     layersAll.addEventListener('click', () => setAllLayers(true));
     layersNone.addEventListener('click', () => setAllLayers(false));
@@ -1430,7 +1437,9 @@
             config = directFilters.customer;
             key = `${properties.connectivity?.layer || 'not_connected'}|${properties.customer_status || 'unknown'}`;
         }
-        return !config || !config.active || config.selected.size === 0 || config.selected.has(key);
+        return !config || !config.active || (
+            config.selected.size > 0 && config.selected.has(key)
+        );
     }
 
     function featureMatchesFilters(properties) {
@@ -1452,7 +1461,57 @@
         return directFilterMatches(properties);
     }
 
+    function layersRequiredByFilters() {
+        const required = new Set();
+        const value = id => document.getElementById(id).value;
+
+        if (value('filter-customer-status')) {
+            required.add('customersConnected');
+            required.add('customersNotConnected');
+        }
+        if (value('filter-device-status') || value('filter-device-type')) {
+            required.add('networkDevices');
+        }
+        if (value('filter-ont-status') || value('filter-signal')) {
+            required.add('onts');
+        }
+        if (value('filter-lifecycle') || value('filter-inspection')) {
+            required.add('supportStructures');
+        }
+        if (value('filter-cable')) {
+            required.add(value('filter-cable'));
+        }
+
+        if (directFilters.device.active && directFilters.device.selected.size > 0) {
+            required.add('networkDevices');
+        }
+        if (directFilters.ont.active && directFilters.ont.selected.size > 0) {
+            required.add('onts');
+        }
+        if (directFilters.customer.active && directFilters.customer.selected.size > 0) {
+            directFilters.customer.selected.forEach(key => {
+                if (key.startsWith('connected|')) required.add('customersConnected');
+                if (key.startsWith('not_connected|')) required.add('customersNotConnected');
+            });
+        }
+        return required;
+    }
+
+    function applyLayerFilterBypass(requiredLayers) {
+        if (!layersSuppressed) return;
+
+        Object.entries(layerToggles).forEach(([checkboxId, layerName]) => {
+            const enabled = requiredLayers.has(layerName);
+            document.getElementById(checkboxId).checked = enabled;
+            if (enabled) map.addLayer(layers[layerName]);
+            else map.removeLayer(layers[layerName]);
+        });
+        syncLayerBulkButtons();
+    }
+
     function applyMapFilters() {
+        const requiredLayers = layersRequiredByFilters();
+        applyLayerFilterBypass(requiredLayers);
         let visible = 0;
         allFeatures.forEach(item => {
             const shown = featureMatchesFilters(item.feature.properties);
@@ -1460,7 +1519,10 @@
             const group = layers[item.layerName];
             item.filteredOut = !shown;
             if (!asset || !group) return;
-            if (shown) { if (!group.hasLayer(asset)) group.addLayer(asset); visible += 1; }
+            if (shown) {
+                if (!group.hasLayer(asset)) group.addLayer(asset);
+                if (map.hasLayer(group)) visible += 1;
+            }
             else if (group.hasLayer(asset)) group.removeLayer(asset);
         });
         const count = document.getElementById('map-filter-count');

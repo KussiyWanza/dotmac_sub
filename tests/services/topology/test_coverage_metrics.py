@@ -371,8 +371,30 @@ def test_export_reports_failure_and_retries(db_session, fake_cache, monkeypatch)
 # --- Wrapper stash guards -----------------------------------------------------
 
 
-def test_lldp_wrapper_stashes_stats(monkeypatch):
+def test_lldp_wrapper_stashes_stats(monkeypatch: pytest.MonkeyPatch) -> None:
+    from sqlalchemy.orm import Session
+
+    from app.services.topology.lldp_contracts import (
+        LldpPoll,
+        LldpReadQuery,
+        LldpSnapshot,
+        LldpStats,
+        ReconcileLldpCommand,
+    )
     from app.tasks import topology_lldp
+    from tests.test_lldp_transaction_span import snapshot
+
+    source = snapshot()
+
+    def read(db: Session, *, query: LldpReadQuery) -> LldpSnapshot:
+        return source
+
+    def collect(*, snapshot: LldpSnapshot) -> LldpPoll:
+        return LldpPoll(snapshot, (), frozenset(), LldpStats(neighbors_seen=5))
+
+    def persist(db: Session, *, command: ReconcileLldpCommand) -> LldpStats:
+        assert command.poll.stats.neighbors_seen == 5
+        return LldpStats(created=2, neighbors_seen=5)
 
     stored = {}
     monkeypatch.setattr(
@@ -386,13 +408,18 @@ def test_lldp_wrapper_stashes_stats(monkeypatch):
     )
     monkeypatch.setattr(
         "app.services.topology.lldp_poller.poll_all",
-        lambda db: {"created": 2, "seen": 5},
+        collect,
+    )
+    monkeypatch.setattr("app.services.topology.lldp_poller.read_snapshot", read)
+    monkeypatch.setattr(
+        "app.services.topology.lldp_poller.reconcile_poll",
+        persist,
     )
 
     result = topology_lldp.run_lldp_topology_poll()
 
-    assert result == {"created": 2, "seen": 5}
-    assert stored == {"lldp_poll": {"created": 2, "seen": 5}}
+    assert result == LldpStats(created=2, neighbors_seen=5).to_dict()
+    assert stored == {"lldp_poll": result}
 
 
 def test_uisp_wrapper_stashes_stats(monkeypatch):

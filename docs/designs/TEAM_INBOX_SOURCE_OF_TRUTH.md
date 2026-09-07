@@ -80,7 +80,11 @@ outbound-intent owners.
 The Inbox default queue is the operational active cohort and excludes resolved
 conversations. The explicit **All** view (`view=all`) includes every lifecycle
 status, including resolved conversations, for history review. Explicit status
-filters still narrow the queue to one status.
+filters still narrow the queue to one status. A non-empty search without an
+explicit lifecycle filter searches active and resolved history; `open_only`
+and explicit status filters remain authoritative when present. Historical
+search, All, and Resolved cohorts fetch one bounded page plus a next-page probe;
+they do not scan the full cohort merely to render an exact total.
 
 The stale-conversation policy may resolve an unassigned conversation only when
 its latest non-internal message is a human agent reply older than the configured
@@ -471,9 +475,13 @@ stale. Realtime has no replay authority.
   Unreplied, Needs Attention, AI handling, ticket handoff, activity window,
   contact resolution, priority, mute, snooze, open, unassigned, and unread. The
   AI handling count and its drill-down use the same unresolved queue cohort.
-- Pagination uses the projection owner's exact filtered total and compact page
-  sequence. Conversation drill-down URLs preserve the active filters, sort,
-  page size, and page number. A confirmed HTMX reply uses its exact message UUID
+  Lifecycle, assignment/team, and channel are independent filter dimensions:
+  changing one preserves the others, so combinations such as All + My Team +
+  Email resolve as one intersected owner query.
+- Pagination uses an exact filtered total for active queues and bounded
+  next-page evidence for demand-loaded historical cohorts. Conversation
+  drill-down URLs preserve the active filters, sort, page size, and page number.
+  A confirmed HTMX reply uses its exact message UUID
   to fetch one typed message fragment and one filter-aware queue-row fragment;
   it does not rebuild the complete timeline or queue. Non-HTMX mutation
   fallbacks return to the same queue location rather than resetting to page one.

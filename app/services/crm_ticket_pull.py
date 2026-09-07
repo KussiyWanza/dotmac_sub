@@ -503,6 +503,19 @@ def sync_ticket(
         and previous_status != TicketStatus.closed.value
     ):
         try:
+            from app.services import support_csat
+
+            support_csat.ensure_ticket_request(
+                db,
+                local_ticket,
+                force_new_cycle=True,
+                resolution_at=local_ticket.closed_at or local_ticket.resolved_at,
+            )
+        except Exception as exc:  # noqa: BLE001 - CRM observation must keep syncing
+            logger.warning(
+                "ticket_closed_csat_request_failed ticket=%s: %s", crm_ticket_id, exc
+            )
+        try:
             from app.services import push as push_service
 
             push_service.send_push(

@@ -281,6 +281,13 @@ TASK_RELIABILITY_CONTRACTS: dict[str, TaskReliabilityContract] = {
         STATUS,
         "Watermarked Sub project/ticket/work-order context feed to ERP; ERP upserts by source UUID.",
     ),
+    "app.tasks.dotmac_erp_outbox.reconcile_erp_staff_access": _c(
+        "integration",
+        SWEEP,
+        IDEMP,
+        HEALTH,
+        "Daily typed ERP snapshot repair; monotonic source versions make reruns safe.",
+    ),
     "app.tasks.enforcement.cleanup_subscription_block_sessions": _c(
         "enforcement", SWEEP, IDEMP, HEALTH
     ),

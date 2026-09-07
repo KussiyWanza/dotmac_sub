@@ -32,6 +32,7 @@ DOCUMENT_CHANGE_NOTIFICATION_EVENTS: tuple[str, ...] = (
     "support_ticket_status_changed",
     "support_ticket_updated",
     "support_ticket_resolution_confirmation",
+    "support_csat_request",
     "work_order_en_route",
     "work_order_arrived",
     "work_order_complete",

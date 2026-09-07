@@ -51,6 +51,11 @@ from app.models.network import (
     IPVersion,
     SubscriberAdditionalRoute,
 )
+from app.models.service_extension import (
+    ServiceExtension,
+    ServiceExtensionScope,
+    ServiceExtensionStatus,
+)
 from app.models.subscriber import (
     Address,
     Subscriber,
@@ -244,6 +249,40 @@ def test_customer_detail_billing_overview_has_responsive_amount_contract() -> No
     assert billing_overview.count("min-w-0") >= 5
     assert billing_overview.count("text-[clamp(1.25rem,2.2vw,1.8rem)]") == 5
     assert billing_overview.count("break-words") == 5
+
+
+def test_customer_detail_billing_workspace_includes_pending_extension_request(
+    db_session,
+    subscriber,
+):
+    subscriber.user_type = UserType.customer
+    extension = ServiceExtension(
+        reason="Pending customer compensation",
+        window_start=datetime(2026, 8, 1, 8, 0, tzinfo=UTC),
+        window_end=datetime(2026, 8, 1, 12, 0, tzinfo=UTC),
+        days=2,
+        scope_type=ServiceExtensionScope.subscribers,
+        scope_subscriber_ids=[str(subscriber.id)],
+        status=ServiceExtensionStatus.pending,
+        created_at=datetime(2026, 8, 2, 9, 0, tzinfo=UTC),
+    )
+    db_session.add(extension)
+    db_session.commit()
+
+    context = build_customer_detail_snapshot(
+        db_session,
+        str(subscriber.id),
+        include_service_extensions=True,
+    )
+
+    workspace = context["billing_workspace"]
+    assert workspace.billing_workspace_counts.service_extensions == 1
+    assert workspace.service_extension_history.total_count == 1
+    assert workspace.service_extension_history.items[0].id == extension.id
+    assert (
+        workspace.service_extension_history.items[0].status_presentation.label
+        == "Pending"
+    )
 
 
 def test_customer_billing_ledger_tab_is_permission_gated_and_lazy() -> None:

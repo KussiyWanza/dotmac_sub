@@ -10,6 +10,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.services.integrations.diagnostics import OperationDiagnostic
 from app.services.integrations.manifest import ConnectorManifest
 
 
@@ -61,6 +62,7 @@ class OperationResult(BaseModel):
     operation_id: UUID
     status: OperationStatus
     output: dict[str, Any] = Field(default_factory=dict)
+    diagnostic: OperationDiagnostic | None = None
     external_receipt: dict[str, Any] = Field(default_factory=dict)
     error_code: str | None = Field(default=None, max_length=120)
     retry_after_seconds: int | None = Field(default=None, ge=1, le=86_400)

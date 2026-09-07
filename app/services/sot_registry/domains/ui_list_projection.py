@@ -1537,8 +1537,10 @@ DOMAIN = DomainSOT(
                 "admin project and task detail field-work composition",
                 "admin project-task work-order creation action projection",
                 "admin project detail customer-account navigation",
+                "admin project-form customer picker projection",
             ),
             depends_on=(
+                "auth.permission_gate",
                 "ui.list_contracts",
                 "customer.accounts",
                 "operations.project_lifecycle",
@@ -1561,7 +1563,11 @@ DOMAIN = DomainSOT(
                 "operations:dispatch:read and creation separately requires "
                 "operations:dispatch:write. The project detail projection "
                 "supplies the canonical person or business customer-account URL; "
-                "the template does not infer account type."
+                "the template does not infer account type. The project-form "
+                "customer picker accepts a bounded typed search request, reads "
+                "active canonical customer accounts, and returns the exact native "
+                "Subscriber UUID used by the project command. It never preloads "
+                "the customer table or treats the display label as identity."
             ),
             contract=ServiceContract(
                 concerns=(
@@ -1616,6 +1622,15 @@ DOMAIN = DomainSOT(
                         role=OwnerRole.RESOLVER,
                         input_names=("canonical customer account identity",),
                     ),
+                    ConcernContract(
+                        name="admin project-form customer picker projection",
+                        role=OwnerRole.RESOLVER,
+                        input_names=(
+                            "project authoring customer search request",
+                            "canonical customer account identity",
+                            "authorized project authoring access",
+                        ),
+                    ),
                 ),
                 authoritative_inputs=(
                     AuthorityInput(
@@ -1644,9 +1659,26 @@ DOMAIN = DomainSOT(
                         owner="customer.accounts",
                         kind=AuthorityKind.AUTHORITATIVE_RECORD,
                         source=(
-                            "the exact native Subscriber identifier and category "
-                            "bound to the project"
+                            "active native Subscriber identifiers, person/business "
+                            "names, email, account number, and subscriber number; "
+                            "detail resolution may retain an already-bound inactive "
+                            "Subscriber so it can be reviewed or cleared"
                         ),
+                    ),
+                    AuthorityInput(
+                        name="project authoring customer search request",
+                        owner="ui.project_list_projection",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "typed ProjectCustomerSearchQuery with a trimmed 2-120 "
+                            "character term and a bounded 1-20 result limit"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="authorized project authoring access",
+                        owner="auth.permission_gate",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source="authenticated project:create or project:update permission",
                     ),
                     AuthorityInput(
                         name="native linked field-work facts",
@@ -1671,8 +1703,8 @@ DOMAIN = DomainSOT(
                     mode=TransactionMode.READ_ONLY,
                     boundary=(
                         "Typed project lists, bulk task field-work composition, "
-                        "and detail projections execute without committing or "
-                        "mutating ORM state."
+                        "detail projections, and bounded project-form customer "
+                        "searches execute without committing or mutating ORM state."
                     ),
                     locking="No locks; stable ordering includes native Project UUID as the final tie-breaker.",
                     idempotency="Equivalent query and visibility scope return the same page for the same authoritative snapshot.",
@@ -1689,6 +1721,7 @@ DOMAIN = DomainSOT(
                     fail_closed_on=(
                         "unknown filter field",
                         "unknown sort field",
+                        "malformed or unbounded customer search request",
                         "missing permission scope",
                     ),
                 ),
@@ -1698,11 +1731,11 @@ DOMAIN = DomainSOT(
                     old_owner="route/template-local project list decisions",
                     verification=(
                         "typed query contract, API/admin parity, bulk task "
-                        "work-order projection, permission rendering, and template "
-                        "projection architecture tests"
+                        "work-order projection, project customer typeahead, permission "
+                        "rendering, and template projection architecture tests"
                     ),
-                    cutover_gate="all list routes delegate typed filter, sort, pagination, status, permission, and eligibility inputs",
-                    fallback_retirement="route and template list-policy inference removed",
+                    cutover_gate="all list routes delegate typed filter, sort, pagination, status, permission, and eligibility inputs; project forms consume the bounded customer picker projection",
+                    fallback_retirement="route and template list-policy inference removed; project forms no longer preload customer options",
                 ),
                 steward="service delivery UI",
                 design_refs=(

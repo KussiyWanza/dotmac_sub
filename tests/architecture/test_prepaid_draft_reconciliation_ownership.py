@@ -63,7 +63,7 @@ def test_prepaid_draft_reconciliation_has_one_contracted_owner():
     assert opening_settlement.canonical_writer == service.name
 
 
-def test_funding_change_checks_draft_before_invoice_less_renewal():
+def test_funding_change_checks_existing_draft_before_new_funded_invoice():
     source = inspect.getsource(
         prepaid_service_renewals.apply_due_prepaid_service_after_funding_change
     )
@@ -74,6 +74,16 @@ def test_funding_change_checks_draft_before_invoice_less_renewal():
     assert "draft_invoice_pending" in source
     assert "draft_result.drafts_voided" in source
     assert "draft_result.drafts_found and not duplicate_drafts_voided" in source
+
+
+def test_funded_prepaid_renewal_uses_invoice_and_credit_participants_only():
+    source = inspect.getsource(prepaid_service_renewals.confirm_prepaid_service_renewal)
+
+    assert "Invoices.stage_system_invoice_for_owner(" in source
+    assert "InvoiceLines.stage_system_line_for_owner(" in source
+    assert "stage_prepaid_draft_after_funding_change(" in source
+    assert "stage_system_account_adjustment(" not in source
+    assert "ensure_prepaid_entitlement_for_wallet_debit(" not in source
 
 
 def test_duplicate_draft_transition_stays_under_reconciliation_owner():

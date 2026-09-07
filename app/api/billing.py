@@ -11,6 +11,7 @@ from app.api.webhook_observation import webhook_observation
 from app.db import finish_read_response, get_db
 from app.models.audit import AuditActorType
 from app.models.billing import (
+    InvoiceStatus,
     PaymentProviderEventStatus,
     PaymentSettlementOrigin,
     PaymentStatus,
@@ -78,6 +79,7 @@ from app.schemas.billing import (
     CreditNoteUpdate,
     CreditNoteVoidPreviewRead,
     CreditNoteVoidRequest,
+    InvoiceAccountingSyncRead,
     InvoiceBulkActionResponse,
     InvoiceBulkVoidRequest,
     InvoiceBulkWriteOffRequest,
@@ -154,6 +156,7 @@ from app.services.billing import adjustments as account_adjustment_service
 from app.services.customer_context import require_customer_account_id
 from app.services.db_session_adapter import db_session_adapter
 from app.services.domain_errors import DomainError
+from app.services.dotmac_erp import invoice_sync_projection
 from app.services.owner_commands import CommandContext
 from app.services.payment_provider_events import (
     ADMINISTRATIVE_INGEST_SCOPE,
@@ -244,6 +247,44 @@ def sync_invoices(
             updated_since=updated_since,
             limit=limit,
             offset=offset,
+        ),
+    )
+
+
+@router.get(
+    "/invoices/accounting-sync/v2",
+    response_model=ListResponse[InvoiceAccountingSyncRead],
+    tags=["invoices"],
+    dependencies=[Depends(require_permission("billing:invoice:read"))],
+)
+def sync_invoices_for_accounting_v2(
+    invoice_id: UUID | None = None,
+    account_id: UUID | None = None,
+    status: InvoiceStatus | None = None,
+    is_active: bool | None = None,
+    updated_since: datetime | None = Query(
+        default=None,
+        description="Inclusive invoice updated_at watermark for ERP accounting sync.",
+    ),
+    limit: int = Query(default=500, ge=1, le=SYNC_FEED_MAX_PAGE_SIZE),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+):
+    """Return versioned invoice accounting facts and blocking issue codes."""
+
+    return finish_read_response(
+        db,
+        invoice_sync_projection.list_invoice_accounting_sync(
+            db,
+            invoice_sync_projection.InvoiceAccountingSyncQuery(
+                invoice_id=invoice_id,
+                account_id=account_id,
+                status=status,
+                is_active=is_active,
+                updated_since=updated_since,
+                limit=limit,
+                offset=offset,
+            ),
         ),
     )
 

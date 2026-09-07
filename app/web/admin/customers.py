@@ -855,11 +855,18 @@ def person_detail(
     show_conversations = bool(request_auth) and has_permission(
         request_auth, db, "support:ticket:read"
     )
+    show_service_extensions = bool(request_auth) and has_permission(
+        request_auth, db, "billing:extension:read"
+    )
+    can_create_service_extension = bool(request_auth) and has_permission(
+        request_auth, db, "billing:extension:create"
+    )
     try:
         detail_data = web_customer_details_service.build_customer_detail_snapshot(
             db=db,
             customer_id=customer_id,
             include_conversations=show_conversations,
+            include_service_extensions=show_service_extensions,
             network_query=web_customer_details_service.CustomerDetailNetworkQuery(
                 include=panel == "network",
             ),
@@ -941,6 +948,8 @@ def person_detail(
             "current_user": current_user,
             "location_capture_enabled": location_capture_enabled,
             "can_unsuspend_account": can_unsuspend_account,
+            "can_read_service_extensions": show_service_extensions,
+            "can_create_service_extension": can_create_service_extension,
             "party_binding_repair": party_binding_repair,
             "sidebar_stats": sidebar_stats,
         },

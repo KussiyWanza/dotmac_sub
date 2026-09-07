@@ -1538,16 +1538,18 @@ class TestPaymentCRUD:
             .filter(ServiceEntitlement.subscription_id == subscription.id)
             .one()
         )
-        debit = db_session.get(LedgerEntry, entitlement.source_ledger_entry_id)
-        assert debit is not None
+        assert entitlement.source_ledger_entry_id is None
+        assert entitlement.source_invoice_id is not None
+        assert entitlement.source_invoice_line_id is not None
+        invoice = db_session.get(Invoice, entitlement.source_invoice_id)
+        assert invoice is not None
+        assert invoice.status is InvoiceStatus.paid
+        assert invoice.balance_due == Decimal("0.00")
         assert credit.entry_type == LedgerEntryType.credit
         assert credit.amount == Decimal("37625.00")
-        assert debit.entry_type == LedgerEntryType.debit
-        assert debit.source == LedgerSource.adjustment
-        assert debit.payment_id is None
-        assert debit.amount == Decimal("37625.00")
         application = billing_service.payments.application_summary(db_session, payment)
-        assert application.prepaid_amount_applied == Decimal("37625.00")
+        assert application.invoice_amount_applied == Decimal("37625.00")
+        assert application.prepaid_amount_applied == Decimal("0.00")
         db_session.refresh(subscription)
         assert subscription.next_billing_at == datetime(2026, 8, 1)
 
@@ -1679,12 +1681,13 @@ class TestPaymentCRUD:
             .filter(ServiceEntitlement.subscription_id == subscription.id)
             .one()
         )
-        debit = db_session.get(LedgerEntry, entitlement.source_ledger_entry_id)
-        assert debit is not None
-        assert debit.amount == Decimal("37625.00")
-        assert debit.entry_type == LedgerEntryType.debit
-        assert debit.source == LedgerSource.adjustment
-        assert debit.payment_id is None
+        assert entitlement.source_ledger_entry_id is None
+        assert entitlement.source_invoice_id is not None
+        assert entitlement.source_invoice_line_id is not None
+        invoice = db_session.get(Invoice, entitlement.source_invoice_id)
+        assert invoice is not None
+        assert invoice.status is InvoiceStatus.paid
+        assert invoice.balance_due == Decimal("0.00")
         db_session.refresh(subscription)
         assert subscription.next_billing_at == period_end.replace(tzinfo=None)
 

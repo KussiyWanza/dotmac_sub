@@ -73,7 +73,10 @@ Use the queue shortcuts and filters to find:
 
 The **All** status view includes every conversation status, including resolved
 history. Use the **Active** shortcut for operational work that is not resolved,
-or choose a specific status to narrow the queue.
+or choose a specific status to narrow the queue. Status, assignment/team, and
+channel filters combine instead of replacing one another. For example, choose
+**All**, **My Team**, and **Email** to review all email history routed to your
+teams.
 
 ### 3. Open and review the conversation
 
@@ -160,6 +163,12 @@ The queue supports filters for:
 - Conversations with or without a linked ticket
 - Activity date range
 - Sort direction and pagination
+
+A search with no explicit lifecycle filter includes both active and resolved
+conversations. Select **Active** or a specific status when the search should be
+narrower. Search preserves the other selected filters, including channel and
+team. Historical results load one page at a time; use **Next** to continue
+without making the Inbox load every older conversation up front.
 
 Advanced team conditions can combine AND/OR rules. Invalid advanced filters are
 rejected rather than interpreted loosely.

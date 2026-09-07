@@ -27,7 +27,6 @@ from fastapi.responses import (
     Response,
     StreamingResponse,
 )
-from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -81,10 +80,10 @@ from app.services.owner_commands import CommandContext
 from app.services.sales import lead_intake
 from app.services.workqueue import principal_from_auth
 from app.services.workqueue.scope import WorkqueuePermissionError, get_workqueue_scope
+from app.web.templates import templates
 
 router = APIRouter(prefix="/inbox", tags=["web-admin-inbox"])
 settings_router = APIRouter(prefix="/crm/inbox", tags=["web-admin-inbox"])
-templates = Jinja2Templates(directory="templates")
 logger = logging.getLogger(__name__)
 INBOX_HTML_RESPONSE_HEADERS: dict[str, str] = {
     "Cache-Control": "private, no-store, no-cache, must-revalidate",
@@ -355,8 +354,9 @@ def team_inbox_queue(
                     if is_sidebar_request
                     else team_inbox_projection.InboxQueueComposition.full_workspace
                 ),
-                # Numbered pagination requires exact filtered bounds from the
-                # projection owner, including a truthful final-page link.
+                # Ask the projection owner for pagination evidence. It keeps
+                # active queues exact and may use bounded next-page evidence
+                # for demand-loaded historical cohorts.
                 include_total_count=True,
             ),
         )

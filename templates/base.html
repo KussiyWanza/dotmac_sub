@@ -436,17 +436,10 @@
     <script src="/static/js/vendor/alpine-focus.min.js"></script>
     <script src="/static/js/vendor/alpine-collapse.min.js"></script>
     <script src="/static/js/vendor/alpine.min.js"></script>
-    <script src="/static/js/typeahead.js?v=20260616a"></script>
+    <script src="/static/js/typeahead.js?v=20260905a"></script>
 
-    <!-- Initialize Operation Tracker for real-time notifications -->
+    <!-- Initialize Operation Tracker lazily for queued operations -->
     <script>
-        // Auto-initialize when user is logged in (session cookie present)
-        document.addEventListener('DOMContentLoaded', function() {
-            // Only initialize on admin/portal pages where user is authenticated
-            if (document.cookie.includes('session_token=') && window.initOperationTracker) {
-                window.initOperationTracker();
-            }
-        });
 
         // Auto-track operations from HTMX responses (operationQueued trigger)
         document.addEventListener('htmx:afterRequest', function(evt) {
@@ -457,9 +450,10 @@
             try {
                 const data = JSON.parse(trigger);
                 if (data.operationQueued && data.operationQueued.operation_id) {
+                    const tracker = window.initOperationTracker ? window.initOperationTracker() : window.operationTracker;
                     // Track via global OperationTracker
-                    if (window.operationTracker) {
-                        window.operationTracker.track(data.operationQueued.operation_id, {
+                    if (tracker) {
+                        tracker.track(data.operationQueued.operation_id, {
                             showToasts: false  // HTMX already shows the initial toast
                         });
                     }

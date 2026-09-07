@@ -29,7 +29,6 @@ from sqlalchemy.orm import Session
 from app.models.billing import (
     Invoice,
     InvoiceStatus,
-    LedgerCategory,
     LedgerEntry,
     LedgerEntryType,
     LedgerSource,
@@ -292,8 +291,8 @@ class TestPrepaidTopupRenewalRowShapes:
         application = Payments.application_summary(db_session, payment)
         assert application.amount_received == Decimal("1500.00")
         assert application.amount_credited == Decimal("1500.00")
-        assert application.invoice_amount_applied == Decimal("0.00")
-        assert application.prepaid_amount_applied == Decimal("1000.00")
+        assert application.invoice_amount_applied == Decimal("1000.00")
+        assert application.prepaid_amount_applied == Decimal("0.00")
         assert application.unallocated_credit == Decimal("500.00")
 
         entitlement = db_session.query(ServiceEntitlement).one()
@@ -306,13 +305,17 @@ class TestPrepaidTopupRenewalRowShapes:
             .one()
         )
         assert outcome.payload["trigger_payment_id"] == str(payment.id)
-        debit = db_session.get(LedgerEntry, entitlement.source_ledger_entry_id)
-        assert debit.entry_type == LedgerEntryType.debit
-        assert debit.source == LedgerSource.adjustment
-        assert debit.category == LedgerCategory.internet_service
-        assert debit.invoice_id is None
-        assert debit.payment_id is None
-        assert debit.amount == Decimal("1000.00")
+        assert entitlement.source_ledger_entry_id is None
+        assert entitlement.source_invoice_id is not None
+        assert entitlement.source_invoice_line_id is not None
+        invoice = db_session.get(Invoice, entitlement.source_invoice_id)
+        assert invoice is not None
+        allocation = (
+            db_session.query(PaymentAllocation).filter_by(invoice_id=invoice.id).one()
+        )
+        assert invoice.status is InvoiceStatus.paid
+        assert invoice.balance_due == Decimal("0.00")
+        assert allocation.amount == Decimal("1000.00")
 
         # Wallet invariant: 1500 top-up credit minus the 1000 renewal debit.
         assert get_account_credit_balance(db_session, subscriber.id) == Decimal(

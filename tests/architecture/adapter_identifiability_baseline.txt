@@ -25,7 +25,7 @@ app/services/web_consolidated_billing.py 4
 app/services/web_control_plane.py 15
 app/services/web_customer_auth.py 5
 app/services/web_customer_availability.py 1
-app/services/web_customer_details.py 36
+app/services/web_customer_details.py 35
 app/services/web_customer_user_access.py 6
 app/services/web_fup.py 2
 app/services/web_integration_syncs.py 9

@@ -82,6 +82,10 @@ class SyncFlowOwner(enum.Enum):
     sub = "sub"
 
 
+# Explicit handoff commands must start from the seeded/pre-cutover owner.
+PRE_CUTOVER_SYNC_FLOW_OWNER: str = SyncFlowOwner.crm.value
+
+
 # Terminal statuses never re-delivered.
 TERMINAL_SYNC_STATUSES = frozenset(
     {
@@ -143,7 +147,7 @@ class SyncFlowOwnership(Base):
     )
     flow: Mapped[str] = mapped_column(String(40), nullable=False)
     owner: Mapped[str] = mapped_column(
-        String(10), nullable=False, default=SyncFlowOwner.crm.value
+        String(10), nullable=False, default=PRE_CUTOVER_SYNC_FLOW_OWNER
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now, onupdate=_now
@@ -175,6 +179,6 @@ def get_flow_ownership(db) -> dict[str, str]:
     """
     rows = {row.flow: row.owner for row in db.query(SyncFlowOwnership).all()}
     return {
-        flow.value: rows.get(flow.value, SyncFlowOwner.crm.value)
+        flow.value: rows.get(flow.value, PRE_CUTOVER_SYNC_FLOW_OWNER)
         for flow in FieldErpSyncFlow
     }

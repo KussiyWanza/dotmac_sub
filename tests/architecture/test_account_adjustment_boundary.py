@@ -109,7 +109,6 @@ def test_only_approved_coordinators_use_nested_adjustment_staging() -> None:
     assert direct_callers == {"app/services/customer_portal_flow_addons.py"}
     assert system_callers == {
         "app/services/prepaid_plan_changes.py",
-        "app/services/prepaid_service_renewals.py",
     }
 
 

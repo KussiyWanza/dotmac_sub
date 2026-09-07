@@ -21,6 +21,7 @@ from uuid import UUID
 import redis.asyncio as redis
 from routeros_api import RouterOsApiPool
 
+from app.config import settings
 from app.models.catalog import (
     CatalogOffer,
     NasDevice,
@@ -96,9 +97,7 @@ POLLING_ENABLED = os.getenv("BANDWIDTH_POLLING_ENABLED", "true").lower() in (
 # no operator is watching. RADIUS interim-update sampling provides the
 # always-on baseline for historical charts (see usage.py).
 POLL_MODE = os.getenv("BANDWIDTH_POLL_MODE", "always").strip().lower()
-ACTIVE_VIEWERS_KEY = os.getenv(
-    "BANDWIDTH_ACTIVE_VIEWERS_KEY", "active:bandwidth:viewers"
-)
+ACTIVE_VIEWERS_KEY = settings.bandwidth_active_viewers_key
 # A live viewer's ZADD score is the unix timestamp of the most recent SSE tick.
 # Memberships older than this window are treated as gone.
 ACTIVE_VIEWER_TTL_SECONDS = int(os.getenv("BANDWIDTH_ACTIVE_VIEWER_TTL_SECONDS", "15"))

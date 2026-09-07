@@ -44,7 +44,7 @@ account-scoped; it is never coerced to zero, paid, funded, or safe-to-suspend.
 | Customer-facing financial position | `customer.financial_position` | Resolves document/event facts without becoming their writer. |
 | Current prepaid coverage | `financial.prepaid_service_coverage` | Classifies exact evidence; writes no money, dates, or access state. |
 | Service-extension lifecycle | `financial.service_extensions` | Owns create/apply/cancel/reverse, immutable grant and linked reversal evidence, and extension-caused billing-anchor changes; requests restoration from the access lifecycle owner. |
-| Prepaid renewal charge and execution | `financial.prepaid_service_renewals` | Resolves the exact taxed contract charge and writes the debit, entitlement, anchor, and renewed outcome together. |
+| Prepaid renewal charge and execution | `financial.prepaid_service_renewals` | Resolves the exact taxed contract charge and coordinates the paid invoice, funding application, entitlement, anchor, and renewed outcome together. |
 | Prepaid threshold | `financial.prepaid_threshold` | Combines due uncovered services with the shared renewal charge and configured reserve. |
 | Funding/access eligibility | `financial.access_resolution` | Produces the currency-bound funded/insufficient decision. |
 | Prepaid warn/suspend/restore plan | `financial.prepaid_enforcement` | Owns one plan used by dry-run and execution. |
@@ -132,7 +132,7 @@ suspension or restoration for that account.
 `financial.prepaid_service_coverage` accepts these current-period sources:
 
 1. an active `ServiceEntitlement` spanning the decision time and structurally
-   linked to the exact renewal debit, paid invoice line, or append-only
+   linked to a paid invoice line, historical exact renewal debit, or append-only
    `SubscriptionBillingGrant`; or
 2. an applied `ServiceExtensionEntry` spanning the exact
    `[grant_starts_at, grant_ends_at)` interval owned by
@@ -179,6 +179,14 @@ therefore part of the new WAT day even though its UTC timestamp is on the
 previous date. Date-only customer and operator projections convert the stored
 boundary back to the configured display timezone before rendering it.
 
+A cash-funded prepaid renewal creates a document only after the complete charge
+is available. The owner creates one draft and base-subscription line, issues and
+fully settles that invoice from exact payment-backed credit and any approved
+reviewed-opening remainder, then creates entitlement and anchor evidence from
+the paid line. Underfunding creates no invoice or partial application. New
+renewals no longer write the historical invoice-less account-adjustment debit.
+See `docs/designs/FUNDED_PREPAID_RENEWAL_INVOICING.md`.
+
 Historical paid periods that exactly match the retired UTC-midnight rule, plus
 paid lapsed periods proved by an older stale anchor and strict documentary/
 payment-period ordering, are owned by
@@ -215,8 +223,8 @@ present, currency, and line-or-gross funded amount are exact. One pair permits
 the invoice owner to void the pristine duplicate with zero economic delta;
 multiple, reversed, mixed, financially active, or inferred pairs remain manual
 review. A funding-change transaction that voids a proven old duplicate may then
-continue its current payment to invoice-less renewal, without treating the old
-draft as the funded renewal.
+continue its current payment to a new invoice-backed renewal, without treating
+the old draft as the funded renewal.
 
 The same owner has a separate dry-run-first command for the historical case
 where generic conversion already made an onboarding document final and an
@@ -626,7 +634,7 @@ defined in `docs/designs/IP_ASSIGNMENT_LIFECYCLE_SOT.md`.
 - future `next_billing_at` without exact current coverage;
 - active prepaid lock on a covered or non-prepaid subscription;
 - overlapping/duplicate entitlements;
-- renewal debit without exactly one entitlement;
+- paid renewal invoice without exactly one entitlement;
 - entitlement/anchor mismatch;
 - reusable fully paid prepaid service value;
 - due uncovered service with missing contract terms;

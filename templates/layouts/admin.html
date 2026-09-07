@@ -785,7 +785,7 @@
                          role="menu"
                          class="absolute right-0 mt-2 w-80 rounded-xl border border-slate-200 bg-white py-2 shadow-lg dark:border-slate-700 dark:bg-slate-800">
                         <div hx-get="/admin/notifications"
-                             hx-trigger="load, every 30s"
+                             hx-trigger="load"
                              hx-swap="innerHTML"
                              class="px-4 py-3 text-sm text-slate-500 dark:text-slate-400">
                             Loading notifications...
@@ -888,6 +888,15 @@
 {% if can(request, "attendance:self:use") %}
 <script src="/static/js/admin-attendance-reminder.js"></script>
 {% endif %}
+<script src="/static/js/session-refresh.js"></script>
+<script>
+    if (typeof initSessionRefresh === 'function') {
+        initSessionRefresh({
+            refreshUrl: "/admin/session/refresh",
+            loginUrl: "/auth/login"
+        });
+    }
+</script>
 <script src="/static/js/admin-tour.js"></script>
 <script>
     document.addEventListener('DOMContentLoaded', function() {

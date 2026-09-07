@@ -11,6 +11,9 @@ from app.services.sot_registry.domains.network.fiber_plant import (
 from app.services.sot_registry.domains.network.foundation import (
     SERVICES as FOUNDATION_SERVICES,
 )
+from app.services.sot_registry.domains.network.infrastructure_catalogue import (
+    SERVICES as INFRASTRUCTURE_CATALOGUE_SERVICES,
+)
 from app.services.sot_registry.domains.network.network_control import (
     SERVICES as NETWORK_CONTROL_SERVICES,
 )
@@ -35,6 +38,7 @@ DOMAIN = DomainSOT(
     ),
     services=(
         *FOUNDATION_SERVICES,
+        *INFRASTRUCTURE_CATALOGUE_SERVICES,
         *FIBER_PLANT_SERVICES,
         *ONT_ASSIGNMENTS_SERVICES,
         *SUBSCRIBER_STATE_SERVICES,

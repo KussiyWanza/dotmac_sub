@@ -6,13 +6,16 @@
         var input = container.querySelector("[data-typeahead-input]");
         var hidden = container.querySelector("[data-typeahead-hidden]");
         var results = container.querySelector("[data-typeahead-results]");
+        var clearButton = container.querySelector("[data-typeahead-clear]");
         var url = container.getAttribute("data-typeahead-url");
         var minChars = parseInt(container.getAttribute("data-typeahead-min") || "2", 10);
         var limit = parseInt(container.getAttribute("data-typeahead-limit") || "8", 10);
+        var validateSelection = container.getAttribute("data-typeahead-validate-selection") === "true";
         if (!input || !hidden || !results || !url) {
             return;
         }
         container.setAttribute("data-typeahead-ready", "true");
+        input.setAttribute("aria-expanded", "false");
         var timer = null;
         var lastQuery = "";
         var activeRequestId = 0;
@@ -31,11 +34,21 @@
 
         function clearResults() {
             results.innerHTML = "";
+            input.setAttribute("aria-expanded", "false");
+        }
+
+        function syncClearButton() {
+            if (!clearButton) {
+                return;
+            }
+            clearButton.classList.toggle("hidden", !input.value.trim());
         }
 
         function createMenu() {
             var menu = document.createElement("div");
+            menu.setAttribute("role", "listbox");
             menu.className = "absolute z-[2200] mt-2 max-h-72 w-full overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg dark:border-slate-700 dark:bg-slate-800";
+            input.setAttribute("aria-expanded", "true");
             return menu;
         }
 
@@ -71,8 +84,10 @@
 
         function updateHiddenValue(value) {
             hidden.value = value || "";
+            input.setCustomValidity("");
             hidden.dispatchEvent(new Event("input", { bubbles: true }));
             hidden.dispatchEvent(new Event("change", { bubbles: true }));
+            syncClearButton();
         }
 
         function renderResults(items) {
@@ -84,6 +99,7 @@
             items.forEach(function (item) {
                 var button = document.createElement("button");
                 button.type = "button";
+                button.setAttribute("role", "option");
                 button.className = "w-full px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-700";
                 button.textContent = item.label || item.name || "";
                 button.addEventListener("click", function () {
@@ -99,6 +115,7 @@
                         }
                     }));
                     clearResults();
+                    syncClearButton();
                 });
                 menu.appendChild(button);
             });
@@ -160,6 +177,7 @@
         input.addEventListener("input", function () {
             var query = input.value.trim();
             updateHiddenValue("");
+            syncClearButton();
             if (timer) {
                 window.clearTimeout(timer);
                 timer = null;
@@ -178,6 +196,75 @@
                 }
             }, 250);
         });
+
+        if (clearButton) {
+            clearButton.addEventListener("click", function () {
+                abortActiveRequest();
+                activeRequestId += 1;
+                if (timer) {
+                    window.clearTimeout(timer);
+                    timer = null;
+                }
+                lastQuery = "";
+                input.value = "";
+                updateHiddenValue("");
+                clearResults();
+                syncClearButton();
+                input.focus();
+                container.dispatchEvent(new CustomEvent("typeahead:cleared", {
+                    bubbles: true,
+                    detail: { input: input, hidden: hidden }
+                }));
+            });
+        }
+
+        input.addEventListener("keydown", function (event) {
+            if (event.key === "Escape") {
+                abortActiveRequest();
+                activeRequestId += 1;
+                clearResults();
+                return;
+            }
+            if (event.key !== "ArrowDown") {
+                return;
+            }
+            var firstOption = results.querySelector('[role="option"]');
+            if (firstOption) {
+                event.preventDefault();
+                firstOption.focus();
+            }
+        });
+
+        results.addEventListener("keydown", function (event) {
+            if (event.key !== "ArrowDown" && event.key !== "ArrowUp") {
+                return;
+            }
+            var options = Array.prototype.slice.call(results.querySelectorAll('[role="option"]'));
+            var currentIndex = options.indexOf(document.activeElement);
+            if (currentIndex === -1 || !options.length) {
+                return;
+            }
+            event.preventDefault();
+            var step = event.key === "ArrowDown" ? 1 : -1;
+            var nextIndex = (currentIndex + step + options.length) % options.length;
+            options[nextIndex].focus();
+        });
+
+        syncClearButton();
+
+        if (validateSelection && input.form) {
+            input.form.addEventListener("submit", function (event) {
+                var hasDisplayValue = Boolean(input.value.trim());
+                var hasSelectedValue = Boolean(hidden.value.trim());
+                if (hasDisplayValue && !hasSelectedValue) {
+                    input.setCustomValidity("Select a customer from the search results or clear the search field.");
+                    input.reportValidity();
+                    event.preventDefault();
+                    return;
+                }
+                input.setCustomValidity("");
+            });
+        }
 
         document.addEventListener("click", function (event) {
             if (!container.contains(event.target)) {

@@ -8,6 +8,7 @@ policy.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from uuid import UUID
 
 from sqlalchemy.orm import Session
 
@@ -16,6 +17,11 @@ from app.models.network import CPEDevice, OLTDevice, OntAssignment, OntUnit
 from app.models.network_monitoring import NetworkDevice, PopSite
 from app.models.radius_active_session import RadiusActiveSession
 from app.services.common import coerce_uuid
+from app.services.nas._mikrotik import (
+    MikrotikLiveBandwidthTarget,
+    MikrotikLiveTargetError,
+    build_mikrotik_live_bandwidth_target,
+)
 
 
 @dataclass(frozen=True)
@@ -26,6 +32,48 @@ class NetworkIdentity:
     network_device: NetworkDevice | None = None
     pop_site: PopSite | None = None
     source: str | None = None
+
+
+@dataclass(frozen=True)
+class LiveBandwidthNetworkIdentity:
+    """Detached subscription and NAS identity for a live diagnostic read."""
+
+    subscriber_id: UUID
+    target: MikrotikLiveBandwidthTarget | None
+    configuration_error: str | None = None
+
+
+def live_bandwidth_identity_for_subscription(
+    db: Session,
+    subscription_id: UUID,
+) -> LiveBandwidthNetworkIdentity | None:
+    """Resolve typed live-read inputs without exporting catalog ORM entities."""
+
+    subscription = db.get(Subscription, subscription_id)
+    if subscription is None:
+        return None
+    device = subscription.provisioning_nas_device
+    if device is None:
+        return LiveBandwidthNetworkIdentity(
+            subscriber_id=subscription.subscriber_id,
+            target=None,
+            configuration_error="missing_nas",
+        )
+    try:
+        target = build_mikrotik_live_bandwidth_target(
+            device,
+            login=subscription.login or "",
+        )
+    except MikrotikLiveTargetError as exc:
+        return LiveBandwidthNetworkIdentity(
+            subscriber_id=subscription.subscriber_id,
+            target=None,
+            configuration_error=str(exc),
+        )
+    return LiveBandwidthNetworkIdentity(
+        subscriber_id=subscription.subscriber_id,
+        target=target,
+    )
 
 
 def network_device_for_matched_entity(

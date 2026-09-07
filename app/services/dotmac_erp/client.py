@@ -14,14 +14,20 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Collection
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
+from typing import Literal
+from uuid import UUID, uuid4
 
 import httpx
 from dotmac_integration_client import IntegrationHttpClient
+from pydantic import ValidationError
 
 from app.services.dotmac_erp.operational_contracts import (
     ErpOperationalSyncCommand,
     ErpOperationalSyncOutcome,
 )
+from app.services.integrations.diagnostics import OperationDiagnostic, safe_diagnostic
 
 logger = logging.getLogger(__name__)
 
@@ -34,10 +40,19 @@ class DotMacERPError(Exception):
         message: str,
         status_code: int | None = None,
         response: dict | None = None,
+        *,
+        diagnostic: OperationDiagnostic | None = None,
     ):
         super().__init__(message)
-        self.status_code = status_code
+        self.status_code = (
+            status_code
+            if status_code is not None
+            else (diagnostic.http_status if diagnostic else None)
+        )
         self.response = response
+        self.diagnostic = diagnostic or safe_diagnostic(
+            status=status_code, body=response
+        )
 
 
 class DotMacERPAuthError(DotMacERPError):
@@ -100,10 +115,12 @@ class DotMacERPClient:
         self.base_url = base_url.rstrip("/")
         self.token = token
         self.timeout = timeout
-        self.retries = retries
+        self.retries = min(3, max(0, retries))
         self.retry_delay = retry_delay
         self._client: httpx.Client | None = None
         self._transport: IntegrationHttpClient | None = None
+        self._last_request_id: UUID | None = None
+        self._last_status: int | None = None
 
     def _get_client(self) -> httpx.Client:
         """Get or create the pooled HTTP client."""
@@ -139,6 +156,7 @@ class DotMacERPClient:
         expected_status_codes: Collection[int] | None = None,
     ) -> dict | list | None:
         """Map an API response to a parsed body or raise the edge's typed error."""
+        self._last_status = response.status_code
         try:
             data = response.json() if response.content else None
         except Exception:
@@ -150,7 +168,7 @@ class DotMacERPClient:
             raise DotMacERPAuthError(
                 f"Authentication failed: {response.status_code}",
                 status_code=response.status_code,
-                response=data if isinstance(data, dict) else None,
+                diagnostic=safe_diagnostic(status=response.status_code, body=data),
             )
 
         if response.status_code == 204:
@@ -160,43 +178,37 @@ class DotMacERPClient:
             raise DotMacERPNotFoundError(
                 "Resource not found",
                 status_code=404,
-                response=data if isinstance(data, dict) else None,
+                diagnostic=safe_diagnostic(status=response.status_code, body=data),
             )
 
         if response.status_code == 429:
-            retry_after = response.headers.get("Retry-After")
+            raw_retry_after = response.headers.get("Retry-After", "")
+            try:
+                retry_after = int(raw_retry_after)
+            except ValueError:
+                try:
+                    retry_date = parsedate_to_datetime(raw_retry_after)
+                    if retry_date.tzinfo is None:
+                        retry_date = retry_date.replace(tzinfo=UTC)
+                    retry_after = int((retry_date - datetime.now(UTC)).total_seconds())
+                except (ValueError, TypeError, OverflowError):
+                    retry_after = 60
             raise DotMacERPRateLimitError(
                 "Rate limit exceeded",
-                retry_after=int(retry_after) if retry_after else None,
+                retry_after=min(86400, max(1, retry_after)),
             )
 
         if response.status_code >= 400:
-            if isinstance(data, dict):
-                error_msg = (
-                    data.get("detail")
-                    or data.get("message")
-                    or data.get("error")
-                    or str(data)
-                )
-            else:
-                error_msg = str(data)
-            logger.warning(
-                "ERP API error: status=%s body=%s", response.status_code, data
+            diagnostic = safe_diagnostic(status=response.status_code, body=data)
+            error_type = (
+                DotMacERPTransientError
+                if response.status_code in (500, 502, 503, 504)
+                else DotMacERPError
             )
-            # 5xx are transient (proxy/gateway/unavailable/timeout or a passing
-            # ERP blip) — raise the retryable type so the transport retries
-            # instead of failing on a momentary hiccup. Idempotent natural-key
-            # upserts on the ERP side make the retry safe.
-            if response.status_code in (500, 502, 503, 504):
-                raise DotMacERPTransientError(
-                    f"ERP transient error ({response.status_code}): {error_msg}",
-                    status_code=response.status_code,
-                    response=data if isinstance(data, dict) else None,
-                )
-            raise DotMacERPError(
-                f"API error ({response.status_code}): {error_msg}",
+            raise error_type(
+                diagnostic.message,
                 status_code=response.status_code,
-                response=data if isinstance(data, dict) else None,
+                diagnostic=diagnostic,
             )
 
         if expected_status_codes and response.status_code not in expected_status_codes:
@@ -204,7 +216,7 @@ class DotMacERPClient:
                 f"API unexpected status ({response.status_code}), "
                 f"expected {sorted(expected_status_codes)}",
                 status_code=response.status_code,
-                response=data if isinstance(data, dict) else None,
+                diagnostic=safe_diagnostic(status=response.status_code, body=data),
             )
 
         return data
@@ -223,19 +235,19 @@ class DotMacERPClient:
                 response_handler=self._handle_response,
                 backoff=lambda attempt: self.retry_delay * (2**attempt),
                 max_attempts=self.retries + 1,
-                rate_limit_exc=DotMacERPRateLimitError,
+                # The durable owner schedules Retry-After; never sleep with its
+                # database lock held for a provider-supplied duration.
+                rate_limit_exc=None,
                 retryable_excs=(DotMacERPTransientError,),
                 non_retryable_excs=(DotMacERPError,),
                 transport_exhausted_factory=lambda exc, retries: (
-                    DotMacERPTransientError(
-                        f"Connection error after {retries} retries: {exc}"
-                    )
+                    DotMacERPTransientError("ERP connection retries exhausted")
                 ),
                 loop_exhausted_factory=lambda exc, retries: DotMacERPError(
-                    f"Request failed after {retries} retries: {exc}"
+                    "ERP request retries exhausted"
                 ),
                 unexpected_error_factory=lambda exc: DotMacERPError(
-                    f"Unexpected error: {exc}"
+                    "Unexpected ERP transport failure"
                 ),
             )
         return self._transport
@@ -251,15 +263,26 @@ class DotMacERPClient:
         headers: dict[str, str] | None = None,
     ) -> dict | list | None:
         """Make an HTTP request with retry logic (delegated to the shared engine)."""
-        return self._get_transport().request(
-            method,
-            path,
-            params=params,
-            json_data=json_data,
-            headers=headers,
-            idempotency_key=idempotency_key,
-            handler_kwargs={"expected_status_codes": expected_status_codes},
-        )
+        request_id = uuid4()
+        self._last_request_id = request_id
+        self._last_status = None
+        request_headers = dict(headers or {})
+        request_headers.setdefault("X-Request-ID", str(request_id))
+        try:
+            return self._get_transport().request(
+                method,
+                path,
+                params=params,
+                json_data=json_data,
+                headers=request_headers,
+                idempotency_key=idempotency_key,
+                handler_kwargs={"expected_status_codes": expected_status_codes},
+            )
+        except DotMacERPError as exc:
+            exc.diagnostic = exc.diagnostic.model_copy(
+                update={"request_id": request_id}
+            )
+            raise
 
     # ============ Generic transport surface ============
 
@@ -303,6 +326,20 @@ class DotMacERPClient:
             expected_status_codes=expected_status_codes,
         )
         return result if isinstance(result, dict) else {}
+
+    def get_staff_access_projection(
+        self,
+        *,
+        entity: Literal["leave_restriction", "account_status"],
+        limit: int = 500,
+    ) -> dict:
+        """Read one complete bounded ERP staff-access projection entity."""
+
+        return self.get(
+            "/api/v1/sync/sub/staff-access/projection",
+            params={"entity": entity, "limit": limit},
+            expected_status_codes={200},
+        )
 
     # ============ Workforce attendance surface ============
 
@@ -545,7 +582,27 @@ class DotMacERPClient:
             command.model_dump(mode="json"),
             expected_status_codes={200},
         )
-        return ErpOperationalSyncOutcome.model_validate(response)
+        try:
+            outcome = ErpOperationalSyncOutcome.model_validate(response)
+        except ValidationError:
+            diagnostic = safe_diagnostic(
+                status=self._last_status, code="invalid_response"
+            )
+            raise DotMacERPError(
+                diagnostic.message,
+                diagnostic=diagnostic.model_copy(
+                    update={"request_id": self._last_request_id}
+                ),
+            ) from None
+        if outcome.errors:
+            diagnostic = safe_diagnostic(status=self._last_status, code="item_rejected")
+            raise DotMacERPError(
+                diagnostic.message,
+                diagnostic=diagnostic.model_copy(
+                    update={"request_id": self._last_request_id}
+                ),
+            )
+        return outcome
 
     # ============ NCC regulatory read surface (ERP owns finance + HR) ============
     #

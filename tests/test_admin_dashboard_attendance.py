@@ -295,6 +295,8 @@ def test_dashboard_templates_and_script_preserve_lazy_safe_states():
     assert index.index("Add Customer") < index.index('id="attendance-widget"')
     assert 'can(request, "attendance:self:use")' in layout
     assert "/static/js/admin-attendance-reminder.js" in layout
+    assert "/static/js/session-refresh.js" in layout
+    assert 'refreshUrl: "/admin/session/refresh"' in layout
     assert "_dashboard_global_cache" not in partial
     assert "Ready to check in" in partial
     assert "Check In" in partial and "Check Out" in partial

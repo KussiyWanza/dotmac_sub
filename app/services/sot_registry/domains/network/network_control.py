@@ -21,6 +21,109 @@ from app.services.sot_manifest import (
 
 SERVICES: tuple[SOTService, ...] = (
     SOTService(
+        name="network.lldp_observations",
+        module="app.services.topology.lldp_poller",
+        owns=("LLDP adjacency observation reconciliation",),
+        depends_on=(
+            "network.identity",
+            "network.monitoring_inventory",
+            "runtime.db_sessions",
+            "events.dispatcher",
+        ),
+        notes="Detached fleet polling followed by revalidated observation-only reconciliation.",
+        contract=ServiceContract(
+            concerns=(
+                ConcernContract(
+                    name="LLDP adjacency observation reconciliation",
+                    role=OwnerRole.OBSERVATION_COLLECTOR,
+                    input_names=(
+                        "router inventory",
+                        "neighbor replies",
+                        "existing adjacency",
+                    ),
+                    canonical_writer="network.lldp_observations",
+                ),
+            ),
+            authoritative_inputs=(
+                AuthorityInput(
+                    name="router inventory",
+                    owner="network.identity",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source="routers, jump_hosts, network_devices",
+                ),
+                AuthorityInput(
+                    name="neighbor replies",
+                    owner="external:routeros",
+                    kind=AuthorityKind.EXTERNAL_OBSERVATION,
+                    source="GET /ip/neighbor via binary API or REST",
+                ),
+                AuthorityInput(
+                    name="existing adjacency",
+                    owner="network.monitoring_inventory",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source="network_topology_links",
+                ),
+            ),
+            transaction=TransactionContract(
+                mode=TransactionMode.OWNER_MANAGED,
+                boundary="reconcile_poll enters execute_owner_command on a fresh transaction-free session after all network I/O",
+                locking="PostgreSQL SHARE inventory table locks and SHARE ROW EXCLUSIVE adjacency lock; 5-second lock timeout; revalidate detached inventory and link snapshots",
+                idempotency="Canonical device pairs with NULL interfaces; serialized query-before-insert and snapshot comparison prevent duplicate or older overlapping writes",
+                retries="No automatic task retries; unreachable routers are partial observations; stale or database failures await the next scheduled run",
+            ),
+            errors=ErrorContract(
+                domain_codes=(
+                    *owner_command_boundary_error_codes("network.lldp_observations"),
+                    "network.lldp_observations.stale_snapshot",
+                ),
+                mapping_owner="app.tasks.topology_lldp",
+                fail_closed_on=(
+                    "changed inventory or adjacency snapshot",
+                    "database errors",
+                    "soft time limit",
+                ),
+            ),
+            events=EventContract(
+                event_types=("lldp.observations_reconciled",),
+                schema_version=1,
+                delivery_owner="events.dispatcher",
+                compatibility="Count-only audit envelope staged atomically; no credentials or router payloads; no inline dispatch",
+                replay="Next scheduled read rebuilds observations without changing forwarding authority",
+            ),
+            projections=(
+                ProjectionContract(
+                    name="LLDP observed adjacency",
+                    input_names=(
+                        "router inventory",
+                        "neighbor replies",
+                        "existing adjacency",
+                    ),
+                    writer="network.lldp_observations",
+                    freshness="last_seen_at advances only for committed observations; metrics retain existing task result keys",
+                    stale_behavior="Failed/skipped observers retain links; stale snapshots write nothing",
+                    drift_signal="last_seen_at age and lldp_poll error/routers_failed counters",
+                    rebuild_operation="scheduled read_snapshot, poll_all, reconcile_poll",
+                    repair_owner="network.lldp_observations",
+                ),
+            ),
+            migration=MigrationContract(
+                state=AuthorityMigrationState.COMPLETE,
+                old_owner="task-owned LLDP transaction spanning router calls",
+                new_owner="network.lldp_observations",
+                verification="Detached-phase, owner rollback, matching, transport, pruning, and task-failure regression tests",
+                cutover_gate="No session-bearing poll_all caller remains",
+                fallback_retirement="Old session-taking poll_all removed; dry-run collects detached observations without writes",
+            ),
+            steward="network operations",
+            design_refs=("docs/designs/LLDP_POLL_TRANSACTION_LIFETIME.md",),
+            test_refs=(
+                "tests/services/topology/test_lldp_poller.py",
+                "tests/test_lldp_transaction_span.py",
+                "tests/architecture/test_lldp_transaction_boundary.py",
+            ),
+        ),
+    ),
+    SOTService(
         name="network.routeros_sot",
         module="app.services.router_management.sot_policy",
         owns=(

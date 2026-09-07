@@ -1,7 +1,7 @@
 """Admin web routes."""
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, Response
 from sqlalchemy.orm import Session
 
 from app.services import module_manager as module_manager_service
@@ -148,6 +148,11 @@ def get_sidebar_stats(db: Session) -> dict:
 @router.get("")
 def admin_root():
     return RedirectResponse(url="/admin/dashboard", status_code=303)
+
+
+@router.get("/session/refresh", include_in_schema=False)
+def admin_session_refresh() -> Response:
+    return Response(status_code=204, headers={"Cache-Control": "no-store"})
 
 
 @router.get("/operations/service-orders")

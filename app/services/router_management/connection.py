@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 import logging
 import threading
 import time
+from typing import TYPE_CHECKING
 
 import httpx
 from sshtunnel import SSHTunnelForwarder
@@ -8,6 +11,9 @@ from sshtunnel import SSHTunnelForwarder
 from app.models.router_management import JumpHost, Router
 from app.schemas.router_management import ConnectionTestResult
 from app.services.credential_crypto import decrypt_credential
+
+if TYPE_CHECKING:
+    from app.services.topology.lldp_contracts import LldpJumpHost, LldpRouter
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +106,7 @@ class RouterConnectionService:
 
     @classmethod
     def _get_or_create_tunnel(
-        cls, router: Router, jump_host: JumpHost
+        cls, router: Router | LldpRouter, jump_host: JumpHost | LldpJumpHost
     ) -> SSHTunnelForwarder:
         with cls._lock:
             tunnel_key = f"{jump_host.id}:{router.management_ip}:{router.rest_api_port}"
@@ -173,7 +179,7 @@ class RouterConnectionService:
 
     @classmethod
     def get_client(
-        cls, router: Router, *, timeout: httpx.Timeout | None = None
+        cls, router: Router | LldpRouter, *, timeout: httpx.Timeout | None = None
     ) -> httpx.Client:
         username = (
             decrypt_credential(router.rest_api_username) or router.rest_api_username
@@ -198,6 +204,36 @@ class RouterConnectionService:
             verify=router.verify_tls,
             timeout=timeout or httpx.Timeout(CONNECT_TIMEOUT, read=READ_TIMEOUT),
         )
+
+    @classmethod
+    def execute_once(
+        cls,
+        router: Router | LldpRouter,
+        *,
+        method: str,
+        path: str,
+        payload: dict | None = None,
+        connect_timeout: float,
+        read_timeout: float,
+    ) -> RouterResponse:
+        """Issue one REST request without resolving database-backed retry settings."""
+        timeout = httpx.Timeout(connect_timeout, read=read_timeout)
+        with cls.get_client(router, timeout=timeout) as client:
+            response = client.request(
+                method=method,
+                url=f"/rest{path}",
+                json=payload,
+            )
+            response.raise_for_status()
+            if not response.text:
+                return {}
+            content_type = response.headers.get("content-type", "")
+            if "json" in content_type.lower():
+                try:
+                    return response.json()
+                except ValueError:
+                    return response.text
+            return response.text
 
     @classmethod
     def execute(

@@ -48,8 +48,8 @@ function bandwidthChart(config = {}) {
         enableLive: config.enableLive !== false,
         directLiveEndpoint: config.directLiveEndpoint || null,
         directLivePollMs: config.directLivePollMs || 5000,
-        // Customer-portal live: drive the live UI from the /my/live SSE stream
-        // (cookie-auth) instead of the admin directLiveEndpoint poll.
+        // Normal live views use the application-owned SSE projection. The
+        // direct endpoint remains an explicit diagnostic-only fallback.
         liveStream: config.liveStream || false,
 
         // Whether live updates are currently running. Off by default — live is
@@ -62,6 +62,9 @@ function bandwidthChart(config = {}) {
         reconnectTimer: null,
         statsPollTimer: null,
         directLivePollTimer: null,
+        directLiveRequestInFlight: false,
+        directLiveAbortController: null,
+        directLiveConsecutiveErrors: 0,
         isDestroyed: false,
         loading: true,
         error: null,
@@ -249,10 +252,18 @@ function bandwidthChart(config = {}) {
         },
 
         async loadDirectLive() {
-            if (!this.directLiveEndpoint || this.isDestroyed) return;
+            if (!this.directLiveEndpoint || this.isDestroyed || document.hidden) return true;
+            if (this.directLiveRequestInFlight) return false;
+
+            this.directLiveRequestInFlight = true;
+            const controller = new AbortController();
+            this.directLiveAbortController = controller;
 
             try {
-                const response = await fetch(new URL(this.directLiveEndpoint, window.location.origin));
+                const response = await fetch(
+                    new URL(this.directLiveEndpoint, window.location.origin),
+                    { signal: controller.signal },
+                );
                 if (!response.ok) {
                     throw new Error('Failed to load live MikroTik bandwidth');
                 }
@@ -266,12 +277,22 @@ function bandwidthChart(config = {}) {
                 this.liveSource = data.source || '';
                 this.liveInterface = data.interface || '';
                 this.liveUpdatedAt = data.timestamp || new Date().toISOString();
+                this.directLiveConsecutiveErrors = 0;
 
                 if (this.currentDownload > this.peakDownload) this.peakDownload = this.currentDownload;
                 if (this.currentUpload > this.peakUpload) this.peakUpload = this.currentUpload;
+                return true;
             } catch (e) {
+                if (e && e.name === 'AbortError') return false;
                 console.warn('MikroTik live bandwidth refresh skipped:', e);
                 this.liveStatus = 'error';
+                this.directLiveConsecutiveErrors += 1;
+                return false;
+            } finally {
+                if (this.directLiveAbortController === controller) {
+                    this.directLiveAbortController = null;
+                }
+                this.directLiveRequestInFlight = false;
             }
         },
 
@@ -280,17 +301,31 @@ function bandwidthChart(config = {}) {
             if (this.isDestroyed || !this.directLiveEndpoint || !this.liveActive) {
                 return;
             }
-            this.loadDirectLive();
-            this.directLivePollTimer = setInterval(() => {
-                this.loadDirectLive();
-            }, this.directLivePollMs);
+            const pollAfterCompletion = async () => {
+                if (this.isDestroyed || !this.directLiveEndpoint || !this.liveActive) return;
+                const succeeded = await this.loadDirectLive();
+                if (this.isDestroyed || !this.directLiveEndpoint || !this.liveActive) return;
+                const backoffMultiplier = succeeded
+                    ? 1
+                    : Math.min(12, Math.pow(2, this.directLiveConsecutiveErrors));
+                this.directLivePollTimer = setTimeout(
+                    pollAfterCompletion,
+                    Math.min(60000, this.directLivePollMs * backoffMultiplier),
+                );
+            };
+            this.directLivePollTimer = setTimeout(pollAfterCompletion, 0);
         },
 
         stopDirectLivePolling() {
             if (this.directLivePollTimer) {
-                clearInterval(this.directLivePollTimer);
+                clearTimeout(this.directLivePollTimer);
                 this.directLivePollTimer = null;
             }
+            if (this.directLiveAbortController) {
+                this.directLiveAbortController.abort();
+                this.directLiveAbortController = null;
+            }
+            this.directLiveRequestInFlight = false;
         },
 
         // Load historical data

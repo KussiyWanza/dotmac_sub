@@ -403,6 +403,13 @@ Prepaid invoices, when legally or operationally required, use an explicit
 `prepaid_consumption` accounting treatment. They are never excluded from AR
 through a negative metadata classifier.
 
+The incumbent funded-renewal owner now satisfies that documentary requirement:
+it creates no document while funding is insufficient, but an approved funded
+period atomically creates and settles one invoice before granting its exact
+entitlement. The paid invoice replaces the former direct account-adjustment
+debit for all new renewals; historical direct-debit evidence remains readable
+for correction and replay only.
+
 #### Postpaid
 
 ```text

@@ -115,6 +115,38 @@ class ServiceExtensionDetailProjection:
 
 
 @dataclass(frozen=True, slots=True)
+class CustomerServiceExtensionImpactItem:
+    subscription_id: UUID
+    previous_billing_display: str
+    new_billing_display: str
+    grant_starts_display: str
+    grant_ends_display: str
+    anchor_basis_label: str
+
+
+@dataclass(frozen=True, slots=True)
+class CustomerServiceExtensionItem:
+    id: UUID
+    reason: str
+    status_presentation: StatusPresentation
+    created_at_display: str
+    outage_window_display: str
+    days: int
+    scope_label: str
+    affected_count: int
+    skipped_count: int
+    match_basis: service_extensions_service.CustomerServiceExtensionMatchBasis
+    impact_message: str
+    impacts: tuple[CustomerServiceExtensionImpactItem, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CustomerServiceExtensionHistory:
+    items: tuple[CustomerServiceExtensionItem, ...]
+    total_count: int
+
+
+@dataclass(frozen=True, slots=True)
 class ServiceExtensionReversalSummaryProjection:
     reason: str
     reversed_by_label: str
@@ -459,6 +491,95 @@ def _impact_projection(
             if extension.status == ServiceExtensionStatus.pending
             else None
         ),
+    )
+
+
+def build_customer_service_extension_history(
+    db: Session,
+    *,
+    subscriber_ids: tuple[UUID, ...],
+    limit: int = 10,
+    offset: int = 0,
+) -> CustomerServiceExtensionHistory:
+    """Project one lifecycle row per extension request for Customer 360."""
+
+    history = service_extensions_service.customer_service_extension_history(
+        db,
+        subscriber_ids=subscriber_ids,
+        limit=limit,
+        offset=offset,
+    )
+    items: list[CustomerServiceExtensionItem] = []
+    for record in history.records:
+        impacts = tuple(
+            CustomerServiceExtensionImpactItem(
+                subscription_id=impact.subscription_id,
+                previous_billing_display=display_format.format_timestamp(
+                    impact.previous_next_billing_at,
+                    db,
+                    fmt="%b %d, %Y",
+                ),
+                new_billing_display=display_format.format_timestamp(
+                    impact.new_next_billing_at,
+                    db,
+                    fmt="%b %d, %Y",
+                ),
+                grant_starts_display=display_format.format_timestamp(
+                    impact.grant_starts_at,
+                    db,
+                    fmt="%b %d, %Y",
+                ),
+                grant_ends_display=display_format.format_timestamp(
+                    impact.grant_ends_at,
+                    db,
+                    fmt="%b %d, %Y",
+                ),
+                anchor_basis_label=(
+                    impact.anchor_basis.value.replace("_", " ").title()
+                    if impact.anchor_basis is not None
+                    else "Not recorded"
+                ),
+            )
+            for impact in record.impacts
+        )
+        if impacts:
+            impact_message = (
+                f"Billing impact recorded for {len(impacts)} subscription(s)."
+            )
+        elif record.status == ServiceExtensionStatus.pending:
+            impact_message = "Submitted and awaiting approval; no billing change yet."
+        elif record.status == ServiceExtensionStatus.canceled:
+            impact_message = "Canceled before a billing change was applied."
+        elif record.status == ServiceExtensionStatus.reversed:
+            impact_message = "Reversed; no customer billing impact row was recorded."
+        else:
+            impact_message = "Applied with no eligible customer billing anchor changed."
+        items.append(
+            CustomerServiceExtensionItem(
+                id=record.id,
+                reason=record.reason,
+                status_presentation=_STATUS_PRESENTATIONS[record.status],
+                created_at_display=display_format.format_timestamp(
+                    record.created_at,
+                    db,
+                    fmt="%b %d, %Y",
+                ),
+                outage_window_display=(
+                    f"{display_format.format_timestamp(record.window_start, db)} — "
+                    f"{display_format.format_timestamp(record.window_end, db)}"
+                ),
+                days=record.days,
+                scope_label=_SCOPE_LABELS[record.scope_type],
+                affected_count=record.affected_count,
+                skipped_count=record.skipped_count,
+                match_basis=record.match_basis,
+                impact_message=impact_message,
+                impacts=impacts,
+            )
+        )
+    return CustomerServiceExtensionHistory(
+        items=tuple(items),
+        total_count=history.total_count,
     )
 
 

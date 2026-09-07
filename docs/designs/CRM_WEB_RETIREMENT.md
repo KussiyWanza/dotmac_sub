@@ -167,7 +167,7 @@ longer exists.
 
 Portal and public live chat is owned outright by
 `communications.team_inbox_widget`. The `crm.chat_session.v1` capability is
-removed from the current `dotmac.crm` manifest (1.2.0), the
+removed from the `dotmac.crm` manifests since 1.2.0, the
 `comms.chat_session_authority` selector and the CRM broker are deleted, and
 `tests/architecture/test_single_chat_authority.py` prevents a second chat
 authority returning. Retirement record: `docs/adr/0006-temporary-crm-chat-authority.md`.
@@ -175,8 +175,56 @@ authority returning. Retirement record: `docs/adr/0006-temporary-crm-chat-author
 This closes the exception; it does not by itself advance a ledger route to
 `retired`. Final CRM removal still requires reconciliation, traffic evidence,
 capability cutover, fallback retirement, and source deletion for the remaining
-CRM surfaces — ticket observation, subscriber observation, portal session, the
-quote command write-through, and the inbound `/api/v1/crm/*` API Sub serves.
+CRM surfaces — ticket observation, subscriber observation, portal session, and
+the inbound `/api/v1/crm/*` API Sub serves.
+
+### Sales quote transport retirement
+
+`sales.crm_quote_retirement` owns the immutable decision that the external CRM
+quote transport is retired. ERP remains a separate active integration. Native
+Selfcare quote reads, authoring, and payment owners retain their existing
+feature controls; this retirement neither enables nor disables native quoting.
+
+Migration 579 disables every persisted schedule with either retired quote task
+name, including differently named aliases. Scheduler reconciliation repeats
+this idempotently. Both task names remain broker-compatible tombstones: they
+return one typed retirement outcome without opening a session or processing
+subscribers. The old service reconciliation entry points also do nothing.
+
+Historical `QuoteMirror` and `QuoteSyncState` rows, payloads, IDs, and timestamps
+are preserved. Mirror reads never fetch CRM, enqueue a refresh, or move
+`synced_at`. Web reads explicitly label saved information as historical; API
+mirror reads return `source_state=retired` and `actions_available=false`.
+Old mobile versions may ignore those additive fields, but request, accept, and
+deposit preflight always refuse through the existing domain-error boundary,
+regardless of a leftover enabled binding. No new payment is taken by the
+retired deposit path. Previously received payments needing manual
+reconciliation remain the financial owner's responsibility; operators must not
+replay CRM acceptance or alter historical rows.
+
+Quote-specific CRM client, facade, and runner methods are removed. The current
+CRM manifest is 1.3.0 without `quote_command`; all published older pins remain
+immutable compatibility facts. No installation is enabled or automatically
+adopted.
+
+The shared connector remains because subscriber and ticket observations,
+portal-session transport, referrals compatibility, and inbound events still
+have callers. Their replacement or retirement is a separate slice. The quote
+webhook admission and historical upsert helper remain because inbound history
+and native quote deposit synchronization still reference them. This slice sends
+no notifications and enables no inbound binding. ERP work-order mappings retain
+legacy CRM project and ticket identifiers when native references are absent.
+
+Customers needing a new quote while native quoting is disabled are directed to
+support; no replacement data source or pricing decision is invented.
+
+Focused validation covers queued tasks, absent/disabled/enabled bindings,
+refusal audit, history and timestamp preservation, scheduler aliases, retirement
+copy, and native quote behavior. Do not roll back to a worker that calls the
+retired transport. Preserve migration 579 storage, its tombstones, and all
+historical quote and synchronization rows during any rollback. Migration 579's
+downgrade therefore moves only the Alembic revision marker; its idempotent
+upgrade accepts the retained singleton and reasserts schedule retirement.
 
 Each slice updates the ledger, the owning design and relationship-map entries,
 the executable SOT registry when an owner changes, behavior tests, architecture

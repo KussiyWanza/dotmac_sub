@@ -981,7 +981,7 @@ class TestAdminUsageTemplateDefaults:
 
         assert "{% set usage_records_default_view = 'chart' %}" in template
 
-    def test_admin_stats_configures_direct_mikrotik_live_read(self) -> None:
+    def test_admin_stats_consumes_central_live_stream(self) -> None:
         stats_panel = Path("templates/admin/customers/_stats_panel.html").read_text(
             encoding="utf-8"
         )
@@ -989,12 +989,24 @@ class TestAdminUsageTemplateDefaults:
             encoding="utf-8"
         )
 
-        assert "/api/v1/bandwidth/mikrotik-live/" in stats_panel
-        assert "bandwidth_chart_direct_live_endpoint" in stats_panel
-        assert "directLiveEndpoint" in usage_content
-        assert "Live from MikroTik" in Path("static/js/bandwidth-chart.js").read_text(
-            encoding="utf-8"
+        assert "/api/v1/bandwidth/mikrotik-live/" not in stats_panel
+        assert "bandwidth_chart_direct_live_endpoint" not in stats_panel
+        assert (
+            "bandwidth_chart_live_stream = usage_subscription_id is not none"
+            in stats_panel
         )
+        assert "liveStream: true" in usage_content
+
+    def test_legacy_direct_probe_polling_is_sequential_and_cancellable(self) -> None:
+        js = Path("static/js/bandwidth-chart.js").read_text(encoding="utf-8")
+
+        direct_section = js.split("async loadDirectLive()", 1)[1].split(
+            "// Load historical data", 1
+        )[0]
+        assert "directLiveRequestInFlight" in direct_section
+        assert "new AbortController()" in direct_section
+        assert "setTimeout(pollAfterCompletion" in direct_section
+        assert "setInterval" not in direct_section
 
     def test_customer_usage_template_supports_live_stream(self) -> None:
         usage_content = Path("templates/customer/usage/_content.html").read_text(

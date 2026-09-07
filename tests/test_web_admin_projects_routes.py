@@ -3,12 +3,15 @@ admin projects web UI (Phase 3 PR 10)."""
 
 from pathlib import Path
 
+from app.services.auth_dependencies import permission_requirement
 from app.web.admin.projects import router, templates
 
 EXPECTED_ROUTES = {
     ("GET", "/projects"),
     ("POST", "/projects"),
     ("GET", "/projects/export.csv"),
+    ("GET", "/projects/customers/search"),
+    ("GET", "/projects/infrastructure-options"),
     ("GET", "/projects/new"),
     ("GET", "/projects/tasks"),
     ("POST", "/projects/tasks"),
@@ -44,9 +47,14 @@ EXPECTED_ROUTES = {
 }
 
 EXPECTED_PERMISSIONS = {
+    ("GET", "/projects/infrastructure-options"): ("project:create", "project:update"),
     ("GET", "/projects"): "project:read",
     ("POST", "/projects"): "project:create",
     ("GET", "/projects/export.csv"): "project:read",
+    ("GET", "/projects/customers/search"): (
+        "project:create",
+        "project:update",
+    ),
     ("GET", "/projects/new"): "project:create",
     ("GET", "/projects/tasks"): "project:task:read",
     ("POST", "/projects/tasks"): "project:task:write",
@@ -122,24 +130,26 @@ def test_static_paths_declared_before_dynamic_detail():
     detail_index = get_paths.index("/projects/{project_ref}")
     assert get_paths.index("/projects/tasks") < detail_index
     assert get_paths.index("/projects/templates") < detail_index
+    assert get_paths.index("/projects/customers/search") < detail_index
+    assert get_paths.index("/projects/infrastructure-options") < detail_index
     assert get_paths.index("/projects/new") < detail_index
     assert get_paths.index("/projects/export.csv") < detail_index
 
 
-def _permission_keys(route) -> set[str]:
+def _permission_keys(route, method: str) -> set[str]:
     keys: set[str] = set()
     for dep in route.dependencies:
-        fn = dep.dependency
-        for cell in getattr(fn, "__closure__", None) or []:
-            if isinstance(cell.cell_contents, str):
-                keys.add(cell.cell_contents)
+        requirement = permission_requirement(dep.dependency)
+        if requirement is not None:
+            keys.update(requirement.any_of_for(method))
     return keys
 
 
 def test_every_route_has_expected_permission_guard():
     for key, route in _routes():
         expected = EXPECTED_PERMISSIONS[key]
-        assert expected in _permission_keys(route), (
+        expected_keys = {expected} if isinstance(expected, str) else set(expected)
+        assert expected_keys == _permission_keys(route, key[0]), (
             f"{key} missing permission guard {expected!r}"
         )
 
@@ -150,7 +160,12 @@ def test_permission_keys_are_seeded():
     seed = (
         Path(__file__).resolve().parents[1] / "scripts" / "seed" / "seed_rbac.py"
     ).read_text()
-    for permission in set(EXPECTED_PERMISSIONS.values()):
+    permissions = {
+        permission
+        for expected in EXPECTED_PERMISSIONS.values()
+        for permission in ((expected,) if isinstance(expected, str) else expected)
+    }
+    for permission in permissions:
         assert f'"{permission}"' in seed, f"{permission} not seeded in RBAC"
 
 

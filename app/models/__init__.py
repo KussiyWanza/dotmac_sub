@@ -240,6 +240,11 @@ from app.models.cross_app_drift import (  # noqa: F401
     CrossAppDriftRun,
     CrossAppDriftWaiver,
 )
+from app.models.csat import (  # noqa: F401
+    CsatRequestStatus,
+    CsatSourceType,
+    SupportCsatRequest,
+)
 from app.models.customer_experience import (  # noqa: F401
     CustomerExperienceHandoff,
     CustomerExperienceHandoffEvent,

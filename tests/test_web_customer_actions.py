@@ -116,7 +116,7 @@ def test_update_business_customer_applies_billing_overrides_to_linked_subscriber
         captive_redirect_enabled="false",
         tax_rate_id=str(tax_rate.id),
         withholding_tax_enabled=None,
-        payment_method="cash",
+        payment_method="paystack",
     )
 
     refreshed = db_session.get(Subscriber, organization.id)
@@ -128,7 +128,7 @@ def test_update_business_customer_applies_billing_overrides_to_linked_subscriber
     assert refreshed.grace_period_days == 4
     assert refreshed.min_balance == Decimal("75.00")
     assert refreshed.tax_rate_id == tax_rate.id
-    assert refreshed.payment_method == "cash"
+    assert refreshed.payment_method == "paystack"
 
 
 def test_repair_customer_access_state_restores_stale_active_projection(
@@ -516,6 +516,28 @@ def _update_person(db, subscriber, **overrides):
     return actions.update_person_customer(
         db=db, customer_id=str(subscriber.id), **kwargs
     )
+
+
+def test_billing_form_defaults_defaults_payment_method_to_paystack(subscriber):
+    subscriber.payment_method = None
+
+    defaults = actions.billing_form_defaults(subscriber)
+
+    assert defaults["payment_method"] == "paystack"
+
+
+def test_customer_payment_method_normalizes_transfer_alias():
+    assert (
+        actions.normalize_customer_invoice_payment_method("bank transfer") == "transfer"
+    )
+    assert (
+        actions.normalize_customer_invoice_payment_method("bank-transfer") == "transfer"
+    )
+
+
+def test_customer_payment_method_rejects_unowned_values():
+    with pytest.raises(ValueError, match="payment_method must be Paystack or Transfer"):
+        actions.normalize_customer_invoice_payment_method("cash")
 
 
 def test_update_person_allows_shared_email(db_session, subscriber):

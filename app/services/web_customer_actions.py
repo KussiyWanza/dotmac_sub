@@ -100,6 +100,15 @@ from app.services.whatsapp_notification_templates import (
     sync_whatsapp_registry_templates,
 )
 
+CUSTOMER_INVOICE_PAYMENT_METHOD_PAYSTACK = "paystack"
+CUSTOMER_INVOICE_PAYMENT_METHOD_TRANSFER = "transfer"
+CUSTOMER_INVOICE_PAYMENT_METHOD_PAYSTACK_VALUES = frozenset(
+    {"paystack", "card", "cards", "online", "online_payment"}
+)
+CUSTOMER_INVOICE_PAYMENT_METHOD_TRANSFER_VALUES = frozenset(
+    {"transfer", "bank_transfer"}
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -228,7 +237,7 @@ def billing_form_defaults(subscriber: Subscriber | None) -> dict[str, str]:
         "tax_rate_id": "",
         "withholding_tax_enabled": "false",
         "vat_exempt": "false",
-        "payment_method": "",
+        "payment_method": CUSTOMER_INVOICE_PAYMENT_METHOD_PAYSTACK,
     }
     if not subscriber:
         return defaults
@@ -263,7 +272,9 @@ def billing_form_defaults(subscriber: Subscriber | None) -> dict[str, str]:
                 else ""
             ),
             "tax_rate_id": str(subscriber.tax_rate_id or ""),
-            "payment_method": str(subscriber.payment_method or ""),
+            "payment_method": customer_invoice_payment_method_form_value(
+                subscriber.payment_method
+            ),
         }
     )
     # The form renders the billing-day bounds from the declared domain rather
@@ -894,9 +905,12 @@ def _normalize_bulk_updates(payload: dict[str, Any]) -> dict[str, Any]:
             )
 
     if "payment_method" in updates:
-        normalized["payment_method"] = _normalize_optional(
-            str(updates.get("payment_method") or "")
-        )
+        try:
+            normalized["payment_method"] = normalize_customer_invoice_payment_method(
+                str(updates.get("payment_method") or "")
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if "notes" in updates:
         normalized["notes"] = _normalize_optional(str(updates.get("notes") or ""))
@@ -1862,6 +1876,26 @@ def _normalize_optional(value: str | None) -> str | None:
     return stripped or None
 
 
+def _payment_method_token(value: str | None) -> str:
+    return str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def normalize_customer_invoice_payment_method(value: str | None) -> str:
+    token = _payment_method_token(value)
+    if not token or token in CUSTOMER_INVOICE_PAYMENT_METHOD_PAYSTACK_VALUES:
+        return CUSTOMER_INVOICE_PAYMENT_METHOD_PAYSTACK
+    if token in CUSTOMER_INVOICE_PAYMENT_METHOD_TRANSFER_VALUES:
+        return CUSTOMER_INVOICE_PAYMENT_METHOD_TRANSFER
+    raise ValueError("payment_method must be Paystack or Transfer")
+
+
+def customer_invoice_payment_method_form_value(value: str | None) -> str:
+    try:
+        return normalize_customer_invoice_payment_method(value)
+    except ValueError:
+        return CUSTOMER_INVOICE_PAYMENT_METHOD_PAYSTACK
+
+
 def _require_text(value: str | None, label: str, *, max_length: int) -> str:
     """Validate a required free-text field: trim, reject blank/whitespace-only,
     and enforce a max length so we surface a clean message instead of relying on
@@ -1907,7 +1941,7 @@ def _billing_override_payload(
         "grace_period_days": _optional_int(grace_period_days),
         "min_balance": _optional_decimal(min_balance),
         "tax_rate_id": _normalize_optional(tax_rate_id),
-        "payment_method": _normalize_optional(payment_method),
+        "payment_method": normalize_customer_invoice_payment_method(payment_method),
         "captive_redirect_enabled": captive_redirect_enabled == "true",
     }
     # ABSENT and EMPTY are different instructions, and conflating them is how a

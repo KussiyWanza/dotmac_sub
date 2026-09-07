@@ -49,6 +49,9 @@ from app.tasks.dotmac_erp_outbox import (
     repair_purchase_invoice_sync,
     sync_erp_operational_domains,
 )
+from app.tasks.dotmac_erp_outbox import (
+    reconcile_erp_staff_access as reconcile_erp_staff_access,
+)
 from app.tasks.durable_timers import fire_due_durable_timers
 from app.tasks.enforcement import cleanup_subscription_block_sessions
 from app.tasks.events import (

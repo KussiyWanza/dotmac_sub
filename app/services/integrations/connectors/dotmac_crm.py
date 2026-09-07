@@ -25,7 +25,6 @@ CRM_PORTAL_SESSION_CAPABILITY = "crm.portal_session.v1"
 # sole live-chat authority again. Manifest 1.1.0 still declares the capability
 # because a published digest is immutable, but no action maps to it, so a
 # binding pinned at 1.1.0 fails closed with `capability_not_supported`.
-CRM_QUOTE_COMMAND_CAPABILITY = "crm.quote_command.v1"
 CRM_EVENT_RECEIVE_CAPABILITY = "crm.events.receive.v1"
 
 
@@ -62,26 +61,6 @@ class CrmTransport(Protocol):
         scopes: list[str] | None = None,
     ) -> dict[str, Any]: ...
     def get_portal_referrals(self, crm_subscriber_id: str) -> dict[str, Any]: ...
-    def get_portal_quotes(self, crm_subscriber_id: str) -> dict[str, Any]: ...
-    def request_portal_quote(
-        self,
-        crm_subscriber_id: str,
-        *,
-        latitude: float,
-        longitude: float,
-        address: str | None = None,
-        region: str | None = None,
-        note: str | None = None,
-    ) -> dict[str, Any]: ...
-    def accept_portal_quote(
-        self,
-        crm_subscriber_id: str,
-        quote_id: str,
-        *,
-        deposit_reference: str,
-        deposit_amount: str,
-        provider: str | None = None,
-    ) -> dict[str, Any]: ...
 
 
 # Ticket import legitimately needs subscriber identity observations to map a
@@ -101,13 +80,8 @@ _ACTIONS_BY_CAPABILITY = {
     },
     CRM_OPERATIONAL_OBSERVATION_CAPABILITY: {
         "get_portal_referrals",
-        "get_portal_quotes",
     },
     CRM_PORTAL_SESSION_CAPABILITY: {"create_portal_session"},
-    CRM_QUOTE_COMMAND_CAPABILITY: {
-        "request_portal_quote",
-        "accept_portal_quote",
-    },
     CRM_EVENT_RECEIVE_CAPABILITY: set(),
 }
 
@@ -282,29 +256,6 @@ class DotmacCrmRunner:
         if action == "get_portal_referrals":
             return {
                 "item": client.get_portal_referrals(str(params["crm_subscriber_id"]))
-            }
-        if action == "get_portal_quotes":
-            return {"item": client.get_portal_quotes(str(params["crm_subscriber_id"]))}
-        if action == "request_portal_quote":
-            return {
-                "item": client.request_portal_quote(
-                    str(params["crm_subscriber_id"]),
-                    latitude=float(params["latitude"]),
-                    longitude=float(params["longitude"]),
-                    address=params.get("address"),
-                    region=params.get("region"),
-                    note=params.get("note"),
-                )
-            }
-        if action == "accept_portal_quote":
-            return {
-                "item": client.accept_portal_quote(
-                    str(params["crm_subscriber_id"]),
-                    str(params["quote_id"]),
-                    deposit_reference=str(params["deposit_reference"]),
-                    deposit_amount=str(params["deposit_amount"]),
-                    provider=params.get("provider"),
-                )
             }
         raise ValueError("unsupported CRM action")
 

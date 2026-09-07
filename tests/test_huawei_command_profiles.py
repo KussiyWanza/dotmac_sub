@@ -51,3 +51,19 @@ def test_ma5800_v100r019_uses_slash_fsp_display_ont_info():
         profile.display_ont_optical_info("0/1/0", 5)
         == "display ont optical-info 0/1 0 5"
     )
+
+
+def test_generic_ma5800_uses_space_separated_display_ont_info():
+    olt = SimpleNamespace(
+        model="MA5800-X2",
+        firmware_version="{",
+        software_version="R019",
+    )
+
+    profile = get_huawei_command_profile(olt)
+
+    assert profile.name == "huawei-generic"
+    assert profile.requires_slow_send is True
+    assert profile.supports_scoped_autofind is True
+    assert profile.display_ont_info("0/2/1", 13) == "display ont info 0 2 1 13"
+    assert profile.display_ont_info_all("0/2/1") == "display ont info 0 2 1 all"

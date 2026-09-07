@@ -31,13 +31,10 @@ from app.models.catalog import (
 )
 from app.models.network import (
     CPEDevice,
-    FdhCabinet,
     IPAssignment,
     IPv4Address,
-    OLTDevice,
     OntAssignment,
     OntUnit,
-    PonPort,
     Splitter,
     SplitterPort,
     SplitterPortAssignment,
@@ -45,13 +42,19 @@ from app.models.network import (
 from app.models.network import (
     DeviceStatus as CPEDeviceStatus,
 )
-from app.models.network_monitoring import DeviceType, NetworkDevice, PopSite
+from app.models.network_monitoring import NetworkDevice, PopSite
 from app.models.subscriber import (
     Subscriber,
     SubscriberCategory,
     SubscriberStatus,
     UserType,
 )
+from app.schemas.infrastructure import (
+    InfrastructureReference,
+    InfrastructureSearch,
+    InfrastructureType,
+)
+from app.services import infrastructure_catalogue
 from app.services.billing_profile import effective_billing_mode_clause
 from app.services.billing_settings import COLLECTIBLE_SERVICE_STATUSES
 from app.services.customer_account_visibility import splynx_deleted_import_clause
@@ -130,16 +133,7 @@ _LEGACY_CUSTOMER_TABLE_PARAMS = frozenset(
 )
 
 
-class CustomerInfrastructureType(StrEnum):
-    """Infrastructure audiences supported by the lazy customer-list filter."""
-
-    location = "location"
-    nas = "nas"
-    access_point = "access_point"
-    base_station = "base_station"
-    olt = "olt"
-    pon_port = "pon_port"
-    cabinet = "cabinet"
+CustomerInfrastructureType = InfrastructureType
 
 
 class CustomerBillingFilter(StrEnum):
@@ -385,202 +379,45 @@ def normalize_customer_billing_filter(
 
 
 def search_customer_infrastructure_options(
-    db: Session,
-    *,
-    infrastructure_type: str,
-    query: str,
-    limit: int = 20,
+    db: Session, *, infrastructure_type: str, query: str, limit: int = 20
 ) -> tuple[CustomerInfrastructureOption, ...]:
-    """Return a bounded, projection-only typeahead result.
-
-    The customer page deliberately loads none of these inventories. Searches
-    require two characters and select only the label fields needed by the UI.
-    """
-
+    """Compatibility adapter; shared inventory owner supplies the actual query."""
     kind = normalize_customer_infrastructure_type(infrastructure_type)
     if kind is None:
         raise ValueError("infrastructure_type is required")
-    term = str(query or "").strip()
-    if len(term) < 2:
-        return ()
-    bounded_limit = max(1, min(int(limit), 20))
-    pattern = f"%{term}%"
-
-    if kind is CustomerInfrastructureType.nas:
-        nas_rows = (
-            db.query(NasDevice.id, NasDevice.name, NasDevice.nas_ip)
-            .filter(
-                NasDevice.is_active.is_(True),
-                or_(NasDevice.name.ilike(pattern), NasDevice.nas_ip.ilike(pattern)),
-            )
-            .order_by(NasDevice.name)
-            .limit(bounded_limit)
-            .all()
-        )
-        return tuple(
-            CustomerInfrastructureOption(
-                row.id, row.name, str(row.nas_ip or "") or None
-            )
-            for row in nas_rows
-        )
-
-    if kind is CustomerInfrastructureType.location:
-        location_rows = (
-            db.query(PopSite.id, PopSite.name)
-            .filter(PopSite.name.ilike(pattern))
-            .order_by(PopSite.name)
-            .limit(bounded_limit)
-            .all()
-        )
-        return tuple(
-            CustomerInfrastructureOption(row.id, row.name) for row in location_rows
-        )
-
-    if kind is CustomerInfrastructureType.access_point:
-        access_point_rows = (
-            db.query(NetworkDevice.id, NetworkDevice.name, PopSite.name.label("site"))
-            .outerjoin(PopSite, PopSite.id == NetworkDevice.pop_site_id)
-            .filter(
-                NetworkDevice.is_active.is_(True),
-                NetworkDevice.device_type == DeviceType.access_point,
-                or_(
-                    NetworkDevice.name.ilike(pattern),
-                    NetworkDevice.hostname.ilike(pattern),
-                    NetworkDevice.mgmt_ip.ilike(pattern),
-                    PopSite.name.ilike(pattern),
-                ),
-            )
-            .order_by(NetworkDevice.name)
-            .limit(bounded_limit)
-            .all()
-        )
-        return tuple(
-            CustomerInfrastructureOption(row.id, row.name, row.site)
-            for row in access_point_rows
-        )
-
-    if kind is CustomerInfrastructureType.base_station:
-        base_station_rows = (
-            db.query(PopSite.id, PopSite.name)
-            .filter(PopSite.zabbix_group_id.isnot(None), PopSite.name.ilike(pattern))
-            .order_by(PopSite.name)
-            .limit(bounded_limit)
-            .all()
-        )
-        return tuple(
-            CustomerInfrastructureOption(row.id, row.name) for row in base_station_rows
-        )
-
-    if kind is CustomerInfrastructureType.olt:
-        olt_rows = (
-            db.query(OLTDevice.id, OLTDevice.name, OLTDevice.hostname)
-            .filter(
-                OLTDevice.is_active.is_(True),
-                or_(
-                    OLTDevice.name.ilike(pattern),
-                    OLTDevice.hostname.ilike(pattern),
-                    OLTDevice.mgmt_ip.ilike(pattern),
-                ),
-            )
-            .order_by(OLTDevice.name)
-            .limit(bounded_limit)
-            .all()
-        )
-        return tuple(
-            CustomerInfrastructureOption(row.id, row.name, row.hostname)
-            for row in olt_rows
-        )
-
-    if kind is CustomerInfrastructureType.pon_port:
-        pon_port_rows = (
-            db.query(PonPort.id, PonPort.name, OLTDevice.name.label("olt_name"))
-            .join(OLTDevice, OLTDevice.id == PonPort.olt_id)
-            .filter(
-                PonPort.is_active.is_(True),
-                OLTDevice.is_active.is_(True),
-                or_(PonPort.name.ilike(pattern), OLTDevice.name.ilike(pattern)),
-            )
-            .order_by(OLTDevice.name, PonPort.name)
-            .limit(bounded_limit)
-            .all()
-        )
-        return tuple(
-            CustomerInfrastructureOption(row.id, row.name, row.olt_name)
-            for row in pon_port_rows
-        )
-
-    cabinet_rows = (
-        db.query(FdhCabinet.id, FdhCabinet.name, FdhCabinet.code)
-        .filter(
-            FdhCabinet.is_active.is_(True),
-            or_(FdhCabinet.name.ilike(pattern), FdhCabinet.code.ilike(pattern)),
-        )
-        .order_by(FdhCabinet.name)
-        .limit(bounded_limit)
-        .all()
+    result = infrastructure_catalogue.search(
+        db,
+        query=InfrastructureSearch(
+            type=InfrastructureType(kind.value),
+            query=query,
+            limit=max(1, min(limit, 20)),
+        ),
     )
     return tuple(
-        CustomerInfrastructureOption(row.id, row.name, row.code) for row in cabinet_rows
+        CustomerInfrastructureOption(id=item.id, label=item.label, context=item.context)
+        for item in result.results
     )
 
 
 def customer_infrastructure_option_by_id(
-    db: Session,
-    *,
-    infrastructure_type: str | None,
-    infrastructure_id: str | None,
+    db: Session, *, infrastructure_type: str | None, infrastructure_id: str | None
 ) -> CustomerInfrastructureOption | None:
-    """Resolve one selected label without loading an infrastructure inventory."""
-
+    """Resolve a selected label through the shared native inventory owner."""
     kind = normalize_customer_infrastructure_type(infrastructure_type)
-    normalized_id = str(infrastructure_id or "").strip()
-    if kind is None or not normalized_id:
+    if kind is None or not infrastructure_id:
         return None
     try:
-        target_id = UUID(normalized_id)
+        target = UUID(infrastructure_id.strip())
     except ValueError as exc:
         raise ValueError("infrastructure_id must be a valid UUID") from exc
-
-    if kind is CustomerInfrastructureType.nas:
-        nas = db.get(NasDevice, target_id)
-        return CustomerInfrastructureOption(nas.id, nas.name) if nas else None
-    if kind is CustomerInfrastructureType.location:
-        location = db.get(PopSite, target_id)
-        return (
-            CustomerInfrastructureOption(location.id, location.name)
-            if location
-            else None
-        )
-    if kind is CustomerInfrastructureType.access_point:
-        access_point = db.get(NetworkDevice, target_id)
-        return (
-            CustomerInfrastructureOption(access_point.id, access_point.name)
-            if access_point
-            else None
-        )
-    if kind is CustomerInfrastructureType.base_station:
-        base_station = db.get(PopSite, target_id)
-        return (
-            CustomerInfrastructureOption(base_station.id, base_station.name)
-            if base_station
-            else None
-        )
-    if kind is CustomerInfrastructureType.olt:
-        olt = db.get(OLTDevice, target_id)
-        return CustomerInfrastructureOption(olt.id, olt.name) if olt else None
-    if kind is CustomerInfrastructureType.pon_port:
-        pon_port = db.get(PonPort, target_id)
-        if pon_port is None:
-            return None
-        return CustomerInfrastructureOption(
-            pon_port.id,
-            pon_port.name,
-            pon_port.olt.name if pon_port.olt else None,
-        )
-    cabinet = db.get(FdhCabinet, target_id)
+    option = infrastructure_catalogue.resolve(
+        db, reference=InfrastructureReference(type=kind, id=target), active_only=False
+    )
     return (
-        CustomerInfrastructureOption(cabinet.id, cabinet.name, cabinet.code)
-        if cabinet
+        CustomerInfrastructureOption(
+            id=option.id, label=option.label, context=option.context
+        )
+        if option
         else None
     )
 

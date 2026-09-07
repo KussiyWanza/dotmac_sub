@@ -243,6 +243,26 @@ def test_inbox_pagination_builds_only_available_navigation_links(
         assert f"page={next_page}" in rendered
 
 
+def test_inbox_lazy_pagination_does_not_claim_an_exact_history_total():
+    environment = Environment(loader=FileSystemLoader("templates"), autoescape=True)
+    pagination = environment.get_template(
+        "admin/inbox/_queue_macros.html"
+    ).module.inbox_pagination
+    list_query = team_inbox_projection.INBOX_LIST_DEFINITION.build_query(
+        search="router",
+        filters={},
+        page=1,
+        per_page=25,
+    )
+    page_meta = PageMeta.from_query(list_query, 26, total_is_exact=False)
+
+    rendered = str(pagination(list_query, page_meta, "/admin/inbox"))
+
+    assert "1&ndash;25 conversations &middot; more available" in rendered
+    assert "of 26 conversations" not in rendered
+    assert "page=2" in rendered
+
+
 def test_inbox_pagination_renders_compact_page_numbers_and_preserves_selection():
     environment = Environment(loader=FileSystemLoader("templates"), autoescape=True)
     pagination = environment.get_template(
@@ -300,8 +320,8 @@ def test_workspace_exposes_responsive_realtime_and_accessible_controls():
     assert "conversation_id" in sidebar
     assert "Advanced team conditions" in sidebar
     assert sidebar.count('name="inbox-filter-section"') == 2
-    assert '<details open class="group' not in sidebar
-    assert '<details hidden class="group' in sidebar
+    assert '<details open class="group' in sidebar
+    assert sidebar.count('<details hidden class="group') >= 2
     assert sidebar.count("applyAssignmentFilter('attention')") == 1
     assert "Needs attention <span" in sidebar
     assert "\n                        Resolved\n" in sidebar

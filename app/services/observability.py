@@ -289,6 +289,15 @@ def record_celery_task_success(
     """Record framework-level Celery task success signals."""
     if not task_name:
         return
+    if task_name == "app.tasks.dotmac_erp_outbox.sync_erp_operational_domains":
+        from app.services.dotmac_erp.operational_contracts import (
+            OperationalSyncRunOutcome,
+        )
+
+        # Completion of a blocked/no-op task is not successful ERP delivery.
+        outcome = OperationalSyncRunOutcome.model_validate(result)
+        if outcome.status != "success":
+            return
     detail = result if isinstance(result, dict) else None
     try:
         job_heartbeat.record_success(task_name, now=now)

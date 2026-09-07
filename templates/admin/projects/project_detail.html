@@ -4,6 +4,11 @@
 {% block title %}Project {{ project.number or project.id }}{% endblock %}
 
 {% block content %}
+{% if project_infrastructure %}
+<div class="mb-4 rounded-lg border border-slate-200 p-3 text-sm dark:border-slate-700">
+    <span class="font-semibold">Infrastructure:</span> {{ project_infrastructure.label }}{% if project_infrastructure.context %} · {{ project_infrastructure.context }}{% endif %}
+</div>
+{% endif %}
 {{ ambient_background('emerald', 'teal') }}
 <div class="relative z-10 space-y-6">
     {% call detail_header(

@@ -108,7 +108,7 @@ files are harmless; it prevents the subtraction from changing silently.
 
 | Path | Symbol | Category | Fingerprint |
 | --- | --- | --- | --- |
-| `tests/services/topology/test_coverage_metrics.py` | `<module>` | `outbound_transport` | `2a333a758c593d279f27877b1a36de495a66a8bd0a48f1ecebcfbfe6512a65bf` |
+| `tests/services/topology/test_coverage_metrics.py` | `<module>` | `outbound_transport` | `51fa94be3406bf06f9ae28167b6ac0160b8567ff79d95b4e9a88dded6fdc2b2e` |
 | `tests/test_ai_gateway.py` | `<module>` | `delivery_retry` | `8592de9de918a715812dd3b241f2f00930b30bc617bdf2674fdfc16abb797399` |
 | `tests/test_ai_gateway.py` | `<module>` | `outbound_transport` | `8592de9de918a715812dd3b241f2f00930b30bc617bdf2674fdfc16abb797399` |
 | `tests/test_crm_client_resilience.py` | `<module>` | `outbound_transport` | `58bc472074bb7bec95639e2575065066c05d8043983fa49bb10f3858d29320b0` |
@@ -123,6 +123,10 @@ files are harmless; it prevents the subtraction from changing silently.
 | `tests/test_team_inbox_meta_social_webhook.py` | `<module>` | `provider_credential` | `2cfb33c493921333d14bb1a84b0426ad12e15e535a8f752d0add3ff9e9d33002` |
 | `tests/test_team_inbox_smtp_runtime.py` | `test_readiness_uses_smtp_noop` | `outbound_transport` | `2df88d6ae0dba969bd2097a5459861379cf68d42b8542974efb0382c0a92e7f7` |
 | `tests/test_team_inbox_whatsapp_webhook.py` | `<module>` | `provider_credential` | `6b5ec793e3c6236cda3fd4a2acac14846cc9c8970a068551ed3b3bb8bfb2c3fc` |
+
+The 2026-09-05 review re-recorded `test_coverage_metrics.py` after its LLDP
+wrapper assertions moved to the typed detached-poll contracts. The file remains
+test-only, and its existing HTTP error fixture does not add a runtime transport.
 
 ## Review rule
 

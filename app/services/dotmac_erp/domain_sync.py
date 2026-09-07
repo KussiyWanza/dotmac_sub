@@ -7,17 +7,22 @@ each local cursor only when the complete bulk request succeeds without errors.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import hashlib
+import json
+import logging
+from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from uuid import UUID
 
+from pydantic import ValidationError
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
-from app.models.erp_domain_sync import ErpDomainSyncCursor
+from app.models.erp_domain_sync import ErpDomainSyncCursor, ErpOperationalSyncState
 from app.models.project import Project, ProjectTask
 from app.models.support import Ticket
 from app.models.work_order import WorkOrder
+from app.services.dotmac_erp.client import DotMacERPError, DotMacERPTransientError
 from app.services.dotmac_erp.operational_contracts import (
     ErpOperationalSyncCommand,
     ErpOperationalSyncOutcome,
@@ -29,7 +34,15 @@ from app.services.dotmac_erp.operational_contracts import (
     OperationalSyncRunOutcome,
 )
 from app.services.events import EventType, emit_event
+from app.services.integrations import installations
+from app.services.integrations.backoffice_contracts import (
+    ERP_OPERATIONAL_SYNC_CAPABILITY,
+)
+from app.services.integrations.diagnostics import OperationDiagnostic, safe_diagnostic
 from app.services.integrations.erp_capability import capability_client
+from app.services.integrations.runtime_execution import RuntimeExecutionError
+
+logger = logging.getLogger(__name__)
 from app.services.owner_commands import (
     CommandContext,
     OwnerCommandDefinition,
@@ -40,7 +53,7 @@ from app.services.owner_commands import (
 _DOMAINS = ("projects", "project_tasks", "tickets", "work_orders")
 _SYNC_COMMAND = OwnerCommandDefinition(
     owner="integration.dotmac_erp_operational_context_adapter",
-    concern="per-domain ERP operational-context delivery watermarks",
+    concern="per-domain ERP operational-context delivery watermarks and retry admission",
     name="sync_operational_domains",
 )
 
@@ -268,6 +281,83 @@ def _sync_operational_domains(
     command: OperationalSyncExecution,
     client: OperationalSyncClient | None,
 ) -> OperationalSyncRunOutcome:
+    state = db.scalar(
+        select(ErpOperationalSyncState)
+        .where(ErpOperationalSyncState.id == 1)
+        .with_for_update(skip_locked=True)
+    )
+    if state is None:
+        if db.get(ErpOperationalSyncState, 1) is None:
+            raise RuntimeError(
+                "ERP sync admission state is missing; apply migration 579"
+            )
+        return OperationalSyncRunOutcome(
+            projects=0,
+            tickets=0,
+            project_tasks=0,
+            work_orders=0,
+            status="already_running",
+            skipped="already_running",
+        )
+    now = datetime.now(UTC)
+    configuration = None
+    configuration_error = False
+    binding = None
+    if client is None:
+        try:
+            binding = installations.require_enabled_capability_binding(
+                db,
+                capability_id=ERP_OPERATIONAL_SYNC_CAPABILITY,
+            )
+        except installations.InstallationError:
+            configuration_error = True
+        if binding is not None:
+            configuration = {
+                "binding": str(binding.id),
+                "revision": str(binding.installation.current_config_revision_id),
+                "manifest": binding.installation.manifest_digest,
+                "scope": binding.scope_json,
+                "policy": binding.policy_json,
+            }
+    fingerprint = hashlib.sha256(
+        json.dumps(configuration, sort_keys=True).encode()
+    ).hexdigest()
+    retry_at = state.next_attempt_at
+    if retry_at is not None and retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=UTC)
+    if state.configuration_fingerprint == fingerprint and retry_at and now < retry_at:
+        return OperationalSyncRunOutcome(
+            projects=0,
+            tickets=0,
+            project_tasks=0,
+            work_orders=0,
+            status="retryable" if state.status == "retryable" else "blocked",
+            skipped="retry_not_due",
+            next_attempt_at=retry_at,
+            diagnostic=OperationDiagnostic.model_validate(state.diagnostic)
+            if state.diagnostic
+            else None,
+        )
+    if state.configuration_fingerprint != fingerprint:
+        state.failure_count = 0
+    state.configuration_fingerprint = fingerprint
+    state.last_attempt_at = now
+    if configuration_error:
+        return _record_failure(
+            db, state, safe_diagnostic(code="configuration_unavailable"), now=now
+        )
+    if binding is not None:
+        try:
+            command = OperationalSyncExecution.model_validate(
+                {
+                    "domains": (binding.scope_json or {}).get("domains") or _DOMAINS,
+                    "batch_size": (binding.policy_json or {}).get("batch_size") or 100,
+                }
+            )
+        except ValidationError:
+            return _record_failure(
+                db, state, safe_diagnostic(code="configuration_unavailable"), now=now
+            )
     limit = command.batch_size
     selected = tuple(dict.fromkeys(command.domains))
     cursors = {domain: _cursor(db, domain) for domain in selected}
@@ -289,32 +379,56 @@ def _sync_operational_domains(
     if dependencies_catching_up:
         project_tasks = []
     if not projects and not project_tasks and not tickets and not work_orders:
+        state.status = "ready"
+        state.failure_count = 0
+        state.next_attempt_at = None
+        state.diagnostic = None
         return OperationalSyncRunOutcome(
             projects=0, project_tasks=0, tickets=0, work_orders=0
         )
 
-    outbound_command = ErpOperationalSyncCommand(
-        projects=tuple(_project_payload(row) for row in projects),
-        project_tasks=tuple(_project_task_payload(row) for row in project_tasks),
-        tickets=tuple(_ticket_payload(row) for row in tickets),
-        work_orders=tuple(_work_order_payload(row) for row in work_orders),
-    )
+    try:
+        outbound_command = ErpOperationalSyncCommand(
+            projects=tuple(_project_payload(row) for row in projects),
+            project_tasks=tuple(_project_task_payload(row) for row in project_tasks),
+            tickets=tuple(_ticket_payload(row) for row in tickets),
+            work_orders=tuple(_work_order_payload(row) for row in work_orders),
+        )
+    except ValidationError:
+        return _record_failure(
+            db, state, safe_diagnostic(code="validation_error"), now=now
+        )
     owned_client = client or capability_client(db)
     created_client = client is None
     try:
         response = owned_client.sync_operational_domains(outbound_command)
+    except DotMacERPError as exc:
+        return _record_failure(
+            db,
+            state,
+            exc.diagnostic,
+            now=now,
+            transient=isinstance(exc, DotMacERPTransientError),
+        )
+    except (installations.InstallationError, RuntimeExecutionError, ValidationError):
+        return _record_failure(
+            db,
+            state,
+            safe_diagnostic(code="configuration_unavailable"),
+            now=now,
+        )
     finally:
         if created_client:
             owned_client.close()
     errors = response.errors
     if errors:
-        return OperationalSyncRunOutcome(
-            projects=0,
-            project_tasks=0,
-            tickets=0,
-            work_orders=0,
-            errors=errors,
+        return _record_failure(
+            db, state, safe_diagnostic(code="item_rejected"), now=now
         )
+    state.status = "ready"
+    state.failure_count = 0
+    state.next_attempt_at = None
+    state.diagnostic = None
     if "projects" in cursors:
         _advance(db, cursors["projects"], projects)
     if "project_tasks" in cursors:
@@ -344,43 +458,72 @@ def _sync_operational_domains(
     )
 
 
-def run_sync_operational_domains() -> dict[str, object]:
-    """Own the background session for operational-domain ERP synchronization."""
-    from app.db import task_session
-    from app.models.integration_platform import IntegrationCapabilityBinding
-    from app.services.integrations.backoffice_contracts import (
-        ERP_OPERATIONAL_SYNC_CAPABILITY,
+def _record_failure(
+    db: Session,
+    state: ErpOperationalSyncState,
+    diagnostic: OperationDiagnostic,
+    *,
+    now: datetime,
+    transient: bool = False,
+) -> OperationalSyncRunOutcome:
+    context = current_command_context(db)
+    diagnostic = diagnostic.model_copy(
+        update={
+            "operation": "sync_operational_domains",
+            "operation_id": diagnostic.operation_id or context.command_id,
+            "correlation_id": diagnostic.correlation_id or context.correlation_id,
+        }
+    )
+    state.failure_count += 1
+    state.status = "retryable" if transient else "blocked"
+    delay = (
+        min(3600, 300 * 2 ** min(state.failure_count - 1, 4)) if transient else 21600
+    )
+    delay = max(delay, diagnostic.retry_after_seconds or 0)
+    state.next_attempt_at = now + timedelta(seconds=delay)
+    state.diagnostic = diagnostic.model_dump(mode="json")
+    emit_event(
+        db,
+        EventType.erp_operational_context_retry_deferred,
+        {
+            "status": state.status,
+            "next_attempt_at": state.next_attempt_at.isoformat(),
+            "diagnostic": state.diagnostic,
+        },
+        actor=context.actor,
+        dispatch_after_commit=False,
+    )
+    db.flush()
+    logger.warning(
+        "erp_operational_sync_blocked",
+        extra={
+            "sync_status": state.status,
+            "next_attempt_at": state.next_attempt_at.isoformat(),
+            "diagnostic": state.diagnostic,
+        },
+    )
+    return OperationalSyncRunOutcome(
+        projects=0,
+        tickets=0,
+        project_tasks=0,
+        work_orders=0,
+        status="retryable" if transient else "blocked",
+        next_attempt_at=state.next_attempt_at,
+        diagnostic=diagnostic,
     )
 
-    with task_session() as db:
-        binding = (
-            db.query(IntegrationCapabilityBinding)
-            .filter(
-                IntegrationCapabilityBinding.capability_id
-                == ERP_OPERATIONAL_SYNC_CAPABILITY,
-                IntegrationCapabilityBinding.state == "enabled",
-            )
-            .one_or_none()
-        )
-        if binding is None:
-            return OperationalSyncRunOutcome(
-                projects=0,
-                project_tasks=0,
-                tickets=0,
-                work_orders=0,
-                skipped="capability_disabled",
-            ).model_dump(mode="json")
-        domains = tuple((binding.scope_json or {}).get("domains") or _DOMAINS)
-        batch_size = int((binding.policy_json or {}).get("batch_size") or 100)
-        db.rollback()
+
+def run_sync_operational_domains() -> OperationalSyncRunOutcome:
+    """Own the background session for operational-domain ERP synchronization."""
+    from app.services.db_session_adapter import db_session_adapter
+
+    with db_session_adapter.owner_command_session() as db:
         return sync_operational_domains(
             db,
-            command=OperationalSyncExecution.model_validate(
-                {"domains": domains, "batch_size": batch_size}
-            ),
+            command=OperationalSyncExecution(),
             context=CommandContext.system(
                 actor="erp-operational-sync-task",
                 scope="erp-operational-context",
                 reason="scheduled operational-context projection",
             ),
-        ).model_dump(mode="json")
+        )

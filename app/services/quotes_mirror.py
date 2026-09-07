@@ -2,20 +2,19 @@
 
 All DB + CRM access for the customer-facing quote flow lives here so the API/web
 wrappers stay thin. The CRM owns quotes; this keeps a read-optimised local copy
-hydrated by CRM ``quote.*`` webhooks + a periodic reconcile pull + lazy on-view
-refresh, plus the write-through that requests a new map-pinned quote. The
+preserved as historical data after retirement. Reconciliation and commands
+never contact CRM, even if a binding remains enabled. The
 estimate/feasibility/deposit are computed by the CRM; this is a faithful copy.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from enum import StrEnum
 
-from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -25,22 +24,18 @@ from app.models.subscriber import Subscriber
 from app.schemas.notification import PushIntent
 from app.services.audit_adapter import AuditActor, record_audit_event
 from app.services.common import coerce_uuid
-from app.services.crm_client import CRMClientError
-from app.services.crm_portal import resolve_crm_subscriber_id
 from app.services.domain_errors import DomainError
-from app.services.integrations import installations
-from app.services.integrations.connectors.dotmac_crm import (
-    CRM_QUOTE_COMMAND_CAPABILITY,
-)
-from app.services.integrations.crm_capability import CONNECTOR_KEY, capability_client
-from app.services.integrations.installations import InstallationError
+from app.services.quote_retirement import retirement_outcome
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_REFRESH_TTL_SECONDS = 300  # quotes change slowly; refresh on view
+_DEFAULT_REFRESH_TTL_SECONDS = (
+    300  # compatibility parameter; retired reads never refresh
+)
 
 
 class QuoteReadState(StrEnum):
+    retired = "retired"
     current = "current"
     stale = "stale"
     unavailable = "unavailable"
@@ -182,69 +177,10 @@ def ensure_portal_quote_commands_available(
     *,
     audit_context: PortalQuoteAuditContext | None = None,
 ) -> None:
-    """Fail closed unless the CRM portal-quote command transport is enabled.
-
-    This is the money-path precondition. A caller that is about to record a
-    customer payment whose only consequence is a CRM quote acceptance must ask
-    this owner BEFORE the payment is recorded, so a deposit is never taken for
-    an acceptance that cannot be completed.
-
-    Resolves local capability configuration only - no network call - so a
-    decommissioned CRM is refused immediately rather than hanging.
-    """
-    try:
-        installations.require_enabled_capability_binding(
-            db,
-            connector_key=CONNECTOR_KEY,
-            capability_id=CRM_QUOTE_COMMAND_CAPABILITY,
-        )
-    except InstallationError as exc:
-        error = _portal_quote_error(
-            "transport_unavailable",
-            capability_id=CRM_QUOTE_COMMAND_CAPABILITY,
-            reason="capability_binding_not_enabled",
-        )
-        if audit_context is not None:
-            _audit_portal_quote_refusal(db, audit_context, error)
-        raise error from exc
-
-
-def _run_portal_quote_command(
-    db: Session,
-    context: PortalQuoteAuditContext,
-    command: Callable[[], object],
-) -> dict[str, object]:
-    """Run one Sub -> CRM quote command under the fail-closed contract."""
-    ensure_portal_quote_commands_available(db, audit_context=context)
-
-    try:
-        item = command()
-    except (CRMClientError, InstallationError) as exc:
-        error = _portal_quote_error(
-            "transport_failed",
-            capability_id=CRM_QUOTE_COMMAND_CAPABILITY,
-            reason=type(exc).__name__,
-        )
-        logger.warning(
-            "portal_quote_command_failed action=%s error_type=%s",
-            context.action,
-            type(exc).__name__,
-        )
-        _audit_portal_quote_refusal(db, context, error)
-        raise error from exc
-
-    if not isinstance(item, dict) or not item.get("id"):
-        # The transport reported success but handed back nothing identifying a
-        # quote. Returning it would be a 200 with an empty body on a money
-        # path - the silent success this contract exists to forbid.
-        error = _portal_quote_error(
-            "command_not_acknowledged",
-            capability_id=CRM_QUOTE_COMMAND_CAPABILITY,
-            reason="missing_quote_identity",
-        )
-        _audit_portal_quote_refusal(db, context, error)
-        raise error
-    return item
+    error = _portal_quote_error("retired", reason=retirement_outcome().status)
+    if audit_context is not None:
+        _audit_portal_quote_refusal(db, audit_context, error)
+    raise error
 
 
 def _to_dt(value: object) -> datetime | None:
@@ -348,44 +284,13 @@ def _local_subscriber(db: Session, body: dict[str, object]) -> Subscriber | None
 
 
 def reconcile_subscriber(db: Session, subscriber_id: str) -> bool:
-    """Pull the subscriber's quotes from the CRM into the mirror. Returns True on
-    success, False if not CRM-linked. Raises CRMClientError on outage."""
-    crm_subscriber_id = resolve_crm_subscriber_id(db, str(subscriber_id))
-    if not crm_subscriber_id:
-        return False
-
-    data = capability_client(db).get_portal_quotes(crm_subscriber_id)
-    sub_uuid = coerce_uuid(str(subscriber_id))
-
-    for item in data.get("quotes") or []:
-        if isinstance(item, dict):
-            _upsert_row(db, subscriber_id=sub_uuid, item=item)
-
-    sync = db.get(QuoteSyncState, sub_uuid)
-    if sync is None:
-        sync = QuoteSyncState(subscriber_id=sub_uuid)
-        db.add(sync)
-    sync.synced_at = datetime.now(UTC)
-    db.commit()
-    return True
+    """Compatibility entry point for queued jobs; CRM is retired."""
+    return False
 
 
 def reconcile_all(db: Session, *, stale_after_seconds: int = 3600) -> int:
-    cutoff = datetime.now(UTC) - timedelta(seconds=max(60, stale_after_seconds))
-    stale = db.scalars(
-        select(QuoteSyncState.subscriber_id).where(QuoteSyncState.synced_at < cutoff)
-    ).all()
-    done = 0
-    for subscriber_id in stale:
-        try:
-            if reconcile_subscriber(db, str(subscriber_id)):
-                done += 1
-        except (CRMClientError, InstallationError) as exc:
-            db.rollback()
-            logger.warning(
-                "quote_reconcile_failed subscriber=%s: %s", subscriber_id, exc
-            )
-    return done
+    """Retired: preserve mirrors and synchronization timestamps unchanged."""
+    return 0
 
 
 def _row_to_item(row: QuoteMirror) -> dict[str, object]:
@@ -415,23 +320,6 @@ def _row_to_item(row: QuoteMirror) -> dict[str, object]:
     }
 
 
-def _enqueue_lazy_refresh(subscriber_id: str) -> None:
-    """Enqueue a background mirror refresh (best-effort — the periodic reconcile
-    is the backstop, so an enqueue failure must not break the read)."""
-    from app.services.queue_adapter import enqueue_task
-
-    try:
-        enqueue_task(
-            "app.tasks.quotes.refresh_quote_mirror_for_subscriber",
-            args=[subscriber_id],
-            source="quote_lazy_refresh",
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "quote_lazy_refresh_enqueue_failed subscriber=%s: %s", subscriber_id, exc
-        )
-
-
 def read_for_subscriber(
     db: Session,
     subscriber_id: str,
@@ -454,29 +342,6 @@ def read_for_subscriber_result(
 ) -> QuoteReadResult:
     """Build quotes plus explicit CRM projection freshness for web renderers."""
     sub_uuid = coerce_uuid(str(subscriber_id))
-    sync = db.get(QuoteSyncState, sub_uuid)
-    cutoff = datetime.now(UTC) - timedelta(seconds=max(0, refresh_ttl_seconds))
-    synced = _as_utc(sync.synced_at) if sync else None
-    state = QuoteReadState.current
-    if sync is None or synced is None:
-        # Cold cache — fetch synchronously so the first load is populated.
-        try:
-            reconcile_subscriber(db, str(subscriber_id))
-        except (CRMClientError, InstallationError) as exc:
-            db.rollback()
-            state = QuoteReadState.unavailable
-            logger.warning(
-                "quote_lazy_refresh_unavailable error_type=%s", type(exc).__name__
-            )
-    elif synced < cutoff:
-        state = QuoteReadState.stale
-        # Warm but stale — serve the stale copy now and refresh in the background.
-        # Optimistically stamp synced_at so concurrent reads within the TTL don't
-        # each enqueue (debounce); the refresh task re-stamps after pulling.
-        sync.synced_at = datetime.now(UTC)
-        db.commit()
-        _enqueue_lazy_refresh(str(subscriber_id))
-
     rows = db.scalars(
         select(QuoteMirror)
         .where(QuoteMirror.subscriber_id == sub_uuid)
@@ -487,8 +352,14 @@ def read_for_subscriber_result(
         1 for r in rows if r.status not in ("accepted", "rejected", "expired")
     )
     return QuoteReadResult(
-        payload={"quotes": items, "total": len(items), "open": open_count},
-        state=state,
+        payload={
+            "quotes": items,
+            "total": len(items),
+            "open": open_count,
+            "source_state": retirement_outcome().status,
+            "actions_available": retirement_outcome().actions_available,
+        },
+        state=QuoteReadState.retired,
     )
 
 
@@ -502,37 +373,15 @@ def request_quote(
     region: str | None = None,
     note: str | None = None,
 ) -> dict[str, object]:
-    """Write-through: request a map-pinned installation quote from the CRM,
-    mirror the result locally, and return it.
-
-    Fail-closed (see the portal quote command contract above): raises 400 if
-    the account is not CRM-linked, and ``PortalQuoteCommandError`` if the
-    transport is disabled, fails, or does not acknowledge a quote. It never
-    returns an empty payload and never mirrors an unacknowledged command."""
-    crm_subscriber_id = resolve_crm_subscriber_id(db, str(subscriber_id))
-    if not crm_subscriber_id:
-        raise HTTPException(status_code=400, detail="Account is not linked to the CRM")
-
-    item = _run_portal_quote_command(
+    """Refuse retired CRM quoting before resolving customer data or transport."""
+    ensure_portal_quote_commands_available(
         db,
-        PortalQuoteAuditContext(
+        audit_context=PortalQuoteAuditContext(
             action=PORTAL_QUOTE_REQUEST_REFUSED,
-            subscriber_id=str(subscriber_id),
-        ),
-        lambda: capability_client(db).request_portal_quote(
-            crm_subscriber_id,
-            latitude=latitude,
-            longitude=longitude,
-            address=address,
-            region=region,
-            note=note,
+            subscriber_id=subscriber_id,
         ),
     )
-
-    sub_uuid = coerce_uuid(str(subscriber_id))
-    _upsert_row(db, subscriber_id=sub_uuid, item=item)
-    db.commit()
-    return item
+    raise AssertionError("retired quote command must refuse")
 
 
 def accept_quote(
@@ -544,38 +393,15 @@ def accept_quote(
     deposit_amount: str,
     provider: str | None = None,
 ) -> dict:
-    """Write-through: accept a quote after the deposit is verified. The CRM
-    records the deposit + triggers the sales-order/install-project; mirror the
-    returned quote locally.
-
-    Fail-closed: raises ``PortalQuoteCommandError`` rather than reporting a
-    success it did not observe. Money has ALREADY been recorded by the time
-    this runs, so callers must call ``ensure_portal_quote_commands_available``
-    before they record it - see ``quote_deposits.verify_deposit``."""
-    crm_subscriber_id = resolve_crm_subscriber_id(db, str(subscriber_id))
-    if not crm_subscriber_id:
-        raise HTTPException(status_code=400, detail="Account is not linked to the CRM")
-
-    item = _run_portal_quote_command(
+    """Refuse retired CRM acceptance; native Selfcare quoting has its own owner."""
+    ensure_portal_quote_commands_available(
         db,
-        PortalQuoteAuditContext(
+        audit_context=PortalQuoteAuditContext(
             action=PORTAL_QUOTE_ACCEPT_REFUSED,
-            subscriber_id=str(subscriber_id),
-            details={"quote_id": str(quote_id)},
-        ),
-        lambda: capability_client(db).accept_portal_quote(
-            crm_subscriber_id,
-            quote_id,
-            deposit_reference=deposit_reference,
-            deposit_amount=deposit_amount,
-            provider=provider,
+            subscriber_id=subscriber_id,
         ),
     )
-
-    sub_uuid = coerce_uuid(str(subscriber_id))
-    _upsert_row(db, subscriber_id=sub_uuid, item=item)
-    db.commit()
-    return item
+    raise AssertionError("retired quote command must refuse")
 
 
 _STATUS_EVENTS = {

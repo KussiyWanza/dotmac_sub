@@ -85,6 +85,26 @@ def test_subscriber_typeahead_finds_records_beyond_preloaded_people_limit(
     assert results[0]["service_address"] == "1 Search Way, Lagos, LA"
 
 
+def test_customer_typeahead_people_searches_display_name_and_subscriber_number(
+    db_session,
+) -> None:
+    target = Subscriber(
+        first_name="Hidden",
+        last_name="Customer",
+        display_name="NOC Search Alias",
+        email=f"{uuid4().hex}@example.com",
+        subscriber_number="SUB-NOC-777",
+    )
+    db_session.add(target)
+    db_session.commit()
+
+    display_name_results = typeahead_service.people(db_session, "NOC Search", 8)
+    subscriber_number_results = typeahead_service.people(db_session, "SUB-NOC", 8)
+
+    assert str(target.id) in {str(item["id"]) for item in display_name_results}
+    assert str(target.id) in {str(item["id"]) for item in subscriber_number_results}
+
+
 def test_ticket_form_context_prefills_selected_person_labels(db_session) -> None:
     subscriber = Subscriber(
         first_name="Typeahead",

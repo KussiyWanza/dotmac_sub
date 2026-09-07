@@ -188,6 +188,11 @@ class PrepaidOpeningFundingConsumption(Base):
             "length(reconciliation_fingerprint) = 64",
             name="ck_prepaid_opening_consumption_fingerprint",
         ),
+        CheckConstraint(
+            "(baseline_id IS NOT NULL AND opening_position_id IS NULL) "
+            "OR (baseline_id IS NULL AND opening_position_id IS NOT NULL)",
+            name="ck_prepaid_opening_consumption_one_source",
+        ),
         Index(
             "uq_prepaid_opening_consumption_invoice",
             "invoice_id",
@@ -208,15 +213,23 @@ class PrepaidOpeningFundingConsumption(Base):
             "baseline_id",
             "created_at",
         ),
+        Index(
+            "ix_prepaid_opening_consumption_opening_position",
+            "opening_position_id",
+            "created_at",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    baseline_id: Mapped[uuid.UUID] = mapped_column(
+    baseline_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("prepaid_funding_baselines.id", ondelete="RESTRICT"),
-        nullable=False,
+    )
+    opening_position_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("customer_subledger_opening_positions.id", ondelete="RESTRICT"),
     )
     account_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -247,6 +260,7 @@ class PrepaidOpeningFundingConsumption(Base):
     )
 
     baseline = relationship("PrepaidFundingBaseline")
+    opening_position = relationship("CustomerSubledgerOpeningPosition")
     account = relationship("Subscriber")
     invoice = relationship("Invoice")
     ledger_entry = relationship("LedgerEntry")

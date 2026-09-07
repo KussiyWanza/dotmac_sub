@@ -21,10 +21,12 @@ from app.api.staff_sync import (
     sync_staff_erp_department,
     update_staff_account_roles,
 )
+from app.models.auth import AuthProvider
 from app.models.rbac import Role, SystemUserRole
 from app.models.service_team import ServiceTeamExternalReference, ServiceTeamMember
 from app.models.system_user import SystemUser
-from app.services import service_team_lifecycle
+from app.services import credential_party_binding, service_team_lifecycle
+from app.services.operator_tenant import provision_operator_tenant
 from app.services.owner_commands import CommandContext
 
 _AUTH = {
@@ -36,6 +38,28 @@ _AUTH = {
         "operations:service_team:membership",
     ],
 }
+
+
+@pytest.fixture(autouse=True)
+def local_authentication_binding(db_session) -> None:
+    provision_operator_tenant(db_session)
+    if db_session.in_transaction():
+        db_session.rollback()
+    credential_party_binding.install_authentication_binding(
+        db_session,
+        credential_party_binding.AuthenticationBindingInstallation(
+            context=CommandContext.system(
+                actor="operator:test",
+                scope=credential_party_binding.AUTHENTICATION_BINDING_INSTALL_SCOPE,
+                reason="staff sync tests require local authentication",
+                idempotency_key="authentication-binding:local.staff-sync-test",
+            ),
+            binding_key="local.staff-sync-test",
+            mechanism_code=AuthProvider.local.value,
+            name="Staff sync local authentication",
+            description="Test verifier for ERP staff sync local credentials",
+        ),
+    )
 
 
 @pytest.fixture()

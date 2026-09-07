@@ -78,10 +78,32 @@ identifiers are provenance attributes only and are never decision or join keys.
 Vendor installation-project lifecycle and workspace owners retain their
 existing, non-overlapping authority.
 
+Optional Cable Rerun infrastructure uses the structural relationship and typed
+catalogue/scope contracts in `PROJECT_INFRASTRUCTURE_SCOPE.md`. The project owner
+validates and writes that relationship, then requests the installation-scope
+participant atomically. Selecting an asset does not assign a vendor.
+
 `ui.project_list_projection` owns the complete typed list query: visibility
 scope, search fields, filters, status vocabulary, stable sorting, pagination,
 freshness, and action eligibility. Routes serialize inputs and templates render
 the returned model without redefining these rules.
+
+The same UI owner provides the project-form customer picker. The form no longer
+loads a fixed customer dropdown: after two characters it sends a 250 ms
+debounced request to a project-authoring endpoint, which accepts only
+`project:create` or `project:update`, caps results at 20, and searches active
+customer name, native account ID, account number, subscriber number, and email
+facts owned by `customer.accounts`. The typed projection returns an informative label and the
+exact native Subscriber UUID; the unnamed display input is never accepted as
+identity. Clearing the picker submits an empty canonical value and removes an
+existing optional Project-to-Subscriber relationship on update.
+
+`operations.project_lifecycle` remains the command owner and revalidates the
+selected UUID. New project relationships and changed customer relationships
+must target an active Subscriber. An unchanged legacy relationship to an
+inactive Subscriber remains editable so an operator can review or clear it.
+This is a read/UI and command-validation cutover over existing columns; it does
+not require a database migration.
 
 The project and task detail pages compose field work through
 `operations.work_orders`. A project detail shows every native work order whose

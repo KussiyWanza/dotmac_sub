@@ -60,7 +60,10 @@ WORKFLOW_GUIDANCE: tuple[AdminWorkflowGuidance, ...] = (
         "Choose a work area from the sidebar.",
         "Start from Customers for a person or service, and Billing for an invoice, payment, proof, credit, or reconciliation item.",
         "Open the customer detail page for work affecting one customer.",
-        notes=("Use visible actions on the owning record; do not work from memory.",),
+        notes=(
+            "Use visible actions on the owning record; do not work from memory.",
+            "If a session-expired page appears, use Refresh page so the same Admin page reloads with a fresh token.",
+        ),
     ),
     _guide(
         "find-customer",
@@ -96,6 +99,7 @@ WORKFLOW_GUIDANCE: tuple[AdminWorkflowGuidance, ...] = (
         "Use one page to review customer, service, network, billing, ticket, and timeline context.",
         ("/admin/customers/",),
         "Use Account for profile and portal access, Service for subscriptions, Network for access, Billing for financial evidence, Tickets for support, and Timeline for history.",
+        "In Billing, use Extensions to review pending, applied, canceled, and reversed service-extension requests; billing-date impact appears when an extension has been applied.",
         "Open the specific record before performing a state-changing action.",
         notes=(
             "Timeline and ledger entries are evidence; review them before deciding on a correction.",
@@ -182,6 +186,29 @@ WORKFLOW_GUIDANCE: tuple[AdminWorkflowGuidance, ...] = (
         ),
     ),
     _guide(
+        "project-authoring",
+        "Projects",
+        "Create and update projects",
+        "Project managers, operations",
+        "Create project work against the correct customer account or infrastructure.",
+        ("/admin/projects",),
+        "Open New Project or edit the project that owns the work.",
+        "Search for an active customer by name, account ID, account number, subscriber number, or email, then choose the matching result.",
+        "Clear the customer field when the project is intentionally not linked to a customer.",
+        "For Cable Rerun infrastructure work, choose the infrastructure type, enter at least two characters, and select the matching result. Check its name and location or device details.",
+        "Leave Infrastructure blank for customer-only work. A cable rerun can reference both a customer and infrastructure, or neither while planning.",
+        "Select the appropriate template, save, and check the infrastructure on the project detail page. A template enabled for vendor work and either a customer or infrastructure prepares the vendor work record.",
+        "Assign an active vendor through the vendor workflow when its work record is active and in draft.",
+        "Review the project type, status, priority, team, schedule, and customer before saving.",
+        notes=(
+            "The visible customer label is search text; the selected customer account is the identity saved with the project.",
+            "Typing an infrastructure name alone does not select it. Changing the search clears the previous selection; use Clear infrastructure to remove it.",
+            "For an older unscoped project, review and save its infrastructure and vendor-enabled template. Do not guess the target from the project name.",
+            "Assigned or published work cannot be retargeted through ordinary project edits. A draft vendor work record cannot lose its last customer, infrastructure, or buildout reference.",
+            "Selecting infrastructure does not assign a vendor or approve a quote or payment.",
+        ),
+    ),
+    _guide(
         "billing-overview",
         "Billing",
         "Understand customer billing",
@@ -231,6 +258,7 @@ WORKFLOW_GUIDANCE: tuple[AdminWorkflowGuidance, ...] = (
         "Set the reason, dates or days, and affected customer or subscription scope.",
         "Review billing-date and access effects before confirming.",
         "Use cancellation for pending extensions and reversal for applied extensions.",
+        "Verify the request state and any recorded billing-date impact from the customer Billing tab under Extensions.",
         notes=("Do not manually edit billing dates to undo an extension.",),
     ),
     _guide(
@@ -242,10 +270,13 @@ WORKFLOW_GUIDANCE: tuple[AdminWorkflowGuidance, ...] = (
         ("/admin/billing/payments",),
         "Confirm external payment evidence, then enter amount, currency, method, date, reference, and memo.",
         "Review the preview, duplicate-reference and duplicate-evidence warnings, allocation, and service effects before confirming.",
+        "When verified prepaid credit covers the complete renewal charge, the system creates and pays one invoice for that service period, grants the matching coverage, and updates the next billing date together.",
+        "If the complete prepaid charge is unavailable, no renewal invoice is created and the billing date is not moved.",
         "Acknowledge duplicate risk only when the reviewed bank evidence proves the payment is distinct.",
         "Use allocation for existing unallocated value; it does not create new money.",
         notes=(
             "Use Payment Proof review for customer-uploaded transfer receipts; never bypass a duplicate warning by changing the reference.",
+            "Do not create a manual invoice or manually change the next billing date to imitate a prepaid renewal.",
         ),
     ),
     _guide(
@@ -287,6 +318,36 @@ WORKFLOW_GUIDANCE: tuple[AdminWorkflowGuidance, ...] = (
         notes=(
             "Tickets track communication and follow-up; they do not own billing or service state changes.",
             "Ticket assignment uses the same ticket-update authority as the rest of the edit workflow.",
+        ),
+    ),
+    _guide(
+        "support-csat-report",
+        "Support",
+        "Review support CSAT",
+        "Support leads, managers",
+        "Review customer satisfaction evidence for resolved support interactions.",
+        ("/admin/reports/support-csat",),
+        "Filter by date range, rating, source, status, agent, or service team.",
+        "Open the linked ticket or inbox conversation when the rating needs operational follow-up.",
+        "Export CSV only for authorized support review or management reporting.",
+        notes=(
+            "CSAT rows are historical snapshots; do not reinterpret them from current assignment state.",
+        ),
+    ),
+    _guide(
+        "team-inbox",
+        "Support",
+        "Use the team inbox",
+        "Support, operations",
+        "Review and filter customer conversations without losing route, channel, or assignment context.",
+        ("/admin/inbox",),
+        "Use search, lifecycle, assignment, channel, team, and activity filters to narrow the queue.",
+        "Use All only when historical conversations should be included; use Active or a specific status for operational work.",
+        "Open the conversation or linked ticket before acting, then return to the same filtered queue context.",
+        notes=(
+            "Historical inbox views load bounded pages and may show that more results are available before an exact final total is known.",
+            "In Manager AI, select a Conversation or use Period Review with a period and any channel or status filters, then submit your question with Ask AI.",
+            "Read the response under Answer; emphasis and lists are formatted, while HTML-like text remains plain text. Verify AI advice against the source conversations before acting.",
         ),
     ),
     _guide(

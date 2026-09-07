@@ -480,7 +480,13 @@ class SelfServeQuotes:
         open_count = sum(
             1 for i in items if i["status"] not in _PORTAL_CLOSED_QUOTE_STATUSES
         )
-        return {"quotes": items, "total": len(items), "open": open_count}
+        return {
+            "quotes": items,
+            "total": len(items),
+            "open": open_count,
+            "source_state": "native",
+            "actions_available": True,
+        }
 
     @staticmethod
     def request_quote(

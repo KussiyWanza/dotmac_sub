@@ -122,6 +122,45 @@ def test_project_number_continues_after_imported_series(db_session, subscriber):
     )
 
 
+def test_project_rejects_inactive_customer_for_new_relationship(db_session, subscriber):
+    subscriber.is_active = False
+    db_session.commit()
+
+    with pytest.raises(ProjectServiceError) as exc_info:
+        projects.create(
+            db_session,
+            ProjectCreate(
+                name="Inactive customer project",
+                subscriber_id=subscriber.id,
+            ),
+        )
+
+    assert exc_info.value.code == "operations.project_lifecycle.invalid_input"
+
+
+def test_project_can_retain_or_clear_legacy_inactive_customer(db_session, subscriber):
+    project = projects.create(
+        db_session,
+        ProjectCreate(name="Legacy customer project", subscriber_id=subscriber.id),
+    )
+    subscriber.is_active = False
+    db_session.commit()
+
+    retained = projects.update(
+        db_session,
+        str(project.id),
+        ProjectUpdate(name="Renamed legacy project", subscriber_id=subscriber.id),
+    )
+    assert retained.subscriber_id == subscriber.id
+
+    cleared = projects.update(
+        db_session,
+        str(project.id),
+        ProjectUpdate(subscriber_id=None),
+    )
+    assert cleared.subscriber_id is None
+
+
 def test_vendor_scope_template_project_creation_scopes_vendor_assignment(
     db_session, subscriber
 ):

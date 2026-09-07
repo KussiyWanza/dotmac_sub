@@ -15,6 +15,16 @@ def test_projects_owners_have_complete_typed_contracts() -> None:
 
     assert lifecycle.contract is not None
     assert lifecycle.contract.transaction.mode is TransactionMode.OWNER_MANAGED
+    customer_eligibility = next(
+        concern
+        for concern in lifecycle.contract.concerns
+        if concern.name == "project customer-account eligibility"
+    )
+    assert customer_eligibility.input_names == (
+        "canonical project aggregate",
+        "canonical customer account state",
+        "authorized project command",
+    )
     creation_email = next(
         concern
         for concern in lifecycle.contract.concerns
@@ -71,6 +81,16 @@ def test_projects_owners_have_complete_typed_contracts() -> None:
     assert assignment.contract.transaction.mode is TransactionMode.READ_ONLY
     assert projection.contract is not None
     assert projection.contract.transaction.mode is TransactionMode.READ_ONLY
+    picker = next(
+        concern
+        for concern in projection.contract.concerns
+        if concern.name == "admin project-form customer picker projection"
+    )
+    assert picker.input_names == (
+        "project authoring customer search request",
+        "canonical customer account identity",
+        "authorized project authoring access",
+    )
     assert vendor_delivery.contract is not None
     assert vendor_delivery.contract.transaction.mode is TransactionMode.READ_ONLY
     assert work_order_projection.contract is not None
@@ -94,6 +114,21 @@ def test_project_adapters_do_not_complete_transactions() -> None:
     for relative in ("app/api/projects.py", "app/web/admin/projects.py"):
         source = (ROOT / relative).read_text()
         assert ".commit(" not in source
+
+
+def test_project_customer_picker_uses_typed_bounded_projection() -> None:
+    route = (ROOT / "app/web/admin/projects.py").read_text()
+    projection = (ROOT / "app/services/web_projects.py").read_text()
+    template = (ROOT / "templates/admin/projects/project_form.html").read_text()
+
+    assert "ProjectCustomerSearchQuery" in projection
+    assert "ProjectCustomerSearchPage" in projection
+    assert '"/customers/search"' in route
+    assert 'require_any_permission("project:create", "project:update")' in route
+    assert "subscriber_options(" not in projection
+    assert "subscriber_options" not in template
+    assert "data-typeahead-input" in template
+    assert 'name="subscriber_id"' in template
 
 
 def test_project_task_relationship_integrity_stays_in_lifecycle_owner() -> None:

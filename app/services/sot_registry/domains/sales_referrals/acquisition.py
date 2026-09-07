@@ -21,6 +21,54 @@ from app.services.sot_manifest import (
 
 SERVICES: tuple[SOTService, ...] = (
     SOTService(
+        name="sales.crm_quote_retirement",
+        module="app.services.quote_retirement",
+        owns=("retired CRM quote execution and action availability",),
+        contract=ServiceContract(
+            concerns=(
+                ConcernContract(
+                    name="retired CRM quote execution and action availability",
+                    role=OwnerRole.POLICY,
+                    input_names=("approved CRM retirement",),
+                ),
+            ),
+            authoritative_inputs=(
+                AuthorityInput(
+                    name="approved CRM retirement",
+                    owner="sales.crm_quote_retirement",
+                    kind=AuthorityKind.CONTROL_INPUT,
+                    source="docs/designs/CRM_WEB_RETIREMENT.md",
+                ),
+            ),
+            transaction=TransactionContract(
+                mode=TransactionMode.NOT_APPLICABLE,
+                boundary="Pure immutable retirement decision; no database or transport access.",
+                locking="No writes.",
+                idempotency="Every query returns the same retirement outcome.",
+                retries="Retired jobs never retry CRM or process subscribers.",
+            ),
+            errors=ErrorContract(
+                domain_codes=("sales.portal_quote.retired",),
+                mapping_owner="app.services.quotes_mirror",
+                fail_closed_on=("CRM quote commands regardless of binding state",),
+            ),
+            migration=MigrationContract(
+                state=AuthorityMigrationState.COMPLETE,
+                old_owner="live CRM quote reconciliation and command transport",
+                new_owner="sales.crm_quote_retirement",
+                verification="Retired task, history preservation, and native quote tests.",
+                cutover_gate="Migration 579 retires persisted schedules; queued tasks are tombstones.",
+                fallback_retirement="No quote-specific CRM client or runner actions remain.",
+            ),
+            steward="sales operations",
+            design_refs=("docs/designs/CRM_WEB_RETIREMENT.md",),
+            test_refs=(
+                "tests/test_quotes_mirror.py",
+                "tests/architecture/test_no_crm_writeback.py",
+            ),
+        ),
+    ),
+    SOTService(
         name="sales.capture",
         module="app.services.sales.capture",
         owns=(

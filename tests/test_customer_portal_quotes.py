@@ -34,3 +34,24 @@ def test_route_is_registered():
 
     paths = {getattr(route, "path", "") for route in customer_router.routes}
     assert "/portal/quotes" in paths
+
+
+def test_native_quote_read_still_uses_native_owner(db_session, monkeypatch):
+    from unittest.mock import MagicMock
+
+    from app.web.customer import quotes
+
+    native = MagicMock(return_value={"quotes": [], "total": 0, "open": 0})
+    historical = MagicMock()
+    monkeypatch.setattr(
+        quotes.selfserve_service, "native_read_enabled", lambda db: True
+    )
+    monkeypatch.setattr(
+        quotes.selfserve_service.selfserve_quotes, "read_for_subscriber", native
+    )
+    monkeypatch.setattr(quotes.quotes_mirror, "read_for_subscriber_result", historical)
+    payload, state = quotes._quotes(db_session, "test-subscriber")
+    assert state == "current"
+    assert payload["total"] == 0
+    native.assert_called_once()
+    historical.assert_not_called()

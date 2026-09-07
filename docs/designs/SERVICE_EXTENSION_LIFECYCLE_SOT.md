@@ -18,10 +18,20 @@ owner. Service extensions stage exact entity-linked audit evidence through that
 owner; there is no parallel activity table.
 
 `ui.service_extension_detail_projection` is the read-only owner for the admin
-detail page. It composes extension facts, exact audit events, safe actor labels,
-status presentation, impact, scope samples, action eligibility, and legacy
-provenance. Routes and templates do not query audit rows, resolve actors, or
-derive lifecycle meaning.
+detail page and the Customer 360 service-extension request history. It composes
+extension facts, exact audit events, safe actor labels, status presentation,
+impact, customer scope, action eligibility, and legacy provenance. The
+customer history starts from the extension aggregate, returns one row per
+request, and attaches immutable subscription-entry impact when it exists.
+Routes and templates do not query audit rows, resolve actors, or derive
+lifecycle meaning.
+
+Customer membership is durable when an applied entry names the subscriber or
+an explicit subscriber scope stores its UUID. Pending and canceled POP, NAS,
+and historical network requests use current active-or-suspended subscription
+topology and identify that match as current scope rather than immutable
+historical evidence. Existing broad-scope records do not contain a declaration-
+time subscriber snapshot, so the read path does not manufacture one.
 
 Access restoration is not service-extension policy. The financial owner asks
 `access.subscription_lifecycle` to resolve only billing-related locks, and the

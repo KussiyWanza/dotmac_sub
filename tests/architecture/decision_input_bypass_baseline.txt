@@ -1,10 +1,9 @@
 # Existing direct decision-input bypasses. This is migration debt, not an
 # allowlist. Counts must only decrease; new entries require an explicit source-
 # of-truth ownership review. Format: kind count repository-relative-path.
-env 2 app/api/bandwidth.py
 env 14 app/main.py
 env 2 app/observability.py
-env 10 app/poller/mikrotik_poller.py
+env 9 app/poller/mikrotik_poller.py
 env 3 app/services/app_cache.py
 env 2 app/services/auth_cache.py
 env 1 app/services/auth_flow.py

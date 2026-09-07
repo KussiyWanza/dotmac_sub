@@ -2233,9 +2233,9 @@ SERVICES: tuple[SOTService, ...] = (
             "The admin invoice adapter presents the same exact classifier "
             "output and submits an actor-bound, signed, fingerprinted review "
             "to this owner; it does not maintain a second settlement path. "
-            "Every unresolved draft blocks the parallel invoice-less renewal "
-            "path. One strictly proven duplicate is voided through the invoice "
-            "participant before current funding continues to invoice-less "
+            "Every unresolved draft blocks creation of a new funded renewal "
+            "invoice. One strictly proven duplicate is voided through the invoice "
+            "participant before current funding continues to invoice-backed "
             "renewal; generic Restore cannot bypass an unresolved prepaid "
             "financial lock. A separate dry-run-first adoption concern can "
             "restore the documentary identity of one pristine onboarding "
@@ -2562,7 +2562,7 @@ SERVICES: tuple[SOTService, ...] = (
                     "funding-change caller uses the same flush-only classifier "
                     "inside its existing transaction; after that participant "
                     "voids one proven duplicate, the caller may continue the "
-                    "current funding to invoice-less renewal in that transaction."
+                    "current funding to invoice-backed renewal in that transaction."
                 ),
                 locking=(
                     "Lock account first, then invoice or selected subscription "
@@ -2717,7 +2717,7 @@ SERVICES: tuple[SOTService, ...] = (
                 state=AuthorityMigrationState.CUT_OVER,
                 old_owner=(
                     "billing.reconcile_unposted issue-then-return helper and "
-                    "invoice-less funding-change renewal when a draft exists"
+                    "a second funded renewal invoice when a draft exists"
                 ),
                 new_owner="financial.prepaid_draft_reconciliation",
                 verification=(
@@ -2736,7 +2736,8 @@ SERVICES: tuple[SOTService, ...] = (
                 ),
                 cutover_gate=(
                     "Funding-change handling checks the authoritative draft "
-                    "before direct renewal; the reviewed CLI defaults to dry-run; "
+                    "before creating another renewal invoice; the reviewed CLI "
+                    "defaults to dry-run; "
                     "the invoice page confirms only signed owner previews."
                 ),
                 fallback_retirement=(
@@ -3009,8 +3010,8 @@ SERVICES: tuple[SOTService, ...] = (
             "due prepaid service-cycle funding preview",
             "settled-payment evidence validation and evaluation outcome",
             "WAT lapsed-settlement service-period resolution",
-            "locked and idempotent prepaid renewal debit",
-            "exact debit-to-entitlement evidence",
+            "locked and idempotent funded prepaid renewal invoice settlement",
+            "exact paid-invoice-to-entitlement evidence",
             "prepaid subscription paid-through advancement",
             "billing-anchor projection from entitlement evidence",
             "billing-anchor retraction after funding reversal",
@@ -3038,7 +3039,7 @@ SERVICES: tuple[SOTService, ...] = (
             "A funding-change event is complete only when the referenced "
             "payment has canonical succeeded and settlement evidence. "
             "Each forward renewal stages prepaid_service.renewed with the "
-            "exact entitlement, debit and renewed-through boundary in the "
+            "exact paid invoice, entitlement and renewed-through boundary in the "
             "same transaction; payment correlation is a trigger, not source "
             "attribution for pooled account credit. Incomplete evidence raises "
             "through the durable event-handler attempt so the permanent event "
@@ -3077,10 +3078,13 @@ SERVICES: tuple[SOTService, ...] = (
             "settlement period first resolves the payment instant into the "
             "Africa/Lagos calendar, starts at local midnight, advances by the "
             "typed cadence, and persists the resulting boundaries as UTC "
-            "instants. Payment participants consume that typed period; they do "
-            "not derive a UTC calendar date independently. A missed period may "
+            "instants. A fully funded renewal creates and settles one exact "
+            "prepaid invoice through invoice, payment-credit, and reviewed-opening "
+            "participants; it never writes a parallel account adjustment. Payment "
+            "participants consume that typed period; they do not derive a UTC "
+            "calendar date independently. A missed period may "
             "be executed only from an exact read-only preview fingerprint plus "
-            "a durable review reference; it uses the same debit, entitlement, "
+            "a durable review reference; it uses the same paid invoice, entitlement, "
             "anchor, renewed-outcome, and restoration transaction."
         ),
         contract=ServiceContract(
@@ -3094,6 +3098,7 @@ SERVICES: tuple[SOTService, ...] = (
                         "settled payment evidence",
                         "verified customer funding position",
                         "funded service entitlement evidence",
+                        "invoice and payment participant protocols",
                     ),
                     canonical_writer="financial.prepaid_service_renewals",
                 ),
@@ -3124,20 +3129,25 @@ SERVICES: tuple[SOTService, ...] = (
                     ),
                 ),
                 ConcernContract(
-                    name="locked and idempotent prepaid renewal debit",
+                    name=(
+                        "locked and idempotent funded prepaid renewal invoice "
+                        "settlement"
+                    ),
                     role=OwnerRole.COMMAND_WRITER,
                     input_names=(
                         "verified customer funding position",
                         "prepaid subscription and renewal terms",
+                        "invoice and payment participant protocols",
                     ),
                     canonical_writer="financial.prepaid_service_renewals",
                 ),
                 ConcernContract(
-                    name="exact debit-to-entitlement evidence",
+                    name="exact paid-invoice-to-entitlement evidence",
                     role=OwnerRole.AUTHORITATIVE_RECORD,
                     input_names=(
                         "verified customer funding position",
                         "prepaid subscription and renewal terms",
+                        "invoice and payment participant protocols",
                     ),
                     canonical_writer="financial.prepaid_service_renewals",
                 ),
@@ -3190,6 +3200,7 @@ SERVICES: tuple[SOTService, ...] = (
                         "settled payment evidence",
                         "verified customer funding position",
                         "prepaid subscription and renewal terms",
+                        "invoice and payment participant protocols",
                     ),
                     canonical_writer="financial.prepaid_service_renewals",
                 ),
@@ -3199,6 +3210,7 @@ SERVICES: tuple[SOTService, ...] = (
                     input_names=(
                         "verified customer funding position",
                         "prepaid subscription and renewal terms",
+                        "invoice and payment participant protocols",
                     ),
                     canonical_writer="financial.prepaid_service_renewals",
                 ),
@@ -3208,6 +3220,7 @@ SERVICES: tuple[SOTService, ...] = (
                     input_names=(
                         "verified customer funding position",
                         "prepaid subscription and renewal terms",
+                        "invoice and payment participant protocols",
                     ),
                     canonical_writer="financial.prepaid_service_renewals",
                 ),
@@ -3255,8 +3268,18 @@ SERVICES: tuple[SOTService, ...] = (
                     owner="financial.prepaid_service_renewals",
                     kind=AuthorityKind.AUTHORITATIVE_RECORD,
                     source=(
-                        "active ServiceEntitlement linked to the exact renewal "
-                        "debit and service period"
+                        "active ServiceEntitlement linked to the exact paid invoice "
+                        "line and service period, with legacy direct-debit evidence "
+                        "retained for historical replay"
+                    ),
+                ),
+                AuthorityInput(
+                    name="invoice and payment participant protocols",
+                    owner="financial.invoices",
+                    kind=AuthorityKind.CONTROL_INPUT,
+                    source=(
+                        "typed invoice construction and issuance plus exact "
+                        "payment-allocation or reviewed-opening application outcomes"
                     ),
                 ),
                 AuthorityInput(
@@ -3275,21 +3298,21 @@ SERVICES: tuple[SOTService, ...] = (
                     "Settlement-triggered, scheduled, and reviewed missed-period "
                     "public commands enter "
                     "execute_owner_command once on a transaction-free session. "
-                    "Validation, draft consequence, debit, entitlement, anchor, "
+                    "Validation, paid invoice, entitlement, anchor, "
                     "posting group, renewed outcome, and restoration commit or "
                     "roll back together."
                 ),
                 locking=(
                     "The account is locked before idempotency lookup and funding "
-                    "re-preview; entitlement overlap and adjustment uniqueness "
+                    "re-preview; entitlement overlap and unique period-line identity "
                     "prevent a second funded result for the same period."
                 ),
                 idempotency=(
-                    "The service period deterministically keys its adjustment; "
+                    "The service period deterministically keys its invoice line; "
                     "settlement events and scheduled passes carry typed command "
                     "keys; reviewed execution additionally binds the exact preview "
                     "fingerprint and evidence reference, and replay must match the "
-                    "exact debit, entitlement, period, and posting effects."
+                    "exact paid invoice, entitlement, period, and application effects."
                 ),
                 retries=(
                     "The durable event redriver or scheduled adapter retries the "
@@ -3305,6 +3328,7 @@ SERVICES: tuple[SOTService, ...] = (
                     "financial.prepaid_service_renewals.adjustment_rejected",
                     "financial.prepaid_service_renewals.idempotency_conflict",
                     "financial.prepaid_service_renewals.incomplete_entitlement",
+                    "financial.prepaid_service_renewals.incomplete_funding_evidence",
                     "financial.prepaid_service_renewals.ineligible_billing_mode",
                     "financial.prepaid_service_renewals.ineligible_status",
                     "financial.prepaid_service_renewals.insufficient_funding",
@@ -3316,6 +3340,8 @@ SERVICES: tuple[SOTService, ...] = (
                     "financial.prepaid_service_renewals.missing_anchor",
                     "financial.prepaid_service_renewals.missing_evidence_ref",
                     "financial.prepaid_service_renewals.missing_price",
+                    "financial.prepaid_service_renewals.invoice_rejected",
+                    "financial.prepaid_service_renewals.invoice_settlement_rejected",
                     "financial.prepaid_service_renewals.mode_not_prepaid",
                     "financial.prepaid_service_renewals.payment_account_mismatch",
                     "financial.prepaid_service_renewals.payment_not_found",
@@ -3334,19 +3360,21 @@ SERVICES: tuple[SOTService, ...] = (
                     "missing or non-canonical settlement evidence",
                     "quarantined or insufficient funding",
                     "stale preview or entitlement overlap",
-                    "posting-group failure",
+                    "invoice, allocation, entitlement, or posting-group failure",
                 ),
             ),
             events=EventContract(
                 event_types=("prepaid_service.renewed",),
-                schema_version=1,
+                schema_version=2,
                 delivery_owner="events.dispatcher",
                 compatibility=(
-                    "Version 1 carries the exact account, subscription, debit, "
-                    "entitlement, funded period, amount, currency, and trigger."
+                    "Version 2 carries the exact account, subscription, paid "
+                    "invoice, entitlement, funded period, amount, currency, and "
+                    "trigger. Readers retain version-1 legacy debit compatibility."
                 ),
                 replay=(
-                    "The period-keyed adjustment and posting group return the "
+                    "The period-keyed invoice line, paid document, and entitlement "
+                    "return the "
                     "recorded result; no second renewed outcome is staged."
                 ),
             ),
@@ -3361,7 +3389,7 @@ SERVICES: tuple[SOTService, ...] = (
                     ),
                     writer="financial.prepaid_service_renewals",
                     freshness=(
-                        "Atomic with the renewal debit or recomputed from exact "
+                        "Atomic with the paid renewal invoice or recomputed from exact "
                         "surviving entitlement evidence after reversal."
                     ),
                     stale_behavior=(
@@ -3381,23 +3409,20 @@ SERVICES: tuple[SOTService, ...] = (
             ),
             migration=MigrationContract(
                 state=AuthorityMigrationState.CUT_OVER,
-                old_owner=(
-                    "billing_automation.run_invoice_cycle and durable event "
-                    "handler caller-owned transactions"
-                ),
+                old_owner="invoice-less prepaid AccountAdjustment renewal evidence",
                 new_owner="financial.prepaid_service_renewals",
                 verification=(
-                    "Scheduled and event-triggered command-boundary, atomicity, "
-                    "idempotent posting, and architecture tests."
+                    "Scheduled and event-triggered command-boundary, atomic paid "
+                    "invoice, idempotency, balance, and architecture tests."
                 ),
                 cutover_gate=(
                     "Both live renewal entry paths invoke the typed public owner "
                     "command and each new funded period has exactly one matching "
-                    "prepaid-consumption posting group."
+                    "paid invoice, base line, funding application, and entitlement."
                 ),
                 fallback_retirement=(
-                    "Direct caller-transaction renewal writes and the generic "
-                    "account-adjustment posting fallback are rejected by guards."
+                    "New invoice-less AccountAdjustment renewals are rejected by "
+                    "guards; historical adjustment evidence remains readable only."
                 ),
             ),
             steward="billing and finance operations",

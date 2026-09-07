@@ -23,6 +23,7 @@ from app.models.project import (
     ProjectTaskStatus,
     ProjectType,
 )
+from app.schemas.infrastructure import InfrastructureReference
 
 
 class ProjectBase(BaseModel):
@@ -36,6 +37,7 @@ class ProjectBase(BaseModel):
     status: ProjectStatus = ProjectStatus.open
     priority: ProjectPriority = ProjectPriority.normal
     subscriber_id: UUID | None = None
+    infrastructure: InfrastructureReference | None = None
     lead_id: UUID | None = None
     created_by_person_id: UUID | None = None
     owner_person_id: UUID | None = None
@@ -70,6 +72,7 @@ class ProjectUpdate(BaseModel):
     status: ProjectStatus | None = None
     priority: ProjectPriority | None = None
     subscriber_id: UUID | None = None
+    infrastructure: InfrastructureReference | None = None
     lead_id: UUID | None = None
     created_by_person_id: UUID | None = None
     owner_person_id: UUID | None = None

@@ -41,7 +41,11 @@ from app.services.prepaid_service_renewals import (
     confirm_prepaid_service_renewal,
     preview_prepaid_service_renewal,
 )
-from tests.prepaid_funding_helpers import materialize_test_prepaid_opening_balance
+from tests.prepaid_funding_helpers import (
+    create_test_settled_payment_credit,
+    ensure_test_prepaid_contract,
+    materialize_test_prepaid_opening_balance,
+)
 
 
 def test_canonical_ledger_ignores_archived_mirror_and_uses_native_documents(
@@ -431,7 +435,7 @@ def test_paid_prepaid_invoice_consumes_payment_from_canonical_position(
     assert len(preview.fingerprint) == 64
 
 
-def test_documentary_paid_invoice_does_not_duplicate_direct_renewal_debit(
+def test_invoice_backed_prepaid_renewal_has_one_customer_position_debit(
     db_session, subscriber, subscription
 ):
     position_at = datetime(2026, 7, 20, tzinfo=UTC)
@@ -439,16 +443,12 @@ def test_documentary_paid_invoice_does_not_duplicate_direct_renewal_debit(
     period_end = datetime(2026, 8, 21, tzinfo=UTC)
     subscription.billing_mode = BillingMode.prepaid
     subscription.status = SubscriptionStatus.active
-    db_session.add(
-        Payment(
-            account_id=subscriber.id,
-            amount=Decimal("18812.50"),
-            refunded_amount=Decimal("0.00"),
-            currency="NGN",
-            status=PaymentStatus.succeeded,
-            paid_at=paid_at,
-            created_at=paid_at,
-        )
+    ensure_test_prepaid_contract(db_session, subscription, Decimal("100.00"))
+    payment = create_test_settled_payment_credit(
+        db_session,
+        subscriber.id,
+        Decimal("100.00"),
+        paid_at=paid_at,
     )
     db_session.commit()
     materialize_test_prepaid_opening_balance(
@@ -462,46 +462,22 @@ def test_documentary_paid_invoice_does_not_duplicate_direct_renewal_debit(
         subscription_id=subscription.id,
         starts_at=paid_at,
         ends_at=period_end,
-        amount=Decimal("18812.50"),
+        amount=Decimal("100.00"),
         currency="NGN",
     )
-    confirm_prepaid_service_renewal(
+    renewal = confirm_prepaid_service_renewal(
         db_session,
         preview,
-        evidence_ref="pytest:direct-renewal-before-documentary-invoice",
-    )
-    invoice = Invoice(
-        account_id=subscriber.id,
-        invoice_number="INV-DOCUMENTARY-ONLY",
-        status=InvoiceStatus.paid,
-        currency="NGN",
-        subtotal=Decimal("17500.00"),
-        tax_total=Decimal("1312.50"),
-        total=Decimal("18812.50"),
-        balance_due=Decimal("0.00"),
-        billing_period_start=paid_at,
-        billing_period_end=period_end,
-        issued_at=paid_at,
-        paid_at=paid_at,
-    )
-    db_session.add(invoice)
-    db_session.flush()
-    db_session.add(
-        InvoiceLine(
-            invoice_id=invoice.id,
-            subscription_id=subscription.id,
-            description="Documentary prepaid base service",
-            quantity=Decimal("1.000"),
-            unit_price=Decimal("17500.00"),
-            amount=Decimal("17500.00"),
-            metadata_={"kind": "base_subscription"},
-        )
+        effective_at=paid_at,
+        evidence_ref="pytest:invoice-backed-prepaid-renewal",
     )
     db_session.commit()
+    assert renewal.invoice is not None
+    invoice = renewal.invoice
 
     events = list_customer_financial_events(db_session, subscriber.id)
 
-    assert not any(
+    assert any(
         event.id == f"prepaid-invoice-consumption:{invoice.id}" for event in events
     )
     assert calculate_customer_balance(db_session, subscriber.id) == Decimal("0.00")
@@ -513,8 +489,8 @@ def test_documentary_paid_invoice_does_not_duplicate_direct_renewal_debit(
         account_ids=(subscriber.id,),
         recorded_after=position_at,
     )
-    assert preview.projected_count == 0
-    assert preview.already_represented_count == 1
+    assert preview.projected_count == 1
+    assert preview.already_represented_count == 0
     assert preview.quarantined_count == 0
 
 

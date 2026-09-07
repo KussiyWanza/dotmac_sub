@@ -282,9 +282,16 @@ class PageMeta:
     end_item: int
     has_previous: bool
     has_next: bool
+    total_is_exact: bool = True
 
     @classmethod
-    def from_query(cls, query: ListQuery, total_items: int) -> PageMeta:
+    def from_query(
+        cls,
+        query: ListQuery,
+        total_items: int,
+        *,
+        total_is_exact: bool = True,
+    ) -> PageMeta:
         safe_total = max(0, int(total_items))
         total_pages = max(1, (safe_total + query.per_page - 1) // query.per_page)
         page = min(query.page, total_pages)
@@ -299,6 +306,7 @@ class PageMeta:
             end_item=end_item,
             has_previous=page > 1,
             has_next=page < total_pages,
+            total_is_exact=total_is_exact,
         )
 
     @property

@@ -8,6 +8,15 @@ from unittest.mock import patch
 
 from sqlalchemy import select
 
+from app.models.billing import (
+    LedgerEntry,
+    LedgerEntryType,
+    LedgerSource,
+    Payment,
+    PaymentSettlement,
+    PaymentSettlementOrigin,
+    PaymentStatus,
+)
 from app.models.catalog import BillingCycle, OfferPrice, PriceType, Subscription
 from app.models.prepaid_funding import PrepaidFundingReconstructionBatch
 from app.services import prepaid_funding_attestation
@@ -112,3 +121,65 @@ def materialize_test_prepaid_opening_balances(
             now=position_at + timedelta(minutes=1),
         )
     db.commit()
+
+
+def create_test_settled_payment_credit(
+    db,
+    account_id: object,
+    amount: Decimal | str,
+    *,
+    currency: str = "NGN",
+    paid_at: datetime,
+    provider_fee: Decimal | str = Decimal("0.00"),
+    origin: PaymentSettlementOrigin = PaymentSettlementOrigin.system,
+    idempotency_key: str | None = None,
+) -> Payment:
+    """Create canonical settled payment credit with allocation evidence."""
+
+    payment_amount = Decimal(str(amount))
+    fee = Decimal(str(provider_fee))
+    settlement_amount = payment_amount - fee
+    payment = Payment(
+        account_id=account_id,
+        amount=payment_amount,
+        provider_fee=fee,
+        refunded_amount=Decimal("0.00"),
+        currency=currency,
+        status=PaymentStatus.succeeded,
+        paid_at=paid_at,
+        created_at=paid_at,
+        is_active=True,
+    )
+    db.add(payment)
+    db.flush()
+    entry = LedgerEntry(
+        account_id=account_id,
+        payment_id=payment.id,
+        entry_type=LedgerEntryType.credit,
+        source=LedgerSource.payment,
+        amount=settlement_amount,
+        currency=currency,
+        memo="Test settled payment credit",
+        effective_date=paid_at,
+        created_at=paid_at,
+        is_active=True,
+        affects_customer_position=False,
+    )
+    db.add(entry)
+    db.flush()
+    db.add(
+        PaymentSettlement(
+            payment_id=payment.id,
+            unallocated_ledger_entry_id=entry.id,
+            amount=settlement_amount,
+            unallocated_amount=settlement_amount,
+            prepaid_amount=Decimal("0.00"),
+            currency=currency,
+            origin=origin,
+            idempotency_key=idempotency_key
+            or f"pytest:settled-payment-credit:{payment.id}",
+            created_at=paid_at,
+        )
+    )
+    db.flush()
+    return payment

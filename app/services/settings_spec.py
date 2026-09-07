@@ -1,14 +1,16 @@
 import json
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 
 from dotmac_kernel.settings_models import SettingDomain as KernelSettingDomain
 from dotmac_kernel.settings_resolver import resolve_many as kernel_resolve_many
 from dotmac_kernel.settings_resolver import resolve_value as kernel_resolve_value
+from sqlalchemy import select
 
-from app.models.domain_settings import SettingDomain
+from app.models.domain_settings import DomainSetting, SettingDomain
 from app.models.subscription_engine import SettingValueType
 from app.services import domain_settings as settings_service
 from app.services.brand_theme import (
@@ -24,10 +26,6 @@ from app.services.response import ListResponseMixin
 from app.services.settings_specs.integration import build_integration_specs
 from app.services.settings_specs.provisioning import build_provisioning_specs
 from app.timezone import APP_TIMEZONE_NAME
-
-if TYPE_CHECKING:
-    from app.models.domain_settings import DomainSetting
-
 
 logger = logging.getLogger(__name__)
 
@@ -1062,6 +1060,7 @@ SETTINGS_SPECS: list[SettingSpec] = [
             "support_ticket_status_changed": True,
             "support_ticket_updated": False,
             "support_ticket_resolution_confirmation": True,
+            "support_csat_request": True,
             "work_order_en_route": True,
             "work_order_arrived": True,
             "work_order_complete": True,
@@ -2129,6 +2128,16 @@ SETTINGS_SPECS: list[SettingSpec] = [
         value_type=SettingValueType.string,
         default="7,1",
         label="Invoice Payment Reminder (days before due)",
+    ),
+    SettingSpec(
+        domain=SettingDomain.billing,
+        key="invoice_pdf_payment_presentment",
+        env_var="BILLING_INVOICE_PDF_PAYMENT_PRESENTMENT",
+        value_type=SettingValueType.string,
+        default="paystack",
+        allowed={"bank_account", "paystack", "both"},
+        string_normalization=SettingStringNormalization.LOWERCASE,
+        label="Invoice PDF Payment Fallback",
     ),
     SettingSpec(
         domain=SettingDomain.billing,
@@ -5632,13 +5641,6 @@ SETTINGS_SPECS.extend(
             default=1,
         ),
         SettingSpec(
-            domain=SettingDomain.subscriber,
-            key="quote_reconcile_interval_seconds",
-            env_var=None,
-            value_type=SettingValueType.integer,
-            default=3600,
-        ),
-        SettingSpec(
             domain=SettingDomain.usage,
             key="device_login_sync_interval_seconds",
             env_var="DEVICE_LOGIN_SYNC_INTERVAL_SECONDS",
@@ -5790,6 +5792,22 @@ def resolve_value(db, domain: SettingDomain, key: str) -> Any:
         key,
         tenant_id=operator_tenant_id(),
     )
+
+
+def active_setting_updated_at(db, domain: SettingDomain, key: str) -> datetime | None:
+    """Return the newest active row timestamp for a registered setting."""
+
+    if get_spec(domain, key) is None:
+        return None
+    stmt = (
+        select(DomainSetting.updated_at)
+        .where(DomainSetting.domain == domain)
+        .where(DomainSetting.key == key)
+        .where(DomainSetting.is_active.is_(True))
+        .order_by(DomainSetting.updated_at.desc())
+        .limit(1)
+    )
+    return db.scalar(stmt)
 
 
 def resolve_boolean(db, domain: SettingDomain, key: str) -> bool:

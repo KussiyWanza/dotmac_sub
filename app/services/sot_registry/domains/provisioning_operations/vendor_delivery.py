@@ -26,6 +26,7 @@ SERVICES: tuple[SOTService, ...] = (
             "idempotent structural InstallationProject root creation",
             "Project-to-InstallationProject subscriber alignment",
             "buildout-rooted installation scope creation",
+            "infrastructure-linked project installation scope creation",
         ),
         depends_on=("operations.project_lifecycle",),
         notes=(
@@ -33,7 +34,8 @@ SERVICES: tuple[SOTService, ...] = (
             "root. Vendor lifecycle decisions remain with "
             "operations.vendor_project_lifecycle. Two entry points reach "
             "the same root: a sold installation (subscriber-scoped, "
-            "triggered by sales.fulfillment) and a network buildout "
+            "triggered by sales.fulfillment), infrastructure-linked maintenance "
+            "(triggered by project lifecycle), and a network buildout "
             "(subscriber-less, rooted on a BuildoutProject) so every "
             "downstream vendor decision runs one path. The BuildoutProject "
             "is validated as a referent, not consumed as a decision input; "
@@ -41,6 +43,12 @@ SERVICES: tuple[SOTService, ...] = (
         ),
         contract=ServiceContract(
             concerns=(
+                ConcernContract(
+                    name="infrastructure-linked project installation scope creation",
+                    role=OwnerRole.COMMAND_WRITER,
+                    input_names=("canonical native project state",),
+                    canonical_writer="operations.installation_scope",
+                ),
                 ConcernContract(
                     name=("idempotent structural InstallationProject root creation"),
                     role=OwnerRole.COMMAND_WRITER,
@@ -70,26 +78,27 @@ SERVICES: tuple[SOTService, ...] = (
                     name="canonical native project state",
                     owner="operations.project_lifecycle",
                     kind=AuthorityKind.AUTHORITATIVE_RECORD,
-                    source="the exact native Project and its Subscriber binding",
+                    source="The exact native Project, optional Subscriber, structural infrastructure and vendor-enabled template binding",
                 ),
                 AuthorityInput(
                     name="installation scope creation command",
-                    owner="sales.orders",
+                    owner="operations.project_lifecycle",
                     kind=AuthorityKind.CONTROL_INPUT,
                     source=(
-                        "typed Project, Subscriber, optional creator, and actor "
-                        "identifiers derived from the exact SalesOrder scope"
+                        "EnsureProjectScope with exact Project, optional Subscriber, "
+                        "creator and actor identifiers, issued by project lifecycle "
+                        "or sales fulfillment from its exact SalesOrder scope"
                     ),
                 ),
             ),
             transaction=TransactionContract(
                 mode=TransactionMode.PARTICIPANT,
                 boundary=(
-                    "The sales fulfillment coordinator owns commit/rollback; "
+                    "The sales fulfillment or project lifecycle owner owns commit/rollback; "
                     "this owner stages one InstallationProject and event."
                 ),
                 locking=(
-                    "The parent Project is read by exact id and the unique "
+                    "Lock the parent Project before the InstallationProject; the unique "
                     "project_id constraint arbitrates concurrent creation."
                 ),
                 idempotency=(
@@ -107,8 +116,9 @@ SERVICES: tuple[SOTService, ...] = (
                     "project_not_found",
                     "subscriber_mismatch",
                     "existing_scope_mismatch",
+                    "scope_required",
                 ),
-                mapping_owner="sales.fulfillment",
+                mapping_owner="sales.fulfillment and project web/API adapters",
                 fail_closed_on=(
                     "missing parent Project",
                     "Subscriber mismatch",
@@ -149,6 +159,7 @@ SERVICES: tuple[SOTService, ...] = (
             design_refs=(
                 "docs/SOT_RELATIONSHIP_MAP.md",
                 "docs/designs/SALES_TO_SERVICE_LIFECYCLE_SOT.md",
+                "docs/designs/PROJECT_INFRASTRUCTURE_SCOPE.md",
             ),
             test_refs=(
                 "tests/test_sales_to_service_lifecycle.py",

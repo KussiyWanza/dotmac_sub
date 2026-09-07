@@ -13,8 +13,10 @@ import logging
 import mimetypes
 import re
 from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
+from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -29,6 +31,7 @@ from app.models.subscription_engine import SettingValueType
 from app.schemas.settings import DomainSettingUpdate
 from app.services import branding_storage as branding_storage_service
 from app.services import domain_settings as domain_settings_service
+from app.services import invoice_bank_details as invoice_bank_details_service
 from app.services import settings_spec
 from app.services import web_system_company_info as company_info_service
 from app.services.db_session_adapter import db_session_adapter
@@ -47,9 +50,27 @@ STALE_EXPORT_SECONDS = 20
 # fallback) includes the glyph; renderers without it use an "NGN " prefix.
 NAIRA_SIGN = "₦"
 INVOICE_PDF_CACHE_METRICS_KEY = "invoice_pdf_cache_metrics"
-INVOICE_PDF_TEMPLATE_REFRESHED_AT = datetime(2026, 8, 25, 9, 0, tzinfo=UTC)
+INVOICE_PDF_TEMPLATE_REFRESHED_AT = datetime(2026, 9, 3, 12, 0, tzinfo=UTC)
+INVOICE_PDF_PAYMENT_PRESENTMENT_KEY = "invoice_pdf_payment_presentment"
+CUSTOMER_PAYMENT_METHOD_PAYSTACK_VALUES = frozenset(
+    {"paystack", "card", "cards", "online", "online_payment"}
+)
+CUSTOMER_PAYMENT_METHOD_TRANSFER_VALUES = frozenset({"transfer", "bank_transfer"})
 logger = logging.getLogger(__name__)
 SessionLocal = db_session_adapter.create_session
+
+
+class InvoicePdfPaymentPresentment(str, Enum):
+    bank_account = "bank_account"
+    paystack = "paystack"
+    both = "both"
+
+
+@dataclass(frozen=True)
+class InvoicePaymentPresentment:
+    mode: InvoicePdfPaymentPresentment
+    bank_details: dict[str, str] | None
+    payment_url: str | None
 
 
 def _normalize_requested_by_id(db: Session, requested_by_id: str | None) -> str | None:
@@ -137,12 +158,122 @@ def _branded_company_info(
     }
 
 
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
 def _public_invoice_payment_url(brand: ResolvedBrand, invoice: Invoice) -> str | None:
     """Return the stable application hand-off, never a cached provider URL."""
     app_url = str(brand.app_url or "").strip().rstrip("/")
     if not app_url.startswith("https://"):
         return None
     return f"{app_url}/pay/invoices/{invoice.id}"
+
+
+def _resolve_invoice_pdf_payment_presentment(
+    db: Session,
+) -> InvoicePdfPaymentPresentment:
+    raw_value = settings_spec.resolve_value(
+        db, SettingDomain.billing, INVOICE_PDF_PAYMENT_PRESENTMENT_KEY
+    )
+    value = (
+        str(raw_value or InvoicePdfPaymentPresentment.paystack.value).strip().lower()
+    )
+    try:
+        return InvoicePdfPaymentPresentment(value)
+    except ValueError:
+        return InvoicePdfPaymentPresentment.paystack
+
+
+def _normalize_customer_payment_method(value: str | None) -> str:
+    return str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def _customer_invoice_payment_presentment(
+    invoice: Invoice,
+) -> InvoicePdfPaymentPresentment | None:
+    account = getattr(invoice, "account", None)
+    if account is None:
+        return None
+    payment_method = _normalize_customer_payment_method(
+        cast(str | None, getattr(account, "payment_method", None))
+    )
+    if not payment_method:
+        return None
+    if payment_method in CUSTOMER_PAYMENT_METHOD_TRANSFER_VALUES:
+        return InvoicePdfPaymentPresentment.bank_account
+    if payment_method in CUSTOMER_PAYMENT_METHOD_PAYSTACK_VALUES:
+        return InvoicePdfPaymentPresentment.paystack
+    return InvoicePdfPaymentPresentment.paystack
+
+
+def _invoice_payment_presentment(
+    db: Session, brand: ResolvedBrand, invoice: Invoice
+) -> InvoicePaymentPresentment:
+    mode = _customer_invoice_payment_presentment(
+        invoice
+    ) or _resolve_invoice_pdf_payment_presentment(db)
+    bank_details = None
+    if mode in {
+        InvoicePdfPaymentPresentment.bank_account,
+        InvoicePdfPaymentPresentment.both,
+    }:
+        bank_details = invoice_bank_details_service.get_invoice_bank_details(
+            db, currency=invoice.currency or "NGN"
+        )
+    payment_url = None
+    if mode in {
+        InvoicePdfPaymentPresentment.paystack,
+        InvoicePdfPaymentPresentment.both,
+    }:
+        payment_url = _public_invoice_payment_url(brand, invoice)
+    return InvoicePaymentPresentment(
+        mode=mode, bank_details=bank_details, payment_url=payment_url
+    )
+
+
+def _render_payment_markup(presentment: InvoicePaymentPresentment) -> str:
+    cards: list[str] = []
+    if presentment.bank_details:
+        bank = presentment.bank_details
+        sort_code = bank.get("sort_code") or ""
+        sort_code_markup = (
+            f'<div class="payment-detail"><span>Sort code</span>'
+            f"<strong>{html.escape(sort_code)}</strong></div>"
+            if sort_code
+            else ""
+        )
+        cards.append(
+            '<div class="payment-card">'
+            '<p class="card-title">Bank transfer</p>'
+            '<p class="payment-note">Use these details when paying by transfer.</p>'
+            f'<div class="payment-detail"><span>Bank</span>'
+            f"<strong>{html.escape(bank['bank_name'])}</strong></div>"
+            f'<div class="payment-detail"><span>Account name</span>'
+            f"<strong>{html.escape(bank['account_name'])}</strong></div>"
+            f'<div class="payment-detail"><span>Account number</span>'
+            f'<strong class="account-number">{html.escape(bank["account_number"])}</strong></div>'
+            f"{sort_code_markup}"
+            "</div>"
+        )
+    if presentment.payment_url:
+        cards.append(
+            '<div class="payment-card">'
+            '<p class="card-title">Pay online</p>'
+            '<p class="payment-note">Use Paystack to pay this invoice securely.</p>'
+            f'<a class="pay-button" href="{html.escape(presentment.payment_url, quote=True)}">'
+            "Pay with Paystack</a></div>"
+        )
+    if not cards:
+        return ""
+    cells = "".join(f"<td>{card}</td>" for card in cards)
+    return (
+        f'<table class="payment-options" role="presentation"><tr>{cells}</tr></table>'
+    )
 
 
 def _logo_src(db: Session, configured_logo: str | None = None) -> str | None:
@@ -270,15 +401,8 @@ def _render_invoice_html(invoice: Invoice, db: Session) -> str:
         if logo_src
         else f'<div class="logo-fallback">{company_name[:1].upper()}</div>'
     )
-    payment_url = _public_invoice_payment_url(brand, invoice)
-    payment_markup = (
-        '<div class="payment-card">'
-        '<p class="card-title">Pay online</p>'
-        "<p>Use Paystack to pay this invoice securely.</p>"
-        f'<a class="pay-button" href="{html.escape(payment_url, quote=True)}">'
-        "Pay with Paystack</a></div>"
-        if payment_url
-        else ""
+    payment_markup = _render_payment_markup(
+        _invoice_payment_presentment(db, brand, invoice)
     )
 
     return f"""
@@ -352,8 +476,14 @@ def _render_invoice_html(invoice: Invoice, db: Session) -> str:
   .totals-card {{ width: 320px; border: 1px solid var(--slate-200); border-radius: 16px; padding: 14px 16px; background: var(--white); }}
   .totals-card table td {{ border: none; padding: 5px 0; }}
   .totals-card .grand-total td {{ color: var(--green-900); font-size: 15px; font-weight: 800; padding-top: 10px; border-top: 1px solid var(--slate-200); }}
-  .payment-card {{ margin-top: 16px; border: 1px solid var(--slate-200); border-radius: 16px; padding: 14px 16px; background: var(--white); }}
-  .payment-card p {{ margin: 0 0 10px; color: var(--slate-600); }}
+  .payment-options {{ width: 100%; border-collapse: separate; border-spacing: 14px 0; margin: 16px -14px 0; table-layout: fixed; }}
+  .payment-options td {{ border: none; padding: 0 14px; vertical-align: top; background: transparent; }}
+  .payment-card {{ min-height: 146px; border: 1px solid var(--slate-200); border-radius: 16px; padding: 14px 16px; background: var(--white); }}
+  .payment-note {{ margin: 0 0 10px; color: var(--slate-700); line-height: 1.55; }}
+  .payment-detail {{ margin-top: 7px; color: var(--slate-700); line-height: 1.35; }}
+  .payment-detail span {{ display: block; color: var(--slate-500); font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; }}
+  .payment-detail strong {{ display: block; color: var(--slate-900); font-size: 12px; overflow-wrap: anywhere; }}
+  .account-number {{ color: var(--green-900) !important; font-size: 16px !important; letter-spacing: 0.04em; }}
   .pay-button {{ display: inline-block; border-radius: 8px; background: var(--green-800); color: var(--white); padding: 10px 15px; font-weight: 700; text-decoration: none; }}
   .memo {{ margin-top: 18px; border-left: 4px solid var(--red-700); background: #fff8f8; border-radius: 0 14px 14px 0; padding: 14px 16px; }}
   .memo strong {{ color: var(--red-700); }}
@@ -555,9 +685,22 @@ def _render_invoice_text_lines(
         from app.services.brand_profiles import resolve_brand
 
         brand = resolve_brand(db, subscriber_id=invoice.account_id)
-        payment_url = _public_invoice_payment_url(brand, invoice)
-        if payment_url:
-            out.extend(["", "Pay with Paystack:", payment_url])
+        presentment = _invoice_payment_presentment(db, brand, invoice)
+        if presentment.bank_details:
+            bank = presentment.bank_details
+            out.extend(
+                [
+                    "",
+                    "Bank Details:",
+                    f"Bank: {bank['bank_name']}",
+                    f"Account Name: {bank['account_name']}",
+                    f"Account Number: {bank['account_number']}",
+                ]
+            )
+            if bank.get("sort_code"):
+                out.append(f"Sort Code: {bank['sort_code']}")
+        if presentment.payment_url:
+            out.extend(["", "Pay with Paystack:", presentment.payment_url])
     out.append(f"Memo: {(invoice.memo or '').strip() or '-'}")
     return out
 
@@ -600,6 +743,7 @@ def _build_branded_fallback_pdf(db: Session, invoice: Invoice) -> bytes:
 
     account_id = getattr(getattr(invoice, "account", None), "id", None)
     brand = resolve_brand(db, subscriber_id=account_id)
+    payment_presentment = _invoice_payment_presentment(db, brand, invoice)
     green_900 = brand.primary_color
     green_700 = brand.secondary_color
     green_50 = "#f0fdf4"
@@ -838,34 +982,54 @@ def _build_branded_fallback_pdf(db: Session, invoice: Invoice) -> bytes:
             fill=green_900 if label == "Total" else slate_900,
         )
 
-    payment_url = _public_invoice_payment_url(brand, invoice)
-    if payment_url:
+    payment_cards: list[tuple[str, list[str]]] = []
+    if payment_presentment.bank_details:
+        bank = payment_presentment.bank_details
+        bank_lines = [
+            f"Bank: {bank['bank_name']}",
+            f"Name: {_truncate_text(bank['account_name'], 30)}",
+            f"Number: {bank['account_number']}",
+        ]
+        if bank.get("sort_code"):
+            bank_lines.append(f"Sort: {bank['sort_code']}")
+        payment_cards.append(("BANK TRANSFER", bank_lines))
+    if payment_presentment.payment_url:
+        payment_cards.append(
+            (
+                "PAY ONLINE",
+                ["Pay securely with Paystack", "Use the invoice checkout link."],
+            )
+        )
+    if payment_cards:
         payment_left = margin_x
         payment_top = totals_top
         payment_right = totals_left - 28
-        draw.rounded_rectangle(
-            (payment_left, payment_top, payment_right, payment_top + 172),
-            radius=20,
-            fill="#ffffff",
-            outline=slate_200,
+        payment_gap = 16 if len(payment_cards) > 1 else 0
+        payment_width = (payment_right - payment_left - payment_gap) // len(
+            payment_cards
         )
-        draw.text(
-            (payment_left + 22, payment_top + 18),
-            "PAY ONLINE",
-            font=label_font,
-            fill=green_900,
-        )
-        payment_lines = [
-            "Pay securely with Paystack",
-            "Open the clickable link in this invoice.",
-        ]
-        for index, line in enumerate(payment_lines):
-            draw.text(
-                (payment_left + 22, payment_top + 54 + (index * 28)),
-                line,
-                font=small_font,
-                fill=slate_700,
+        for index, (title, payment_lines) in enumerate(payment_cards):
+            left = payment_left + index * (payment_width + payment_gap)
+            right = left + payment_width
+            draw.rounded_rectangle(
+                (left, payment_top, right, payment_top + 172),
+                radius=20,
+                fill="#ffffff",
+                outline=slate_200,
             )
+            draw.text(
+                (left + 22, payment_top + 18),
+                title,
+                font=label_font,
+                fill=green_900,
+            )
+            for line_index, line in enumerate(payment_lines[:4]):
+                draw.text(
+                    (left + 22, payment_top + 54 + (line_index * 28)),
+                    line,
+                    font=small_font,
+                    fill=slate_700,
+                )
 
     memo_top = 1388
     draw.rounded_rectangle(
@@ -912,15 +1076,32 @@ def get_latest_export(db: Session, invoice_id: str) -> InvoicePdfExport | None:
     return db.scalars(stmt).first()
 
 
-def _is_export_fresh(invoice: Invoice, export: InvoicePdfExport) -> bool:
+def _is_export_fresh(
+    invoice: Invoice, export: InvoicePdfExport, *, db: Session | None = None
+) -> bool:
     if export.status != InvoicePdfExportStatus.completed:
         return False
-    if not export.completed_at:
+    completed_at = _as_utc(export.completed_at)
+    if completed_at is None:
         return False
-    if export.completed_at < INVOICE_PDF_TEMPLATE_REFRESHED_AT:
+    if completed_at < INVOICE_PDF_TEMPLATE_REFRESHED_AT:
         return False
-    invoice_updated = invoice.updated_at or invoice.created_at
-    if invoice_updated and export.completed_at < invoice_updated:
+    if db is not None:
+        presentment_updated_at = _as_utc(
+            settings_spec.active_setting_updated_at(
+                db, SettingDomain.billing, INVOICE_PDF_PAYMENT_PRESENTMENT_KEY
+            )
+        )
+        if presentment_updated_at and completed_at < presentment_updated_at:
+            return False
+        account = getattr(invoice, "account", None)
+        if account is None and getattr(invoice, "account_id", None):
+            account = db.get(Subscriber, invoice.account_id)
+        account_updated = _as_utc(getattr(account, "updated_at", None))
+        if account_updated and completed_at < account_updated:
+            return False
+    invoice_updated = _as_utc(invoice.updated_at or invoice.created_at)
+    if invoice_updated and completed_at < invoice_updated:
         return False
     return True
 
@@ -930,7 +1111,7 @@ def is_export_cache_valid(
 ) -> bool:
     if not export:
         return False
-    if not _is_export_fresh(invoice, export):
+    if not _is_export_fresh(invoice, export, db=db):
         return False
     return export_file_exists(db, export)
 

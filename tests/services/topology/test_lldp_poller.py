@@ -8,8 +8,9 @@ sample dicts in the real shape the fleet returns.
 from __future__ import annotations
 
 import time
-from datetime import UTC, datetime
-from types import SimpleNamespace
+from datetime import UTC, datetime, timedelta
+from unittest.mock import MagicMock
+from uuid import uuid4
 
 import pytest
 from billiard.exceptions import SoftTimeLimitExceeded
@@ -18,19 +19,172 @@ from routeros_api.exceptions import (
     RouterOsApiConnectionError,
     RouterOsApiParsingError,
 )
+from sqlalchemy.orm import Session
 
 from app.models.network_monitoring import NetworkDevice, NetworkTopologyLink
-from app.models.router_management import Router
+from app.models.router_management import Router, RouterAccessMethod
+from app.services.owner_commands import CommandContext
 from app.services.topology import lldp_poller
-from app.services.topology.lldp_poller import SOURCE, poll_all
+from app.services.topology.lldp_contracts import LldpReadQuery, ReconcileLldpCommand
+from app.services.topology.lldp_poller import SOURCE, NeighborReader
 
 NOW = datetime(2026, 6, 17, 14, 0, tzinfo=UTC)
+
+
+def poll_all(
+    session: Session,
+    *,
+    read_neighbors: NeighborReader,
+    now: datetime,
+    time_budget_seconds: float = lldp_poller.TIME_BUDGET_SECONDS,
+) -> dict[str, int]:
+    """Exercise the public phases with the fast unit fixture's reusable session."""
+    session.expire_on_commit = False
+    session.commit()
+    snapshot = lldp_poller.read_snapshot(session, query=LldpReadQuery(now))
+    session.expunge_all()
+    session.rollback()
+    session.close()
+    poll = lldp_poller.poll_all(
+        snapshot=snapshot,
+        read_neighbors=read_neighbors,
+        time_budget_seconds=time_budget_seconds,
+    )
+    return lldp_poller.reconcile_poll(
+        session,
+        command=ReconcileLldpCommand(
+            context=CommandContext.system(
+                actor="test:lldp", scope="network:topology", reason="regression"
+            ),
+            poll=poll,
+        ),
+    ).to_dict()
 
 
 def _empty_table_error():
     """The exact parse failure routeros_api raises for an empty neighbor table:
     a bare '!empty' sentence that some library builds refuse to parse."""
     return RouterOsApiParsingError("Malformed sentence %s", [b"!empty", b".tag=2"])
+
+
+@pytest.mark.parametrize("change", ["address", "eligibility", "matching", "manual"])
+def test_reconcile_rejects_intervening_changes(
+    db_session: Session, change: str
+) -> None:
+    from app.services.domain_errors import DomainError
+
+    local, router = _router_node(db_session, "Local")
+    remote = _plain(db_session, "Remote")
+    db_session.commit()
+    initial = lldp_poller.read_snapshot(db_session, query=LldpReadQuery(NOW))
+    db_session.commit()
+    collected = lldp_poller.poll_all(
+        snapshot=initial, read_neighbors=lambda _: [{"identity": "Remote"}]
+    )
+    if change == "address":
+        router.management_ip = "192.0.2.99"
+    elif change == "eligibility":
+        router.is_active = False
+    elif change == "matching":
+        remote.name = "Renamed"
+    else:
+        db_session.add(
+            NetworkTopologyLink(
+                source_device_id=local.id,
+                target_device_id=remote.id,
+                source="manual",
+                is_active=True,
+            )
+        )
+    db_session.commit()
+    with pytest.raises(DomainError, match="changed during collection"):
+        lldp_poller.reconcile_poll(
+            db_session,
+            command=ReconcileLldpCommand(
+                CommandContext.system(
+                    actor="test:lldp", scope="network", reason="stale"
+                ),
+                collected,
+            ),
+        )
+    assert not _active_links(db_session)
+
+
+def test_persistence_failure_rolls_back_observations(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _router_node(db_session, "Local")
+    _plain(db_session, "Remote")
+    db_session.commit()
+    initial = lldp_poller.read_snapshot(db_session, query=LldpReadQuery(NOW))
+    db_session.rollback()
+    collected = lldp_poller.poll_all(
+        snapshot=initial, read_neighbors=lambda _: [{"identity": "Remote"}]
+    )
+    error = RuntimeError("audit persistence failed")
+    monkeypatch.setattr(
+        lldp_poller, "create_event_record", MagicMock(side_effect=error)
+    )
+    with pytest.raises(RuntimeError) as caught:
+        lldp_poller.reconcile_poll(
+            db_session,
+            command=ReconcileLldpCommand(
+                CommandContext.system(
+                    actor="test:lldp", scope="network", reason="rollback"
+                ),
+                collected,
+            ),
+        )
+    assert caught.value is error
+    assert not db_session.in_transaction()
+    assert not _active_links(db_session)
+
+
+def test_failed_observer_is_not_pruned_by_successful_peer(db_session: Session) -> None:
+    local, _ = _router_node(db_session, "Local")
+    remote, _ = _router_node(db_session, "Remote")
+    db_session.add(
+        NetworkTopologyLink(
+            source_device_id=local.id,
+            target_device_id=remote.id,
+            source=SOURCE,
+            is_active=True,
+            metadata_={"observed_from": str(local.id)},
+        )
+    )
+
+    def reader(router: lldp_poller.LldpRouter) -> list[dict[str, str]]:
+        if router.name == "Local":
+            raise TimeoutError("unreachable")
+        return []
+
+    result = poll_all(db_session, read_neighbors=reader, now=NOW)
+    assert result["routers_failed"] == 1
+    assert result["pruned"] == 0
+    assert len(_active_links(db_session)) == 1
+
+
+def test_older_run_cannot_overwrite_newer_observation(db_session: Session) -> None:
+    from app.services.domain_errors import DomainError
+
+    local, _ = _router_node(db_session, "Local")
+    remote = _plain(db_session, "Remote")
+    db_session.add(
+        NetworkTopologyLink(
+            source_device_id=local.id,
+            target_device_id=remote.id,
+            source=SOURCE,
+            is_active=True,
+            last_seen_at=NOW + timedelta(minutes=1),
+            metadata_={"observed_from": str(local.id)},
+        )
+    )
+    # The newer result was already visible in this older run's read snapshot.
+    # Snapshot equality alone therefore cannot protect its freshness.
+    with pytest.raises(DomainError, match="changed during collection"):
+        poll_all(db_session, read_neighbors=lambda _: [], now=NOW)
+    link = _active_links(db_session)[0]
+    assert link.last_seen_at.replace(tzinfo=UTC) == NOW + timedelta(minutes=1)
 
 
 def _router_node(db, name, mgmt_ip=None, is_active=True, network_device=True):
@@ -306,11 +460,18 @@ def test_inactive_router_not_polled(db_session):
 
 
 def _fake_router():
-    return SimpleNamespace(
+    return lldp_poller.LldpRouter(
+        id=uuid4(),
         name="edge-rtr",
         management_ip="10.20.0.1",
         rest_api_username="api-user",
         rest_api_password="api-pass",
+        rest_api_port=443,
+        use_ssl=True,
+        verify_tls=False,
+        access_method=RouterAccessMethod.direct,
+        jump_host=None,
+        network_device_id=None,
     )
 
 
@@ -544,15 +705,24 @@ def test_rest_reader_parses_json_array_into_neighbor_dict_shape(monkeypatch):
     ]
     captured = {}
 
-    def fake_execute(router, method, path, **kwargs):
-        captured["method"] = method
-        captured["path"] = path
-        captured["kwargs"] = kwargs
-        return rest_json
+    def fake_client(router, *, timeout):
+        captured["timeout"] = timeout
+        client = MagicMock()
+        client.__enter__.return_value = client
+        response = MagicMock()
+        response.text = "json response"
+        response.headers = {"content-type": "application/json"}
+        response.json.return_value = rest_json
+        client.request.return_value = response
+        captured["client"] = client
+        return client
 
     import app.services.router_management.connection as conn
 
-    monkeypatch.setattr(conn.RouterConnectionService, "execute", fake_execute)
+    monkeypatch.setattr(conn.RouterConnectionService, "get_client", fake_client)
+    monkeypatch.setattr(
+        conn, "_rest_tunables", lambda: pytest.fail("network phase queried settings")
+    )
 
     out = lldp_poller._read_neighbors_via_rest(_fake_router())
 
@@ -563,9 +733,13 @@ def test_rest_reader_parses_json_array_into_neighbor_dict_shape(monkeypatch):
     assert out[0]["board-name"] == "CCR1072-1G-8S+"
     # Reused the established REST layer: GET /ip/neighbor with discovery-grade
     # tunables (one attempt, ~12s read bound).
-    assert (captured["method"], captured["path"]) == ("GET", "/ip/neighbor")
-    assert captured["kwargs"]["max_retries"] == lldp_poller.ROUTER_REST_MAX_RETRIES
-    assert captured["kwargs"]["read_timeout"] == lldp_poller.ROUTER_REST_READ_TIMEOUT
+    captured["client"].request.assert_called_once_with(
+        method="GET", url="/rest/ip/neighbor", json=None
+    )
+    captured["client"].request.return_value.raise_for_status.assert_called_once_with()
+    assert captured["timeout"].read == lldp_poller.ROUTER_REST_READ_TIMEOUT
+    assert captured["timeout"].connect == lldp_poller.ROUTER_REST_CONNECT_TIMEOUT
+    captured["client"].__exit__.assert_called_once()
 
 
 def test_poll_all_rest_fallback_end_to_end(db_session):
@@ -705,6 +879,8 @@ def test_manual_backbone_link_not_duplicated_and_survives(db_session):
     )
     db_session.add_all([manual, manual_null])
     db_session.flush()
+    manual_id = manual.id
+    manual_null_id = manual_null.id
 
     neighbors = {
         # Both endpoints rediscover the manually-modeled pair (either direction).
@@ -720,8 +896,10 @@ def test_manual_backbone_link_not_duplicated_and_survives(db_session):
 
     # No lldp row exists for either canonical pair; the manual links survive.
     assert len(_active_links(db_session)) == 0  # source='lldp_neighbor' rows
-    db_session.refresh(manual)
-    db_session.refresh(manual_null)
+    manual = db_session.get(NetworkTopologyLink, manual_id)
+    manual_null = db_session.get(NetworkTopologyLink, manual_null_id)
+    assert manual is not None
+    assert manual_null is not None
     assert manual.is_active is True and manual.source == "manual"
     assert manual_null.is_active is True and manual_null.source is None
 
@@ -730,5 +908,6 @@ def test_manual_backbone_link_not_duplicated_and_survives(db_session):
         db_session, read_neighbors=stub, now=datetime(2026, 6, 17, 14, 5, tzinfo=UTC)
     )
     assert r2["pruned"] == 0
-    db_session.refresh(manual)
+    manual = db_session.get(NetworkTopologyLink, manual_id)
+    assert manual is not None
     assert manual.is_active is True

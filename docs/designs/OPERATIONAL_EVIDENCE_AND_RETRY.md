@@ -45,6 +45,23 @@ last attempt, last successful poll, affected live-bandwidth mappings, and next
 attempt. Exponential backoff is bounded at fifteen minutes. The poller remains
 an observer and never retires or disables a NAS.
 
+`network.live_bandwidth_observations` owns the subscription-scoped live
+projection. Normal admin and customer charts open its SSE stream; they do not
+poll RouterOS directly or choose collection retry cadence. A connected stream
+refreshes the poller's ephemeral demand evidence, VictoriaMetrics is the
+preferred observation projection, and either source must carry an observation
+timestamp no older than two minutes. When neither source is fresh, the stream
+reports `has_sample=false` and does not claim that a zero value is live.
+
+The direct RouterOS read is retained only as an explicit operator diagnostic.
+The owner materializes a typed subscription/NAS target, ends the clean database
+read transaction, and then acquires a shared per-NAS single-flight
+claim before network I/O. The pinned RouterOS client applies a fifteen-second
+socket timeout, and the admission claim outlives that bound. Missing distributed
+coordination fails closed. Its
+public outcome excludes PPPoE login, framed address, caller ID, credentials,
+and interface names that may embed customer identity.
+
 ### TR-069 inventory
 
 The complete ACS pass is idempotent. A soft timeout, unexpected failure, or

@@ -69,6 +69,16 @@ class BandwidthPoint:
     tx_bps: int
 
 
+@dataclass(frozen=True)
+class CurrentBandwidthObservation:
+    """Current rates that distinguish an idle zero from an absent series."""
+
+    rx_bps: float
+    tx_bps: float
+    has_sample: bool
+    observed_at: datetime | None
+
+
 @dataclass
 class TimeSeriesPoint:
     """A single point in a time series query result."""
@@ -382,21 +392,34 @@ class MetricsStore:
         Returns:
             Dict with rx_bps and tx_bps values
         """
+        observation = await self.get_current_bandwidth_observation(subscription_id)
+        return {"rx_bps": observation.rx_bps, "tx_bps": observation.tx_bps}
+
+    async def get_current_bandwidth_observation(
+        self,
+        subscription_id: str,
+    ) -> CurrentBandwidthObservation:
+        """Return rates plus source presence and the latest sample timestamp."""
         rx_query = f'bandwidth_rx_bps_avg{{subscription_id="{subscription_id}"}}'
         tx_query = f'bandwidth_tx_bps_avg{{subscription_id="{subscription_id}"}}'
-
         rx_results = await self.get_instant(rx_query)
         tx_results = await self.get_instant(tx_query)
 
-        rx_bps = 0.0
-        tx_bps = 0.0
-
-        if rx_results and rx_results[0].get("value"):
-            rx_bps = float(rx_results[0]["value"][1])
-        if tx_results and tx_results[0].get("value"):
-            tx_bps = float(tx_results[0]["value"][1])
-
-        return {"rx_bps": rx_bps, "tx_bps": tx_bps}
+        rx_value = rx_results[0].get("value") if rx_results else None
+        tx_value = tx_results[0].get("value") if tx_results else None
+        rx_bps = float(rx_value[1]) if isinstance(rx_value, list) else 0.0
+        tx_bps = float(tx_value[1]) if isinstance(tx_value, list) else 0.0
+        timestamps = [
+            datetime.fromtimestamp(float(value[0]), tz=UTC)
+            for value in (rx_value, tx_value)
+            if isinstance(value, list) and value
+        ]
+        return CurrentBandwidthObservation(
+            rx_bps=rx_bps,
+            tx_bps=tx_bps,
+            has_sample=bool(rx_value or tx_value),
+            observed_at=max(timestamps) if timestamps else None,
+        )
 
     async def get_peak_bandwidth(
         self,

@@ -221,6 +221,7 @@ BILLING_KEYS = [
     "proforma_payment_period",
     "zero_total_invoices",
     "invoice_caching",
+    "invoice_pdf_payment_presentment",
     # Prepaid customer defaults
     "prepaid_default_billing_day",
     "prepaid_default_payment_due_days",
@@ -251,6 +252,7 @@ def get_billing_config_context(db: Session) -> dict:
         "upcoming_charges_include_funded_prepaid_default": "false",
         "invoice_reminder_days": "7,1",
         "minimum_balance": "0",
+        "invoice_pdf_payment_presentment": "paystack",
     }
     for key, value in defaults.items():
         if not billing.get(key):
@@ -373,6 +375,12 @@ def _normalized_billing_config(data: Mapping[str, Any]) -> dict[str, Any]:
         "proforma_payment_period",
         "Proforma Payment Period",
         {"monthly", "quarterly", "annual"},
+    )
+    _normalize_choice(
+        normalized,
+        "invoice_pdf_payment_presentment",
+        "Invoice PDF Payment Fallback",
+        {"bank_account", "paystack", "both"},
     )
 
     for key, label in (

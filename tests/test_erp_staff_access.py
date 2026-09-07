@@ -470,3 +470,28 @@ def test_reconciliation_repairs_missed_staff_access_events(db_session) -> None:
     )
     db_session.refresh(user)
     assert user.is_active is False
+
+
+def test_reconciliation_repairs_reactivated_inactive_account_without_new_version(
+    db_session,
+) -> None:
+    user = _staff(db_session)
+    account = _account_event(user, version=1, status="inactive")
+    _apply_account(db_session, account)
+    db_session.refresh(user)
+    assert user.is_active is False
+
+    user.is_active = True
+    db_session.commit()
+
+    outcome = erp_staff_access.reconcile_staff_access_snapshot(
+        db_session,
+        erp_staff_access.ReconcileStaffAccessSnapshotCommand(
+            context=_context(ERP_STAFF_ACCESS_RECONCILE_CAPABILITY),
+            account_statuses=(account,),
+        ),
+    )
+
+    db_session.refresh(user)
+    assert outcome.applied == 1
+    assert user.is_active is False

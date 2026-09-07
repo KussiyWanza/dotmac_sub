@@ -3934,6 +3934,10 @@ def _payment_prepaid_service_amount(db: Session, payment: Payment) -> Decimal:
             (
                 outcome.amount
                 for outcome in renewal_outcomes_for_payment(db, payment.id)
+                # Invoice-backed renewals are already represented by this
+                # payment's active allocations. Only legacy direct-debit
+                # outcomes need the separate prepaid-consumption deduction.
+                if outcome.invoice_id is None
             ),
             Decimal("0.00"),
         )

@@ -434,7 +434,6 @@ DOMAIN = DomainSOT(
                 "ticket customer publication visibility",
                 "ticket links duplicates and merges",
                 "signed-link and authenticated resolution confirmation/dispute",
-                "ticket CSAT and satisfaction",
                 "ticket audit official timeline and transactional events",
             ),
             depends_on=(
@@ -495,7 +494,6 @@ DOMAIN = DomainSOT(
                             "ticket customer publication visibility",
                             "ticket links duplicates and merges",
                             "signed-link and authenticated resolution confirmation/dispute",
-                            "ticket CSAT and satisfaction",
                             "ticket audit official timeline and transactional events",
                         )
                     ),
@@ -536,7 +534,7 @@ DOMAIN = DomainSOT(
                         kind=AuthorityKind.CONTROL_INPUT,
                         source=(
                             "typed TicketCreate, TicketUpdate, TicketMentionTarget, "
-                            "comment, merge, link, resolution, satisfaction, typed "
+                            "comment, merge, link, resolution, typed "
                             "AttachmentMeta with private StoredFile UUID, bounded comment "
                             "attachment-reference repair, and bulk command inputs "
                             "with CommandContext plus the closed silent-internal creation "
@@ -734,9 +732,9 @@ DOMAIN = DomainSOT(
                     new_owner="support.ticket_lifecycle",
                     verification=(
                         "Support lifecycle, assignment, automation, comment, attachment, "
-                        "comment attachment-reference repair, link, duplicate, merge, CSAT, "
-                        "portal, unmatched-radio silent creation and legacy-number repair, "
-                        "and architecture tests"
+                        "comment attachment-reference repair, link, duplicate, merge, "
+                        "CSAT request handoff, portal, unmatched-radio silent creation "
+                        "and legacy-number repair, and architecture tests"
                     ),
                     cutover_gate=(
                         "all Ticket mutations enter the registered owner; policies return "
@@ -1544,6 +1542,145 @@ DOMAIN = DomainSOT(
                     "tests/test_support_ticket_bulk_actions.py",
                     "tests/architecture/test_support_ticket_sot_boundary.py",
                 ),
+            ),
+        ),
+        SOTService(
+            name="support.csat",
+            module="app.services.support_csat",
+            owns=(
+                "support CSAT request and response records",
+                "support CSAT report projection",
+            ),
+            depends_on=(
+                "support.ticket_lifecycle",
+                "communications.team_inbox_status",
+                "communications.intents",
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name="support CSAT request and response records",
+                        role=OwnerRole.COMMAND_WRITER,
+                        input_names=(
+                            "closed support ticket interaction",
+                            "resolved Team Inbox interaction",
+                            "customer CSAT submission",
+                            "CSAT request records",
+                        ),
+                        canonical_writer="support.csat",
+                    ),
+                    ConcernContract(
+                        name="support CSAT report projection",
+                        role=OwnerRole.RESOLVER,
+                        input_names=("CSAT request records",),
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="closed support ticket interaction",
+                        owner="support.ticket_lifecycle",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "closed Support Ticket lifecycle transitions with exact "
+                            "resolution-cycle identity"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="resolved Team Inbox interaction",
+                        owner="communications.team_inbox_status",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "resolved Team Inbox status-transition events with exact "
+                            "transition-event cycle identity"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="customer CSAT submission",
+                        owner="support.csat",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "authenticated portal or widget-token rating command scoped "
+                            "to the owning subscriber/conversation"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="CSAT request records",
+                        owner="support.csat",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "support_csat_requests rows with source, resolution-cycle "
+                            "key, customer, agent, team, rating, comment, and submission "
+                            "timestamps"
+                        ),
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.PARTICIPANT,
+                    boundary=(
+                        "Ticket and Inbox lifecycle owners invoke CSAT creation as an "
+                        "optional flush-only participant. Customer submissions enter "
+                        "through the existing ticket or widget command boundary."
+                    ),
+                    locking=(
+                        "The source interaction is already locked by its lifecycle owner; "
+                        "unique source/cycle records prevent duplicate CSAT requests."
+                    ),
+                    idempotency=(
+                        "source_type, source_id, and resolution_cycle_key uniquely identify "
+                        "one request; submitted requests reject duplicate responses."
+                    ),
+                    retries="retry from the same source transition or customer submission",
+                ),
+                errors=ErrorContract(
+                    domain_codes=(
+                        "support.csat.invalid_rating",
+                        "support.csat.not_eligible",
+                        "support.csat.request_unavailable",
+                        "support.csat.already_submitted",
+                    ),
+                    mapping_owner="support ticket, chat widget, and reports adapters",
+                    fail_closed_on=(
+                        "unowned customer source",
+                        "non-resolved source interaction",
+                        "duplicate submission",
+                    ),
+                ),
+                events=EventContract(
+                    event_types=(
+                        "support.csat.request_created",
+                        "support.csat.response_submitted",
+                    ),
+                    schema_version=1,
+                    delivery_owner="events.dispatcher",
+                    compatibility=(
+                        "Version 1 contains CSAT request identity, source/cycle identity, "
+                        "submission state, and snapshot reporting references without "
+                        "requiring legacy metadata as authority."
+                    ),
+                    replay=(
+                        "support_csat_requests rows reconstruct request creation and "
+                        "response submission history by source_type, source_id, and "
+                        "resolution_cycle_key."
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.NATIVE,
+                    new_owner="support.csat",
+                    verification="CSAT lifecycle, ownership, duplicate, report, and migration tests",
+                    cutover_gate=(
+                        "new submissions write support_csat_requests and update legacy "
+                        "metadata only as compatibility projection"
+                    ),
+                    fallback_retirement=(
+                        "metadata.csat remains read compatibility only, not report authority"
+                    ),
+                ),
+                steward="support operations",
+                design_refs=(
+                    "docs/designs/SUPPORT_TICKET_LIFECYCLE_SOT.md",
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                ),
+                test_refs=("tests/test_support_csat.py",),
             ),
         ),
     ),

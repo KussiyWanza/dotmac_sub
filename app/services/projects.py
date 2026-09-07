@@ -54,6 +54,7 @@ from app.models.notification import NotificationChannel
 from app.models.project import (
     Project,
     ProjectComment,
+    ProjectInfrastructure,
     ProjectPriority,
     ProjectStatus,
     ProjectTask,
@@ -78,6 +79,12 @@ from app.models.ticket_workflow import (
     TicketAssignmentRule,
     WorkflowEntityType,
 )
+from app.models.vendor_routes import InstallationProject, InstallationProjectStatus
+from app.schemas.infrastructure import (
+    InfrastructureReference,
+    InfrastructureType,
+    ProjectInfrastructureChanged,
+)
 from app.schemas.project import (
     ProjectCommentCreate,
     ProjectCommentUpdate,
@@ -94,14 +101,13 @@ from app.schemas.project import (
     ProjectUpdate,
 )
 from app.services import domain_settings as domain_settings_service
+from app.services import infrastructure_catalogue, settings_spec
 from app.services import numbering as numbering_service
-from app.services import settings_spec
 from app.services.audit_adapter import stage_audit_event
 from app.services.common import (
     apply_ordering,
     apply_pagination,
     coerce_uuid,
-    ensure_exists,
     validate_enum,
 )
 from app.services.communication_intents import (
@@ -646,10 +652,87 @@ class SalesProjectLifecycleError(ValueError):
         self.kind = kind
 
 
+def _set_project_infrastructure(
+    db: Session,
+    *,
+    project: Project,
+    reference: InfrastructureReference | None,
+    context: CommandContext,
+) -> bool:
+    """Project-owner participant; caller holds the project lock before scope locks."""
+    current = project.infrastructure
+    previous = InfrastructureReference.model_validate(current) if current else None
+    if reference == previous:
+        return False
+    if reference is not None:
+        if project.project_type != ProjectType.cable_rerun.value:
+            raise _project_error(
+                "invalid_input",
+                "Infrastructure selection is supported for Cable Rerun projects.",
+            )
+        if infrastructure_catalogue.resolve(db, reference=reference) is None:
+            raise _project_error(
+                "invalid_input",
+                "Select an available infrastructure item from the search results.",
+            )
+    scope = db.scalar(
+        select(InstallationProject)
+        .where(InstallationProject.project_id == project.id)
+        .with_for_update()
+    )
+    if scope is not None:
+        if (
+            not scope.is_active
+            or scope.status != InstallationProjectStatus.draft.value
+            or scope.assigned_vendor_id is not None
+        ):
+            raise _project_error(
+                "relationship_conflict",
+                "Infrastructure cannot change after vendor work has been assigned or published.",
+            )
+        if (
+            reference is None
+            and project.subscriber_id is None
+            and scope.buildout_project_id is None
+        ):
+            raise _project_error(
+                "relationship_conflict",
+                "Keep an infrastructure or customer link for this vendor scope.",
+            )
+    emit_event(
+        db,
+        EventType.custom,
+        ProjectInfrastructureChanged(
+            project_id=project.id,
+            command_id=context.command_id,
+            previous=previous,
+            current=reference,
+        ).model_dump(mode="json"),
+        actor=context.actor,
+        subscriber_id=project.subscriber_id,
+    )
+    if reference is None:
+        project.infrastructure = None
+        return True
+    link = current or ProjectInfrastructure(project_id=project.id)
+    kind, target = reference.type, reference.id
+    link.location_id = target if kind is InfrastructureType.location else None
+    link.nas_id = target if kind is InfrastructureType.nas else None
+    link.access_point_id = target if kind is InfrastructureType.access_point else None
+    link.base_station_id = target if kind is InfrastructureType.base_station else None
+    link.olt_id = target if kind is InfrastructureType.olt else None
+    link.pon_port_id = target if kind is InfrastructureType.pon_port else None
+    link.cabinet_id = target if kind is InfrastructureType.cabinet else None
+    project.infrastructure = link
+    return True
+
+
 def _ensure_vendor_assignment_scope_for_project(
     db: Session, *, project: Project, context: CommandContext
 ) -> None:
-    if project.project_template_id is None or project.subscriber_id is None:
+    if project.project_template_id is None or (
+        project.subscriber_id is None and project.infrastructure is None
+    ):
         return
     template = db.get(ProjectTemplate, project.project_template_id)
     if template is None or not template.creates_vendor_assignment_scope:
@@ -659,10 +742,12 @@ def _ensure_vendor_assignment_scope_for_project(
 
     installation_projects.ensure_for_project(
         db,
-        project_id=project.id,
-        subscriber_id=project.subscriber_id,
-        actor_id=context.actor,
-        created_by_person_id=project.created_by_person_id,
+        command=installation_projects.EnsureProjectScope(
+            project_id=project.id,
+            subscriber_id=project.subscriber_id,
+            actor_id=context.actor,
+            created_by_person_id=project.created_by_person_id,
+        ),
     )
 
 
@@ -2487,8 +2572,21 @@ def _ensure_project_template(db: Session, template_id: str) -> ProjectTemplate:
     return template
 
 
-def _ensure_subscriber(db: Session, subscriber_id: str) -> None:
-    ensure_exists(db, Subscriber, subscriber_id, "Subscriber not found")
+def _ensure_subscriber(
+    db: Session, subscriber_id: str, *, require_active: bool = False
+) -> Subscriber:
+    subscriber = db.scalar(
+        select(Subscriber)
+        .where(Subscriber.id == coerce_uuid(subscriber_id))
+        .with_for_update()
+    )
+    if subscriber is None:
+        raise _project_error("not_found", "Subscriber not found")
+    if require_active and not subscriber.is_active:
+        raise _project_error(
+            "invalid_input", "Select an active customer for the project"
+        )
+    return subscriber
 
 
 def _ensure_lead(db: Session, lead_id: str) -> None:
@@ -3042,12 +3140,12 @@ class Projects(ListResponseMixin):
         if payload.manager_person_id:
             _ensure_staff_uuid(str(payload.manager_person_id))
         if payload.subscriber_id:
-            _ensure_subscriber(db, str(payload.subscriber_id))
+            _ensure_subscriber(db, str(payload.subscriber_id), require_active=True)
         if payload.lead_id:
             _ensure_lead(db, str(payload.lead_id))
         if payload.project_template_id:
             _ensure_project_template(db, str(payload.project_template_id))
-        data = _model_data(payload.model_dump())
+        data = _model_data(payload.model_dump(exclude={"infrastructure"}))
         number = _resolve_project_number(db)
         if number:
             data["number"] = number
@@ -3100,6 +3198,10 @@ class Projects(ListResponseMixin):
                     data["due_at"] = start_at + timedelta(days=duration_days)
         project = Project(**data)
         db.add(project)
+        db.flush()
+        _set_project_infrastructure(
+            db, project=project, reference=payload.infrastructure, context=context
+        )
         db.flush()
         _ensure_vendor_assignment_scope_for_project(
             db, project=project, context=context
@@ -3489,7 +3591,9 @@ class Projects(ListResponseMixin):
         previous_template_id = (
             str(project.project_template_id) if project.project_template_id else None
         )
-        data = _model_data(payload.model_dump(exclude_unset=True))
+        data = _model_data(
+            payload.model_dump(exclude_unset=True, exclude={"infrastructure"})
+        )
         if data.get("status"):
             _require_status_transition(
                 current=project.status,
@@ -3508,7 +3612,11 @@ class Projects(ListResponseMixin):
         if data.get("lead_id"):
             _ensure_lead(db, str(data["lead_id"]))
         if data.get("subscriber_id"):
-            _ensure_subscriber(db, str(data["subscriber_id"]))
+            _ensure_subscriber(
+                db,
+                str(data["subscriber_id"]),
+                require_active=data["subscriber_id"] != project.subscriber_id,
+            )
         # Auto-assign PM based on region if region changes and no PM is set
         new_region = data.get("region")
         current_pm = (
@@ -3531,6 +3639,19 @@ class Projects(ListResponseMixin):
         ]
         for key, value in data.items():
             setattr(project, key, value)
+        if "infrastructure" in payload.model_fields_set:
+            if _set_project_infrastructure(
+                db, project=project, reference=payload.infrastructure, context=context
+            ):
+                changed_fields.append("infrastructure")
+        if (
+            project.infrastructure is not None
+            and project.project_type != ProjectType.cable_rerun.value
+        ):
+            raise _project_error(
+                "invalid_input",
+                "Clear the infrastructure selection before changing the project type.",
+            )
         if (
             data.get("status") == ProjectStatus.completed.value
             and project.completed_at is None

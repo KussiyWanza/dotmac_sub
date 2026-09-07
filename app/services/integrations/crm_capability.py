@@ -13,7 +13,6 @@ from app.services.integrations.connectors.dotmac_crm import (
     CRM_EVENT_RECEIVE_CAPABILITY,
     CRM_OPERATIONAL_OBSERVATION_CAPABILITY,
     CRM_PORTAL_SESSION_CAPABILITY,
-    CRM_QUOTE_COMMAND_CAPABILITY,
     CRM_SUBSCRIBER_OBSERVATION_CAPABILITY,
     CRM_TICKET_OBSERVATION_CAPABILITY,
 )
@@ -198,16 +197,6 @@ class CrmCapabilityClient:
             or {}
         )
 
-    def get_portal_quotes(self, crm_subscriber_id: str) -> dict[str, Any]:
-        return dict(
-            self._operational(
-                "get_portal_quotes",
-                {"crm_subscriber_id": crm_subscriber_id},
-                f"crm-portal-quotes:{crm_subscriber_id}",
-            ).get("item")
-            or {}
-        )
-
     def create_portal_session(
         self,
         *,
@@ -226,60 +215,6 @@ class CrmCapabilityClient:
                 },
                 trigger=OperationTrigger.interactive,
                 correlation_id=f"crm-portal-session:{actor}:{crm_subscriber_id}",
-            ).get("item")
-            or {}
-        )
-
-    def request_portal_quote(
-        self,
-        crm_subscriber_id: str,
-        *,
-        latitude: float,
-        longitude: float,
-        address: str | None = None,
-        region: str | None = None,
-        note: str | None = None,
-    ) -> dict[str, Any]:
-        return dict(
-            self._execute(
-                CRM_QUOTE_COMMAND_CAPABILITY,
-                "request_portal_quote",
-                {
-                    "crm_subscriber_id": crm_subscriber_id,
-                    "latitude": latitude,
-                    "longitude": longitude,
-                    "address": address,
-                    "region": region,
-                    "note": note,
-                },
-                trigger=OperationTrigger.interactive,
-                correlation_id=f"crm-quote-request:{crm_subscriber_id}:{latitude}:{longitude}",
-            ).get("item")
-            or {}
-        )
-
-    def accept_portal_quote(
-        self,
-        crm_subscriber_id: str,
-        quote_id: str,
-        *,
-        deposit_reference: str,
-        deposit_amount: str,
-        provider: str | None = None,
-    ) -> dict[str, Any]:
-        return dict(
-            self._execute(
-                CRM_QUOTE_COMMAND_CAPABILITY,
-                "accept_portal_quote",
-                {
-                    "crm_subscriber_id": crm_subscriber_id,
-                    "quote_id": quote_id,
-                    "deposit_reference": deposit_reference,
-                    "deposit_amount": deposit_amount,
-                    "provider": provider,
-                },
-                trigger=OperationTrigger.interactive,
-                correlation_id=f"crm-quote-accept:{quote_id}:{deposit_reference}",
             ).get("item")
             or {}
         )

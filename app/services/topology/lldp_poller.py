@@ -40,12 +40,15 @@ MAC strategy is intentionally not implemented (no schema is invented).
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import time
 import uuid
 from collections import Counter
-from datetime import UTC, datetime
+from collections.abc import Callable
+from datetime import UTC
+from typing import Literal, TypeAlias
 
 import routeros_api
 from billiard.exceptions import SoftTimeLimitExceeded
@@ -53,9 +56,10 @@ from routeros_api.exceptions import (
     RouterOsApiConnectionError,
     RouterOsApiParsingError,
 )
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, or_, text
 from sqlalchemy.orm import Session
 
+from app.models.event_store import EventStatus
 from app.models.network_monitoring import (
     NetworkDevice,
     NetworkTopologyLink,
@@ -63,6 +67,28 @@ from app.models.network_monitoring import (
 )
 from app.models.router_management import Router
 from app.services.credential_crypto import decrypt_credential
+from app.services.domain_errors import DomainError
+from app.services.event_store import create_event_record
+from app.services.events.types import Event, EventType
+from app.services.owner_commands import OwnerCommandDefinition, execute_owner_command
+from app.services.topology.lldp_contracts import (
+    LldpDevice,
+    LldpEdge,
+    LldpJumpHost,
+    LldpLinkState,
+    LldpPoll,
+    LldpReadQuery,
+    LldpRouter,
+    LldpSnapshot,
+    LldpStats,
+    ReconcileLldpCommand,
+)
+
+NeighborRow: TypeAlias = dict[str, str]
+NeighborReader: TypeAlias = Callable[
+    [LldpRouter],
+    tuple[list[NeighborRow], Literal["binary", "rest"]] | list[NeighborRow],
+]
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +110,6 @@ ROUTER_SOCKET_TIMEOUT = 15.0
 # router this hour, retry next" philosophy as the binary socket timeout above.
 ROUTER_REST_CONNECT_TIMEOUT = 5.0
 ROUTER_REST_READ_TIMEOUT = 12.0
-ROUTER_REST_MAX_RETRIES = 1
 
 # Wall-clock safety net: the Celery task has soft_time_limit=300 — stop
 # attempting new devices before that so the run finishes cleanly (upsert +
@@ -271,7 +296,7 @@ def _canonical(a: uuid.UUID, b: uuid.UUID) -> tuple[uuid.UUID, uuid.UUID]:
 
 def accumulate_edges(
     edges: dict,
-    local: NetworkDevice,
+    local: NetworkDevice | LldpDevice,
     neighbors: list[dict],
     index,
     strategy_counter: dict | None = None,
@@ -336,7 +361,9 @@ def _is_empty_neighbor_table(exc: BaseException) -> bool:
     return False
 
 
-def _read_neighbors_via_binary_api(router: Router, pool_factory=None) -> list[dict]:
+def _read_neighbors_via_binary_api(
+    router: LldpRouter, pool_factory=None
+) -> list[NeighborRow]:
     """Read a router's ``/ip/neighbor`` over the RouterOS binary API (8728).
 
     Mirrors the bandwidth poller's proven connection path: construct a
@@ -366,6 +393,8 @@ def _read_neighbors_via_binary_api(router: Router, pool_factory=None) -> list[di
         # this poll (best-effort: tolerate older library builds lacking it).
         try:
             pool.set_timeout(ROUTER_SOCKET_TIMEOUT)
+        except SoftTimeLimitExceeded:
+            raise
         except Exception:  # noqa: BLE001 - timeout tuning is best-effort
             pass
         api = pool.get_api()
@@ -383,6 +412,8 @@ def _read_neighbors_via_binary_api(router: Router, pool_factory=None) -> list[di
         # pool_factory returned; release it no matter how we leave.
         try:
             pool.disconnect()
+        except SoftTimeLimitExceeded:
+            raise
         except Exception as exc:  # noqa: BLE001 - never mask the real error
             logger.warning(
                 "lldp_poll_pool_disconnect_failed router=%s: %s",
@@ -391,7 +422,7 @@ def _read_neighbors_via_binary_api(router: Router, pool_factory=None) -> list[di
             )
 
 
-def _read_neighbors_via_rest(router: Router) -> list[dict]:
+def _read_neighbors_via_rest(router: LldpRouter) -> list[NeighborRow]:
     """Read a router's ``/ip/neighbor`` over the RouterOS REST API (443).
 
     Fallback transport for the REST-only cores (Garki Core, Abuja Medallion)
@@ -402,7 +433,7 @@ def _read_neighbors_via_rest(router: Router) -> list[dict]:
     so a dead router costs seconds, not the snapshot retry budget. The service
     decrypts the same ``rest_api_*`` credentials, builds the
     ``management_ip``/``rest_api_port``/``use_ssl`` base URL, prepends ``/rest``,
-    and closes the httpx client via its ``with`` context (no session leak).
+    and closes the HTTP client via its context manager (no session leak).
 
     TLS: RouterOS presents a self-signed cert, so verification is governed by
     the router row's ``verify_tls`` column (``RouterConnectionService.get_client``
@@ -417,17 +448,19 @@ def _read_neighbors_via_rest(router: Router) -> list[dict]:
     SAME dict shape :func:`_read_neighbors_via_binary_api` yields — so downstream
     matching/edge-building is unchanged.
     """
-    # Imported lazily: the REST connection layer pulls in httpx/sshtunnel and is
+    # Imported lazily: the REST connection layer pulls in its transport and is
     # only needed on the rare REST-only-core fallback path.
     from app.services.router_management.connection import RouterConnectionService
 
-    data = RouterConnectionService.execute(
+    # LLDP has always used one REST attempt. The established connection owner
+    # provides an explicit one-shot boundary that cannot resolve DB settings.
+    data = RouterConnectionService.execute_once(
         router,
-        "GET",
-        "/ip/neighbor",
+        method="GET",
+        path="/ip/neighbor",
+        payload=None,
         connect_timeout=ROUTER_REST_CONNECT_TIMEOUT,
         read_timeout=ROUTER_REST_READ_TIMEOUT,
-        max_retries=ROUTER_REST_MAX_RETRIES,
     )
     return [dict(row) for row in data] if isinstance(data, list) else []
 
@@ -442,11 +475,11 @@ _BINARY_CONNECTION_ERRORS = (RouterOsApiConnectionError, OSError)
 
 
 def _read_neighbors(
-    router: Router,
+    router: LldpRouter,
     *,
-    binary_reader=None,
-    rest_reader=None,
-) -> tuple[list[dict], str]:
+    binary_reader: Callable[[LldpRouter], list[NeighborRow]] | None = None,
+    rest_reader: Callable[[LldpRouter], list[NeighborRow]] | None = None,
+) -> tuple[list[NeighborRow], Literal["binary", "rest"]]:
     """Dispatch a neighbor read: binary API (8728) first, REST (443) on fallback.
 
     Returns ``(neighbors, transport)`` where ``transport`` is ``"binary"`` or
@@ -455,7 +488,7 @@ def _read_neighbors(
     the REST reader for the REST-only cores. Does NOT fall back on an AUTH
     failure (``RouterOsApiCommunicationError``: REST would fail identically) nor
     on ``SoftTimeLimitExceeded`` (which must reach the task's graceful handler);
-    both propagate to ``poll_all`` and count as ``routers_failed``. The
+    auth failures count as ``routers_failed``; soft limits fail the whole run. The
     sub-readers are injectable for tests. ``binary_reader`` returning ``[]`` for
     an empty neighbor table is a SUCCESS, not a fallback trigger."""
     binary_reader = binary_reader or _read_neighbors_via_binary_api
@@ -474,12 +507,12 @@ def _read_neighbors(
 
 
 def poll_all(
-    session: Session,
-    read_neighbors=None,
-    now: datetime | None = None,
+    *,
+    snapshot: LldpSnapshot,
+    read_neighbors: NeighborReader | None = None,
     time_budget_seconds: float = TIME_BUDGET_SECONDS,
-) -> dict:
-    """Poll every active router's neighbors, upsert lldp_neighbor edges, soft-prune.
+) -> LldpPoll:
+    """Collect detached neighbor observations without database access.
 
     Iterates active ``routers`` rows and reads each one's ``/ip/neighbor`` via
     the transport dispatcher (:func:`_read_neighbors`): binary API on 8728 first
@@ -498,11 +531,23 @@ def poll_all(
     re-run only bumps ``last_seen_at``.
     """
     read_neighbors = read_neighbors or _read_neighbors
-    now = now or datetime.now(UTC)
-    started = time.monotonic()
+    started = snapshot.started_at
     budget_logged = False
-    index = _build_match_index(session)
-    stats: Counter = Counter(
+    by_name: dict[str, LldpDevice] = {}
+    by_ip: dict[str, LldpDevice] = {}
+    stripped: list[tuple[frozenset[str], LldpDevice]] = []
+    for device in snapshot.devices:
+        if not device.is_active:
+            continue
+        for label in (device.name, device.hostname):
+            if normalized := _norm(label):
+                by_name.setdefault(normalized, device)
+            if tokens := _strip_tokens(label):
+                stripped.append((tokens, device))
+        if device.mgmt_ip:
+            by_ip.setdefault(device.mgmt_ip, device)
+    index = (by_name, by_ip, stripped)
+    stats: Counter[str] = Counter(
         {
             "routers_polled": 0,
             "routers_failed": 0,
@@ -524,7 +569,8 @@ def poll_all(
         }
     )
 
-    routers = session.query(Router).filter(Router.is_active.is_(True)).all()
+    routers = snapshot.routers
+    devices = {device.id: device for device in snapshot.devices}
 
     edges: dict = {}
     # NetworkDevice ids of routers we SUCCESSFULLY read this run. Only these
@@ -536,9 +582,7 @@ def poll_all(
     polled_device_ids: set = set()
     for router in routers:
         local = (
-            session.get(NetworkDevice, router.network_device_id)
-            if router.network_device_id
-            else None
+            devices.get(router.network_device_id) if router.network_device_id else None
         )
         if local is None:
             stats["skipped_no_device"] += 1
@@ -587,18 +631,89 @@ def poll_all(
         polled_device_ids.add(local.id)
         accumulate_edges(edges, local, neighbors, index, strategy_counter=stats)
 
+    stats["edges"] = len(edges)
+    return LldpPoll(
+        snapshot=snapshot,
+        edges=tuple(
+            LldpEdge(
+                source_device_id=edge["source_device_id"],
+                target_device_id=edge["target_device_id"],
+                medium=edge["medium"],
+                observed_from=uuid.UUID(edge["metadata"]["observed_from"]),
+                local_interface=edge["metadata"]["local_interface"],
+                remote_identity=edge["metadata"]["remote_identity"],
+                remote_board=edge["metadata"]["remote_board"],
+            )
+            for edge in edges.values()
+        ),
+        polled_device_ids=frozenset(polled_device_ids),
+        stats=LldpStats(**dict(stats)),
+    )
+
+
+def _reconcile(session: Session, poll: LldpPoll) -> LldpStats:
+    # Serialize LLDP runs and block inventory/manual-link edits only during the
+    # short write phase. Table locks also cover inserts (row locks alone don't).
+    if session.get_bind().dialect.name == "postgresql":
+        session.execute(text("SET LOCAL lock_timeout = '5s'"))
+        session.execute(
+            text("LOCK TABLE routers, jump_hosts, network_devices IN SHARE MODE")
+        )
+        session.execute(
+            text("LOCK TABLE network_topology_links IN SHARE ROW EXCLUSIVE MODE")
+        )
+    current = read_snapshot(session, query=LldpReadQuery(poll.snapshot.observed_at))
+    observed_at = poll.snapshot.observed_at
+    if observed_at.tzinfo is None:
+        observed_at = observed_at.replace(tzinfo=UTC)
+    newer_observation = any(
+        link.source == SOURCE
+        and link.last_seen_at is not None
+        and (
+            link.last_seen_at
+            if link.last_seen_at.tzinfo is not None
+            else link.last_seen_at.replace(tzinfo=UTC)
+        )
+        > observed_at
+        for link in current.links
+    )
+    if (
+        {row.id: row for row in current.routers}
+        != {row.id: row for row in poll.snapshot.routers}
+        or {row.id: row for row in current.devices}
+        != {row.id: row for row in poll.snapshot.devices}
+        or current.links != poll.snapshot.links
+        or newer_observation
+    ):
+        raise DomainError(
+            code="network.lldp_observations.stale_snapshot",
+            message="LLDP inventory or topology changed during collection; poll discarded",
+        )
+    now = poll.snapshot.observed_at
+    stats = Counter(poll.stats.to_dict())
+    polled_device_ids = poll.polled_device_ids
+    edges = {
+        (edge.source_device_id, edge.target_device_id): edge for edge in poll.edges
+    }
+
     # Upsert by canonical pair, scoped to our source (query-before-insert: the
     # 4-tuple unique constraint treats NULL interfaces as distinct, so we keep
     # one-row-per-pair in code).
     seen_pairs: set = set()
     for key, e in edges.items():
         seen_pairs.add(key)
+        metadata = {
+            "observed_from": str(e.observed_from),
+            "local_interface": e.local_interface,
+            "remote_identity": e.remote_identity,
+            "remote_board": e.remote_board,
+        }
         link = (
             session.query(NetworkTopologyLink)
             .filter(
                 NetworkTopologyLink.source == SOURCE,
-                NetworkTopologyLink.source_device_id == e["source_device_id"],
-                NetworkTopologyLink.target_device_id == e["target_device_id"],
+                NetworkTopologyLink.source_device_id == e.source_device_id,
+                NetworkTopologyLink.target_device_id == e.target_device_id,
                 NetworkTopologyLink.source_interface_id.is_(None),
                 NetworkTopologyLink.target_interface_id.is_(None),
             )
@@ -610,7 +725,7 @@ def poll_all(
             # the improved matcher can rediscover those same canonical pairs, do NOT
             # create a SECOND active row — leave the manual link authoritative. Check
             # BOTH endpoint orderings since manual links aren't canonicalized.
-            a, b = e["source_device_id"], e["target_device_id"]
+            a, b = e.source_device_id, e.target_device_id
             manual = (
                 session.query(NetworkTopologyLink)
                 .filter(
@@ -637,11 +752,11 @@ def poll_all(
                 continue
             session.add(
                 NetworkTopologyLink(
-                    source_device_id=e["source_device_id"],
-                    target_device_id=e["target_device_id"],
+                    source_device_id=e.source_device_id,
+                    target_device_id=e.target_device_id,
                     source=SOURCE,
-                    medium=e["medium"],
-                    metadata_=e["metadata"],
+                    medium=e.medium,
+                    metadata_=metadata,
                     is_active=True,
                     discovered_at=now,
                     last_seen_at=now,
@@ -649,8 +764,8 @@ def poll_all(
             )
             stats["created"] += 1
         else:
-            link.medium = e["medium"]
-            link.metadata_ = e["metadata"]
+            link.medium = e.medium
+            link.metadata_ = metadata
             link.is_active = True
             link.last_seen_at = now
             stats["updated"] += 1
@@ -673,9 +788,11 @@ def poll_all(
     ):
         if _canonical(link.source_device_id, link.target_device_id) in seen_pairs:
             continue
+        observer = (link.metadata_ or {}).get("observed_from")
         observed_by_polled_router = (
-            link.source_device_id in polled_device_ids
-            or link.target_device_id in polled_device_ids
+            observer in {str(device_id) for device_id in polled_device_ids}
+            if observer
+            else {link.source_device_id, link.target_device_id} <= polled_device_ids
         )
         if observed_by_polled_router:
             link.is_active = False
@@ -684,4 +801,120 @@ def poll_all(
 
     stats["edges"] = len(edges)
     stats["pruned"] = pruned
-    return dict(stats)
+    return LldpStats(**dict(stats))
+
+
+def read_snapshot(session: Session, *, query: LldpReadQuery) -> LldpSnapshot:
+    """Materialize all attributes, including the lazy jump-host relationship."""
+    started_at = time.monotonic()
+    devices = [
+        LldpDevice(d.id, d.name, d.hostname, d.mgmt_ip, d.is_active)
+        for d in session.query(NetworkDevice)
+        .populate_existing()
+        .filter(NetworkDevice.is_active.is_(True))
+        .all()
+    ]
+    device_ids = {device.id for device in devices}
+    routers: list[LldpRouter] = []
+    for router in (
+        session.query(Router)
+        .populate_existing()
+        .filter(Router.is_active.is_(True))
+        .all()
+    ):
+        if router.network_device_id and router.network_device_id not in device_ids:
+            # Local devices were historically eligible even when inactive;
+            # only the remote matching index is restricted to active nodes.
+            local = session.get(NetworkDevice, router.network_device_id)
+            if local is not None:
+                devices.append(
+                    LldpDevice(
+                        local.id,
+                        local.name,
+                        local.hostname,
+                        local.mgmt_ip,
+                        local.is_active,
+                    )
+                )
+                device_ids.add(local.id)
+        jump = router.jump_host
+        routers.append(
+            LldpRouter(
+                id=router.id,
+                name=router.name,
+                management_ip=router.management_ip,
+                rest_api_port=router.rest_api_port,
+                rest_api_username=router.rest_api_username,
+                rest_api_password=router.rest_api_password,
+                use_ssl=router.use_ssl,
+                verify_tls=router.verify_tls,
+                access_method=router.access_method,
+                network_device_id=router.network_device_id,
+                jump_host=LldpJumpHost(
+                    jump.id,
+                    jump.hostname,
+                    jump.port,
+                    jump.username,
+                    jump.ssh_key,
+                    jump.ssh_password,
+                    jump.is_active,
+                )
+                if jump
+                else None,
+            )
+        )
+    links = tuple(
+        LldpLinkState(
+            link.id,
+            link.source_device_id,
+            link.target_device_id,
+            link.source_interface_id,
+            link.target_interface_id,
+            link.source,
+            link.medium,
+            link.is_active,
+            link.last_seen_at,
+            json.dumps(link.metadata_, sort_keys=True),
+        )
+        for link in session.query(NetworkTopologyLink)
+        .populate_existing()
+        .order_by(NetworkTopologyLink.id)
+        .all()
+    )
+    return LldpSnapshot(
+        query.observed_at, tuple(routers), tuple(devices), links, started_at
+    )
+
+
+def reconcile_poll(session: Session, *, command: ReconcileLldpCommand) -> LldpStats:
+    """Commit revalidated LLDP observations in one registered owner transaction."""
+
+    def operation() -> LldpStats:
+        result = _reconcile(session, command.poll)
+        create_event_record(
+            session,
+            event=Event(
+                event_type=EventType.lldp_observations_reconciled,
+                event_id=command.context.command_id,
+                actor=command.context.actor,
+                payload={
+                    "schema_version": 1,
+                    "correlation_id": str(command.context.correlation_id),
+                    "observed_at": command.poll.snapshot.observed_at.isoformat(),
+                    "stats": result.to_dict(),
+                },
+            ),
+            status=EventStatus.pending,
+        )
+        return result
+
+    return execute_owner_command(
+        session,
+        definition=OwnerCommandDefinition(
+            owner="network.lldp_observations",
+            concern="LLDP adjacency observation reconciliation",
+            name="reconcile_poll",
+        ),
+        context=command.context,
+        operation=operation,
+    )

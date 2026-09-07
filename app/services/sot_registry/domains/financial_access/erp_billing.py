@@ -164,4 +164,110 @@ SERVICES: tuple[SOTService, ...] = (
             ),
         ),
     ),
+    SOTService(
+        name="integration.dotmac_erp_invoice_sync_projection",
+        module="app.services.dotmac_erp.invoice_sync_projection",
+        owns=("versioned ERP invoice accounting sync projection",),
+        depends_on=("financial.invoices", "financial.tax_configuration"),
+        notes=(
+            "A transitional, read-only compatibility projection for the ERP pull "
+            "consumer. It exposes Sub-owned Invoice header and issued-line tax "
+            "facts without posting, repairing, or inventing missing facts. "
+            "Contradictory and not-yet-projectable documents carry stable blocking "
+            "codes. The durable ERP billing outbox remains the target boundary."
+        ),
+        contract=ServiceContract(
+            concerns=(
+                ConcernContract(
+                    name="versioned ERP invoice accounting sync projection",
+                    role=OwnerRole.RESOLVER,
+                    input_names=(
+                        "canonical invoice accounting source documents",
+                        "issued invoice tax-rate snapshots",
+                    ),
+                ),
+            ),
+            authoritative_inputs=(
+                AuthorityInput(
+                    name="canonical invoice accounting source documents",
+                    owner="financial.invoices",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source=(
+                        "active Invoice headers, active InvoiceLine facts, lifecycle, "
+                        "discount evidence, account identity, and update watermark"
+                    ),
+                ),
+                AuthorityInput(
+                    name="issued invoice tax-rate snapshots",
+                    owner="financial.tax_configuration",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source=(
+                        "InvoiceLine tax-rate identity, snapshot version, snapshotted "
+                        "code, percentage and active state, plus tax_application"
+                    ),
+                ),
+            ),
+            transaction=TransactionContract(
+                mode=TransactionMode.READ_ONLY,
+                boundary=(
+                    "The API adapter supplies one request-scoped read session and "
+                    "closes its read transaction after the typed page is resolved."
+                ),
+                locking=(
+                    "No lock is taken: the inclusive updated_at watermark and stable "
+                    "updated_at,id order make a later owner change replayable."
+                ),
+                idempotency=(
+                    "The same committed invoice facts produce the same version-2 "
+                    "projection and issue-code set."
+                ),
+                retries=(
+                    "Transport retries repeat the inclusive watermark page; blocked "
+                    "documents are data outcomes and are not repaired by this query."
+                ),
+            ),
+            errors=ErrorContract(
+                domain_codes=(),
+                mapping_owner="the invoice accounting-sync API adapter",
+                fail_closed_on=(
+                    "header and active-line amount disagreement",
+                    "taxed headers without usable line tax facts",
+                    "missing tax-rate references",
+                    "taxed legacy lines without immutable tax snapshots",
+                    "unapproved Invoice discount apportionment",
+                ),
+            ),
+            migration=MigrationContract(
+                state=AuthorityMigrationState.SHADOWING,
+                old_owner=(
+                    "the unversioned /invoices/sync payload plus ERP-side implicit "
+                    "line and tax reconstruction"
+                ),
+                new_owner="integration.dotmac_erp_invoice_sync_projection",
+                verification=(
+                    "Focused exact-tax, inclusive-tax, mismatch, legacy, discount, "
+                    "watermark, OpenAPI, and registry tests."
+                ),
+                cutover_gate=(
+                    "ERP consumes version 2 in shadow, quarantines every blocked "
+                    "document durably, and proves accounting parity for ready rows."
+                ),
+                fallback_retirement=(
+                    "Retire this pull projection after the versioned durable ERP "
+                    "billing adapter owns every invoice delivery and acknowledgement."
+                ),
+            ),
+            steward="finance and platform operations",
+            design_refs=(
+                "docs/designs/ERP_INVOICE_ACCOUNTING_SYNC_V2.md",
+                "docs/designs/TAX_FACT_ADAPTER_AND_CLASSIFICATION_BACKFILL.md",
+                "docs/SOT_RELATIONSHIP_MAP.md",
+            ),
+            test_refs=(
+                "tests/test_invoice_accounting_sync_v2.py",
+                "tests/architecture/test_sot_registry_integrity.py",
+                "tests/architecture/test_openapi_contract_surface.py",
+            ),
+        ),
+    ),
 )

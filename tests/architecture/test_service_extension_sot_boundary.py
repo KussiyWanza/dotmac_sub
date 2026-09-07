@@ -17,6 +17,9 @@ OWNER = ROOT / "app/services/service_extensions.py"
 PROJECTION = ROOT / "app/services/web_billing_service_extensions.py"
 ROUTE = ROOT / "app/web/admin/billing_extensions.py"
 TEMPLATE = ROOT / "templates/admin/billing/service_extension_detail.html"
+CUSTOMER_TEMPLATE = ROOT / "templates/admin/customers/detail.html"
+CUSTOMER_PROJECTION = ROOT / "app/services/web_customer_details.py"
+CUSTOMER_ROUTE = ROOT / "app/web/admin/customers.py"
 
 
 def _source(path: Path) -> str:
@@ -56,7 +59,8 @@ def test_service_extension_owners_have_complete_registered_contracts() -> None:
         == "financial.service_extensions"
     )
     assert {concern.name for concern in detail.contract.concerns} >= {
-        "service-extension reversal confirmation projection"
+        "customer-scoped service-extension request history projection",
+        "service-extension reversal confirmation projection",
     }
 
 
@@ -156,6 +160,27 @@ def test_template_only_renders_typed_status_activity_and_eligibility() -> None:
     assert "app_datetime" not in source
     assert "AuditEvent" not in source
     assert "View all" not in source
+
+
+def test_customer_history_starts_from_typed_extension_requests() -> None:
+    projection = _source(PROJECTION)
+    customer_projection = _source(CUSTOMER_PROJECTION)
+    template = _source(CUSTOMER_TEMPLATE)
+    route = _source(CUSTOMER_ROUTE)
+
+    assert "class CustomerServiceExtensionHistory:" in projection
+    assert "def build_customer_service_extension_history(" in projection
+    assert "customer_service_extension_history(" in projection
+    assert "ServiceExtensionEntry" not in customer_projection
+    assert "service_extension_history" in customer_projection
+    assert "service_extension_history.total_count" in template
+    assert "extension.status_presentation" in template
+    assert "No service extension requests found for this customer." in template
+    assert "service_extension_entries" not in template
+    assert "extension_status =" not in template
+    assert (
+        'has_permission(\n        request_auth, db, "billing:extension:read"' in route
+    )
 
 
 def test_service_extension_legacy_writer_debt_is_removed() -> None:

@@ -18,8 +18,12 @@ from typing import NoReturn
 
 from sqlalchemy import (
     ColumnElement,
+    String,
+    cast,
     delete,
+    exists,
     func,
+    or_,
     select,
     table,
     update,
@@ -255,6 +259,51 @@ class ServiceExtensionPreview:
     total_count: int
     extendable_count: int
     skipped_count: int
+
+
+class CustomerServiceExtensionMatchBasis(str, enum.Enum):
+    """Why one extension belongs in a customer-scoped history."""
+
+    applied_entry = "applied_entry"
+    explicit_request_scope = "explicit_request_scope"
+    current_topology_scope = "current_topology_scope"
+
+
+@dataclass(frozen=True, slots=True)
+class CustomerServiceExtensionImpact:
+    subscription_id: uuid.UUID
+    previous_next_billing_at: datetime | None
+    new_next_billing_at: datetime | None
+    grant_starts_at: datetime | None
+    grant_ends_at: datetime | None
+    anchor_basis: ServiceExtensionAnchorBasis | None
+
+
+@dataclass(frozen=True, slots=True)
+class CustomerServiceExtensionRecord:
+    id: uuid.UUID
+    reason: str
+    status: ServiceExtensionStatus
+    created_at: datetime
+    created_by: str | None
+    window_start: datetime
+    window_end: datetime
+    days: int
+    scope_type: ServiceExtensionScope
+    applied_at: datetime | None
+    applied_by: str | None
+    canceled_at: datetime | None
+    canceled_by: str | None
+    affected_count: int
+    skipped_count: int
+    match_basis: CustomerServiceExtensionMatchBasis
+    impacts: tuple[CustomerServiceExtensionImpact, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CustomerServiceExtensionHistory:
+    records: tuple[CustomerServiceExtensionRecord, ...]
+    total_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -1327,6 +1376,13 @@ def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
+
+
+def _uuid_or_none(value: object) -> uuid.UUID | None:
+    try:
+        return uuid.UUID(str(value))
+    except (TypeError, ValueError):
+        return None
 
 
 def _sha256(value: str) -> str:
@@ -2654,4 +2710,181 @@ def list_extensions(
             .limit(limit)
             .offset(offset)
         ).all()
+    )
+
+
+def customer_service_extension_history(
+    db: Session,
+    *,
+    subscriber_ids: Sequence[uuid.UUID],
+    limit: int = 10,
+    offset: int = 0,
+) -> CustomerServiceExtensionHistory:
+    """Return distinct extension requests related to the selected customers.
+
+    Applied entry evidence and explicit subscriber request scope are durable
+    matches. Pending/canceled POP, NAS, and legacy network requests use the
+    customer's current active-or-suspended subscription topology, matching the
+    same eligibility scope used by preview/apply.
+    """
+
+    if not 1 <= limit <= 200:
+        raise ValueError("Customer service-extension limit must be between 1 and 200")
+    if offset < 0:
+        raise ValueError("Customer service-extension offset cannot be negative")
+
+    resolved_ids = tuple(dict.fromkeys(subscriber_ids))
+    if not resolved_ids:
+        return CustomerServiceExtensionHistory(records=(), total_count=0)
+
+    eligible_statuses = (SubscriptionStatus.active, SubscriptionStatus.suspended)
+    topology_rows = db.execute(
+        select(
+            Subscription.provisioning_nas_device_id,
+            NasDevice.pop_site_id,
+        )
+        .outerjoin(
+            NasDevice,
+            NasDevice.id == Subscription.provisioning_nas_device_id,
+        )
+        .where(
+            Subscription.subscriber_id.in_(resolved_ids),
+            Subscription.status.in_(eligible_statuses),
+        )
+    ).all()
+    nas_device_ids = {
+        nas_device_id for nas_device_id, _pop_site_id in topology_rows if nas_device_id
+    }
+    pop_site_ids = {
+        pop_site_id for _nas_device_id, pop_site_id in topology_rows if pop_site_id
+    }
+
+    entry_match = exists(
+        select(ServiceExtensionEntry.id).where(
+            ServiceExtensionEntry.extension_id == ServiceExtension.id,
+            ServiceExtensionEntry.subscriber_id.in_(resolved_ids),
+        )
+    )
+    # scope_subscriber_ids is a PostgreSQL JSON column rather than JSONB.
+    # Quoted UUID matching keeps this exact for canonical JSON string elements
+    # and remains usable in the SQLite fast-test lane without schema branching.
+    explicit_scope_match = or_(
+        *(
+            cast(ServiceExtension.scope_subscriber_ids, String).contains(
+                f'"{subscriber_id}"'
+            )
+            for subscriber_id in resolved_ids
+        )
+    )
+    broad_lifecycle = ServiceExtension.status.in_(
+        (ServiceExtensionStatus.pending, ServiceExtensionStatus.canceled)
+    )
+    broad_scope_matches: list[ColumnElement[bool]] = []
+    if nas_device_ids:
+        broad_scope_matches.append(
+            (ServiceExtension.scope_type == ServiceExtensionScope.nas_device)
+            & ServiceExtension.scope_id.in_(nas_device_ids)
+        )
+    if pop_site_ids:
+        broad_scope_matches.append(
+            (ServiceExtension.scope_type == ServiceExtensionScope.pop_site)
+            & ServiceExtension.scope_id.in_(pop_site_ids)
+        )
+    if topology_rows:
+        broad_scope_matches.append(
+            ServiceExtension.scope_type == ServiceExtensionScope.network
+        )
+
+    match_filters: list[ColumnElement[bool]] = [
+        entry_match,
+        (ServiceExtension.scope_type == ServiceExtensionScope.subscribers)
+        & explicit_scope_match,
+    ]
+    if broad_scope_matches:
+        match_filters.append(broad_lifecycle & or_(*broad_scope_matches))
+    match_filter = or_(*match_filters)
+
+    total_count = int(
+        db.scalar(select(func.count(ServiceExtension.id)).where(match_filter)) or 0
+    )
+    extensions = list(
+        db.scalars(
+            select(ServiceExtension)
+            .where(match_filter)
+            .order_by(ServiceExtension.created_at.desc(), ServiceExtension.id.desc())
+            .limit(limit)
+            .offset(offset)
+        ).all()
+    )
+    extension_ids = tuple(extension.id for extension in extensions)
+    entries = (
+        list(
+            db.scalars(
+                select(ServiceExtensionEntry)
+                .where(
+                    ServiceExtensionEntry.extension_id.in_(extension_ids),
+                    ServiceExtensionEntry.subscriber_id.in_(resolved_ids),
+                )
+                .order_by(
+                    ServiceExtensionEntry.extension_id,
+                    ServiceExtensionEntry.created_at.desc(),
+                    ServiceExtensionEntry.id,
+                )
+            ).all()
+        )
+        if extension_ids
+        else []
+    )
+    impacts_by_extension: dict[uuid.UUID, list[CustomerServiceExtensionImpact]] = {}
+    for entry in entries:
+        impacts_by_extension.setdefault(entry.extension_id, []).append(
+            CustomerServiceExtensionImpact(
+                subscription_id=entry.subscription_id,
+                previous_next_billing_at=entry.previous_next_billing_at,
+                new_next_billing_at=entry.new_next_billing_at,
+                grant_starts_at=entry.grant_starts_at,
+                grant_ends_at=entry.grant_ends_at,
+                anchor_basis=entry.anchor_basis,
+            )
+        )
+
+    requested_ids = set(resolved_ids)
+    records: list[CustomerServiceExtensionRecord] = []
+    for extension in extensions:
+        impacts = tuple(impacts_by_extension.get(extension.id, ()))
+        explicit_ids = {
+            parsed
+            for value in (extension.scope_subscriber_ids or ())
+            if (parsed := _uuid_or_none(value)) is not None
+        }
+        if impacts:
+            match_basis = CustomerServiceExtensionMatchBasis.applied_entry
+        elif explicit_ids & requested_ids:
+            match_basis = CustomerServiceExtensionMatchBasis.explicit_request_scope
+        else:
+            match_basis = CustomerServiceExtensionMatchBasis.current_topology_scope
+        records.append(
+            CustomerServiceExtensionRecord(
+                id=extension.id,
+                reason=extension.reason,
+                status=extension.status,
+                created_at=extension.created_at,
+                created_by=extension.created_by,
+                window_start=extension.window_start,
+                window_end=extension.window_end,
+                days=int(extension.days),
+                scope_type=extension.scope_type,
+                applied_at=extension.applied_at,
+                applied_by=extension.applied_by,
+                canceled_at=extension.canceled_at,
+                canceled_by=extension.canceled_by,
+                affected_count=int(extension.affected_count),
+                skipped_count=int(extension.skipped_count),
+                match_basis=match_basis,
+                impacts=impacts,
+            )
+        )
+    return CustomerServiceExtensionHistory(
+        records=tuple(records),
+        total_count=total_count,
     )

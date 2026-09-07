@@ -87,7 +87,7 @@
         "path": "tests/services/topology/test_coverage_metrics.py",
         "symbol": "<module>",
         "category": "outbound_transport",
-        "fingerprint": "2a333a758c593d279f27877b1a36de495a66a8bd0a48f1ecebcfbfe6512a65bf"
+        "fingerprint": "51fa94be3406bf06f9ae28167b6ac0160b8567ff79d95b4e9a88dded6fdc2b2e"
       },
       {
         "path": "tests/test_ai_gateway.py",

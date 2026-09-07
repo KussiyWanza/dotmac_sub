@@ -1,9 +1,7 @@
 """Preview the LLDP topology poll against the live fleet — no DB writes.
 
-Runs the real poll (reads each NAS's /ip/neighbor) in an uncommitted session and
-prints the stats + the directed edges it WOULD create, with device names, then
-rolls back. Use to verify the expected infra adjacencies before enabling the
-scheduled poll.
+Reads detached neighbor observations with no session held during network I/O.
+Prints collection counts and candidate pairs; persistence is not simulated.
 
     python -m scripts.one_off.lldp_poll_dryrun
 
@@ -13,39 +11,30 @@ Run on a host with reachability to the MikroTik NAS fleet.
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 
 from app.db import SessionLocal
-from app.models.network_monitoring import NetworkDevice, NetworkTopologyLink
-from app.services.topology.lldp_poller import SOURCE, poll_all
+from app.services.topology.lldp_contracts import LldpReadQuery
+from app.services.topology.lldp_poller import poll_all, read_snapshot
 
 
 def main() -> int:
     db = SessionLocal()
     try:
-        stats = poll_all(db)  # writes to the session only
-        links = (
-            db.query(NetworkTopologyLink)
-            .filter(
-                NetworkTopologyLink.source == SOURCE,
-                NetworkTopologyLink.is_active.is_(True),
-            )
-            .all()
-        )
-        names = {d.id: d.name for d in db.query(NetworkDevice).all()}
-        print("LLDP topology poll — DRY-RUN (no writes)")
-        print(json.dumps(stats, indent=2, default=str))
-        print(f"\n{len(links)} directed edges:")
-        for link in sorted(
-            links,
-            key=lambda link_: names.get(link_.source_device_id, ""),
-        ):
-            a = names.get(link.source_device_id, str(link.source_device_id))
-            b = names.get(link.target_device_id, str(link.target_device_id))
-            medium = getattr(link.medium, "value", link.medium)
-            print(f"  {a}  <->  {b}   ({medium})")
+        snapshot = read_snapshot(db, query=LldpReadQuery(datetime.now(UTC)))
     finally:
-        db.rollback()  # discard — nothing persisted
-        db.close()
+        try:
+            db.rollback()
+        finally:
+            db.close()
+    poll = poll_all(snapshot=snapshot)
+    names = {device.id: device.name for device in snapshot.devices}
+    print("LLDP collection preview (no writes; reconciliation not simulated)")
+    print(json.dumps(poll.stats.to_dict(), indent=2))
+    for edge in poll.edges:
+        print(
+            f"  {names[edge.source_device_id]} <-> {names[edge.target_device_id]} ({edge.medium.value})"
+        )
     return 0
 
 

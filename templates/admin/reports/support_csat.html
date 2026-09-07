@@ -1,0 +1,76 @@
+{% extends "layouts/admin.html" %}
+{% from "components/ui/macros.html" import ambient_background, page_header, card, animation_styles %}
+
+{% block title %}Support CSAT - Admin{% endblock %}
+
+{% block content %}
+{{ ambient_background("violet", "blue") }}
+<div class="relative space-y-8">
+    {% call(content) page_header(
+        title="Support CSAT",
+        subtitle="Customer satisfaction ratings for resolved tickets and inbox conversations.",
+        icon='<svg class="h-7 w-7 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.889a1 1 0 00-.363 1.118l1.519 4.674c.3.921-.755 1.688-1.538 1.118l-3.976-2.889a1 1 0 00-1.176 0L7.437 19.9c-.783.57-1.838-.197-1.538-1.118l1.519-4.674a1 1 0 00-.363-1.118L3.079 10.1c-.783-.57-.381-1.81.588-1.81h4.915a1 1 0 00.95-.69l1.517-4.674z"/></svg>',
+        color="violet", color2="blue",
+        breadcrumbs=[{"label": "Reports", "href": "/admin/reports"}, {"label": "Support CSAT"}]
+    ) %}
+        <a href="/admin/reports/support-csat/export?date_from={{ date_from }}&date_to={{ date_to }}{% if rating %}&rating={{ rating }}{% endif %}{% if source_type %}&source_type={{ source_type }}{% endif %}&status={{ status }}{% if agent_person_id %}&agent_person_id={{ agent_person_id }}{% endif %}{% if service_team_id %}&service_team_id={{ service_team_id }}{% endif %}" class="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200">Export CSV</a>
+    {% endcall %}
+
+    <form method="get" class="flex flex-wrap items-end gap-3 rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-800">
+        <div><label for="date_from" class="block text-xs font-medium text-slate-500">From</label><input id="date_from" name="date_from" type="date" value="{{ date_from }}" class="mt-1 rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700"></div>
+        <div><label for="date_to" class="block text-xs font-medium text-slate-500">To</label><input id="date_to" name="date_to" type="date" value="{{ date_to }}" class="mt-1 rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700"></div>
+        <div><label for="rating" class="block text-xs font-medium text-slate-500">Rating</label><select id="rating" name="rating" class="mt-1 rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700"><option value="">All</option>{% for value in [5,4,3,2,1] %}<option value="{{ value }}"{% if rating == value %} selected{% endif %}>{{ value }}</option>{% endfor %}</select></div>
+        <div><label for="source_type" class="block text-xs font-medium text-slate-500">Source</label><select id="source_type" name="source_type" class="mt-1 rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700"><option value="">All</option><option value="support_ticket"{% if source_type == "support_ticket" %} selected{% endif %}>Ticket</option><option value="inbox_conversation"{% if source_type == "inbox_conversation" %} selected{% endif %}>Inbox</option></select></div>
+        <div><label for="status" class="block text-xs font-medium text-slate-500">Status</label><select id="status" name="status" class="mt-1 rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700"><option value="submitted"{% if status == "submitted" %} selected{% endif %}>Submitted</option><option value="pending"{% if status == "pending" %} selected{% endif %}>Pending</option><option value="expired"{% if status == "expired" %} selected{% endif %}>Expired</option></select></div>
+        <div><label for="agent_person_id" class="block text-xs font-medium text-slate-500">Agent ID</label><input id="agent_person_id" name="agent_person_id" value="{{ agent_person_id }}" class="mt-1 rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700"></div>
+        <div><label for="service_team_id" class="block text-xs font-medium text-slate-500">Team ID</label><input id="service_team_id" name="service_team_id" value="{{ service_team_id }}" class="mt-1 rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700"></div>
+        <div><label for="per_page" class="block text-xs font-medium text-slate-500">Rows</label><select id="per_page" name="per_page" class="mt-1 rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700">{% for size in [25,50,100,200] %}<option value="{{ size }}"{% if per_page == size %} selected{% endif %}>{{ size }}</option>{% endfor %}</select></div>
+        <button type="submit" class="rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white">Apply</button>
+        <a href="/admin/reports/support-csat" class="px-3 py-2 text-sm text-slate-600 dark:text-slate-300">Clear</a>
+    </form>
+
+    <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-800"><p class="text-sm font-medium text-slate-500">Submitted ratings</p><p class="mt-2 text-2xl font-bold text-slate-900 dark:text-white">{{ summary.submitted }}</p></div>
+        <div class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-800"><p class="text-sm font-medium text-slate-500">Average rating</p><p class="mt-2 text-2xl font-bold text-slate-900 dark:text-white">{% if summary.average_rating is not none %}{{ "%.2f"|format(summary.average_rating) }}{% else %}-{% endif %}</p></div>
+        <div class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-800"><p class="text-sm font-medium text-slate-500">Five-star ratings</p><p class="mt-2 text-2xl font-bold text-slate-900 dark:text-white">{{ summary.rating_counts.get(5, 0) }}</p></div>
+        <div class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-800"><p class="text-sm font-medium text-slate-500">Filtered records</p><p class="mt-2 text-2xl font-bold text-slate-900 dark:text-white">{{ total }}</p></div>
+    </div>
+
+    {% call card("Support CSAT", color="violet", padding=False) %}
+        {% if rows %}
+        <div class="overflow-x-auto">
+            <table class="min-w-full divide-y divide-slate-200 dark:divide-slate-700">
+                <thead class="bg-slate-50 dark:bg-slate-900/40"><tr><th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">Source</th><th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">Agent</th><th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">Team</th><th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">Rating</th><th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">Comment</th><th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">Customer</th><th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">Resolved</th><th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">Submitted</th><th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">Status</th></tr></thead>
+                <tbody class="divide-y divide-slate-100 bg-white dark:divide-slate-700 dark:bg-slate-800">
+                    {% for row in rows %}
+                    <tr>
+                        <td class="whitespace-nowrap px-4 py-3 text-sm"><a class="font-medium text-violet-700 hover:underline dark:text-violet-300" href="{{ row.source_url }}">{{ row.source_type }} {{ row.source_reference }}</a></td>
+                        <td class="whitespace-nowrap px-4 py-3 text-sm text-slate-700 dark:text-slate-200">{{ row.agent }}</td>
+                        <td class="whitespace-nowrap px-4 py-3 text-sm text-slate-700 dark:text-slate-200">{{ row.team }}</td>
+                        <td class="whitespace-nowrap px-4 py-3 text-sm text-slate-700 dark:text-slate-200">{{ row.rating }}</td>
+                        <td class="max-w-md whitespace-normal px-4 py-3 text-sm text-slate-700 dark:text-slate-200">{{ row.comment }}</td>
+                        <td class="whitespace-nowrap px-4 py-3 text-sm text-slate-700 dark:text-slate-200">{{ row.customer }}</td>
+                        <td class="whitespace-nowrap px-4 py-3 text-sm text-slate-700 dark:text-slate-200">{{ row.resolution_at }}</td>
+                        <td class="whitespace-nowrap px-4 py-3 text-sm text-slate-700 dark:text-slate-200">{{ row.submitted_at or "-" }}</td>
+                        <td class="whitespace-nowrap px-4 py-3 text-sm text-slate-700 dark:text-slate-200">{{ row.status }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="px-6 py-12 text-center"><p class="text-sm font-medium text-slate-700 dark:text-slate-200">No CSAT records for these filters</p><p class="mt-1 text-sm text-slate-500">Resolved interactions will appear here after customers submit ratings.</p></div>
+        {% endif %}
+        {% if total %}
+        <div class="flex items-center justify-between border-t border-slate-200 px-4 py-3 text-sm dark:border-slate-700">
+            <span class="text-slate-500">{{ total }} records</span>
+            <div class="flex gap-2">
+                {% if has_previous %}<a class="rounded border border-slate-300 px-3 py-1" href="?page={{ page - 1 }}&per_page={{ per_page }}&date_from={{ date_from }}&date_to={{ date_to }}{% if rating %}&rating={{ rating }}{% endif %}{% if source_type %}&source_type={{ source_type }}{% endif %}&status={{ status }}{% if agent_person_id %}&agent_person_id={{ agent_person_id }}{% endif %}{% if service_team_id %}&service_team_id={{ service_team_id }}{% endif %}">Previous</a>{% endif %}
+                {% if has_next %}<a class="rounded border border-slate-300 px-3 py-1" href="?page={{ page + 1 }}&per_page={{ per_page }}&date_from={{ date_from }}&date_to={{ date_to }}{% if rating %}&rating={{ rating }}{% endif %}{% if source_type %}&source_type={{ source_type }}{% endif %}&status={{ status }}{% if agent_person_id %}&agent_person_id={{ agent_person_id }}{% endif %}{% if service_team_id %}&service_team_id={{ service_team_id }}{% endif %}">Next</a>{% endif %}
+            </div>
+        </div>
+        {% endif %}
+    {% endcall %}
+</div>
+{{ animation_styles() }}
+{% endblock %}

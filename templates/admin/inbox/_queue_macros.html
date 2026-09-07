@@ -182,7 +182,11 @@
 {% endif %}
 <div class="shrink-0 border-t border-slate-200 px-3 py-2.5 dark:border-slate-800/50">
     <p class="mb-2 text-center text-[11px] tabular-nums text-slate-500 dark:text-slate-400" role="status" aria-live="polite">
+        {% if page_meta.total_is_exact %}
         {{ page_meta.start_item }}&ndash;{{ page_meta.end_item }} of {{ page_meta.total_items }} conversations
+        {% else %}
+        {{ page_meta.start_item }}&ndash;{{ page_meta.end_item }} conversations &middot; more available
+        {% endif %}
     </p>
     <nav class="flex flex-wrap items-center justify-center gap-1" aria-label="Conversation pagination">
         {% if page_meta.has_previous %}

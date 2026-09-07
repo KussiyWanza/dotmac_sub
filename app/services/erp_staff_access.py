@@ -458,25 +458,33 @@ def _apply_account_status_in_transaction(
             event.version == projection.version
             and projection.desired_status == event.account_status
         ):
-            _stage_audit(
-                db,
-                action="auth.erp_staff_account_status_duplicate",
-                user_id=user.id,
-                context=command.context,
-                actor_type=actor_type,
-                actor_id=actor_id,
-                metadata={"event_version": event.version},
-                status_code=202,
+            inactive_drift = (
+                event.account_status == StaffAccountStatus.inactive.value
+                and user.is_active
             )
-            return StaffAccessApplyOutcome(
-                event_id=event.event_id,
-                system_user_id=user.id,
-                version=projection.version,
-                applied=False,
-                status=projection.desired_status,
-                reason="duplicate",
-            )
-        if event.version == projection.version:
+            if not inactive_drift:
+                _stage_audit(
+                    db,
+                    action="auth.erp_staff_account_status_duplicate",
+                    user_id=user.id,
+                    context=command.context,
+                    actor_type=actor_type,
+                    actor_id=actor_id,
+                    metadata={"event_version": event.version},
+                    status_code=202,
+                )
+                return StaffAccessApplyOutcome(
+                    event_id=event.event_id,
+                    system_user_id=user.id,
+                    version=projection.version,
+                    applied=False,
+                    status=projection.desired_status,
+                    reason="duplicate",
+                )
+        if (
+            event.version == projection.version
+            and projection.desired_status != event.account_status
+        ):
             raise _error(
                 "version_conflict",
                 "ERP staff account-status event reused a version with different state.",

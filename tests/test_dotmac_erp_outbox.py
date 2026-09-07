@@ -38,6 +38,7 @@ from app.services.dotmac_erp.client import (
 from app.services.dotmac_erp.operational_contracts import ErpOperationalSyncOutcome
 from app.services.integrations.backoffice_contracts import (
     ERP_OPERATIONAL_SYNC_CAPABILITY,
+    ERP_STAFF_ACCESS_RECONCILE_CAPABILITY,
 )
 from app.services.integrations.connectors.dotmac_erp import DotmacErpRunner
 from app.services.integrations.runtime_execution import (
@@ -505,6 +506,68 @@ def test_erp_operational_capability_validation_accepts_empty_bulk_sync():
     assert client.commands[0].projects == ()
 
 
+def test_erp_staff_access_capability_validation_checks_projection_scope():
+    client = MagicMock(spec=DotMacERPClient)
+    client.get_staff_access_projection.side_effect = DotMacERPAuthError(
+        "Authentication failed: 403",
+        status_code=403,
+    )
+
+    result = DotmacErpRunner(client_override=client).validate_capability(
+        capability_id=ERP_STAFF_ACCESS_RECONCILE_CAPABILITY,
+        manifest=object(),
+        config={"base_url": "https://erp.dotmac.io"},
+        secret_material={"service_credentials": "test-token"},
+    )
+
+    assert result.valid is False
+    assert result.error_codes == ("erp_staff_access_scope_missing",)
+    assert result.details == {"required_scope": "sub:staff_access:read"}
+    client.get_staff_access_projection.assert_called_once_with(
+        entity="account_status",
+        limit=1,
+    )
+
+
+def test_erp_staff_access_capability_validation_accepts_projection_read():
+    client = MagicMock(spec=DotMacERPClient)
+    client.get_staff_access_projection.return_value = {
+        "contract_version": "staff.access.projection.v1",
+        "entity": "account_status",
+        "items": [],
+    }
+
+    result = DotmacErpRunner(client_override=client).validate_capability(
+        capability_id=ERP_STAFF_ACCESS_RECONCILE_CAPABILITY,
+        manifest=object(),
+        config={"base_url": "https://erp.dotmac.io"},
+        secret_material={"service_credentials": "test-token"},
+    )
+
+    assert result.valid is True
+    client.get_staff_access_projection.assert_called_once_with(
+        entity="account_status",
+        limit=1,
+    )
+
+
+def test_erp_bootstrap_binds_every_enabled_production_capability():
+    from scripts.one_off.bootstrap_erp_material_integration import CAPABILITIES
+
+    assert set(CAPABILITIES) == {
+        "erp.inventory.read.v1",
+        "erp.outbox.deliver.v1",
+        "erp.status.read.v1",
+        "erp.material_status.webhook.v1",
+        "erp.operational_context.sync.v1",
+        "erp.staff_access.reconcile.v1",
+        "erp.staff_access.webhook.v1",
+        "workforce.attendance.read.v1",
+        "workforce.attendance.punch.v1",
+    }
+    assert len(CAPABILITIES) == len(set(CAPABILITIES))
+
+
 # ---------------------------------------------------------------------------
 # Task reliability contract + celery registration
 # ---------------------------------------------------------------------------
@@ -531,6 +594,7 @@ def test_outbox_task_registered_with_celery():
     from app.celery_app import celery_app
 
     assert "app.tasks.dotmac_erp_outbox.deliver_erp_sync_events" in celery_app.tasks
+    assert "app.tasks.dotmac_erp_outbox.reconcile_erp_staff_access" in celery_app.tasks
     assert (
         "app.tasks.dotmac_erp_outbox.refresh_purchase_invoice_statuses"
         in celery_app.tasks

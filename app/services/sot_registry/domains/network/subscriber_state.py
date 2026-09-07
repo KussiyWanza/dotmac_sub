@@ -116,6 +116,202 @@ SERVICES: tuple[SOTService, ...] = (
         ),
     ),
     SOTService(
+        name="network.live_bandwidth_observations",
+        module="app.services.network.live_bandwidth_observations",
+        owns=(
+            "subscription-scoped live bandwidth observation projection",
+            "direct RouterOS bandwidth diagnostic admission",
+            "active-viewer bandwidth polling demand signal",
+        ),
+        depends_on=(
+            "access.subscription_lifecycle",
+            "network.identity",
+        ),
+        notes=(
+            "Normal UI reads consume the centralized poller projection; browsers "
+            "never own RouterOS polling cadence. The direct RouterOS read remains "
+            "an explicit operator diagnostic, is admitted once per NAS device "
+            "through a shared Redis claim, and starts only after its clean database "
+            "read transaction has returned its pooled connection."
+        ),
+        contract=ServiceContract(
+            concerns=(
+                ConcernContract(
+                    name=("subscription-scoped live bandwidth observation projection"),
+                    role=OwnerRole.RESOLVER,
+                    input_names=(
+                        "canonical subscription-to-NAS binding",
+                        "canonical NAS identity and transport configuration",
+                        "native RouterOS bandwidth observations",
+                        "live bandwidth freshness policy",
+                    ),
+                ),
+                ConcernContract(
+                    name="direct RouterOS bandwidth diagnostic admission",
+                    role=OwnerRole.POLICY,
+                    input_names=(
+                        "canonical subscription-to-NAS binding",
+                        "canonical NAS identity and transport configuration",
+                        "direct diagnostic admission policy",
+                    ),
+                ),
+                ConcernContract(
+                    name="active-viewer bandwidth polling demand signal",
+                    role=OwnerRole.POLICY,
+                    input_names=(
+                        "connected live viewer observation",
+                        "live bandwidth freshness policy",
+                    ),
+                ),
+            ),
+            authoritative_inputs=(
+                AuthorityInput(
+                    name="canonical subscription-to-NAS binding",
+                    owner="access.subscription_lifecycle",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source=(
+                        "Subscription ownership, PPPoE login, and provisioning "
+                        "NAS identity resolved on the caller read session"
+                    ),
+                ),
+                AuthorityInput(
+                    name="canonical NAS identity and transport configuration",
+                    owner="network.identity",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source=(
+                        "NAS device identity, vendor, management address, API port, "
+                        "and encrypted credential references"
+                    ),
+                ),
+                AuthorityInput(
+                    name="native RouterOS bandwidth observations",
+                    owner="external:routeros",
+                    kind=AuthorityKind.EXTERNAL_OBSERVATION,
+                    source=(
+                        "MikroTik poller samples projected into VictoriaMetrics "
+                        "with a recent PostgreSQL bandwidth-sample fallback"
+                    ),
+                ),
+                AuthorityInput(
+                    name="connected live viewer observation",
+                    owner="external:connected_client",
+                    kind=AuthorityKind.EXTERNAL_OBSERVATION,
+                    source="An authorized SSE connection that remains connected",
+                ),
+                AuthorityInput(
+                    name="live bandwidth freshness policy",
+                    owner="network.live_bandwidth_observations",
+                    kind=AuthorityKind.CONTROL_INPUT,
+                    source=(
+                        "Two-minute stored-sample freshness limit and one-second "
+                        "stream projection cadence"
+                    ),
+                ),
+                AuthorityInput(
+                    name="direct diagnostic admission policy",
+                    owner="network.live_bandwidth_observations",
+                    kind=AuthorityKind.CONTROL_INPUT,
+                    source=(
+                        "Fail-closed shared Redis single-flight claim with a "
+                        "five-minute expiry"
+                    ),
+                ),
+            ),
+            transaction=TransactionContract(
+                mode=TransactionMode.READ_ONLY,
+                boundary=(
+                    "Authorization and target materialization use the adapter's "
+                    "read session. The owner finishes the clean read transaction "
+                    "before Redis admission or RouterOS I/O; stream fallbacks use "
+                    "short infrastructure-managed read sessions."
+                ),
+                locking=(
+                    "Direct diagnostics acquire one shared Redis NX claim per NAS "
+                    "device; observation projection acquires no database lock."
+                ),
+                idempotency=(
+                    "The same observation and evaluation time produce the same "
+                    "subscriber-direction projection; diagnostic reads do not mutate."
+                ),
+                retries=(
+                    "UI streams reconnect with bounded client delay. Direct probe "
+                    "contention fails closed and must be explicitly retried."
+                ),
+            ),
+            errors=ErrorContract(
+                domain_codes=(
+                    "network.live_bandwidth_observations.subscription_not_found",
+                    "network.live_bandwidth_observations.access_denied",
+                    "network.live_bandwidth_observations.invalid_nas_configuration",
+                    "network.live_bandwidth_observations.probe_in_progress",
+                    "network.live_bandwidth_observations.coordination_unavailable",
+                ),
+                mapping_owner="app.api.bandwidth and customer portal adapters",
+                retryable_codes=(
+                    "network.live_bandwidth_observations.probe_in_progress",
+                    "network.live_bandwidth_observations.coordination_unavailable",
+                ),
+                fail_closed_on=(
+                    "ambiguous subscription ownership",
+                    "missing NAS configuration",
+                    "unavailable distributed admission",
+                ),
+            ),
+            projections=(
+                ProjectionContract(
+                    name="live bandwidth SSE observation",
+                    input_names=(
+                        "native RouterOS bandwidth observations",
+                        "live bandwidth freshness policy",
+                    ),
+                    writer="network.live_bandwidth_observations",
+                    freshness=(
+                        "VictoriaMetrics current observation preferred; either it "
+                        "or the PostgreSQL fallback must be no older than two minutes."
+                    ),
+                    stale_behavior=(
+                        "Emit has_sample=false and source=unavailable; never relabel "
+                        "an absent or stale observation as live."
+                    ),
+                    drift_signal=(
+                        "Stream source/has_sample fields plus poller health and "
+                        "observation-age telemetry expose missing projection data."
+                    ),
+                    rebuild_operation=(
+                        "app.poller.mikrotik_poller next admitted observation cycle"
+                    ),
+                    repair_owner="network.live_bandwidth_observations",
+                ),
+            ),
+            migration=MigrationContract(
+                state=AuthorityMigrationState.COMPLETE,
+                old_owner="admin browser direct RouterOS polling loop",
+                new_owner="network.live_bandwidth_observations",
+                verification=(
+                    "Admin template stream cutover, sequential direct-probe guard, "
+                    "single-flight admission, and transaction-release tests."
+                ),
+                cutover_gate=(
+                    "Normal admin and customer live charts use the SSE projection."
+                ),
+                fallback_retirement=(
+                    "No normal UI configures the direct MikroTik endpoint; it is "
+                    "retained only as an explicit operator diagnostic."
+                ),
+            ),
+            steward="network operations",
+            design_refs=(
+                "docs/SOT_RELATIONSHIP_MAP.md",
+                "docs/designs/OPERATIONAL_EVIDENCE_AND_RETRY.md",
+                "docs/runbooks/DATABASE_TRANSACTION_PRESSURE.md",
+            ),
+            test_refs=(
+                "tests/test_bandwidth_mikrotik_live_session.py",
+                "tests/test_customer_portal_gaps.py",
+            ),
+        ),
+    ),
+    SOTService(
         name="network.radius_sessions",
         module="app.services.network.radius_sessions",
         owns=(

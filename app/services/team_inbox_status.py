@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -16,8 +17,10 @@ from app.models.team_inbox import (
     InboxConversationStatus,
     InboxStatusTransitionEvent,
 )
+from app.services.owner_commands import execute_owner_savepoint, owner_command_active
 
 OWNER = "communications.team_inbox_status"
+logger = logging.getLogger(__name__)
 
 
 class InboxStatusReason(StrEnum):
@@ -117,6 +120,36 @@ def _apply_status_transition(
     conversation.metadata_ = metadata
     conversation.status = command.status.value
     db.flush()
+    if command.status is InboxConversationStatus.resolved:
+
+        def create_csat_request():
+            from app.services import support_csat
+
+            return support_csat.ensure_inbox_request(
+                db,
+                conversation,
+                transition_event_id=event.id,
+                resolution_at=effective_at,
+                actor_person_id=command.actor_person_id,
+            )
+
+        try:
+            if owner_command_active(db):
+                execute_owner_savepoint(db, create_csat_request)
+            else:
+                logger.warning(
+                    "inbox_csat_request_skipped_no_owner_command "
+                    "conversation_id=%s event_id=%s",
+                    conversation.id,
+                    event.id,
+                )
+        except Exception as exc:  # noqa: BLE001 - status transition must persist
+            logger.warning(
+                "inbox_csat_request_failed conversation_id=%s event_id=%s error=%s",
+                conversation.id,
+                event.id,
+                exc,
+            )
     return InboxStatusTransitionOutcome(
         conversation_id=conversation.id,
         previous_status=previous,

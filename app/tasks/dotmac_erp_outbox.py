@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import time
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from app.celery_app import celery_app
 
@@ -157,6 +158,111 @@ def refresh_purchase_invoice_statuses() -> dict:
 @celery_app.task(name="app.tasks.dotmac_erp_outbox.sync_erp_operational_domains")
 def sync_erp_operational_domains() -> dict[str, object]:
     """Push native project, ticket, project-task, and work-order context to ERP."""
+    from app.services import job_heartbeat
     from app.services.dotmac_erp.domain_sync import run_sync_operational_domains
 
-    return run_sync_operational_domains()
+    outcome = run_sync_operational_domains()
+    job_heartbeat.record_result(
+        "app.tasks.dotmac_erp_outbox.sync_erp_operational_domains",
+        status=outcome.status,
+        detail=outcome.model_dump(mode="json"),
+        next_attempt_at=outcome.next_attempt_at,
+    )
+    return outcome.model_dump(mode="json")
+
+
+@celery_app.task(
+    name="app.tasks.dotmac_erp_outbox.reconcile_erp_staff_access",
+    bind=True,
+    max_retries=5,
+    default_retry_delay=120,
+    retry_backoff=True,
+    retry_jitter=True,
+)
+def reconcile_erp_staff_access(self) -> dict[str, object]:
+    """Repair Selfcare staff-access projections from ERP's authoritative feed."""
+
+    from app.schemas.erp_staff_access_webhook import (
+        ErpStaffAccountStatusProjection,
+        ErpStaffLeaveRestrictionProjection,
+    )
+    from app.services import erp_staff_access
+    from app.services.db_session_adapter import db_session_adapter
+    from app.services.dotmac_erp.client import DotMacERPTransientError
+    from app.services.integrations.backoffice_contracts import (
+        ERP_STAFF_ACCESS_RECONCILE_CAPABILITY,
+    )
+    from app.services.integrations.erp_capability import ErpCapabilityClient
+    from app.services.owner_commands import CommandContext
+
+    page_limit = 500
+    try:
+        with db_session_adapter.session() as db:
+            client = ErpCapabilityClient(db)
+            leave_page = client.get_staff_access_projection(
+                entity="leave_restriction",
+                limit=page_limit,
+            )
+            account_page = client.get_staff_access_projection(
+                entity="account_status",
+                limit=page_limit,
+            )
+            if (
+                len(leave_page.items) >= page_limit
+                or len(account_page.items) >= page_limit
+            ):
+                raise RuntimeError(
+                    "ERP staff access projection reached the bounded page limit"
+                )
+
+            leave_events = tuple(
+                leave_event
+                for item in leave_page.items
+                if isinstance(item, ErpStaffLeaveRestrictionProjection)
+                if (leave_event := item.to_owner_event()) is not None
+            )
+            account_events = tuple(
+                account_event
+                for item in account_page.items
+                if isinstance(item, ErpStaffAccountStatusProjection)
+                if (account_event := item.to_owner_event()) is not None
+            )
+            unmapped = (
+                len(leave_page.items)
+                + len(account_page.items)
+                - len(leave_events)
+                - len(account_events)
+            )
+            task_run_id = self.request.id or str(uuid4())
+            command_id = uuid5(
+                NAMESPACE_URL,
+                f"erp-staff-access-reconcile:{task_run_id}",
+            )
+            db_session_adapter.release_read_transaction(db)
+            outcome = erp_staff_access.reconcile_staff_access_snapshot(
+                db,
+                erp_staff_access.ReconcileStaffAccessSnapshotCommand(
+                    context=CommandContext(
+                        command_id=command_id,
+                        correlation_id=command_id,
+                        actor="service:dotmac-erp-reconcile",
+                        scope=ERP_STAFF_ACCESS_RECONCILE_CAPABILITY,
+                        reason="Repair ERP staff access projection drift",
+                        idempotency_key=task_run_id,
+                    ),
+                    leave_restrictions=leave_events,
+                    account_statuses=account_events,
+                ),
+            )
+    except DotMacERPTransientError as exc:
+        raise self.retry(exc=exc) from exc
+
+    result: dict[str, object] = {
+        "leave_restrictions_seen": outcome.leave_restrictions_seen,
+        "account_statuses_seen": outcome.account_statuses_seen,
+        "unmapped_seen": unmapped,
+        "applied": outcome.applied,
+        "ignored": outcome.ignored,
+    }
+    logger.info("ERP_STAFF_ACCESS_RECONCILE_COMPLETE %s", result)
+    return result

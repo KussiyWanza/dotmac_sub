@@ -6,9 +6,14 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
+
 from app.models.audit import AuditActorType, AuditEvent
+from app.models.catalog import SubscriptionStatus
 from app.models.service_extension import (
     ServiceExtension,
+    ServiceExtensionAnchorBasis,
+    ServiceExtensionEntry,
     ServiceExtensionReversal,
     ServiceExtensionScope,
     ServiceExtensionStatus,
@@ -18,6 +23,7 @@ from app.services import service_extensions
 from app.services.owner_commands import CommandContext
 from app.services.web_billing_service_extensions import (
     ServiceExtensionActivityProvenance,
+    build_customer_service_extension_history,
     build_service_extension_detail,
 )
 from app.web.admin.billing_extensions import templates
@@ -95,6 +101,192 @@ def _audit(
     db_session.commit()
     db_session.refresh(event)
     return event
+
+
+def test_customer_history_includes_pending_and_canceled_requests_without_entries(
+    db_session,
+    subscriber,
+):
+    other_subscriber_id = uuid4()
+    pending = ServiceExtension(
+        reason="Submitted customer extension",
+        window_start=_NOW - timedelta(hours=4),
+        window_end=_NOW - timedelta(hours=2),
+        days=2,
+        scope_type=ServiceExtensionScope.subscribers,
+        scope_subscriber_ids=[str(other_subscriber_id), str(subscriber.id)],
+        status=ServiceExtensionStatus.pending,
+        created_at=_NOW,
+    )
+    canceled = ServiceExtension(
+        reason="Canceled customer extension",
+        window_start=_NOW - timedelta(days=2),
+        window_end=_NOW - timedelta(days=1),
+        days=1,
+        scope_type=ServiceExtensionScope.subscribers,
+        scope_subscriber_ids=[str(subscriber.id)],
+        status=ServiceExtensionStatus.canceled,
+        created_at=_NOW - timedelta(days=1),
+        canceled_at=_NOW,
+    )
+    unrelated = ServiceExtension(
+        reason="Different customer",
+        window_start=_NOW - timedelta(hours=4),
+        window_end=_NOW - timedelta(hours=2),
+        days=2,
+        scope_type=ServiceExtensionScope.subscribers,
+        scope_subscriber_ids=[str(other_subscriber_id)],
+        status=ServiceExtensionStatus.pending,
+        created_at=_NOW,
+    )
+    db_session.add_all([pending, canceled, unrelated])
+    db_session.commit()
+
+    history = build_customer_service_extension_history(
+        db_session,
+        subscriber_ids=(subscriber.id,),
+    )
+
+    assert history.total_count == 2
+    assert [item.id for item in history.items] == [pending.id, canceled.id]
+    assert [item.status_presentation.label for item in history.items] == [
+        "Pending",
+        "Canceled",
+    ]
+    assert history.items[0].impacts == ()
+    assert "awaiting approval" in history.items[0].impact_message
+    assert "before a billing change" in history.items[1].impact_message
+
+
+def test_customer_history_includes_pending_network_scope_from_current_topology(
+    db_session,
+    subscriber,
+    subscription,
+):
+    subscription.status = SubscriptionStatus.active
+    db_session.commit()
+    extension = ServiceExtension(
+        reason="Submitted network extension",
+        window_start=_NOW - timedelta(hours=4),
+        window_end=_NOW - timedelta(hours=2),
+        days=2,
+        scope_type=ServiceExtensionScope.network,
+        status=ServiceExtensionStatus.pending,
+        created_at=_NOW,
+    )
+    db_session.add(extension)
+    db_session.commit()
+
+    history = build_customer_service_extension_history(
+        db_session,
+        subscriber_ids=(subscriber.id,),
+    )
+
+    assert history.total_count == 1
+    assert history.items[0].id == extension.id
+    assert history.items[0].status_presentation.label == "Pending"
+    assert history.items[0].impacts == ()
+
+
+@pytest.mark.parametrize(
+    ("status", "status_label"),
+    [
+        (ServiceExtensionStatus.applied, "Applied"),
+        (ServiceExtensionStatus.reversed, "Reversed"),
+    ],
+)
+def test_customer_history_deduplicates_finalized_subscription_entries(
+    db_session,
+    subscriber,
+    subscription,
+    catalog_offer,
+    status,
+    status_label,
+):
+    from app.schemas.catalog import SubscriptionCreate
+    from app.services import catalog as catalog_service
+
+    subscription.status = SubscriptionStatus.archived
+    db_session.commit()
+    second_subscription = catalog_service.subscriptions.create(
+        db_session,
+        SubscriptionCreate(
+            account_id=subscriber.id,
+            offer_id=catalog_offer.id,
+        ),
+    )
+    extension = ServiceExtension(
+        reason="Applied customer extension",
+        window_start=_NOW - timedelta(hours=4),
+        window_end=_NOW - timedelta(hours=2),
+        days=2,
+        scope_type=ServiceExtensionScope.subscribers,
+        scope_subscriber_ids=[str(subscriber.id)],
+        status=status,
+        affected_count=2,
+        applied_at=_NOW,
+        created_at=_NOW - timedelta(hours=1),
+    )
+    db_session.add(extension)
+    db_session.flush()
+    for target, previous_day, new_day in (
+        (subscription, 1, 3),
+        (second_subscription, 4, 6),
+    ):
+        db_session.add(
+            ServiceExtensionEntry(
+                extension_id=extension.id,
+                subscriber_id=subscriber.id,
+                subscription_id=target.id,
+                previous_next_billing_at=datetime(2026, 8, previous_day, tzinfo=UTC),
+                grant_starts_at=datetime(2026, 8, previous_day, tzinfo=UTC),
+                grant_ends_at=datetime(2026, 8, new_day, tzinfo=UTC),
+                anchor_basis=ServiceExtensionAnchorBasis.existing_billing_anchor,
+                new_next_billing_at=datetime(2026, 8, new_day, tzinfo=UTC),
+                created_at=_NOW,
+            )
+        )
+    db_session.commit()
+
+    history = build_customer_service_extension_history(
+        db_session,
+        subscriber_ids=(subscriber.id,),
+    )
+
+    assert history.total_count == 1
+    assert len(history.items) == 1
+    assert history.items[0].id == extension.id
+    assert history.items[0].status_presentation.label == status_label
+    assert len(history.items[0].impacts) == 2
+
+
+def test_customer_history_count_is_not_limited_to_visible_items(
+    db_session,
+    subscriber,
+):
+    for index in range(12):
+        db_session.add(
+            ServiceExtension(
+                reason=f"Request {index}",
+                window_start=_NOW - timedelta(hours=4),
+                window_end=_NOW - timedelta(hours=2),
+                days=1,
+                scope_type=ServiceExtensionScope.subscribers,
+                scope_subscriber_ids=[str(subscriber.id)],
+                status=ServiceExtensionStatus.pending,
+                created_at=_NOW - timedelta(minutes=index),
+            )
+        )
+    db_session.commit()
+
+    history = build_customer_service_extension_history(
+        db_session,
+        subscriber_ids=(subscriber.id,),
+        limit=10,
+    )
+
+    assert history.total_count == 12
+    assert len(history.items) == 10
 
 
 def test_legacy_creation_and_apply_are_reconstructed_once_with_provenance(db_session):

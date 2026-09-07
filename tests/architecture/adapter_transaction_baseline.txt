@@ -28,7 +28,6 @@ commit 5 app/tasks/ont_runtime_status.py
 commit 1 app/tasks/ont_signal_observations.py
 commit 2 app/tasks/radius.py
 commit 26 app/tasks/router_sync.py
-commit 1 app/tasks/topology_lldp.py
 commit 1 app/tasks/topology_outage.py
 commit 1 app/tasks/topology_ufiber_link.py
 commit 1 app/tasks/topology_uisp.py
@@ -55,7 +54,6 @@ flush 1 app/tasks/uisp_control.py
 helper:form_write 10 app/web/admin/catalog_settings.py
 helper:task_session 2 app/tasks/crm_ticket_pull.py
 helper:task_session 1 app/tasks/support_tickets.py
-rollback 2 app/api/bandwidth.py
 rollback 1 app/api/crm.py
 rollback 2 app/tasks/_postgres_lock.py
 rollback 1 app/tasks/cross_app_drift.py
@@ -75,12 +73,10 @@ rollback 2 app/tasks/ont_reconcile.py
 rollback 2 app/tasks/ont_runtime_status.py
 rollback 2 app/tasks/ont_signal_observations.py
 rollback 1 app/tasks/profile_sync.py
-rollback 2 app/tasks/quotes.py
 rollback 3 app/tasks/radius.py
 rollback 3 app/tasks/radius_health.py
 rollback 1 app/tasks/radius_population.py
 rollback 5 app/tasks/router_sync.py
-rollback 2 app/tasks/topology_lldp.py
 rollback 2 app/tasks/topology_outage.py
 rollback 2 app/tasks/topology_ufiber_link.py
 rollback 3 app/tasks/topology_uisp.py
@@ -107,4 +103,4 @@ rollback 4 app/web/admin/support_tickets.py
 rollback 20 app/web/admin/system.py
 rollback 2 app/web/admin/vendors.py
 rollback 2 app/web/customer/location.py
-rollback 5 app/web/customer/routes.py
+rollback 4 app/web/customer/routes.py

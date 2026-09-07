@@ -15,6 +15,8 @@ from app.models.billing import (
     LedgerEntryType,
     LedgerSource,
     Payment,
+    PaymentSettlement,
+    PaymentSettlementOrigin,
     PaymentStatus,
     ServiceEntitlement,
 )
@@ -554,15 +556,28 @@ def test_canonical_prepaid_funding_renewal_creates_entitlement(
     )
     db_session.add(payment)
     db_session.flush()
+    entry = LedgerEntry(
+        account_id=subscriber.id,
+        payment_id=payment.id,
+        entry_type=LedgerEntryType.credit,
+        source=LedgerSource.payment,
+        amount=Decimal("1000.00"),
+        currency="NGN",
+        memo="wallet top-up",
+        effective_date=paid_at,
+    )
+    db_session.add(entry)
+    db_session.flush()
     db_session.add(
-        LedgerEntry(
-            account_id=subscriber.id,
+        PaymentSettlement(
             payment_id=payment.id,
-            entry_type=LedgerEntryType.credit,
-            source=LedgerSource.payment,
             amount=Decimal("1000.00"),
+            unallocated_amount=Decimal("1000.00"),
+            prepaid_amount=Decimal("0.00"),
             currency="NGN",
-            memo="wallet top-up",
+            origin=PaymentSettlementOrigin.system,
+            idempotency_key=f"pytest:prepaid-renewal:{payment.id}",
+            unallocated_ledger_entry_id=entry.id,
         )
     )
     db_session.commit()

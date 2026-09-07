@@ -842,7 +842,8 @@
         {% set payment_proof_corrections = billing_workspace.payment_proof_corrections_by_proof | default({}) %}
         {% set credit_notes = billing_workspace.credit_notes | default([]) %}
         {% set credit_applications = billing_workspace.credit_applications | default([]) %}
-        {% set service_extension_entries = billing_workspace.service_extensions | default([]) %}
+        {% set service_extension_history = billing_workspace.service_extension_history | default(none) %}
+        {% set service_extension_items = service_extension_history.items if service_extension_history else [] %}
         {% set billing_account_id = accounts[0].id if accounts and accounts|length == 1 else customer.id %}
 
         <div class="flex flex-col gap-4 rounded-2xl border border-slate-200/70 bg-white p-5 shadow-sm dark:border-slate-700/70 dark:bg-slate-800 sm:flex-row sm:items-center sm:justify-between">
@@ -884,9 +885,11 @@
                         {'id': 'payments', 'label': 'Payments', 'count': payments|length},
                         {'id': 'proofs', 'label': 'Proofs', 'count': payment_proofs|length},
                         {'id': 'credits', 'label': 'Credits', 'count': credit_notes|length},
-                        {'id': 'extensions', 'label': 'Extensions', 'count': service_extension_entries|length},
                         {'id': 'activity', 'label': 'Activity', 'count': credit_applications|length}
                     ] %}
+                    {% if can_read_service_extensions %}
+                    {% set billing_tabs = billing_tabs[:5] + [{'id': 'extensions', 'label': 'Extensions', 'count': service_extension_history.total_count}] + billing_tabs[5:] %}
+                    {% endif %}
                     {% if can(request, 'billing:ledger:read') %}
                     {% set billing_tabs = billing_tabs[:3] + [{'id': 'ledger', 'label': 'Ledger', 'count': none}] + billing_tabs[3:] %}
                     {% endif %}
@@ -909,11 +912,11 @@
                     <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v12m6-6H6"/></svg>
                     Issue Credit
                 </a>
-                <a href="/admin/billing/service-extensions/new"
+                {% if can_create_service_extension %}<a href="/admin/billing/service-extensions/new"
                    class="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700">
                     <svg class="h-4 w-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3M5 11h14M7 21h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
                     Extend Service
-                </a>
+                </a>{% endif %}
             </div>
         </div>
 
@@ -928,11 +931,11 @@
                 <p class="mt-2 text-2xl font-bold text-slate-900 dark:text-white">₦{{ '{:,.2f}'.format(billing_counts.open_credit_amount | default(0)) }}</p>
                 <button type="button" @click="billingSubTab = 'credits'" class="mt-2 text-xs font-semibold text-emerald-700 hover:text-emerald-800 dark:text-emerald-300">{{ billing_counts.open_credit_notes | default(0) }} available credit note{{ 's' if (billing_counts.open_credit_notes | default(0)) != 1 else '' }}</button>
             </div>
-            <div class="rounded-2xl border border-indigo-200/70 bg-indigo-50 p-4 shadow-sm dark:border-indigo-900/50 dark:bg-slate-800">
+            {% if can_read_service_extensions %}<div class="rounded-2xl border border-indigo-200/70 bg-indigo-50 p-4 shadow-sm dark:border-indigo-900/50 dark:bg-slate-800">
                 <p class="text-xs font-semibold uppercase tracking-wider text-indigo-700 dark:text-indigo-300">Service Extensions</p>
                 <p class="mt-2 text-2xl font-bold text-slate-900 dark:text-white">{{ billing_counts.service_extensions | default(0) }}</p>
                 <button type="button" @click="billingSubTab = 'extensions'" class="mt-2 text-xs font-semibold text-indigo-700 hover:text-indigo-800 dark:text-indigo-300">View extension history</button>
-            </div>
+            </div>{% endif %}
         </div>
 
         <div x-show="billingSubTab === 'overview'" x-cloak class="grid gap-6 lg:grid-cols-2">
@@ -1161,37 +1164,38 @@
             {% endif %}
         </div>
 
-        <div x-show="billingSubTab === 'extensions'" x-cloak class="rounded-2xl border border-slate-200/60 bg-white shadow-sm dark:border-slate-700/60 dark:bg-slate-800">
+        {% if can_read_service_extensions %}<div x-show="billingSubTab === 'extensions'" x-cloak class="rounded-2xl border border-slate-200/60 bg-white shadow-sm dark:border-slate-700/60 dark:bg-slate-800">
             <div class="flex items-center justify-between border-b border-slate-100 px-5 py-4 dark:border-slate-700">
                 <h3 class="font-semibold text-slate-900 dark:text-white">Service Extension History</h3>
-                <a href="/admin/billing/service-extensions/new" class="text-xs font-semibold text-indigo-600 hover:text-indigo-700 dark:text-indigo-400">Create extension</a>
+                {% if can_create_service_extension %}<a href="/admin/billing/service-extensions/new" class="text-xs font-semibold text-indigo-600 hover:text-indigo-700 dark:text-indigo-400">Create extension</a>{% endif %}
             </div>
-            {% if service_extension_entries %}
+            {% if service_extension_items %}
             <div class="divide-y divide-slate-100 dark:divide-slate-700">
-                {% for entry in service_extension_entries %}
-                {% set extension = entry.extension %}
-                {% set extension_status = extension.status.value if extension and extension.status else 'applied' %}
-                <a href="/admin/billing/service-extensions/{{ extension.id if extension else entry.extension_id }}" class="block px-5 py-4 transition hover:bg-slate-50 dark:hover:bg-slate-700/30">
+                {% for extension in service_extension_items %}
+                <a href="/admin/billing/service-extensions/{{ extension.id }}" class="block px-5 py-4 transition hover:bg-slate-50 dark:hover:bg-slate-700/30">
                     <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                        <div>
-                            <p class="text-sm font-semibold text-slate-900 dark:text-white">{{ extension.reason if extension else 'Service extension' }}</p>
-                            <p class="text-xs text-slate-500 dark:text-slate-400">
-                                {{ entry.created_at | app_datetime('%b %d, %Y', 'N/A', include_tz=False) }}
-                                {% if extension %} · {{ extension.days }} day{{ 's' if extension.days != 1 else '' }} · {{ extension_status | title }}{% endif %}
-                            </p>
+                        <div class="min-w-0">
+                            <div class="flex flex-wrap items-center gap-2">
+                                <p class="text-sm font-semibold text-slate-900 dark:text-white">{{ extension.reason }}</p>
+                                {{ status_presentation_badge(extension.status_presentation, size="sm") }}
+                            </div>
+                            <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">{{ extension.created_at_display }} · {{ extension.days }} day{{ 's' if extension.days != 1 else '' }} · {{ extension.scope_label }}</p>
+                            <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">{{ extension.impact_message }}</p>
                         </div>
-                        <div class="text-sm text-slate-600 dark:text-slate-300 md:text-right">
-                            <p>Previous: {{ entry.previous_next_billing_at | app_datetime('%b %d, %Y', 'N/A', include_tz=False) }}</p>
-                            <p>New: {{ entry.new_next_billing_at | app_datetime('%b %d, %Y', 'N/A', include_tz=False) }}</p>
-                        </div>
+                        {% if extension.impacts %}<div class="space-y-2 text-sm text-slate-600 dark:text-slate-300 md:text-right">
+                            {% for impact in extension.impacts %}<div>
+                                <p>Previous: {{ impact.previous_billing_display }}</p>
+                                <p>New: {{ impact.new_billing_display }}</p>
+                            </div>{% endfor %}
+                        </div>{% endif %}
                     </div>
                 </a>
                 {% endfor %}
             </div>
             {% else %}
-            <div class="px-5 py-10 text-center text-sm text-slate-500 dark:text-slate-400">No service extensions applied to this customer.</div>
+            <div class="px-5 py-10 text-center text-sm text-slate-500 dark:text-slate-400">No service extension requests found for this customer.</div>
             {% endif %}
-        </div>
+        </div>{% endif %}
 
         <div x-show="billingSubTab === 'activity'" x-cloak class="rounded-2xl border border-slate-200/60 bg-white shadow-sm dark:border-slate-700/60 dark:bg-slate-800">
             <div class="flex items-center justify-between border-b border-slate-100 px-5 py-4 dark:border-slate-700">

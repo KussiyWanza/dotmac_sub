@@ -1,0 +1,49 @@
+<div class="relative border-t border-slate-200 pt-4 dark:border-slate-700"
+     x-data='projectInfrastructurePicker({{ infrastructure_editor | tojson }})'
+     x-show="projectType === 'cable_rerun' || type || id" x-cloak
+     @keydown.escape.stop="open = false">
+    <p class="mb-3 text-sm font-semibold text-slate-900 dark:text-white">Infrastructure (optional)</p>
+    <p class="mb-3 text-sm text-slate-600 dark:text-slate-300">Select the infrastructure this cable rerun is for. Customer-only work can leave this blank.</p>
+    <div class="grid gap-3 sm:grid-cols-2">
+        <div>
+            <label for="project-infrastructure-type" class="mb-1 block text-sm font-medium">Infrastructure type</label>
+            <select id="project-infrastructure-type" name="infrastructure_type" x-model="type" @change="changeType()"
+                    class="min-h-11 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 dark:border-slate-600 dark:bg-slate-800">
+                <option value="">None</option>
+                {% for value, label in infrastructure_types %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
+            </select>
+        </div>
+        <div class="relative">
+            <label for="project-infrastructure-search" class="mb-1 block text-sm font-medium">Infrastructure</label>
+            <input id="project-infrastructure-search" type="text" x-model="search" :disabled="!type"
+                   @input="edited()" @input.debounce.300ms="lookup()" @focus="lookup()"
+                   @keydown.arrow-down.prevent="move(1)" @keydown.arrow-up.prevent="move(-1)"
+                   @keydown.enter="if (open && active >= 0) { $event.preventDefault(); choose(results[active]); }"
+                   role="combobox" aria-autocomplete="list" aria-controls="project-infrastructure-results"
+                   :aria-expanded="open" :aria-activedescendant="active >= 0 ? 'project-infra-option-' + active : null"
+                   {% if infrastructure_error %}aria-invalid="true" aria-describedby="project-infrastructure-error"{% endif %}
+                   autocomplete="off" maxlength="120" placeholder="Search by name, code or IP"
+                   class="min-h-11 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 dark:border-slate-600 dark:bg-slate-800">
+            <input type="hidden" name="infrastructure_id" :value="id">
+            <div x-show="open" @click.outside="open = false" class="absolute z-30 mt-1 max-h-60 w-full overflow-auto rounded-lg border border-slate-300 bg-white p-1 shadow-lg dark:border-slate-600 dark:bg-slate-800">
+                <p x-show="loading" role="status" class="p-2 text-sm">Searching…</p>
+                <p x-show="error" role="alert" class="p-2 text-sm text-red-700 dark:text-red-300" x-text="error"></p>
+                <p x-show="!loading && !error && search.trim().length < 2" class="p-2 text-sm">Type at least two characters.</p>
+                <p x-show="searched && !loading && !error && search.trim().length >= 2 && !results.length" class="p-2 text-sm">No matching infrastructure.</p>
+                <ul id="project-infrastructure-results" role="listbox">
+                    <template x-for="(item, index) in results" :key="item.id">
+                        <li role="option" :id="'project-infra-option-' + index" :aria-selected="active === index">
+                            <button type="button" @click="choose(item)" :class="active === index ? 'bg-slate-100 dark:bg-slate-700' : ''" class="min-h-11 w-full rounded-lg px-3 py-2 text-left hover:bg-slate-100 dark:hover:bg-slate-700">
+                                <span class="block text-sm font-medium" x-text="item.label"></span>
+                                <span class="block text-xs text-slate-600 dark:text-slate-300" x-text="item.context || ''"></span>
+                            </button>
+                        </li>
+                    </template>
+                </ul>
+            </div>
+        </div>
+    </div>
+    {% if infrastructure_error %}<p id="project-infrastructure-error" role="alert" class="mt-2 text-sm text-red-700 dark:text-red-300">{{ infrastructure_error }}</p>{% endif %}
+    <button type="button" x-show="type || id" @click="clear()" class="mt-2 min-h-11 text-sm font-medium text-emerald-700 dark:text-emerald-300">Clear infrastructure</button>
+</div>
+<script src="/static/js/project-infrastructure-picker.js"></script>

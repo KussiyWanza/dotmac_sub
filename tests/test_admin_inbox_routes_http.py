@@ -214,7 +214,35 @@ def test_all_view_reaches_the_projection_owner(captured_request):
     assert captured_request("").view is None
 
 
-def test_queue_requests_exact_total_for_numbered_pagination(captured_request):
+def test_routing_channel_is_visible_and_composed_filters_render(db_session):
+    team_id = uuid.uuid4()
+    client = _client(db_session)
+    with (
+        patch("app.web.admin.get_current_user", return_value=None),
+        patch("app.web.admin.get_sidebar_stats", return_value={}),
+        patch("app.services.web_admin.get_actor_id", return_value=None),
+    ):
+        response = client.get(
+            "/inbox",
+            params={
+                "view": "all",
+                "channel_type": "email",
+                "service_team_ids": str(team_id),
+            },
+        )
+
+    assert response.status_code == 200
+    assert re.search(
+        r'<details open class="[^"]*">\s*<summary[^>]*>\s*'
+        r"<span>Routing</span>",
+        response.text,
+    )
+    assert '<option value="email" selected>Email</option>' in response.text
+    assert '<input type="hidden" name="view" value="all">' in response.text
+    assert '@change="navigateFilter({ channel_type: $el.value })"' in response.text
+
+
+def test_queue_requests_pagination_count_evidence(captured_request):
     assert captured_request("?page=7").include_total_count is True
 
 

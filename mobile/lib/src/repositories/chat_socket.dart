@@ -6,13 +6,14 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 typedef ChatEventHandler = void Function(Map<String, dynamic> event);
 
-/// Thin wrapper over the CRM widget WebSocket (`/ws/widget?token=…`). Decodes
-/// the server's JSON events and exposes a simple send/close API. Connection
-/// lifecycle, reconnection, and event interpretation live in [ChatController].
+/// Thin wrapper over the selected native Selfcare or temporary CRM visitor
+/// WebSocket. Decodes JSON events and exposes a simple send/close API.
+/// Connection lifecycle, reconnection, and event interpretation live in
+/// [ChatController].
 class ChatSocket {
   ChatSocket({required this.wsUrl, required this.visitorToken});
 
-  final String wsUrl;
+  final Uri wsUrl;
   final String visitorToken;
 
   WebSocketChannel? _channel;
@@ -28,9 +29,7 @@ class ChatSocket {
     required ChatEventHandler onEvent,
     required void Function() onClosed,
   }) async {
-    final uri = Uri.parse(wsUrl).replace(
-      queryParameters: {'token': visitorToken},
-    );
+    final uri = wsUrl.replace(queryParameters: {'token': visitorToken});
     final channel = WebSocketChannel.connect(uri);
     _channel = channel;
 

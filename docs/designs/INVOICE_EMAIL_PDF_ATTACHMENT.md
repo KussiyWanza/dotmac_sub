@@ -46,20 +46,30 @@ At delivery time the worker:
 The generated document is therefore the same branded/template-backed PDF used
 by admin and customer portal downloads.
 
-## PDF payment action
+## PDF payment presentment
 
-Current invoice renders present one **Pay with Paystack** action and do not
-print bank-transfer account details. The action links to the public,
-invoice-scoped checkout hand-off at `/pay/invoices/{invoice_id}`. Opening the
-link rechecks that the invoice remains payable, creates a fresh Paystack
-checkout intent for its current balance, and redirects directly to Paystack;
-the customer does not need to sign in to the portal. The PDF stores only the
-stable Dotmac hand-off URL, never an expiring provider authorization URL. The
-normal signed webhook/reconciliation path remains the settlement authority.
+Current invoice renders first read the customer account `payment_method`.
+`transfer` and `bank_transfer` print bank details; `paystack` and card-like
+values print the Paystack link. Blank customer methods and accountless renders
+fall back to `billing.invoice_pdf_payment_presentment` from the settings owner.
+The closed fallback values are `bank_account`, `paystack`, and `both`; the
+default is `paystack` so fresh or unconfigured deployments print the stable
+invoice-scoped Paystack payment link.
+
+Bank-transfer details are resolved from `financial.collection_accounts` through
+`invoice_bank_details.get_invoice_bank_details()`. The PDF never stores or
+copies bank account facts onto the invoice. Paystack presentment uses the same
+stable invoice-scoped checkout hand-off at `/pay/invoices/{invoice_id}` that
+rechecks payable state and creates a fresh checkout intent before redirecting
+to Paystack. The PDF stores only the stable Dotmac hand-off URL, never an
+expiring provider authorization URL. The normal signed webhook/reconciliation
+path remains the settlement authority.
 
 Changing the invoice template freshness marker invalidates cached exports so
-new downloads and invoice email attachments do not retain the retired bank
-details.
+new downloads and invoice email attachments do not retain the previous payment
+surface. A later customer payment-method change or operator change to
+`invoice_pdf_payment_presentment` also makes older cached exports stale against
+that decision timestamp.
 
 ## Failure and retry
 

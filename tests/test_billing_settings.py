@@ -58,11 +58,13 @@ def test_billing_config_context_backfills_notification_defaults(db_session):
     assert context["billing"]["expiry_reminder_days"] == "7"
     assert context["billing"]["invoice_reminder_days"] == "7,1"
     assert context["billing"]["minimum_balance"] == "0"
+    assert context["billing"]["invoice_pdf_payment_presentment"] == "paystack"
 
 
 def test_billing_policy_settings_have_specs():
     expected = {
         "minimum_balance": "0",
+        "invoice_pdf_payment_presentment": "paystack",
     }
 
     for key, default in expected.items():
@@ -96,6 +98,7 @@ def test_save_billing_config_normalizes_valid_policy_values(db_session):
             "proforma_enabled": "false",
             "zero_total_invoices": "false",
             "invoice_caching": "true",
+            "invoice_pdf_payment_presentment": "Both",
             "upcoming_charges_prepaid_amount_bands": "0-10000,10000-",
         },
     )
@@ -106,6 +109,7 @@ def test_save_billing_config_normalizes_valid_policy_values(db_session):
     assert context["billing_day"] == "5"
     assert context["invoice_reminder_days"] == "7,1"
     assert context["minimum_balance"] == "10.50"
+    assert context["invoice_pdf_payment_presentment"] == "both"
 
 
 @pytest.mark.parametrize(
@@ -117,6 +121,11 @@ def test_save_billing_config_normalizes_valid_policy_values(db_session):
             "invoice_reminder_days",
             "7,today",
             "Invoice Reminder Days must be a comma-separated list of day numbers.",
+        ),
+        (
+            "invoice_pdf_payment_presentment",
+            "cash",
+            "Invoice PDF Payment Fallback must be one of: bank_account, both, paystack.",
         ),
     ],
 )
@@ -143,6 +152,7 @@ def test_billing_settings_template_confirms_and_bounds_policy_save():
     assert "{% if error %}" in template
     assert 'name="payment_due_days"' in template
     assert 'name="minimum_balance"' in template
+    assert 'name="invoice_pdf_payment_presentment"' in template
     assert "Dunning owns overdue actions" in template
     assert 'name="auto_suspend_on_overdue"' not in template
     assert 'name="suspension_grace_hours"' not in template

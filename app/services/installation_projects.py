@@ -1,11 +1,14 @@
 """Transaction-neutral owner for installation scope creation.
 
-Work reaches a vendor two ways, and both land on the same
+Work reaches a vendor through three origins, all landing on the same
 ``InstallationProject`` root so the award -> quote -> as-built -> PO -> payment
 chain downstream has exactly one shape:
 
 * **Sale** — ``ensure_for_project`` scopes an installation sold to a
   subscriber. ``sales.fulfillment`` owns that trigger.
+* **Infrastructure maintenance** — ``ensure_for_project`` also scopes a
+  vendor-enabled, infrastructure-linked project without requiring a subscriber.
+  ``operations.project_lifecycle`` owns that trigger.
 * **Buildout** — ``ensure_for_buildout`` scopes plant we decided to build.
   There is no subscriber, quote, or sales order; the ``BuildoutProject`` is the
   reason the work exists.
@@ -17,6 +20,7 @@ points, not a second scope model.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from uuid import UUID
 
 from sqlalchemy import select
@@ -26,31 +30,47 @@ from app.models.project import Project
 from app.models.qualification import BuildoutProject
 from app.models.vendor_routes import InstallationProject, InstallationProjectStatus
 from app.services import projects as projects_service
+from app.services.domain_errors import DomainError
 from app.services.events import EventType, emit_event
 
 
-class InstallationScopeError(ValueError):
+class InstallationScopeError(DomainError):
     def __init__(self, code: str, message: str, *, kind: str = "conflict") -> None:
-        super().__init__(message)
-        self.code = code
+        super().__init__(code=code, message=message)
         self.kind = kind
 
 
+@dataclass(frozen=True, slots=True)
+class EnsureProjectScope:
+    project_id: UUID
+    subscriber_id: UUID | None
+    actor_id: str
+    created_by_person_id: UUID | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectScopeOutcome:
+    installation_project_id: UUID
+    project_id: UUID
+    created: bool
+
+
 def ensure_for_project(
-    db: Session,
-    *,
-    project_id: UUID,
-    subscriber_id: UUID,
-    actor_id: str,
-    created_by_person_id: UUID | None = None,
-) -> InstallationProject:
+    db: Session, *, command: EnsureProjectScope
+) -> ProjectScopeOutcome:
+    project_id = command.project_id
+    subscriber_id = command.subscriber_id
+    actor_id = command.actor_id
+    created_by_person_id = command.created_by_person_id
     actor = str(actor_id or "").strip()
     if not actor:
         raise InstallationScopeError(
             "actor_required", "Installation-scope actor is required", kind="invalid"
         )
-    project = db.get(Project, project_id)
-    if project is None:
+    project = db.scalar(
+        select(Project).where(Project.id == project_id).with_for_update()
+    )
+    if project is None or not project.is_active:
         raise InstallationScopeError(
             "project_not_found", "Project not found", kind="not_found"
         )
@@ -59,21 +79,35 @@ def ensure_for_project(
             "subscriber_mismatch", "Project and installation Subscriber differ"
         )
     existing = db.scalars(
-        select(InstallationProject).where(InstallationProject.project_id == project_id)
+        select(InstallationProject)
+        .where(InstallationProject.project_id == project_id)
+        .with_for_update()
     ).one_or_none()
     if existing is not None:
-        if existing.subscriber_id != subscriber_id:
+        if existing.subscriber_id != subscriber_id or not existing.is_active:
             raise InstallationScopeError(
                 "existing_scope_mismatch",
                 "Installation project conflicts with the Project Subscriber",
             )
-        return existing
+        return ProjectScopeOutcome(existing.id, project.id, False)
+    if subscriber_id is None:
+        template = project.project_template
+        if (
+            project.infrastructure is None
+            or template is None
+            or not template.creates_vendor_assignment_scope
+        ):
+            raise InstallationScopeError(
+                "scope_required",
+                "Select infrastructure and a vendor-enabled template before creating a vendor scope.",
+                kind="invalid",
+            )
     installation = InstallationProject(
         project_id=project.id,
         subscriber_id=subscriber_id,
         status=InstallationProjectStatus.draft.value,
         created_by_person_id=created_by_person_id,
-        notes="Created by sales.fulfillment from the accepted order scope",
+        notes="Created by operations.installation_scope from the native project scope",
     )
     db.add(installation)
     db.flush()
@@ -83,12 +117,12 @@ def ensure_for_project(
         {
             "installation_project_id": str(installation.id),
             "project_id": str(project.id),
-            "subscriber_id": str(subscriber_id),
+            "subscriber_id": str(subscriber_id) if subscriber_id else None,
         },
         actor=actor,
         subscriber_id=subscriber_id,
     )
-    return installation
+    return ProjectScopeOutcome(installation.id, project.id, True)
 
 
 DEFAULT_BUILDOUT_PROJECT_TYPE = "fiber_optics_installation"

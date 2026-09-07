@@ -24,7 +24,7 @@
     <form method="post"
           action="{% if form_mode == 'edit' and project %}/admin/projects/{{ project.number or project.id }}/edit{% else %}/admin/projects{% endif %}"
           class="space-y-5"
-          x-data='{ templateMap: {{ project_template_map | tojson }} }'>
+          x-data='{ templateMap: {{ project_template_map | tojson }}, projectType: {{ prefill.project_type | tojson }} }'>
         <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
 
         <div class="grid gap-4 sm:grid-cols-2">
@@ -40,7 +40,7 @@
             </div>
             <div>
                 <label class="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Project Type</label>
-                <select name="project_type"
+                <select name="project_type" x-model="projectType"
                         x-on:change="const tpl = templateMap[$event.target.value]; if (tpl) { $refs.templateSelect.value = tpl; }"
                         class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
                     <option value="">— None —</option>
@@ -83,17 +83,43 @@
             </div>
         </div>
 
+        {% include 'admin/projects/_infrastructure_picker.html' %}
+
         <div class="border-t border-slate-200/70 pt-4 dark:border-slate-700/70">
             <p class="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Customer</p>
             <div class="grid gap-4 sm:grid-cols-2">
                 <div>
-                    <label class="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Subscriber</label>
-                    <select name="subscriber_id" class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
-                        <option value="">— None —</option>
-                        {% for person in subscriber_options %}
-                        <option value="{{ person.id }}" {% if prefill.subscriber_id == person.id|string %}selected{% endif %}>{{ person.label }}</option>
-                        {% endfor %}
-                    </select>
+                    <label for="project-customer-search" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Customer</label>
+                    <div class="relative"
+                         data-typeahead-url="/admin/projects/customers/search"
+                         data-typeahead-min="2"
+                         data-typeahead-limit="20"
+                         data-typeahead-label="customers"
+                         data-typeahead-validate-selection="true">
+                        <div class="flex gap-2">
+                            <input id="project-customer-search"
+                                   type="search"
+                                   data-typeahead-input
+                                   value="{{ selected_customer.label if selected_customer else '' }}"
+                                   autocomplete="off"
+                                   role="combobox"
+                                   aria-autocomplete="list"
+                                   aria-controls="project-customer-results"
+                                   placeholder="Search name, account ID, or email"
+                                   class="min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+                            <button type="button"
+                                    data-typeahead-clear
+                                    class="rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700 {% if not selected_customer %}hidden{% endif %}">
+                                Clear
+                            </button>
+                        </div>
+                        <input type="hidden"
+                               name="subscriber_id"
+                               data-typeahead-hidden
+                               value="{{ selected_customer.id if selected_customer else '' }}">
+                        <div id="project-customer-results" data-typeahead-results></div>
+                    </div>
+                    <p class="mt-1 text-xs text-slate-400 dark:text-slate-500">Optional. Search active customers by name, account ID, subscriber number, or email.</p>
                 </div>
                 <div>
                     <label class="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Region</label>

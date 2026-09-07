@@ -195,6 +195,9 @@ class Settings:
     s3_region: str = os.getenv("S3_REGION", "us-east-1")
     redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     REDIS_URL: str = redis_url
+    bandwidth_active_viewers_key: str = os.getenv(
+        "BANDWIDTH_ACTIVE_VIEWERS_KEY", "active:bandwidth:viewers"
+    )
     payment_webhook_rate_limit_per_ip: int = _bounded_env_int(
         "PAYMENT_WEBHOOK_RATE_LIMIT_PER_IP", 120, 10, 1000
     )

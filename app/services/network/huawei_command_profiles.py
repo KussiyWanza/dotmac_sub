@@ -87,9 +87,7 @@ def get_huawei_command_profile(olt: OLTDevice) -> HuaweiCommandProfile:
         adapter_revision=binding.adapter_revision if binding else None,
         identity_fingerprint=binding.identity.fingerprint if binding else None,
         requires_slow_send=capabilities.requires_slow_send,
-        supports_slash_fsp_display=(
-            capabilities.supports_slash_fsp_display or "MA5800" in model
-        ),
+        supports_slash_fsp_display=capabilities.supports_slash_fsp_display,
         # MA5608T rejects ``display ont autofind <F/S/P>`` with
         # ``unknown_command``. Its global inventory command is supported and
         # callers filter the parsed observation back to the requested F/S/P.

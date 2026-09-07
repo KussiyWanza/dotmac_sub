@@ -1,4 +1,4 @@
-"""Idempotently install and validate the ERP material integration.
+"""Idempotently install and validate the shared ERP integration.
 
 Secrets are referenced, never stored in this script. Example:
 
@@ -21,6 +21,11 @@ CAPABILITIES = (
     "erp.outbox.deliver.v1",
     "erp.status.read.v1",
     "erp.material_status.webhook.v1",
+    "erp.operational_context.sync.v1",
+    "erp.staff_access.reconcile.v1",
+    "erp.staff_access.webhook.v1",
+    "workforce.attendance.read.v1",
+    "workforce.attendance.punch.v1",
 )
 
 
@@ -46,7 +51,7 @@ def main() -> int:
     if args.apply and args.prepare:
         raise SystemExit("Choose either --prepare or --apply")
     if not args.apply and not args.prepare:
-        print("DRY RUN: would install dotmac.erp 1.2.0, bind:")
+        print("DRY RUN: would install dotmac.erp 1.3.0, bind:")
         for capability in CAPABILITIES:
             print(f"  - {capability}")
         print(f"ERP base URL: {args.base_url}")
@@ -62,6 +67,7 @@ def main() -> int:
     from app.models.integration_platform import IntegrationInstallation
     from app.services.field.material_catalog_sync import run_erp_material_catalog_sync
     from app.services.integrations import installations
+    from app.services.integrations.runtime import ValidationResult
     from app.services.integrations.runtime_execution import (
         build_execution_context,
         validate_connection,
@@ -114,18 +120,29 @@ def main() -> int:
         if not static.valid:
             raise SystemExit(f"Static validation failed: {static.error_codes}")
         if args.apply:
-            runtime = build_execution_context(
-                db, capability_binding_id=bindings[0].id, allow_disabled=True
-            )
-            connection = validate_connection(runtime)
-            if not connection.valid:
+            validation_failures: list[str] = []
+            for binding in bindings:
+                runtime = build_execution_context(
+                    db,
+                    capability_binding_id=binding.id,
+                    allow_disabled=True,
+                )
+                connection = validate_connection(runtime)
+                if not connection.valid:
+                    error_codes = connection.error_codes or ("validation_failed",)
+                    validation_failures.extend(
+                        f"{binding.capability_id}:{error_code}"
+                        for error_code in error_codes
+                    )
+            if validation_failures:
                 raise SystemExit(
-                    f"ERP connection validation failed: {connection.error_codes}"
+                    "ERP capability validation failed: "
+                    + ", ".join(validation_failures)
                 )
             installations.enable_after_connection_validation(
                 db,
                 installation_id=installation.id,
-                connection_result=connection,
+                connection_result=ValidationResult(valid=True),
                 actor=actor,
             )
         db.commit()

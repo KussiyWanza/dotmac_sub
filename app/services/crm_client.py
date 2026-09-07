@@ -705,7 +705,6 @@ class CRMClient:
     # and work orders are native Sub domains and are intentionally absent.
     _PORTAL_READ_SCOPES: ClassVar[list[str]] = [
         "referrals:read",
-        "quotes:read",
     ]
 
     @staticmethod
@@ -768,71 +767,6 @@ class CRMClient:
         data = self._request(
             "GET",
             "/api/v1/portal/referrals",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        return data if isinstance(data, dict) else {}
-
-    def get_portal_quotes(self, crm_subscriber_id: str) -> dict[str, Any]:
-        """Read a subscriber's self-serve quotes (feasibility, estimate, deposit,
-        status) from the CRM Portal API (server-side). Used by the mirror reconcile."""
-        token = self._portal_read_token(crm_subscriber_id)
-        data = self._request(
-            "GET",
-            "/api/v1/portal/quotes",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        return data if isinstance(data, dict) else {}
-
-    def request_portal_quote(
-        self,
-        crm_subscriber_id: str,
-        *,
-        latitude: float,
-        longitude: float,
-        address: str | None = None,
-        region: str | None = None,
-        note: str | None = None,
-    ) -> dict[str, Any]:
-        """Request a map-pinned installation quote (write-through to the CRM
-        Portal API). Returns the created quote payload (feasibility + estimate)."""
-        token = self._portal_token(crm_subscriber_id, ["quotes:write"])
-        payload: dict[str, Any] = {"latitude": latitude, "longitude": longitude}
-        if address:
-            payload["address"] = address
-        if region:
-            payload["region"] = region
-        if note:
-            payload["note"] = note
-        data = self._request(
-            "POST",
-            "/api/v1/portal/quote-request",
-            json_data=payload,
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        return data if isinstance(data, dict) else {}
-
-    def accept_portal_quote(
-        self,
-        crm_subscriber_id: str,
-        quote_id: str,
-        *,
-        deposit_reference: str,
-        deposit_amount: str,
-        provider: str | None = None,
-    ) -> dict[str, Any]:
-        """Accept a quote after the deposit is verified (write-through). The CRM
-        records the deposit and triggers the sales-order + install-project."""
-        token = self._portal_token(crm_subscriber_id, ["quotes:write"])
-        payload: dict[str, Any] = {
-            "deposit_reference": deposit_reference,
-            "deposit_amount": deposit_amount,
-        }
-        if provider:
-            payload["provider"] = provider
-        data = self._request(
-            "POST",
-            f"/api/v1/portal/quotes/{quote_id}/accept",
-            json_data=payload,
             headers={"Authorization": f"Bearer {token}"},
         )
         return data if isinstance(data, dict) else {}

@@ -163,7 +163,6 @@ app.services.team_inbox_operations
 app.services.team_inbox_routing
 app.services.topology.availability_log
 app.services.topology.live_status
-app.services.topology.lldp_poller
 app.services.topology.olt_mac_harvest
 app.services.topology.outage_notifications
 app.services.topology.uisp_ip_backfill

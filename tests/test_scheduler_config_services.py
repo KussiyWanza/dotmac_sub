@@ -539,6 +539,43 @@ class TestBuildBeatSchedule:
             for entry in schedule.values()
         )
 
+    def test_registers_staff_access_reconcile_as_frequent_repair_loop(
+        self,
+        db_session,
+        monkeypatch,
+    ):
+        """Missed leave webhooks are repaired within the 15-minute bound."""
+        monkeypatch.setattr(db_session, "close", lambda: None)
+        with (
+            patch.object(scheduler_config, "SessionLocal", return_value=db_session),
+            patch(
+                "app.services.integrations.erp_capability.capability_enabled",
+                return_value=True,
+            ),
+            patch.object(
+                scheduler_config.integration_service,
+                "list_interval_jobs",
+                return_value=[],
+            ),
+        ):
+            schedule = scheduler_config.build_beat_schedule()
+
+        row = (
+            db_session.query(ScheduledTask)
+            .filter(ScheduledTask.name == "erp_staff_access_reconcile")
+            .one()
+        )
+        assert row.task_name == (
+            "app.tasks.dotmac_erp_outbox.reconcile_erp_staff_access"
+        )
+        assert row.enabled is True
+        assert row.interval_seconds == 900
+        assert "erp_staff_access_reconcile" not in schedule
+        assert any(
+            entry["task"] == "app.tasks.dotmac_erp_outbox.reconcile_erp_staff_access"
+            for entry in schedule.values()
+        )
+
     def test_retires_parallel_radius_refresh_schedule(self, db_session, monkeypatch):
         refresh_task = "app.tasks.radius_population.refresh_radius_from_subs"
         stale_row = ScheduledTask(

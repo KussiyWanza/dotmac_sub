@@ -18,12 +18,18 @@ from app.models.notification import CommunicationIntentRecord, Notification
 from app.models.party import Party, PartyType
 from app.models.rbac import Role, SystemUserRole
 from app.models.system_user import SystemUser
-from app.services import auth_flow, credential_recovery, staff_provisioning
+from app.services import (
+    auth_flow,
+    credential_party_binding,
+    credential_recovery,
+    staff_provisioning,
+)
 from app.services.ephemeral_communication_actions import (
     EPHEMERAL_ACTION_METADATA_KEY,
     STAFF_ACCOUNT_INVITE_ACTION,
     materialize_email,
 )
+from app.services.operator_tenant import provision_operator_tenant
 from app.services.owner_commands import CommandContext
 
 
@@ -36,6 +42,28 @@ def _context(key: str = "staff-owner-test") -> CommandContext:
         scope=staff_provisioning.STAFF_ASSIGN_SCOPE,
         reason="verify staff owner semantics",
         idempotency_key=key,
+    )
+
+
+@pytest.fixture(autouse=True)
+def local_authentication_binding(db_session) -> None:
+    provision_operator_tenant(db_session)
+    if db_session.in_transaction():
+        db_session.rollback()
+    credential_party_binding.install_authentication_binding(
+        db_session,
+        credential_party_binding.AuthenticationBindingInstallation(
+            context=CommandContext.system(
+                actor="operator:test",
+                scope=credential_party_binding.AUTHENTICATION_BINDING_INSTALL_SCOPE,
+                reason="staff provisioning tests require local authentication",
+                idempotency_key="authentication-binding:local.staff-provisioning-test",
+            ),
+            binding_key="local.staff-provisioning-test",
+            mechanism_code=AuthProvider.local.value,
+            name="Staff provisioning local authentication",
+            description="Test verifier for staff local credentials",
+        ),
     )
 
 
@@ -116,6 +144,10 @@ def test_provision_commits_identity_grant_audit_and_event_together(db_session) -
     assert user.party_binding_source == "auth.staff_provisioning:erp_hr"
     assert user.party_binding_reason == "verify staff owner semantics"
     assert credential.provider == AuthProvider.local
+    assert credential.party_id == result.person_party_id
+    assert credential.authentication_binding_id is not None
+    assert credential.tenant_id is not None
+    assert credential.party_bound_at is not None
     assert credential.must_change_password is True
     assert credential.password_hash
     assert grant.source == staff_provisioning.ERP_HR_ROLE_SOURCE
@@ -147,7 +179,12 @@ def test_late_failure_rolls_back_every_staff_write(db_session, monkeypatch) -> N
     assert db_session.query(UserCredential).count() == 0
     assert db_session.query(SystemUserRole).count() == 0
     assert db_session.query(Party).count() == 0
-    assert db_session.query(AuditEvent).count() == 0
+    assert (
+        db_session.query(AuditEvent)
+        .filter(AuditEvent.action == "auth.staff_account_provisioned")
+        .count()
+        == 0
+    )
     assert db_session.query(EventStore).count() == 0
 
 
@@ -279,6 +316,13 @@ def test_local_admin_create_uses_same_atomic_provisioning_boundary(
     user = db_session.get(SystemUser, result.user_id)
     assert user is not None
     assert user.person_party_id == result.person_party_id
+    credential = (
+        db_session.query(UserCredential)
+        .filter(UserCredential.system_user_id == result.user_id)
+        .one()
+    )
+    assert credential.party_id == result.person_party_id
+    assert credential.authentication_binding_id is not None
     assert user.party_binding_source == "auth.staff_provisioning:local"
     assert (
         db_session.query(AuditEvent)

@@ -208,7 +208,7 @@ def contacts(db: Session, query: str, limit: int) -> list[dict]:
 
 
 def people(db: Session, query: str, limit: int) -> list[dict]:
-    """Search subscribers (people) by name, email, or phone."""
+    """Search subscribers (people) by name, display name, email, phone, or number."""
     term = (query or "").strip()
     if not term:
         return []
@@ -219,8 +219,10 @@ def people(db: Session, query: str, limit: int) -> list[dict]:
             or_(
                 Subscriber.first_name.ilike(like_term),
                 Subscriber.last_name.ilike(like_term),
+                Subscriber.display_name.ilike(like_term),
                 Subscriber.email.ilike(like_term),
                 Subscriber.phone.ilike(like_term),
+                Subscriber.subscriber_number.ilike(like_term),
             )
         )
         .limit(limit)

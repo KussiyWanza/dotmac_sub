@@ -8,10 +8,11 @@ connector can implement the same contracts without changing Sub domain callers.
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy.orm import Session
 
+from app.schemas.erp_staff_access_webhook import ErpStaffAccessProjectionPage
 from app.services.backoffice import ExpenseCategoryView
 from app.services.dotmac_erp.client import DotMacERPError, DotMacERPTransientError
 from app.services.dotmac_erp.operational_contracts import (
@@ -24,6 +25,7 @@ from app.services.integrations.backoffice_contracts import (
     ERP_OPERATIONAL_SYNC_CAPABILITY,
     ERP_OUTBOX_CAPABILITY,
     ERP_REGULATORY_CAPABILITY,
+    ERP_STAFF_ACCESS_RECONCILE_CAPABILITY,
     ERP_STATUS_CAPABILITY,
     WORKFORCE_ATTENDANCE_PUNCH_CAPABILITY,
     WORKFORCE_ATTENDANCE_READ_CAPABILITY,
@@ -77,9 +79,12 @@ class ErpCapabilityClient:
             return dict(result.output)
         if result.status == OperationStatus.retryable:
             raise DotMacERPTransientError(
-                result.error_code or "ERP operation retryable"
+                result.error_code or "ERP operation retryable",
+                diagnostic=result.diagnostic,
             )
-        raise DotMacERPError(result.error_code or "ERP operation rejected")
+        raise DotMacERPError(
+            result.error_code or "ERP operation rejected", diagnostic=result.diagnostic
+        )
 
     def post(
         self,
@@ -246,6 +251,21 @@ class ErpCapabilityClient:
             trigger=OperationTrigger.interactive,
             correlation_id="erp-regulatory:ncc-staff",
         )
+
+    def get_staff_access_projection(
+        self,
+        *,
+        entity: Literal["leave_restriction", "account_status"],
+        limit: int = 500,
+    ) -> ErpStaffAccessProjectionPage:
+        response = self._execute(
+            ERP_STAFF_ACCESS_RECONCILE_CAPABILITY,
+            "read_staff_access_projection",
+            {"entity": entity, "limit": limit},
+            trigger=OperationTrigger.reconcile,
+            correlation_id=f"erp-staff-access:{entity}",
+        )
+        return ErpStaffAccessProjectionPage.model_validate(response)
 
     def get_attendance_today(self, subject: str, request_id: str) -> dict:
         return self._execute(

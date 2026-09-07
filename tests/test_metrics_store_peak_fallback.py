@@ -167,3 +167,19 @@ def test_reads_target_ingested_aggregate_series():
     instant_queries.clear()
     _run(store.get_current_bandwidth("sub-1"))
     assert all("_avg" in q for q in instant_queries)
+
+
+def test_current_observation_distinguishes_idle_zero_from_missing_series():
+    store = MetricsStore(base_url="http://vm.test")
+
+    async def idle_instant(_query):
+        return [{"value": [1_725_000_000, "0"]}]
+
+    store.get_instant = idle_instant  # type: ignore[assignment]
+
+    observation = _run(store.get_current_bandwidth_observation("sub-1"))
+
+    assert observation.has_sample is True
+    assert observation.rx_bps == 0
+    assert observation.tx_bps == 0
+    assert observation.observed_at is not None

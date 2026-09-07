@@ -4,11 +4,13 @@ import os
 import secrets
 import warnings
 from contextlib import asynccontextmanager
+from html import escape
 from http.cookies import SimpleCookie
 from importlib import import_module
 from threading import Lock
 from time import monotonic
 from typing import TypedDict
+from urllib.parse import urlparse
 from uuid import UUID
 
 warnings.filterwarnings(
@@ -986,6 +988,25 @@ def _web_auth_refresh_candidate(request: Request) -> bool:
     return any(path.startswith(prefix) for prefix in _WEB_AUTH_REFRESH_PATHS)
 
 
+def _csrf_safe_return_url(request: Request) -> str | None:
+    referer = str(request.headers.get("referer") or "").strip()
+    if not referer:
+        return None
+
+    parsed = urlparse(referer)
+    same_host = not parsed.netloc or parsed.netloc == request.url.netloc
+    same_scheme = not parsed.scheme or parsed.scheme == request.url.scheme
+    if not same_host or not same_scheme:
+        return None
+
+    referer_path = str(parsed.path or "").strip()
+    if not referer_path.startswith("/"):
+        return None
+    if parsed.query:
+        return f"{referer_path}?{parsed.query}"
+    return referer_path
+
+
 async def _terminated_request_response(
     request: Request, method: str, path: str
 ) -> Response:
@@ -1147,6 +1168,7 @@ async def csrf_middleware(request: Request, call_next):
         from fastapi.responses import HTMLResponse
 
         def _csrf_forbidden(reason: str) -> HTMLResponse:
+            return_url = _csrf_safe_return_url(request)
             logger.warning(
                 "CSRF validation failed for %s %s: %s",
                 method,
@@ -1162,10 +1184,18 @@ async def csrf_middleware(request: Request, call_next):
 
                 env = Environment(loader=FileSystemLoader("templates"), autoescape=True)
                 template = env.get_template("errors/csrf.html")
-                content = template.render(request_id=request_id)
+                content = template.render(
+                    request_id=request_id,
+                    return_url=return_url,
+                )
                 return HTMLResponse(content=content, status_code=403)
             except Exception:
                 # Fallback to simple HTML if template rendering fails
+                refresh_control = (
+                    f'<a href="{escape(return_url, quote=True)}" style="margin-top:16px;padding:12px 24px;background:#2563eb;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:600;text-decoration:none;display:inline-block">Refresh Page</a>'
+                    if return_url
+                    else '<button onclick="location.reload()" style="margin-top:16px;padding:12px 24px;background:#2563eb;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:600">Refresh Page</button>'
+                )
                 return HTMLResponse(
                     content=f"""<!DOCTYPE html>
 <html><head><title>Session Expired</title></head>
@@ -1174,7 +1204,7 @@ async def csrf_middleware(request: Request, call_next):
 <h1 style="color:#1e293b">Session Expired</h1>
 <p style="color:#64748b">Your session has expired or the security token is invalid. Please refresh the page and try again.</p>
 <p style="color:#94a3b8;font-size:12px">Reference: {request_id}</p>
-<button onclick="location.reload()" style="margin-top:16px;padding:12px 24px;background:#2563eb;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:600">Refresh Page</button>
+{refresh_control}
 </div></body></html>""",
                     status_code=403,
                 )

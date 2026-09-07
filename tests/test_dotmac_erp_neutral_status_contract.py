@@ -7,7 +7,10 @@ import httpx
 import pytest
 
 from app.services.dotmac_erp.client import DotMacERPClient
-from app.services.integrations.backoffice_contracts import ERP_STATUS_CAPABILITY
+from app.services.integrations.backoffice_contracts import (
+    ERP_STAFF_ACCESS_RECONCILE_CAPABILITY,
+    ERP_STATUS_CAPABILITY,
+)
 from app.services.integrations.connectors.dotmac_erp import DotmacErpRunner
 from app.services.integrations.erp_capability import ErpCapabilityClient
 
@@ -95,3 +98,26 @@ def test_regulatory_client_uses_only_neutral_sub_routes() -> None:
         "/api/v1/sync/sub/ncc/financials",
         "/api/v1/sync/sub/ncc/staff-headcount",
     ]
+
+
+def test_staff_access_reconcile_uses_typed_neutral_projection_route() -> None:
+    client = MagicMock(spec=DotMacERPClient)
+    client.get_staff_access_projection.return_value = {
+        "contract_version": "staff.access.projection.v1",
+        "entity": "account_status",
+        "items": [],
+    }
+
+    result = DotmacErpRunner(client_override=client)._execute_action(
+        client,
+        capability_id=ERP_STAFF_ACCESS_RECONCILE_CAPABILITY,
+        action="read_staff_access_projection",
+        params={"entity": "account_status", "limit": 500},
+        idempotency_key="staff-access-reconcile",
+    )
+
+    assert result["contract_version"] == "staff.access.projection.v1"
+    client.get_staff_access_projection.assert_called_once_with(
+        entity="account_status",
+        limit=500,
+    )

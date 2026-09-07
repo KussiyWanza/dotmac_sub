@@ -25,6 +25,11 @@ def test_admin_router_uses_staff_gate_not_bare_auth():
     assert require_web_auth not in calls
 
 
+def test_admin_router_has_session_refresh_probe():
+    paths = {getattr(route, "path", "") for route in admin_router.routes}
+    assert "/admin/session/refresh" in paths
+
+
 def test_staff_gate_rejects_subscriber():
     with pytest.raises(HTTPException) as exc:
         require_admin_web_auth({"principal_type": "subscriber", "principal_id": "p"})

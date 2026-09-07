@@ -5,6 +5,65 @@ from uuid import uuid4
 from playwright.sync_api import expect
 
 
+def test_admin_project_customer_typeahead_selects_and_clears(admin_page, settings):
+    customer_id = str(uuid4())
+    requests: list[str] = []
+
+    def fulfill_customer_search(route):
+        requests.append(route.request.url)
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=(
+                '{"items":[{"id":"'
+                + customer_id
+                + '","label":"Acme Fiber · ACC-420 · ops@acme.test",'
+                '"email":"ops@acme.test","account_number":"ACC-420",'
+                '"subscriber_number":"SUB-420"}],"count":1,"limit":20,'
+                '"offset":0}'
+            ),
+        )
+
+    admin_page.route("**/admin/projects/customers/search?**", fulfill_customer_search)
+    admin_page.goto(
+        f"{settings.base_url}/admin/projects/new",
+        wait_until="domcontentloaded",
+    )
+
+    customer_search = admin_page.get_by_label("Customer", exact=True)
+    customer_search.fill("Acme Fiber")
+    expect(
+        admin_page.get_by_role("option", name="Acme Fiber · ACC-420 · ops@acme.test")
+    ).to_be_visible()
+    assert len(requests) == 1
+
+    admin_page.get_by_role(
+        "option", name="Acme Fiber · ACC-420 · ops@acme.test"
+    ).click()
+    selected_id = admin_page.locator('input[name="subscriber_id"]')
+    expect(selected_id).to_have_value(customer_id)
+
+    admin_page.get_by_role("button", name="Clear").click()
+    expect(customer_search).to_have_value("")
+    expect(selected_id).to_have_value("")
+
+    customer_search.fill("Unselected customer")
+    validation = customer_search.evaluate(
+        """input => {
+            const allowed = input.form.dispatchEvent(
+                new Event("submit", {bubbles: true, cancelable: true})
+            );
+            return {allowed, message: input.validationMessage};
+        }"""
+    )
+    assert validation == {
+        "allowed": False,
+        "message": (
+            "Select a customer from the search results or clear the search field."
+        ),
+    }
+
+
 def test_admin_project_template_dependency_journey(admin_page, settings):
     template_name = f"E2E project template {uuid4().hex[:8]}"
 

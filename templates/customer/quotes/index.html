@@ -6,10 +6,15 @@
 <div class="space-y-8">
     <div>
         <h1 class="text-3xl font-display font-bold text-stone-900 dark:text-white">Installation Quotes</h1>
-        <p class="mt-1 text-base text-stone-500 dark:text-stone-400">Feasibility, estimate, and deposit for your requested installations. Request a new quote and pay the deposit in the mobile app.</p>
+        <p class="mt-1 text-base text-stone-500 dark:text-stone-400">Feasibility, estimate, and deposit for your requested installations. {% if quote_read_state != "retired" %}Request a new quote and pay the deposit in the mobile app.{% endif %}</p>
     </div>
 
-    {% if quote_read_state == 'unavailable' %}
+    {% if quote_read_state == 'retired' %}
+    <div data-testid="quotes-source-retired" role="status" class="rounded-2xl border border-amber-200 bg-amber-50 p-5 text-amber-900 dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-100">
+        <h2 class="text-sm font-semibold">Historical quote information</h2>
+        <p class="mt-1 text-sm">These saved quotes are no longer updated. Online requests and acceptance for these quotes are unavailable. Contact support to continue.</p>
+    </div>
+    {% elif quote_read_state == 'unavailable' %}
     <div data-testid="quotes-source-unavailable" class="rounded-2xl border border-amber-200 bg-amber-50 p-5 text-amber-900 dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-100">
         <h2 class="text-sm font-semibold">Quotes are temporarily unavailable</h2>
         <p class="mt-1 text-sm">The quote service could not be reached. No quote state has been inferred or changed; please try again later.</p>
@@ -67,7 +72,7 @@
                     </dd>
                 </div>
                 {% endif %}
-                {% if q.status == 'accepted' and q.project_id %}
+                {% if quote_read_state != 'retired' and q.status == 'accepted' and q.project_id %}
                 <div class="sm:col-span-2">
                     <dd class="text-sm text-emerald-700 dark:text-emerald-400">Installation booked — track progress under Installations.</dd>
                 </div>
@@ -76,7 +81,7 @@
         </div>
         {% endfor %}
     </div>
-    {% elif quote_read_state != 'unavailable' %}
+    {% elif quote_read_state not in ('unavailable', 'retired') %}
     <div class="rounded-2xl border border-stone-200 bg-white px-6 py-12 text-center shadow-premium dark:border-stone-700 dark:bg-stone-800">
         <p class="text-sm text-stone-500 dark:text-stone-400">No quotes yet. Open the mobile app and pin your installation address to get an instant feasibility check and estimate.</p>
     </div>

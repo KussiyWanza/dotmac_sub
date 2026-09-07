@@ -58,6 +58,7 @@ CURRENT_INTEGRATION_SERVICES = (
     "integration.backoffice_adapter",
     "integration.workforce_attendance_adapter",
     "integration.dotmac_erp_operational_context_adapter",
+    "integration.procurement_purchase_order_cutover",
     "integration.dotmac_erp_payables_adapter",
     "integration.dotmac_erp_material_support_adapter",
 )

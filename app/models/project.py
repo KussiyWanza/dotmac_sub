@@ -50,6 +50,7 @@ from sqlalchemy.ext.mutable import MutableDict
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
+from app.models.infrastructure import InfrastructureType
 
 
 class ProjectStatus(enum.Enum):
@@ -251,6 +252,72 @@ class Project(Base):
     tasks = relationship("ProjectTask", back_populates="project")
     comments = relationship("ProjectComment", back_populates="project")
     work_orders = relationship("WorkOrder", back_populates="project")
+    infrastructure: Mapped["ProjectInfrastructure | None"] = relationship(
+        cascade="all, delete-orphan", single_parent=True, lazy="selectin"
+    )
+
+
+class ProjectInfrastructure(Base):
+    """One optional project target, with real FKs to each native inventory owner."""
+
+    __tablename__ = "project_infrastructure"
+    __table_args__ = (
+        CheckConstraint(
+            " + ".join(
+                f"CASE WHEN {kind.value}_id IS NOT NULL THEN 1 ELSE 0 END"
+                for kind in InfrastructureType
+            )
+            + " = 1",
+            name="ck_project_infrastructure_one_target",
+        ),
+    )
+
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    location_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("pop_sites.id", ondelete="RESTRICT")
+    )
+    nas_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("nas_devices.id", ondelete="RESTRICT")
+    )
+    access_point_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("network_devices.id", ondelete="RESTRICT")
+    )
+    base_station_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("pop_sites.id", ondelete="RESTRICT")
+    )
+    olt_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("olt_devices.id", ondelete="RESTRICT")
+    )
+    pon_port_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("pon_ports.id", ondelete="RESTRICT")
+    )
+    cabinet_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("fdh_cabinets.id", ondelete="RESTRICT")
+    )
+
+    @property
+    def targets(self) -> tuple[tuple[InfrastructureType, uuid.UUID | None], ...]:
+        return (
+            (InfrastructureType.location, self.location_id),
+            (InfrastructureType.nas, self.nas_id),
+            (InfrastructureType.access_point, self.access_point_id),
+            (InfrastructureType.base_station, self.base_station_id),
+            (InfrastructureType.olt, self.olt_id),
+            (InfrastructureType.pon_port, self.pon_port_id),
+            (InfrastructureType.cabinet, self.cabinet_id),
+        )
+
+    @property
+    def type(self) -> InfrastructureType:
+        return next(kind for kind, target in self.targets if target is not None)
+
+    @property
+    def id(self) -> uuid.UUID:
+        return next(target for _, target in self.targets if target is not None)
 
 
 class ProjectTask(Base):

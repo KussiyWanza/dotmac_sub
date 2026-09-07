@@ -5,12 +5,7 @@ Provides endpoints for bandwidth time series data, real-time streaming,
 and usage statistics. Supports both admin and customer portal access.
 """
 
-import asyncio
-import json
-import logging
-import os
-import time
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 from typing import Any, cast
 from uuid import UUID
 
@@ -21,24 +16,25 @@ from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
 
 from app.api.deps import get_current_user, get_db
-from app.models.catalog import Subscription
+from app.db import finish_read_transaction
 from app.services.bandwidth import (
     add_directions_to_series,
     bandwidth_samples,
-    live_event_payload,
 )
-from app.services.db_session_adapter import db_session_adapter
-from app.services.metrics_store import get_metrics_store
-from app.services.nas import get_mikrotik_pppoe_live_bandwidth
-
-# The MikroTik poller skips devices with no live viewer when running in
-# on_demand mode. Each SSE tick refreshes this subscription's score so the
-# poller knows someone is watching.
-_ACTIVE_VIEWERS_KEY = os.getenv(
-    "BANDWIDTH_ACTIVE_VIEWERS_KEY", "active:bandwidth:viewers"
+from app.services.network.live_bandwidth_observations import (
+    LiveBandwidthAccess,
+    LiveBandwidthAccessDenied,
+    LiveBandwidthConfigurationError,
+    LiveBandwidthCoordinationUnavailable,
+    LiveBandwidthNotFound,
+    LiveBandwidthProbeBusy,
+    LiveBandwidthProbeObservation,
+    LiveBandwidthReadQuery,
+    LiveBandwidthStreamQuery,
+    authorize_live_bandwidth_read,
+    live_bandwidth_events,
+    probe_live_bandwidth,
 )
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/bandwidth", tags=["bandwidth"])
 
@@ -147,36 +143,35 @@ def get_bandwidth_stats(
     return BandwidthStats(**stats)
 
 
-@router.get("/mikrotik-live/{subscription_id}")
+@router.get(
+    "/mikrotik-live/{subscription_id}",
+    # Preserve the legacy OpenAPI surface while returning a typed, minimized
+    # service outcome. A separately reviewed API-contract change can expose the
+    # schema later.
+    response_model=None,
+)
 def get_mikrotik_live_bandwidth(
     subscription_id: UUID,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
-):
-    """Read live PPPoE bandwidth directly from the subscription's MikroTik NAS."""
-    bandwidth_samples.check_subscription_access(db, subscription_id, current_user)
-    subscription = db.get(Subscription, subscription_id)
-    if not subscription:
-        raise HTTPException(status_code=404, detail="Subscription not found")
-    nas_device = subscription.provisioning_nas_device
-    if not nas_device:
-        raise HTTPException(
-            status_code=400, detail="Subscription has no provisioning NAS device"
-        )
-    login = subscription.login or ""
-
-    # Release the pooled DB connection BEFORE the blocking RouterOS network call.
-    # get_mikrotik_pppoe_live_bandwidth() opens a live API session to the customer's
-    # MikroTik and can block for minutes on an unreachable/slow router; holding the
-    # request-scoped session across it leaves a connection idle-in-transaction and
-    # starves the pool under aggressive polling. Mirror the /live SSE endpoint below.
-    # The RouterOS call only reads already-loaded plain columns off the NAS device
-    # (_mikrotik_routeros_auth + id/name), so detaching it is safe.
-    db.expunge(nas_device)
-    db.rollback()
-    db.close()
-
-    return get_mikrotik_pppoe_live_bandwidth(nas_device, login=login)
+    current_user: dict[str, object] = Depends(get_current_user),
+) -> LiveBandwidthProbeObservation:
+    """Run one rate-limited, PII-minimized direct RouterOS diagnostic."""
+    query = LiveBandwidthReadQuery(
+        subscription_id=subscription_id,
+        access=LiveBandwidthAccess.from_principal(current_user),
+    )
+    try:
+        return probe_live_bandwidth(db, query)
+    except LiveBandwidthNotFound as exc:
+        raise HTTPException(status_code=404, detail=exc.code) from exc
+    except LiveBandwidthAccessDenied as exc:
+        raise HTTPException(status_code=403, detail=exc.code) from exc
+    except LiveBandwidthConfigurationError as exc:
+        raise HTTPException(status_code=400, detail=exc.code) from exc
+    except LiveBandwidthProbeBusy as exc:
+        raise HTTPException(status_code=429, detail=exc.code) from exc
+    except LiveBandwidthCoordinationUnavailable as exc:
+        raise HTTPException(status_code=503, detail=exc.code) from exc
 
 
 @router.get("/live/{subscription_id}")
@@ -184,104 +179,34 @@ def get_live_bandwidth(
     subscription_id: UUID,
     request: Request,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
-):
+    current_user: dict[str, object] = Depends(get_current_user),
+) -> EventSourceResponse:
     """
     Server-Sent Events stream for real-time bandwidth updates.
 
     Sends bandwidth updates approximately every second.
     """
-    bandwidth_samples.check_subscription_access(db, subscription_id, current_user)
+    query = LiveBandwidthReadQuery(
+        subscription_id=subscription_id,
+        access=LiveBandwidthAccess.from_principal(current_user),
+    )
+    try:
+        authorize_live_bandwidth_read(db, query)
+    except LiveBandwidthNotFound as exc:
+        raise HTTPException(status_code=404, detail=exc.code) from exc
+    except LiveBandwidthAccessDenied as exc:
+        raise HTTPException(status_code=403, detail=exc.code) from exc
     # Streaming responses outlive the route function. Release the request-scoped
     # session before the SSE loop starts so a live viewer does not hold a pooled
     # DB connection idle in transaction for the lifetime of the stream.
-    db.rollback()
+    finish_read_transaction(db)
     db.close()
 
-    async def event_generator():
-        metrics_store = get_metrics_store()
-        redis_client = None
-        redis_url = os.getenv("REDIS_URL")
-        if redis_url:
-            try:
-                import redis.asyncio as aioredis
-
-                redis_client = aioredis.from_url(redis_url)
-            except Exception as exc:
-                logger.debug("active viewer redis init failed: %s", exc)
-                redis_client = None
-
-        try:
-            while True:
-                # Check if client disconnected
-                if await request.is_disconnected():
-                    break
-
-                # Signal the bandwidth poller that this subscription has a live
-                # viewer. ZADD overwrites the score, so each tick refreshes the
-                # TTL window; the poller treats memberships older than its TTL
-                # as gone.
-                if redis_client is not None:
-                    try:
-                        await redis_client.zadd(
-                            _ACTIVE_VIEWERS_KEY,
-                            {str(subscription_id): time.time()},
-                        )
-                    except Exception as exc:
-                        logger.debug("active viewer heartbeat failed: %s", exc)
-
-                current = {"rx_bps": 0.0, "tx_bps": 0.0}
-                try:
-                    # Primary source: VictoriaMetrics
-                    current = await metrics_store.get_current_bandwidth(
-                        str(subscription_id)
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "Live bandwidth metrics query failed for %s: %s",
-                        subscription_id,
-                        e,
-                    )
-
-                try:
-                    # Fallback source: latest PostgreSQL sample (recent only)
-                    if current.get("rx_bps", 0) <= 0 and current.get("tx_bps", 0) <= 0:
-                        cutoff = datetime.now(UTC) - timedelta(minutes=2)
-                        with db_session_adapter.read_session() as sse_db:
-                            latest_sample = bandwidth_samples.get_latest_recent_sample(
-                                sse_db, subscription_id, cutoff
-                            )
-                            if latest_sample:
-                                current = {
-                                    "rx_bps": float(latest_sample.rx_bps or 0),
-                                    "tx_bps": float(latest_sample.tx_bps or 0),
-                                }
-                except Exception as e:
-                    logger.warning(
-                        "Live bandwidth DB fallback failed for %s: %s",
-                        subscription_id,
-                        e,
-                    )
-
-                yield {
-                    "event": "bandwidth",
-                    "data": json.dumps(live_event_payload(current, datetime.now(UTC))),
-                }
-
-                await asyncio.sleep(1)
-        finally:
-            if redis_client is not None:
-                try:
-                    # Drop our viewer membership immediately on disconnect so
-                    # the poller stops within one cycle rather than waiting
-                    # for the TTL to expire.
-                    await redis_client.zrem(_ACTIVE_VIEWERS_KEY, str(subscription_id))
-                    await redis_client.aclose()
-                except Exception as exc:
-                    logger.debug("active viewer cleanup failed: %s", exc)
-
     return EventSourceResponse(
-        event_generator(),
+        live_bandwidth_events(
+            LiveBandwidthStreamQuery(subscription_id=subscription_id),
+            is_disconnected=request.is_disconnected,
+        ),
         headers={
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",

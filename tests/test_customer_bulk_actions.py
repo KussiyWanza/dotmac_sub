@@ -248,7 +248,7 @@ def test_bulk_update_customers_requires_explicit_filtered_scope_preview_and_conf
     assert result["updated_count"] == 1
     assert matched.is_active is False
     assert matched.billing_enabled is False
-    assert matched.payment_method == "bank_transfer"
+    assert matched.payment_method == "transfer"
     assert other.is_active is True
     assert other.billing_enabled is True
 

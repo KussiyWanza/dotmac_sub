@@ -248,6 +248,7 @@ def _dotmac_crm_manifest(
     *,
     version: str,
     include_chat_session: bool,
+    include_quote_command: bool = True,
 ) -> ConnectorManifest:
     """Build the current CRM manifest and its bounded pre-chat predecessor."""
 
@@ -300,6 +301,12 @@ def _dotmac_crm_manifest(
             ),
         )
     )
+    if not include_quote_command:
+        capabilities = [
+            capability
+            for capability in capabilities
+            if capability.id != "crm.quote_command.v1"
+        ]
     properties: dict[str, dict[str, object]] = {
         "base_url": {"type": "string"},
         "timeout_seconds": {"type": "number"},
@@ -725,8 +732,9 @@ _DEFINITIONS: tuple[ConnectorManifest, ...] = (
         health=HealthManifest(operation="connection.validate.v1"),
     ),
     _dotmac_crm_manifest(
-        version="1.2.0",
+        version="1.3.0",
         include_chat_session=False,
+        include_quote_command=False,
     ),
     _whatsapp_manifest(
         version="1.1.0",
@@ -870,6 +878,7 @@ _HISTORICAL_DEFINITIONS: tuple[ConnectorManifest, ...] = (
     _dotmac_erp_manifest(version="1.0.0", include_workforce_attendance=False),
     # CRM 1.0.0 predates the temporary chat-session capability. It remains
     # executable because a deployed pin is an immutable compatibility fact.
+    _dotmac_crm_manifest(version="1.2.0", include_chat_session=False),
     _dotmac_crm_manifest(version="1.0.0", include_chat_session=False),
     # CRM 1.1.0 is the ONLY manifest that ever declared `crm.chat_session.v1`
     # (ADR 0006, retired 2026-08-30 with the CRM itself). 1.2.0 drops the

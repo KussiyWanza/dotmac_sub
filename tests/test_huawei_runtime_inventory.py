@@ -97,7 +97,7 @@ def test_registered_inventory_uses_explicit_profile_scoped_ports(monkeypatch) ->
     assert ok is True
     assert message == "Found 3 registered ONTs on 1 ports"
     assert len(entries) == 3
-    assert sent == [("display ont info summary 0/2/1", 30)]
+    assert sent == [("display ont info 0 2 1 all", 30)]
 
 
 def test_registered_inventory_rejects_cli_errors(monkeypatch) -> None:

@@ -303,6 +303,8 @@ class MyQuotesResponse(BaseModel):
     quotes: list[QuoteItem] = Field(default_factory=list)
     total: int = 0
     open: int = 0
+    source_state: Literal["native", "retired"]
+    actions_available: bool
 
 
 class QuoteDepositInitiateRequest(BaseModel):

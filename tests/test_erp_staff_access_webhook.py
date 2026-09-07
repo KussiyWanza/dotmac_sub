@@ -12,6 +12,7 @@ from fastapi import HTTPException
 from sqlalchemy import text
 
 from app.api import erp_staff_access_webhooks
+from app.schemas.erp_staff_access_webhook import ERP_STAFF_ACCESS_WEBHOOK_ADAPTER
 from app.services.integrations.backoffice_contracts import (
     ERP_STAFF_ACCESS_WEBHOOK_CAPABILITY,
 )
@@ -34,20 +35,36 @@ class _Request:
 def _leave_payload(user_id: UUID) -> bytes:
     return json.dumps(
         {
-            "event_type": "staff.leave_restriction.v1",
-            "leave_restriction": {
-                "event_id": "leave-event-1",
-                "restriction_id": "leave-1",
-                "erp_employee_id": "employee-1",
-                "system_user_id": str(user_id),
-                "effective_from": "2026-01-10T00:00:00Z",
-                "effective_until": "2026-01-15T00:00:00Z",
-                "status": "active",
-                "version": 1,
-                "updated_at": "2026-01-10T09:00:00Z",
+            "contract_version": "staff.leave_restriction.v1",
+            "event_type": "hr.staff_leave_restriction.changed",
+            "restriction_id": "0d3c9255-37c2-49b3-9236-afd48544c244",
+            "organization_id": "a64f60ea-ce11-4609-b2dc-dc35152cdfd5",
+            "employee_id": "dc8148ac-b5d5-43c2-a09d-f342b8204948",
+            "person_id": "40a71f76-77f3-42a5-9721-c4db0db8cc71",
+            "selfcare_user_id": str(user_id),
+            "source": {
+                "type": "leave_application",
+                "id": "707ba800-00b9-4d2a-96a8-4ff5a523c822",
+                "status": "APPROVED",
             },
+            "organization_timezone": "Africa/Lagos",
+            "effective_from": "2026-01-10",
+            "effective_until": "2026-01-15",
+            "status": "ACTIVE",
+            "version": 1,
+            "updated_at": "2026-01-10T09:00:00Z",
+            "cancelled_at": None,
+            "cancellation_reason": None,
         }
     ).encode()
+
+
+def test_staff_leave_contract_rejects_unknown_organization_timezone() -> None:
+    payload = json.loads(_leave_payload(uuid4()))
+    payload["organization_timezone"] = "Not/AZone"
+
+    with pytest.raises(ValueError, match="valid IANA timezone"):
+        ERP_STAFF_ACCESS_WEBHOOK_ADAPTER.validate_python(payload)
 
 
 def test_staff_access_webhook_rejects_invalid_signature_before_claim(
@@ -110,8 +127,8 @@ def test_processed_staff_access_delivery_replays_without_second_owner_command(
         lambda *_args, **_kwargs: (
             SimpleNamespace(
                 consequence_json={
-                    "event_id": "leave-event-1",
-                    "event_type": "staff.leave_restriction.v1",
+                    "event_id": "already-processed",
+                    "event_type": "hr.staff_leave_restriction.changed",
                     "applied": True,
                     "status": "active",
                 }
@@ -137,8 +154,8 @@ def test_processed_staff_access_delivery_replays_without_second_owner_command(
         )
     )
 
-    assert receipt.event_id == "leave-event-1"
-    assert receipt.event_type == "staff.leave_restriction.v1"
+    assert receipt.event_id == "already-processed"
+    assert receipt.event_type == "hr.staff_leave_restriction.changed"
     assert receipt.applied is True
     assert receipt.replayed is True
 
@@ -186,6 +203,9 @@ def test_staff_access_webhook_enters_owner_command_after_inbox_commit(
     def apply_leave(db, command):
         assert not db.in_transaction()
         assert command.delivery_id == "stable-delivery"
+        assert command.event.event_id == "stable-delivery"
+        assert command.event.effective_from.isoformat() == "2026-01-09T23:00:00+00:00"
+        assert command.event.effective_until.isoformat() == "2026-01-15T23:00:00+00:00"
         return SimpleNamespace(
             event_id=command.event.event_id,
             applied=True,
@@ -224,8 +244,8 @@ def test_staff_access_webhook_enters_owner_command_after_inbox_commit(
     assert receipt.replayed is False
     assert completed == [
         {
-            "event_id": "leave-event-1",
-            "event_type": "staff.leave_restriction.v1",
+            "event_id": "stable-delivery",
+            "event_type": "hr.staff_leave_restriction.changed",
             "applied": True,
             "status": "active",
         }

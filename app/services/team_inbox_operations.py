@@ -1108,14 +1108,19 @@ def set_satisfaction(
         raise InboxOperationError("Rating must be between 1 and 5.")
     if conversation.status != "resolved":
         raise InboxOperationError("Only resolved conversations can be rated.")
-    metadata = dict(conversation.metadata_ or {})
-    metadata["csat"] = {
-        "rating": clean_rating,
-        "comment": str(comment or "").strip() or None,
-        "actor": str(actor or "").strip() or None,
-        "rated_at": datetime.now(UTC).isoformat(),
-    }
-    conversation.metadata_ = metadata
+    from app.services import support_csat
+
+    try:
+        support_csat.submit_inbox_rating(
+            db,
+            conversation,
+            rating=clean_rating,
+            comment=comment,
+            submitted_by=str(actor or "").strip() or None,
+            channel="chat_widget",
+        )
+    except support_csat.SupportCsatError as exc:
+        raise InboxOperationError(exc.message) from exc
     db.flush()
     return conversation
 

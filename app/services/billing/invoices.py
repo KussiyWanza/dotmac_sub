@@ -29,6 +29,7 @@ from app.models.billing import (
     LedgerEntryType,
     LedgerSource,
     TaxApplication,
+    TaxRate,
 )
 from app.models.domain_settings import SettingDomain
 from app.models.idempotency import IdempotencyKey
@@ -220,6 +221,24 @@ class DraftInvoiceParticipantError(ValueError):
     def __init__(self, reason: str, message: str) -> None:
         super().__init__(message)
         self.reason = reason
+
+
+def _apply_invoice_line_tax_snapshot(
+    line: InvoiceLine,
+    tax_rate: TaxRate | None,
+) -> None:
+    """Copy mutable tax configuration onto the invoice line being authored."""
+
+    if tax_rate is None:
+        line.tax_rate_snapshot_version = None
+        line.tax_rate_code_snapshot = None
+        line.tax_rate_percent_snapshot = None
+        line.tax_rate_is_active_snapshot = None
+        return
+    line.tax_rate_snapshot_version = 1
+    line.tax_rate_code_snapshot = tax_rate.code
+    line.tax_rate_percent_snapshot = tax_rate.rate
+    line.tax_rate_is_active_snapshot = tax_rate.is_active
 
 
 def _evidence_utc(value: datetime | None) -> datetime | None:
@@ -2990,7 +3009,7 @@ class InvoiceLines(ListResponseMixin):
                     "line_not_found",
                     "Invoice line belongs to another invoice",
                 )
-            _resolve_tax_rate(
+            tax_rate = _resolve_tax_rate(
                 db,
                 str(payload.tax_rate_id) if payload.tax_rate_id else None,
             )
@@ -3001,21 +3020,24 @@ class InvoiceLines(ListResponseMixin):
             )
             if replacement.line_id is None:
                 data = payload.model_dump(exclude={"amount"})
-                db.add(InvoiceLine(**data, amount=amount))
+                line = InvoiceLine(**data, amount=amount)
+                _apply_invoice_line_tax_snapshot(line, tax_rate)
+                db.add(line)
                 continue
-            line = existing.get(replacement.line_id)
-            if line is None:
+            existing_line = existing.get(replacement.line_id)
+            if existing_line is None:
                 raise DraftInvoiceParticipantError(
                     "line_not_found",
                     "Invoice line not found",
                 )
-            seen.add(line.id)
-            line.description = payload.description
-            line.quantity = payload.quantity
-            line.unit_price = payload.unit_price
-            line.amount = amount
-            line.tax_rate_id = payload.tax_rate_id
-            line.tax_application = payload.tax_application
+            seen.add(existing_line.id)
+            existing_line.description = payload.description
+            existing_line.quantity = payload.quantity
+            existing_line.unit_price = payload.unit_price
+            existing_line.amount = amount
+            existing_line.tax_rate_id = payload.tax_rate_id
+            existing_line.tax_application = payload.tax_application
+            _apply_invoice_line_tax_snapshot(existing_line, tax_rate)
         for line_id, line in existing.items():
             if line_id not in seen:
                 line.is_active = False
@@ -3038,7 +3060,9 @@ class InvoiceLines(ListResponseMixin):
                 status_code=409,
                 detail="System lines may be added only to draft or issued invoices",
             )
-        _resolve_tax_rate(db, str(payload.tax_rate_id) if payload.tax_rate_id else None)
+        tax_rate = _resolve_tax_rate(
+            db, str(payload.tax_rate_id) if payload.tax_rate_id else None
+        )
         amount = round_money(
             payload.amount
             if payload.amount is not None
@@ -3061,6 +3085,12 @@ class InvoiceLines(ListResponseMixin):
                     "unit_price": payload.unit_price,
                     "amount": amount,
                     "tax_rate_id": payload.tax_rate_id,
+                    "tax_rate_snapshot_version": 1 if tax_rate else None,
+                    "tax_rate_code_snapshot": tax_rate.code if tax_rate else None,
+                    "tax_rate_percent_snapshot": tax_rate.rate if tax_rate else None,
+                    "tax_rate_is_active_snapshot": (
+                        tax_rate.is_active if tax_rate else None
+                    ),
                     "tax_application": payload.tax_application,
                     "metadata_": payload.metadata_,
                 }
@@ -3083,6 +3113,7 @@ class InvoiceLines(ListResponseMixin):
             amount=amount,
             billing_line_key=billing_line_key,
         )
+        _apply_invoice_line_tax_snapshot(line, tax_rate)
         db.add(line)
         db.flush()
         AuditEvents.stage(
@@ -3141,7 +3172,9 @@ class InvoiceLines(ListResponseMixin):
                 status_code=409,
                 detail="Change Invoice lines and its discount together from Edit Invoice",
             )
-        _resolve_tax_rate(db, str(payload.tax_rate_id) if payload.tax_rate_id else None)
+        tax_rate = _resolve_tax_rate(
+            db, str(payload.tax_rate_id) if payload.tax_rate_id else None
+        )
         data = payload.model_dump(exclude={"amount"})
         fields_set = payload.model_fields_set
         if "tax_application" not in fields_set:
@@ -3156,6 +3189,7 @@ class InvoiceLines(ListResponseMixin):
             payload.quantity, payload.unit_price, payload.amount
         )
         line = InvoiceLine(**data, amount=amount)
+        _apply_invoice_line_tax_snapshot(line, tax_rate)
         try:
             db.add(line)
             db.flush()
@@ -3218,7 +3252,7 @@ class InvoiceLines(ListResponseMixin):
             )
         data = payload.model_dump(exclude_unset=True)
         if "tax_rate_id" in data:
-            _resolve_tax_rate(
+            tax_rate = _resolve_tax_rate(
                 db, str(data["tax_rate_id"]) if data["tax_rate_id"] else None
             )
         quantity = data.get("quantity", line.quantity)
@@ -3227,6 +3261,8 @@ class InvoiceLines(ListResponseMixin):
         data["amount"] = _validate_invoice_line_amount(quantity, unit_price, amount)
         for key, value in data.items():
             setattr(line, key, value)
+        if "tax_rate_id" in data:
+            _apply_invoice_line_tax_snapshot(line, tax_rate)
         try:
             if invoice:
                 db.flush()

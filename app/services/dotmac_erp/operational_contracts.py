@@ -8,6 +8,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
+from app.services.integrations.diagnostics import OperationDiagnostic
+
 
 class _OperationalContract(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -120,4 +122,11 @@ class OperationalSyncRunOutcome(_OperationalContract):
     project_tasks: int = Field(ge=0)
     work_orders: int = Field(ge=0)
     errors: tuple[ErpOperationalSyncError, ...] = ()
-    skipped: Literal["capability_disabled"] | None = None
+    skipped: (
+        Literal["capability_disabled", "already_running", "retry_not_due"] | None
+    ) = None
+    status: Literal[
+        "success", "blocked", "retryable", "already_running", "disabled"
+    ] = "success"
+    next_attempt_at: datetime | None = None
+    diagnostic: OperationDiagnostic | None = None

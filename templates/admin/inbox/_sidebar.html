@@ -210,7 +210,7 @@
                         Needs attention <span class="tabular-nums">{{ assignment_counts.needs_attention }}</span>
                     </button>
                     <button type="submit" name="has_ticket" value="true"
-                            @click.prevent="navigateFilter({ has_ticket: 'true' })"
+                            @click.prevent="applyStatusFilter('ticket')"
                             class="min-h-10 min-w-24 flex-1 rounded-lg px-2 text-xs font-semibold transition-colors {% if has_ticket %}bg-white text-sky-700 shadow-sm dark:bg-slate-700 dark:text-sky-300{% else %}text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200{% endif %}">
                         Sent to ticket
                     </button>
@@ -267,23 +267,23 @@
                             class="flex min-h-10 min-w-24 flex-1 items-center justify-between gap-2 rounded-lg px-2.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500"
                             :class="assignmentFilterActive('agent') ? 'bg-white text-violet-700 shadow-sm dark:bg-slate-700 dark:text-violet-300' : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'"
                             :aria-expanded="byAgentOpen.toString()" aria-controls="inbox-by-agent-panel">
-                        <span>By Agent</span><span class="tabular-nums">{% if assigned_person_id and assigned_person_id != actor_person_id %}{{ count }}{% else %}—{% endif %}</span>
+                        <span>By Agent</span><span class="tabular-nums">{% if assigned_person_id and assigned_person_id != actor_person_id %}{{ count }}{% if not page_meta.total_is_exact %}+{% endif %}{% else %}—{% endif %}</span>
                     </button>
                 </div>
                 <div id="inbox-by-agent-panel" x-show="byAgentOpen" x-cloak class="mt-2 space-y-2 rounded-lg border border-slate-200/60 bg-slate-50 p-2.5 dark:border-slate-700/60 dark:bg-slate-900">
                     <label class="block">
                         <span class="sr-only">Agent</span>
-                        <select name="assigned_person_id" @change="$el.form.requestSubmit()" class="h-10 w-full rounded-lg border-slate-200 bg-white text-xs text-slate-700 focus:border-violet-500 focus:ring-violet-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
+                        <select name="assigned_person_id" @change="applyAssignmentFilter($el.value)" class="h-10 w-full rounded-lg border-slate-200 bg-white text-xs text-slate-700 focus:border-violet-500 focus:ring-violet-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
                             <option value="">Choose agent</option>
                             {% for agent in agent_options %}<option value="{{ agent.id }}" {% if agent.id|string == assigned_person_id %}selected{% endif %}>{{ agent.name }}</option>{% endfor %}
                         </select>
                     </label>
                     <div class="grid grid-cols-2 gap-2">
                         <label class="text-[11px] font-medium text-slate-500 dark:text-slate-400">From
-                            <input type="datetime-local" name="activity_from" value="{{ activity_from or '' }}" @change="$el.form.requestSubmit()" class="mt-1 h-10 w-full rounded-lg border-slate-200 bg-white text-xs text-slate-700 focus:border-violet-500 focus:ring-violet-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
+                            <input type="datetime-local" name="activity_from" value="{{ activity_from or '' }}" @change="navigateFilter({ activity_from: $el.value })" class="mt-1 h-10 w-full rounded-lg border-slate-200 bg-white text-xs text-slate-700 focus:border-violet-500 focus:ring-violet-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
                         </label>
                         <label class="text-[11px] font-medium text-slate-500 dark:text-slate-400">To
-                            <input type="datetime-local" name="activity_to" value="{{ activity_to or '' }}" @change="$el.form.requestSubmit()" class="mt-1 h-10 w-full rounded-lg border-slate-200 bg-white text-xs text-slate-700 focus:border-violet-500 focus:ring-violet-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
+                            <input type="datetime-local" name="activity_to" value="{{ activity_to or '' }}" @change="navigateFilter({ activity_to: $el.value })" class="mt-1 h-10 w-full rounded-lg border-slate-200 bg-white text-xs text-slate-700 focus:border-violet-500 focus:ring-violet-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
                         </label>
                     </div>
                 </div>
@@ -297,35 +297,35 @@
                 <fieldset class="border-t border-slate-200/70 p-2.5 dark:border-slate-700/70">
                 <legend class="sr-only">Attention</legend>
                 <div class="flex flex-wrap gap-1 rounded-xl bg-slate-100 p-1 dark:bg-slate-800/50">
-                    <label class="inline-flex min-h-10 min-w-20 flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-lg px-2 text-xs font-semibold {% if unread %}bg-white text-amber-700 shadow-sm dark:bg-slate-700 dark:text-amber-300{% else %}text-slate-500 dark:text-slate-400{% endif %}"><input type="checkbox" name="unread" value="true" {% if unread %}checked{% endif %} @change="$el.form.requestSubmit()" class="rounded border-slate-300 text-amber-500 focus:ring-amber-500">Unread</label>
+                    <label class="inline-flex min-h-10 min-w-20 flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-lg px-2 text-xs font-semibold {% if unread %}bg-white text-amber-700 shadow-sm dark:bg-slate-700 dark:text-amber-300{% else %}text-slate-500 dark:text-slate-400{% endif %}"><input type="checkbox" name="unread" value="true" {% if unread %}checked{% endif %} @change="navigateFilter({ unread: $el.checked ? 'true' : '' })" class="rounded border-slate-300 text-amber-500 focus:ring-amber-500">Unread</label>
                     <a href="/admin/inbox?open_only=true&amp;snoozed=true" class="inline-flex min-h-10 min-w-20 flex-1 items-center justify-center gap-1 rounded-lg px-2 text-xs font-semibold {% if snoozed %}bg-white text-violet-700 shadow-sm dark:bg-slate-700 dark:text-violet-300{% else %}text-slate-500 dark:text-slate-400{% endif %}">Snoozed <strong>{{ queue_metrics.snoozed_open }}</strong></a>
                     <a href="/admin/inbox?open_only=true&amp;muted=true" class="inline-flex min-h-10 min-w-20 flex-1 items-center justify-center gap-1 rounded-lg px-2 text-xs font-semibold {% if muted %}bg-white text-slate-700 shadow-sm dark:bg-slate-700 dark:text-slate-200{% else %}text-slate-500 dark:text-slate-400{% endif %}">Muted <strong>{{ queue_metrics.muted_open }}</strong></a>
                 </div>
                 </fieldset>
             </details>
 
-            <details hidden class="group rounded-lg border border-slate-200/70 bg-slate-50/70 dark:border-slate-700/70 dark:bg-slate-800/40">
+            <details open class="group rounded-lg border border-slate-200/70 bg-slate-50/70 dark:border-slate-700/70 dark:bg-slate-800/40">
                 <summary class="flex min-h-10 cursor-pointer list-none items-center justify-between px-3 text-xs font-semibold text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:text-slate-300">
                     <span>Routing</span><span class="text-slate-400 transition-transform group-open:rotate-90" aria-hidden="true">&rsaquo;</span>
                 </summary>
             <div class="space-y-2 border-t border-slate-200/70 p-2.5 dark:border-slate-700/70">
                 <label class="flex items-center gap-2 text-[11px] font-medium text-slate-500 dark:text-slate-400">
                     <span class="w-12 shrink-0">Channel</span>
-                    <select name="channel_type" @change="$el.form.requestSubmit()" data-inbox-channel="{{ channel_type }}" class="inbox-channel-filter h-10 min-w-0 flex-1 rounded-lg border-slate-200 bg-white text-xs text-slate-700 focus:border-amber-500 focus:ring-amber-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
+                    <select name="channel_type" @change="navigateFilter({ channel_type: $el.value })" data-inbox-channel="{{ channel_type }}" class="inbox-channel-filter h-10 min-w-0 flex-1 rounded-lg border-slate-200 bg-white text-xs text-slate-700 focus:border-amber-500 focus:ring-amber-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
                         <option value="">All channels</option>
                         {% for option in channel_options %}<option value="{{ option }}" {% if option == channel_type %}selected{% endif %}>{{ option | replace('_',' ') | title }}</option>{% endfor %}
                     </select>
                 </label>
                 <label class="flex items-center gap-2 text-[11px] font-medium text-slate-500 dark:text-slate-400">
                     <span class="w-12 shrink-0">Team</span>
-                    <select name="service_team_id" @change="$el.form.requestSubmit()" class="h-10 min-w-0 flex-1 rounded-lg border-slate-200 bg-white text-xs text-slate-700 focus:border-amber-500 focus:ring-amber-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
+                    <select name="service_team_id" @change="navigateFilter({ service_team_id: $el.value })" class="h-10 min-w-0 flex-1 rounded-lg border-slate-200 bg-white text-xs text-slate-700 focus:border-amber-500 focus:ring-amber-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
                         <option value="">All teams</option>
                         {% for team in service_team_options %}<option value="{{ team.id }}" {% if team.id|string == service_team_id %}selected{% endif %}>{{ team.name }}</option>{% endfor %}
                     </select>
                 </label>
                 <label class="flex items-center gap-2 text-[11px] font-medium text-slate-500 dark:text-slate-400">
                     <span class="w-12 shrink-0">Priority</span>
-                    <select name="priority_at_most" @change="$el.form.requestSubmit()" class="h-10 min-w-0 flex-1 rounded-lg border-slate-200 bg-white text-xs text-slate-700 focus:border-amber-500 focus:ring-amber-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
+                    <select name="priority_at_most" @change="navigateFilter({ priority_at_most: $el.value })" class="h-10 min-w-0 flex-1 rounded-lg border-slate-200 bg-white text-xs text-slate-700 focus:border-amber-500 focus:ring-amber-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
                         <option value="">All priorities</option>
                         {% for option in priority_options|reverse %}
                         {% if option.value < 100 %}

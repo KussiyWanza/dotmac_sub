@@ -991,25 +991,27 @@
         }
       },
 
-      navigateFilter(changes, clearAll = false) {
+      navigateFilter(changes, clearAll = false, clearScope = null) {
         const url = new URL(window.location.href);
-        const assignmentKeys = [
+        const lifecycleKeys = [
           "status",
           "view",
+          "reply_window_status",
+          "open_only",
+          "has_ticket",
+        ];
+        const assignmentKeys = [
           "assigned_person_id",
           "service_team_ids",
           "unassigned",
           "needs_response",
           "needs_attention",
           "ai_handling",
-          "reply_window_status",
           "activity_from",
           "activity_to",
-          "open_only",
-          "has_ticket",
-          "page",
         ];
         const savedViewKeys = [
+          ...lifecycleKeys,
           ...assignmentKeys,
           "search",
           "channel_type",
@@ -1020,10 +1022,15 @@
           "muted",
           "snoozed",
           "unread",
+          "page",
         ];
-        (clearAll ? savedViewKeys : assignmentKeys).forEach((key) =>
-          url.searchParams.delete(key),
-        );
+        let keysToClear = [];
+        if (clearAll) keysToClear = savedViewKeys;
+        else if (clearScope === "assignment_lifecycle") {
+          keysToClear = [...lifecycleKeys, ...assignmentKeys];
+        } else if (clearScope === "lifecycle") keysToClear = lifecycleKeys;
+        else if (clearScope === "assignment") keysToClear = assignmentKeys;
+        [...keysToClear, "page"].forEach((key) => url.searchParams.delete(key));
         // The two team params scope the same relation, so only one may be live
         // at a time. Setting either clears the other; leaving both in the URL
         // asked the server for two team filters at once, which it cannot
@@ -1038,6 +1045,8 @@
         Object.entries(changes || {}).forEach(([key, value]) => {
           if (value !== null && value !== undefined && value !== "") {
             url.searchParams.set(key, value);
+          } else {
+            url.searchParams.delete(key);
           }
         });
         if (this.selectedId) {
@@ -1095,29 +1104,45 @@
 
       applyAssignmentFilter(value) {
         if (value === "unassigned") {
-          this.navigateFilter({ open_only: "true", unassigned: "true" });
+          this.navigateFilter(
+            { open_only: "true", unassigned: "true" },
+            false,
+            "assignment_lifecycle",
+          );
         } else if (value === "unreplied") {
-          this.navigateFilter({ needs_response: "true" });
+          this.navigateFilter({ needs_response: "true" }, false, "assignment");
         } else if (value === "attention") {
-          this.navigateFilter({ needs_attention: "true" });
+          this.navigateFilter({ needs_attention: "true" }, false, "assignment");
         } else if (value === "ai") {
-          this.navigateFilter({ ai_handling: "true" });
+          this.navigateFilter({ ai_handling: "true" }, false, "assignment");
         } else if (value) {
-          this.navigateFilter({ assigned_person_id: value });
+          this.navigateFilter(
+            { assigned_person_id: value },
+            false,
+            "assignment",
+          );
         } else {
-          this.navigateFilter({});
+          this.navigateFilter({}, false, "assignment");
         }
       },
 
       applyStatusFilter(value) {
         if (value === "expired") {
-          this.navigateFilter({ reply_window_status: "expired" });
+          this.navigateFilter(
+            { reply_window_status: "expired" },
+            false,
+            "lifecycle",
+          );
+        } else if (value === "ticket") {
+          this.navigateFilter({ has_ticket: "true" }, false, "lifecycle");
+        } else if (value === "active") {
+          this.navigateFilter({ open_only: "true" }, false, "lifecycle");
         } else if (value === "all") {
-          this.navigateFilter({ view: "all" });
+          this.navigateFilter({ view: "all" }, false, "lifecycle");
         } else if (value) {
-          this.navigateFilter({ status: value });
+          this.navigateFilter({ status: value }, false, "lifecycle");
         } else {
-          this.navigateFilter({});
+          this.navigateFilter({}, false, "lifecycle");
         }
       },
 
@@ -1163,7 +1188,11 @@
           this.showToast("You are not a member of any service team.");
           return;
         }
-        this.navigateFilter({ service_team_ids: this.myTeamIds });
+        this.navigateFilter(
+          { service_team_ids: this.myTeamIds },
+          false,
+          "assignment",
+        );
       },
 
       applySavedView(payload) {

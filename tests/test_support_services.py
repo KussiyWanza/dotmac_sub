@@ -438,6 +438,87 @@ def test_ticket_update_deduplicates_manual_and_auto_assignee(db_session, monkeyp
     assert [row.person_id for row in assignees] == [assignee_id]
 
 
+def test_ticket_update_preserves_explicit_service_team_when_auto_assignment_runs(
+    db_session, monkeypatch
+):
+    from app.services.ticket_assignment import engine as assignment_engine
+
+    requested_team = ServiceTeam(
+        name="Requested team", team_type=ServiceTeamType.support.value
+    )
+    policy_team = ServiceTeam(
+        name="Policy team", team_type=ServiceTeamType.support.value
+    )
+    ticket = Ticket(title="Manual team reassignment", status=TicketStatus.open.value)
+    db_session.add_all([requested_team, policy_team, ticket])
+    db_session.commit()
+
+    monkeypatch.setattr(
+        support_service.Tickets,
+        "_auto_assignment_enabled",
+        staticmethod(lambda _db: True),
+    )
+    monkeypatch.setattr(
+        assignment_engine,
+        "auto_assign_ticket",
+        lambda _db, ticket_id, **_kwargs: assignment_engine.AssignmentResult(
+            assigned=True,
+            ticket_id=ticket_id,
+            assignment_target="team",
+            fallback_service_team_id=str(policy_team.id),
+            reason="assigned",
+        ),
+    )
+
+    updated = support_service.tickets.update(
+        db_session,
+        str(ticket.id),
+        TicketUpdate(service_team_id=requested_team.id),
+    )
+
+    assert updated.service_team_id == requested_team.id
+
+
+def test_ticket_update_preserves_explicit_service_team_from_status_automation(
+    db_session, monkeypatch
+):
+    requested_team = ServiceTeam(
+        name="Requested escalation", team_type=ServiceTeamType.support.value
+    )
+    automation_team = ServiceTeam(
+        name="Automation escalation", team_type=ServiceTeamType.support.value
+    )
+    ticket = Ticket(title="Status automation", status=TicketStatus.open.value)
+    db_session.add_all([requested_team, automation_team, ticket])
+    db_session.commit()
+    support_automation_rules.create_rule(
+        db_session,
+        name="Status-driven team assignment",
+        trigger=AutomationTrigger.status_changed,
+        action_type=AutomationActionType.assign_team,
+        action_value=support_automation_rules.TicketAutomationAction(
+            service_team_id=automation_team.id
+        ),
+    )
+    monkeypatch.setattr(
+        support_service.Tickets,
+        "_auto_assignment_enabled",
+        staticmethod(lambda _db: False),
+    )
+
+    updated = support_service.tickets.update(
+        db_session,
+        str(ticket.id),
+        TicketUpdate(
+            service_team_id=requested_team.id,
+            status=TicketStatus.closed.value,
+        ),
+    )
+
+    assert updated.status == TicketStatus.closed.value
+    assert updated.service_team_id == requested_team.id
+
+
 def test_link_and_merge_form_reject_invalid_target_uuid(db_session):
     with pytest.raises(ValueError, match="valid ticket UUID"):
         web_support_tickets_service.link_ticket_from_form(

@@ -156,6 +156,7 @@ def _existing_asset(
     *,
     message: InboxMessage,
     raw: dict[str, Any],
+    attachment_index: int,
 ) -> InboxMediaAsset | None:
     provider = _text(raw.get("provider"), max_length=80)
     provider_media_id = _provider_media_id(raw)
@@ -170,7 +171,31 @@ def _existing_asset(
             return existing
     file_name = _file_name(raw)
     source_url = _source_url(raw)
-    if not provider and not provider_media_id and not file_name and not source_url:
+    if not provider_media_id and not file_name and not source_url:
+        asset_type = _asset_type(raw)
+        candidates = (
+            db.query(InboxMediaAsset)
+            .filter(InboxMediaAsset.message_id == message.id)
+            .filter(InboxMediaAsset.provider_media_id.is_(None))
+            .filter(InboxMediaAsset.file_name.is_(None))
+            .filter(InboxMediaAsset.source_url.is_(None))
+            .filter(InboxMediaAsset.asset_type == asset_type)
+            .order_by(InboxMediaAsset.created_at.asc(), InboxMediaAsset.id.asc())
+            .all()
+        )
+        for candidate in candidates:
+            metadata = candidate.metadata_ or {}
+            if metadata.get("_source_attachment_index") == attachment_index:
+                return candidate
+        for candidate in candidates:
+            metadata = candidate.metadata_ or {}
+            if "_source_attachment_index" in metadata:
+                continue
+            candidate.metadata_ = {
+                **metadata,
+                "_source_attachment_index": attachment_index,
+            }
+            return candidate
         return None
     return (
         db.query(InboxMediaAsset)
@@ -195,13 +220,19 @@ def promote_message_attachments(
         return []
 
     assets: list[InboxMediaAsset] = []
-    for raw_item in raw_items:
+    for attachment_index, raw_item in enumerate(raw_items):
         if not isinstance(raw_item, dict):
             continue
         raw = dict(raw_item)
+        raw["_source_attachment_index"] = attachment_index
         if provider and not raw.get("provider"):
             raw["provider"] = provider
-        existing = _existing_asset(db, message=message, raw=raw)
+        existing = _existing_asset(
+            db,
+            message=message,
+            raw=raw,
+            attachment_index=attachment_index,
+        )
         if existing is not None:
             assets.append(existing)
             continue

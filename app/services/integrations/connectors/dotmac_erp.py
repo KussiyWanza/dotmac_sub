@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
-from uuid import UUID
+from typing import Any, Literal, cast
+from uuid import UUID, uuid4
 
 from app.services.dotmac_erp.client import (
     DotMacERPAuthError,
@@ -19,10 +19,12 @@ from app.services.integrations.backoffice_contracts import (
     ERP_OPERATIONAL_SYNC_CAPABILITY,
     ERP_OUTBOX_CAPABILITY,
     ERP_REGULATORY_CAPABILITY,
+    ERP_STAFF_ACCESS_RECONCILE_CAPABILITY,
     ERP_STATUS_CAPABILITY,
     WORKFORCE_ATTENDANCE_PUNCH_CAPABILITY,
     WORKFORCE_ATTENDANCE_READ_CAPABILITY,
 )
+from app.services.integrations.diagnostics import safe_diagnostic
 from app.services.integrations.manifest import ConnectorManifest
 from app.services.integrations.runtime import (
     HealthResult,
@@ -63,10 +65,16 @@ class DotmacErpRunner:
                 if interactive
                 else config.get("timeout_seconds") or 30
             ),
-            retries=int(
-                config.get("interactive_max_retries") or 1
-                if interactive
-                else config.get("max_retries") or 3
+            retries=min(
+                3,
+                max(
+                    0,
+                    int(
+                        config.get("interactive_max_retries", 1)
+                        if interactive
+                        else config.get("max_retries", 3)
+                    ),
+                ),
             ),
         )
 
@@ -102,7 +110,10 @@ class DotmacErpRunner:
         config: Mapping[str, Any],
         secret_material: Mapping[str, str],
     ) -> ValidationResult:
-        if capability_id != ERP_OPERATIONAL_SYNC_CAPABILITY:
+        if capability_id not in {
+            ERP_OPERATIONAL_SYNC_CAPABILITY,
+            ERP_STAFF_ACCESS_RECONCILE_CAPABILITY,
+        }:
             return self.validate(
                 manifest=manifest,
                 config=config,
@@ -119,17 +130,34 @@ class DotmacErpRunner:
             )
         client = self._client(config, secret_material)
         try:
-            client.sync_operational_domains(ErpOperationalSyncCommand())
+            if capability_id == ERP_OPERATIONAL_SYNC_CAPABILITY:
+                client.sync_operational_domains(ErpOperationalSyncCommand())
+            else:
+                client.get_staff_access_projection(
+                    entity="account_status",
+                    limit=1,
+                )
         except DotMacERPAuthError:
+            if capability_id == ERP_OPERATIONAL_SYNC_CAPABILITY:
+                return ValidationResult(
+                    valid=False,
+                    error_codes=("erp_operational_scope_missing",),
+                    details={"required_scope": "sub:domain:write"},
+                )
             return ValidationResult(
                 valid=False,
-                error_codes=("erp_operational_scope_missing",),
-                details={"required_scope": "sub:domain:write"},
+                error_codes=("erp_staff_access_scope_missing",),
+                details={"required_scope": "sub:staff_access:read"},
             )
         except DotMacERPError:
+            error_code = (
+                "erp_operational_sync_unavailable"
+                if capability_id == ERP_OPERATIONAL_SYNC_CAPABILITY
+                else "erp_staff_access_projection_unavailable"
+            )
             return ValidationResult(
                 valid=False,
-                error_codes=("erp_operational_sync_unavailable",),
+                error_codes=(error_code,),
             )
         except Exception:
             return ValidationResult(valid=False, error_codes=("validation_failed",))
@@ -153,51 +181,110 @@ class DotmacErpRunner:
                 status=OperationStatus.rejected,
                 error_code="params_invalid",
             )
+        correlation_id = uuid4()
+        safe_operation = (
+            action
+            if action
+            in {
+                "sync_operational_domains",
+                "deliver_outbox",
+                "upload_purchase_invoice_attachment",
+                "expense_claim_status",
+                "material_request_status",
+                "purchase_invoice_status",
+                "list_inventory",
+                "get_inventory_item",
+                "list_warehouses",
+                "list_categories",
+                "list_expense_categories",
+                "list_available_serials",
+                "get_ncc_financials",
+                "get_ncc_staff_headcount",
+                "read_staff_access_projection",
+                "attendance_today",
+                "attendance_check_in",
+                "attendance_check_out",
+            }
+            else "unsupported_operation"
+        )
+        client = None
         try:
             is_attendance = envelope.capability_id in {
                 WORKFORCE_ATTENDANCE_READ_CAPABILITY,
                 WORKFORCE_ATTENDANCE_PUNCH_CAPABILITY,
             }
+            client = self._client(config, secret_material, interactive=is_attendance)
+            if envelope.capability_id == ERP_OPERATIONAL_SYNC_CAPABILITY:
+                # This feed holds its admission lock until the remote result.
+                # Keep the whole transport budget bounded under the normal
+                # transaction idle timeout; 429 is deferred by the owner.
+                client.retries = min(client.retries, 2)
+                client.timeout = min(client.timeout, 20)
             output = self._execute_action(
-                self._client(config, secret_material, interactive=is_attendance),
+                client,
                 capability_id=envelope.capability_id,
                 action=action,
                 params=params,
                 idempotency_key=envelope.idempotency_key,
             )
-        except DotMacERPRateLimitError as exc:
-            return OperationResult(
-                operation_id=envelope.operation_id,
-                status=OperationStatus.retryable,
-                error_code="erp_rate_limited",
-                retry_after_seconds=exc.retry_after,
-            )
-        except DotMacERPTransientError:
-            return OperationResult(
-                operation_id=envelope.operation_id,
-                status=OperationStatus.retryable,
-                error_code="erp_transport_retryable",
-            )
         except DotMacERPError as exc:
-            detail = (exc.response or {}).get("detail")
-            error_code = detail.get("code") if isinstance(detail, dict) else None
+            retryable = isinstance(
+                exc, (DotMacERPRateLimitError, DotMacERPTransientError)
+            )
+            diagnostic = exc.diagnostic.model_copy(
+                update={
+                    "operation": safe_operation,
+                    "operation_id": envelope.operation_id,
+                    "correlation_id": correlation_id,
+                    "retry_after_seconds": (
+                        min(86400, max(1, exc.retry_after or 60))
+                        if isinstance(exc, DotMacERPRateLimitError)
+                        else None
+                    ),
+                }
+            )
             return OperationResult(
                 operation_id=envelope.operation_id,
-                status=OperationStatus.rejected,
-                error_code=str(error_code or "erp_operation_rejected"),
+                status=OperationStatus.retryable
+                if retryable
+                else OperationStatus.rejected,
+                error_code=diagnostic.code,
+                diagnostic=diagnostic,
+                retry_after_seconds=(
+                    min(86400, max(1, exc.retry_after or 60))
+                    if isinstance(exc, DotMacERPRateLimitError)
+                    else None
+                ),
             )
         except (KeyError, TypeError, ValueError):
             return OperationResult(
                 operation_id=envelope.operation_id,
                 status=OperationStatus.rejected,
                 error_code="operation_invalid",
+                diagnostic=safe_diagnostic(code="invalid_response").model_copy(
+                    update={
+                        "operation": safe_operation,
+                        "operation_id": envelope.operation_id,
+                        "correlation_id": correlation_id,
+                    }
+                ),
             )
         except Exception:
             return OperationResult(
                 operation_id=envelope.operation_id,
                 status=OperationStatus.failed,
                 error_code="connector_failed",
+                diagnostic=safe_diagnostic().model_copy(
+                    update={
+                        "operation": safe_operation,
+                        "operation_id": envelope.operation_id,
+                        "correlation_id": correlation_id,
+                    }
+                ),
             )
+        finally:
+            if client is not None and self._client_override is None:
+                client.close()
         return OperationResult(
             operation_id=envelope.operation_id,
             status=OperationStatus.succeeded,
@@ -273,6 +360,15 @@ class DotmacErpRunner:
                 return client.get_ncc_financials(**params)
             if action == "get_ncc_staff_headcount":
                 return client.get_ncc_staff_headcount()
+        elif capability_id == ERP_STAFF_ACCESS_RECONCILE_CAPABILITY:
+            if action == "read_staff_access_projection":
+                entity = str(params["entity"])
+                if entity not in {"leave_restriction", "account_status"}:
+                    raise ValueError("unsupported staff access projection entity")
+                return client.get_staff_access_projection(
+                    entity=cast(Literal["leave_restriction", "account_status"], entity),
+                    limit=int(params.get("limit") or 500),
+                )
         elif capability_id == WORKFORCE_ATTENDANCE_READ_CAPABILITY:
             if action == "attendance_today":
                 return client.get_attendance_today(

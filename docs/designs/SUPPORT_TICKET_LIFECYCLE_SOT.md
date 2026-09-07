@@ -19,7 +19,7 @@ The lifecycle owner controls, in one root owner command:
 - links, duplicate evidence, merges, and merged-source immutability;
 - resolution requests, active confirmation capabilities, confirmation, disputes,
   and automatic confirmation after the configured grace period;
-- CSAT/satisfaction evidence; and
+- best-effort CSAT request creation for closed resolution cycles; and
 - transactionally staged audit records, domain events, notifications, and SLA
   consequences.
 
@@ -239,6 +239,13 @@ idempotent rebuild path; the comment-edit delta tests and database target/unique
 constraints are the drift signal.
 
 ## Related owners
+
+`support.csat` owns durable CSAT request and response records for support
+tickets and eligible Team Inbox conversations. The Ticket lifecycle owner
+creates one request per closed resolution cycle through an optional participant
+path, and customer submissions keep `Ticket.metadata.csat` only as a
+compatibility projection. Historical CSAT reporting reads `support_csat_requests`
+and its agent/team snapshots, not mutable current Ticket assignment.
 
 `support.ticket_sla_clock` remains the Ticket SLA clock and breach owner.
 `support.ticket_work_order_handoff` remains the only issuance/provenance

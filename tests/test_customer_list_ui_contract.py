@@ -372,8 +372,16 @@ def test_customer_infrastructure_filter_is_lazy_and_bounded():
     assert "limit: '20'" in template
     assert "nas_options" not in template
     assert "pop_site_options" not in template
-    assert ".limit(bounded_limit)" in service
-    assert "if len(term) < 2:" in service
+    catalogue = (PROJECT_ROOT / "app/services/infrastructure_catalogue.py").read_text(
+        encoding="utf-8"
+    )
+    contract = (PROJECT_ROOT / "app/schemas/infrastructure.py").read_text(
+        encoding="utf-8"
+    )
+    assert "infrastructure_catalogue.search(" in service
+    assert ".limit(query.limit)" in catalogue
+    assert "if len(term) < 2:" in catalogue
+    assert "ge=1, le=20" in contract
 
 
 def test_customer_infrastructure_picker_renders_complete_setup_expression():

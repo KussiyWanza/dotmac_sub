@@ -1068,7 +1068,7 @@ def customer_bandwidth_live(
     # Streaming responses keep dependencies alive until disconnect. Release the
     # lookup session now; the SSE helper opens short read sessions only when it
     # needs a Postgres fallback sample.
-    db.rollback()
+    finish_read_transaction(db)
     db.close()
 
     return EventSourceResponse(

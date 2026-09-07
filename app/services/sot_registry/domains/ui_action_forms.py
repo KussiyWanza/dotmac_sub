@@ -177,6 +177,7 @@ DOMAIN = DomainSOT(
             module="app.services.web_billing_service_extensions",
             owns=(
                 "admin service-extension detail projection",
+                "customer-scoped service-extension request history projection",
                 "service-extension reversal confirmation projection",
                 "exact service-extension activity presentation",
                 "service-extension status and action presentation",
@@ -205,6 +206,19 @@ DOMAIN = DomainSOT(
                             "canonical service-extension lifecycle facts",
                             "canonical service-extension activity evidence",
                             "canonical staff display identity",
+                            "service-extension permission result",
+                            "application display-timezone policy",
+                            "service-extension presentation policy",
+                        ),
+                    ),
+                    ConcernContract(
+                        name=(
+                            "customer-scoped service-extension request history "
+                            "projection"
+                        ),
+                        role=OwnerRole.RESOLVER,
+                        input_names=(
+                            "canonical service-extension lifecycle facts",
                             "service-extension permission result",
                             "application display-timezone policy",
                             "service-extension presentation policy",
@@ -246,7 +260,8 @@ DOMAIN = DomainSOT(
                         kind=AuthorityKind.AUTHORITATIVE_RECORD,
                         source=(
                             "ServiceExtension aggregate, immutable grant and reversal "
-                            "entries, selected scope, and sampled affected subscriptions"
+                            "entries, selected scope, customer-scoped request membership, "
+                            "and sampled affected subscriptions"
                         ),
                     ),
                     AuthorityInput(
@@ -305,9 +320,9 @@ DOMAIN = DomainSOT(
                     ),
                     idempotency=(
                         "The same extension, exact audit/reversal cohort, staff "
-                        "identities, permissions, normalized reason, and anchor facts "
-                        "produce the same typed detail/confirmation projection and "
-                        "deterministic activity order."
+                        "identities, permissions, normalized reason, customer scope, "
+                        "and anchor facts produce the same typed detail/history/"
+                        "confirmation projection and deterministic activity order."
                     ),
                     retries="The bounded read-only projection is safe to retry.",
                 ),
@@ -328,18 +343,20 @@ DOMAIN = DomainSOT(
                     new_owner="ui.service_extension_detail_projection",
                     verification=(
                         "Exact filtering, activity provenance, actor snapshot, "
-                        "permission, reversal preview, deterministic ordering, template, "
-                        "mobile layout, and route-delegation tests."
+                        "permission, reversal preview, customer request membership, "
+                        "deterministic ordering, template, mobile layout, and "
+                        "route-delegation tests."
                     ),
                     cutover_gate=(
                         "The detail and reversal-preview routes pass typed projections; "
-                        "templates render owner-provided status, impact, and action "
-                        "eligibility."
+                        "Customer 360 and detail/reversal-preview routes pass typed "
+                        "projections; templates render owner-provided status, impact, "
+                        "and action eligibility."
                     ),
                     fallback_retirement=(
                         "Route/template audit queries, actor lookup, status maps, "
-                        "eligibility decisions, and misleading broad audit links are "
-                        "absent."
+                        "entry-only customer history, eligibility decisions, and "
+                        "misleading broad audit links are absent."
                     ),
                 ),
                 steward="billing operations UI",
@@ -352,6 +369,7 @@ DOMAIN = DomainSOT(
                 ),
                 test_refs=(
                     "tests/test_web_billing_service_extensions.py",
+                    "tests/test_web_customer_details.py",
                     "tests/architecture/test_service_extension_sot_boundary.py",
                 ),
             ),
@@ -362,10 +380,12 @@ DOMAIN = DomainSOT(
         "app.web.admin.billing_invoice_bulk",
         "app.web.admin.billing_payment_proofs",
         "app.web.admin.billing_extensions",
+        "app.web.admin.customers",
         "templates.admin.billing.invoice_batch",
         "templates.admin.billing.invoice_bulk_review",
         "templates.admin.billing.payment_proof_detail",
         "templates.admin.billing.service_extension_detail",
+        "templates.admin.customers.detail",
         "templates.components.forms.action_form",
         "templates.components.ui.timeline_item",
     ),

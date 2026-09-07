@@ -5,6 +5,7 @@ import re
 import secrets
 import string
 import time
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID
@@ -28,6 +29,56 @@ from app.services.nas._helpers import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class MikrotikLiveBandwidthTarget:
+    """Detached transport input for one direct RouterOS diagnostic read."""
+
+    device_id: UUID
+    device_name: str
+    host: str
+    port: int
+    username: str
+    password: str = field(repr=False)
+    login: str
+
+
+class MikrotikLiveTargetError(ValueError):
+    """The canonical NAS record cannot produce a safe live-read target."""
+
+
+def build_mikrotik_live_bandwidth_target(
+    device: NasDevice,
+    *,
+    login: str,
+) -> MikrotikLiveBandwidthTarget:
+    """Materialize all RouterOS inputs while the owning DB read is active."""
+    normalized_login = str(login or "").strip()
+    if not normalized_login:
+        raise MikrotikLiveTargetError("missing_login")
+    if device.vendor != NasVendor.mikrotik:
+        raise MikrotikLiveTargetError("unsupported_vendor")
+    host = device.management_ip or device.ip_address
+    if not host:
+        raise MikrotikLiveTargetError("missing_management_address")
+    if not (device.api_username and device.api_password):
+        raise MikrotikLiveTargetError("missing_api_credentials")
+    try:
+        password = decrypt_credential(device.api_password)
+    except Exception as exc:
+        raise MikrotikLiveTargetError("invalid_api_credentials") from exc
+    if password is None:
+        raise MikrotikLiveTargetError("invalid_api_credentials")
+    return MikrotikLiveBandwidthTarget(
+        device_id=device.id,
+        device_name=device.name,
+        host=host,
+        port=_mikrotik_api_port(device),
+        username=device.api_username,
+        password=password,
+        login=normalized_login,
+    )
 
 
 def _as_dict_list(value: object) -> list[dict[str, object]]:
@@ -526,31 +577,46 @@ def _first_rate_value(row: dict[str, object], *keys: str) -> float:
 
 
 def get_mikrotik_pppoe_live_bandwidth(
-    device: NasDevice,
+    device: NasDevice | MikrotikLiveBandwidthTarget,
     *,
-    login: str,
+    login: str | None = None,
 ) -> dict[str, object]:
     """Read a subscriber PPPoE interface rate directly from MikroTik RouterOS.
 
     This is intentionally separate from the sampled history pipeline. It is for
     operator "what is this customer doing right now?" UI reads.
     """
-    login = str(login or "").strip()
-    if not login:
-        raise HTTPException(status_code=400, detail="Subscription has no PPPoE login.")
+    if isinstance(device, MikrotikLiveBandwidthTarget):
+        target = device
+    else:
+        normalized_login = str(login or "").strip()
+        if not normalized_login:
+            raise HTTPException(
+                status_code=400, detail="Subscription has no PPPoE login."
+            )
+        host, port, username, password = _mikrotik_routeros_auth(device)
+        target = MikrotikLiveBandwidthTarget(
+            device_id=device.id,
+            device_name=device.name,
+            host=host,
+            port=port,
+            username=username,
+            password=password,
+            login=normalized_login,
+        )
+    login = target.login
 
     from routeros_api import RouterOsApiPool
     from routeros_api.exceptions import RouterOsApiError
 
     from app.services.bandwidth import to_subscriber_directions
 
-    host, port, username, password = _mikrotik_routeros_auth(device)
-    use_ssl = port == 8729
+    use_ssl = target.port == 8729
     pool = RouterOsApiPool(
-        host,
-        username=username,
-        password=password,
-        port=port,
+        target.host,
+        username=target.username,
+        password=target.password,
+        port=target.port,
         plaintext_login=not use_ssl,
         use_ssl=use_ssl,
         ssl_verify=False,
@@ -568,8 +634,8 @@ def get_mikrotik_pppoe_live_bandwidth(
                 "online": False,
                 "login": login,
                 "source": "mikrotik_routeros_api",
-                "nas_device_id": str(device.id),
-                "nas_device_name": device.name,
+                "nas_device_id": str(target.device_id),
+                "nas_device_name": target.device_name,
                 "timestamp": datetime.now(UTC).isoformat(),
                 "current_rx_bps": 0.0,
                 "current_tx_bps": 0.0,
@@ -609,8 +675,8 @@ def get_mikrotik_pppoe_live_bandwidth(
             "login": login,
             "interface": interface_name,
             "source": "mikrotik_routeros_api",
-            "nas_device_id": str(device.id),
-            "nas_device_name": device.name,
+            "nas_device_id": str(target.device_id),
+            "nas_device_name": target.device_name,
             "timestamp": datetime.now(UTC).isoformat(),
             "current_rx_bps": rx_bps,
             "current_tx_bps": tx_bps,
@@ -626,18 +692,17 @@ def get_mikrotik_pppoe_live_bandwidth(
         # fault — return a graceful "unavailable" payload (same shape as the
         # no-session case) instead of letting the timeout bubble up to a 500.
         logger.warning(
-            "mikrotik live bandwidth read failed (device=%s login=%s): %s",
-            device.id,
-            login,
-            exc,
+            "mikrotik live bandwidth read failed device=%s error_type=%s",
+            target.device_id,
+            type(exc).__name__,
         )
         return {
             "online": False,
             "available": False,
             "login": login,
             "source": "mikrotik_routeros_api",
-            "nas_device_id": str(device.id),
-            "nas_device_name": device.name,
+            "nas_device_id": str(target.device_id),
+            "nas_device_name": target.device_name,
             "timestamp": datetime.now(UTC).isoformat(),
             "current_rx_bps": 0.0,
             "current_tx_bps": 0.0,
