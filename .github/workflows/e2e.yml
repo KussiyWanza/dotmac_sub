@@ -67,7 +67,7 @@ jobs:
             -p 127.0.0.1:55432:5432 \
             -e POSTGRES_USER=postgres -e POSTGRES_HOST_AUTH_METHOD=trust \
             -e POSTGRES_DB=dotmac_sub_e2e \
-            --health-cmd "pg_isready -U postgres" --health-interval 5s \
+            --health-cmd "pg_isready -h 127.0.0.1 -U postgres -d postgres" --health-interval 5s \
             --health-retries 10 postgis/postgis:16-3.4
           docker run -d --name e2e-redis --network e2e-net \
             -p 127.0.0.1:56379:6379 redis:7
@@ -80,7 +80,7 @@ jobs:
           # an opaque "database connection or role operation failed", naming
           # migrations for a fault that was service startup. Readiness is a
           # precondition of this step, so prove it here and fail loudly.
-          if [ "$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' e2e-db)" != "healthy" ] || ! docker exec e2e-db pg_isready -U postgres >/dev/null 2>&1; then
+          if [ "$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' e2e-db)" != "healthy" ] || ! docker exec e2e-db pg_isready -h 127.0.0.1 -U postgres -d postgres >/dev/null 2>&1; then
             echo "::error::e2e-db did not become ready within 60s"
             docker inspect --format='status={{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' e2e-db || true
             docker logs e2e-db || true
