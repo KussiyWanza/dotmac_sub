@@ -58,7 +58,7 @@
                             <td class="px-4 py-3 text-xs text-slate-600 dark:text-slate-300">{{ row.cached_at | app_datetime('%Y-%m-%d %H:%M', '-') }}</td>
                             <td class="px-4 py-3 text-xs text-slate-600 dark:text-slate-300">{{ row.cache_size_label }}</td>
                             <td class="px-4 py-3 text-right">
-                                <a href="/admin/billing/invoices/{{ row.invoice_id }}" class="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300">View</a>
+                                <a href="/admin/billing/invoices/{{ row.invoice_id }}" class="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700 dark:border-slate-600 dark:text-slate-300">View</a>
                             </td>
                         </tr>
                         {% else %}

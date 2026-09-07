@@ -1,5 +1,5 @@
 {% extends "layouts/admin.html" %}
-{% from "components/ui/macros.html" import ambient_background, page_header, stats_card, card, report_chart_card, data_table, table_head, table_row, empty_state, action_button, metric_row, animation_styles %}
+{% from "components/ui/macros.html" import ambient_background, page_header, stats_card, card, report_chart_card, table_head, table_row, empty_state, action_button, metric_row, animation_styles %}
 
 {% block title %}Revenue Report - Admin{% endblock %}
 
@@ -44,9 +44,10 @@
         {{ stats_card("Collection Rate", "%.1f"|format(collection_rate) ~ "%", icon='<svg class="h-6 w-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>', color="violet", color2="purple", compact_value=True) }}
     </div>
 
-    {# Revenue Trend Chart #}
-    <div class="animate-fade-in-up" style="animation-delay: 100ms;">
-    {% call report_chart_card("Revenue Trend", revenue_chart, "revenue-chart", color="teal", min_height=280) %}
+    {# Compact report detail row #}
+    <section data-revenue-overview-grid class="grid gap-6 lg:grid-cols-2 lg:items-start">
+    <div class="min-w-0 animate-fade-in-up" style="animation-delay: 100ms;">
+    {% call report_chart_card("Revenue Trend", revenue_chart, "revenue-chart", color="teal", min_height=240) %}
         <script>
         document.addEventListener('DOMContentLoaded', function() {
             const ctx = document.getElementById('revenue-chart');
@@ -72,11 +73,17 @@
     </div>
 
     {# Recent Payments #}
-    <div class="animate-fade-in-up" style="animation-delay: 150ms;">
-    {% call card("Recent Payments", color="teal") %}
+    <div class="min-w-0 animate-fade-in-up" style="animation-delay: 150ms;">
+    {% call card("Recent Payments", color="teal", padding=False) %}
         {% if recent_payments %}
-        {% call data_table() %}
-            <table class="min-w-full divide-y divide-slate-200 dark:divide-slate-700">
+        <div class="max-h-[288px] overflow-x-hidden overflow-y-auto">
+            <table class="w-full table-fixed divide-y divide-slate-200 dark:divide-slate-700">
+                <colgroup>
+                    <col class="w-[22%]">
+                    <col class="w-[32%]">
+                    <col class="w-[28%]">
+                    <col class="w-[18%]">
+                </colgroup>
                 {{ table_head([
                     {"label": "Date"},
                     {"label": "Account"},
@@ -86,18 +93,18 @@
                 <tbody class="divide-y divide-slate-200 bg-white dark:divide-slate-700 dark:bg-slate-800">
                     {% for payment in recent_payments %}
                     {% call table_row(payment.id) %}
-                        <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-900 dark:text-white">
+                        <td class="truncate px-4 py-3 text-sm text-slate-900 dark:text-white">
                             {{ payment.paid_at | app_datetime('%b %d, %Y', include_tz=False) if payment.paid_at else (payment.created_at | app_datetime('%b %d, %Y', '-', include_tz=False)) }}
                         </td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-600 dark:text-slate-300">
+                        <td class="truncate px-4 py-3 text-sm text-slate-600 dark:text-slate-300">
                             {% if payment.account %}
                                 {{ payment.account.name }}
                             {% else %}
                                 Account
                             {% endif %}
                         </td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm font-medium font-mono tabular-nums text-emerald-600 dark:text-emerald-400">₦{{ "{:,.2f}".format(payment.amount) }}</td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-600 dark:text-slate-300">
+                        <td class="truncate px-4 py-3 font-mono text-sm font-medium tabular-nums text-emerald-600 dark:text-emerald-400">₦{{ "{:,.2f}".format(payment.amount) }}</td>
+                        <td class="truncate px-4 py-3 text-sm text-slate-600 dark:text-slate-300">
                             {% if payment.payment_method %}
                                 {{ payment.payment_method.label or payment.payment_method.method_type.value | title }}
                             {% else %}
@@ -108,12 +115,13 @@
                     {% endfor %}
                 </tbody>
             </table>
-        {% endcall %}
+        </div>
         {% else %}
-        {{ empty_state("No recent payments", "Payments will appear here as they are recorded.") }}
+        <table class="min-w-full"><tbody>{{ empty_state("No recent payments", "Payments will appear here as they are recorded.") }}</tbody></table>
         {% endif %}
     {% endcall %}
     </div>
+    </section>
 
     {% set activity_title = "Reports Activity" %}
     {% set activity_link = "/admin/system/audit" %}

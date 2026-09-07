@@ -34,7 +34,7 @@
             <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">{{ display_vendor }}{% if display_model %} / {{ display_model }}{% endif %}</p>
         </div>
         <div class="flex items-center gap-2">
-            <a href="/admin/network/cpes/{{ cpe.id }}/edit" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">Edit</a>
+            <a href="/admin/network/cpes/{{ cpe.id }}/edit" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">Edit</a>
             {% if is_mikrotik_device %}
             <form method="POST" action="/admin/network/cpes/{{ cpe.id }}/test-api">
                 {% include "components/forms/csrf_input.html" %}

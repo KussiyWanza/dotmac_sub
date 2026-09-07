@@ -18,7 +18,7 @@
                 Review proved historical prepaid calendar defects, including retired UTC-midnight periods and lapsed payments left on stale coverage. Correct periods begin at midnight Africa/Lagos (WAT) and remain stored as UTC instants.
             </p>
         </div>
-        <a href="/admin/billing/payments/reconciliation" class="inline-flex items-center rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200">Bank reconciliation</a>
+        <a href="/admin/billing/payments/reconciliation" class="inline-flex items-center rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200">Bank reconciliation</a>
     </div>
 
     {% if request.query_params.get('notice') %}
@@ -101,8 +101,8 @@
         </div>
         {% if cohort.has_previous or cohort.has_more %}
         <div class="flex items-center justify-between border-t border-slate-200 px-4 py-3 dark:border-slate-700">
-            {% if cohort.has_previous %}<a href="?page={{ page - 1 }}" class="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-200">Previous</a>{% else %}<span></span>{% endif %}
-            {% if cohort.has_more %}<a href="?page={{ page + 1 }}" class="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-200">Next</a>{% endif %}
+            {% if cohort.has_previous %}<a href="?page={{ page - 1 }}" class="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 dark:border-slate-600 dark:text-slate-200">Previous</a>{% else %}<span></span>{% endif %}
+            {% if cohort.has_more %}<a href="?page={{ page + 1 }}" class="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 dark:border-slate-600 dark:text-slate-200">Next</a>{% endif %}
         </div>
         {% endif %}
     </section>

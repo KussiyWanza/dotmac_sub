@@ -13,7 +13,7 @@
                 hx-disabled-elt="this"
                 data-network-action
                 data-loading-label="Refreshing..."
-                class="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                class="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">
             Refresh
         </button>
         <button hx-post="/admin/network/cpes/{{ tr069.cpe_id }}/connection-request"
@@ -274,12 +274,12 @@
             <p class="text-xs text-slate-500 dark:text-slate-400 mb-3">Run network diagnostics from the CPE device itself via TR-069.</p>
             <div class="flex flex-wrap gap-2">
                 <button @click="showPingModal = true"
-                    class="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                    class="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">
                     <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
                     Ping Test
                 </button>
                 <button @click="const token = document.querySelector('meta[name=&quot;csrf-token&quot;]')?.content || document.cookie.match(/csrf_token=([^;]+)/)?.[1] || ''; fetch('/admin/network/cpes/{{ tr069.cpe_id }}/traceroute-diagnostic', {method:'POST', headers:Object.assign({'Content-Type':'application/x-www-form-urlencoded'}, token ? {'X-CSRF-Token': token} : {}), body:'host=8.8.8.8'}).then(r=>r.json()).then(d=>{htmx.trigger(document.body,'showToast',{message:d.message,type:d.success?'success':'error'})})"
-                    class="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                    class="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">
                     <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/></svg>
                     Traceroute (8.8.8.8)
                 </button>
@@ -310,7 +310,7 @@
             </div>
             <div class="mt-6 flex justify-end gap-3">
                 <button @click="showPingModal = false"
-                        class="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300">
+                        class="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 dark:border-slate-600 dark:text-slate-300">
                     Cancel
                 </button>
                 <button @click="const fd = new FormData(); fd.append('host', pingHost); fd.append('count', pingCount); const token = document.querySelector('meta[name=&quot;csrf-token&quot;]')?.content || document.cookie.match(/csrf_token=([^;]+)/)?.[1] || ''; if (token) { fd.append('_csrf_token', token); } fetch('/admin/network/cpes/{{ tr069.cpe_id }}/ping-diagnostic', {method:'POST', headers: token ? {'X-CSRF-Token': token} : {}, body: fd}).then(r=>r.json()).then(d=>{showPingModal=false; htmx.trigger(document.body, 'showToast', {message: d.message, type: d.success ? 'success' : 'error'})})"
@@ -338,7 +338,7 @@
             </div>
             <div class="mt-6 flex justify-end gap-3">
                 <button @click="showSsidModal = false"
-                        class="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300">
+                        class="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 dark:border-slate-600 dark:text-slate-300">
                     Cancel
                 </button>
                 <button @click="const feedback = document.getElementById('cpe-wifi-feedback'); const token = document.querySelector('meta[name=&quot;csrf-token&quot;]')?.content || document.cookie.match(/csrf_token=([^;]+)/)?.[1] || ''; const setFeedback = (message, type) => { if (!feedback) return; feedback.classList.remove('hidden','border-emerald-200','bg-emerald-50','text-emerald-800','dark:border-emerald-800/60','dark:bg-emerald-900/20','dark:text-emerald-300','border-rose-200','bg-rose-50','text-rose-800','dark:border-rose-800/60','dark:bg-rose-900/20','dark:text-rose-300','border-blue-200','bg-blue-50','text-blue-800','dark:border-blue-800/60','dark:bg-blue-900/20','dark:text-blue-300'); feedback.textContent = message; feedback.classList.add(type === 'success' ? 'border-emerald-200' : type === 'error' ? 'border-rose-200' : 'border-blue-200', type === 'success' ? 'bg-emerald-50' : type === 'error' ? 'bg-rose-50' : 'bg-blue-50', type === 'success' ? 'text-emerald-800' : type === 'error' ? 'text-rose-800' : 'text-blue-800', type === 'success' ? 'dark:border-emerald-800/60' : type === 'error' ? 'dark:border-rose-800/60' : 'dark:border-blue-800/60', type === 'success' ? 'dark:bg-emerald-900/20' : type === 'error' ? 'dark:bg-rose-900/20' : 'dark:bg-blue-900/20', type === 'success' ? 'dark:text-emerald-300' : type === 'error' ? 'dark:text-rose-300' : 'dark:text-blue-300'); feedback.classList.remove('hidden'); }; setFeedback('Applying WiFi SSID...', 'info'); fetch('/admin/network/cpes/{{ tr069.cpe_id }}/wifi-ssid?ssid=' + encodeURIComponent(ssid), {method:'POST', headers: token ? {'X-CSRF-Token': token} : {}}).then(async (r) => { const raw = await r.text(); let d = {}; try { d = raw ? JSON.parse(raw) : {}; } catch { d = { message: raw || ('Request failed (' + r.status + ')'), success: r.ok }; } const ok = r.ok && d.success !== false; const message = d.message || (ok ? 'WiFi SSID updated.' : ('Request failed (' + r.status + ')')); setFeedback(message, ok ? 'success' : 'error'); htmx.trigger(document.body, 'showToast', {message: message, type: ok ? 'success' : 'error'}); if (ok) { showSsidModal = false; } })"
@@ -366,7 +366,7 @@
             </div>
             <div class="mt-6 flex justify-end gap-3">
                 <button @click="showPasswordModal = false"
-                        class="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300">
+                        class="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 dark:border-slate-600 dark:text-slate-300">
                     Cancel
                 </button>
                 <button @click="const feedback = document.getElementById('cpe-wifi-feedback'); const token = document.querySelector('meta[name=&quot;csrf-token&quot;]')?.content || document.cookie.match(/csrf_token=([^;]+)/)?.[1] || ''; const setFeedback = (message, type) => { if (!feedback) return; feedback.classList.remove('hidden','border-emerald-200','bg-emerald-50','text-emerald-800','dark:border-emerald-800/60','dark:bg-emerald-900/20','dark:text-emerald-300','border-rose-200','bg-rose-50','text-rose-800','dark:border-rose-800/60','dark:bg-rose-900/20','dark:text-rose-300','border-blue-200','bg-blue-50','text-blue-800','dark:border-blue-800/60','dark:bg-blue-900/20','dark:text-blue-300'); feedback.textContent = message; feedback.classList.add(type === 'success' ? 'border-emerald-200' : type === 'error' ? 'border-rose-200' : 'border-blue-200', type === 'success' ? 'bg-emerald-50' : type === 'error' ? 'bg-rose-50' : 'bg-blue-50', type === 'success' ? 'text-emerald-800' : type === 'error' ? 'text-rose-800' : 'text-blue-800', type === 'success' ? 'dark:border-emerald-800/60' : type === 'error' ? 'dark:border-rose-800/60' : 'dark:border-blue-800/60', type === 'success' ? 'dark:bg-emerald-900/20' : type === 'error' ? 'dark:bg-rose-900/20' : 'dark:bg-blue-900/20', type === 'success' ? 'dark:text-emerald-300' : type === 'error' ? 'dark:text-rose-300' : 'dark:text-blue-300'); feedback.classList.remove('hidden'); }; const fd = new FormData(); fd.append('password', wifiPassword); if (token) { fd.append('_csrf_token', token); } setFeedback('Applying WiFi password...', 'info'); fetch('/admin/network/cpes/{{ tr069.cpe_id }}/wifi-password', {method:'POST', headers: token ? {'X-CSRF-Token': token} : {}, body: fd}).then(async (r) => { const raw = await r.text(); let d = {}; try { d = raw ? JSON.parse(raw) : {}; } catch { d = { message: raw || ('Request failed (' + r.status + ')'), success: r.ok }; } const ok = r.ok && d.success !== false; const message = d.message || (ok ? 'WiFi password updated.' : ('Request failed (' + r.status + ')')); setFeedback(message, ok ? 'success' : 'error'); htmx.trigger(document.body, 'showToast', {message: message, type: ok ? 'success' : 'error'}); if (ok) { showPasswordModal = false; wifiPassword = ''; } })"

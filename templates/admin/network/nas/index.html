@@ -242,12 +242,12 @@
             <div class="flex items-center gap-2">
                 {% if pagination.has_prev %}
                 <a href="?page={{ pagination.page - 1 }}{% if filters.nas_type %}&nas_type={{ filters.nas_type }}{% endif %}{% if filters.status %}&status={{ filters.status }}{% endif %}{% if filters.search %}&search={{ filters.search }}{% endif %}{% if filters.pop_site_id %}&pop_site_id={{ filters.pop_site_id }}{% endif %}{% if filters.partner_org_id %}&partner_org_id={{ filters.partner_org_id }}{% endif %}{% if filters.olt_status %}&olt_status={{ filters.olt_status }}{% endif %}"
-                   class="inline-flex items-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">Previous</a>
+                   class="inline-flex items-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">Previous</a>
                 {% endif %}
                 <span class="text-sm text-slate-600 dark:text-slate-400">Page {{ pagination.page }} of {{ pagination.total_pages }}</span>
                 {% if pagination.has_next %}
                 <a href="?page={{ pagination.page + 1 }}{% if filters.nas_type %}&nas_type={{ filters.nas_type }}{% endif %}{% if filters.status %}&status={{ filters.status }}{% endif %}{% if filters.search %}&search={{ filters.search }}{% endif %}{% if filters.pop_site_id %}&pop_site_id={{ filters.pop_site_id }}{% endif %}{% if filters.partner_org_id %}&partner_org_id={{ filters.partner_org_id }}{% endif %}{% if filters.olt_status %}&olt_status={{ filters.olt_status }}{% endif %}"
-                   class="inline-flex items-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">Next</a>
+                   class="inline-flex items-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">Next</a>
                 {% endif %}
             </div>
         </div>

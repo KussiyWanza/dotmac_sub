@@ -125,7 +125,7 @@
                     <td>
                         <form method="post" action="/admin/network/outages/{{ row.incident.id }}/resolve">
                             {% include "components/forms/csrf_input.html" %}
-                            <button type="submit" class="rounded-lg border border-slate-300 px-3 py-1 text-xs text-slate-600 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-300">Resolve</button>
+                            <button type="submit" class="rounded-lg border border-slate-300 px-3 py-1 text-xs text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700 dark:border-slate-600 dark:text-slate-300">Resolve</button>
                         </form>
                     </td>
                 </tr>

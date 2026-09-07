@@ -479,7 +479,7 @@
                                         <form method="post" action="/admin/crm/inbox/ai-intake-canary/run">
                                             {% include "components/forms/csrf_input.html" %}
                                             <input type="hidden" name="scenario_id" value="{{ scenario.scenario_id }}">
-                                            <button class="min-h-9 rounded-lg border border-slate-300 px-3 font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200">Run</button>
+                                            <button class="min-h-9 rounded-lg border border-slate-300 px-3 font-semibold text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 dark:border-slate-700 dark:text-slate-200">Run</button>
                                         </form>
                                     </td>
                                 </tr>
@@ -502,7 +502,7 @@
                                         <form method="post" action="/admin/crm/inbox/ai-intake-canary/run">
                                             {% include "components/forms/csrf_input.html" %}
                                             <input type="hidden" name="suite_id" value="{{ suite.suite_id }}">
-                                            <button class="min-h-9 rounded-lg border border-slate-300 px-3 font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200">Run</button>
+                                            <button class="min-h-9 rounded-lg border border-slate-300 px-3 font-semibold text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 dark:border-slate-700 dark:text-slate-200">Run</button>
                                         </form>
                                     </td>
                                 </tr>
@@ -516,12 +516,12 @@
                         <div class="flex flex-wrap gap-2">
                             <form method="post" action="/admin/crm/inbox/ai-intake-canary/run">
                                 {% include "components/forms/csrf_input.html" %}
-                                <button class="min-h-10 rounded-lg border border-slate-300 px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200">Run enabled</button>
+                                <button class="min-h-10 rounded-lg border border-slate-300 px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 dark:border-slate-700 dark:text-slate-200">Run enabled</button>
                             </form>
                             <form method="post" action="/admin/crm/inbox/ai-intake-canary/run">
                                 {% include "components/forms/csrf_input.html" %}
                                 <input type="hidden" name="required_only" value="true">
-                                <button class="min-h-10 rounded-lg border border-slate-300 px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200">Run required</button>
+                                <button class="min-h-10 rounded-lg border border-slate-300 px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 dark:border-slate-700 dark:text-slate-200">Run required</button>
                             </form>
                         </div>
                     </div>
@@ -562,7 +562,7 @@
         <div class="flex flex-wrap gap-2 border-t border-slate-100 p-5 dark:border-slate-700">
             <form method="post" action="/admin/crm/inbox/ai-intake-policy/{{ ai_intake_draft_version.id }}/validate">
                 {% include "components/forms/csrf_input.html" %}
-                <button class="min-h-10 rounded-lg border border-slate-300 px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200">Validate draft</button>
+                <button class="min-h-10 rounded-lg border border-slate-300 px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 dark:border-slate-700 dark:text-slate-200">Validate draft</button>
             </form>
             <form method="post" action="/admin/crm/inbox/ai-intake-policy/{{ ai_intake_draft_version.id }}/activate" onsubmit="return confirm('Activate this AI intake policy version for new eligible conversations?')">
                 {% include "components/forms/csrf_input.html" %}
@@ -589,7 +589,7 @@
                         <label class="flex items-start gap-2"><input type="radio" name="preview_mode" value="simulation" checked class="mt-0.5 border-slate-300 text-amber-500 focus:ring-amber-500"> <span><span class="font-semibold">Simulation</span><br><span class="text-slate-500 dark:text-slate-400">Uses deterministic mock tool results. No live subscriber or monitoring reads.</span></span></label>
                         <label class="flex items-start gap-2"><input type="radio" name="preview_mode" value="live_read_only" class="mt-0.5 border-slate-300 text-amber-500 focus:ring-amber-500"> <span><span class="font-semibold">Authorized read-only</span><br><span class="text-slate-500 dark:text-slate-400">Uses live read-only customer data and monitoring where tools are enabled.</span></span></label>
                     </div>
-                    <button class="mt-3 min-h-10 rounded-lg border border-slate-300 px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200">Run preview</button>
+                    <button class="mt-3 min-h-10 rounded-lg border border-slate-300 px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 dark:border-slate-700 dark:text-slate-200">Run preview</button>
                 </label>
             </form>
             {% if ai_intake_preview_result %}
@@ -734,7 +734,7 @@
                                 <form method="post" action="/admin/crm/inbox/channel-routes/{{ route.id }}">
                                     {% include "components/forms/csrf_input.html" %}
                                     <input type="hidden" name="is_active" value="{{ 'false' if route.is_active else 'true' }}">
-                                    <button class="min-h-9 rounded-lg border border-slate-300 px-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200">{{ "Disable" if route.is_active else "Reactivate" }}</button>
+                                    <button class="min-h-9 rounded-lg border border-slate-300 px-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 dark:border-slate-700 dark:text-slate-200">{{ "Disable" if route.is_active else "Reactivate" }}</button>
                                 </form>
                                 {% if route.is_active %}
                                 <form method="post" action="/admin/crm/inbox/channel-routes/{{ route.id }}/delete" onsubmit="return confirm('Deactivate this channel route?')">
@@ -793,7 +793,7 @@
                                 <form method="post" action="/admin/crm/inbox/ai-routes/{{ route.id }}">
                                     {% include "components/forms/csrf_input.html" %}
                                     <input type="hidden" name="is_active" value="{{ 'false' if route.is_active else 'true' }}">
-                                    <button class="min-h-9 rounded-lg border border-slate-300 px-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200">{{ "Disable" if route.is_active else "Reactivate" }}</button>
+                                    <button class="min-h-9 rounded-lg border border-slate-300 px-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 dark:border-slate-700 dark:text-slate-200">{{ "Disable" if route.is_active else "Reactivate" }}</button>
                                 </form>
                                 {% if route.is_active %}
                                 <form method="post" action="/admin/crm/inbox/ai-routes/{{ route.id }}/delete" onsubmit="return confirm('Deactivate this AI route?')">
@@ -879,7 +879,7 @@
                                 <form method="post" action="/admin/crm/inbox/email-routes/{{ route.id }}">
                                     {% include "components/forms/csrf_input.html" %}
                                     <input type="hidden" name="is_primary" value="true">
-                                    <button type="submit" class="min-h-9 rounded-lg border border-slate-300 px-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200">Make primary</button>
+                                    <button type="submit" class="min-h-9 rounded-lg border border-slate-300 px-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 dark:border-slate-700 dark:text-slate-200">Make primary</button>
                                 </form>
                                 {% endif %}
                                 {% if route.is_active %}
@@ -891,7 +891,7 @@
                                 <form method="post" action="/admin/crm/inbox/email-routes/{{ route.id }}">
                                     {% include "components/forms/csrf_input.html" %}
                                     <input type="hidden" name="is_active" value="true">
-                                    <button type="submit" class="min-h-9 rounded-lg border border-slate-300 px-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200">Reactivate</button>
+                                    <button type="submit" class="min-h-9 rounded-lg border border-slate-300 px-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 dark:border-slate-700 dark:text-slate-200">Reactivate</button>
                                 </form>
                                 {% endif %}
                             </div>

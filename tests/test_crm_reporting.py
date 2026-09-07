@@ -740,6 +740,35 @@ def test_sales_report_columns_bind_labels_to_exact_row_keys():
     ]
 
 
+def test_lead_performance_rows_paginate_twenty_at_a_time():
+    rows: list[report_routes.SalesReportRow] = [
+        {"agent_name": f"Agent {index}", "leads_won": index}
+        for index in range(45)
+    ]
+
+    first = report_routes._paginate_sales_report_rows(rows, page=1)
+    third = report_routes._paginate_sales_report_rows(rows, page=3)
+
+    assert len(first.rows) == 20
+    assert first.total_count == 45
+    assert first.total_pages == 3
+    assert first.has_next
+    assert len(third.rows) == 5
+    assert third.has_previous
+    assert not third.has_next
+
+
+def test_lead_performance_template_has_bottom_right_page_controls():
+    source, _, _ = report_routes.templates.env.loader.get_source(
+        report_routes.templates.env, "admin/reports/sales_kpi.html"
+    )
+
+    assert 'report_kind == "leads"' in source
+    assert 'aria-label="Lead performance pages"' in source
+    assert "page={{ page + 1 }}" in source
+    assert "page={{ page - 1 }}" in source
+
+
 def test_sales_order_report_columns_render_exact_prefixed_row_keys():
     columns: tuple[report_routes.SalesReportColumn, ...] = (
         {"label": "Agent", "key": "agent_name"},
