@@ -72,11 +72,25 @@ def test_notifications_menu_only_renders_current_staff_inbox(db_session, monkeyp
     assert response.headers["cache-control"] == "private, no-store"
 
 
-def test_notification_badge_loads_before_bell_open_and_refreshes() -> None:
+def test_notification_badge_loads_once_without_recurring_poll() -> None:
     layout = (
         Path(__file__).parents[1] / "templates" / "layouts" / "admin.html"
     ).read_text(encoding="utf-8")
 
     assert 'hx-get="/admin/notifications"' in layout
-    assert 'hx-trigger="load, every 30s"' in layout
+    assert 'hx-trigger="load"' in layout
+    assert 'hx-trigger="load, every 30s"' not in layout
     assert 'hx-trigger="intersect once"' not in layout
+
+
+def test_operation_tracker_initializes_only_for_queued_operations() -> None:
+    base = (Path(__file__).parents[1] / "templates" / "base.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert "window.initOperationTracker();" not in base
+    assert (
+        "const tracker = window.initOperationTracker "
+        "? window.initOperationTracker() : window.operationTracker;"
+    ) in base
+    assert "tracker.track(data.operationQueued.operation_id" in base
