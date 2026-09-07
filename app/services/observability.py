@@ -42,8 +42,17 @@ class StateObservation:
     value: float
 
 
+BILLING_HEALTH_MAX_OBSERVATIONS = 65
+
+
 _STATE_SNAPSHOT_SPECS = {
-    "billing_health": {"max_observations": 64, "ttl_seconds": 7 * 86_400},
+    # The fully populated billing snapshot is bounded at 65 observations:
+    # 36 fixed signals, seven invariant scopes, 14 renewal-day scopes,
+    # five optional ratios/balances, and two signals for each of five runners.
+    "billing_health": {
+        "max_observations": BILLING_HEALTH_MAX_OBSERVATIONS,
+        "ttl_seconds": 7 * 86_400,
+    },
     # Raw freshness plus the validated health-contract signals per external
     # channel; the channel set is bounded by InboxChannelType.
     "channel_ingestion": {"max_observations": 96, "ttl_seconds": 86_400},

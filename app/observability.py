@@ -12,6 +12,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from app.metrics import REQUEST_COUNT, REQUEST_ERRORS, REQUEST_LATENCY
 
 logger = logging.getLogger(__name__)
+_UNMATCHED_METRIC_PATH = "<unmatched>"
 _SKIP_OBSERVABILITY_PATHS = {"/health", "/metrics"}
 
 # The current request's x-request-id, for propagation onto outbound
@@ -80,6 +81,17 @@ def _request_path(request: Request) -> str:
     return request.url.path
 
 
+def _metric_path(request: Request) -> str:
+    """Return a bounded route label after FastAPI routing has completed."""
+
+    route = request.scope.get("route")
+    if route is not None:
+        path = getattr(route, "path", None)
+        if isinstance(path, str):
+            return path
+    return _UNMATCHED_METRIC_PATH
+
+
 def _should_skip_observability(path: str) -> bool:
     return path in _SKIP_OBSERVABILITY_PATHS
 
@@ -97,8 +109,8 @@ class ObservabilityMiddleware:
         request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
         scope.setdefault("state", {})["request_id"] = request_id
         request_id_var.set(request_id)
-        path = _request_path(request)
-        if _should_skip_observability(path):
+        request_path = request.url.path
+        if _should_skip_observability(request_path):
             await self.app(scope, receive, send)
             return
         token = _extract_bearer_token(request)
@@ -118,17 +130,19 @@ class ObservabilityMiddleware:
             await self.app(scope, receive, send_wrapper)
         except Exception:
             duration_ms = (time.monotonic() - start) * 1000.0
-            REQUEST_COUNT.labels(request.method, path, str(status_code)).inc()
-            REQUEST_LATENCY.labels(request.method, path, str(status_code)).observe(
-                duration_ms / 1000.0
-            )
-            REQUEST_ERRORS.labels(request.method, path, str(status_code)).inc()
+            metric_path = _metric_path(request)
+            REQUEST_COUNT.labels(request.method, metric_path, str(status_code)).inc()
+            REQUEST_LATENCY.labels(
+                request.method, metric_path, str(status_code)
+            ).observe(duration_ms / 1000.0)
+            REQUEST_ERRORS.labels(request.method, metric_path, str(status_code)).inc()
             logger.exception(
                 "request_failed",
                 extra={
                     "request_id": request_id,
                     "actor_id": actor_id,
-                    "path": path,
+                    "path": request_path,
+                    "route_path": metric_path,
                     "method": request.method,
                     "status": status_code,
                     "duration_ms": round(duration_ms, 2),
@@ -137,18 +151,20 @@ class ObservabilityMiddleware:
             raise
 
         duration_ms = (time.monotonic() - start) * 1000.0
-        REQUEST_COUNT.labels(request.method, path, str(status_code)).inc()
-        REQUEST_LATENCY.labels(request.method, path, str(status_code)).observe(
+        metric_path = _metric_path(request)
+        REQUEST_COUNT.labels(request.method, metric_path, str(status_code)).inc()
+        REQUEST_LATENCY.labels(request.method, metric_path, str(status_code)).observe(
             duration_ms / 1000.0
         )
         if status_code >= 500:
-            REQUEST_ERRORS.labels(request.method, path, str(status_code)).inc()
+            REQUEST_ERRORS.labels(request.method, metric_path, str(status_code)).inc()
         logger.info(
             "request_completed",
             extra={
                 "request_id": request_id,
                 "actor_id": actor_id,
-                "path": path,
+                "path": request_path,
+                "route_path": metric_path,
                 "method": request.method,
                 "status": status_code,
                 "duration_ms": round(duration_ms, 2),

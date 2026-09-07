@@ -7,8 +7,9 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy import String, func, literal_column, or_, select
+from sqlalchemy.orm import Query, Session
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.models.service_team import ServiceTeam
 from app.models.team_inbox import (
@@ -51,6 +52,27 @@ _ALLOWED_LABEL_COLORS = {
 
 class InboxOperationError(ValueError):
     pass
+
+
+def _delivery_status_expression(db: Session) -> ColumnElement[str]:
+    """Return the indexed delivery-status expression for the active database."""
+
+    if db.get_bind().dialect.name == "postgresql":
+        # Keep the JSON key literal in PostgreSQL SQL. A bound JSON key does not
+        # structurally match the expression index once psycopg promotes the
+        # statement to a generic prepared plan.
+        return InboxMessage.metadata_.op("->>", return_type=String)(
+            literal_column("'delivery_status'")
+        )
+    return InboxMessage.metadata_["delivery_status"].as_string()
+
+
+def _failed_outbound_query(db: Session) -> Query[InboxMessage]:
+    return (
+        db.query(InboxMessage)
+        .filter(InboxMessage.direction == InboxMessageDirection.outbound.value)
+        .filter(_delivery_status_expression(db) == "failed")
+    )
 
 
 def route_to_service_team(
@@ -1010,9 +1032,7 @@ def list_failed_outbound_messages(
     limit: int = 100,
 ) -> list[InboxMessage]:
     return list(
-        db.query(InboxMessage)
-        .filter(InboxMessage.direction == "outbound")
-        .filter(InboxMessage.metadata_["delivery_status"].as_string() == "failed")
+        _failed_outbound_query(db)
         .order_by(InboxMessage.created_at.desc())
         .limit(limit)
         .all()
@@ -1080,9 +1100,8 @@ def queue_metrics(db: Session) -> InboxQueueMetrics:
         total_open=int(total_open or 0),
         needs_response=team_inbox_read.needs_response_conversation_count(db),
         failed_outbound=int(
-            db.query(func.count(InboxMessage.id))
-            .filter(InboxMessage.direction == "outbound")
-            .filter(InboxMessage.metadata_["delivery_status"].as_string() == "failed")
+            _failed_outbound_query(db)
+            .with_entities(func.count(InboxMessage.id))
             .scalar()
             or 0
         ),

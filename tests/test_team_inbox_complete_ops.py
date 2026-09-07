@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
+from sqlalchemy.dialects import postgresql
 from starlette.requests import Request
 
 from app.models.service_team import ServiceTeam, ServiceTeamType
@@ -267,6 +268,35 @@ def test_queue_metrics_counts_open_work(db_session):
     assert metrics.needs_response == 2
     assert metrics.unassigned_open == 2
     assert metrics.failed_outbound == 1
+
+
+def test_failed_outbound_query_matches_postgresql_expression_index(
+    db_session, monkeypatch
+):
+    monkeypatch.setattr(
+        db_session,
+        "get_bind",
+        lambda: SimpleNamespace(dialect=postgresql.dialect()),
+    )
+    statement = team_inbox_operations._failed_outbound_query(db_session).statement
+    compiled = str(
+        statement.compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": False},
+        )
+    )
+
+    assert "inbox_messages.metadata ->> 'delivery_status'" in compiled
+    assert "metadata ->> %(metadata_" not in compiled
+
+
+def test_delivery_status_migration_is_online_and_non_destructive():
+    migration = Path("alembic/versions/581_inbox_delivery_status_index.py").read_text()
+
+    assert "CREATE INDEX CONCURRENTLY IF NOT EXISTS" in migration
+    assert "autovacuum_vacuum_scale_factor = 0.02" in migration
+    assert "UPDATE inbox_messages" not in migration
+    assert "DELETE FROM inbox_messages" not in migration
 
 
 def test_queue_metric_drilldown_filters_match_exact_open_cohorts(db_session):
