@@ -1,11 +1,10 @@
 """Phase 3 §4.3 — quote-request write surfaces behind ``quotes_native_write_enabled``.
 
-OFF (default) keeps the CRM write-through via ``quotes_mirror.request_quote``
-unchanged; ON creates the quote in sub's native ``quotes`` table via
-``SelfServeQuotes.request_quote`` and returns the §2.5 portal payload. The
-native path needs no CRM linkage, so subscribers without a
-``splynx_customer_id``/CRM id (native-only customers) can request quotes —
-the mirror path 400s for them by construction.
+OFF (default) routes to the retired ``quotes_mirror.request_quote`` owner,
+which refuses without contacting CRM; ON creates the quote in sub's native
+``quotes`` table via ``SelfServeQuotes.request_quote`` and returns the §2.5
+portal payload. The native path needs no CRM linkage, so native-only customers
+can request quotes after cutover.
 """
 
 from __future__ import annotations
@@ -46,7 +45,9 @@ def _request(payload=None) -> QuoteRequestCreate:
     return QuoteRequestCreate(**(payload or _PIN))
 
 
-def test_me_quote_request_flag_off_writes_through_mirror(db_session, monkeypatch):
+def test_me_quote_request_flag_off_routes_to_retired_mirror_owner(
+    db_session, monkeypatch
+):
     sub = _subscriber(db_session)
     principal = {"principal_type": "subscriber", "subscriber_id": str(sub.id)}
     monkeypatch.setattr(selfserve_service, "native_write_enabled", lambda db: False)
@@ -123,7 +124,9 @@ def test_reseller_quote_request_flag_on_creates_native_quote(db_session, monkeyp
     assert quote is not None and quote.subscriber_id == sub.id
 
 
-def test_reseller_quote_request_flag_off_writes_through_mirror(db_session, monkeypatch):
+def test_reseller_quote_request_flag_off_routes_to_retired_mirror_owner(
+    db_session, monkeypatch
+):
     sub = _subscriber(db_session)
     monkeypatch.setattr(selfserve_service, "native_write_enabled", lambda db: False)
     monkeypatch.setattr(reseller_api, "_reseller_id", lambda db, principal: "r-1")

@@ -1190,10 +1190,10 @@ def my_quote_request(
 ):
     """Request a map-pinned installation quote. The dropped pin drives the
     feasibility check (proximity to fiber) + estimate + deposit. Behind the
-    ``quotes_native_write_enabled`` write-flip flag: OFF writes through
-    to the CRM and returns the mirrored item; ON creates the quote in sub's
-    native ``quotes`` table (no CRM link required, so native-only subscribers
-    can quote too) — same payload shape either way."""
+    ``quotes_native_write_enabled`` write-flip flag: OFF delegates to the
+    retired mirror owner and refuses without contacting CRM; ON creates the
+    quote in sub's native ``quotes`` table (no CRM link required, so
+    native-only subscribers can quote too)."""
     subscriber_id = _subscriber_id(principal)
     if selfserve_service.native_write_enabled(db):
         quote = selfserve_service.selfserve_quotes.request_quote(

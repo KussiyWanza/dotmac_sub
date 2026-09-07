@@ -2,6 +2,42 @@ import 'package:dotmac_portal/src/models/quote.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  group('QuotesPage', () {
+    test('parses native action availability', () {
+      final page = QuotesPage.fromJson({
+        'quotes': const [],
+        'total': 0,
+        'open': 0,
+        'source_state': 'native',
+        'actions_available': true,
+        'actions_unavailable_message': null,
+      });
+
+      expect(page.sourceState, QuoteSourceState.native);
+      expect(page.actionsAvailable, isTrue);
+    });
+
+    test(
+        'parses the retired owner message and fails closed if eligibility is missing',
+        () {
+      final retired = QuotesPage.fromJson({
+        'quotes': const [],
+        'total': 0,
+        'open': 0,
+        'source_state': 'retired',
+        'actions_available': false,
+        'actions_unavailable_message': 'Please contact support.',
+      });
+      final incomplete = QuotesPage.fromJson({'quotes': const []});
+
+      expect(retired.sourceState, QuoteSourceState.retired);
+      expect(retired.actionsAvailable, isFalse);
+      expect(retired.actionsUnavailableMessage, 'Please contact support.');
+      expect(incomplete.actionsAvailable, isFalse);
+      expect(incomplete.sourceState, QuoteSourceState.unknown);
+    });
+  });
+
   group('Quote', () {
     test('parses a covered quote with estimate + deposit', () {
       final q = Quote.fromJson({

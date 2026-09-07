@@ -194,11 +194,14 @@ subscribers. The old service reconciliation entry points also do nothing.
 Historical `QuoteMirror` and `QuoteSyncState` rows, payloads, IDs, and timestamps
 are preserved. Mirror reads never fetch CRM, enqueue a refresh, or move
 `synced_at`. Web reads explicitly label saved information as historical; API
-mirror reads return `source_state=retired` and `actions_available=false`.
-Old mobile versions may ignore those additive fields, but request, accept, and
-deposit preflight always refuse through the existing domain-error boundary,
-regardless of a leftover enabled binding. No new payment is taken by the
-retired deposit path. Previously received payments needing manual
+mirror reads return `source_state=retired`, `actions_available=false`, and the
+customer-safe `actions_unavailable_message` owned by
+`sales.crm_quote_retirement`. Current mobile clients hide the request action
+and display that explanation; direct navigation fails closed on the same read
+contract. Old mobile versions may ignore those additive fields, but request,
+accept, and deposit preflight always refuse through the existing domain-error
+boundary, regardless of a leftover enabled binding. No new payment is taken by
+the retired deposit path. Previously received payments needing manual
 reconciliation remain the financial owner's responsibility; operators must not
 replay CRM acceptance or alter historical rows.
 

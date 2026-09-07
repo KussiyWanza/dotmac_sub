@@ -257,7 +257,7 @@ class _ServiceLocationScreenState extends ConsumerState<ServiceLocationScreen> {
                                   : null,
                               child: Icon(
                                 Icons.place,
-                                color: theme.colorScheme.error,
+                                color: theme.colorScheme.primary,
                                 size: 40,
                               ),
                             ),

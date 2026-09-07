@@ -10,8 +10,8 @@ import 'package:latlong2/latlong.dart';
 import '../../core/api_exception.dart';
 import '../../providers/data_providers.dart';
 
-/// Drop a map pin for a new installation; the CRM returns feasibility + an
-/// estimate + the required deposit, surfaced back on the quotes list.
+/// Drop a map pin for a new installation; the active quote owner returns
+/// feasibility, an estimate, and the required deposit.
 class QuoteRequestScreen extends ConsumerStatefulWidget {
   const QuoteRequestScreen({super.key});
 
@@ -24,17 +24,20 @@ class _QuoteRequestScreenState extends ConsumerState<QuoteRequestScreen> {
 
   final _mapController = MapController();
   final _mapKey = GlobalKey();
+  final _address = TextEditingController();
   final _note = TextEditingController();
 
   LatLng? _selected;
-  String? _resolvedAddress;
   Timer? _reverseDebounce;
+  int _selectionRevision = 0;
+  bool _addressEdited = false;
   bool _locating = false;
   bool _submitting = false;
 
   @override
   void dispose() {
     _reverseDebounce?.cancel();
+    _address.dispose();
     _note.dispose();
     super.dispose();
   }
@@ -47,7 +50,9 @@ class _QuoteRequestScreenState extends ConsumerState<QuoteRequestScreen> {
   void _select(LatLng point, {bool recenter = false}) {
     setState(() {
       _selected = point;
-      _resolvedAddress = null;
+      _selectionRevision++;
+      _addressEdited = false;
+      _address.clear();
     });
     if (recenter) _mapController.move(point, 17);
     _reverseGeocode(point);
@@ -63,15 +68,29 @@ class _QuoteRequestScreenState extends ConsumerState<QuoteRequestScreen> {
 
   void _reverseGeocode(LatLng point) {
     _reverseDebounce?.cancel();
+    final revision = _selectionRevision;
     _reverseDebounce = Timer(const Duration(milliseconds: 400), () async {
       try {
         final address = await ref
             .read(locationRepositoryProvider)
             .reverseGeocode(point.latitude, point.longitude);
-        if (mounted) setState(() => _resolvedAddress = address);
+        if (mounted &&
+            revision == _selectionRevision &&
+            !_addressEdited &&
+            address != null) {
+          _address.text = address;
+        }
       } on ApiException {
         // best-effort; the pin is what gets submitted
       }
+    });
+  }
+
+  void _beginPinMove() {
+    setState(() {
+      _selectionRevision++;
+      _addressEdited = false;
+      _address.clear();
     });
   }
 
@@ -107,6 +126,8 @@ class _QuoteRequestScreenState extends ConsumerState<QuoteRequestScreen> {
   }
 
   Future<void> _submit() async {
+    if (_submitting) return;
+    FocusScope.of(context).unfocus();
     final selected = _selected;
     if (selected == null) {
       _snack('Drop a pin on your installation address first.');
@@ -117,7 +138,7 @@ class _QuoteRequestScreenState extends ConsumerState<QuoteRequestScreen> {
       await ref.read(quotesRepositoryProvider).requestQuote(
             latitude: selected.latitude,
             longitude: selected.longitude,
-            address: _resolvedAddress,
+            address: _address.text.trim(),
             note: _note.text.trim(),
           );
       ref.invalidate(quotesProvider);
@@ -133,6 +154,69 @@ class _QuoteRequestScreenState extends ConsumerState<QuoteRequestScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final quotesPage = ref.watch(quotesProvider);
+    return quotesPage.when(
+      loading: () => Scaffold(
+        appBar: AppBar(title: const Text('Request installation')),
+        body: const Center(child: CircularProgressIndicator()),
+      ),
+      error: (_, __) => Scaffold(
+        appBar: AppBar(title: const Text('Request installation')),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text(
+                  'Could not confirm whether online quotes are available.',
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 16),
+                FilledButton.tonal(
+                  onPressed: () => ref.invalidate(quotesProvider),
+                  child: const Text('Try again'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+      data: (page) => page.actionsAvailable
+          ? _buildRequestForm(context)
+          : _unavailable(context, page.actionsUnavailableMessage),
+    );
+  }
+
+  Widget _unavailable(BuildContext context, String? ownerMessage) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Request installation')),
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.info_outline,
+                size: 48,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+              const SizedBox(height: 16),
+              Text(
+                ownerMessage ??
+                    'Online quote requests are currently unavailable. '
+                        'Please contact support to continue.',
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRequestForm(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final center = _selected ?? _fallbackCenter;
     return Scaffold(
@@ -165,6 +249,7 @@ class _QuoteRequestScreenState extends ConsumerState<QuoteRequestScreen> {
                             height: 48,
                             alignment: Alignment.topCenter,
                             child: GestureDetector(
+                              onPanStart: (_) => _beginPinMove(),
                               onPanUpdate: (d) {
                                 final p = _globalToLatLng(d.globalPosition);
                                 if (p != null) setState(() => _selected = p);
@@ -175,7 +260,8 @@ class _QuoteRequestScreenState extends ConsumerState<QuoteRequestScreen> {
                               },
                               child: Icon(
                                 Icons.place,
-                                color: scheme.error,
+                                key: const ValueKey('installation-map-pin'),
+                                color: scheme.primary,
                                 size: 44,
                               ),
                             ),
@@ -213,13 +299,30 @@ class _QuoteRequestScreenState extends ConsumerState<QuoteRequestScreen> {
                   Text(
                     _selected == null
                         ? 'Tap the map (or use GPS) to pin your installation address.'
-                        : _resolvedAddress ?? 'Pinned location selected',
+                        : 'Pinned location selected. Confirm the address below.',
                     style: Theme.of(context).textTheme.bodyMedium,
                   ),
                   const SizedBox(height: 12),
                   TextField(
+                    key: const ValueKey('installation-address'),
+                    controller: _address,
+                    textInputAction: TextInputAction.next,
+                    onChanged: (_) => _addressEdited = true,
+                    decoration: const InputDecoration(
+                      labelText: 'Installation address',
+                      hintText: 'Enter or confirm the pinned address',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    key: const ValueKey('installation-notes'),
                     controller: _note,
                     maxLines: 2,
+                    textInputAction: TextInputAction.done,
+                    onSubmitted: (_) {
+                      if (_selected != null && !_submitting) _submit();
+                    },
                     decoration: const InputDecoration(
                       labelText: 'Notes (building, floor, landmark…)',
                       border: OutlineInputBorder(),
@@ -227,6 +330,7 @@ class _QuoteRequestScreenState extends ConsumerState<QuoteRequestScreen> {
                   ),
                   const SizedBox(height: 12),
                   FilledButton(
+                    key: const ValueKey('get-estimate'),
                     onPressed:
                         _submitting || _selected == null ? null : _submit,
                     child: _submitting
