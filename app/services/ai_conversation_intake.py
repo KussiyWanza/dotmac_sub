@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import time
 from collections.abc import Mapping
@@ -88,6 +87,7 @@ from app.services.owner_commands import (
     OwnerCommandDefinition,
     execute_owner_command,
 )
+from app.version import get_app_revision
 
 SUPPORTED_CONVERSATIONAL_CHANNELS = frozenset(
     {
@@ -3391,11 +3391,7 @@ def _process_one_session(
                     "question_key": decision.metadata.get("question_key"),
                     "tokens_in": composition.tokens_in,
                     "tokens_out": composition.tokens_out,
-                    "app_revision": (
-                        os.getenv("APP_REVISION")
-                        or os.getenv("GIT_SHA")
-                        or os.getenv("COMMIT_SHA")
-                    ),
+                    "app_revision": get_app_revision(),
                 },
             )
             metadata["ai_intake_response_source"] = composition.response_source

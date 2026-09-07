@@ -2624,7 +2624,7 @@ def test_engine_resolution_finishes_ai_session_and_resolves_inbox(
     assert session.completed_at is not None
     assert conversation.status == "resolved"
     assert conversation.metadata_["ai_handling"] is False
-    assert resolved_event.to_status == "resolved"
+    assert resolved_event.status == "resolved"
 
 
 def test_back_to_back_inbounds_are_processed_oldest_first_exactly_once(

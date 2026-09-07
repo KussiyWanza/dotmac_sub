@@ -340,7 +340,7 @@ WORKFLOW_GUIDANCE: tuple[AdminWorkflowGuidance, ...] = (
         "Use the team inbox",
         "Support, operations",
         "Review and filter customer conversations without losing route, channel, or assignment context.",
-        ("/admin/inbox", "/admin/crm/inbox"),
+        ("/admin/inbox",),
         "Use search, lifecycle, assignment, channel, team, and activity filters to narrow the queue.",
         "Use All only when historical conversations should be included; use Active or a specific status for operational work.",
         "Open the conversation or linked ticket before acting, then return to the same filtered queue context.",
