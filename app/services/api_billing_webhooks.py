@@ -106,6 +106,31 @@ def _processed_response(consequence: dict[str, object]) -> JSONResponse:
     )
 
 
+def _log_processed_webhook(
+    *,
+    provider: PaymentWebhookProvider,
+    source_provider_event_id: str,
+    receipt_id: UUID,
+    consequence: dict[str, object],
+    replayed: bool,
+) -> None:
+    """Emit non-secret trace evidence after the financial consequence commits."""
+
+    logger.info(
+        "payment_webhook_consequence_confirmed",
+        extra={
+            "event": "payment_webhook_consequence_confirmed",
+            "provider": provider.value,
+            "source_provider_event_id": source_provider_event_id,
+            "receipt_id": str(receipt_id),
+            "provider_event_id": consequence.get("provider_event_id"),
+            "payment_id": consequence.get("payment_id"),
+            "consequence_status": consequence.get("status"),
+            "replayed": replayed,
+        },
+    )
+
+
 def _record_processing_failure(
     db: Session,
     *,
@@ -187,6 +212,13 @@ def _process_webhook(
 
     if not should_process:
         _record_ingress_outcome(provider, "duplicate")
+        _log_processed_webhook(
+            provider=provider,
+            source_provider_event_id=identity.provider_event_id,
+            receipt_id=receipt_id,
+            consequence=consequence,
+            replayed=True,
+        )
         return _processed_response(consequence)
 
     context = CommandContext.system(
@@ -238,8 +270,16 @@ def _process_webhook(
         _record_ingress_outcome(provider, "processing_error")
         return JSONResponse({"status": "error"}, status_code=500)
 
+    consequence = result.consequence()
     _record_ingress_outcome(provider, "processed")
-    return _processed_response(result.consequence())
+    _log_processed_webhook(
+        provider=provider,
+        source_provider_event_id=identity.provider_event_id,
+        receipt_id=receipt_id,
+        consequence=consequence,
+        replayed=result.replayed,
+    )
+    return _processed_response(consequence)
 
 
 def process_paystack_webhook(
