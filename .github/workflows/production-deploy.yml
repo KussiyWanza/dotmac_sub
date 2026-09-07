@@ -214,6 +214,8 @@ jobs:
           AUTHORIZATION_RUN_ID: ${{ inputs.authorization_run_id }}
           DEPLOY_RUN_ID: ${{ github.run_id }}
           DB_BACKUP_BASENAME: dotmac_sub_run_${{ github.run_id }}
+          DB_BACKUP_RETENTION_PREFIX: dotmac_sub_run_
+          DB_BACKUP_RETENTION_COUNT: "5"
         run: |
           set -euo pipefail
           mapfile -t files < <(find "$RUNNER_TEMP/authorization" -type f -name authorization.json)
