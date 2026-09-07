@@ -270,7 +270,14 @@ def test_queue_metrics_counts_open_work(db_session):
     assert metrics.failed_outbound == 1
 
 
-def test_failed_outbound_query_matches_postgresql_expression_index(db_session):
+def test_failed_outbound_query_matches_postgresql_expression_index(
+    db_session, monkeypatch
+):
+    monkeypatch.setattr(
+        db_session,
+        "get_bind",
+        lambda: SimpleNamespace(dialect=postgresql.dialect()),
+    )
     statement = team_inbox_operations._failed_outbound_query(db_session).statement
     compiled = str(
         statement.compile(
